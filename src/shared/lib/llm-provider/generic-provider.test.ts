@@ -124,6 +124,18 @@ describe('GenericLlmProvider.getContainerEnvVars', () => {
     })
     expect(provider.getContainerEnvVars().ANTHROPIC_BASE_URL).toBe('http://localhost.mycorp.dev:4000')
   })
+
+  // Seam guard for Apple Container (SUP-447): when the runtime supplies its
+  // gateway IP, the baked ANTHROPIC_BASE_URL must use that address — not the
+  // Docker-only name that is NXDOMAIN inside Apple guests.
+  it('rewrites loopback to the runtime host address when one is supplied', () => {
+    settingsMock.mockReturnValue({
+      apiKeys: { genericApiKey: 'k', genericBaseUrl: 'http://localhost:11434' },
+    })
+    expect(provider.getContainerEnvVars(undefined, '192.168.64.1').ANTHROPIC_BASE_URL).toBe(
+      'http://192.168.64.1:11434',
+    )
+  })
 })
 
 describe('GenericLlmProvider.getApiKeyStatus', () => {

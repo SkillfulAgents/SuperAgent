@@ -8,14 +8,6 @@
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]'])
 
 /**
- * Rewrite a loopback URL to the container-reachable host gateway
- * (host.docker.internal — forwarded by Docker Desktop/Lima, and added via
- * --add-host on Linux). Matches on the parsed hostname, so loopback IPs are
- * covered and hostnames that merely start with "localhost"
- * (e.g. localhost.mycorp.dev) are left alone. Non-URL input passes through
- * unchanged.
- */
-/**
  * True when a parsed URL hostname is a single-label name (no dots) that only
  * resolves through host-side mechanisms Docker's DNS forwarder does not apply
  * — the host's search domains and scoped resolvers (Tailscale MagicDNS, mDNS
@@ -30,7 +22,20 @@ export function isHostOnlyHostname(hostname: string): boolean {
   return !hostname.includes('.')
 }
 
-export function rewriteLoopbackForContainer(url: string | undefined): string | undefined {
+/**
+ * Rewrite a loopback URL to a container-reachable host address. Matches on the
+ * parsed hostname, so loopback IPs are covered and hostnames that merely start
+ * with "localhost" (e.g. localhost.mycorp.dev) are left alone. Non-URL input
+ * passes through unchanged.
+ *
+ * `hostAddress` defaults to `host.docker.internal` (Docker Desktop/Lima/WSL2
+ * --add-host). Callers that know a different address (Apple's gateway IP)
+ * must pass it — the rewrite cannot pull the runtime itself (module cycle).
+ */
+export function rewriteLoopbackForContainer(
+  url: string | undefined,
+  hostAddress = 'host.docker.internal',
+): string | undefined {
   if (!url) return url
   let parsed: URL
   try {
@@ -39,7 +44,7 @@ export function rewriteLoopbackForContainer(url: string | undefined): string | u
     return url
   }
   if (!LOOPBACK_HOSTNAMES.has(parsed.hostname)) return url
-  parsed.hostname = 'host.docker.internal'
+  parsed.hostname = hostAddress
   const rewritten = parsed.toString()
   // URL.toString() appends a trailing slash to a bare origin; don't introduce
   // one the caller didn't have.

@@ -9,6 +9,11 @@ const enableToolSearch = vi.fn((): boolean | undefined => true)
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ enableToolSearch: enableToolSearch() }),
 }))
+const getContainerHostUrl = vi.fn(() => 'host.docker.internal')
+vi.mock('@shared/lib/proxy/host-url', () => ({
+  getContainerHostUrl: () => getContainerHostUrl(),
+  getAppPort: () => 47891,
+}))
 const getContainerEnvVars = vi.fn(() => ({ ANTHROPIC_API_KEY: 'provider-key' }))
 vi.mock('@shared/lib/llm-provider', () => ({
   getActiveLlmProvider: () => ({ getContainerEnvVars }),
@@ -29,10 +34,31 @@ class TestContainerClient extends BaseContainerClient {
   public testBuildAgentEnv(extra?: Record<string, string>): Record<string, string> {
     return this.buildAgentEnv(extra)
   }
+  public testAssertLocalLlmReachable(): Promise<void> {
+    return this.assertLocalLlmReachable()
+  }
+}
+
+/** Stand-in for Apple: overrides only the host-address hook the runtime owns. */
+class GatewayHostContainerClient extends TestContainerClient {
+  getContainerHostAddress(): string {
+    return '192.168.64.1'
+  }
+}
+
+/** Stand-in for Apple with an unknown gateway, which fails closed (SUP-447). */
+class UnknownGatewayContainerClient extends TestContainerClient {
+  getContainerHostAddress(): string {
+    throw new Error('macOS Container host gateway is unreachable.')
+  }
 }
 
 describe('buildAgentEnv', () => {
-  afterEach(() => enableToolSearch.mockReturnValue(true))
+  afterEach(() => {
+    enableToolSearch.mockReturnValue(true)
+    getContainerHostUrl.mockReturnValue('host.docker.internal')
+    getContainerEnvVars.mockClear()
+  })
 
   it('merges provider env, constants, config.envVars and per-start extra (later wins)', () => {
     const client = new TestContainerClient({
@@ -53,11 +79,61 @@ describe('buildAgentEnv', () => {
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
-  it('passes the agent identity to the provider so it can attribute LLM usage', () => {
+  it('passes the agent identity and runtime host address to the provider', () => {
     new TestContainerClient({ agentId: 'my-agent', envVars: {} }).testBuildAgentEnv()
     expect(getContainerEnvVars).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'my-agent' })
+      expect.objectContaining({ id: 'my-agent' }),
+      'host.docker.internal',
     )
+  })
+
+  // Composition seam (SUP-447): runtime override → buildAgentEnv → provider.
+  // Apple's unit tests mock away BaseContainerClient, so the inheritance path
+  // is pinned here with a gateway-IP subclass.
+  it('threads an overridden container host address into the provider', () => {
+    new GatewayHostContainerClient({ agentId: 'apple-agent', envVars: {} }).testBuildAgentEnv()
+    expect(getContainerEnvVars).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'apple-agent' }),
+      '192.168.64.1',
+    )
+  })
+
+  // Podman uses host.containers.internal via getContainerHostUrl. Pre-fix the
+  // rewrite hardcoded host.docker.internal for every runtime; aligning with the
+  // shared host-url helper is intentional (same address Podman already uses
+  // for host API talk-back).
+  it('passes Podman host.containers.internal when that is the runtime host URL', () => {
+    getContainerHostUrl.mockReturnValue('host.containers.internal')
+    new TestContainerClient({ agentId: 'podman-agent', envVars: {} }).testBuildAgentEnv()
+    expect(getContainerEnvVars).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'podman-agent' }),
+      'host.containers.internal',
+    )
+  })
+})
+
+describe('assertLocalLlmReachable', () => {
+  afterEach(() => {
+    getContainerHostUrl.mockReturnValue('host.docker.internal')
+    getContainerEnvVars.mockClear()
+  })
+
+  // Byte-identical behavior for Docker/Lima/WSL2/Podman: a forwarding-name host
+  // address reaches the host loopback whatever the bind, so the check must not
+  // consult the provider or touch the network at all.
+  it('does nothing when the runtime host address is a forwarding name', async () => {
+    const client = new TestContainerClient({ agentId: 'docker-agent', envVars: {} })
+    await expect(client.testAssertLocalLlmReachable()).resolves.toBeUndefined()
+    expect(getContainerEnvVars).not.toHaveBeenCalled()
+  })
+
+  // The fail-closed contract this check deliberately defers rather than owns:
+  // it swallows an unknown gateway so the identical throw surfaces from the env
+  // build a few lines later, with the context that belongs to it.
+  it('defers an unknown gateway to the env build, which still fails closed', async () => {
+    const client = new UnknownGatewayContainerClient({ agentId: 'apple-agent', envVars: {} })
+    await expect(client.testAssertLocalLlmReachable()).resolves.toBeUndefined()
+    expect(() => client.testBuildAgentEnv()).toThrow(/gateway is unreachable/i)
   })
 })
 

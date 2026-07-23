@@ -46,7 +46,10 @@ vi.mock('@shared/lib/llm-provider', () => ({
 
 const autoSleepTimeoutMinutes = vi.fn((): number | undefined => 30)
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({ app: { autoSleepTimeoutMinutes: autoSleepTimeoutMinutes() }, enableToolSearch: true }),
+  // container is always present in real settings; buildAgentEnv now reads
+  // container.containerRunner via getContainerHostUrl (SUP-447). The runner
+  // value is irrelevant for a hosted runtime — the host address is unused.
+  getSettings: () => ({ app: { autoSleepTimeoutMinutes: autoSleepTimeoutMinutes() }, enableToolSearch: true, container: {} }),
 }))
 
 import {

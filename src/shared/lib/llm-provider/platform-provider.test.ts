@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // Stub everything with side effects: attribution pulls in the DB, auth-service
 // reads settings storage, config resolves the proxy URL from the environment.
 const currentAttribution = vi.fn()
+const getPlatformProxyBaseUrl = vi.fn(() => 'https://proxy.example/v1')
 vi.mock('@shared/lib/platform-attribution', () => ({
   attribution: { current: () => currentAttribution() },
 }))
@@ -10,7 +11,7 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => 'platform-token',
 }))
 vi.mock('@shared/lib/platform-auth/config', () => ({
-  getPlatformProxyBaseUrl: () => 'https://proxy.example/v1',
+  getPlatformProxyBaseUrl: () => getPlatformProxyBaseUrl(),
 }))
 vi.mock('../config/settings', () => ({
   getSettings: () => ({}),
@@ -23,6 +24,7 @@ const provider = new PlatformLlmProvider()
 
 beforeEach(() => {
   currentAttribution.mockReturnValue(null)
+  getPlatformProxyBaseUrl.mockReturnValue('https://proxy.example/v1')
 })
 
 describe('getContainerEnvVars agent identity', () => {
@@ -49,6 +51,23 @@ describe('getContainerEnvVars agent identity', () => {
   it('flattens control characters out of the name', () => {
     const env = provider.getContainerEnvVars({ id: 'abc123', name: 'Multi\nLine\tBot' })
     expect(env.SUPERAGENT_AGENT_NAME).toBe('Multi Line Bot')
+  })
+
+  // Symmetric with generic-provider: local-dev loopback platform proxy must
+  // honor the runtime host address (SUP-447).
+  it('rewrites a loopback platform proxy to the runtime host address when supplied', () => {
+    getPlatformProxyBaseUrl.mockReturnValue('http://localhost:47891/v1')
+    const env = provider.getContainerEnvVars({ id: 'abc123' }, '192.168.64.1')
+    expect(env.ANTHROPIC_BASE_URL).toBe('http://192.168.64.1:47891/v1')
+  })
+
+  // Guards the byte-identical default (SUP-447): with no host address, a
+  // loopback platform proxy keeps the Docker-convention name for every
+  // non-Apple runtime, exactly as before the fix.
+  it('keeps host.docker.internal for a loopback platform proxy when no host address is supplied', () => {
+    getPlatformProxyBaseUrl.mockReturnValue('http://localhost:47891/v1')
+    const env = provider.getContainerEnvVars({ id: 'abc123' })
+    expect(env.ANTHROPIC_BASE_URL).toBe('http://host.docker.internal:47891/v1')
   })
 })
 

@@ -326,20 +326,31 @@ export class AppleContainerClient extends BaseContainerClient {
   }
 
   /**
-   * Containers talk back to the host (LLM proxy, host API) at this URL.
-   * host.docker.internal doesn't resolve here, so use the gateway IP — the
-   * same address Lima aliases that name to via --add-host. Fail closed if
-   * the gateway is unknown: the Docker fallback is NXDOMAIN inside Apple
-   * containers and would start agents with a permanently unreachable proxy.
+   * The vmnet gateway IP, or throw. host.docker.internal doesn't resolve inside
+   * Apple containers, so the gateway IP is the only address they can reach the
+   * host at (the same address Lima aliases that name to via --add-host). Fail
+   * closed when it's unknown: the Docker fallback is NXDOMAIN here and would
+   * start agents with a permanently unreachable host.
    */
-  public getHostApiBaseUrl(): string {
+  private requireGatewayIp(): string {
     const gateway = getAppleGatewayIp()
     if (!gateway) {
       throw new Error(
         'macOS Container host gateway is unreachable. Restart macOS Container and try again.',
       )
     }
-    return `http://${gateway}:${getAppPort()}`
+    return gateway
+  }
+
+  /** Containers talk back to the host (LLM proxy, host API) at this URL. */
+  public getHostApiBaseUrl(): string {
+    return `http://${this.requireGatewayIp()}:${getAppPort()}`
+  }
+
+  /** Loopback LLM endpoints rewrite to this address (host.docker.internal is
+   *  NXDOMAIN here — same fail-closed gateway rule as getHostApiBaseUrl). */
+  getContainerHostAddress(): string {
+    return this.requireGatewayIp()
   }
 
   /** The vmnet gateway is a real host interface — the host-browser CDP proxy
