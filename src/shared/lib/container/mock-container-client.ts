@@ -996,6 +996,64 @@ export class ProxyReviewScenario implements MockScenario {
   }
 }
 
+/**
+ * Mixed cross-store pending requests: two container-side input asks (secret +
+ * question) stream in one turn while an agent-scoped proxy review parks in
+ * the real ReviewManager. The three waits live in DIFFERENT stores (persister
+ * pendingInputRequests × 2, ReviewManager pending × 1), so this scenario
+ * exercises the aggregation no single-store scenario can: the pending-request
+ * stack must show all three, and the awaiting indicator must survive until
+ * the LAST wait of either store resolves. The review decision deliberately
+ * does NOT end the turn — the input machinery does, once both inputs resolve.
+ */
+export class MixedPendingRequestsScenario implements MockScenario {
+  private inputScenario = new UserInputRequestScenario([
+    {
+      name: 'mcp__user-input__request_secret',
+      input: { secretName: 'MIXED_SECRET_KEY', reason: 'Needed alongside a review' },
+    },
+    {
+      name: 'AskUserQuestion',
+      input: {
+        questions: [{
+          question: 'Which database should we use?',
+          header: 'Database',
+          options: [
+            { label: 'PostgreSQL', description: 'Reliable relational database' },
+            { label: 'MongoDB', description: 'Flexible document store' },
+          ],
+          multiSelect: false,
+        }],
+      },
+    },
+  ])
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    this.inputScenario.execute(sessionId, client, userMessage)
+
+    const agentSlug = client.getAgentId()
+    const accountId = getMessageParam(userMessage, 'account_id') ?? MOCK_ACCOUNT_ID
+    // Kick the review after the input tool stream has finished (its delay
+    // budget is ~200ms for two tools); exact ordering is not load-bearing —
+    // specs wait for all three cards independently.
+    setTimeout(async () => {
+      await seedMockConnectedAccount(accountId)
+      reviewManager.requestReview({
+        agentSlug,
+        accountId,
+        toolkit: 'slack',
+        method: 'POST',
+        targetPath: 'api/chat.postMessage',
+        matchedScopes: ['chat:write'],
+        scopeDescriptions: { 'chat:write': 'Send messages to channels' },
+      }).catch(() => {
+        // Denied or timed out — the turn lifecycle is owned by the input
+        // machinery, so nothing to do here.
+      })
+    }, 400)
+  }
+}
+
 export class XAgentReviewScenario implements MockScenario {
   constructor(
     private targetAgentSlug: string,
@@ -1532,6 +1590,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ])],
     ['subagent browser input', new SubagentBrowserInputScenario()],
     // Proxy review scenario for E2E tests
+    // Cross-store mix: container input asks + a parked ReviewManager review
+    ['mixed pending', new MixedPendingRequestsScenario()],
     ['proxy review', new ProxyReviewScenario(
       'slack',
       'POST',
