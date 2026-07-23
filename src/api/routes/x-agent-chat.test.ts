@@ -485,6 +485,7 @@ describe('x-agent chat route', () => {
 
   it('resolves a user_id to a direct chat and sends there', async () => {
     immediateTimeout()
+    mockGetConnectorClass.mockResolvedValue({ discoveryCapabilities: ['dm_by_user_id'] })
     const resolveDirectChat = vi.fn().mockResolvedValue('D0NEWCHAT')
     mockGetConnector.mockReturnValue({ ...connector, resolveDirectChat })
 
@@ -504,16 +505,22 @@ describe('x-agent chat route', () => {
     expect(connector.sendMessage).not.toHaveBeenCalled()
   })
 
-  it('rejects user_id sends on providers without dm_by_user_id support', async () => {
-    // The default connector mock has no resolveDirectChat — the capability is absent
+  it('rejects user_id sends on providers without dm_by_user_id support, without touching the connector', async () => {
+    // Default mockGetConnectorClass resolves undefined — no capabilities. The
+    // connector must never be resolved: a reconnect attempt could resurrect an
+    // integration just to tell the caller the provider can't do this anyway.
+    mockGetConnector.mockReturnValue(undefined)
+
     const res = await sendRequest({ user_id: 'U0MIKE' })
 
     expect(res.status).toBe(400)
     expect((await res.json()).error).toContain('does not support messaging by user_id')
+    expect(mockAddIntegration).not.toHaveBeenCalled()
     expect(connector.sendMessage).not.toHaveBeenCalled()
   })
 
   it('surfaces DM-resolution failures as a clear error', async () => {
+    mockGetConnectorClass.mockResolvedValue({ discoveryCapabilities: ['dm_by_user_id'] })
     const resolveDirectChat = vi.fn().mockRejectedValue(new Error('user_not_found'))
     mockGetConnector.mockReturnValue({ ...connector, resolveDirectChat })
 
@@ -527,6 +534,7 @@ describe('x-agent chat route', () => {
   it('applies the own-chat guard to the chat a user_id resolves to', async () => {
     // The caller session IS the DM conversation with this user: resolving the
     // user id lands on the caller's own chat, which must still be rejected.
+    mockGetConnectorClass.mockResolvedValue({ discoveryCapabilities: ['dm_by_user_id'] })
     const resolveDirectChat = vi.fn().mockResolvedValue('D0AAA111')
     mockGetConnector.mockReturnValue({ ...connector, resolveDirectChat })
     mockGetChatIntegrationSessionBySessionId.mockReturnValue({
@@ -551,6 +559,7 @@ describe('x-agent chat route', () => {
   }
 
   it('lists directory users through the connector', async () => {
+    mockGetConnectorClass.mockResolvedValue({ discoveryCapabilities: ['list_users', 'list_channels'] })
     const listChatUsers = vi.fn().mockResolvedValue({
       items: [{ id: 'U0MIKE', name: 'Mike Reid', title: 'Office Manager' }],
       truncated: false,
@@ -568,6 +577,7 @@ describe('x-agent chat route', () => {
   })
 
   it('lists directory channels and passes the truncation flag through', async () => {
+    mockGetConnectorClass.mockResolvedValue({ discoveryCapabilities: ['list_users', 'list_channels'] })
     const listChatChannels = vi.fn().mockResolvedValue({
       items: [{ id: 'C0OFFICE', name: '#office', isPrivate: false, isMember: true }],
       truncated: true,
@@ -584,8 +594,12 @@ describe('x-agent chat route', () => {
     })
   })
 
-  it('returns a graceful 400 when the provider has no directory support', async () => {
-    // Default connector mock lacks listChatUsers/listChatChannels
+  it('returns a graceful 400 when the provider has no directory support, without touching the connector', async () => {
+    // Default mockGetConnectorClass resolves undefined — no capabilities. Even
+    // with no live connector, an unsupported provider must get the capability
+    // answer, not a reconnect attempt followed by a connection error.
+    mockGetConnector.mockReturnValue(undefined)
+
     const usersRes = await directoryRequest('users')
     expect(usersRes.status).toBe(400)
     expect((await usersRes.json()).error).toBe('The slack provider does not support listing users.')
@@ -593,6 +607,19 @@ describe('x-agent chat route', () => {
     const channelsRes = await directoryRequest('channels')
     expect(channelsRes.status).toBe(400)
     expect((await channelsRes.json()).error).toBe('The slack provider does not support listing channels.')
+    expect(mockAddIntegration).not.toHaveBeenCalled()
+  })
+
+  it('does not reconnect a paused integration for directory listings', async () => {
+    mockGetConnectorClass.mockResolvedValue({ discoveryCapabilities: ['list_users', 'list_channels'] })
+    mockGetChatIntegration.mockReturnValue(createIntegration({ status: 'paused' }))
+    mockGetConnector.mockReturnValue(undefined)
+
+    const res = await directoryRequest('users')
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('paused')
+    expect(mockAddIntegration).not.toHaveBeenCalled()
   })
 
   it('rejects directory listings for integrations owned by another agent', async () => {

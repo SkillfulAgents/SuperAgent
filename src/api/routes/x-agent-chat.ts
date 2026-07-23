@@ -16,7 +16,7 @@ import {
   getChatIntegrationSessionBySessionId,
 } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
-import type { ChatClientConnector } from '@shared/lib/chat-integrations/base-connector'
+import type { ChatClientConnector, ChatDiscoveryCapability } from '@shared/lib/chat-integrations/base-connector'
 import {
   validateChatIntegrationConfig,
   CHAT_PROVIDERS,
@@ -199,6 +199,18 @@ xAgentChat.post('/send', async (c) => {
       return c.json({ error: 'Chat integration does not belong to this agent' }, 403)
     }
 
+    // Static capability check first: an unsupported provider must get the
+    // "unsupported" answer without the connector ever being touched (a
+    // reconnect attempt could otherwise resurrect it or mask the real error).
+    if (user_id) {
+      const connectorClass = await chatIntegrationManager.getConnectorClass(integration.provider)
+      if (!connectorClass?.discoveryCapabilities?.includes('dm_by_user_id')) {
+        return c.json({
+          error: `The ${integration.provider} provider does not support messaging by user_id. Pass a chat_id instead (see list_chat_integrations).`,
+        }, 400)
+      }
+    }
+
     const connector = await resolveLiveConnector(integration_id, integration.status)
     if (!connector) {
       return c.json({ error: 'Integration is not connected and reconnection failed.' }, 400)
@@ -351,19 +363,19 @@ async function resolveLiveConnector(
   return connector
 }
 
-const DIRECTORY_CAPABILITY_LABEL = {
-  listChatUsers: 'listing users',
-  listChatChannels: 'listing channels',
-} as const
+const DIRECTORY_CAPABILITIES = {
+  listChatUsers: { label: 'listing users', capability: 'list_users' },
+  listChatChannels: { label: 'listing channels', capability: 'list_channels' },
+} as const satisfies Record<string, { label: string; capability: ChatDiscoveryCapability }>
 
 /**
- * Shared preamble for the directory endpoints: auth/ownership checks, live
- * connector resolution, and a graceful 400 when the provider lacks the
- * capability. Returns { response } to short-circuit, or the ready connector.
+ * Shared preamble for the directory endpoints: auth/ownership checks, the
+ * capability check, and live connector resolution. Returns { response } to
+ * short-circuit, or the ready connector.
  */
 async function resolveDirectoryConnector(
   c: { get: (k: 'callerSlug') => string; req: { json: () => Promise<unknown> }; json: (body: unknown, status?: 400 | 403 | 404) => Response },
-  capability: keyof typeof DIRECTORY_CAPABILITY_LABEL,
+  capability: keyof typeof DIRECTORY_CAPABILITIES,
 ): Promise<{ response: Response } | { connector: ChatClientConnector; provider: string }> {
   const callerSlug = getCallerSlug(c)
   const body = await c.req.json() as { integration_id?: string }
@@ -380,14 +392,34 @@ async function resolveDirectoryConnector(
     return { response: c.json({ error: 'Chat integration does not belong to this agent' }, 403) }
   }
 
+  // Capability is a static property of the provider — check it BEFORE touching
+  // the connector, so an unsupported provider gets the promised "unsupported"
+  // answer (never a connection error) and, crucially, no integration is
+  // reconnected just to discover it can't serve the request.
+  const { label, capability: capabilityName } = DIRECTORY_CAPABILITIES[capability]
+  const connectorClass = await chatIntegrationManager.getConnectorClass(integration.provider)
+  if (!connectorClass?.discoveryCapabilities?.includes(capabilityName)) {
+    return {
+      response: c.json({
+        error: `The ${integration.provider} provider does not support ${label}.`,
+      }, 400),
+    }
+  }
+  // A directory read must not resurrect an integration the owner paused.
+  if (integration.status === 'paused') {
+    return { response: c.json({ error: 'Integration is paused. Resume it before using directory listings.' }, 400) }
+  }
+
   const connector = await resolveLiveConnector(integrationId, integration.status)
   if (!connector) {
     return { response: c.json({ error: 'Integration is not connected and reconnection failed.' }, 400) }
   }
+  // Defensive: the static declaration and the instance implementation come
+  // from the same class, so this only fires on a connector/class mismatch.
   if (typeof connector[capability] !== 'function') {
     return {
       response: c.json({
-        error: `The ${integration.provider} provider does not support ${DIRECTORY_CAPABILITY_LABEL[capability]}.`,
+        error: `The ${integration.provider} provider does not support ${label}.`,
       }, 400),
     }
   }
