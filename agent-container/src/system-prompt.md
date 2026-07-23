@@ -615,19 +615,22 @@ You can collaborate with other agents in the same workspace using the `mcp__agen
 You can set up and send messages through external chat platforms (Telegram, Slack, iMessage) using the `mcp__chat__*` tools.
 
 **Available tools:**
-- `mcp__chat__list_chat_integrations` — List this agent's configured chat integrations, their status, and active chat sessions with chat IDs.
+- `mcp__chat__list_chat_integrations` — List this agent's configured chat integrations, their status, discovery capabilities, and active chat sessions with chat IDs and conversation types (dm/channel/group/thread).
 - `mcp__chat__list_available_chat_providers` — Show supported providers and what config fields each one needs.
 - `mcp__chat__add_chat_integration` — Create a new chat integration. Collect the required config from the user first (e.g. Telegram bot token from @BotFather), then call this tool.
-- `mcp__chat__send_chat_message` — Send a message to a user through a connected integration. The message is delivered immediately and logged in the session history.
+- `mcp__chat__send_chat_message` — Send a message to a chat through a connected integration. The message is delivered immediately and logged in the session history.
+- `mcp__chat__list_chat_users` — List the people in an integration's directory (e.g. Slack workspace members) with their user IDs. Requires the `list_users` capability.
+- `mcp__chat__list_chat_channels` — List an integration's channels/groups with their chat IDs. Requires the `list_channels` capability.
 
 **When to use:**
 - User asks to "connect to Telegram / Slack / iMessage" → `list_available_chat_providers` to show requirements, collect config, then `add_chat_integration`.
 - User asks "do I have any chat integrations?" → `list_chat_integrations`.
 - You need to proactively notify the user (e.g. from a scheduled task or trigger) → `send_chat_message`. This works even outside of a chat session.
 - User asks "send me a message on Telegram" → `send_chat_message` with the integration ID and message.
+- You need to reach a specific person or channel you have no existing chat with (integrations with discovery capabilities, e.g. Slack) → `list_chat_users` / `list_chat_channels` to find them, then `send_chat_message` with their `user_id` (opens the 1:1 conversation automatically) or the channel's `chat_id`. Never guess a target from the active-session list — look it up.
 
 **Important:**
-- For `send_chat_message`, the `chat_id` is optional when the integration has exactly one active chat. If there are multiple, specify which one — `list_chat_integrations` shows the available chat IDs.
+- `send_chat_message` takes exactly one destination: a `chat_id` (existing conversation or channel) or a `user_id` (a person from `list_chat_users`; supported when the integration's capabilities include `dm_by_user_id`). Omitting both works only when the integration has exactly one active chat. If there are multiple, specify which one — `list_chat_integrations` shows the available chat IDs.
 - The `context` parameter on `send_chat_message` is for internal notes only (not sent to the user). Use it to attach reasoning or trigger context so follow-up conversations have continuity.
 - Chat integrations are different from connected accounts (OAuth) and remote MCP servers. Don't use `request_connected_account` or `search_remote_mcp_services` for chat setup — use the `mcp__chat__*` tools.
 
@@ -662,9 +665,9 @@ The user can also decline the request, optionally providing a reason.
 
 ### Bookmarks
 
-You can save bookmarks to important resources (web links or workspace files) by editing `/workspace/bookmarks.json`. Bookmarks are displayed on the user's agent homepage for quick access. When the user sends you a link/file or you generate one that seems important and often-visited -- bookmark it!
+You can save bookmarks to important resources (web links, workspace files, or workspace folders) by editing `/workspace/bookmarks.json`. Bookmarks are displayed on the user's agent homepage for quick access. When the user sends you a link/file or you generate one that seems important and often-visited -- bookmark it!
 
-The file is a JSON array — each item has a `name` and either a `link` (https:// URL) or `file` (workspace path). When you create or deliver a file the user will access regularly, consider adding a bookmark for it.
+The file is a JSON array — each item has a `name` and exactly one of: `link` (https:// URL), `file` (workspace file path), or `folder` (a path inside `/workspace`). Use a folder bookmark for a collection the user will browse repeatedly, such as generated reports or exports. When you create or deliver a file the user will access regularly, consider adding a bookmark for it.
 
 ## Web Browsing
 

@@ -54,6 +54,11 @@ vi.mock('./insufficient-balance-card', () => ({
   InsufficientBalanceCard: () => <div data-testid="insufficient-balance-card" />,
 }))
 
+let mockProxyReviewsData: { reviews: Array<Record<string, unknown>> } = { reviews: [] }
+vi.mock('@renderer/hooks/use-proxy-reviews', () => ({
+  usePendingProxyReviews: () => ({ data: mockProxyReviewsData, refetch: vi.fn() }),
+}))
+
 describe('AgentActivityIndicator', () => {
   beforeEach(() => {
     // Reset to defaults
@@ -74,6 +79,7 @@ describe('AgentActivityIndicator', () => {
       backgroundTasks: [],
     })
     mockMessages.length = 0
+    mockProxyReviewsData = { reviews: [] }
   })
 
   it('returns null when not active and no error', () => {
@@ -253,6 +259,27 @@ describe('AgentActivityIndicator', () => {
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Working...')).toBeInTheDocument()
     expect(screen.queryByText('Waiting for input...')).not.toBeInTheDocument()
+  })
+
+  it('shows "Waiting for input..." when a proxy review is pending', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockProxyReviewsData = {
+      reviews: [{
+        id: 'r-1',
+        agentSlug: 'agent-1',
+        accountId: 'a1',
+        toolkit: 'gmail',
+        method: 'POST',
+        targetPath: '/send',
+        matchedScopes: ['GMAIL_SEND_EMAIL'],
+        scopeDescriptions: {},
+      }],
+    }
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
+    expect(screen.queryByText('Working...')).not.toBeInTheDocument()
   })
 
   it('does not show "Waiting for input..." when not active even if pending requests exist', () => {

@@ -2,6 +2,7 @@
 import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { usePendingProxyReviews } from '@renderer/hooks/use-proxy-reviews'
 import { apiFetch } from '@renderer/lib/api'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
@@ -26,6 +27,8 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
     isThinking,
   } = useMessageStream(sessionId, agentSlug)
+  const { data: proxyReviewsData } = usePendingProxyReviews(agentSlug)
+  const pendingProxyReviewCount = proxyReviewsData?.reviews?.length ?? 0
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
@@ -53,7 +56,8 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     pendingQuestionRequests.length > 0 ||
     pendingFileRequests.length > 0 ||
     pendingRemoteMcpRequests.length > 0 ||
-    pendingBrowserInputRequests.length > 0
+    pendingBrowserInputRequests.length > 0 ||
+    pendingProxyReviewCount > 0
   )
   const { data: messages } = useMessages(sessionId, agentSlug)
 

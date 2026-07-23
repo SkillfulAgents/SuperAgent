@@ -34,6 +34,7 @@ type ExposedApi = {
   platform: string
   osVersion: string
   openExternal: (url: string) => Promise<void>
+  revealInFolder: (hostPath: string) => Promise<string | null>
   createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
   getPathForFile: (file: File) => string
   showNotification: (
@@ -94,6 +95,12 @@ describe('preload electronAPI bridge', () => {
 
     await api.openExternal('https://example.com')
     expect(electronMocks.invoke).toHaveBeenLastCalledWith('open-external', 'https://example.com')
+
+    await api.revealInFolder('/workspace/reports/notes.md')
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith(
+      'reveal-in-folder',
+      '/workspace/reports/notes.md',
+    )
 
     await api.showNotification('Ready', 'The job finished', [{ text: 'Open' }], { sessionId: 's1' })
     expect(electronMocks.invoke).toHaveBeenLastCalledWith('show-notification', {

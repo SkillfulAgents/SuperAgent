@@ -67,6 +67,143 @@ test.describe('File Preview', () => {
 
     await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
     await expect(markdown(page).getByRole('heading', { name: 'Test Report' })).toBeVisible({ timeout: 10000 })
+
+    // On a wide Session View, the preview participates in the row layout rather
+    // than covering the chat and composer.
+    await expect.poll(async () => {
+      const [sessionBox, drawerBox] = await Promise.all([
+        page.getByTestId('session-thread-main').boundingBox(),
+        page.getByTestId('tray-drawer').boundingBox(),
+      ])
+      if (!sessionBox || !drawerBox) return Number.POSITIVE_INFINITY
+      return Math.abs(sessionBox.x + sessionBox.width - drawerBox.x)
+    }).toBeLessThanOrEqual(1)
+  })
+
+  test('agent home bookmark preview overlays the wide page', async ({ page }) => {
+    await agentPage.createAgent(`HomeFilePreview ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'reports/daily.md', '# Daily Report')
+
+    const bookmarksResponse = await page.request.put(`/api/agents/${agentSlug}/bookmarks`, {
+      data: [{ name: 'Daily report', file: '/workspace/reports/daily.md' }],
+    })
+    expect(bookmarksResponse.ok()).toBeTruthy()
+
+    await page.reload()
+    const bookmark = page.getByRole('button', { name: 'Daily report' })
+    await expect(bookmark).toBeVisible({ timeout: 10000 })
+    await bookmark.click()
+    await expect(markdown(page).getByRole('heading', { name: 'Daily Report' })).toBeVisible({ timeout: 10000 })
+
+    const homeBox = await page.getByTestId('agent-home').boundingBox()
+    const drawerBox = await page.getByTestId('tray-drawer').boundingBox()
+    expect(homeBox).not.toBeNull()
+    expect(drawerBox).not.toBeNull()
+    expect(Math.abs(homeBox!.x + homeBox!.width - (drawerBox!.x + drawerBox!.width))).toBeLessThanOrEqual(1)
+  })
+
+  test('folder bookmark traverses lazily and opens files while preserving tree state', async ({ page }) => {
+    await agentPage.createAgent(`FolderPreview ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'reports/overview.md', '# Reports Overview')
+    seedWorkspaceFile(agentSlug, 'reports/2026/july.md', '# July Report')
+    seedWorkspaceFile(
+      agentSlug,
+      'bookmarks.json',
+      JSON.stringify([{ name: 'Reports', folder: '/workspace/reports' }]),
+    )
+
+    await page.reload()
+    await appPage.waitForAgentsLoaded()
+
+    // The Agent Directory uses the same built-in folder browser on web and
+    // Electron; it no longer delegates to an OS-level directory action.
+    await page.getByTestId('home-agent-directory-open-browser').click()
+    await expect(page.locator(
+      '[data-testid="folder-entry"][data-entry-path="/workspace/reports"]',
+    )).toBeVisible({ timeout: 5000 })
+    await page.getByRole('button', { name: 'Hide files panel' }).click()
+
+    await page.getByRole('button', { name: 'Reports' }).click()
+    await expect(page.getByTestId('folder-browser')).toBeVisible({ timeout: 5000 })
+
+    const year = page.locator(
+      '[data-testid="folder-entry"][data-entry-path="/workspace/reports/2026"]',
+    )
+    await expect(year).toHaveAttribute('aria-expanded', 'false')
+    await year.click({ button: 'right' })
+    await expect(page.getByRole('menuitem', { name: 'Bookmark' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Delete' })).toBeVisible()
+    await page.getByRole('menuitem', { name: 'Bookmark' }).click()
+    await expect.poll(async () => {
+      const response = await page.request.get(`/api/agents/${agentSlug}/bookmarks`)
+      return await response.json()
+    }).toContainEqual({ name: '2026', folder: '/workspace/reports/2026' })
+
+    await year.click()
+    await expect(year).toHaveAttribute('aria-expanded', 'true')
+
+    const july = page.locator(
+      '[data-testid="folder-entry"][data-entry-path="/workspace/reports/2026/july.md"]',
+    )
+    await july.click()
+    await expect(markdown(page).getByRole('heading', { name: 'July Report' })).toBeVisible({ timeout: 10000 })
+
+    await fileTab(page, 'reports').click()
+    await expect(year).toHaveAttribute('aria-expanded', 'true')
+    await expect(july).toBeVisible()
+
+    const overview = page.locator(
+      '[data-testid="folder-entry"][data-entry-path="/workspace/reports/overview.md"]',
+    )
+    await overview.click({ button: 'right' })
+    await expect(page.getByRole('menuitem', { name: 'Copy contents' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Bookmark' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Delete' })).toBeVisible()
+
+    const downloadPromise = page.waitForEvent('download')
+    await page.getByRole('menuitem', { name: 'Download' }).click()
+    const download = await downloadPromise
+    expect(download.suggestedFilename()).toBe('overview.md')
+
+    await overview.click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Rename' }).click()
+    await page.getByRole('textbox', { name: 'File name' }).fill('summary.md')
+    await page.getByRole('dialog').getByRole('button', { name: 'Rename' }).click()
+
+    const summary = page.locator(
+      '[data-testid="folder-entry"][data-entry-path="/workspace/reports/summary.md"]',
+    )
+    await expect(summary).toBeVisible()
+    await summary.click()
+    await expect(markdown(page).getByRole('heading', { name: 'Reports Overview' })).toBeVisible({ timeout: 10000 })
+
+    await fileTab(page, 'reports').click()
+    await summary.click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Delete' }).click()
+    const deleteDialog = page.getByRole('alertdialog')
+    await expect(deleteDialog.getByRole('heading', { name: 'Delete File' })).toBeVisible()
+    await deleteDialog.getByRole('button', { name: 'Delete' }).click()
+    await expect(summary).not.toBeVisible()
+
+    await year.click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Rename' }).click()
+    await page.getByRole('textbox', { name: 'Folder name' }).fill('archive')
+    await page.getByRole('dialog').getByRole('button', { name: 'Rename' }).click()
+
+    const archive = page.locator(
+      '[data-testid="folder-entry"][data-entry-path="/workspace/reports/archive"]',
+    )
+    await expect(archive).toBeVisible()
+    await archive.click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Delete' }).click()
+    const deleteFolderDialog = page.getByRole('alertdialog')
+    await expect(deleteFolderDialog.getByRole('heading', { name: 'Delete Folder' })).toBeVisible()
+    await deleteFolderDialog.getByRole('button', { name: 'Delete' }).click()
+    await expect(archive).not.toBeVisible()
   })
 
   test('closing last tab closes the tray', async ({ page }) => {
@@ -105,9 +242,7 @@ test.describe('File Preview', () => {
 
     await expect(markdown(page).getByRole('heading', { name: 'Version 1' })).toBeVisible({ timeout: 10000 })
 
-    // The file tray intentionally overlays the composer. Close it before asking
-    // the agent to deliver the updated version, then reopen it from the new pill.
-    await page.getByRole('button', { name: 'Hide files panel' }).click()
+    // The wide Session View remains usable while the split preview is open.
     seedWorkspaceFile(agentSlug, 'output/report.md', '# Version 2')
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
@@ -319,6 +454,13 @@ test.describe('File Preview', () => {
           expect(box!.x + box!.width).toBeLessThanOrEqual(viewportWidth)
         }
       }).toPass({ timeout: 5000 })
+
+      const containerBox = await page.getByTestId('file-preview-container').boundingBox()
+      const drawerBox = await page.getByTestId('tray-drawer').boundingBox()
+      expect(containerBox).not.toBeNull()
+      expect(drawerBox).not.toBeNull()
+      expect(Math.abs(drawerBox!.x - containerBox!.x)).toBeLessThanOrEqual(1)
+      expect(Math.abs(drawerBox!.width - containerBox!.width)).toBeLessThanOrEqual(1)
     })
   })
 
@@ -343,11 +485,8 @@ test.describe('File Preview', () => {
     await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
     await expect(markdown(page).getByRole('heading', { name: 'Report Content' })).toBeVisible({ timeout: 10000 })
 
-    // The overlay covers the composer by design, so close it before delivering
-    // the next file. Existing tabs remain available when the tray reopens.
-    await page.getByRole('button', { name: 'Hide files panel' }).click()
-
-    // Deliver and open the image file → second tab, image renderer.
+    // Deliver while the split preview remains open, then open the image file →
+    // second tab, image renderer.
     await sessionPage.sendMessage('deliver image')
     await sessionPage.waitForResponse(15000)
     const chartPill = getFilePill(page, 'chart.png').first()
