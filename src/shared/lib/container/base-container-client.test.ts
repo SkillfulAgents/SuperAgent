@@ -34,12 +34,22 @@ class TestContainerClient extends BaseContainerClient {
   public testBuildAgentEnv(extra?: Record<string, string>): Record<string, string> {
     return this.buildAgentEnv(extra)
   }
+  public testAssertLocalLlmReachable(): Promise<void> {
+    return this.assertLocalLlmReachable()
+  }
 }
 
 /** Stand-in for Apple: overrides only the host-address hook the runtime owns. */
 class GatewayHostContainerClient extends TestContainerClient {
   getContainerHostAddress(): string {
     return '192.168.64.1'
+  }
+}
+
+/** Stand-in for Apple with an unknown gateway, which fails closed (SUP-447). */
+class UnknownGatewayContainerClient extends TestContainerClient {
+  getContainerHostAddress(): string {
+    throw new Error('macOS Container host gateway is unreachable.')
   }
 }
 
@@ -99,6 +109,31 @@ describe('buildAgentEnv', () => {
       expect.objectContaining({ id: 'podman-agent' }),
       'host.containers.internal',
     )
+  })
+})
+
+describe('assertLocalLlmReachable', () => {
+  afterEach(() => {
+    getContainerHostUrl.mockReturnValue('host.docker.internal')
+    getContainerEnvVars.mockClear()
+  })
+
+  // Byte-identical behavior for Docker/Lima/WSL2/Podman: a forwarding-name host
+  // address reaches the host loopback whatever the bind, so the check must not
+  // consult the provider or touch the network at all.
+  it('does nothing when the runtime host address is a forwarding name', async () => {
+    const client = new TestContainerClient({ agentId: 'docker-agent', envVars: {} })
+    await expect(client.testAssertLocalLlmReachable()).resolves.toBeUndefined()
+    expect(getContainerEnvVars).not.toHaveBeenCalled()
+  })
+
+  // The fail-closed contract this check deliberately defers rather than owns:
+  // it swallows an unknown gateway so the identical throw surfaces from the env
+  // build a few lines later, with the context that belongs to it.
+  it('defers an unknown gateway to the env build, which still fails closed', async () => {
+    const client = new UnknownGatewayContainerClient({ agentId: 'apple-agent', envVars: {} })
+    await expect(client.testAssertLocalLlmReachable()).resolves.toBeUndefined()
+    expect(() => client.testBuildAgentEnv()).toThrow(/gateway is unreachable/i)
   })
 })
 

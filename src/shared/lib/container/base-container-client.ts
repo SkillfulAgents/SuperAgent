@@ -25,6 +25,13 @@ import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
+import {
+  describeUnreachableLocalLlm,
+  diagnoseLocalLlm,
+  isLocalInterfaceAddress,
+  resolveLoopbackProbeTarget,
+  type LoopbackProbeTarget,
+} from '@shared/lib/llm-provider/loopback-reachability'
 import { readAgentDisplayNameSync } from '@shared/lib/utils/file-storage'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
 import { getActiveWebProvider } from '../web-provider'
@@ -659,6 +666,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       // Find an available port
       let port = await this.findAvailablePort()
+
+      // A local model the container provably cannot reach fails here, with the
+      // bind to change, rather than as a connection error on every model call.
+      await this.assertLocalLlmReachable()
 
       // Write env vars to a temp file (avoids command length limits on Windows)
       const { flag: envFileFlag, cleanup: cleanupEnvFile } = this.buildEnvFile(options?.envVars)
@@ -1607,6 +1618,51 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       id: this.config.agentId,
       name: readAgentDisplayNameSync(this.config.agentId),
     }
+  }
+
+  /**
+   * Fail an agent start that would be wired to a local model the container
+   * cannot reach.
+   *
+   * getContainerHostAddress() returning one of our own interfaces (Apple's
+   * vmnet gateway) means the guest arrives over the network rather than
+   * through a loopback forwarder, so a model server bound to 127.0.0.1 is
+   * invisible to it. That is the default bind for Ollama and friends, so the
+   * rewritten ANTHROPIC_BASE_URL is correct yet still refuses every call.
+   * Probing the same address from the host reproduces the guest's verdict
+   * without starting anything.
+   *
+   * No-op on Docker/Lima/WSL2/Podman: their host address is a forwarding name,
+   * so resolveLoopbackProbeTarget returns null before any work is done. Only a
+   * definitive ECONNREFUSED throws — an ambiguous probe never blocks a start.
+   */
+  protected async assertLocalLlmReachable(): Promise<void> {
+    let target: LoopbackProbeTarget | null
+    try {
+      const hostAddress = this.getContainerHostAddress()
+      // Gate before touching the provider so non-Apple runtimes do no extra work.
+      if (!isLocalInterfaceAddress(hostAddress)) return
+      const { ANTHROPIC_BASE_URL } = getActiveLlmProvider().getContainerEnvVars(
+        this.agentIdentityForEnv(),
+        hostAddress,
+      )
+      target = resolveLoopbackProbeTarget(ANTHROPIC_BASE_URL, hostAddress)
+    } catch (error) {
+      // A provider or gateway failure is not this check's to report; the env
+      // build in buildAgentEnv raises it with the right context moments later.
+      console.warn('[Container] Local-LLM reachability check could not run:', error)
+      return
+    }
+    if (!target) return
+
+    const diagnosis = await diagnoseLocalLlm(target)
+    if (diagnosis === 'reachable' || diagnosis === 'unknown') return
+    const err = new Error(describeUnreachableLocalLlm(target, diagnosis))
+    captureException(err, {
+      tags: { component: 'container', operation: 'local-llm-reachability' },
+      extra: { agentId: this.config.agentId, host: target.host, port: target.port, diagnosis },
+    })
+    throw err
   }
 
   // The final agent env, transport-agnostic; subclasses only serialize it.
