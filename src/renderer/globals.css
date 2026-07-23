@@ -701,16 +701,15 @@ html[data-keyboard-open] [data-composer-footer] {
 /*
   File previews can render in the agent body or in a smaller embedded session
   mirror. A viewport or app-level query cannot describe both spaces. Make each
-  immediate tray host a query container and switch the file tray between a
-  fixed-width overlay and a full-width overlay at 768px. Neither mode
-  participates in flex layout, so opening a file never reflows or squeezes the
-  content beneath it.
+  immediate tray host a query container. Above 768px, Session View keeps its
+  file tray in the flex layout while Agent Home opts into an overlay. Below the
+  breakpoint, both use the same full-width overlay.
 */
 .file-preview-container {
   container-type: inline-size;
 }
 
-.file-preview-responsive-overlay {
+.file-preview-wide-overlay {
   position: absolute;
   inset-block: 0;
   right: 0;
@@ -719,6 +718,10 @@ html[data-keyboard-open] [data-composer-footer] {
 
 @container (max-width: 767px) {
   .file-preview-responsive-overlay {
+    position: absolute;
+    inset-block: 0;
+    right: 0;
+    z-index: 30;
     left: 0;
     width: 100% !important; /* overrides the persisted inline drawer width */
     border-left-width: 0;

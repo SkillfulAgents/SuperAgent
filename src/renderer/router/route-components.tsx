@@ -38,9 +38,17 @@ export function AgentHomeRoute() {
   return (
     <FilePreviewProvider sessionId={homePreviewId} commentsEnabled={false}>
       <WorkflowProvider sessionId={homePreviewId}>
-        <div className="file-preview-container relative flex flex-1 min-h-0 min-w-0">
+        <div
+          className="file-preview-container relative flex flex-1 min-h-0 min-w-0"
+          data-testid="file-preview-container"
+        >
           <AgentHome key={agent.slug} agent={agent} onSessionCreated={onSessionCreated} />
-          <TrayManager agentSlug={agent.slug} sessionId={homePreviewId} browserActive={false} />
+          <TrayManager
+            agentSlug={agent.slug}
+            sessionId={homePreviewId}
+            browserActive={false}
+            filePreviewWideLayout="overlay"
+          />
         </div>
       </WorkflowProvider>
     </FilePreviewProvider>

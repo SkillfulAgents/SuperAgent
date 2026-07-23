@@ -15,9 +15,16 @@ interface TrayManagerProps {
   agentSlug: string
   sessionId: string
   browserActive: boolean
+  /** Wide-screen file previews split the layout by default; Agent Home opts into an overlay. */
+  filePreviewWideLayout?: 'split' | 'overlay'
 }
 
-export function TrayManager({ agentSlug, sessionId, browserActive }: TrayManagerProps) {
+export function TrayManager({
+  agentSlug,
+  sessionId,
+  browserActive,
+  filePreviewWideLayout = 'split',
+}: TrayManagerProps) {
   const filePreview = useFilePreview()
   const hasOpenFiles = filePreview.openTabs.length > 0 && filePreview.isOpen
   const workflow = useWorkflow()
@@ -188,6 +195,7 @@ export function TrayManager({ agentSlug, sessionId, browserActive }: TrayManager
       isOpen={isOpen}
       storageKey={DRAWER_STORAGE_KEY}
       responsiveFullWidth={activeTray?.id === 'files'}
+      wideOverlay={activeTray?.id === 'files' && filePreviewWideLayout === 'overlay'}
     >
       <div className="flex flex-1 min-h-0">
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
