@@ -8,10 +8,10 @@
  *
  * This file pins CURRENT behavior — including the known divergences it
  * documents inline (computer-use's separate store, capability review's early
- * clear, and the sidechain kinds that do not surface at all today). The
- * sidechain matrix at the bottom is the acceptance table for the unified
- * dispatch work: entries marked `surfacesToday: false` are the live gap where
- * a subagent's request hangs silently, and that work flips them to true.
+ * clear). The sidechain matrix at the bottom is the acceptance table for the
+ * unified dispatcher: every kind must surface from every delivery path. Rows
+ * were `surfacesToday: false` before the dispatcher landed — those kinds hung
+ * silently when a subagent called them.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ContainerClient, StreamMessage } from './types'
@@ -460,7 +460,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(0)
     })
 
-    it('the route clear broadcasts session_input_provided but never flips the awaiting bit itself', () => {
+    it('the route clear flips awaiting and broadcasts when it was the last blocking wait', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const globalEvents: any[] = []
       const cleanup = messagePersister.addGlobalNotificationClient((data) => {
@@ -470,20 +470,34 @@ describe('pending user-input request lifecycle (characterization)', () => {
         simulateToolUse(TOOL, 'cu-clear-2', { x: 1, y: 2 })
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-        // KNOWN SPLIT-BRAIN (pinned, not desired): clearPendingComputerUseRequest
-        // broadcasts session_input_provided when its own shelf empties, but by
-        // design leaves isAwaitingInput to "the tool result arriving in the
-        // stream" — so the wire says input was provided while the bit still
-        // says awaiting. Consumers reading the bit and consumers reading the
-        // event disagree until the tool_result lands.
+        // The route clear applies the shared waiting-light rule: with both
+        // shelves empty and no external blocker, the bit flips AND the wire
+        // says input was provided — together, atomically. (Before the unified
+        // dispatch change it broadcast without flipping the bit, leaving the
+        // wire and the bit disagreeing until the tool_result landed.)
         messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'cu-clear-2')
         expect(
           globalEvents.filter((e) => e.type === 'session_input_provided')
         ).toHaveLength(1)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
       } finally {
         cleanup()
       }
+    })
+
+    it('the route clear defers while another input request is still parked', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'cu-mix-secret', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      simulateToolUse(TOOL, 'cu-clear-3', { x: 1, y: 2 })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // Clearing the computer-use entry must NOT flip awaiting: the secret
+      // is still parked on the other shelf.
+      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'cu-clear-3')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(0)
     })
   })
 
@@ -564,8 +578,8 @@ describe('pending user-input request lifecycle (characterization)', () => {
         sendToolResult('mix-secret-1')
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-        // The computer-use route clear never flips the bit, so awaiting
-        // survives it too (broadcast fires, bit untouched).
+        // The computer-use route clear defers to the held external blocker
+        // (same waiting-light rule), so awaiting survives it too.
         messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'mix-cu-1')
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
@@ -611,11 +625,13 @@ describe('pending user-input request lifecycle (characterization)', () => {
   // ==========================================================================
   // Sidechain delivery matrix — the acceptance table for unified dispatch.
   //
-  // `surfacesToday: false` rows document the LIVE GAP: a subagent calling
-  // that tool parks forever in the container while the host surfaces nothing
-  // — no card, no awaiting status, no notification. The unified-dispatch
-  // change is expected to flip every row to true; each false row here is a
-  // deliberate red-flag pin, not desired behavior.
+  // Every kind must surface from BOTH sidechain delivery paths (subagent
+  // stream events and complete assistant messages), exactly like the main
+  // path: card broadcast + awaiting status. Before the unified dispatcher,
+  // the `false` rows (secret, question, connected account, file, remote MCP)
+  // hung silently — a subagent's ask parked forever in the container with no
+  // card, no status, no notification. A new request kind added to the
+  // dispatcher belongs in this table.
   // ==========================================================================
 
   interface SidechainCase {
@@ -653,7 +669,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       toolName: 'mcp__user-input__request_secret',
       input: { secretName: 'API_KEY', reason: 'Need it' },
       sseType: 'secret_request',
-      surfacesToday: false,
+      surfacesToday: true,
     },
     {
       label: 'question',
@@ -662,28 +678,28 @@ describe('pending user-input request lifecycle (characterization)', () => {
         questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
       },
       sseType: 'user_question_request',
-      surfacesToday: false,
+      surfacesToday: true,
     },
     {
       label: 'connected account',
       toolName: 'mcp__user-input__request_connected_account',
       input: { toolkit: 'github', reason: 'Need access' },
       sseType: 'connected_account_request',
-      surfacesToday: false,
+      surfacesToday: true,
     },
     {
       label: 'file',
       toolName: 'mcp__user-input__request_file',
       input: { description: 'Upload a CSV' },
       sseType: 'file_request',
-      surfacesToday: false,
+      surfacesToday: true,
     },
     {
       label: 'remote MCP',
       toolName: 'mcp__user-input__request_remote_mcp',
       input: { url: 'https://example.com/mcp', name: 'Example', reason: 'Docs' },
       sseType: 'remote_mcp_request',
-      surfacesToday: false,
+      surfacesToday: true,
     },
   ]
 
@@ -739,4 +755,163 @@ describe('pending user-input request lifecycle (characterization)', () => {
       })
     }
   )
+
+  // ==========================================================================
+  // Sidechain dedupe + resolution semantics for dispatcher-surfaced kinds
+  // ==========================================================================
+
+  describe('sidechain dedupe and resolution', () => {
+    function sendSidechainToolUse(
+      toolName: string,
+      toolId: string,
+      input: Record<string, unknown>,
+      parentToolId: string,
+      via: 'stream' | 'complete'
+    ) {
+      if (via === 'complete') {
+        mockClient._sendMessage({
+          type: 'assistant',
+          parent_tool_use_id: parentToolId,
+          message: {
+            content: [{ type: 'tool_use', id: toolId, name: toolName, input }],
+          },
+        })
+        return
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const send = (event: any) =>
+        mockClient._sendMessage({ type: 'stream_event', parent_tool_use_id: parentToolId, event })
+      send({
+        type: 'content_block_start',
+        content_block: { type: 'tool_use', id: toolId, name: toolName },
+      })
+      send({
+        type: 'content_block_delta',
+        delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+      })
+      send({ type: 'content_block_stop' })
+    }
+
+    function sendSidechainToolResult(toolId: string, parentToolId: string) {
+      mockClient._sendMessage({
+        type: 'user',
+        parent_tool_use_id: parentToolId,
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: toolId, content: 'resolved' }],
+        },
+      })
+    }
+
+    it('first delivery wins: stream stop then complete-assistant with the same toolUseId emits ONE card', () => {
+      const input = { secretName: 'DUP_KEY', reason: 'Dedupe check' }
+      sendSidechainToolUse('mcp__user-input__request_secret', 'dup-1', input, 'parent-dup', 'stream')
+      sendSidechainToolUse('mcp__user-input__request_secret', 'dup-1', input, 'parent-dup', 'complete')
+
+      expect(sseEvents.filter((e) => e.type === 'secret_request')).toHaveLength(1)
+      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+    })
+
+    it('a sidechain tool_result resolves a dispatcher-surfaced kind: entry dropped, tool_result broadcast, awaiting cleared', () => {
+      sendSidechainToolUse(
+        'mcp__user-input__request_secret',
+        'side-res-1',
+        { secretName: 'SUB_KEY', reason: 'From a subagent' },
+        'parent-res',
+        'complete'
+      )
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      sseEvents.length = 0
+
+      sendSidechainToolResult('side-res-1', 'parent-res')
+
+      expect(sseEvents.filter((e) => e.type === 'tool_result')).toHaveLength(1)
+      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('the sidechain resolve applies the both-shelves rule: a parked computer-use keeps awaiting on', () => {
+      sendSidechainToolUse(
+        'AskUserQuestion',
+        'side-q-1',
+        { questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }] },
+        'parent-mix',
+        'complete'
+      )
+      simulateToolUse('mcp__computer-use__computer_click', 'side-cu-1', { x: 1, y: 2 })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      sendSidechainToolResult('side-q-1', 'parent-mix')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // Clearing the last computer-use entry now flips the light (shared rule).
+      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'side-cu-1')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('an auto-approved script replay entry does not keep awaiting on after the last real ask resolves', async () => {
+      mockCheckPermission.mockReturnValue('granted')
+      const fetchMock = vi.fn(() => Promise.resolve({ ok: true } as Response))
+      vi.stubGlobal('fetch', fetchMock)
+      try {
+        sendSidechainToolUse(
+          'mcp__user-input__request_script_run',
+          'side-sr-auto',
+          { script: 'sw_vers', explanation: 'Version', scriptType: 'shell' },
+          'parent-auto',
+          'complete'
+        )
+        expect(
+          messagePersister
+            .getPendingInputRequests(SESSION_ID)
+            .some((r) => r.toolUseId === 'side-sr-auto' && r.autoApproved === true)
+        ).toBe(true)
+
+        mockCheckPermission.mockReturnValue('prompt_needed')
+        sendSidechainToolUse(
+          'mcp__user-input__request_secret',
+          'side-real-1',
+          { secretName: 'REAL_KEY', reason: 'A real ask' },
+          'parent-auto',
+          'complete'
+        )
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+        // The auto-approved script's replay entry is still tracked, but it is
+        // not a real wait — resolving the secret must clear awaiting.
+        sendSidechainToolResult('side-real-1', 'parent-auto')
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('the sidechain resolve defers to a held external blocker (parked proxy/x-agent review)', () => {
+      let blockerHeld = true
+      const unregister = messagePersister.registerAwaitingBlockerSource(
+        (agentSlug) => agentSlug === AGENT_SLUG && blockerHeld
+      )
+      try {
+        sendSidechainToolUse(
+          'mcp__user-input__request_secret',
+          'side-blk-1',
+          { secretName: 'BLK_KEY', reason: 'Blocked resolve' },
+          'parent-blk',
+          'complete'
+        )
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+        // The subagent's ask resolves, but the review is still parked — the
+        // waiting light must stay on.
+        sendSidechainToolResult('side-blk-1', 'parent-blk')
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+        blockerHeld = false
+        messagePersister.clearAwaitingInputForAgentIfUnblocked(AGENT_SLUG)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      } finally {
+        unregister()
+      }
+    })
+  })
 })
