@@ -92,14 +92,33 @@ interface RemoteMcpConfig {
   tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
 }
 
-/**
- * Parses remote MCP server configs from the REMOTE_MCPS env var.
- */
+// Host may inject a direct private-IP proxyUrl; MicroVM talk-back is rewritten onto
+// SUPERAGENT_HOST_API_URL (local mTLS proxy). Re-origin so mid-session MCP inject works.
+export function resolveRemoteMcpProxyUrl(
+  proxyUrl: string,
+  hostApiUrl: string | undefined = process.env.SUPERAGENT_HOST_API_URL,
+): string {
+  if (!hostApiUrl) return proxyUrl
+  try {
+    const talkback = new URL(hostApiUrl)
+    const target = new URL(proxyUrl)
+    target.protocol = talkback.protocol
+    target.host = talkback.host
+    return target.href
+  } catch {
+    return proxyUrl
+  }
+}
+
 function parseRemoteMcps(): RemoteMcpConfig[] {
   const raw = process.env.REMOTE_MCPS;
   if (!raw) return [];
   try {
-    return JSON.parse(raw) as RemoteMcpConfig[];
+    const parsed = JSON.parse(raw) as RemoteMcpConfig[];
+    return parsed.map((mcp) => ({
+      ...mcp,
+      proxyUrl: resolveRemoteMcpProxyUrl(mcp.proxyUrl),
+    }))
   } catch {
     return [];
   }
