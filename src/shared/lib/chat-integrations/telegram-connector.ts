@@ -13,7 +13,7 @@ import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
-import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
+import { describeUnsupportedRequest, isUnsupportedInChat, type AppLinkContext } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from 'grammy/types'
@@ -166,7 +166,7 @@ export class TelegramConnector extends ChatClientConnector {
   // the current label even when it changes mid-turn (working → thinking → …).
   private workingActivity: Map<string, SessionActivity> = new Map()
 
-  constructor(private config: TelegramConfig) {
+  constructor(private config: TelegramConfig, private appLink?: AppLinkContext) {
     super()
   }
 
@@ -505,7 +505,7 @@ export class TelegramConnector extends ChatClientConnector {
     if (!this.bot) throw new Error('Bot not connected')
 
     if (isUnsupportedInChat(event)) {
-      return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event))}_`)
+      return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event, this.appLink))}_`)
     }
 
     switch (event.type) {
@@ -602,7 +602,7 @@ export class TelegramConnector extends ChatClientConnector {
       }
 
       default:
-        return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event))}_`)
+        return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event, this.appLink))}_`)
     }
   }
 

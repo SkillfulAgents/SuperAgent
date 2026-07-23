@@ -16,7 +16,7 @@ import type { SessionActivity } from '@shared/lib/types/agent'
 import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
 import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
-import { formatProviderName, formatSessionTimestamp } from './utils'
+import { formatProviderName, formatSessionTimestamp, resolveAppLinkContext } from './utils'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import {
   listStartupChatIntegrations,
@@ -558,18 +558,20 @@ class ChatIntegrationManager {
       throw new Error(`Invalid config for ${integration.provider} integration ${integration.id}`)
     }
 
+    const appLink = resolveAppLinkContext(integration.agentSlug)
+
     switch (integration.provider) {
       case 'telegram': {
         const { TelegramConnector } = await import('./telegram-connector')
-        return new TelegramConnector(config as import('./telegram-connector').TelegramConfig)
+        return new TelegramConnector(config as import('./telegram-connector').TelegramConfig, appLink)
       }
       case 'slack': {
         const { SlackConnector } = await import('./slack-connector')
-        return new SlackConnector(config as import('./slack-connector').SlackConfig)
+        return new SlackConnector(config as import('./slack-connector').SlackConfig, appLink)
       }
       case 'imessage': {
         const { IMessageConnector } = await import('./imessage-connector')
-        return new IMessageConnector(config as import('./imessage-connector').IMessageConfig)
+        return new IMessageConnector(config as import('./imessage-connector').IMessageConfig, appLink)
       }
       default:
         throw new Error(`Unknown chat integration provider: ${integration.provider}`)
