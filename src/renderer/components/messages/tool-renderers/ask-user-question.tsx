@@ -61,7 +61,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
                 return (
                   <div
                     key={j}
-                    className={`text-xs flex items-start gap-1 ${isSelected ? 'font-semibold text-foreground' : 'text-muted-foreground'}`}
+                    className={`text-xs flex items-start gap-1 ${isSelected ? 'font-medium text-foreground' : 'text-muted-foreground'}`}
                   >
                     <span className="shrink-0">{isSelected ? '✓' : '○'}</span>
                     <span>

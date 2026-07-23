@@ -324,8 +324,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                       description: error instanceof Error ? error.message : 'Please try again.',
                     })
                   }}
-                  displayClassName="text-xl font-semibold"
-                  inputClassName="h-9 text-xl font-semibold"
+                  displayClassName="text-xl font-medium"
+                  inputClassName="h-9 text-xl font-medium"
                   saveButtonClassName="h-8 w-8"
                   ariaLabel="Rename agent"
                   saveAriaLabel="Save name"
