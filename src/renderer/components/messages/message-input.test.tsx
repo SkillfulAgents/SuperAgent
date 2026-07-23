@@ -111,7 +111,9 @@ describe('MessageInput', () => {
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
-    expect(screen.getByTestId('message-input')).toBeInTheDocument()
+    const input = screen.getByTestId('message-input')
+    expect(input).toBeInTheDocument()
+    expect(input.closest('form')).toHaveClass('pt-0')
     expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument()
   })
 
