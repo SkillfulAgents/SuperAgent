@@ -120,12 +120,12 @@ export function ConversationDetail({
             value={switcherValue}
             onValueChange={(v) => (v === NEW_WINDOW ? onNewConversation(row.externalChatId) : onSelectWindow(v))}
           >
-            <SelectTrigger className="h-8 w-[170px] shrink-0 text-xs" aria-label="Switch conversation">
+            <SelectTrigger className="h-8 w-[170px] shrink-0" aria-label="Switch conversation">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               {switcherOptions.map((o) => (
-                <SelectItem key={o.value} value={o.value} className="text-xs">
+                <SelectItem key={o.value} value={o.value}>
                   {o.label}
                 </SelectItem>
               ))}

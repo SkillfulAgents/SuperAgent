@@ -102,12 +102,12 @@ export function SessionTimeoutSelect({ value, onCommit, disabled, id, descriptio
       disabled={disabled}
       onValueChange={(v) => onCommit(v === 'never' ? null : parseInt(v, 10))}
     >
-      <SelectTrigger id={id} className={layout === 'inline' ? 'h-7 w-24 shrink-0 text-xs' : 'h-7 text-xs'}>
+      <SelectTrigger id={id} className={layout === 'inline' ? 'h-7 w-24 shrink-0' : 'h-7'}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
         {options.map((o) => (
-          <SelectItem key={o.value} value={o.value} className="text-xs">
+          <SelectItem key={o.value} value={o.value}>
             {o.label}
           </SelectItem>
         ))}
