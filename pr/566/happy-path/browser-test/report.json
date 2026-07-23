@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature test: Agent successfully opened browser, navigated to example.com, retrieved page title, and confirmed \"Example Domain\" in response",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\", showing sidebar with agent list including \"QA-20260723-212808-k6bm\"",
+    "Clicked on \"QA-20260723-212808-k6bm\" agent in sidebar — Successfully opened agent page with chat interface, URL changed to /agents/qa-20260723-212808-k6bm-u4rirkrdfs",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message appeared in textbox, send button became active",
+    "Clicked send button — Message was submitted, page navigated to session URL, agent status changed to \"working\"",
+    "Waited up to 3 minutes for response — Agent completed processing in 12 seconds, \"Working...\" indicator disappeared, full response rendered",
+    "Verified response mentions \"Example Domain\" — Response confirms: \"The page title is \"Example Domain\".\" and \"Done — the page at https://example.com loaded with the heading \"Example Domain\". I've closed the browser.\" Screenshot captured showing complete response with all browser tool calls (Open Browser, Browser Get State, Close Browser) marked as successful with green checkmarks"
+  ],
+  "bugs": [],
+  "durationMs": 82485,
+  "sessionId": "157c5c82-4ef1-4679-90ae-e8e8f602f963",
+  "cost": {
+    "inputTokens": 392,
+    "outputTokens": 9760,
+    "cacheCreationTokens": 67548,
+    "cacheReadTokens": 1075217,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.241149
+  }
+}
