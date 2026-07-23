@@ -38,6 +38,7 @@ describe('FilePreviewContext', () => {
         filePath: '/workspace/report.md',
         displayName: 'report.md',
         version: 0,
+        pdfPage: 1,
       })
       expect(result.current.isOpen).toBe(true)
       expect(result.current.activeTabIndex).toBe(0)
@@ -63,6 +64,34 @@ describe('FilePreviewContext', () => {
 
       act(() => result.current.openFile('/workspace/report.md', 'agent-1'))
       expect(result.current.openTabs[0]).toMatchObject({ version: 2 })
+    })
+  })
+
+  describe('PDF pagination', () => {
+    it('keeps a separate page for each open file', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFile('/workspace/long.pdf', 'agent-1'))
+      act(() => result.current.openFile('/workspace/short.pdf', 'agent-1'))
+
+      act(() => result.current.setPdfPage('/workspace/long.pdf', 8))
+      act(() => result.current.setPdfPage('/workspace/short.pdf', 2))
+
+      expect(result.current.openTabs[0]).toMatchObject({ pdfPage: 8 })
+      expect(result.current.openTabs[1]).toMatchObject({ pdfPage: 2 })
+
+      act(() => result.current.setActiveTab(0))
+      expect(result.current.openTabs[result.current.activeTabIndex]).toMatchObject({ pdfPage: 8 })
+      act(() => result.current.setActiveTab(1))
+      expect(result.current.openTabs[result.current.activeTabIndex]).toMatchObject({ pdfPage: 2 })
+    })
+
+    it('clamps page updates to the first page', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFile('/workspace/report.pdf', 'agent-1'))
+
+      act(() => result.current.setPdfPage('/workspace/report.pdf', 0))
+
+      expect(result.current.openTabs[0]).toMatchObject({ pdfPage: 1 })
     })
   })
 

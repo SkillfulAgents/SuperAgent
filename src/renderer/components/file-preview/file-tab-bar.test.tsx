@@ -20,6 +20,7 @@ const tabs: PreviewTab[] = [
     agentSlug: 'test-agent',
     displayName: 'summary.md',
     version: 0,
+    pdfPage: 1,
   },
 ]
 

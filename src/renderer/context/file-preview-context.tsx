@@ -8,6 +8,8 @@ export interface FileTab {
   displayName: string
   description?: string
   version: number
+  /** 1-based page currently shown when this tab contains a PDF. */
+  pdfPage: number
 }
 
 export interface FolderTab {
@@ -68,6 +70,7 @@ interface FilePreviewContextType {
   removeDirectoryPath: (directoryPath: string) => void
   closeTab: (tabKey: string) => void
   setActiveTab: (index: number) => void
+  setPdfPage: (filePath: string, page: number) => void
   close: () => void
 
   addComment: (comment: Omit<FileComment, 'id'>) => void
@@ -136,7 +139,15 @@ export function FilePreviewProvider({
         next[existingIndex] = { ...existing, version: existing.version + 1 }
         return next
       }
-      const newTab: FileTab = { kind: 'file', filePath, agentSlug, displayName: getDisplayName(filePath), description, version: 0 }
+      const newTab: FileTab = {
+        kind: 'file',
+        filePath,
+        agentSlug,
+        displayName: getDisplayName(filePath),
+        description,
+        version: 0,
+        pdfPage: 1,
+      }
       const next = [...prev, newTab]
       setActiveTabIndex(next.length - 1)
       setIsOpen(true)
@@ -339,6 +350,21 @@ export function FilePreviewProvider({
     setActiveTabIndex(index)
   }, [])
 
+  const setPdfPage = useCallback((filePath: string, page: number) => {
+    const nextPage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1
+    setOpenTabs(prev => {
+      const index = prev.findIndex(tab => tab.kind === 'file' && tab.filePath === filePath)
+      if (index < 0) return prev
+
+      const file = prev[index] as FileTab
+      if (file.pdfPage === nextPage) return prev
+
+      const next = [...prev]
+      next[index] = { ...file, pdfPage: nextPage }
+      return next
+    })
+  }, [])
+
   const close = useCallback(() => {
     setIsOpen(false)
   }, [])
@@ -392,11 +418,12 @@ export function FilePreviewProvider({
     removeDirectoryPath,
     closeTab,
     setActiveTab,
+    setPdfPage,
     close,
     addComment,
     removeComment,
     clearComments,
-  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, close, addComment, removeComment, clearComments])
+  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, close, addComment, removeComment, clearComments])
 
   return (
     <FilePreviewContext.Provider value={value}>

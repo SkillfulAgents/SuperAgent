@@ -14,7 +14,7 @@ interface FilePreviewTrayContentProps {
 }
 
 export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayContentProps) {
-  const { openTabs, activeTabIndex, setActiveTab, closeTab, comments } = useFilePreview()
+  const { openTabs, activeTabIndex, setActiveTab, setPdfPage, closeTab, comments } = useFilePreview()
 
   const activeTab = openTabs[activeTabIndex]
   if (!activeTab) return null
@@ -89,6 +89,8 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
             filePath={activeTab.filePath}
             fileUrl={fileUrl}
             agentSlug={activeTab.agentSlug}
+            pdfPage={activeTab.pdfPage}
+            onPdfPageChange={(page) => setPdfPage(activeTab.filePath, page)}
           />
         ) : null}
       </div>

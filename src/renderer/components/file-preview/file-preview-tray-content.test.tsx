@@ -11,6 +11,7 @@ const mocks = vi.hoisted((): { openTabs: PreviewTab[] } => ({
     agentSlug: 'test-agent',
     displayName: 'report.md',
     version: 0,
+    pdfPage: 1,
   }],
 }))
 
@@ -19,8 +20,10 @@ vi.mock('@renderer/context/file-preview-context', () => ({
     openTabs: mocks.openTabs,
     activeTabIndex: 0,
     setActiveTab: vi.fn(),
+    setPdfPage: vi.fn(),
     closeTab: vi.fn(),
     comments: new Map(),
+    commentsEnabled: true,
   }),
 }))
 
@@ -37,6 +40,7 @@ describe('FilePreviewTrayContent', () => {
       agentSlug: 'test-agent',
       displayName: 'report.md',
       version: 0,
+      pdfPage: 1,
     }]
   })
 
@@ -68,7 +72,6 @@ describe('FilePreviewTrayContent', () => {
       expandedPaths: ['/workspace/reports'],
       query: '',
     }]
-
     render(
       <FilePreviewTrayContent
         sessionId="test-session"
