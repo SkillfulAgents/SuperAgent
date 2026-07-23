@@ -289,10 +289,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     this.config = config
   }
 
-  shouldRunHostAutoSleep(): boolean {
-    return true
-  }
-
   /**
    * Emit an 'error' event without crashing the process.
    *

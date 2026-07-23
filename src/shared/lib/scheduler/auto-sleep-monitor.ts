@@ -16,7 +16,6 @@ class AutoSleepMonitor {
   private isRunning = false
   private pollIntervalMs = 60000 // Check every minute
   private isProcessing = false
-  private hasLoggedRuntimeManagedIdle = false
 
   /**
    * Start the monitor.
@@ -28,7 +27,6 @@ class AutoSleepMonitor {
     }
 
     this.isRunning = true
-    this.hasLoggedRuntimeManagedIdle = false
     console.log('[AutoSleepMonitor] Starting monitor...')
 
     // Start periodic polling
@@ -78,14 +76,6 @@ class AutoSleepMonitor {
 
       for (const agentId of runningAgentIds) {
         try {
-          if (!containerManager.shouldRunHostAutoSleep(agentId)) {
-            if (!this.hasLoggedRuntimeManagedIdle) {
-              console.log('[AutoSleepMonitor] Runtime owns idle sleep; skipping host session scans')
-              this.hasLoggedRuntimeManagedIdle = true
-            }
-            continue
-          }
-
           // Skip if any session is currently processing a request
           if (messagePersister.hasActiveSessionsForAgent(agentId)) {
             continue
