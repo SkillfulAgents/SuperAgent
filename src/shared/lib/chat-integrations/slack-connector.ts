@@ -10,7 +10,15 @@
 import { App as SlackApp, SocketModeReceiver } from '@slack/bolt'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
-import { ChatClientConnector, type OutgoingMessage, type SystemPromptContext } from './base-connector'
+import {
+  ChatClientConnector,
+  type ChatConversationType,
+  type ChatDirectoryChannel,
+  type ChatDirectoryPage,
+  type ChatDirectoryUser,
+  type OutgoingMessage,
+  type SystemPromptContext,
+} from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { isUnrecoverableSlackError } from './slack-error'
 import { captureException } from '@shared/lib/error-reporting'
@@ -148,6 +156,21 @@ export function buildSlackSystemPrompt(message: SystemPromptContext): string {
 - Never use send_chat_message to reply to this conversation — your reply is already delivered automatically, so that would post it twice. Only use send_chat_message to reach a DIFFERENT chat (for example, to DM a specific person or post to another channel).${isGroupContext ? `
 - Multiple people can take part. Incoming messages are prefixed with the sender's name (for example "[Jane Doe]: ..."); the prefix is added for attribution — the sender did not type it. Keep track of who is asking for what.` : ''}
 - Keep responses concise and conversational — this is a chat, not a document.`
+}
+
+// ── Chat id classification ──────────────────────────────────────────────
+
+/**
+ * Classify a Slack (effective) chat id by shape: `channel|threadTs` composites
+ * are threads, and top-level conversation ids encode their type in the prefix
+ * (D* = DM, G* = private group/mpim, C* = channel).
+ */
+export function classifySlackChatId(chatId: string): ChatConversationType | undefined {
+  if (chatId.indexOf('|') > 0) return 'thread'
+  if (chatId.startsWith('D')) return 'dm'
+  if (chatId.startsWith('G')) return 'group'
+  if (chatId.startsWith('C')) return 'channel'
+  return undefined
 }
 
 // ── Message routing (exported for testing) ──────────────────────────────
@@ -290,6 +313,8 @@ export class SlackConnector extends ChatClientConnector {
   readonly provider = 'slack' as const
 
   static generateSystemPrompt = buildSlackSystemPrompt
+  static discoveryCapabilities = ['list_users', 'list_channels', 'dm_by_user_id'] as const
+  static classifyChatId = classifySlackChatId
 
   private app: SlackApp | null = null
   private receiver: SocketModeReceiver | null = null
@@ -917,6 +942,90 @@ export class SlackConnector extends ChatClientConnector {
         return result.ts || ''
       }
     }
+  }
+
+  // ── Directory discovery ─────────────────────────────────────────────
+
+  // Cap on directory listings so a large workspace can't flood an agent's
+  // context; pages of 200 match Slack's recommended page size.
+  private static readonly MAX_DIRECTORY_ENTRIES = 500
+  private static readonly DIRECTORY_PAGE_SIZE = 200
+
+  async listChatUsers(): Promise<ChatDirectoryPage<ChatDirectoryUser>> {
+    if (!this.app) throw new Error('Slack app not connected')
+
+    const users: ChatDirectoryUser[] = []
+    let truncated = false
+    let cursor: string | undefined
+    do {
+      const result = await this.app.client.users.list({
+        limit: SlackConnector.DIRECTORY_PAGE_SIZE,
+        ...(cursor ? { cursor } : {}),
+      })
+      for (const member of result.members ?? []) {
+        // Directory = reachable people: skip deactivated accounts, bots, and
+        // Slackbot (a bot in every workspace that users.list doesn't flag).
+        if (!member.id || member.deleted || member.is_bot || member.id === 'USLACKBOT') continue
+        if (users.length >= SlackConnector.MAX_DIRECTORY_ENTRIES) {
+          truncated = true
+          break
+        }
+        const title = member.profile?.title
+        users.push({
+          id: member.id,
+          name: member.profile?.real_name || member.real_name || member.name || member.id,
+          ...(title ? { title } : {}),
+        })
+      }
+      cursor = truncated ? undefined : (result.response_metadata?.next_cursor || undefined)
+    } while (cursor)
+
+    return { items: users, truncated }
+  }
+
+  async listChatChannels(): Promise<ChatDirectoryPage<ChatDirectoryChannel>> {
+    if (!this.app) throw new Error('Slack app not connected')
+
+    const channels: ChatDirectoryChannel[] = []
+    let truncated = false
+    let cursor: string | undefined
+    do {
+      const result = await this.app.client.conversations.list({
+        limit: SlackConnector.DIRECTORY_PAGE_SIZE,
+        exclude_archived: true,
+        types: 'public_channel,private_channel',
+        ...(cursor ? { cursor } : {}),
+      })
+      for (const channel of result.channels ?? []) {
+        if (!channel.id || !channel.name) continue
+        if (channels.length >= SlackConnector.MAX_DIRECTORY_ENTRIES) {
+          truncated = true
+          break
+        }
+        channels.push({
+          id: channel.id,
+          name: `#${channel.name}`,
+          isPrivate: !!channel.is_private,
+          isMember: !!channel.is_member,
+        })
+      }
+      cursor = truncated ? undefined : (result.response_metadata?.next_cursor || undefined)
+    } while (cursor)
+
+    return { items: channels, truncated }
+  }
+
+  async resolveDirectChat(userId: string): Promise<string> {
+    if (!this.app) throw new Error('Slack app not connected')
+
+    // conversations.open returns the existing 1:1 when there is one and only
+    // otherwise creates it — resolving is idempotent and side-effect-light.
+    const result = await this.app.client.conversations.open({ users: userId })
+    const channelId = result.channel?.id
+    if (!channelId) {
+      throw new Error(`Slack did not return a DM channel for user ${userId}`)
+    }
+    return channelId
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────
