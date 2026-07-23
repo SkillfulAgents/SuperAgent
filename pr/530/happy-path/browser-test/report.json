@@ -1,23 +1,17 @@
 {
   "storyId": "browser-test",
-  "passed": true,
-  "reason": "Verified that the browser-use feature works correctly - agent can open a browser, navigate to a URL, retrieve page title, and report results to user.",
-  "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Successfully loaded Gamut app home page with agent list in sidebar",
-    "Step 2: Clicked on \"QA-20260721-184046-6vsv\" agent in sidebar — Successfully opened agent chat interface with message input field",
-    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully submitted, agent status changed to \"working\"",
-    "Step 4: Waited up to 3 minutes for agent response — Agent completed work in ~2 seconds and returned successful response",
-    "Step 5: Verified response mentions \"Example Domain\" and took screenshot — Response clearly states \"The page title is \"Example Domain\".\" - Requirement verified"
-  ],
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail:  https://example.com ✓\n- Browser MCP: Browser Get State ✓  \n- Close Browser ✓\n- Total execution time: 13 seconds\n\nAll requirements met. The browser use feature is working correctly, with the agent successfully using browser tools to navigate to the specified URL and retrieve the correct page title.\n",
+  "steps": [],
   "bugs": [],
-  "durationMs": 79302,
-  "sessionId": "6bf8aff9-6500-45a9-9ebd-cf229a386b1d",
+  "durationMs": 78822,
+  "sessionId": "efbb3c9f-7eea-42c4-b2a2-4dfdcb6a3af1",
   "cost": {
-    "inputTokens": 426,
-    "outputTokens": 11413,
-    "cacheCreationTokens": 123537,
-    "cacheReadTokens": 1182492,
+    "inputTokens": 424,
+    "outputTokens": 11444,
+    "cacheCreationTokens": 51787,
+    "cacheReadTokens": 1119264,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.330161
+    "totalCostUsd": 0.234304
   }
 }
