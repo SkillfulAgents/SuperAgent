@@ -119,6 +119,15 @@ interface StreamingState {
   // that connects AFTER they fire would never see them; we store the exact payloads here and the
   // /stream route replays them on (re)connect. Cleared at turn boundaries (session_active/idle).
   pendingInputRequests: Map<string, { type: string; toolUseId: string; [k: string]: unknown }>
+  // Tombstones for capability reviews cancelled BEFORE their card was stored:
+  // handleCapabilityReviewTool awaits a container grant lookup before it
+  // broadcasts, so a capability_review_cancelled frame can win that race —
+  // the handler must then drop the card instead of resurrecting it. NOT
+  // cleared at turn boundaries: a hung grant lookup can outlive the turn
+  // (interrupts kill the container the fetch is talking to), and a tool_use
+  // id never recurs, so a straggler can only ever suppress its own stale
+  // card. Entries are consumed on match; the rest die with this state.
+  cancelledCapabilityReviews: Set<string>
   lastApiErrorCode: string | null // SDK error code from last assistant message (e.g., 'authentication_failed', 'rate_limit')
   // Backgrounded Bash commands + dynamic workflows still running, keyed by the SDK task_id.
   // For workflows we also carry the launching tool's id, the meta.name, and — once the
@@ -303,6 +312,7 @@ class MessagePersister {
       isAwaitingInput: priorIsAwaitingInput,
       pendingComputerUseRequests: new Map(),
       pendingInputRequests: new Map(),
+      cancelledCapabilityReviews: new Set(),
       lastApiErrorCode: null,
       activeBackgroundTasks: priorBackgroundTasks,
       bgTasksSnapshot: prior?.bgTasksSnapshot ?? null,
@@ -800,6 +810,7 @@ class MessagePersister {
         isAwaitingInput: false,
         pendingComputerUseRequests: new Map(),
         pendingInputRequests: new Map(),
+        cancelledCapabilityReviews: new Set(),
         lastApiErrorCode: null,
         activeBackgroundTasks: new Map(),
         bgTasksSnapshot: null,
@@ -1680,7 +1691,14 @@ class MessagePersister {
         // aborted). No decision can land anymore: close the approval card
         // everywhere instead of leaving it dangling until reconnect cleanup.
         if (typeof content.toolUseId === 'string') {
-          this.completeCapabilityReview(sessionId, content.toolUseId)
+          if (state.pendingInputRequests.has(content.toolUseId)) {
+            this.completeCapabilityReview(sessionId, content.toolUseId)
+          } else {
+            // No card yet — handleCapabilityReviewTool is still awaiting its
+            // container grant lookup. Tombstone the id so the handler drops
+            // the card instead of broadcasting it after this cancellation.
+            state.cancelledCapabilityReviews.add(content.toolUseId)
+          }
         }
         break
 
@@ -3905,6 +3923,15 @@ ${continuation}`
           // on beats a launch that silently skips review.
           console.warn('[MessagePersister] Capability grant lookup failed; showing review card:', error)
         }
+      }
+
+      // The grant lookup above is async — a capability_review_cancelled frame
+      // may have arrived while we awaited it (interrupts make this common).
+      // Its completeCapabilityReview found nothing to delete, so consume the
+      // tombstone here: broadcasting now would resurrect an unanswerable card
+      // and re-mark the session as awaiting input.
+      if (this.streamingStates.get(sessionId)?.cancelledCapabilityReviews.delete(toolUseId)) {
+        return
       }
 
       let input: Record<string, unknown> = {}
