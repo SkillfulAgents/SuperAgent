@@ -537,7 +537,15 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         }
         messagePersister.markSessionActive(existingSessionId, targetSlug)
         stage = 'send_message'
-        await client.sendMessage(existingSessionId, prompt)
+        try {
+          await client.sendMessage(existingSessionId, prompt)
+        } catch (error) {
+          // The send never reached the container, so no turn will run to emit the idle that
+          // settles the indicator. The 409 guard above guarantees we started this turn fresh,
+          // so clear the active state we just set (host-only — nothing is running to interrupt).
+          await messagePersister.markSessionInterrupted(existingSessionId)
+          throw error
+        }
 
         if (sync) {
           try {
