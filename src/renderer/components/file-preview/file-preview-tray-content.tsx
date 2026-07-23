@@ -1,31 +1,32 @@
-import { Download, FileText, PanelRightClose, X } from 'lucide-react'
+import { Download, FileText, Folder, PanelRightClose, X } from 'lucide-react'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { FileTabBar } from './file-tab-bar'
 import { FileRenderer } from './renderers/file-renderer'
+import { FolderBrowser } from './folder-browser'
 import { CommentBar } from './comments/comment-bar'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
+import { cn } from '@shared/lib/utils/cn'
 
 interface FilePreviewTrayContentProps {
   sessionId: string
   onClose: () => void
 }
 
-function getRelativePath(filePath: string): string {
-  return filePath.replace(/^\/workspace\//, '')
-}
-
 export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayContentProps) {
-  const { openFiles, activeFileIndex, setActiveFile, setPdfPage, closeFile, comments } = useFilePreview()
+  const { openTabs, activeTabIndex, setActiveTab, setPdfPage, closeTab, comments } = useFilePreview()
 
-  const activeFile = openFiles[activeFileIndex]
-  if (!activeFile) return null
+  const activeTab = openTabs[activeTabIndex]
+  if (!activeTab) return null
 
   const baseUrl = getApiBaseUrl()
-  const relativePath = getRelativePath(activeFile.filePath)
-  const versionParam = activeFile.version > 0 ? `&v=${activeFile.version}` : ''
-  const fileUrl = `${baseUrl}/api/agents/${activeFile.agentSlug}/files/${relativePath}?inline=true${versionParam}`
-  const downloadUrl = `${baseUrl}/api/agents/${activeFile.agentSlug}/files/${relativePath}`
-  const activeComments = comments.get(activeFile.filePath) || []
+  const fileApiPath = activeTab.kind === 'file'
+    ? getAgentFileApiPath(activeTab.agentSlug, activeTab.filePath)
+    : null
+  const versionParam = activeTab.kind === 'file' && activeTab.version > 0 ? `&v=${activeTab.version}` : ''
+  const fileUrl = fileApiPath ? `${baseUrl}${fileApiPath}?inline=true${versionParam}` : null
+  const downloadUrl = fileApiPath ? `${baseUrl}${fileApiPath}` : null
+  const activeComments = activeTab.kind === 'file' ? comments.get(activeTab.filePath) || [] : []
 
   return (
     <div className="contents" data-testid="file-preview-tray">
@@ -39,17 +40,23 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
         >
           <X className="h-4 w-4" />
         </button>
-        <FileText className="h-4 w-4 shrink-0" />
+        {activeTab.kind === 'folder' ? (
+          <Folder className="h-4 w-4 shrink-0" />
+        ) : (
+          <FileText className="h-4 w-4 shrink-0" />
+        )}
         <span className="flex-1 text-xs truncate font-medium">Files</span>
-        <a
-          href={downloadUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="p-0.5 rounded hover:bg-muted transition-colors"
-          title="Download file"
-        >
-          <Download className="h-4 w-4" />
-        </a>
+        {downloadUrl && (
+          <a
+            href={downloadUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="p-0.5 rounded hover:bg-muted transition-colors"
+            title="Download file"
+          >
+            <Download className="h-4 w-4" />
+          </a>
+        )}
         <button
           className="file-preview-wide-close inline-flex p-0.5 rounded hover:bg-muted transition-colors"
           onClick={onClose}
@@ -62,29 +69,40 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
 
       {/* File tabs */}
       <FileTabBar
-        files={openFiles}
-        activeIndex={activeFileIndex}
-        onTabClick={setActiveFile}
-        onCloseTab={closeFile}
+        tabs={openTabs}
+        activeIndex={activeTabIndex}
+        onTabClick={setActiveTab}
+        onCloseTab={closeTab}
       />
 
       {/* File content */}
-      <div className="flex-1 min-h-0 overflow-auto">
-        <FileRenderer
-          filePath={activeFile.filePath}
-          fileUrl={fileUrl}
-          agentSlug={activeFile.agentSlug}
-          pdfPage={activeFile.pdfPage}
-          onPdfPageChange={(page) => setPdfPage(activeFile.filePath, page)}
-        />
+      <div
+        className={cn(
+          'flex-1 min-h-0',
+          activeTab.kind === 'folder' ? 'overflow-hidden' : 'overflow-auto',
+        )}
+      >
+        {activeTab.kind === 'folder' ? (
+          <FolderBrowser folder={activeTab} />
+        ) : fileUrl ? (
+          <FileRenderer
+            filePath={activeTab.filePath}
+            fileUrl={fileUrl}
+            agentSlug={activeTab.agentSlug}
+            pdfPage={activeTab.pdfPage}
+            onPdfPageChange={(page) => setPdfPage(activeTab.filePath, page)}
+          />
+        ) : null}
       </div>
 
       {/* Comment bar */}
-      <CommentBar
-        comments={activeComments}
-        filePath={activeFile.filePath}
-        sessionId={sessionId}
-      />
+      {activeTab.kind === 'file' && (
+        <CommentBar
+          comments={activeComments}
+          filePath={activeTab.filePath}
+          sessionId={sessionId}
+        />
+      )}
     </div>
   )
 }

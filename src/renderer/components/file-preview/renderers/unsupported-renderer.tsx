@@ -2,6 +2,7 @@ import { Download, FileQuestion } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
 
 interface UnsupportedRendererProps {
   filePath: string
@@ -12,14 +13,10 @@ function getFilename(filePath: string): string {
   return filePath.split('/').pop() || filePath
 }
 
-function getRelativePath(filePath: string): string {
-  return filePath.replace(/^\/workspace\//, '')
-}
-
 export function UnsupportedRenderer({ filePath, agentSlug }: UnsupportedRendererProps) {
   const filename = getFilename(filePath)
   const baseUrl = getApiBaseUrl()
-  const downloadUrl = `${baseUrl}/api/agents/${agentSlug}/files/${getRelativePath(filePath)}`
+  const downloadUrl = `${baseUrl}${getAgentFileApiPath(agentSlug, filePath)}`
 
   return (
     <div className="flex flex-col items-center justify-center gap-4 py-16 px-8 text-center">

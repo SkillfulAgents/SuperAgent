@@ -662,9 +662,9 @@ The user can also decline the request, optionally providing a reason.
 
 ### Bookmarks
 
-You can save bookmarks to important resources (web links or workspace files) by editing `/workspace/bookmarks.json`. Bookmarks are displayed on the user's agent homepage for quick access. When the user sends you a link/file or you generate one that seems important and often-visited -- bookmark it!
+You can save bookmarks to important resources (web links, workspace files, or workspace folders) by editing `/workspace/bookmarks.json`. Bookmarks are displayed on the user's agent homepage for quick access. When the user sends you a link/file or you generate one that seems important and often-visited -- bookmark it!
 
-The file is a JSON array — each item has a `name` and either a `link` (https:// URL) or `file` (workspace path). When you create or deliver a file the user will access regularly, consider adding a bookmark for it.
+The file is a JSON array — each item has a `name` and exactly one of: `link` (https:// URL), `file` (workspace file path), or `folder` (a path inside `/workspace`). Use a folder bookmark for a collection the user will browse repeatedly, such as generated reports or exports. When you create or deliver a file the user will access regularly, consider adding a bookmark for it.
 
 ## Web Browsing
 

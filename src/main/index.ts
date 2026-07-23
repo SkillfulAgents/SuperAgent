@@ -90,10 +90,14 @@ console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
 
 // Initialize error reporting as early as possible (after data dir is set)
 import { initErrorReporting, captureException, flushErrorReporting } from '@shared/lib/error-reporting'
+import { recordFatalError, reportCrashMarkerFromLastRun, toReportableError } from './crash-marker'
 
 // Only report errors in production builds — dev mode generates too much noise
 if (app.isPackaged) {
   initErrorReporting({ environment: 'electron' })
+  // If the last session died in a fatal handler, its Sentry event may have
+  // been lost (no offline transport) — deliver the on-disk record now.
+  void reportCrashMarkerFromLastRun()
 }
 
 // Register auto-update IPC handlers early (before window creation)
@@ -681,6 +685,20 @@ ipcMain.handle('show-in-folder', async (_event, rawPath: unknown) => {
   }
   const errorMessage = await shell.openPath(hostPath)
   return errorMessage === '' ? null : errorMessage
+})
+
+// Reveal a specific file or directory in the OS file manager. This is kept
+// separate from show-in-folder, whose existing contract opens a mounted
+// directory rather than selecting it in its parent.
+ipcMain.handle('reveal-in-folder', async (_event, rawPath: unknown) => {
+  const hostPath = ShowInFolderPath.parse(rawPath)
+  try {
+    await fs.promises.stat(hostPath)
+    shell.showItemInFolder(hostPath)
+    return null
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).message
+  }
 })
 
 // --- Recent files infrastructure ---
@@ -1707,6 +1725,10 @@ app.on('before-quit', async (event) => {
 // Handle uncaught exceptions
 process.on('uncaughtException', async (error) => {
   console.error('Uncaught exception:', error)
+  // Persist to disk before any async work — if the network is down (or flush
+  // hangs, or shutdown throws again) the Sentry event below is lost, and the
+  // marker is then the only record that this exit was a crash.
+  recordFatalError('uncaughtException', error)
   captureException(error, { tags: { type: 'uncaughtException' }, level: 'fatal' })
   await flushErrorReporting(3000)
   await gracefulShutdown()
@@ -1717,7 +1739,8 @@ process.on('uncaughtException', async (error) => {
 // Handle unhandled promise rejections
 process.on('unhandledRejection', async (reason) => {
   console.error('Unhandled rejection:', reason)
-  captureException(reason instanceof Error ? reason : new Error(String(reason)), { tags: { type: 'unhandledRejection' }, level: 'fatal' })
+  recordFatalError('unhandledRejection', reason)
+  captureException(toReportableError(reason), { tags: { type: 'unhandledRejection' }, level: 'fatal' })
   await flushErrorReporting(3000)
   await gracefulShutdown()
   // See before-quit handler above for why this is deferred

@@ -1,62 +1,49 @@
 // @vitest-environment jsdom
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
-import type { ReactNode } from 'react'
 import { FilePreviewTrayContent } from './file-preview-tray-content'
+import type { PreviewTab } from '@renderer/context/file-preview-context'
 
-const setPdfPage = vi.fn()
+const mocks = vi.hoisted((): { openTabs: PreviewTab[] } => ({
+  openTabs: [{
+    kind: 'file' as const,
+    filePath: '/workspace/report.md',
+    agentSlug: 'test-agent',
+    displayName: 'report.md',
+    version: 0,
+    pdfPage: 1,
+  }],
+}))
 
 vi.mock('@renderer/context/file-preview-context', () => ({
   useFilePreview: () => ({
-    openFiles: [{
-      filePath: '/workspace/report.pdf',
-      agentSlug: 'test-agent',
-      displayName: 'report.pdf',
-      version: 0,
-      pdfPage: 2,
-    }],
-    activeFileIndex: 0,
-    setActiveFile: vi.fn(),
-    setPdfPage,
-    closeFile: vi.fn(),
+    openTabs: mocks.openTabs,
+    activeTabIndex: 0,
+    setActiveTab: vi.fn(),
+    setPdfPage: vi.fn(),
+    closeTab: vi.fn(),
     comments: new Map(),
     commentsEnabled: true,
   }),
 }))
 
 vi.mock('./file-tab-bar', () => ({ FileTabBar: () => null }))
-vi.mock('./comments/comment-bar', () => ({ CommentBar: () => null }))
-vi.mock('react-pdf', () => ({
-  pdfjs: { GlobalWorkerOptions: {} },
-  Document: ({
-    children,
-    onLoadSuccess,
-  }: {
-    children: ReactNode
-    onLoadSuccess: (pdf: { numPages: number }) => void
-  }) => (
-    <div>
-      <button onClick={() => onLoadSuccess({ numPages: 3 })}>Load PDF</button>
-      {children}
-    </div>
-  ),
-  Page: ({ pageNumber }: { pageNumber: number }) => (
-    <div data-testid="tray-pdf-page" data-page-number={pageNumber} />
-  ),
-}))
-
-beforeAll(() => {
-  vi.stubGlobal('ResizeObserver', class {
-    observe() {}
-    disconnect() {}
-  })
-})
-
-beforeEach(() => {
-  setPdfPage.mockReset()
-})
+vi.mock('./renderers/file-renderer', () => ({ FileRenderer: () => <div data-testid="file-renderer" /> }))
+vi.mock('./folder-browser', () => ({ FolderBrowser: () => <div data-testid="folder-browser" /> }))
+vi.mock('./comments/comment-bar', () => ({ CommentBar: () => <div data-testid="comment-bar" /> }))
 
 describe('FilePreviewTrayContent', () => {
+  beforeEach(() => {
+    mocks.openTabs = [{
+      kind: 'file',
+      filePath: '/workspace/report.md',
+      agentSlug: 'test-agent',
+      displayName: 'report.md',
+      version: 0,
+      pdfPage: 1,
+    }]
+  })
+
   it('exposes container-responsive close controls on opposite sides', () => {
     const onClose = vi.fn()
     render(
@@ -76,7 +63,15 @@ describe('FilePreviewTrayContent', () => {
     expect(onClose).toHaveBeenCalledTimes(2)
   })
 
-  it('wires the active PDF page and page changes through the tray', async () => {
+  it('shows folder navigation without file-only download and comment actions', () => {
+    mocks.openTabs = [{
+      kind: 'folder',
+      rootPath: '/workspace/reports',
+      agentSlug: 'test-agent',
+      displayName: 'reports',
+      expandedPaths: ['/workspace/reports'],
+      query: '',
+    }]
     render(
       <FilePreviewTrayContent
         sessionId="test-session"
@@ -84,10 +79,8 @@ describe('FilePreviewTrayContent', () => {
       />,
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Load PDF' }))
-    expect(screen.getByTestId('tray-pdf-page')).toHaveAttribute('data-page-number', '2')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Next PDF page' }))
-    expect(setPdfPage).toHaveBeenCalledWith('/workspace/report.pdf', 3)
+    expect(screen.getByTestId('folder-browser')).toBeVisible()
+    expect(screen.queryByTitle('Download file')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('comment-bar')).not.toBeInTheDocument()
   })
 })

@@ -3915,7 +3915,11 @@ ${continuation}`
       this.markSessionAwaitingInput(sessionId)
 
       if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'capability_review').catch((err) => {
+        notificationManager.triggerSessionWaitingInput(
+          sessionId,
+          agentSlug,
+          capability === 'workflows' ? 'capability_review_workflows' : 'capability_review_subagents'
+        ).catch((err) => {
           console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
         })
       }

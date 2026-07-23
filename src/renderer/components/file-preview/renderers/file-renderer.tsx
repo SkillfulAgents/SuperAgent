@@ -10,21 +10,16 @@ import { AudioRenderer } from './audio-renderer'
 import { HtmlRenderer } from './html-renderer'
 import { UnsupportedRenderer } from './unsupported-renderer'
 import { useFilePreview } from '@renderer/context/file-preview-context'
+import {
+  AUDIO_EXTS,
+  CSV_EXTS,
+  IMAGE_EXTS,
+  MARKDOWN_EXTS,
+  TEXT_EXTS,
+  VIDEO_EXTS,
+} from '../file-types'
 
 const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
-
-const MARKDOWN_EXTS = new Set(['md', 'markdown'])
-const CSV_EXTS = new Set(['csv', 'tsv'])
-const TEXT_EXTS = new Set([
-  'txt', 'log', 'json', 'xml', 'yml', 'yaml', 'toml', 'ini', 'cfg',
-  'env', 'sh', 'bash', 'zsh', 'py', 'js', 'ts', 'tsx', 'jsx', 'css',
-  'scss', 'less', 'sql', 'graphql', 'proto', 'dockerfile', 'makefile',
-  'gitignore', 'editorconfig', 'rs', 'go', 'java', 'kt', 'swift', 'rb', 'php',
-  'c', 'cpp', 'h', 'hpp', 'r',
-])
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'])
-const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'm4v', 'ogv'])
-const AUDIO_EXTS = new Set(['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac', 'weba'])
 
 interface FileRendererProps {
   filePath: string
