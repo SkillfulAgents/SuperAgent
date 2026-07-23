@@ -57,11 +57,6 @@ vi.mock('@shared/lib/container/host-token-store', () => ({
   getOrCreateHostToken: vi.fn(() => 'test-host-token'),
 }))
 
-vi.mock('@shared/lib/proxy/host-url', () => ({
-  getContainerHostUrl: () => '127.0.0.1',
-  getAppPort: () => 3000,
-}))
-
 const mockDbWhere = vi.fn().mockResolvedValue([])
 const mockDbInnerJoin = vi.fn().mockReturnValue({ where: mockDbWhere })
 

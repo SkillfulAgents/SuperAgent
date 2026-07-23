@@ -421,18 +421,19 @@ export class WSL2ContainerClient extends BaseContainerClient {
   }
 
   /**
-   * Map host.docker.internal to the detected Windows-host gateway IP. nerdctl's
-   * `host-gateway` resolves to the in-WSL2 bridge, not the Windows host, so we
-   * pass the resolved IP; fall back to the host-gateway literal if undetectable.
+   * Map getContainerHostAddress() to the detected Windows-host gateway IP.
+   * nerdctl's `host-gateway` resolves to the in-WSL2 bridge, not the Windows
+   * host, so we pass the resolved IP; fall back to host-gateway if undetectable.
    */
   protected getAdditionalRunFlags(): string {
+    const host = this.getContainerHostAddress()
     const ip = this.getHostBridgeIp()
     if (ip) {
       console.log(`WSL2 host IP detected: ${ip}`)
-      return `--add-host host.docker.internal:${ip}`
+      return `--add-host ${host}:${ip}`
     }
     // Fallback: host-gateway may still work in some configurations
-    return '--add-host host.docker.internal:host-gateway'
+    return `--add-host ${host}:host-gateway`
   }
 
   /**
@@ -448,7 +449,10 @@ export class WSL2ContainerClient extends BaseContainerClient {
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
     const envVars: Record<string, string | undefined> = {
-      ...getActiveLlmProvider().getContainerEnvVars(this.agentIdentityForEnv()),
+      ...getActiveLlmProvider().getContainerEnvVars(
+        this.agentIdentityForEnv(),
+        this.getContainerHostAddress(),
+      ),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ...this.config.envVars,
       ...additionalEnvVars,

@@ -29,8 +29,8 @@ export default defineConfig({
     {
       name: 'server-lifecycle',
       configureServer(server) {
-        // Sync process.env.PORT to the actual bound port so that
-        // getAppPort() returns the right value even when Vite auto-assigns.
+        // Sync process.env.PORT to the actual bound port so that the app port
+        // containers talk back to is right even when Vite auto-assigns.
         server.httpServer?.on('listening', () => {
           const addr = server.httpServer?.address()
           if (addr && typeof addr === 'object') {

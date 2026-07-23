@@ -2112,6 +2112,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return 'http://127.0.0.1:3000'
   }
 
+  getContainerHostAddress(): string {
+    return 'host.docker.internal'
+  }
+
   // Health checks
 
   async waitForHealthy(_timeoutMs?: number, _knownPort?: number): Promise<boolean> {

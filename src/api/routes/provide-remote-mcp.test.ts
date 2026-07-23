@@ -147,12 +147,6 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: vi.fn(),
 }))
 
-// Must not be used for REMOTE_MCPS proxyUrl — runtime talk-back goes through getHostApiBaseUrl.
-vi.mock('@shared/lib/proxy/host-url', () => ({
-  getContainerHostUrl: () => 'host.docker.internal',
-  getAppPort: () => 3000,
-}))
-
 vi.mock('@shared/lib/services/agent-template-service', () => ({
   exportAgentTemplate: vi.fn(),
   importAgentFromTemplate: vi.fn(),

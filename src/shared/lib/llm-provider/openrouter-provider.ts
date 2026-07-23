@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider, type AgentIdentity, type ModelPurpose } from './base-llm-provider'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import { OPENROUTER_CATALOG } from './builtin-catalogs'
 import type { EffortLevel } from '../container/types'
@@ -159,7 +159,10 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
     }
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  getContainerEnvVars(
+    _agent: AgentIdentity | undefined,
+    _hostAddress: string,
+  ): Record<string, string | undefined> {
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: OPENROUTER_BASE_URL,

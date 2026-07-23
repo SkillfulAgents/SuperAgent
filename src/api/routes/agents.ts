@@ -3511,7 +3511,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       await db.insert(agentRemoteMcps).values(newMappings)
     }
 
-    // Same talk-back base as container start — not getContainerHostUrl().
+    // Same talk-back base as container start.
     const hostApiBaseUrl = await client.getHostApiBaseUrl()
     const mcpMappings = await db
       .select({ mcp: remoteMcpServers })

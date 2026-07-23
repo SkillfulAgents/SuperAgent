@@ -10,7 +10,6 @@ import { BaseContainerClient, execWithPath, execSyncWithPath, CONTAINER_INTERNAL
 import type { ContainerConfig, ContainerInfo, ContainerStats, ImagePullProgress } from './types'
 import { isAdminPrivilegeCancelError, runWithAdminPrivileges } from '@shared/lib/run-with-admin-privileges'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
-import { getAppPort } from '@shared/lib/proxy/host-url'
 
 export type AppleContainerProvisionProgress = Pick<ImagePullProgress, 'status' | 'percent'>
 
@@ -342,13 +341,8 @@ export class AppleContainerClient extends BaseContainerClient {
     return gateway
   }
 
-  /** Containers talk back to the host (LLM proxy, host API) at this URL. */
-  public getHostApiBaseUrl(): string {
-    return `http://${this.requireGatewayIp()}:${getAppPort()}`
-  }
-
-  /** Loopback LLM endpoints rewrite to this address (host.docker.internal is
-   *  NXDOMAIN here — same fail-closed gateway rule as getHostApiBaseUrl). */
+  /** Guest-reachable host address. host.docker.internal is NXDOMAIN here;
+   *  fail-closed via requireGatewayIp. Base getHostApiBaseUrl derives from this. */
   getContainerHostAddress(): string {
     return this.requireGatewayIp()
   }

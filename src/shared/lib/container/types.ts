@@ -169,6 +169,9 @@ export interface ContainerClient {
   getWebSocketBaseUrl(port: number): string
   getHostApiBaseUrl(): string | Promise<string>
 
+  // Guest-reachable host name/IP for this runtime (loopback rewrite + talk-back).
+  getContainerHostAddress(): string
+
   // Health checks
   waitForHealthy(timeoutMs?: number, knownPort?: number): Promise<boolean>
   isHealthy(knownPort?: number): Promise<boolean>

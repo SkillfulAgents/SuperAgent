@@ -3,16 +3,12 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient } from './base-container-client'
+import { DockerContainerClient } from './docker-container-client'
 import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
 
 const enableToolSearch = vi.fn((): boolean | undefined => true)
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ enableToolSearch: enableToolSearch() }),
-}))
-const getContainerHostUrl = vi.fn(() => 'host.docker.internal')
-vi.mock('@shared/lib/proxy/host-url', () => ({
-  getContainerHostUrl: () => getContainerHostUrl(),
-  getAppPort: () => 47891,
 }))
 const getContainerEnvVars = vi.fn(() => ({ ANTHROPIC_API_KEY: 'provider-key' }))
 vi.mock('@shared/lib/llm-provider', () => ({
@@ -39,8 +35,8 @@ class TestContainerClient extends BaseContainerClient {
   }
 }
 
-/** Stand-in for Apple: overrides only the host-address hook the runtime owns. */
-class GatewayHostContainerClient extends TestContainerClient {
+/** Runtime that overrides getContainerHostAddress (Apple/Podman shape). */
+class OverrideHostContainerClient extends TestContainerClient {
   getContainerHostAddress(): string {
     return '192.168.64.1'
   }
@@ -53,10 +49,15 @@ class UnknownGatewayContainerClient extends TestContainerClient {
   }
 }
 
+class ExposedDockerContainerClient extends DockerContainerClient {
+  public testAdditionalRunFlags(): string {
+    return this.getAdditionalRunFlags()
+  }
+}
+
 describe('buildAgentEnv', () => {
   afterEach(() => {
     enableToolSearch.mockReturnValue(true)
-    getContainerHostUrl.mockReturnValue('host.docker.internal')
     getContainerEnvVars.mockClear()
   })
 
@@ -87,34 +88,30 @@ describe('buildAgentEnv', () => {
     )
   })
 
-  // Composition seam (SUP-447): runtime override → buildAgentEnv → provider.
-  // Apple's unit tests mock away BaseContainerClient, so the inheritance path
-  // is pinned here with a gateway-IP subclass.
+  // Apple's tests mock away BaseContainerClient; pin the inheritance path here.
   it('threads an overridden container host address into the provider', () => {
-    new GatewayHostContainerClient({ agentId: 'apple-agent', envVars: {} }).testBuildAgentEnv()
+    new OverrideHostContainerClient({ agentId: 'override-agent', envVars: {} }).testBuildAgentEnv()
     expect(getContainerEnvVars).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'apple-agent' }),
+      expect.objectContaining({ id: 'override-agent' }),
       '192.168.64.1',
     )
   })
+})
 
-  // Podman uses host.containers.internal via getContainerHostUrl. Pre-fix the
-  // rewrite hardcoded host.docker.internal for every runtime; aligning with the
-  // shared host-url helper is intentional (same address Podman already uses
-  // for host API talk-back).
-  it('passes Podman host.containers.internal when that is the runtime host URL', () => {
-    getContainerHostUrl.mockReturnValue('host.containers.internal')
-    new TestContainerClient({ agentId: 'podman-agent', envVars: {} }).testBuildAgentEnv()
-    expect(getContainerEnvVars).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'podman-agent' }),
-      'host.containers.internal',
-    )
+describe('getAdditionalRunFlags host name', () => {
+  it('Docker Linux --add-host uses getContainerHostAddress for the name half', () => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux')
+    try {
+      const client = new ExposedDockerContainerClient({ agentId: 'docker-agent' })
+      expect(client.testAdditionalRunFlags()).toBe('--add-host=host.docker.internal:host-gateway')
+    } finally {
+      platformSpy.mockRestore()
+    }
   })
 })
 
 describe('assertLocalLlmReachable', () => {
   afterEach(() => {
-    getContainerHostUrl.mockReturnValue('host.docker.internal')
     getContainerEnvVars.mockClear()
   })
 

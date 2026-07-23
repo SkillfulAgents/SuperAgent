@@ -21,7 +21,6 @@ import type {
 } from './types'
 import type { RuntimeOptions } from './runtime-options'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
-import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
@@ -39,6 +38,10 @@ import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/li
 import { getOrCreateHostToken } from './host-token-store'
 
 const execAsync = promisify(exec)
+
+function getAppPort(): number {
+  return parseInt(process.env.PORT || '47891', 10)
+}
 
 /**
  * Common paths where Docker/Podman might be installed.
@@ -367,12 +370,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
-   * Hostname/IP the guest should use to reach the host when rewriting a
-   * loopback LLM endpoint. Default is the Docker-convention name (also used
-   * by Lima/WSL2 via --add-host). Apple overrides with the gateway IP.
+   * Hostname/IP the guest uses to reach the host. Default is the one
+   * Docker-convention literal; podman and apple override.
    */
   getContainerHostAddress(): string {
-    return getContainerHostUrl()
+    return 'host.docker.internal'
   }
 
   /**
@@ -1080,7 +1082,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   public getHostApiBaseUrl(): string | Promise<string> {
-    return `http://${getContainerHostUrl()}:${getAppPort()}`
+    return `http://${this.getContainerHostAddress()}:${getAppPort()}`
   }
 
   // Proves to the container API that the caller is the host, not the agent's

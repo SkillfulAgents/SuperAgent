@@ -96,45 +96,23 @@ describe('GenericLlmProvider.getDefaultModel', () => {
 })
 
 describe('GenericLlmProvider.getContainerEnvVars', () => {
-  it('sets the Anthropic-wire env, rewriting localhost to the container host gateway', () => {
+  // Rewrite edge cases: container-url.test.ts. Here: provider wiring only.
+
+  it('sets the Anthropic-wire env and threads hostAddress into the loopback rewrite', () => {
     settingsMock.mockReturnValue({
       apiKeys: { genericApiKey: 'k', genericBaseUrl: 'http://localhost:11434' },
     })
-    expect(provider.getContainerEnvVars()).toEqual({
+    expect(provider.getContainerEnvVars(undefined, '192.168.64.1')).toEqual({
       ANTHROPIC_API_KEY: '',
-      ANTHROPIC_BASE_URL: 'http://host.docker.internal:11434',
+      ANTHROPIC_BASE_URL: 'http://192.168.64.1:11434',
       ANTHROPIC_AUTH_TOKEN: 'k',
     })
   })
 
-  it('leaves a non-localhost baseURL untouched', () => {
-    expect(provider.getContainerEnvVars().ANTHROPIC_BASE_URL).toBe('https://proxy.example')
-  })
-
-  it('rewrites loopback IPs, not just the localhost hostname', () => {
-    settingsMock.mockReturnValue({
-      apiKeys: { genericApiKey: 'k', genericBaseUrl: 'http://127.0.0.1:11434' },
-    })
-    expect(provider.getContainerEnvVars().ANTHROPIC_BASE_URL).toBe('http://host.docker.internal:11434')
-  })
-
-  it('does not mangle hostnames that merely start with localhost', () => {
-    settingsMock.mockReturnValue({
-      apiKeys: { genericApiKey: 'k', genericBaseUrl: 'http://localhost.mycorp.dev:4000' },
-    })
-    expect(provider.getContainerEnvVars().ANTHROPIC_BASE_URL).toBe('http://localhost.mycorp.dev:4000')
-  })
-
-  // Seam guard for Apple Container (SUP-447): when the runtime supplies its
-  // gateway IP, the baked ANTHROPIC_BASE_URL must use that address — not the
-  // Docker-only name that is NXDOMAIN inside Apple guests.
-  it('rewrites loopback to the runtime host address when one is supplied', () => {
-    settingsMock.mockReturnValue({
-      apiKeys: { genericApiKey: 'k', genericBaseUrl: 'http://localhost:11434' },
-    })
-    expect(provider.getContainerEnvVars(undefined, '192.168.64.1').ANTHROPIC_BASE_URL).toBe(
-      'http://192.168.64.1:11434',
-    )
+  it('leaves a non-loopback baseURL untouched', () => {
+    expect(
+      provider.getContainerEnvVars(undefined, 'host.docker.internal').ANTHROPIC_BASE_URL,
+    ).toBe('https://proxy.example')
   })
 })
 

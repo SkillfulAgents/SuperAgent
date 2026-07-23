@@ -7,9 +7,6 @@ vi.mock('child_process', () => ({
 
 const mockExecWithPath = vi.fn()
 const mockExecSyncWithPath = vi.fn()
-vi.mock('@shared/lib/proxy/host-url', () => ({
-  getAppPort: () => 47891,
-}))
 vi.mock('./base-container-client', () => ({
   BaseContainerClient: class {
     config: { agentId: string }
@@ -22,8 +19,12 @@ vi.mock('./base-container-client', () => ({
     getRunnerShellCommand() {
       return 'container'
     }
+    getContainerHostAddress() {
+      return 'host.docker.internal'
+    }
+    // Same derivation as the real base (so Apple's override is what's under test).
     getHostApiBaseUrl() {
-      return 'http://host.docker.internal:47891'
+      return `http://${this.getContainerHostAddress()}:47891`
     }
   },
   execWithPath: (...args: unknown[]) => mockExecWithPath(...args),

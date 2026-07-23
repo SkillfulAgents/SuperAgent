@@ -310,11 +310,6 @@ vi.mock('@shared/lib/services/notification-service', () => ({
   deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
 }))
 
-vi.mock('@shared/lib/proxy/host-url', () => ({
-  getContainerHostUrl: () => 'localhost',
-  getAppPort: () => 3000,
-}))
-
 const mockGetPendingReviewsForAgent = vi.fn((_slug: string) => [] as any[])
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {

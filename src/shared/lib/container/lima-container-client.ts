@@ -396,14 +396,14 @@ export class LimaContainerClient extends BaseContainerClient {
   }
 
   /**
-   * Add --add-host so containers can reach the macOS host via host.docker.internal.
-   * Lima/nerdctl doesn't set this up automatically like Docker Desktop does.
+   * Add --add-host so containers can reach the macOS host. Lima/nerdctl doesn't
+   * set this up automatically like Docker Desktop does.
    */
   protected getAdditionalRunFlags(): string {
     const ip = this.getHostBridgeIp()
     if (ip) {
       console.log(`Lima host IP detected: ${ip}`)
-      return `--add-host host.docker.internal:${ip}`
+      return `--add-host ${this.getContainerHostAddress()}:${ip}`
     }
     return ''
   }
@@ -415,7 +415,10 @@ export class LimaContainerClient extends BaseContainerClient {
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
     const envVars: Record<string, string | undefined> = {
-      ...getActiveLlmProvider().getContainerEnvVars(this.agentIdentityForEnv()),
+      ...getActiveLlmProvider().getContainerEnvVars(
+        this.agentIdentityForEnv(),
+        this.getContainerHostAddress(),
+      ),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ...this.config.envVars,
       ...additionalEnvVars,

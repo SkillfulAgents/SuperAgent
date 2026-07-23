@@ -43,6 +43,7 @@ vi.mock('./base-container-client', () => ({
     config: any
     constructor(config: any) { this.config = config }
     protected agentIdentityForEnv() { return { id: this.config.agentId } }
+    getContainerHostAddress() { return 'host.docker.internal' }
   },
   checkCommandAvailable: vi.fn(),
   execWithPath: vi.fn(),

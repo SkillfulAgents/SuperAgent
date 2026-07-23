@@ -65,8 +65,8 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   }
 
   getContainerEnvVars(
-    agent?: AgentIdentity,
-    hostAddress?: string,
+    agent: AgentIdentity | undefined,
+    hostAddress: string,
   ): Record<string, string | undefined> {
     const proxyUrl = getPlatformProxyBaseUrl()
     const containerUrl = rewriteLoopbackForContainer(proxyUrl, hostAddress)

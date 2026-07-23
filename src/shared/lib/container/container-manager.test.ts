@@ -57,12 +57,9 @@ vi.mock('@shared/lib/container/host-token-store', () => ({
   getOrCreateHostToken: (...args: unknown[]) => mockGetOrCreateHostToken(...args),
 }))
 
+// Used only by the fake createContainerClient.getHostApiBaseUrl above.
 const mockGetContainerHostUrl = vi.fn()
 const mockGetAppPort = vi.fn()
-vi.mock('@shared/lib/proxy/host-url', () => ({
-  getContainerHostUrl: () => mockGetContainerHostUrl(),
-  getAppPort: () => mockGetAppPort(),
-}))
 
 // DB mock: agentConnectedAccounts join query
 const mockDbWhere = vi.fn()

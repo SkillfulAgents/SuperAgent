@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider, type AgentIdentity, type ModelPurpose } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
 import { CLAUDE_BARE_CATALOG } from './builtin-catalogs'
 
@@ -28,7 +28,10 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
     }
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  getContainerEnvVars(
+    _agent: AgentIdentity | undefined,
+    _hostAddress: string,
+  ): Record<string, string | undefined> {
     return {
       ANTHROPIC_API_KEY: this.getEffectiveApiKey(),
     }

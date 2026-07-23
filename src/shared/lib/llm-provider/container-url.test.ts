@@ -2,28 +2,32 @@ import { describe, expect, it } from 'vitest'
 import { isHostOnlyHostname, rewriteLoopbackForContainer } from './container-url'
 
 describe('rewriteLoopbackForContainer', () => {
-  it('rewrites the bracketed IPv6 loopback literal (URL.hostname keeps brackets)', () => {
-    expect(rewriteLoopbackForContainer('http://[::1]:11434')).toBe('http://host.docker.internal:11434')
-  })
-
-  it('rewrites localhost and IPv4 loopback', () => {
-    expect(rewriteLoopbackForContainer('http://localhost:4000')).toBe('http://host.docker.internal:4000')
-    expect(rewriteLoopbackForContainer('http://127.0.0.1:4000')).toBe('http://host.docker.internal:4000')
-  })
-
-  it('leaves non-loopback URLs untouched', () => {
-    expect(rewriteLoopbackForContainer('http://ollama.example.com:11434')).toBe('http://ollama.example.com:11434')
-  })
-
-  // Apple Container has no --add-host; the runtime's gateway IP is the only
-  // host-reachable address inside the guest (SUP-447).
-  it('rewrites to an explicit host address when one is supplied', () => {
-    expect(rewriteLoopbackForContainer('http://localhost:11434', '192.168.64.1')).toBe(
-      'http://192.168.64.1:11434',
+  it('rewrites localhost, IPv4 loopback, and bracketed IPv6 to the supplied host address', () => {
+    expect(rewriteLoopbackForContainer('http://localhost:4000', 'host.docker.internal')).toBe(
+      'http://host.docker.internal:4000',
+    )
+    expect(rewriteLoopbackForContainer('http://127.0.0.1:4000', 'host.docker.internal')).toBe(
+      'http://host.docker.internal:4000',
+    )
+    expect(rewriteLoopbackForContainer('http://[::1]:11434', 'host.docker.internal')).toBe(
+      'http://host.docker.internal:11434',
     )
   })
 
-  it('honors an explicit host address for IPv6 loopback and trailing slash', () => {
+  it('leaves non-loopback URLs untouched', () => {
+    expect(rewriteLoopbackForContainer('http://ollama.example.com:11434', 'host.docker.internal')).toBe(
+      'http://ollama.example.com:11434',
+    )
+    // "localhost.mycorp.dev" is not the loopback hostname.
+    expect(
+      rewriteLoopbackForContainer('http://localhost.mycorp.dev:4000', 'host.docker.internal'),
+    ).toBe('http://localhost.mycorp.dev:4000')
+  })
+
+  it('honors an explicit host address, including trailing slash', () => {
+    expect(rewriteLoopbackForContainer('http://localhost:11434', '192.168.64.1')).toBe(
+      'http://192.168.64.1:11434',
+    )
     expect(rewriteLoopbackForContainer('http://[::1]:11434', '192.168.64.1')).toBe(
       'http://192.168.64.1:11434',
     )
@@ -50,7 +54,7 @@ describe('isHostOnlyHostname', () => {
     expect(isHostOnlyHostname('[fe80::1]')).toBe(false)
   })
 
-  it('accepts loopback names — the container rewrite handles those', () => {
+  it('accepts loopback names - the container rewrite handles those', () => {
     expect(isHostOnlyHostname('localhost')).toBe(false)
     expect(isHostOnlyHostname('127.0.0.1')).toBe(false)
   })

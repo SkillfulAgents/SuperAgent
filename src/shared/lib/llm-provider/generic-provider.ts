@@ -129,8 +129,8 @@ export class GenericLlmProvider extends BaseLlmProvider {
   }
 
   getContainerEnvVars(
-    _agent?: AgentIdentity,
-    hostAddress?: string,
+    _agent: AgentIdentity | undefined,
+    hostAddress: string,
   ): Record<string, string | undefined> {
     // A loopback endpoint (e.g. ollama on the host) isn't reachable as
     // localhost from inside the agent container; rewrite to the runtime's

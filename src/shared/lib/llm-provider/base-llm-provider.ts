@@ -90,14 +90,12 @@ export abstract class BaseLlmProvider {
   }
 
   /**
-   * Get env vars to inject into agent containers.
-   * `hostAddress` is the container-reachable host name/IP the active runtime
-   * supplies (gateway IP on Apple; `host.docker.internal` elsewhere). When
-   * omitted, loopback rewrites keep the Docker-convention default.
+   * Env vars for agent containers. `hostAddress` is required - the caller
+   * threads `getContainerHostAddress()` so loopback URLs rewrite correctly.
    */
   abstract getContainerEnvVars(
-    agent?: AgentIdentity,
-    hostAddress?: string,
+    agent: AgentIdentity | undefined,
+    hostAddress: string,
   ): Record<string, string | undefined>
 
   /**

@@ -28,13 +28,12 @@ export function isHostOnlyHostname(hostname: string): boolean {
  * with "localhost" (e.g. localhost.mycorp.dev) are left alone. Non-URL input
  * passes through unchanged.
  *
- * `hostAddress` defaults to `host.docker.internal` (Docker Desktop/Lima/WSL2
- * --add-host). Callers that know a different address (Apple's gateway IP)
- * must pass it — the rewrite cannot pull the runtime itself (module cycle).
+ * `hostAddress` is required (callers thread getContainerHostAddress). Not
+ * imported here - that would create a module cycle with the container clients.
  */
 export function rewriteLoopbackForContainer(
   url: string | undefined,
-  hostAddress = 'host.docker.internal',
+  hostAddress: string,
 ): string | undefined {
   if (!url) return url
   let parsed: URL

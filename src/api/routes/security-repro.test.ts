@@ -285,10 +285,6 @@ vi.mock('@shared/lib/services/notification-service', () => ({
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
 }))
 
-vi.mock('@shared/lib/proxy/host-url', () => ({
-  getContainerHostUrl: () => 'localhost', getAppPort: () => 3000,
-}))
-
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
     getPendingReviewsForAgent: () => [],

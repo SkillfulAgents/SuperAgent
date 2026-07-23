@@ -60,7 +60,7 @@ export interface StartRunnerResult {
  * Registry of all container runners with their client classes.
  * Order determines preference (first eligible runner is the default).
  */
-const ALL_RUNNERS: {
+export const ALL_RUNNERS: {
   name: ContainerRunner
   cliCommand: string | (() => string)
   isEligible: () => boolean

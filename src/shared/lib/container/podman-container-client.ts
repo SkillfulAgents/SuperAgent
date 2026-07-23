@@ -15,6 +15,11 @@ export class PodmanContainerClient extends BaseContainerClient {
     return 'podman'
   }
 
+  /** Podman guests reach the host as host.containers.internal, not host.docker.internal. */
+  getContainerHostAddress(): string {
+    return 'host.containers.internal'
+  }
+
   protected getAdditionalRunFlags(): string {
     return ''
   }

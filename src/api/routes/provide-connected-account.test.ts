@@ -155,11 +155,6 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: vi.fn(),
 }))
 
-vi.mock('@shared/lib/proxy/host-url', () => ({
-  getContainerHostUrl: () => 'localhost',
-  getAppPort: () => 3000,
-}))
-
 vi.mock('@shared/lib/services/agent-template-service', () => ({
   exportAgentTemplate: vi.fn(),
   importAgentFromTemplate: vi.fn(),

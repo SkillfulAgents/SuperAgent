@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
 import { getSettings, type ApiKeyStatus } from '../config/settings'
-import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider, type AgentIdentity, type ModelPurpose } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
 import { BEDROCK_CATALOG } from './builtin-catalogs'
 
@@ -85,7 +85,10 @@ export class BedrockLlmProvider extends BaseLlmProvider {
     }
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  getContainerEnvVars(
+    _agent: AgentIdentity | undefined,
+    _hostAddress: string,
+  ): Record<string, string | undefined> {
     const settings = getSettings()
     const region = this.getRegion()
     const bearerToken = this.getEffectiveApiKey()

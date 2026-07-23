@@ -28,46 +28,40 @@ beforeEach(() => {
 })
 
 describe('getContainerEnvVars agent identity', () => {
+  const dockerHost = 'host.docker.internal'
+
   it('injects agent id and name env vars when identity is provided', () => {
-    const env = provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' })
+    const env = provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' }, dockerHost)
     expect(env.SUPERAGENT_AGENT_ID).toBe('abc123')
     expect(env.SUPERAGENT_AGENT_NAME).toBe('My Agent')
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
   })
 
   it('omits identity env vars when no identity is provided', () => {
-    const env = provider.getContainerEnvVars()
+    const env = provider.getContainerEnvVars(undefined, dockerHost)
     expect(env).not.toHaveProperty('SUPERAGENT_AGENT_ID')
     expect(env).not.toHaveProperty('SUPERAGENT_AGENT_NAME')
   })
 
   it('omits the name var when the name is missing or sanitizes to empty', () => {
-    expect(provider.getContainerEnvVars({ id: 'abc123' })).not.toHaveProperty('SUPERAGENT_AGENT_NAME')
-    expect(provider.getContainerEnvVars({ id: 'abc123', name: '\n\t ' })).not.toHaveProperty(
-      'SUPERAGENT_AGENT_NAME'
+    expect(provider.getContainerEnvVars({ id: 'abc123' }, dockerHost)).not.toHaveProperty(
+      'SUPERAGENT_AGENT_NAME',
     )
+    expect(
+      provider.getContainerEnvVars({ id: 'abc123', name: '\n\t ' }, dockerHost),
+    ).not.toHaveProperty('SUPERAGENT_AGENT_NAME')
   })
 
   it('flattens control characters out of the name', () => {
-    const env = provider.getContainerEnvVars({ id: 'abc123', name: 'Multi\nLine\tBot' })
+    const env = provider.getContainerEnvVars({ id: 'abc123', name: 'Multi\nLine\tBot' }, dockerHost)
     expect(env.SUPERAGENT_AGENT_NAME).toBe('Multi Line Bot')
   })
 
-  // Symmetric with generic-provider: local-dev loopback platform proxy must
-  // honor the runtime host address (SUP-447).
-  it('rewrites a loopback platform proxy to the runtime host address when supplied', () => {
+  // Rewrite edge cases: container-url.test.ts. Here: provider wiring only.
+  it('rewrites a loopback platform proxy using the threaded host address', () => {
     getPlatformProxyBaseUrl.mockReturnValue('http://localhost:47891/v1')
     const env = provider.getContainerEnvVars({ id: 'abc123' }, '192.168.64.1')
     expect(env.ANTHROPIC_BASE_URL).toBe('http://192.168.64.1:47891/v1')
-  })
-
-  // Guards the byte-identical default (SUP-447): with no host address, a
-  // loopback platform proxy keeps the Docker-convention name for every
-  // non-Apple runtime, exactly as before the fix.
-  it('keeps host.docker.internal for a loopback platform proxy when no host address is supplied', () => {
-    getPlatformProxyBaseUrl.mockReturnValue('http://localhost:47891/v1')
-    const env = provider.getContainerEnvVars({ id: 'abc123' })
-    expect(env.ANTHROPIC_BASE_URL).toBe('http://host.docker.internal:47891/v1')
   })
 })
 
