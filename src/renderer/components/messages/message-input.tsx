@@ -250,7 +250,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   return (
     <form
       onSubmit={composer.handleSubmit}
-      className={`relative px-4 pt-3 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      className={`relative px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       {...composer.dragHandlers}
     >
       <MountChoiceDialog
