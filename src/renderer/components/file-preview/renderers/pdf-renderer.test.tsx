@@ -61,6 +61,7 @@ describe('PdfRenderer', () => {
       />,
     )
 
+    expect(screen.queryByTestId('pdf-page')).not.toBeInTheDocument()
     act(() => mockDocumentProps.onLoadSuccess({ numPages: 3 }))
 
     expect(onPageChange).toHaveBeenCalledWith(3)

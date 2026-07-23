@@ -50,7 +50,9 @@ export function PdfRenderer({
     return () => observer.disconnect()
   }, [updateWidth])
 
-  const currentPage = numPages ? Math.min(pageNumber, numPages) : pageNumber
+  const currentPage = numPages === null
+    ? null
+    : Math.max(1, Math.min(pageNumber, numPages))
 
   const handleLoadSuccess = ({ numPages: loadedPages }: { numPages: number }) => {
     setNumPages(loadedPages)
@@ -76,7 +78,7 @@ export function PdfRenderer({
           </div>
         }
       >
-        {!loadError && (
+        {!loadError && currentPage !== null && (
           <Page
             pageNumber={currentPage}
             width={pageWidth}
@@ -87,7 +89,7 @@ export function PdfRenderer({
         )}
       </Document>
 
-      {numPages && numPages > 1 && (
+      {numPages && numPages > 1 && currentPage !== null && (
         <div className="sticky bottom-0 flex items-center gap-2 py-2 px-3 bg-background/90 backdrop-blur-sm border-t border-border/40 w-full justify-center">
           <button
             onClick={() => onPageChange(Math.max(1, currentPage - 1))}

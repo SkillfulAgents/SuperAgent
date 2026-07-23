@@ -30,16 +30,16 @@ interface FileRendererProps {
   filePath: string
   fileUrl: string
   agentSlug: string
-  pdfPage?: number
-  onPdfPageChange?: (page: number) => void
+  pdfPage: number
+  onPdfPageChange: (page: number) => void
 }
 
 export function FileRenderer({
   filePath,
   fileUrl,
   agentSlug,
-  pdfPage = 1,
-  onPdfPageChange = () => {},
+  pdfPage,
+  onPdfPageChange,
 }: FileRendererProps) {
   const ext = getFileExtension(filePath)
   const { commentsEnabled } = useFilePreview()
