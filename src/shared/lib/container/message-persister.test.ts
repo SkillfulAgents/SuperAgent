@@ -3322,6 +3322,70 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
       expect(mockClient.fetch).not.toHaveBeenCalled()
     })
+
+    it('a cancellation racing ahead of the grant lookup suppresses the card entirely', async () => {
+      // handleCapabilityReviewTool awaits the container grant lookup before
+      // storing/broadcasting the card. A capability_review_cancelled frame
+      // landing during that await must tombstone the id — otherwise the
+      // handler resurrects an unanswerable card and re-marks the session
+      // awaiting input after its own cancellation.
+      let releaseLookup!: (value: unknown) => void
+      vi.mocked(mockClient.fetch).mockReturnValue(
+        new Promise((resolve) => { releaseLookup = resolve }) as never
+      )
+
+      simulateToolUse('Workflow', 'wf-race', { script: 'export const meta = {}' })
+      await flush()
+      mockClient._sendMessage({
+        type: 'capability_review_cancelled',
+        toolUseId: 'wf-race',
+        capability: 'workflows',
+      })
+      await flush()
+
+      releaseLookup({ ok: true, json: async () => ({ grants: [] }) })
+      await flush()
+      await flush()
+
+      expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
+      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+
+      // The tombstone is consumed — a later review with a fresh id is unaffected.
+      vi.mocked(mockClient.fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ grants: [] }),
+      } as unknown as Response)
+      simulateToolUse('Workflow', 'wf-after-race', { script: 'export const meta = {}' })
+      await vi.waitFor(() => {
+        expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(1)
+      })
+      expect(sseEvents.filter(e => e.type === 'capability_review_request')[0]).toMatchObject({
+        toolUseId: 'wf-after-race',
+      })
+    })
+
+    it('a container cancellation frame closes the card like a decision does', async () => {
+      // The container's gate hook emits this when the CLI abandons the parked
+      // hook (per-hook timeout or turn abort) — no decision can ever land, so
+      // the card must not linger for live clients or reconnect replay.
+      simulateToolUse('Workflow', 'wf-5', { script: 'export const meta = {}' })
+      await vi.waitFor(() => {
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+      })
+
+      mockClient._sendMessage({
+        type: 'capability_review_cancelled',
+        toolUseId: 'wf-5',
+        capability: 'workflows',
+      })
+
+      await vi.waitFor(() => {
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      })
+      const resolved = sseEvents.filter(e => e.type === 'capability_review_resolved')
+      expect(resolved).toHaveLength(1)
+      expect(resolved[0]).toMatchObject({ toolUseId: 'wf-5' })
+    })
   })
 
   // ============================================================================
