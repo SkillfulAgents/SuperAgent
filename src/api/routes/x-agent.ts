@@ -14,9 +14,9 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { agentAcl } from '@shared/lib/db/schema'
+import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -91,6 +91,27 @@ async function getOwnersOfAgent(agentSlug: string): Promise<string[]> {
     .from(agentAcl)
     .where(and(eq(agentAcl.agentSlug, agentSlug), eq(agentAcl.role, 'owner')))
   return rows.map((r) => r.userId)
+}
+
+/**
+ * Resolve the user who sent the message currently driving an agent session.
+ * In shared sessions this can differ from the session creator, so invocation
+ * attribution must prefer the latest per-message author record.
+ */
+async function getLatestMessageAuthorUserId(
+  agentSlug: string,
+  sessionId: string,
+): Promise<string | undefined> {
+  const rows = await db
+    .select({ userId: messageAuthor.userId })
+    .from(messageAuthor)
+    .where(and(
+      eq(messageAuthor.agentSlug, agentSlug),
+      eq(messageAuthor.sessionId, sessionId),
+    ))
+    .orderBy(desc(messageAuthor.createdAt))
+    .limit(1)
+  return rows[0]?.userId
 }
 
 /**
@@ -497,6 +518,12 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     )
   }
 
+  // Capture the triggering message's author before a review prompt can pause
+  // this request and newer messages can arrive in a shared caller session.
+  const triggeringUserId = isAuthMode() && _callerSessionId
+    ? await getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
+    : undefined
+
   const target = await getAgent(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
 
@@ -515,8 +542,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
-  // Attribute to session creator → caller agent's first owner (auth-mode fallback).
-  let attributedUserId: string | undefined = callerMeta?.createdByUserId
+  // Attribute to the triggering message author. Session creator and caller
+  // owner remain compatibility fallbacks for old sessions without author rows.
+  let attributedUserId: string | undefined = triggeringUserId ?? callerMeta?.createdByUserId
   if (!attributedUserId && isAuthMode()) {
     attributedUserId = (await getOwnersOfAgent(callerSlug))[0]
   }
@@ -537,7 +565,18 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         }
         messagePersister.markSessionActive(existingSessionId, targetSlug)
         stage = 'send_message'
-        await client.sendMessage(existingSessionId, prompt)
+        if (isAuthMode() && attributedUserId) {
+          const messageUuid = randomUUID()
+          await db.insert(messageAuthor).values({
+            id: messageUuid,
+            sessionId: existingSessionId,
+            agentSlug: targetSlug,
+            userId: attributedUserId,
+          })
+          await client.sendMessage(existingSessionId, prompt, messageUuid)
+        } else {
+          await client.sendMessage(existingSessionId, prompt)
+        }
 
         if (sync) {
           try {
@@ -566,11 +605,17 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       const agentLimits = getEffectiveAgentLimits()
       const customEnvVars = getCustomEnvVars()
       const targetPrefs = await readAgentPreferences(targetSlug)
+      const caller = await getAgent(callerSlug)
+      const callerName = caller?.frontmatter.name || callerSlug
+      const initialMessageUuid = isAuthMode() && attributedUserId
+        ? randomUUID()
+        : undefined
 
       stage = 'create_session'
       const containerSession = await client.createSession({
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
         initialMessage: prompt,
+        ...(initialMessageUuid ? { initialMessageUuid } : {}),
         model: targetPrefs.defaultModel ?? getEffectiveModels().agentModel,
         browserModel: getEffectiveModels().browserModel,
         dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,
@@ -589,7 +634,15 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
 
       stage = 'register_session'
       try {
-        await registerSession(targetSlug, newSessionId, `Invoked by ${callerSlug}`)
+        if (initialMessageUuid && attributedUserId) {
+          await db.insert(messageAuthor).values({
+            id: initialMessageUuid,
+            sessionId: newSessionId,
+            agentSlug: targetSlug,
+            userId: attributedUserId,
+          })
+        }
+        await registerSession(targetSlug, newSessionId, `Invoked by ${callerName}`)
       } catch (registerErr) {
         const message = registerErr instanceof Error ? registerErr.message : String(registerErr)
         console.error('[x-agent] invoke failed', {
@@ -609,6 +662,17 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
           })
         })
+        if (initialMessageUuid) {
+          await db
+            .delete(messageAuthor)
+            .where(eq(messageAuthor.id, initialMessageUuid))
+            .catch((cleanupErr) => {
+              console.error('[x-agent] failed to clean up invoked message attribution', {
+                messageUuid: initialMessageUuid,
+                error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+              })
+            })
+        }
         messagePersister.unsubscribeFromSession(newSessionId)
         return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
       }
