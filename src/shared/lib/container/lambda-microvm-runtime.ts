@@ -739,6 +739,10 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   // Proxy-level retry handles the suspend→resume 502 window for all HTTP calls.
 
+  shouldRunHostAutoSleep(): boolean {
+    return false
+  }
+
   async stop(options?: StopOptions): Promise<StopResult> {
     this.terminateWebSocketConnections()
     // Auto-sleep is handled by AWS idlePolicy; the host-app sweep is a no-op.
