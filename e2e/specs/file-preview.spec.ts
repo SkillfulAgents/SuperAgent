@@ -67,6 +67,40 @@ test.describe('File Preview', () => {
 
     await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
     await expect(markdown(page).getByRole('heading', { name: 'Test Report' })).toBeVisible({ timeout: 10000 })
+
+    // On a wide Session View, the preview participates in the row layout rather
+    // than covering the chat and composer.
+    await expect.poll(async () => {
+      const [sessionBox, drawerBox] = await Promise.all([
+        page.getByTestId('session-thread-main').boundingBox(),
+        page.getByTestId('tray-drawer').boundingBox(),
+      ])
+      if (!sessionBox || !drawerBox) return Number.POSITIVE_INFINITY
+      return Math.abs(sessionBox.x + sessionBox.width - drawerBox.x)
+    }).toBeLessThanOrEqual(1)
+  })
+
+  test('agent home bookmark preview overlays the wide page', async ({ page }) => {
+    await agentPage.createAgent(`HomeFilePreview ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'reports/daily.md', '# Daily Report')
+
+    const bookmarksResponse = await page.request.put(`/api/agents/${agentSlug}/bookmarks`, {
+      data: [{ name: 'Daily report', file: '/workspace/reports/daily.md' }],
+    })
+    expect(bookmarksResponse.ok()).toBeTruthy()
+
+    await page.reload()
+    const bookmark = page.getByRole('button', { name: 'Daily report' })
+    await expect(bookmark).toBeVisible({ timeout: 10000 })
+    await bookmark.click()
+    await expect(markdown(page).getByRole('heading', { name: 'Daily Report' })).toBeVisible({ timeout: 10000 })
+
+    const homeBox = await page.getByTestId('agent-home').boundingBox()
+    const drawerBox = await page.getByTestId('tray-drawer').boundingBox()
+    expect(homeBox).not.toBeNull()
+    expect(drawerBox).not.toBeNull()
+    expect(Math.abs(homeBox!.x + homeBox!.width - (drawerBox!.x + drawerBox!.width))).toBeLessThanOrEqual(1)
   })
 
   test('folder bookmark traverses lazily and opens files while preserving tree state', async ({ page }) => {
@@ -208,9 +242,7 @@ test.describe('File Preview', () => {
 
     await expect(markdown(page).getByRole('heading', { name: 'Version 1' })).toBeVisible({ timeout: 10000 })
 
-    // The file tray intentionally overlays the composer. Close it before asking
-    // the agent to deliver the updated version, then reopen it from the new pill.
-    await page.getByRole('button', { name: 'Hide files panel' }).click()
+    // The wide Session View remains usable while the split preview is open.
     seedWorkspaceFile(agentSlug, 'output/report.md', '# Version 2')
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
@@ -422,6 +454,13 @@ test.describe('File Preview', () => {
           expect(box!.x + box!.width).toBeLessThanOrEqual(viewportWidth)
         }
       }).toPass({ timeout: 5000 })
+
+      const containerBox = await page.getByTestId('file-preview-container').boundingBox()
+      const drawerBox = await page.getByTestId('tray-drawer').boundingBox()
+      expect(containerBox).not.toBeNull()
+      expect(drawerBox).not.toBeNull()
+      expect(Math.abs(drawerBox!.x - containerBox!.x)).toBeLessThanOrEqual(1)
+      expect(Math.abs(drawerBox!.width - containerBox!.width)).toBeLessThanOrEqual(1)
     })
   })
 
@@ -446,11 +485,8 @@ test.describe('File Preview', () => {
     await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
     await expect(markdown(page).getByRole('heading', { name: 'Report Content' })).toBeVisible({ timeout: 10000 })
 
-    // The overlay covers the composer by design, so close it before delivering
-    // the next file. Existing tabs remain available when the tray reopens.
-    await page.getByRole('button', { name: 'Hide files panel' }).click()
-
-    // Deliver and open the image file → second tab, image renderer.
+    // Deliver while the split preview remains open, then open the image file →
+    // second tab, image renderer.
     await sessionPage.sendMessage('deliver image')
     await sessionPage.waitForResponse(15000)
     const chartPill = getFilePill(page, 'chart.png').first()
