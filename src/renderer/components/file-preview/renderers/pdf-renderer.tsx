@@ -90,8 +90,12 @@ export function PdfRenderer({
       </Document>
 
       {numPages && numPages > 1 && currentPage !== null && (
-        <div className="sticky bottom-0 flex items-center gap-2 py-2 px-3 bg-background/90 backdrop-blur-sm border-t border-border/40 w-full justify-center">
+        <div
+          data-testid="pdf-pagination"
+          className="sticky bottom-0 z-10 flex items-center gap-2 py-2 px-3 bg-background/90 backdrop-blur-sm border-t border-border/40 w-full justify-center"
+        >
           <button
+            type="button"
             onClick={() => onPageChange(Math.max(1, currentPage - 1))}
             disabled={currentPage <= 1}
             aria-label="Previous PDF page"
@@ -103,6 +107,7 @@ export function PdfRenderer({
             {currentPage} / {numPages}
           </span>
           <button
+            type="button"
             onClick={() => onPageChange(Math.min(numPages, currentPage + 1))}
             disabled={currentPage >= numPages}
             aria-label="Next PDF page"

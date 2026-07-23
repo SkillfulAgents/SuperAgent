@@ -45,8 +45,11 @@ describe('PdfRenderer', () => {
 
     expect(screen.getByTestId('pdf-page')).toHaveAttribute('data-page-number', '4')
     expect(screen.getByText('4 / 5')).toBeVisible()
+    expect(screen.getByTestId('pdf-pagination')).toHaveClass('z-10')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Next PDF page' }))
+    const nextPage = screen.getByRole('button', { name: 'Next PDF page' })
+    expect(nextPage).toHaveAttribute('type', 'button')
+    fireEvent.click(nextPage)
     expect(onPageChange).toHaveBeenCalledWith(5)
   })
 
