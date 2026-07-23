@@ -27,17 +27,20 @@ describe('FilePreviewContext', () => {
   describe('openFile', () => {
     it('adds a tab and sets isOpen', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
-      expect(result.current.openFiles).toHaveLength(0)
+      expect(result.current.openTabs).toHaveLength(0)
       expect(result.current.isOpen).toBe(false)
 
       act(() => result.current.openFile('/workspace/report.md', 'agent-1'))
 
-      expect(result.current.openFiles).toHaveLength(1)
-      expect(result.current.openFiles[0].filePath).toBe('/workspace/report.md')
-      expect(result.current.openFiles[0].displayName).toBe('report.md')
-      expect(result.current.openFiles[0].version).toBe(0)
+      expect(result.current.openTabs).toHaveLength(1)
+      expect(result.current.openTabs[0]).toMatchObject({
+        kind: 'file',
+        filePath: '/workspace/report.md',
+        displayName: 'report.md',
+        version: 0,
+      })
       expect(result.current.isOpen).toBe(true)
-      expect(result.current.activeFileIndex).toBe(0)
+      expect(result.current.activeTabIndex).toBe(0)
     })
 
     it('switches to existing tab without duplicating', () => {
@@ -46,40 +49,164 @@ describe('FilePreviewContext', () => {
       act(() => result.current.openFile('/workspace/b.md', 'agent-1'))
       act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
 
-      expect(result.current.openFiles).toHaveLength(2)
-      expect(result.current.activeFileIndex).toBe(0)
+      expect(result.current.openTabs).toHaveLength(2)
+      expect(result.current.activeTabIndex).toBe(0)
     })
 
     it('bumps version on re-delivery of same file', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.openFile('/workspace/report.md', 'agent-1'))
-      expect(result.current.openFiles[0].version).toBe(0)
+      expect(result.current.openTabs[0]).toMatchObject({ version: 0 })
 
       act(() => result.current.openFile('/workspace/report.md', 'agent-1'))
-      expect(result.current.openFiles[0].version).toBe(1)
+      expect(result.current.openTabs[0]).toMatchObject({ version: 1 })
 
       act(() => result.current.openFile('/workspace/report.md', 'agent-1'))
-      expect(result.current.openFiles[0].version).toBe(2)
+      expect(result.current.openTabs[0]).toMatchObject({ version: 2 })
     })
   })
 
-  describe('closeFile', () => {
+  describe('folder tabs', () => {
+    it('opens a folder once and restores it when reopened', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+
+      act(() => result.current.openFolder('/workspace/reports/', 'agent-1'))
+      act(() => result.current.toggleFolder('/workspace/reports', '/workspace/reports/2026'))
+      act(() => result.current.setFolderQuery('/workspace/reports', 'july'))
+      act(() => result.current.selectFolderEntry('/workspace/reports', '/workspace/reports/2026/july.md'))
+      act(() => result.current.openFile('/workspace/other.md', 'agent-1'))
+      act(() => result.current.openFolder('/workspace/reports', 'agent-1'))
+
+      expect(result.current.openTabs).toHaveLength(2)
+      expect(result.current.activeTabIndex).toBe(0)
+      expect(result.current.openTabs[0]).toMatchObject({
+        kind: 'folder',
+        rootPath: '/workspace/reports',
+        query: 'july',
+        selectedPath: '/workspace/reports/2026/july.md',
+        expandedPaths: ['/workspace/reports', '/workspace/reports/2026'],
+      })
+    })
+
+    it('updates folder selection, open tabs, and comments after a file rename', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      const oldPath = '/workspace/reports/old.md'
+      const newPath = '/workspace/reports/new.md'
+
+      act(() => result.current.openFolder('/workspace/reports', 'agent-1'))
+      act(() => result.current.selectFolderEntry('/workspace/reports', oldPath))
+      act(() => result.current.openFile(oldPath, 'agent-1'))
+      act(() => result.current.addComment({ filePath: oldPath, text: 'keep me' }))
+      act(() => result.current.renameFilePath(oldPath, newPath))
+
+      expect(result.current.openTabs[0]).toMatchObject({ selectedPath: newPath })
+      expect(result.current.openTabs[1]).toMatchObject({
+        filePath: newPath,
+        displayName: 'new.md',
+        version: 1,
+      })
+      expect(result.current.comments.get(oldPath)).toBeUndefined()
+      expect(result.current.comments.get(newPath)?.[0]).toMatchObject({
+        filePath: newPath,
+        text: 'keep me',
+      })
+    })
+
+    it('removes an open file tab and clears folder selection after deletion', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      const filePath = '/workspace/reports/old.md'
+
+      act(() => result.current.openFolder('/workspace/reports', 'agent-1'))
+      act(() => result.current.selectFolderEntry('/workspace/reports', filePath))
+      act(() => result.current.openFile(filePath, 'agent-1'))
+      act(() => result.current.addComment({ filePath, text: 'remove me' }))
+      act(() => result.current.setActiveTab(0))
+      act(() => result.current.removeFilePath(filePath))
+
+      expect(result.current.openTabs).toHaveLength(1)
+      expect(result.current.openTabs[0]).toMatchObject({ kind: 'folder' })
+      expect(result.current.openTabs[0]).toHaveProperty('selectedPath', undefined)
+      expect(result.current.comments.get(filePath)).toBeUndefined()
+    })
+
+    it('rebases expanded state, open files, folder tabs, and comments after a directory rename', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      const oldPath = '/workspace/reports/drafts'
+      const newPath = '/workspace/reports/archive'
+      const filePath = `${oldPath}/notes.md`
+
+      act(() => result.current.openFolder('/workspace/reports', 'agent-1'))
+      act(() => result.current.toggleFolder('/workspace/reports', oldPath))
+      act(() => result.current.selectFolderEntry('/workspace/reports', filePath))
+      act(() => result.current.openFile(filePath, 'agent-1'))
+      act(() => result.current.addComment({ filePath, text: 'move me' }))
+      act(() => result.current.openFolder(oldPath, 'agent-1'))
+      act(() => result.current.renameDirectoryPath(oldPath, newPath))
+
+      expect(result.current.openTabs[0]).toMatchObject({
+        rootPath: '/workspace/reports',
+        expandedPaths: ['/workspace/reports', newPath],
+        selectedPath: `${newPath}/notes.md`,
+      })
+      expect(result.current.openTabs[1]).toMatchObject({
+        filePath: `${newPath}/notes.md`,
+        displayName: 'notes.md',
+        version: 1,
+      })
+      expect(result.current.openTabs[2]).toMatchObject({
+        rootPath: newPath,
+        displayName: 'archive',
+        expandedPaths: [newPath],
+      })
+      expect(result.current.comments.get(filePath)).toBeUndefined()
+      expect(result.current.comments.get(`${newPath}/notes.md`)?.[0]).toMatchObject({
+        filePath: `${newPath}/notes.md`,
+        text: 'move me',
+      })
+    })
+
+    it('closes descendant tabs and clears tree state after a directory deletion', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      const directoryPath = '/workspace/reports/drafts'
+      const filePath = `${directoryPath}/notes.md`
+
+      act(() => result.current.openFolder('/workspace/reports', 'agent-1'))
+      act(() => result.current.toggleFolder('/workspace/reports', directoryPath))
+      act(() => result.current.selectFolderEntry('/workspace/reports', filePath))
+      act(() => result.current.openFile(filePath, 'agent-1'))
+      act(() => result.current.addComment({ filePath, text: 'remove me' }))
+      act(() => result.current.openFolder(directoryPath, 'agent-1'))
+      act(() => result.current.removeDirectoryPath(directoryPath))
+
+      expect(result.current.openTabs).toHaveLength(1)
+      expect(result.current.openTabs[0]).toMatchObject({
+        kind: 'folder',
+        rootPath: '/workspace/reports',
+        expandedPaths: ['/workspace/reports'],
+        selectedPath: undefined,
+      })
+      expect(result.current.activeTabIndex).toBe(0)
+      expect(result.current.comments.get(filePath)).toBeUndefined()
+    })
+  })
+
+  describe('closeTab', () => {
     it('removes the tab', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
       act(() => result.current.openFile('/workspace/b.md', 'agent-1'))
-      act(() => result.current.closeFile('/workspace/a.md'))
+      act(() => result.current.closeTab('file:/workspace/a.md'))
 
-      expect(result.current.openFiles).toHaveLength(1)
-      expect(result.current.openFiles[0].filePath).toBe('/workspace/b.md')
+      expect(result.current.openTabs).toHaveLength(1)
+      expect(result.current.openTabs[0]).toMatchObject({ filePath: '/workspace/b.md' })
     })
 
     it('closes tray when last tab is closed', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
-      act(() => result.current.closeFile('/workspace/a.md'))
+      act(() => result.current.closeTab('file:/workspace/a.md'))
 
-      expect(result.current.openFiles).toHaveLength(0)
+      expect(result.current.openTabs).toHaveLength(0)
       expect(result.current.isOpen).toBe(false)
     })
 
@@ -89,12 +216,12 @@ describe('FilePreviewContext', () => {
       act(() => result.current.openFile('/workspace/b.md', 'agent-1'))
       act(() => result.current.openFile('/workspace/c.md', 'agent-1'))
       // Active is c (index 2)
-      expect(result.current.activeFileIndex).toBe(2)
+      expect(result.current.activeTabIndex).toBe(2)
 
-      act(() => result.current.closeFile('/workspace/a.md'))
+      act(() => result.current.closeTab('file:/workspace/a.md'))
       // c is now at index 1
-      expect(result.current.activeFileIndex).toBe(1)
-      expect(result.current.openFiles[result.current.activeFileIndex].filePath).toBe('/workspace/c.md')
+      expect(result.current.activeTabIndex).toBe(1)
+      expect(result.current.openTabs[result.current.activeTabIndex]).toMatchObject({ filePath: '/workspace/c.md' })
     })
 
     it('adjusts activeFileIndex when closing active tab', () => {
@@ -103,11 +230,11 @@ describe('FilePreviewContext', () => {
       act(() => result.current.openFile('/workspace/b.md', 'agent-1'))
       act(() => result.current.openFile('/workspace/c.md', 'agent-1'))
       // Switch to b (index 1)
-      act(() => result.current.setActiveFile(1))
-      act(() => result.current.closeFile('/workspace/b.md'))
+      act(() => result.current.setActiveTab(1))
+      act(() => result.current.closeTab('file:/workspace/b.md'))
 
       // Should stay at index 1 (now c) or go to 0 if at end
-      expect(result.current.activeFileIndex).toBeLessThan(result.current.openFiles.length)
+      expect(result.current.activeTabIndex).toBeLessThan(result.current.openTabs.length)
     })
 
     it('clears comments for the closed file', () => {
@@ -116,7 +243,7 @@ describe('FilePreviewContext', () => {
       act(() => result.current.addComment({ filePath: '/workspace/a.md', text: 'test' }))
       expect(result.current.comments.get('/workspace/a.md')).toHaveLength(1)
 
-      act(() => result.current.closeFile('/workspace/a.md'))
+      act(() => result.current.closeTab('file:/workspace/a.md'))
       expect(result.current.comments.get('/workspace/a.md')).toBeUndefined()
     })
   })
@@ -127,14 +254,14 @@ describe('FilePreviewContext', () => {
       act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
       act(() => result.current.addComment({ filePath: '/workspace/a.md', text: 'note' }))
 
-      expect(result.current.openFiles).toHaveLength(1)
+      expect(result.current.openTabs).toHaveLength(1)
       expect(result.current.isOpen).toBe(true)
 
       // Change session
       mockView = { kind: 'session', id: 'session-2' }
       rerender()
 
-      expect(result.current.openFiles).toHaveLength(0)
+      expect(result.current.openTabs).toHaveLength(0)
       expect(result.current.isOpen).toBe(false)
       expect(result.current.comments.size).toBe(0)
     })

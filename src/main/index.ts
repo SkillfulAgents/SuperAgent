@@ -687,6 +687,20 @@ ipcMain.handle('show-in-folder', async (_event, rawPath: unknown) => {
   return errorMessage === '' ? null : errorMessage
 })
 
+// Reveal a specific file or directory in the OS file manager. This is kept
+// separate from show-in-folder, whose existing contract opens a mounted
+// directory rather than selecting it in its parent.
+ipcMain.handle('reveal-in-folder', async (_event, rawPath: unknown) => {
+  const hostPath = ShowInFolderPath.parse(rawPath)
+  try {
+    await fs.promises.stat(hostPath)
+    shell.showItemInFolder(hostPath)
+    return null
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).message
+  }
+})
+
 // --- Recent files infrastructure ---
 
 const MIME_TYPES: Record<string, string> = {

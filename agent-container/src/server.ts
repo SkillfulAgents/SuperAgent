@@ -24,6 +24,13 @@ import { runBrowserUpload } from './browser-upload';
 import { runBrowserDownload } from './browser-download';
 import { updateEnvFileEntry, healEnvFilePermissions } from './env-file-store';
 import { isAgentIdentityEnvKey } from './attribution-headers';
+import {
+  deleteWorkspaceEntry,
+  renameWorkspaceEntry,
+  WorkspaceEntryOperationError,
+  type DeleteWorkspaceEntryRequest,
+  type RenameWorkspaceEntryRequest,
+} from './workspace-entry-operations';
 
 import { getEditingCommands } from './cdp-editing-commands';
 
@@ -202,6 +209,35 @@ app.delete('/sessions/:id/queued-messages/:uuid', async (c) => {
 });
 
 // File system endpoints
+// These host-authenticated mutations deliberately execute inside the container
+// namespace. The workspace is bind-mounted, so changes persist, while a racing
+// symlink can never redirect a destructive operation into the host filesystem.
+app.patch('/workspace/entries', async (c) => {
+  try {
+    const result = await renameWorkspaceEntry(await c.req.json<RenameWorkspaceEntryRequest>());
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof WorkspaceEntryOperationError) {
+      return c.json({ error: error.message }, error.status);
+    }
+    console.error('Error renaming workspace entry:', error);
+    return c.json({ error: error instanceof Error ? error.message : 'Failed to rename workspace entry' }, 500);
+  }
+});
+
+app.delete('/workspace/entries', async (c) => {
+  try {
+    await deleteWorkspaceEntry(await c.req.json<DeleteWorkspaceEntryRequest>());
+    return c.json({ success: true });
+  } catch (error) {
+    if (error instanceof WorkspaceEntryOperationError) {
+      return c.json({ error: error.message }, error.status);
+    }
+    console.error('Error deleting workspace entry:', error);
+    return c.json({ error: error instanceof Error ? error.message : 'Failed to delete workspace entry' }, 500);
+  }
+});
+
 app.get('/files/*', async (c) => {
   const filePath = c.req.param('*') || '';
   const fullPath = path.join('/workspace', filePath);

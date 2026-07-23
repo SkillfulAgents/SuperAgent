@@ -8,12 +8,12 @@ import { FileDownloadPill } from './file-download-pill'
 vi.mock('@renderer/context/file-preview-context', () => ({
   useFilePreview: () => ({
     openFile: vi.fn(),
-    openFiles: [],
-    activeFileIndex: 0,
+    openTabs: [],
+    activeTabIndex: 0,
     comments: new Map(),
     isOpen: false,
-    closeFile: vi.fn(),
-    setActiveFile: vi.fn(),
+    closeTab: vi.fn(),
+    setActiveTab: vi.fn(),
     close: vi.fn(),
     addComment: vi.fn(),
     removeComment: vi.fn(),
