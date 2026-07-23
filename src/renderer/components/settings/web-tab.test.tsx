@@ -21,7 +21,9 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
 }))
 
 vi.mock('./provider-api-key-input', () => ({
-  ProviderApiKeyInput: () => <div data-testid="api-key-input" />,
+  ProviderApiKeyInput: ({ layout }: { layout?: 'stacked' | 'rows' }) => (
+    <div data-testid="api-key-input" data-layout={layout ?? 'stacked'} />
+  ),
 }))
 
 import { WebTab } from './web-tab'
@@ -88,5 +90,6 @@ describe('WebTab', () => {
     setup({ webProvider: 'exa', webProviderIsDefault: false, connected: false })
     render(<WebTab />)
     expect(screen.getByTestId('api-key-input')).toBeInTheDocument()
+    expect(screen.getByTestId('api-key-input')).toHaveAttribute('data-layout', 'stacked')
   })
 })

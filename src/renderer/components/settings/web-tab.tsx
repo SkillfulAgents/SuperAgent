@@ -186,7 +186,6 @@ export function WebTab() {
               >
                 {provider.value === 'exa' ? (
                   <ProviderApiKeyInput
-                    layout="rows"
                     providerId="exa"
                     label="Exa API Key"
                     apiKeySettingsField="exaApiKey"
