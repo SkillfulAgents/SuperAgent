@@ -32,13 +32,13 @@ export function AutoDeleteSelect({ value, onChange, disabled }: AutoDeleteSelect
       onValueChange={(val) => onChange(parseInt(val, 10))}
       disabled={disabled}
     >
-      <SelectTrigger className="w-40" aria-label="Session auto-delete">
+      <SelectTrigger className="h-8 w-[140px] text-xs" aria-label="Session auto-delete">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="0">Never</SelectItem>
+        <SelectItem value="0" className="text-xs">Never</SelectItem>
         {AUTO_DELETE_OPTIONS.map((opt) => (
-          <SelectItem key={opt.value} value={opt.value}>
+          <SelectItem key={opt.value} value={opt.value} className="text-xs">
             {opt.label}
           </SelectItem>
         ))}
