@@ -8,6 +8,7 @@ import type { SessionInfo } from '@shared/lib/types/agent'
 const mockGetRunningAgentIds = vi.fn<() => string[]>(() => [])
 const mockGetContainerStartTime = vi.fn<(id: string) => number | undefined>()
 const mockGetLastKeepAlive = vi.fn<(id: string) => number | undefined>()
+const mockShouldRunHostAutoSleep = vi.fn<(id: string) => boolean>(() => true)
 const mockStopContainer = vi.fn()
 
 vi.mock('@shared/lib/container/container-manager', () => ({
@@ -15,6 +16,7 @@ vi.mock('@shared/lib/container/container-manager', () => ({
     getRunningAgentIds: () => mockGetRunningAgentIds(),
     getContainerStartTime: (id: string) => mockGetContainerStartTime(id),
     getLastKeepAlive: (id: string) => mockGetLastKeepAlive(id),
+    shouldRunHostAutoSleep: (id: string) => mockShouldRunHostAutoSleep(id),
     stopContainer: (...args: unknown[]) => mockStopContainer(...args),
   },
 }))
@@ -73,6 +75,7 @@ describe('AutoSleepMonitor', () => {
     mockListSessions.mockResolvedValue([])
     mockGetContainerStartTime.mockReturnValue(undefined)
     mockGetLastKeepAlive.mockReturnValue(undefined)
+    mockShouldRunHostAutoSleep.mockReturnValue(true)
     mockStopContainer.mockResolvedValue(undefined)
   })
 
@@ -173,6 +176,19 @@ describe('AutoSleepMonitor', () => {
     await autoSleepMonitor.start()
     await tick()
 
+    expect(mockListSessions).not.toHaveBeenCalled()
+    expect(mockStopContainer).not.toHaveBeenCalled()
+  })
+
+  it('skips all session I/O when the runtime owns idle sleep', async () => {
+    mockGetRunningAgentIds.mockReturnValue(['agent-1'])
+    mockShouldRunHostAutoSleep.mockReturnValue(false)
+
+    await autoSleepMonitor.start()
+    await tick()
+
+    expect(mockShouldRunHostAutoSleep).toHaveBeenCalledWith('agent-1')
+    expect(mockHasActiveSessions).not.toHaveBeenCalled()
     expect(mockListSessions).not.toHaveBeenCalled()
     expect(mockStopContainer).not.toHaveBeenCalled()
   })

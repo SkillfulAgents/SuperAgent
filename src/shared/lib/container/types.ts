@@ -132,6 +132,7 @@ export interface ContainerClient {
   start(options?: StartOptions): Promise<void>
   stop(options?: StopOptions): Promise<StopResult>
   stopSync(): void // Synchronous stop for exit handlers
+  shouldRunHostAutoSleep(): boolean
 
   // Build a -v flag value for a volume mount (hostPath:containerPath with runtime-specific suffix)
   buildVolumeFlag(hostPath: string, containerPath: string): string
