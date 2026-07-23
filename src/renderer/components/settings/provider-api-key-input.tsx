@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
-import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,6 +13,7 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import { PasswordInput } from '@renderer/components/ui/password-input'
 import { RequestError } from '@renderer/components/messages/request-error'
+import { cn } from '@shared/lib/utils/cn'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react'
@@ -39,9 +39,13 @@ interface ProviderApiKeyInputProps {
   showRemoveConfirm?: boolean
   /** Custom help text node. When provided, replaces the default help text. */
   helpText?: ReactNode
-  /** Custom label for the validate button. Defaults to "Validate & Save". */
+  /** Custom label for the validate button. Defaults to "Save" (validation
+      happens implicitly; failures surface inline). */
   validateButtonLabel?: string
   disabled?: boolean
+  /** 'rows' puts label + help text left, input right (settings card rows).
+      'stacked' (default) keeps label-above-input for narrow containers. */
+  layout?: 'stacked' | 'rows'
 }
 
 export function ProviderApiKeyInput({
@@ -59,8 +63,9 @@ export function ProviderApiKeyInput({
   showRemoveButton = true,
   showRemoveConfirm = true,
   helpText,
-  validateButtonLabel = 'Validate & Save',
+  validateButtonLabel = 'Save',
   disabled = false,
+  layout = 'stacked',
 }: ProviderApiKeyInputProps) {
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
@@ -126,59 +131,75 @@ export function ProviderApiKeyInput({
     ? 'Your API key is saved locally. Enter a new key to replace it.'
     : apiKeyStatus?.source === 'env'
       ? 'Save a key here to override the environment variable.'
-      : 'Your API key will be saved locally on your device.'
+      : 'Key saved locally, on-device'
 
-  return (
-    <div className="space-y-2">
-      <div className="space-y-0.5">
-        <div className="flex items-center gap-2">
-          <Label htmlFor={idPrefix} className="text-xs font-medium text-foreground">{label}</Label>
-          {showSourceIndicator && apiKeyStatus?.isConfigured && (
-            <span
-              className={`text-[11px] px-2 py-0.5 rounded-full ${
-                apiKeyStatus.source === 'settings'
-                  ? 'bg-green-500/10 text-green-700 dark:text-green-400'
-                  : 'bg-blue-500/10 text-blue-700 dark:text-blue-400'
-              }`}
-            >
-              {apiKeyStatus.source === 'settings'
-                ? 'Using saved setting'
-                : 'Using environment variable'}
-            </span>
-          )}
-        </div>
-        {showHelpText && (
-          <p className="text-[11px] text-muted-foreground">
-            {helpText ?? defaultHelpText}
-          </p>
+  const rows = layout === 'rows'
+
+  const labelBlock = (
+    <div className={rows ? 'min-w-0 flex-1' : 'space-y-0.5'}>
+      <div className="flex items-center gap-2">
+        <Label htmlFor={idPrefix} className="text-xs font-medium text-foreground">{label}</Label>
+        {showSourceIndicator && apiKeyStatus?.isConfigured && (
+          <span
+            className={`text-[11px] px-2 py-0.5 rounded-full ${
+              apiKeyStatus.source === 'settings'
+                ? 'bg-green-500/10 text-green-700 dark:text-green-400'
+                : 'bg-blue-500/10 text-blue-700 dark:text-blue-400'
+            }`}
+          >
+            {apiKeyStatus.source === 'settings'
+              ? 'Using saved setting'
+              : 'Using environment variable'}
+          </span>
         )}
       </div>
-
-      {showNotConfiguredAlert && !apiKeyStatus?.isConfigured && (
-        <Alert variant="destructive">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertDescription>
-            No API key configured.{envVarName && <> Set <code className="bg-muted px-1 rounded">{envVarName}</code> environment variable or enter below.</>}
-          </AlertDescription>
-        </Alert>
+      {showHelpText && (
+        <p className={cn('text-[11px] text-muted-foreground', rows && 'mt-0.5')}>
+          {helpText ?? defaultHelpText}
+        </p>
       )}
+    </div>
+  )
 
-      <div className="flex items-center gap-2">
-        <div className="flex-1 min-w-0">
-          <PasswordInput
-            id={idPrefix}
-            value={apiKeyInput}
-            onChange={(e) => {
-              setApiKeyInput(e.target.value)
-              setValidationResult(null)
-            }}
-            placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : placeholder}
-            disabled={disabled || isBusy}
-            className="bg-background"
-          />
-        </div>
-        {apiKeyInput.trim() && (
-          <Button size="sm" onClick={handleValidateAndSave} disabled={isBusy}>
+  const hasInput = !!apiKeyInput.trim()
+
+  const inputRow = (
+    // No gap here: the validate button animates its width from zero, and a flex
+    // gap would leave a phantom 8px next to the collapsed button. Spacing lives
+    // inside/on the buttons instead.
+    <div className={cn('flex items-center', rows && 'shrink-0 w-full md:w-auto')}>
+      <div className={rows ? 'min-w-0 w-full md:w-[340px]' : 'flex-1 min-w-0'}>
+        <PasswordInput
+          id={idPrefix}
+          value={apiKeyInput}
+          onChange={(e) => {
+            setApiKeyInput(e.target.value)
+            setValidationResult(null)
+          }}
+          placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : placeholder}
+          disabled={disabled || isBusy}
+          className={cn('bg-background', rows && 'h-8')}
+        />
+      </div>
+      {/* Always mounted; slides in via the 0fr→1fr grid-columns trick so the
+          input eases over instead of jumping when typing starts. */}
+      <div
+        className={cn(
+          'grid transition-[grid-template-columns,opacity] duration-200 ease-in-out',
+          hasInput
+            ? 'grid-cols-[1fr] opacity-100'
+            : 'grid-cols-[0fr] opacity-0 pointer-events-none',
+        )}
+        aria-hidden={hasInput ? undefined : true}
+      >
+        <div className="overflow-hidden min-w-0">
+          <Button
+            size="sm"
+            onClick={handleValidateAndSave}
+            disabled={isBusy || !hasInput}
+            tabIndex={hasInput ? undefined : -1}
+            className="ml-2 whitespace-nowrap"
+          >
             {isValidating ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -188,18 +209,35 @@ export function ProviderApiKeyInput({
               validateButtonLabel
             )}
           </Button>
-        )}
-        {showRemoveButton && apiKeyStatus?.source === 'settings' && !apiKeyInput.trim() && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={showRemoveConfirm ? () => setShowRemoveDialog(true) : handleRemoveApiKey}
-            disabled={isBusy}
-          >
-            {isRemoving ? 'Removing...' : 'Remove Saved Key'}
-          </Button>
-        )}
+        </div>
       </div>
+      {showRemoveButton && apiKeyStatus?.source === 'settings' && !hasInput && (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={showRemoveConfirm ? () => setShowRemoveDialog(true) : handleRemoveApiKey}
+          disabled={isBusy}
+          className="ml-2"
+        >
+          {isRemoving ? 'Removing...' : 'Remove Saved Key'}
+        </Button>
+      )}
+    </div>
+  )
+
+  return (
+    <div className="space-y-2">
+      {rows ? (
+        <div className="flex flex-col items-stretch gap-3 md:flex-row md:items-center">
+          {labelBlock}
+          {inputRow}
+        </div>
+      ) : (
+        <>
+          {labelBlock}
+          {inputRow}
+        </>
+      )}
 
       {validationResult?.valid && (
         <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
@@ -213,6 +251,15 @@ export function ProviderApiKeyInput({
           message={validationResult.error || 'Invalid API key'}
           variant="compact"
         />
+      )}
+
+      {showNotConfiguredAlert && !apiKeyStatus?.isConfigured && (
+        <div className="flex gap-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+          <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <p>
+            No API key configured.{envVarName && <> Set <code className="bg-red-100 dark:bg-red-900/40 px-1 rounded">{envVarName}</code> environment variable or enter above.</>}
+          </p>
+        </div>
       )}
 
       {showRemoveConfirm && (
