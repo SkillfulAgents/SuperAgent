@@ -558,10 +558,15 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionId)
     if (state) {
       state.pendingComputerUseRequests.delete(toolUseId)
-      // Broadcast so the sidebar updates immediately.
-      // Don't clear isAwaitingInput here — other input types (secrets, questions, etc.)
-      // may still be pending. The flag is cleared when the tool result arrives in the stream.
-      if (state.pendingComputerUseRequests.size === 0) {
+      // Same waiting-light rule as the sidechain input clear: both shelves,
+      // skip auto-approved — and defer to a parked proxy/x-agent review
+      // (external blocker), which is also a real wait.
+      if (
+        state.isAwaitingInput &&
+        !this.hasBlockingPendingRequests(state) &&
+        !this.hasExternalAwaitingBlocker(state.agentSlug)
+      ) {
+        state.isAwaitingInput = false
         this.broadcastGlobal({
           type: 'session_input_provided',
           sessionId,
@@ -926,6 +931,43 @@ class MessagePersister {
       if (isBlocking(agentSlug)) return true
     }
     return false
+  }
+
+  // Surface host-blocking user-input tools (main + sidechain). script_run /
+  // computer-use / capability-review keep their own handlers (conditional await).
+  // First delivery wins: stream stop and complete-assistant can both carry the same tool_use.
+  private dispatchBlockingUserInputTool(
+    sessionId: string,
+    toolName: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string,
+  ): void {
+    const state = this.streamingStates.get(sessionId)
+    if (state?.pendingInputRequests.has(toolUseId)) return
+
+    if (toolName === 'AskUserQuestion') {
+      this.handleAskUserQuestionTool(sessionId, toolUseId, toolInput, agentSlug)
+    } else if (toolName === 'mcp__user-input__request_secret') {
+      this.handleSecretRequestTool(sessionId, toolUseId, toolInput, agentSlug)
+    } else if (toolName === 'mcp__user-input__request_connected_account') {
+      this.handleConnectedAccountRequestTool(sessionId, toolUseId, toolInput, agentSlug)
+    } else if (toolName === 'mcp__user-input__request_file') {
+      this.handleFileRequestTool(sessionId, toolUseId, toolInput, agentSlug)
+    } else if (toolName === 'mcp__user-input__request_remote_mcp') {
+      this.handleRemoteMcpRequestTool(sessionId, toolUseId, toolInput, agentSlug)
+    } else if (toolName === 'mcp__user-input__request_browser_input') {
+      this.handleBrowserInputRequestTool(sessionId, toolUseId, toolInput, agentSlug)
+    }
+
+    // Only tools with 'request_' prefix actually block waiting for user response
+    // (schedule_task, deliver_file, search_* resolve immediately and don't block).
+    // computer-use AND request_script_run mark awaiting in their own handlers,
+    // which only do so when user approval is actually needed (not when
+    // auto-executed against a cached permission grant).
+    if (isBlockingUserInputToolName(toolName)) {
+      this.markSessionAwaitingInput(sessionId)
+    }
   }
 
   // Recover awaiting-input state from persisted messages when the one-shot
@@ -1967,29 +2009,25 @@ class MessagePersister {
           sub.currentText = newText
 
           for (const block of messageContent) {
-            if (block.type === 'tool_use' && block.name === 'mcp__user-input__request_browser_input') {
-              this.handleBrowserInputRequestTool(
-                sessionId,
-                block.id,
-                JSON.stringify(block.input || {}),
-                state.agentSlug
-              )
+            if (block.type !== 'tool_use') continue
+            const input = JSON.stringify(block.input || {})
+            this.dispatchBlockingUserInputTool(
+              sessionId,
+              block.name,
+              block.id,
+              input,
+              state.agentSlug,
+            )
+            if (block.name === 'mcp__user-input__request_script_run') {
+              this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug)
             }
-            if (block.type === 'tool_use' && block.name === 'mcp__user-input__request_script_run') {
-              this.handleScriptRunRequestTool(
-                sessionId,
-                block.id,
-                JSON.stringify(block.input || {}),
-                state.agentSlug
-              )
-            }
-            if (block.type === 'tool_use' && block.name.startsWith('mcp__computer-use__')) {
+            if (block.name.startsWith('mcp__computer-use__')) {
               this.handleComputerUseRequestTool(
                 sessionId,
                 block.id,
                 block.name,
-                JSON.stringify(block.input || {}),
-                state.agentSlug
+                input,
+                state.agentSlug,
               )
             }
           }
@@ -2239,15 +2277,13 @@ class MessagePersister {
 
       case 'content_block_stop':
         if (sub.currentToolUse) {
-          // Safety net: detect browser input if stream events arrive for subagents
-          if (sub.currentToolUse.name === 'mcp__user-input__request_browser_input') {
-            this.handleBrowserInputRequestTool(
-              sessionId,
-              sub.currentToolUse.id,
-              sub.currentToolInput,
-              state.agentSlug
-            )
-          }
+          this.dispatchBlockingUserInputTool(
+            sessionId,
+            sub.currentToolUse.name,
+            sub.currentToolUse.id,
+            sub.currentToolInput,
+            state.agentSlug,
+          )
 
           if (sub.currentToolUse.name === 'mcp__user-input__request_script_run') {
             this.handleScriptRunRequestTool(
@@ -2388,25 +2424,13 @@ class MessagePersister {
             trackServerEvent(`agent_${action}`, { agentSlug: state.agentSlug })
           }
 
-          // Check if this is a secret request tool
-          if (state.currentToolUse.name === 'mcp__user-input__request_secret') {
-            this.handleSecretRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Check if this is a connected account request tool
-          if (state.currentToolUse.name === 'mcp__user-input__request_connected_account') {
-            this.handleConnectedAccountRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
+          this.dispatchBlockingUserInputTool(
+            sessionId,
+            state.currentToolUse.name,
+            state.currentToolUse.id,
+            state.currentToolInput,
+            state.agentSlug,
+          )
 
           // Check if this is a schedule task tool
           if (state.currentToolUse.name === 'mcp__user-input__schedule_task') {
@@ -2507,45 +2531,6 @@ class MessagePersister {
             )
           }
 
-          // Check if this is an AskUserQuestion tool
-          if (state.currentToolUse.name === 'AskUserQuestion') {
-            this.handleAskUserQuestionTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Check if this is a file request tool
-          if (state.currentToolUse.name === 'mcp__user-input__request_file') {
-            this.handleFileRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Check if this is a remote MCP request tool
-          if (state.currentToolUse.name === 'mcp__user-input__request_remote_mcp') {
-            this.handleRemoteMcpRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          if (state.currentToolUse.name === 'mcp__user-input__request_browser_input') {
-            this.handleBrowserInputRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
           if (state.currentToolUse.name === 'mcp__user-input__request_script_run') {
             this.handleScriptRunRequestTool(
               sessionId,
@@ -2576,16 +2561,6 @@ class MessagePersister {
               state.currentToolInput,
               state.agentSlug
             )
-          }
-
-          // Mark session as awaiting input when a blocking user-input tool fires
-          // Only tools with 'request_' prefix actually block waiting for user response
-          // (schedule_task, deliver_file, search_* resolve immediately and don't block)
-          // Note: computer-use AND request_script_run tools are handled by their own
-          // handlers which only mark awaiting input when user approval is actually
-          // needed (not when auto-executed against a cached permission grant).
-          if (isBlockingUserInputToolName(state.currentToolUse.name)) {
-            this.markSessionAwaitingInput(sessionId)
           }
 
           // Track deliver_file tool calls so the matching tool_result can be
@@ -4518,8 +4493,10 @@ ${continuation}`
   // requests only: ordinary subagent tool results (Bash, Read, …) stream
   // constantly and must not broadcast main-path `tool_result` events or touch
   // the awaiting flag. Unlike the main path's unconditional clear, awaiting is
-  // cleared only when NO tracked request remains — a main-agent question can
-  // be open in parallel with a subagent's browser_input.
+  // cleared only when no OTHER blocking request remains (the shared both-shelves
+  // rule) — a main-agent question or a pending computer-use can be open in
+  // parallel with a subagent's browser_input — and never while a proxy/x-agent
+  // review is still parked for this agent.
   private resolveSidechainInputRequests(
     sessionId: string,
     state: StreamingState,
@@ -4540,7 +4517,11 @@ ${continuation}`
         isError: block.is_error || false,
       })
     }
-    if (state.isAwaitingInput && state.pendingInputRequests.size === 0) {
+    if (
+      state.isAwaitingInput &&
+      !this.hasBlockingPendingRequests(state) &&
+      !this.hasExternalAwaitingBlocker(state.agentSlug)
+    ) {
       state.isAwaitingInput = false
       this.broadcastGlobal({
         type: 'session_input_provided',
