@@ -165,8 +165,20 @@ RUN useradd -m -s /bin/bash claude && \
 COPY skills/ /home/claude/.claude/skills/
 RUN chown -R claude:claude /home/claude/.claude
 
+# Product self-knowledge docs (see docs/INDEX.md). Deliberately outside
+# /workspace — invisible to exports and the file browser — and root-owned so
+# the claude user cannot modify or delete them.
+COPY docs/ /opt/gamut/docs/
+RUN chmod -R a-w,a+rX /opt/gamut/docs
+
 # Switch to non-root user
 USER claude
+
+# Assert the docs baked above are present and immutable for the agent user.
+RUN test -f /opt/gamut/docs/INDEX.md && \
+    if touch /opt/gamut/docs/.writable 2>/dev/null; then \
+      echo "/opt/gamut/docs is writable by the claude user" >&2; exit 1; \
+    fi
 
 # Expose port
 EXPOSE 3000
