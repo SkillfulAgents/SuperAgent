@@ -1,7 +1,7 @@
 import { RotateCcw } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useModelSettings } from '@renderer/hooks/use-settings'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
@@ -18,7 +18,8 @@ interface HomeDefaultModelProps {
  * per-trigger or per-session pick still wins over both.
  */
 export function HomeDefaultModel({ agentSlug, className }: HomeDefaultModelProps) {
-  const { data: settings } = useSettings()
+  // Picker-safe endpoint — the card renders for every agent member, admin or not.
+  const { data: settings } = useModelSettings()
   const { data: prefs } = useAgentPreferences(agentSlug)
   const updatePreferences = useUpdateAgentPreferences(agentSlug)
 

@@ -10,6 +10,7 @@ const useProviderModelSearchMock = vi.fn()
 
 vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => useSettingsMock(),
+  useModelSettings: () => useSettingsMock(),
   useProviderModelSearch: (...args: unknown[]) => useProviderModelSearchMock(...args),
   useUpdateSettings: () => ({ mutate: mutateMock }),
 }))

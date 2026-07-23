@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 
 const useSettingsMock = vi.fn()
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => useSettingsMock(),
+  useModelSettings: () => useSettingsMock(),
 }))
 
 const usePreferencesMock = vi.fn()

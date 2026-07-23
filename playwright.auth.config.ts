@@ -40,6 +40,13 @@ const authProjects = [
     dataDir: path.join(e2eDataDir, 'graph'),
     viteCacheDir: path.join(e2eDataDir, '.vite', 'graph'),
   },
+  {
+    name: 'auth-models',
+    testMatch: '**/model-picker-roles.spec.ts',
+    port: e2ePort + 4,
+    dataDir: path.join(e2eDataDir, 'models'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'models'),
+  },
 ].map((project, index) => ({
   ...project,
   baseURL: index === 0 && process.env.E2E_BASE_URL

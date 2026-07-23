@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useModelSettings } from '@renderer/hooks/use-settings'
 import { ComposerOptionsPopover } from './composer-options-popover'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
@@ -110,7 +110,9 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     followDefaults = false,
   } = args
 
-  const { data: settings } = useSettings()
+  // Picker-safe endpoint — readable by non-admin users too, unlike the
+  // admin-gated full settings (which would leave them an empty catalog).
+  const { data: settings } = useModelSettings()
 
   // ---- Effort ----
   const [effort, setEffortState] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
