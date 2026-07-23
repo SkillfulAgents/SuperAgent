@@ -1,0 +1,25 @@
+{
+  "storyId": "agent-chat",
+  "passed": true,
+  "reason": "Agent QA-20260723-022511-e4ow successfully received message \"Hello! What is 2+2?\" and responded with \"4\" in under 1 second.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with agent sidebar visible",
+    "Clicked agent \"QA-20260723-022511-e4ow\" in sidebar — Agent page opened successfully, status shows \"idle\"",
+    "Verified agent status is \"running\" or \"idle\" — Status confirmed as \"idle\"",
+    "Typed message \"Hello! What is 2+2?\" in message input field — Message typed successfully",
+    "Clicked Send message button — Message sent, page navigated to session chat view with title \"Math Basics Quick Question\"",
+    "Waited for response — Agent responded within 1 second with the answer \"4\"",
+    "Verified response mentions \"4\" — Response clearly displays \"4\" in the chat view"
+  ],
+  "bugs": [],
+  "durationMs": 57372,
+  "sessionId": "a305a2fa-a171-48cb-ab2c-872b826beb53",
+  "cost": {
+    "inputTokens": 290,
+    "outputTokens": 8325,
+    "cacheCreationTokens": 106559,
+    "cacheReadTokens": 723987,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.247512
+  }
+}
