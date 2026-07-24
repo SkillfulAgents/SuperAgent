@@ -36,6 +36,7 @@ import auditLogRouter from './routes/audit-log'
 import connectionLogsRouter from './routes/connection-logs'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
+import platformSsoStart from './routes/platform-sso-start'
 import agentBootstrap from './routes/agent-bootstrap'
 import activityRouter from './routes/activity'
 import { initializeServices } from '@shared/lib/startup'
@@ -203,6 +204,11 @@ app.route('/api/admin/users', adminUsersRouter)
 app.route('/api/audit-log', auditLogRouter)
 app.route('/api/connection-logs', connectionLogsRouter)
 app.route('/api/platform-auth', platformAuth)
+if (isAuthMode()) {
+  // Public RP-initiated Platform SSO launcher (SUP-466). Outside /api so the
+  // Platform "Open Cloud Agents" link can target a stable deployment path.
+  app.route('/auth', platformSsoStart)
+}
 app.route('/api/stt', sttRouter)
 app.route('/api/llm', llmRouter)
 app.route('/api/favicon', faviconRouter)
