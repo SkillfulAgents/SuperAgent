@@ -686,6 +686,10 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   async start(options?: StartOptions): Promise<void> {
     if ((await this.getInfoFromRuntime()).status === 'running') return
 
+    // Suspended VMs are UI-stopped but still warm — resume before RunMicrovm.
+    const existing = agentStates.get(this.config.agentId)
+    if (existing && (await this.resumeExisting(existing))) return
+
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
@@ -783,10 +787,12 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     try {
       const mvm = await getMicrovm(config.region, state.microvmId)
-      // SUSPENDED is "running on demand": idlePolicy.autoResumeEnabled wakes it
-      // on the next request through the proxy.
-      if (mvm.state === 'RUNNING' || mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') {
+      if (mvm.state === 'RUNNING') {
         return { status: 'running', port: state.proxyPort }
+      }
+      // Warm-idle: UI shows stopped; local proxy state is kept so start()/traffic can resume.
+      if (mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') {
+        return { status: 'stopped', port: null }
       }
       // Terminal: VM is gone — drop state + proxy (mirror NotFound) so it isn't leaked.
       this.cleanupLocal()
@@ -833,6 +839,41 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       await new Promise((resolve) => setTimeout(resolve, 2_000))
     }
     throw new Error(`Timed out waiting for MicroVM ${microvmId} to become RUNNING`)
+  }
+
+  // Resume a warm-suspended VM. Returns false when local state is stale (caller should Run).
+  // Avoid waitForHealthy here — it treats UI-stopped/suspended as dead and bails early.
+  private async resumeExisting(state: AgentMicrovmState): Promise<boolean> {
+    const config = getMicrovmRuntimeConfig()
+    try {
+      const mvm = await getMicrovm(config.region, state.microvmId)
+      if (mvm.state === 'TERMINATED' || mvm.state === 'TERMINATING') {
+        this.cleanupLocal()
+        return false
+      }
+      if (mvm.state !== 'RUNNING' && mvm.state !== 'SUSPENDED' && mvm.state !== 'SUSPENDING') {
+        this.cleanupLocal()
+        return false
+      }
+
+      const deadline = Date.now() + 120_000
+      while (Date.now() < deadline) {
+        if (await this.isHealthy(state.proxyPort)) break
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      }
+      if (!(await this.isHealthy(state.proxyPort))) {
+        throw new Error(`MicroVM agent ${state.microvmId} failed to become healthy`)
+      }
+      await this.waitForRunning(config.region, state.microvmId, 120_000)
+      touchAgentActivity(this.config.agentId)
+      return true
+    } catch (error) {
+      if (isNotFound(error)) {
+        this.cleanupLocal()
+        return false
+      }
+      throw error
+    }
   }
 
   // Keep local proxy state so the next request auto-resumes the same VM.

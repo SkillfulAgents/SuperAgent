@@ -408,11 +408,32 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(await newClient().getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
   })
 
-  it('getInfoFromRuntime treats SUSPENDED as running (auto-resume on request)', async () => {
+  it('getInfoFromRuntime treats SUSPENDED as stopped (warm idle; local state kept)', async () => {
     const client = newClient()
     await client.start()
     responses.getState = 'SUSPENDED'
-    expect((await client.getInfoFromRuntime()).status).toBe('running')
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+
+    // Warm-idle must not drop local state — a later start() resumes, not Run.
+    responses.getState = 'RUNNING'
+    sendMock.mockClear()
+    await client.start()
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+  })
+
+  it('getInfoFromRuntime treats SUSPENDING as stopped (warm idle; local state kept)', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'SUSPENDING'
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+  })
+
+  it('stop() then getInfoFromRuntime reports stopped while suspended', async () => {
+    const client = newClient()
+    await client.start()
+    await client.stop()
+    responses.getState = 'SUSPENDED'
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
   })
 
   it('getInfoFromRuntime reports stopped when the VM is TERMINATED and cleans up local state', async () => {
@@ -497,11 +518,16 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(suspendCall![0].input).toEqual({ microvmIdentifier: 'mvm-1' })
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
 
-    // State is preserved: a subsequent start() short-circuits (no new RunMicrovm).
+    // State is preserved: start() resumes via /health (no new RunMicrovm).
     sendMock.mockClear()
     responses.getState = 'SUSPENDED'
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      responses.getState = 'RUNNING'
+      return { ok: true } as Response
+    }))
     await client.start()
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+    expect((await client.getInfoFromRuntime()).status).toBe('running')
   })
 
   it('a plain stop() is a no-op suspend when already SUSPENDED', async () => {
