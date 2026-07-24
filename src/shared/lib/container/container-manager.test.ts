@@ -1059,6 +1059,32 @@ describe('containerManager.syncAgentStatus', () => {
 
     expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('sync-agent')
   })
+
+  it('seeds containerStartedAt when sync finds running without a start time', async () => {
+    const before = Date.now()
+    containerManager.getClient('sync-agent')
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 4005 })
+
+    expect(containerManager.getContainerStartTime('sync-agent')).toBeUndefined()
+
+    await containerManager.syncAgentStatus('sync-agent')
+
+    const seeded = containerManager.getContainerStartTime('sync-agent')
+    expect(seeded).toBeDefined()
+    expect(seeded!).toBeGreaterThanOrEqual(before)
+  })
+
+  it('does not overwrite an existing containerStartedAt on sync', async () => {
+    containerManager.getClient('sync-agent')
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 4005 })
+    await containerManager.syncAgentStatus('sync-agent')
+    const first = containerManager.getContainerStartTime('sync-agent')!
+
+    await new Promise((r) => setTimeout(r, 5))
+    await containerManager.syncAgentStatus('sync-agent')
+
+    expect(containerManager.getContainerStartTime('sync-agent')).toBe(first)
+  })
 })
 
 // ============================================================================
@@ -1354,6 +1380,9 @@ describe('containerManager.stopContainer force stop recovery', () => {
     // Auto-sleep path: stop+kill timed out and force-stop was disabled, so the
     // container is still alive. We must NOT mark it stopped, broadcast a stop,
     // or trigger VM-restart recovery — the next sweep retries.
+    const { touchAgentActivity, getAgentLastActivity } = await import('./agent-activity-clock')
+    touchAgentActivity('stuck-agent', 12345)
+
     containerManager.getClient('stuck-agent')
     containerManager.getClient('other-agent')
     containerManager.updateCachedStatus('stuck-agent', 'running', 4001)
@@ -1367,6 +1396,9 @@ describe('containerManager.stopContainer force stop recovery', () => {
     expect(containerManager.getCachedInfo('stuck-agent')).toEqual({ status: 'running', port: 4001 })
     expect(containerManager.getCachedInfo('other-agent')).toEqual({ status: 'running', port: 4002 })
 
+    // Incomplete stop must not clear the activity clock
+    expect(getAgentLastActivity('stuck-agent')).toBe(12345)
+
     // No stopped broadcast for the stuck agent, no system_alert, no recovery
     const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
     const stoppedEvents = broadcasts.filter(
@@ -1376,6 +1408,19 @@ describe('containerManager.stopContainer force stop recovery', () => {
     expect(broadcasts.filter(([msg]: any) => msg.type === 'system_alert')).toHaveLength(0)
     expect(messagePersister.markAllSessionsInactiveForAgent).not.toHaveBeenCalledWith('stuck-agent')
     expect(mockClearRunnerAvailabilityCache).not.toHaveBeenCalled()
+  })
+
+  it('clears activity clock on successful stop', async () => {
+    const { touchAgentActivity, getAgentLastActivity } = await import('./agent-activity-clock')
+    touchAgentActivity('normal-agent', 99999)
+
+    containerManager.getClient('normal-agent')
+    containerManager.updateCachedStatus('normal-agent', 'running', 4001)
+    mockStop.mockResolvedValue({ forceStopUsed: false, stopped: true })
+
+    await containerManager.stopContainer('normal-agent')
+
+    expect(getAgentLastActivity('normal-agent')).toBeUndefined()
   })
 
   it('still cleans up even when stop() throws', async () => {

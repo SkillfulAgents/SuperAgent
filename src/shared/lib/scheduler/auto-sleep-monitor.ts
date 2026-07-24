@@ -7,8 +7,8 @@
  */
 
 import { containerManager } from '@shared/lib/container/container-manager'
+import { getAgentLastActivity } from '@shared/lib/container/agent-activity-clock'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { listSessions } from '@shared/lib/services/session-service'
 import { getSettings } from '@shared/lib/config/settings'
 
 class AutoSleepMonitor {
@@ -81,27 +81,21 @@ class AutoSleepMonitor {
             continue
           }
 
-          // Check last activity across all sessions
-          const sessions = await listSessions(agentId)
+          // Idle history is host RAM only (start / keep-alive / activity clock).
+          // No listSessions — session jsonl stats are expensive on network FS.
+          const signals = [
+            containerManager.getContainerStartTime(agentId),
+            containerManager.getLastKeepAlive(agentId),
+            getAgentLastActivity(agentId),
+          ].filter((t): t is number => t !== undefined)
 
-          // No sessions — container was just started, skip it
-          if (sessions.length === 0) {
+          // No signals — host just discovered the container; wait for grace seed
+          // or a touch before considering idle.
+          if (signals.length === 0) {
             continue
           }
 
-          // Use container start time as a floor — when an agent is woken up
-          // to view its dashboard, session timestamps are stale from before
-          // the previous sleep and would cause immediate re-sleep.
-          const containerStartTime =
-            containerManager.getContainerStartTime(agentId) ?? 0
-          const lastKeepAlive =
-            containerManager.getLastKeepAlive(agentId) ?? 0
-
-          const lastActivity = Math.max(
-            containerStartTime,
-            lastKeepAlive,
-            ...sessions.map((s) => s.lastActivityAt.getTime())
-          )
+          const lastActivity = Math.max(...signals)
 
           if (now - lastActivity > timeoutMs) {
             console.log(

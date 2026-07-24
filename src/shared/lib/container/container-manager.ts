@@ -12,6 +12,10 @@ import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
+import {
+  clearAgentActivity,
+  clearAllAgentActivity,
+} from './agent-activity-clock'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -192,6 +196,7 @@ class ContainerManager {
       } else {
         // Update cached status
         this.markAsStopped(agentId)
+        clearAgentActivity(agentId)
 
         // Mark all sessions for this agent as inactive
         messagePersister.markAllSessionsInactiveForAgent(agentId)
@@ -218,6 +223,7 @@ class ContainerManager {
         for (const otherId of this.getRunningAgentIds()) {
           if (otherId === agentId) continue
           this.markAsStopped(otherId)
+          clearAgentActivity(otherId)
           messagePersister.markAllSessionsInactiveForAgent(otherId)
           messagePersister.broadcastGlobal({
             type: 'agent_status_changed',
@@ -266,6 +272,12 @@ class ContainerManager {
     if (this.startingAgents.has(agentId)) return info
 
     this.updateCachedStatus(agentId, info.status, info.port)
+
+    // Host restart / external reconcile: running without a start timestamp gets
+    // a full auto-sleep grace window from now (not exempt forever).
+    if (info.status === 'running' && !this.containerStartedAt.has(agentId)) {
+      this.containerStartedAt.set(agentId, Date.now())
+    }
 
     // Broadcast if status changed (e.g., container was stopped externally)
     if (previousStatus && previousStatus !== info.status) {
@@ -705,6 +717,7 @@ class ContainerManager {
     this.healthWarnings.delete(agentId)
     this.stoppingAgents.delete(agentId)
     this.startingAgents.delete(agentId)
+    clearAgentActivity(agentId)
   }
 
   // Clear all cached clients (e.g., when container runner setting changes).
@@ -717,6 +730,7 @@ class ContainerManager {
     this.healthWarnings.clear()
     this.stoppingAgents.clear()
     this.startingAgents.clear()
+    clearAllAgentActivity()
   }
 
   // Stop all containers (with per-container timeout to prevent blocking shutdown)
@@ -748,6 +762,7 @@ class ContainerManager {
     this.containerStatuses.clear()
     this.healthWarnings.clear()
     this.stoppingAgents.clear()
+    clearAllAgentActivity()
   }
 
   // Synchronous stop - used for exit handlers where async isn't available
@@ -767,6 +782,7 @@ class ContainerManager {
     this.lastKeepAliveAt.clear()
     this.containerStatuses.clear()
     this.healthWarnings.clear()
+    clearAllAgentActivity()
   }
 
   // Check if any agents have running containers (uses cached status)
