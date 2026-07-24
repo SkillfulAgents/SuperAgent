@@ -53,14 +53,14 @@ test.describe('Scope Policy Editor — risk-label grouping', () => {
 
     // Each group header pre-fills the recommended baseline default.
     await expect(
-      page.locator('[data-testid="group-default-read"] [data-testid="policy-toggle-allow"]'),
-    ).toHaveAttribute('data-active', 'true')
+      page.locator('[data-testid="group-default-read"] [data-testid="policy-dropdown-trigger"]'),
+    ).toHaveAttribute('data-decision', 'allow')
     await expect(
-      page.locator('[data-testid="group-default-write"] [data-testid="policy-toggle-review"]'),
-    ).toHaveAttribute('data-active', 'true')
+      page.locator('[data-testid="group-default-write"] [data-testid="policy-dropdown-trigger"]'),
+    ).toHaveAttribute('data-decision', 'review')
     await expect(
-      page.locator('[data-testid="group-default-destructive"] [data-testid="policy-toggle-block"]'),
-    ).toHaveAttribute('data-active', 'true')
+      page.locator('[data-testid="group-default-destructive"] [data-testid="policy-dropdown-trigger"]'),
+    ).toHaveAttribute('data-decision', 'block')
 
     // Still display-only — nothing persisted until Save.
     const after = await (await request.get(`${API}/api/policies/scope/${account.id}`)).json()
@@ -85,13 +85,14 @@ test.describe('Scope Policy Editor — risk-label grouping', () => {
     // Settings → Connections → open the inline editor via the connection row.
     await openConnectionDetail(page, 'E2E Grouping Persist Slack')
 
-    const destAllow = () =>
-      page.locator('[data-testid="group-default-destructive"] [data-testid="policy-toggle-allow"]')
+    const destTrigger = () =>
+      page.locator('[data-testid="group-default-destructive"] [data-testid="policy-dropdown-trigger"]')
 
-    // Flip the Destructive group default from block → allow.
-    await expect(destAllow()).toHaveAttribute('data-active', 'false')
-    await destAllow().click()
-    await expect(destAllow()).toHaveAttribute('data-active', 'true')
+    // Flip the Destructive group default from block → allow via the dropdown.
+    await expect(destTrigger()).toHaveAttribute('data-decision', 'block')
+    await destTrigger().click()
+    await page.locator('[data-testid="policy-menu-allow"]').click()
+    await expect(destTrigger()).toHaveAttribute('data-decision', 'allow')
 
     // Save — the inline editor stays on screen; verify persistence via API.
     await page.locator('[data-testid="scope-policy-save"]').click()
@@ -112,6 +113,6 @@ test.describe('Scope Policy Editor — risk-label grouping', () => {
     })
     await expect(row).toBeVisible({ timeout: 5000 })
     await row.click()
-    await expect(destAllow()).toHaveAttribute('data-active', 'true', { timeout: 5000 })
+    await expect(destTrigger()).toHaveAttribute('data-decision', 'allow', { timeout: 5000 })
   })
 })
