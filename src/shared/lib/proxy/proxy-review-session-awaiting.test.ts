@@ -6,6 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { ReviewManager } from './review-manager'
 
 const SESSION_ID = 'proxy-review-awaiting-session'
@@ -106,10 +107,20 @@ describe('proxy review session awaiting', () => {
     const promise = manager.requestReview(reviewDetails())
     expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
+    // Park a secret request the way the persister's broadcast funnel does:
+    // store entry + registry write-through (awaiting derives from the latter).
     const state = streamState()
     state?.pendingInputRequests.set('secret-1', {
-      type: 'request_secret',
+      type: 'secret_request',
       toolUseId: 'secret-1',
+    })
+    userInputRequestManager.register({
+      id: 'secret-1',
+      kind: 'secret',
+      scope: { agentSlug: AGENT_SLUG, sessionId: SESSION_ID },
+      blocking: true,
+      autoApproved: false,
+      payload: { secretName: 'API_KEY' },
     })
 
     const id = manager.getPendingReviewsForAgent(AGENT_SLUG)[0].id
@@ -118,5 +129,8 @@ describe('proxy review session awaiting', () => {
 
     expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
     expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('awaiting')
+
+    state?.pendingInputRequests.delete('secret-1')
+    userInputRequestManager.resolve('secret-1', 'cancelled')
   })
 })

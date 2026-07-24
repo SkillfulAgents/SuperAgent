@@ -43,6 +43,29 @@ test.describe('Computer Use requests', () => {
     await sessionPage.expectAssistantMessage('Thank you for providing the information.', 1, 15000)
   })
 
+  test('an abandoned approval does not survive into the next turn', async ({ page }) => {
+    // Park a computer-use approval, then stop the turn with the card unresolved.
+    await sessionPage.sendMessage('use computer')
+    await sessionPage.waitForComputerUseRequest()
+    await sessionPage.stopSessionFromRequest()
+    await sessionPage.waitForInputEnabled(15000)
+
+    // A new message starts a fresh turn, which supersedes the abandoned
+    // approval server-side. (The computer-use store deliberately survives an
+    // IDLE boundary so a reconnect can replay a still-parked card — but a new
+    // turn must wipe it, or the stale entry reads as a live wait.)
+    await sessionPage.sendMessage('carry on without the computer')
+    await sessionPage.waitForInputEnabled(15000)
+    await sessionPage.expectAssistantMessage('This is a mock response from the E2E test container.', 1, 15000)
+
+    // Reload: the /stream replay must NOT resurrect the abandoned approval
+    // card, and the agent must read idle — not needing input.
+    await page.reload()
+    await sessionPage.expectAssistantMessage('This is a mock response from the E2E test container.', 1, 15000)
+    await expect(sessionPage.getComputerUseRequests()).toHaveCount(0)
+    await agentPage.waitForStatus('idle', 15000)
+  })
+
   test('computer use request: deny', async () => {
     await sessionPage.sendMessage('use computer')
 

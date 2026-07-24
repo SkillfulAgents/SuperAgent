@@ -226,29 +226,6 @@ describe('UserInputRequestManager', () => {
       expect(manager.stats.storeMismatches).toBe(1)
     })
 
-    it('compareAwaitingProjection counts divergence and warns once per episode', () => {
-      const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-      manager.register(secretRequest())
-
-      // Bit says false while a real wait is open: diverged. Two checks in the
-      // same episode → two counts, ONE warn.
-      const diverged = {
-        sessionId: 'session-1',
-        context: 'test',
-        agentSlug: 'agent-a',
-        isAwaitingInput: false,
-      }
-      manager.compareAwaitingProjection(diverged)
-      manager.compareAwaitingProjection(diverged)
-      expect(manager.stats.awaitingDivergences).toBe(2)
-      expect(consoleWarn).toHaveBeenCalledTimes(1)
-
-      // Convergence closes the episode; the next divergence warns again.
-      manager.compareAwaitingProjection({ ...diverged, isAwaitingInput: true })
-      manager.compareAwaitingProjection(diverged)
-      expect(consoleWarn).toHaveBeenCalledTimes(2)
-    })
-
     it('reset wipes requests and diagnostics', () => {
       manager.register(secretRequest())
       manager.resolve('tool-1', 'answered')
@@ -256,7 +233,6 @@ describe('UserInputRequestManager', () => {
       expect(manager.stats).toEqual({
         open: 0,
         storeMismatches: 0,
-        awaitingDivergences: 0,
         recentResolutions: [],
       })
     })
