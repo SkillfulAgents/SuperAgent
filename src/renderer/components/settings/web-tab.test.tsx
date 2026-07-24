@@ -21,7 +21,9 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
 }))
 
 vi.mock('./provider-api-key-input', () => ({
-  ProviderApiKeyInput: () => null,
+  ProviderApiKeyInput: ({ layout }: { layout?: 'stacked' | 'rows' }) => (
+    <div data-testid="api-key-input" data-layout={layout ?? 'stacked'} />
+  ),
 }))
 
 import { WebTab } from './web-tab'
@@ -46,27 +48,25 @@ describe('WebTab', () => {
     vi.clearAllMocks()
   })
 
-  it('marks "(default)" only when isDefault', () => {
+  it('marks "(default)" on the selected card only when isDefault', () => {
     setup({ webProvider: 'platform', webProviderIsDefault: true, connected: true })
     const { unmount } = render(<WebTab />)
-    expect(screen.getByRole('combobox')).toHaveTextContent('Platform')
+    expect(screen.getByRole('radio', { name: /Gamut/i })).toBeChecked()
     expect(screen.getByText('(default)')).toBeInTheDocument()
     unmount()
 
     setup({ webProvider: 'exa', webProviderIsDefault: false, connected: true })
     render(<WebTab />)
-    expect(screen.getByRole('combobox')).toHaveTextContent('Exa')
+    expect(screen.getByRole('radio', { name: /Exa/i })).toBeChecked()
     expect(screen.queryByText('(default)')).not.toBeInTheDocument()
   })
 
-  it('disables the Platform option when not signed into Gamut', async () => {
+  it('disables the Gamut card when not signed into Gamut', () => {
     setup({ webProvider: 'native', webProviderIsDefault: true, connected: false })
-    const user = userEvent.setup()
     render(<WebTab />)
 
-    await user.click(screen.getByRole('combobox'))
-    const platformOption = await screen.findByRole('option', { name: /Platform/i })
-    expect(platformOption).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('radio', { name: /Gamut/i })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText('Requires Gamut account')).toBeInTheDocument()
   })
 
   it('pins the chosen vendor to the single webProvider field', async () => {
@@ -74,16 +74,22 @@ describe('WebTab', () => {
     const user = userEvent.setup()
     render(<WebTab />)
 
-    await user.click(screen.getByRole('combobox'))
-    await user.click(await screen.findByRole('option', { name: /^Native$/i }))
+    await user.click(screen.getByRole('radio', { name: /Native/i }))
 
     expect(mutateMock).toHaveBeenCalledWith({ webProvider: 'native' })
   })
 
-  it('shows the Exa key field when Exa is selected', () => {
+  it('expands the Exa card config only when Exa is selected', () => {
+    setup({ webProvider: 'native', webProviderIsDefault: true, connected: false })
+    const { unmount } = render(<WebTab />)
+    expect(screen.queryByTestId('api-key-input')).not.toBeInTheDocument()
+    // The docs link lives in the card description, visible without selection
+    expect(screen.getByRole('link', { name: /View Exa docs/i })).toBeInTheDocument()
+    unmount()
+
     setup({ webProvider: 'exa', webProviderIsDefault: false, connected: false })
     render(<WebTab />)
-
-    expect(screen.getByText('Exa API Key')).toBeInTheDocument()
+    expect(screen.getByTestId('api-key-input')).toBeInTheDocument()
+    expect(screen.getByTestId('api-key-input')).toHaveAttribute('data-layout', 'stacked')
   })
 })

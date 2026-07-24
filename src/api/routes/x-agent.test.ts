@@ -12,6 +12,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import Database from 'better-sqlite3'
+import { eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { randomUUID } from 'crypto'
@@ -179,6 +180,16 @@ function authedFetch(path: string, body: unknown, token = CALLER_TOKEN) {
   })
 }
 
+async function grantCallerOwnerTargetAccess() {
+  await testDb.insert(schema.agentAcl).values({
+    id: randomUUID(),
+    userId: OWNER_USER_ID,
+    agentSlug: TARGET_SLUG,
+    role: 'user',
+    createdAt: new Date(),
+  })
+}
+
 beforeEach(async () => {
   testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xagent-test-'))
   // Point the data dir at testDir so the REAL resolveAgentId (not mocked) finds
@@ -189,6 +200,7 @@ beforeEach(async () => {
   await fs.promises.mkdir(path.join(testDir, 'agents', CALLER_SLUG), { recursive: true })
   await fs.promises.mkdir(path.join(testDir, 'agents', TARGET_SLUG), { recursive: true })
   testSqlite = new Database(':memory:')
+  testSqlite.pragma('foreign_keys = ON')
   testDb = drizzle(testSqlite, { schema })
   const migrationsFolder = path.join(process.cwd(), 'src/shared/lib/db/migrations')
   migrate(testDb, { migrationsFolder })
@@ -222,6 +234,7 @@ beforeEach(async () => {
   mockIsSessionAwaitingInput.mockReturnValue(false)
   mockWaitForIdle.mockResolvedValue(undefined)
   mockReadAgentPreferences.mockResolvedValue({})
+  mockGetSessionMetadata.mockResolvedValue(null)
   mockEnsureRunning.mockClear()
   mockEnsureRunning.mockResolvedValue({
     createSession: mockCreateSession,
@@ -457,11 +470,268 @@ describe('/invoke', () => {
     expect(mockCreateSession).toHaveBeenCalledWith(
       expect.objectContaining({ initialMessage: 'hello' }),
     )
+    expect(mockCreateSession.mock.calls[0][0]).not.toHaveProperty('initialMessageUuid')
     expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
       expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
     )
+  })
+
+  it('names a new session after the caller agent display name', async () => {
+    reviewDecisions.push('allow')
+    mockGetAgent.mockImplementation(async (slug: unknown) => {
+      if (slug === CALLER_SLUG) {
+        return {
+          slug: CALLER_SLUG,
+          frontmatter: { name: 'Business Analyst Agent', createdAt: '2024-01-01' },
+          instructions: '',
+        }
+      }
+      return {
+        slug: TARGET_SLUG,
+        frontmatter: { name: 'Target', createdAt: '2024-01-01' },
+        instructions: '',
+      }
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'hello',
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockRegisterSession).toHaveBeenCalledWith(
+      TARGET_SLUG,
+      'new-sess-id',
+      'Invoked by Business Analyst Agent',
+    )
+  })
+
+  it('falls back to the caller slug when display-name lookup fails', async () => {
+    reviewDecisions.push('allow')
+    mockGetAgent.mockImplementation(async (slug: unknown) => {
+      if (slug === CALLER_SLUG) throw new Error('caller metadata unavailable')
+      return {
+        slug: TARGET_SLUG,
+        frontmatter: { name: 'Target', createdAt: '2024-01-01' },
+        instructions: '',
+      }
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'hello',
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockRegisterSession).toHaveBeenCalledWith(
+      TARGET_SLUG,
+      'new-sess-id',
+      `Invoked by ${CALLER_SLUG}`,
+    )
+  })
+
+  it('attributes a new invoked message to the latest sender in a shared caller session', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    const callerSessionId = 'shared-caller-session'
+    await grantCallerOwnerTargetAccess()
+    await testDb.insert(schema.messageAuthor).values([
+      {
+        id: 'owner-message',
+        sessionId: callerSessionId,
+        agentSlug: CALLER_SLUG,
+        userId: OWNER_USER_ID,
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      },
+      {
+        id: 'other-message',
+        sessionId: callerSessionId,
+        agentSlug: CALLER_SLUG,
+        userId: OTHER_USER_ID,
+        createdAt: new Date('2026-01-01T00:00:01.000Z'),
+      },
+    ])
+    mockGetSessionMetadata.mockResolvedValue({
+      name: 'Shared session',
+      createdAt: new Date().toISOString(),
+      createdByUserId: OWNER_USER_ID,
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'hello from the shared session',
+      _callerSessionId: callerSessionId,
+    })
+
+    expect(res.status).toBe(200)
+    const createArgs = mockCreateSession.mock.calls[0][0] as Record<string, unknown>
+    expect(createArgs.initialMessageUuid).toEqual(expect.any(String))
+    const targetAuthors = await testDb
+      .select()
+      .from(schema.messageAuthor)
+      .where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
+    expect(targetAuthors).toEqual([
+      expect.objectContaining({
+        id: createArgs.initialMessageUuid,
+        agentSlug: TARGET_SLUG,
+        userId: OTHER_USER_ID,
+      }),
+    ])
+    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+      TARGET_SLUG,
+      'new-sess-id',
+      expect.objectContaining({ createdByUserId: OTHER_USER_ID }),
+    )
+  })
+
+  it('falls back to the session creator when no message author is recorded', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    const callerSessionId = 'legacy-caller-session'
+    await grantCallerOwnerTargetAccess()
+    mockGetSessionMetadata.mockResolvedValue({
+      name: 'Legacy shared session',
+      createdAt: new Date().toISOString(),
+      createdByUserId: OTHER_USER_ID,
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'legacy hello',
+      _callerSessionId: callerSessionId,
+    })
+
+    expect(res.status).toBe(200)
+    const targetAuthors = await testDb
+      .select()
+      .from(schema.messageAuthor)
+      .where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
+    expect(targetAuthors).toEqual([
+      expect.objectContaining({ userId: OTHER_USER_ID }),
+    ])
+    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+      TARGET_SLUG,
+      'new-sess-id',
+      expect.objectContaining({ createdByUserId: OTHER_USER_ID }),
+    )
+  })
+
+  it('falls back to the caller owner when legacy metadata has no user attribution', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    await grantCallerOwnerTargetAccess()
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'owner fallback',
+      _callerSessionId: 'legacy-caller-session',
+    })
+
+    expect(res.status).toBe(200)
+    const targetAuthors = await testDb
+      .select()
+      .from(schema.messageAuthor)
+      .where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
+    expect(targetAuthors).toEqual([
+      expect.objectContaining({ userId: OWNER_USER_ID }),
+    ])
+    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+      TARGET_SLUG,
+      'new-sess-id',
+      expect.objectContaining({ createdByUserId: OWNER_USER_ID }),
+    )
+  })
+
+  it('continues without attribution when legacy createdByUserId no longer exists', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    await grantCallerOwnerTargetAccess()
+    mockGetSessionMetadata.mockResolvedValue({
+      name: 'Deleted user session',
+      createdAt: new Date().toISOString(),
+      createdByUserId: 'deleted-user',
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'still invoke',
+      _callerSessionId: 'legacy-caller-session',
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockRegisterSession).toHaveBeenCalled()
+    const targetAuthors = await testDb
+      .select()
+      .from(schema.messageAuthor)
+      .where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
+    expect(targetAuthors).toEqual([])
+    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+      TARGET_SLUG,
+      'new-sess-id',
+      { invokedByAgentSlug: CALLER_SLUG },
+    )
+  })
+
+  it('attributes a continued target-session message to the shared-session sender', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    const callerSessionId = 'shared-caller-session'
+    await grantCallerOwnerTargetAccess()
+    await testDb.insert(schema.messageAuthor).values({
+      id: 'other-message',
+      sessionId: callerSessionId,
+      agentSlug: CALLER_SLUG,
+      userId: OTHER_USER_ID,
+      createdAt: new Date(),
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'follow-up',
+      sessionId: 'existing-sess',
+      _callerSessionId: callerSessionId,
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      'existing-sess',
+      'follow-up',
+      expect.any(String),
+    )
+    const sentMessageUuid = mockSendMessage.mock.calls[0][2]
+    const targetAuthors = await testDb
+      .select()
+      .from(schema.messageAuthor)
+      .where(eq(schema.messageAuthor.sessionId, 'existing-sess'))
+    expect(targetAuthors).toEqual([
+      expect.objectContaining({
+        id: sentMessageUuid,
+        agentSlug: TARGET_SLUG,
+        userId: OTHER_USER_ID,
+      }),
+    ])
+  })
+
+  it('removes continued-session attribution when sendMessage fails', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    await grantCallerOwnerTargetAccess()
+    mockSendMessage.mockRejectedValueOnce(new Error('send failed'))
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'follow-up',
+      sessionId: 'existing-sess',
+    })
+
+    expect(res.status).toBe(500)
+    const targetAuthors = await testDb
+      .select()
+      .from(schema.messageAuthor)
+      .where(eq(schema.messageAuthor.sessionId, 'existing-sess'))
+    expect(targetAuthors).toEqual([])
   })
 
   it('cleans up the container session if registerSession fails (no orphan)', async () => {
@@ -475,6 +745,25 @@ describe('/invoke', () => {
     // Container session should have been deleted to avoid burning model budget on an orphan
     expect(mockDeleteSession).toHaveBeenCalledWith('new-sess-id')
     expect(mockCaptureException).toHaveBeenCalled()
+  })
+
+  it('cleans up an attributed author row when registerSession fails', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    await grantCallerOwnerTargetAccess()
+    mockRegisterSession.mockRejectedValueOnce(new Error('disk full'))
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'hello',
+    })
+
+    expect(res.status).toBe(500)
+    const targetAuthors = await testDb
+      .select()
+      .from(schema.messageAuthor)
+      .where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
+    expect(targetAuthors).toEqual([])
   })
 
   it('returns 500 with stage=ensure_running when target container start fails', async () => {
@@ -953,4 +1242,3 @@ describe('display-slug resolution', () => {
     expect(res.status).toBe(404)
   })
 })
-
