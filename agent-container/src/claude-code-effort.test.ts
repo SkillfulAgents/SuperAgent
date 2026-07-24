@@ -160,6 +160,65 @@ describe('ClaudeCodeProcess effort handling', () => {
   })
 })
 
+describe('ClaudeCodeProcess remote MCP handling', () => {
+  let originalRemoteMcps: string | undefined
+
+  beforeEach(() => {
+    calls.length = 0
+    originalRemoteMcps = process.env.REMOTE_MCPS
+    delete process.env.REMOTE_MCPS
+  })
+
+  afterEach(() => {
+    if (originalRemoteMcps === undefined) {
+      delete process.env.REMOTE_MCPS
+    } else {
+      process.env.REMOTE_MCPS = originalRemoteMcps
+    }
+  })
+
+  it('rebuilds a live query when Agent Settings adds or removes an MCP', { timeout: 20000 }, async () => {
+    const claudeProcess = new ClaudeCodeProcess({
+      sessionId: 'test-remote-mcp-refresh',
+      workingDirectory: '/tmp',
+    })
+
+    await claudeProcess.start()
+    expect(calls).toHaveLength(1)
+    expect(calls[0].options.mcpServers).not.toHaveProperty('team_calendar')
+
+    process.env.REMOTE_MCPS = JSON.stringify([
+      {
+        id: 'mcp-calendar',
+        name: 'Team Calendar',
+        proxyUrl: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
+        tools: [{ name: 'list_events' }],
+      },
+    ])
+
+    await claudeProcess.sendMessage('List today’s events')
+
+    expect(calls).toHaveLength(2)
+    expect(calls[1].options.mcpServers).toMatchObject({
+      team_calendar: {
+        type: 'http',
+        url: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
+      },
+    })
+    expect(calls[1].options.allowedTools).toContain('mcp__team_calendar__*')
+    expect(calls[1].options.systemPrompt).toContain('Team Calendar')
+    expect(calls[1].options.systemPrompt).toContain('list_events')
+
+    process.env.REMOTE_MCPS = '[]'
+    await claudeProcess.sendMessage('Continue without the calendar')
+
+    expect(calls).toHaveLength(3)
+    expect(calls[2].options.mcpServers).not.toHaveProperty('team_calendar')
+    expect(calls[2].options.allowedTools).not.toContain('mcp__team_calendar__*')
+    expect(calls[2].options.systemPrompt).not.toContain('Team Calendar')
+  })
+})
+
 describe('ClaudeCodeProcess speed handling', () => {
   beforeEach(() => {
     calls.length = 0

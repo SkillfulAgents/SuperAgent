@@ -360,6 +360,81 @@ function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'pro
   }
 }
 
+type RemoteMcpRuntimeClient = Pick<
+  ReturnType<typeof containerManager.getClient>,
+  'fetch' | 'getHostApiBaseUrl'
+>
+
+/**
+ * Rebuild the container's runtime MCP catalog from the database.
+ *
+ * The mapping table is the source of truth, while REMOTE_MCPS is the live
+ * container projection consumed when each SDK query is created. Keeping this
+ * in one helper ensures Agent Settings mutations and in-session approvals
+ * produce the same proxy URLs and tool catalog.
+ */
+async function updateRemoteMcpEnvironment(
+  agentSlug: string,
+  client: RemoteMcpRuntimeClient,
+): Promise<Response> {
+  const hostApiBaseUrl = await client.getHostApiBaseUrl()
+  const mcpMappings = await db
+    .select({ mcp: remoteMcpServers })
+    .from(agentRemoteMcps)
+    .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
+    .where(eq(agentRemoteMcps.agentSlug, agentSlug))
+
+  const mcpConfigs = mcpMappings
+    .filter(({ mcp }) => mcp.status === 'active')
+    .map(({ mcp }) => {
+      // Only pass tool names (not full schemas) to keep env var size small.
+      let toolNames: Array<{ name: string }> = []
+      if (mcp.toolsJson) {
+        try {
+          toolNames = JSON.parse(mcp.toolsJson).map((tool: { name: string }) => ({ name: tool.name }))
+        } catch {
+          // A malformed cached tool catalog must not prevent the connection
+          // itself from reaching the runtime; discovery can repair it later.
+        }
+      }
+      return {
+        id: mcp.id,
+        name: mcp.name,
+        proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${agentSlug}/${mcp.id}`,
+        tools: toolNames,
+      }
+    })
+
+  return client.fetch('/env', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: 'REMOTE_MCPS', value: JSON.stringify(mcpConfigs) }),
+  })
+}
+
+async function syncRemoteMcpsToRunningContainer(agentSlug: string): Promise<boolean> {
+  if (containerManager.getCachedInfo(agentSlug).status !== 'running') {
+    // Container startup rebuilds REMOTE_MCPS from the same mapping table.
+    return true
+  }
+  try {
+    const response = await updateRemoteMcpEnvironment(
+      agentSlug,
+      containerManager.getClient(agentSlug),
+    )
+    if (!response.ok) {
+      console.error(
+        `Failed to update REMOTE_MCPS for running agent ${agentSlug}:`,
+        await response.text(),
+      )
+    }
+    return response.ok
+  } catch (error) {
+    console.error(`Failed to sync REMOTE_MCPS for running agent ${agentSlug}:`, error)
+    return false
+  }
+}
+
 /**
  * Enrich an array of ApiAgent objects with summary fields:
  * active/awaiting sessions, last activity, scheduled tasks, dashboards.
@@ -3552,6 +3627,9 @@ agents.post('/:id/remote-mcps', AgentUser(), async (c) => {
     await db.insert(agentRemoteMcps).values(values).onConflictDoNothing()
 
     for (const mcpId of newMcpIds) { logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'assigned', details: { agentSlug: slug } }) }
+    if (!(await syncRemoteMcpsToRunningContainer(slug))) {
+      return c.json({ error: 'MCP assignment was saved, but the live agent session could not be refreshed' }, 502)
+    }
     return c.json({ success: true, added: newMcpIds.length })
   } catch (error) {
     console.error('Failed to assign remote MCPs to agent:', error)
@@ -3586,6 +3664,9 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'unassigned', details: { agentSlug: slug } })
+    if (!(await syncRemoteMcpsToRunningContainer(slug))) {
+      return c.json({ error: 'MCP removal was saved, but the live agent session could not be refreshed' }, 502)
+    }
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to remove remote MCP from agent:', error)
@@ -3702,36 +3783,8 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       await db.insert(agentRemoteMcps).values(newMappings)
     }
 
-    // Same talk-back base as container start — not getContainerHostUrl().
-    const hostApiBaseUrl = await client.getHostApiBaseUrl()
-    const mcpMappings = await db
-      .select({ mcp: remoteMcpServers })
-      .from(agentRemoteMcps)
-      .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
-      .where(eq(agentRemoteMcps.agentSlug, slug))
-
-    const mcpConfigs = mcpMappings
-      .filter(({ mcp }) => mcp.status === 'active')
-      .map(({ mcp }) => {
-        // Only pass tool names (not full schemas) to keep env var size small
-        let toolNames: Array<{ name: string }> = []
-        if (mcp.toolsJson) {
-          try { toolNames = JSON.parse(mcp.toolsJson).map((t: any) => ({ name: t.name })) } catch { /* ignore */ }
-        }
-        return {
-          id: mcp.id,
-          name: mcp.name,
-          proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${slug}/${mcp.id}`,
-          tools: toolNames,
-        }
-      })
-
     // Update container env var
-    const envResponse = await client.fetch('/env', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: 'REMOTE_MCPS', value: JSON.stringify(mcpConfigs) }),
-    })
+    const envResponse = await updateRemoteMcpEnvironment(slug, client)
     if (!envResponse.ok) {
       console.error('Failed to update REMOTE_MCPS env var:', await envResponse.text())
       return c.json({ error: 'Failed to update container environment' }, 502)
