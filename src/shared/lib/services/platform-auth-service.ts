@@ -22,7 +22,7 @@ export type PlatformAuthSource = 'settings' | 'env' | null
 const PLATFORM_ORG_ACCESS_TOKEN_AUDIENCE = 'platform-org-runtime'
 const PLATFORM_ORG_ACCESS_TOKEN_ALG = 'RS256'
 const PLATFORM_ORG_ACCESS_TOKEN_TYP = 'JWT'
-const PLATFORM_AUTH_PROVIDER_ID = 'platform'
+export const PLATFORM_AUTH_PROVIDER_ID = 'platform'
 
 export interface VerifiedPlatformOrgAccessToken {
   orgId: string
