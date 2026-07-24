@@ -13,7 +13,7 @@ import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
-import { describeUnsupportedRequest, isUnsupportedInChat, type AppLinkContext } from './utils'
+import { describeUnsupportedRequest, isUnsupportedInChat, withSessionUrl, type AppLinkContext } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from 'grammy/types'
@@ -501,11 +501,12 @@ export class TelegramConnector extends ChatClientConnector {
 
   // ── User request cards ──────────────────────────────────────────────
 
-  async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
+  async sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
     if (!this.bot) throw new Error('Bot not connected')
+    const appLink = withSessionUrl(this.appLink, sessionId)
 
     if (isUnsupportedInChat(event)) {
-      return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event, this.appLink))}_`)
+      return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event, appLink))}_`)
     }
 
     switch (event.type) {
@@ -602,7 +603,7 @@ export class TelegramConnector extends ChatClientConnector {
       }
 
       default:
-        return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event, this.appLink))}_`)
+        return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event, appLink))}_`)
     }
   }
 

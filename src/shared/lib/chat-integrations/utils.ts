@@ -141,6 +141,21 @@ export function resolveAppLinkContext(agentSlug: string): AppLinkContext {
 }
 
 /**
+ * Session-scoped variant of an app link: suffix the session path onto the base
+ * link. Passthrough when there is no base URL (self-hosted cloud) or no session
+ * identity (link stays agent-home). One rule serves both surfaces because the
+ * desktop and web base shapes are parallel.
+ */
+export function withSessionUrl(
+  appLink: AppLinkContext | undefined,
+  sessionId?: string,
+): AppLinkContext | undefined {
+  if (!appLink?.url || !sessionId) return appLink
+  const base = appLink.url.replace(/\/+$/, '')
+  return { ...appLink, url: `${base}/sessions/${encodeURIComponent(sessionId)}` }
+}
+
+/**
  * Plain-text user-facing message for an event the chat integration can't fulfill.
  * Connectors wrap this in their own formatting (Telegram HTML, Slack mrkdwn).
  */

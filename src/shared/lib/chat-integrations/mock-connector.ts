@@ -17,7 +17,7 @@ export class MockChatClientConnector extends ChatClientConnector {
   // ── Recorded outputs (for assertions) ─────────────────────────────
 
   sentMessages: { chatId: string; message: OutgoingMessage }[] = []
-  sentCards: { chatId: string; event: UserRequestEvent }[] = []
+  sentCards: { chatId: string; event: UserRequestEvent; sessionId?: string }[] = []
   sentFiles: { chatId: string; filename: string; size: number; caption?: string }[] = []
   streamUpdates: { chatId: string; text: string; existingMessageId?: string }[] = []
   finalizedMessages: { chatId: string; messageId: string; finalText: string }[] = []
@@ -123,9 +123,9 @@ export class MockChatClientConnector extends ChatClientConnector {
     this.stoppedWorking.push(chatId)
   }
 
-  async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
+  async sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
     const id = `mock-card-${this.nextMessageId++}`
-    this.sentCards.push({ chatId, event })
+    this.sentCards.push({ chatId, event, sessionId })
     return id
   }
 

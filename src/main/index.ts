@@ -53,6 +53,7 @@ import {
 } from './quick-dispatch-window'
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
+import { parseAgentDeepLink } from './agent-deep-link'
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
@@ -1026,10 +1027,16 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     return
   }
 
-  // Agent deep link — navigate to the agent and select its latest session when available.
-  if (url.startsWith(`${PROTOCOL_SCHEME}://agent/`)) {
+  // Agent deep link — session-bearing links navigate directly (ready-gated);
+  // slug-only links keep the legacy fetch-latest flow.
+  const agentLink = parseAgentDeepLink(url, PROTOCOL_SCHEME)
+  if (agentLink) {
+    if (agentLink.sessionId) {
+      focusMainWindowOnSession(agentLink.agentSlug, agentLink.sessionId)
+      return
+    }
     try {
-      const slug = decodeURIComponent(url.replace(`${PROTOCOL_SCHEME}://agent/`, '').split('/')[0])
+      const slug = agentLink.agentSlug
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.show()
         mainWindow.focus()

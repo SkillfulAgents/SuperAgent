@@ -662,7 +662,7 @@ class ChatIntegrationManager {
       armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(sessionId))
       // Serialize SSE event processing per chat session to prevent race conditions
       // (e.g. session_idle arriving while stream_delta's sendStreamingUpdate is still in-flight)
-      this.enqueueSSEEvent(integrationId, chatId, event)
+      this.enqueueSSEEvent(integrationId, chatId, event, sessionId)
     })
     session.sseUnsubscribe = unsubscribe
     // Arm-if-busy from the cold snapshot — the same primitive as the wake. Busy → arm + paint
@@ -677,11 +677,11 @@ class ChatIntegrationManager {
     if (!BUSY_ACTIVITIES.has(coldActivity)) clearIndicator(session)
   }
 
-  private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown): void {
+  private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string): void {
     const queueKey = `sse:${integrationId}:${chatId}`
     const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
     const next = current.then(() =>
-      this.handleSSEEvent(integrationId, chatId, event).catch((err) => {
+      this.handleSSEEvent(integrationId, chatId, event, sessionId).catch((err) => {
         console.error(`[ChatIntegrationManager] Error handling SSE event:`, err)
         reportError(err, 'sse-event', { integrationId, chatId, eventType: (event as any)?.type })
       })
@@ -1584,7 +1584,7 @@ class ChatIntegrationManager {
 
   // ── SSE event handling ────────────────────────────────────────────
 
-  private async handleSSEEvent(integrationId: string, chatId: string, event: unknown): Promise<void> {
+  private async handleSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string): Promise<void> {
     const key = this.getChatSessionKey(integrationId, chatId)
     const session = this.chatSessions.get(key)
     if (!session) return
@@ -1595,7 +1595,7 @@ class ChatIntegrationManager {
     if (!isChatAllowed(integrationId, chatId)) return
 
     const showToolCalls = getChatIntegration(integrationId)?.showToolCalls ?? false
-    await processSSEEvent(session, event, showToolCalls)
+    await processSSEEvent(session, event, showToolCalls, sessionId)
   }
 
   // ── Interactive response handling ─────────────────────────────────
@@ -1873,6 +1873,7 @@ export async function processSSEEvent(
   managed: ManagedConnector,
   event: unknown,
   showToolCalls = false,
+  sessionId?: string,
 ): Promise<void> {
   const data = event as Record<string, unknown>
   const eventType = data.type as string
@@ -1996,7 +1997,7 @@ export async function processSSEEvent(
       // auto-approved script run (card shown but the session stays 'working') keeps its tick.
       clearIndicator(managed)
       try {
-        await managed.connector.sendUserRequestCard(managed.chatId, data as UserRequestEvent)
+        await managed.connector.sendUserRequestCard(managed.chatId, data as UserRequestEvent, sessionId)
       } catch (err) {
         console.error(`[ChatIntegrationManager] Failed to send user request card (${eventType}):`, err)
         reportError(err, 'send-user-request-card', { integrationId: managed.integration.id, provider: managed.integration.provider, eventType })

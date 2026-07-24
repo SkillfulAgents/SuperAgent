@@ -6,6 +6,7 @@ import {
   isSettling,
   isUnsupportedInChat,
   resolveAppLinkContext,
+  withSessionUrl,
   type AppLinkContext,
 } from './utils'
 
@@ -211,5 +212,44 @@ describe('isUnsupportedInChat / describeUnsupportedRequest', () => {
     const message = describeUnsupportedRequest(event)
     expect(message).toContain('Open Gamut on your desktop to continue.')
     expect(message).not.toContain('://')
+  })
+})
+
+describe('withSessionUrl', () => {
+  const desktop = { isDesktop: true, url: 'superagent://agent/demo' }
+  const web = { isDesktop: false, url: 'https://host.example/agents/demo' }
+
+  it('suffixes the session path onto a desktop link', () => {
+    expect(withSessionUrl(desktop, 'sess-1')).toEqual({
+      isDesktop: true,
+      url: 'superagent://agent/demo/sessions/sess-1',
+    })
+  })
+
+  it('suffixes the session path onto a web link', () => {
+    expect(withSessionUrl(web, 'sess-1')?.url).toBe('https://host.example/agents/demo/sessions/sess-1')
+  })
+
+  it('strips trailing slashes from the base before appending', () => {
+    expect(withSessionUrl({ isDesktop: false, url: 'https://host.example/agents/demo/' }, 's')?.url)
+      .toBe('https://host.example/agents/demo/sessions/s')
+  })
+
+  it('URI-encodes the session id', () => {
+    expect(withSessionUrl(desktop, 'a/b c')?.url).toBe('superagent://agent/demo/sessions/a%2Fb%20c')
+  })
+
+  it('passes through when the session id is missing or empty', () => {
+    expect(withSessionUrl(desktop)).toBe(desktop)
+    expect(withSessionUrl(desktop, '')).toBe(desktop)
+  })
+
+  it('passes through a null-url context (self-hosted cloud)', () => {
+    const noUrl = { isDesktop: false, url: null }
+    expect(withSessionUrl(noUrl, 'sess-1')).toBe(noUrl)
+  })
+
+  it('passes through undefined context', () => {
+    expect(withSessionUrl(undefined, 'sess-1')).toBeUndefined()
   })
 })

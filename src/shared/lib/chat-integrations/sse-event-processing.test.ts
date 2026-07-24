@@ -321,6 +321,16 @@ describe('processSSEEvent', () => {
       expect(mock.sentCards.length).toBe(1)
       expect(mock.sentCards[0].event.type).toBe('secret_request')
     })
+
+    it('threads the originating sessionId into sendUserRequestCard', async () => {
+      await processSSEEvent(managed, { type: 'secret_request', secretName: 'K' }, false, 'sess-42')
+      expect(getMock(managed).sentCards[0]?.sessionId).toBe('sess-42')
+    })
+
+    it('sends no sessionId when the caller has none', async () => {
+      await processSSEEvent(managed, { type: 'secret_request', secretName: 'K' }, false)
+      expect(getMock(managed).sentCards[0]?.sessionId).toBeUndefined()
+    })
   })
 
   // ── Typing indicator ────────────────────────────────────────────
