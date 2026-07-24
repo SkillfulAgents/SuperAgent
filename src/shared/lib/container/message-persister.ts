@@ -231,8 +231,15 @@ export function redactStreamedToolInput(toolName: string | undefined, partialInp
 }
 
 // TODO this file is too big, this class is HUGE. Needs breaking up
+/** Grace after an observed result before self-settling when idle is lost. */
+export const RESULT_IDLE_GRACE_MS = 5_000
+
 class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
+  // Single-shot per-session backstop: armed when a result is seen under
+  // state-events authority and the idle may still be lost on a dead socket.
+  // Never settles a turn whose result was not seen (#339 honesty).
+  private resultIdleGraceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
   // "Allow for this session" capability grants, keyed by sessionId. Display
   // bookkeeping ONLY — enforcement lives in the container (which persists its
   // copy with the session). Once granted, launches auto-allow container-side
@@ -291,6 +298,11 @@ class MessagePersister {
     const priorIsActive = prior?.isActive ?? false
     const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
     const priorBackgroundTasks = prior?.activeBackgroundTasks ?? new Map()
+    // Settle-relevant reply memory must survive external re-subscribe (SSE /
+    // chat bridge). Resetting these made a post-reconnect idle look stale and
+    // left the session busy forever when the drop raced the container's idle.
+    const priorLastResultSubtype = prior?.lastResultSubtype ?? null
+    const priorLastResultCleanSuccess = prior?.lastResultCleanSuccess ?? false
 
     // Unsubscribe if already subscribed (this also clears state, which is why
     // we captured the flags above)
@@ -320,10 +332,16 @@ class MessagePersister {
       bgTasksSnapshot: prior?.bgTasksSnapshot ?? null,
       pendingDeliverFiles: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
-      lastResultSubtype: null,
-      lastResultCleanSuccess: false,
+      lastResultSubtype: priorLastResultSubtype,
+      lastResultCleanSuccess: priorLastResultCleanSuccess,
       isRetrying: false,
     })
+
+    // Re-arm the grace backstop when a re-subscribe preserved an in-flight
+    // turn that already saw a result (unsubscribe tears the previous timer down).
+    if (priorIsActive && priorLastResultSubtype !== null) {
+      this.armResultIdleGrace(sessionId)
+    }
 
     // Store container client for reconnection checks
     this.containerClients.set(sessionId, client)
@@ -348,6 +366,7 @@ class MessagePersister {
 
   // Unsubscribe from a session
   unsubscribeFromSession(sessionId: string): void {
+    this.cancelResultIdleGrace(sessionId)
     const unsubscribe = this.subscriptions.get(sessionId)
     if (unsubscribe) {
       unsubscribe()
@@ -362,10 +381,66 @@ class MessagePersister {
     this.sessionCapabilityGrants.delete(sessionId)
   }
 
+  private cancelResultIdleGrace(sessionId: string): void {
+    const timer = this.resultIdleGraceTimers.get(sessionId)
+    if (!timer) return
+    clearTimeout(timer)
+    this.resultIdleGraceTimers.delete(sessionId)
+  }
+
+  // Post-result stream activity: cancel the grace timer. Tier-1 new-turn
+  // evidence also clears result memory so the honesty gate itself rejects
+  // settling turn N+1 on turn N's stale result. Never re-arms here.
+  private noteLiveStreamActivity(
+    sessionId: string,
+    state: StreamingState,
+    options: { newTurnEvidence?: boolean } = {}
+  ): void {
+    this.cancelResultIdleGrace(sessionId)
+    if (options.newTurnEvidence) {
+      state.lastResultSubtype = null
+      state.lastResultCleanSuccess = false
+    }
+  }
+
+  private armResultIdleGrace(sessionId: string): void {
+    this.cancelResultIdleGrace(sessionId)
+    const timer = setTimeout(() => {
+      this.resultIdleGraceTimers.delete(sessionId)
+      this.fireResultIdleGrace(sessionId)
+    }, RESULT_IDLE_GRACE_MS)
+    this.resultIdleGraceTimers.set(sessionId, timer)
+  }
+
+  private fireResultIdleGrace(sessionId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (!state) return
+    // Full settle gate — never settle a turn whose result was not seen, and
+    // never while background work / any awaiting shelf / an external review
+    // blocker is open. Gate fails → do nothing (no re-arm; other roads own recovery).
+    if (
+      !state.isActive ||
+      state.lastResultSubtype === null ||
+      this.openBackgroundWorkCount(state) > 0 ||
+      state.isAwaitingInput ||
+      this.hasBlockingPendingRequests(state) ||
+      this.hasExternalAwaitingBlocker(state.agentSlug)
+    ) {
+      return
+    }
+    this.finalizeIdle(sessionId, state)
+    if (state.lastResultSubtype === 'success' && state.agentSlug) {
+      notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+        console.error('[MessagePersister] Failed to trigger session complete notification:', err)
+      })
+    }
+  }
+
   // Single idle finalizer — flips state and broadcasts to session + global
   // listeners. Used by the result handler (legacy result-driven idle), the
   // session_state_changed handler (authoritative idle), and markSessionInactive.
   private finalizeIdle(sessionId: string, state: StreamingState): void {
+    this.cancelResultIdleGrace(sessionId)
     // The session is truly settled: persist the automation outcome for a turn
     // that ended in a clean success. (Failures were already persisted at their
     // result — an error ends the turn immediately. Interrupts never set the
@@ -760,6 +835,7 @@ class MessagePersister {
 
   // Mark a session as interrupted (not active)
   async markSessionInterrupted(sessionId: string): Promise<void> {
+    this.cancelResultIdleGrace(sessionId)
     const state = this.streamingStates.get(sessionId)
 
     // Set interrupted flag FIRST to prevent race conditions with incoming events
@@ -852,6 +928,7 @@ class MessagePersister {
         this.capture.recordNote(sessionId, 'state_created', { agentSlug }).catch(() => {})
       }
     }
+    this.cancelResultIdleGrace(sessionId)
     state.isActive = true
     state.isInterrupted = false // Reset interrupted flag on new message
     state.isAwaitingInput = false // Reset awaiting input on new message
@@ -1220,6 +1297,7 @@ class MessagePersister {
 
     switch (content.type) {
       case 'assistant': {
+        this.noteLiveStreamActivity(sessionId, state)
         // Complete assistant message - JSONL is the source of truth
         // Track SDK error code from assistant message (e.g., 'authentication_failed', 'rate_limit')
         if (content.error) {
@@ -1249,6 +1327,7 @@ class MessagePersister {
       }
 
       case 'user':
+        this.noteLiveStreamActivity(sessionId, state)
         // Detect subagent completion: check if this user message contains tool_results
         // for any active subagent tool calls (meaning the subagent finished and returned its result)
         if (state.activeSubagents.size > 0) {
@@ -1422,6 +1501,8 @@ class MessagePersister {
             this.broadcastToSSE(sessionId, { type: 'compact_start' })
           }
           if (content.status === 'requesting') {
+            // Earliest queued-turn signal: CLI draining its command queue.
+            this.noteLiveStreamActivity(sessionId, state, { newTurnEvidence: true })
             // The CLI is composing the next model request — the moment it
             // drains its command queue. Queued (mid-turn) messages picked up
             // here are persisted as queued_command attachments with no stream
@@ -1627,17 +1708,23 @@ class MessagePersister {
                 }
               }
             }
-          } else if (content.state === 'running' && !state.isActive) {
-            // The runtime started a turn we didn't initiate via POST (e.g. a
-            // queued message picked up after an out-of-order idle) — self-heal.
-            state.isActive = true
-            this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
-            this.broadcastGlobal({
-              type: 'session_active',
-              sessionId,
-              agentSlug: state.agentSlug,
-              isActive: true,
-            })
+          } else if (content.state === 'running') {
+            // Unambiguous new-turn evidence — cancel grace + clear result memory
+            // even while isActive is still true (queued follow-up; self-heal
+            // below only covers the inactive case).
+            this.noteLiveStreamActivity(sessionId, state, { newTurnEvidence: true })
+            if (!state.isActive) {
+              // The runtime started a turn we didn't initiate via POST (e.g. a
+              // queued message picked up after an out-of-order idle) — self-heal.
+              state.isActive = true
+              this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
+              this.broadcastGlobal({
+                type: 'session_active',
+                sessionId,
+                agentSlug: state.agentSlug,
+                isActive: true,
+              })
+            }
           }
         } else if (content.subtype === 'background_tasks_changed') {
           // Authoritative full snapshot of the session's live background tasks
@@ -1809,8 +1896,11 @@ class MessagePersister {
         // when the session is settled — a result alone doesn't: queued
         // (mid-turn) messages or background work may keep it running, and the
         // runtime holds that state, not us. session_state_changed:'idle'
-        // finalizes (and fires the completion notification).
+        // finalizes (and fires the completion notification). Arm a grace
+        // backstop so a lost idle (dead socket) still settles once nothing is
+        // pending — never before a result was seen.
         if (state.stateEventsAuthority) {
+          this.armResultIdleGrace(sessionId)
           break
         }
 
@@ -1865,6 +1955,7 @@ class MessagePersister {
         break
 
       case 'stream_event':
+        this.noteLiveStreamActivity(sessionId, state)
         // Handle stream events for SSE broadcasting
         if (content.event) {
           this.handleStreamEvent(sessionId, content.event, state)
@@ -1931,6 +2022,7 @@ class MessagePersister {
 
   // Mark a session as inactive and broadcast the update
   private markSessionInactive(sessionId: string, state: StreamingState): void {
+    this.cancelResultIdleGrace(sessionId)
     // A session that was mid-turn (user message sent, no result yet) and not
     // deliberately interrupted didn't finish — its runtime vanished (container
     // crash, guest OOM kill of the agent process, VM death). Surface that as an

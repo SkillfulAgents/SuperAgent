@@ -474,6 +474,10 @@ export class ClaudeCodeProcess extends EventEmitter {
   private lastTurnInformationals: SDKMessage[] = [];
   private lastResultMessage: SDKMessage | null = null;
   private lastSessionState: string | null = null;
+  // Latest authoritative background-task snapshot for late-join replay. A
+  // reconnecting host that only sees result+idle would otherwise keep a stale
+  // local task hold forever (the live consumer self-heals when this arrives).
+  private lastBackgroundTasksChanged: SDKMessage | null = null;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
 
   constructor(options: ClaudeCodeProcessOptions) {
@@ -1043,6 +1047,20 @@ export class ClaudeCodeProcess extends EventEmitter {
 
       if (isAbortError) {
         console.log(`[Session ${this.sessionId}] Query aborted`);
+        // Terminal idle on abort ONLY when this loop is exiting with no
+        // successor query. interrupt() restarts via initializeQuery() unless
+        // stop()/dispose set `stopping` first — emitting idle on a settings-
+        // change interrupt would falsely settle a continuing session. When
+        // stopping, the host usually settles via markSessionInterrupted; the
+        // frame here is for live symmetry and late-join replay.
+        if (this.stopping && generation === this.queryGeneration) {
+          this.emitTrackedMessage({
+            type: 'system',
+            subtype: 'session_state_changed',
+            state: 'idle',
+            session_id: this.claudeSessionId || this.sessionId,
+          } as SDKMessage);
+        }
       } else {
         console.error(`[Session ${this.sessionId}] Query error:`, error);
         // Only emit a synthetic result if the SDK hasn't already reported this
@@ -1062,15 +1080,27 @@ export class ClaudeCodeProcess extends EventEmitter {
             userError = errorMsg || 'An unexpected error occurred';
           }
           // Emit synthetic result so downstream (WebSocket → message-persister → UI)
-          // knows the query failed and can transition to error state
+          // knows the query failed and can transition to error state. Route
+          // through trackForLateJoinReplay so a reconnecting host can recover
+          // the turn end (the live path already settles on isError).
           const isFatal = errorMsg.includes('SIGKILL') || errorMsg.includes('SIGTERM');
-          this.emit('message', {
+          this.emitTrackedMessage({
             type: 'result',
             subtype: 'error',
             error: userError,
             session_id: this.claudeSessionId || this.sessionId,
             ...(isFatal && { fatal: true }),
-          });
+          } as SDKMessage);
+        }
+        // Always announce turn-over after an abnormal exit so replay and live
+        // consumers see a terminal idle (host live path also settles on error).
+        if (generation === this.queryGeneration) {
+          this.emitTrackedMessage({
+            type: 'system',
+            subtype: 'session_state_changed',
+            state: 'idle',
+            session_id: this.claudeSessionId || this.sessionId,
+          } as SDKMessage);
         }
         // Only emit if there are listeners to prevent crash
         if (this.listenerCount('error') > 0) {
@@ -1362,9 +1392,17 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.lastResultMessage = message;
       this.lastTurnInformationals = this.currentTurnInformationals;
       this.currentTurnInformationals = [];
+    } else if (msg.type === 'system' && msg.subtype === 'background_tasks_changed') {
+      this.lastBackgroundTasksChanged = message;
     } else if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
       this.lastSessionState = msg.state ?? null;
     }
+  }
+
+  /** Track then emit — used for synthetic terminal frames outside the SDK loop. */
+  private emitTrackedMessage(message: SDKMessage): void {
+    this.trackForLateJoinReplay(message);
+    this.emit('message', message);
   }
 
   /**
@@ -1386,6 +1424,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     return [
       ...this.lastTurnInformationals,
       this.lastResultMessage,
+      ...(this.lastBackgroundTasksChanged ? [this.lastBackgroundTasksChanged] : []),
       {
         type: 'system',
         subtype: 'session_state_changed',
