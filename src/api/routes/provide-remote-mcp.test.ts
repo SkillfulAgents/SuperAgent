@@ -451,3 +451,95 @@ describe('provide-remote-mcp handler', () => {
     expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 })
+
+describe('Agent Settings remote MCP live sync', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockGetHostApiBaseUrl.mockResolvedValue('http://10.20.107.8:3000')
+  })
+
+  it('updates REMOTE_MCPS in a running container after assignment', async () => {
+    const onConflictDoNothing = vi.fn().mockResolvedValue(undefined)
+    mockInsertValues.mockReturnValueOnce({ onConflictDoNothing })
+
+    // Existing assignments lookup → none.
+    mockSelectFrom.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([]),
+    })
+    // Runtime projection after insert.
+    mockSelectFrom.mockReturnValueOnce({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([
+          {
+            mcp: {
+              id: 'mcp-1',
+              name: 'Calendar',
+              status: 'active',
+              toolsJson: JSON.stringify([{ name: 'list_events' }]),
+            },
+          },
+        ]),
+      }),
+    })
+    mockContainerFetch.mockResolvedValueOnce({
+      ok: true,
+      text: async () => '',
+    })
+
+    const res = await app.request('http://localhost/api/agents/test-agent/remote-mcps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpIds: ['mcp-1'] }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(onConflictDoNothing).toHaveBeenCalledOnce()
+    const envCall = mockContainerFetch.mock.calls.find(([path]) => path === '/env')
+    expect(envCall).toBeDefined()
+    const envBody = JSON.parse(envCall![1].body as string)
+    const configs = JSON.parse(envBody.value)
+    expect(configs).toEqual([
+      {
+        id: 'mcp-1',
+        name: 'Calendar',
+        proxyUrl: 'http://10.20.107.8:3000/api/mcp-proxy/test-agent/mcp-1',
+        tools: [{ name: 'list_events' }],
+      },
+    ])
+  })
+
+  it('updates REMOTE_MCPS in a running container after removal', async () => {
+    // Mapping ownership lookup.
+    mockSelectFrom.mockReturnValueOnce({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'mapping-1' }]),
+        }),
+      }),
+    })
+    // Runtime projection after delete → empty.
+    mockSelectFrom.mockReturnValueOnce({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    })
+    mockContainerFetch.mockResolvedValueOnce({
+      ok: true,
+      text: async () => '',
+    })
+
+    const res = await app.request(
+      'http://localhost/api/agents/test-agent/remote-mcps/mcp-1',
+      { method: 'DELETE' },
+    )
+
+    expect(res.status).toBe(204)
+    const envCall = mockContainerFetch.mock.calls.find(([path]) => path === '/env')
+    expect(envCall).toBeDefined()
+    const envBody = JSON.parse(envCall![1].body as string)
+    expect(JSON.parse(envBody.value)).toEqual([])
+  })
+})
