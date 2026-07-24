@@ -3,7 +3,6 @@ import { ChevronDown } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
-import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { EFFORT_LEVELS } from '@shared/lib/container/types'
 import { type ComposerOptionsState } from './composer-options'
 import { ModelFamilyList, findCatalogModel } from './model-family-list'
@@ -66,7 +65,6 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
           aria-label={`${includeEffort ? 'Model and effort' : 'Model'}: ${triggerAriaLabel}. Click to change.`}
           data-testid="composer-options-trigger"
         >
-          {selectedModel && <ModelIcon icon={selectedModel.icon} className="h-3.5 w-3.5 shrink-0" />}
           <span>
             {selectedModelLabel}
             {includeEffort && (

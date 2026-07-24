@@ -29,7 +29,6 @@ import { ComposerOptions, useComposerOptions } from '@renderer/components/messag
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
-import { HomeDefaultModel } from './home-default-model'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
 import { HomeChatIntegrations } from './home-chat-integrations'
@@ -563,7 +562,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             }} />
             <HomeChatIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
             <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
-            <HomeDefaultModel className="intro-step intro-step-9" agentSlug={agent.slug} />
             <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
             <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={isOwner} />
           </div>

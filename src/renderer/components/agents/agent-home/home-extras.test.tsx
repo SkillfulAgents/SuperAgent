@@ -17,6 +17,12 @@ vi.mock('@renderer/context/file-preview-context', () => ({
   useFilePreview: () => ({ openFolder: mocks.openFolder }),
 }))
 
+// Covered by home-default-model.test.tsx; stubbed here to keep this test
+// free of its settings/preferences data hooks.
+vi.mock('./home-default-model', () => ({
+  HomeDefaultModel: () => <div data-testid="home-default-model-card" />,
+}))
+
 describe('HomeExtras', () => {
   it('opens Agent Directory in the built-in folder browser', async () => {
     const user = userEvent.setup()
