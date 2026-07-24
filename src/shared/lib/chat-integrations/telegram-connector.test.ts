@@ -680,14 +680,14 @@ describe('TelegramConnector - unsupported-request session link', () => {
   it('renders the session-scoped link when a sessionId is passed', async () => {
     const connector = new TelegramConnector({ botToken: 'fake:TOKEN' }, { isDesktop: true, url: 'superagent://agent/demo' })
     const fake = attachFakeBot(connector)
-    await connector.sendUserRequestCard('123', { type: 'computer_use_request' } as any, 'sess-1')
+    await connector.sendUserRequestCard('123', { type: 'secret_request', toolUseId: 'tu-1', secretName: 'K' }, 'sess-1')
     expect(JSON.stringify(fake.sent)).toContain('superagent://agent/demo/sessions/sess-1')
   })
 
   it('falls back to the agent-home link without a sessionId', async () => {
     const connector = new TelegramConnector({ botToken: 'fake:TOKEN' }, { isDesktop: true, url: 'superagent://agent/demo' })
     const fake = attachFakeBot(connector)
-    await connector.sendUserRequestCard('123', { type: 'computer_use_request' } as any)
+    await connector.sendUserRequestCard('123', { type: 'secret_request', toolUseId: 'tu-1', secretName: 'K' })
     const sent = JSON.stringify(fake.sent)
     expect(sent).toContain('superagent://agent/demo')
     expect(sent).not.toContain('/sessions/')

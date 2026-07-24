@@ -82,6 +82,17 @@ describe('SUP-234: chat integration message queue cleanup', () => {
     expect(mgr.messageQueues.size).toBe(0)
   })
 
+  it('keeps each SSE event tied to its originating session', async () => {
+    const handler = vi.spyOn(mgr, 'handleSSEEvent').mockResolvedValue(undefined)
+
+    mgr.enqueueSSEEvent('intg-2', 'chat-2', { type: 'first' }, 'sess-old')
+    mgr.enqueueSSEEvent('intg-2', 'chat-2', { type: 'second' }, 'sess-new')
+    await flushMicrotasks()
+
+    expect(handler).toHaveBeenNthCalledWith(1, 'intg-2', 'chat-2', { type: 'first' }, 'sess-old')
+    expect(handler).toHaveBeenNthCalledWith(2, 'intg-2', 'chat-2', { type: 'second' }, 'sess-new')
+  })
+
   it('keeps in-flight (unsettled) queue entries', async () => {
     vi.spyOn(mgr, 'handleIncomingMessage').mockReturnValue(pendingForever())
 

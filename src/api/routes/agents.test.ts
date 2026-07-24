@@ -251,6 +251,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true),
+  isSessionRegistered: vi.fn().mockResolvedValue(false),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   deleteSession: vi.fn(),
   removeMessage: vi.fn(),
@@ -437,7 +438,8 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
 }))
 
 vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))
-vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
+const mockStreamSSE = vi.fn((..._args: unknown[]) => new Response(null, { status: 200 }))
+vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStreamSSE(...args) }))
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
@@ -451,7 +453,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, deleteSession, getSession, readSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, isSessionRegistered, deleteSession, getSession, readSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -820,6 +822,36 @@ describe('session usage — GET /:id/sessions/:sessionId/usage', () => {
 
     expect(res.status).toBe(404)
     expect(mockLoadSessionUsageTotals).not.toHaveBeenCalled()
+  })
+})
+
+describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('rejects a session that does not belong to the authorized agent', async () => {
+    vi.mocked(sessionExists).mockResolvedValueOnce(false)
+
+    const res = await getReq(app, '/api/agents/authorized-agent/sessions/foreign-session/stream')
+
+    expect(res.status).toBe(404)
+    expect(sessionExists).toHaveBeenCalledWith('authorized-agent', 'foreign-session')
+    expect(mockStreamSSE).not.toHaveBeenCalled()
+  })
+
+  it('allows a newly registered session before its transcript exists', async () => {
+    vi.mocked(sessionExists).mockResolvedValueOnce(false)
+    vi.mocked(isSessionRegistered).mockResolvedValueOnce(true)
+
+    const res = await getReq(app, '/api/agents/authorized-agent/sessions/new-session/stream')
+
+    expect(res.status).toBe(200)
+    expect(isSessionRegistered).toHaveBeenCalledWith('authorized-agent', 'new-session')
+    expect(mockStreamSSE).toHaveBeenCalledOnce()
   })
 })
 
