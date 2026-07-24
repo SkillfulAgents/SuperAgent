@@ -85,7 +85,7 @@ describe('getDocumentTitle', () => {
     expect(getDocumentTitle({ location: location({ kind: 'notifications' }) })).toBe(`Notifications${DOT}Gamut`)
     expect(getDocumentTitle({ location: location({ kind: 'home' }), isSettingsRoute: true })).toBe(`Settings${DOT}Gamut`)
     expect(getDocumentTitle({ location: location({ kind: 'home' }), isSettingsRoute: true, settingsTab: 'llm' })).toBe(
-      `Settings${DASH}LLM Provider`,
+      `Settings${DASH}Model Provider`,
     )
   })
 })
