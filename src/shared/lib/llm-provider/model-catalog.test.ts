@@ -41,7 +41,7 @@ describe('getProviderCatalog', () => {
     const catalog = getProviderCatalog('anthropic')
     const opusLatest = catalog.filter((m) => m.family === 'opus' && m.isLatest)
     expect(opusLatest).toHaveLength(1)
-    expect(opusLatest[0].id).toBe('claude-opus-4-8')
+    expect(opusLatest[0].id).toBe('claude-opus-5')
   })
 
   it('gives Opus/Fable all five efforts and Sonnet/Haiku the lower three', () => {
@@ -413,7 +413,7 @@ describe('resolveModelForProvider', () => {
   })
 
   it('resolves a bare family alias to that family latest id', () => {
-    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-4-8')
+    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-5')
     expect(resolveModelForProvider('sonnet', 'anthropic', 'agent')).toBe('claude-sonnet-5')
   })
 
@@ -423,7 +423,7 @@ describe('resolveModelForProvider', () => {
 
   it('falls back to the provider default (alias-resolved) for an unknown family-less alias', () => {
     // Anthropic agent default is 'opus' → resolves to its latest concrete id.
-    expect(resolveModelForProvider('mystery', 'anthropic', 'agent')).toBe('claude-opus-4-8')
+    expect(resolveModelForProvider('mystery', 'anthropic', 'agent')).toBe('claude-opus-5')
     // Summarizer default 'haiku' → latest haiku.
     expect(resolveModelForProvider('mystery', 'anthropic', 'summarizer')).toBe('claude-haiku-4-5')
   })
@@ -441,11 +441,12 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')
     expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.5')
     expect(resolveModelForProvider('grok-4.5', 'platform', 'agent')).toBe('grok-4.5')
-    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('claude-opus-4-8')
+    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('claude-opus-5')
   })
 
   it('resolves the SAME bare alias to each provider concrete id (cross-provider portability)', () => {
-    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-4-8')
+    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-5')
+    // Bedrock's opus family stays on 4.8 until AWS publishes an Opus 5 region id.
     expect(resolveModelForProvider('opus', 'bedrock', 'agent')).toBe('us.anthropic.claude-opus-4-8')
   })
 

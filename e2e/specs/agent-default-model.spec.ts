@@ -119,6 +119,6 @@ test.describe('Per-agent default model', () => {
     const resetRecord = await waitForRecord(
       (r) => r.type === 'createSession' && r.initialMessage === resetMessage
     )
-    expect(resetRecord.model).toBe('claude-opus-4-8')
+    expect(resetRecord.model).toBe('claude-opus-5')
   })
 })
