@@ -307,6 +307,28 @@ describe('grant verification', () => {
     expect((await res.json()).error).toBe('invalid_grant')
   })
 
+  it('rejects a still-valid grant whose total lifetime exceeds the max', async () => {
+    // Old iat, near-future exp: not yet expired, but claims a >5min lifetime.
+    const now = Math.floor(Date.now() / 1000)
+    const res = await exchangeRequest(await signGrant({ iat: now - 3600, exp: now + 120 }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe('invalid_grant')
+  })
+
+  it('refuses to exchange when the deployment org pin is unavailable', async () => {
+    const pinned = process.env.PLATFORM_TOKEN
+    delete process.env.PLATFORM_TOKEN
+    try {
+      // A correctly-signed grant for the right org must still be rejected:
+      // without a verified org pin the exchange fails closed.
+      const res = await exchangeRequest(await signGrant())
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toBe('invalid_grant')
+    } finally {
+      process.env.PLATFORM_TOKEN = pinned
+    }
+  })
+
   it('rejects a grant whose email is not an email address', async () => {
     const res = await exchangeRequest(
       await signGrant({ payload: { email: 'not-an-email' } }),
@@ -337,6 +359,27 @@ describe('grant verification', () => {
         'content-length': String(64 * 1024),
       },
       body: new URLSearchParams({ grant_type: GRANT_TYPE, assertion: 'x' }).toString(),
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe('invalid_request')
+  })
+
+  it('rejects an oversized chunked body that declares no content-length', async () => {
+    // A streamed body has no Content-Length, so the pre-check can't see it;
+    // bodyLimit must abort mid-stream by byte count.
+    const oversized = 'a'.repeat(20 * 1024)
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(oversized))
+        controller.close()
+      },
+    })
+    const res = await app.request('/api/auth/token/exchange', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: stream,
+      // @ts-expect-error duplex is required for a streaming request body
+      duplex: 'half',
     })
     expect(res.status).toBe(400)
     expect((await res.json()).error).toBe('invalid_request')

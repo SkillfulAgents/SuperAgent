@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { captureException } from '@shared/lib/error-reporting'
 import { JWT_BEARER_GRANT_TYPE, type TokenExchangeErrorCode } from '@shared/lib/auth/token-exchange-schema'
@@ -44,26 +45,25 @@ function singleParam(params: URLSearchParams, name: string): string | null {
  */
 const tokenExchange = new Hono()
 
-tokenExchange.post('/exchange', async (c) => {
+// Bound the request body by bytes before it is buffered. bodyLimit checks a
+// declared Content-Length up front and, for chunked bodies with none, aborts
+// mid-stream once the byte count is exceeded — so a body-less-Content-Length
+// request can't force us to buffer unbounded input.
+const limitBody = bodyLimit({
+  maxSize: MAX_FORM_BODY_BYTES,
+  onError: (c) => oauthError(c, 400, 'invalid_request'),
+})
+
+tokenExchange.post('/exchange', limitBody, async (c) => {
   const contentType = (c.req.header('content-type') ?? '').split(';')[0].trim().toLowerCase()
   if (contentType !== 'application/x-www-form-urlencoded') {
     return oauthError(c, 400, 'invalid_request', 'content type must be application/x-www-form-urlencoded')
-  }
-
-  // Reject oversized bodies before buffering when the client declares a
-  // length; the post-read check below still covers chunked encodings.
-  const declaredLength = Number(c.req.header('content-length'))
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_FORM_BODY_BYTES) {
-    return oauthError(c, 400, 'invalid_request')
   }
 
   let rawBody: string
   try {
     rawBody = await c.req.text()
   } catch {
-    return oauthError(c, 400, 'invalid_request')
-  }
-  if (rawBody.length > MAX_FORM_BODY_BYTES) {
     return oauthError(c, 400, 'invalid_request')
   }
 

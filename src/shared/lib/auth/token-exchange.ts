@@ -83,11 +83,19 @@ async function verifyGrant(assertion: string): Promise<DeploymentGrantClaims> {
   const claims = parsed.data
 
   const nowSec = Math.floor(Date.now() / 1000)
-  if (claims.exp > nowSec + MAX_GRANT_LIFETIME_SEC + CLOCK_SKEW_SEC) {
-    throw new TokenExchangeError('invalid_grant')
-  }
   // Not issued in the future (jose does not check iat by default).
   if (claims.iat > nowSec + CLOCK_SKEW_SEC) {
+    throw new TokenExchangeError('invalid_grant')
+  }
+  // Positive, bounded total lifetime — enforce the documented ≤5-min contract
+  // against iat directly, not just how far exp sits from now. A grant claiming
+  // a long lifetime (old iat, near-future exp) is rejected even if it hasn't
+  // expired yet.
+  if (claims.exp <= claims.iat || claims.exp - claims.iat > MAX_GRANT_LIFETIME_SEC) {
+    throw new TokenExchangeError('invalid_grant')
+  }
+  // And it must still be fresh relative to now.
+  if (claims.exp > nowSec + MAX_GRANT_LIFETIME_SEC + CLOCK_SKEW_SEC) {
     throw new TokenExchangeError('invalid_grant')
   }
   // Exactly this deployment as the sole audience: jose accepts any array
@@ -96,10 +104,14 @@ async function verifyGrant(assertion: string): Promise<DeploymentGrantClaims> {
     throw new TokenExchangeError('invalid_grant')
   }
 
-  // Org gate: identical to interactive login — a grant minted for another
-  // org's deployment can never create a session here.
+  // Org gate — fail closed. The browser-login gate allows a non-org-pinned
+  // deployment (no PLATFORM_TOKEN → any org), but a headless token exchange
+  // must not: a missing or malformed deployment org pin is a misconfiguration,
+  // and minting a session for an unverified org would be a fail-open. Every
+  // real auth-mode deployment carries PLATFORM_TOKEN, so this only rejects the
+  // broken case.
   const deploymentOrg = decodeOrgIdFromToken(process.env.PLATFORM_TOKEN ?? '')
-  if (deploymentOrg && claims.org_id !== deploymentOrg) {
+  if (!deploymentOrg || claims.org_id !== deploymentOrg) {
     throw new TokenExchangeError('invalid_grant')
   }
 
