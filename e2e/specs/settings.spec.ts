@@ -245,10 +245,15 @@ test.describe('Settings Page', () => {
     await expect(page.locator('[data-testid="settings-sidebar"]')).not.toBeVisible()
   })
 
-  test('non-auth mode shows ungrouped sections (no group labels)', async ({ page }) => {
+  test('sidebar shows the four semantic settings groups', async ({ page }) => {
     await openSettings(page)
-    // Group labels are only rendered in auth+admin mode; in non-auth mode the sidebar is flat.
-    await expect(page.locator('[data-sidebar="group-label"]')).toHaveCount(0)
+    // Semantic groups render for everyone, regardless of auth mode.
+    const labels = page.locator('[data-sidebar="group-label"]')
+    await expect(labels).toHaveCount(4)
+    await expect(labels.nth(0)).toHaveText('App Settings')
+    await expect(labels.nth(1)).toHaveText('Agent Capabilities')
+    await expect(labels.nth(2)).toHaveText('Agent Infrastructure')
+    await expect(labels.nth(3)).toHaveText('Agent Activity')
   })
 })
 
