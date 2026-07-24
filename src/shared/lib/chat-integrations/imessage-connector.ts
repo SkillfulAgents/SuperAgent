@@ -10,7 +10,7 @@ import WebSocket from 'ws'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
-import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
+import { describeUnsupportedRequest, isUnsupportedInChat, withSessionUrl, type AppLinkContext } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -104,7 +104,7 @@ export class IMessageConnector extends ChatClientConnector {
   private nextUploadId = 0
   private nextApprovalId = 0
 
-  constructor(private config: IMessageConfig) {
+  constructor(private config: IMessageConfig, private appLink?: AppLinkContext) {
     super()
   }
 
@@ -340,10 +340,11 @@ export class IMessageConnector extends ChatClientConnector {
 
   // ── User request cards ──────────────────────────────────────────────
 
-  async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
+  async sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
+    const appLink = withSessionUrl(this.appLink, sessionId)
     const targetChatId = chatId || this.lastChatId || undefined
     if (isUnsupportedInChat(event)) {
-      return this.sendTextAndReturn(describeUnsupportedRequest(event), targetChatId)
+      return this.sendTextAndReturn(describeUnsupportedRequest(event, appLink), targetChatId)
     }
 
     switch (event.type) {
@@ -370,7 +371,7 @@ export class IMessageConnector extends ChatClientConnector {
       }
 
       default: {
-        return this.sendTextAndReturn(describeUnsupportedRequest(event), targetChatId)
+        return this.sendTextAndReturn(describeUnsupportedRequest(event, appLink), targetChatId)
       }
     }
   }

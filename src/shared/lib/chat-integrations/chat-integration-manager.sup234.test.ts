@@ -30,9 +30,9 @@ import { chatIntegrationManager } from './chat-integration-manager'
 interface ManagerInternals {
   messageQueues: Map<string, unknown>
   enqueueMessage: (integrationId: string, message: { chatId: string; text?: string }) => void
-  enqueueSSEEvent: (integrationId: string, chatId: string, event: unknown) => void
+  enqueueSSEEvent: (integrationId: string, chatId: string, event: unknown, sessionId: string) => void
   handleIncomingMessage: (integrationId: string, message: unknown) => Promise<void>
-  handleSSEEvent: (integrationId: string, chatId: string, event: unknown) => Promise<void>
+  handleSSEEvent: (integrationId: string, chatId: string, event: unknown, sessionId: string) => Promise<void>
   removeIntegration: (id: string) => Promise<void>
 }
 
@@ -73,13 +73,24 @@ describe('SUP-234: chat integration message queue cleanup', () => {
   it('self-evicts a settled SSE queue entry', async () => {
     vi.spyOn(mgr, 'handleSSEEvent').mockResolvedValue(undefined)
 
-    mgr.enqueueSSEEvent('intg-2', 'chat-2', { type: 'session_idle' })
+    mgr.enqueueSSEEvent('intg-2', 'chat-2', { type: 'session_idle' }, 'sess-test')
     expect(mgr.messageQueues.has('sse:intg-2:chat-2')).toBe(true)
 
     await flushMicrotasks()
 
     expect(mgr.messageQueues.has('sse:intg-2:chat-2')).toBe(false)
     expect(mgr.messageQueues.size).toBe(0)
+  })
+
+  it('keeps each SSE event tied to its originating session', async () => {
+    const handler = vi.spyOn(mgr, 'handleSSEEvent').mockResolvedValue(undefined)
+
+    mgr.enqueueSSEEvent('intg-2', 'chat-2', { type: 'first' }, 'sess-old')
+    mgr.enqueueSSEEvent('intg-2', 'chat-2', { type: 'second' }, 'sess-new')
+    await flushMicrotasks()
+
+    expect(handler).toHaveBeenNthCalledWith(1, 'intg-2', 'chat-2', { type: 'first' }, 'sess-old')
+    expect(handler).toHaveBeenNthCalledWith(2, 'intg-2', 'chat-2', { type: 'second' }, 'sess-new')
   })
 
   it('keeps in-flight (unsettled) queue entries', async () => {
@@ -118,7 +129,7 @@ describe('SUP-234: chat integration message queue cleanup', () => {
     for (let c = 0; c < CHATS; c++) {
       for (let i = 0; i < PER_CHAT; i++) {
         mgr.enqueueMessage('vol', { chatId: `chat-${c}`, text: `m${i}` })
-        mgr.enqueueSSEEvent('vol', `chat-${c}`, { type: 'evt' })
+        mgr.enqueueSSEEvent('vol', `chat-${c}`, { type: 'evt' }, 'sess-test')
       }
     }
     expect(mgr.messageQueues.size).toBeGreaterThan(0)
@@ -138,9 +149,9 @@ describe('SUP-234: chat integration message queue cleanup', () => {
     // startsWith(id): 'intg2:c1'.startsWith('intg') is true, but
     // 'intg2:c1'.startsWith('intg:') is false — only the delimiter keeps intg2 safe.
     mgr.enqueueMessage('intg', { chatId: 'c1', text: 'hi' })
-    mgr.enqueueSSEEvent('intg', 'c2', { type: 'evt' })
+    mgr.enqueueSSEEvent('intg', 'c2', { type: 'evt' }, 'sess-test')
     mgr.enqueueMessage('intg2', { chatId: 'c1', text: 'hi' })
-    mgr.enqueueSSEEvent('intg2', 'c2', { type: 'evt' })
+    mgr.enqueueSSEEvent('intg2', 'c2', { type: 'evt' }, 'sess-test')
     await flushMicrotasks()
 
     // All in-flight, so all retained until explicitly removed.

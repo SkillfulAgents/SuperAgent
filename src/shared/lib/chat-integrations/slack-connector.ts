@@ -19,7 +19,7 @@ import {
   type OutgoingMessage,
   type SystemPromptContext,
 } from './base-connector'
-import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
+import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage, withSessionUrl, type AppLinkContext } from './utils'
 import { isUnrecoverableSlackError } from './slack-error'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -370,7 +370,7 @@ export class SlackConnector extends ChatClientConnector {
   // requires a re-mention if it ever resurfaces.
   private static readonly MAX_TRACKED_THREADS = 1000
 
-  constructor(private config: SlackConfig) {
+  constructor(private config: SlackConfig, private appLink?: AppLinkContext) {
     super()
   }
 
@@ -830,8 +830,9 @@ export class SlackConnector extends ChatClientConnector {
 
   // ── User request cards ──────────────────────────────────────────────
 
-  async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
+  async sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
+    const appLink = withSessionUrl(this.appLink, sessionId)
 
     const { channel, threadTs } = this.resolveChannel(chatId)
     const threadOpt = threadTs ? { thread_ts: threadTs } : {}
@@ -839,7 +840,7 @@ export class SlackConnector extends ChatClientConnector {
     if (isUnsupportedInChat(event)) {
       const result = await this.app.client.chat.postMessage({
         channel,
-        text: `_${describeUnsupportedRequest(event)}_`,
+        text: describeUnsupportedRequest(event, appLink),
         mrkdwn: true,
         ...threadOpt,
       })
@@ -935,7 +936,7 @@ export class SlackConnector extends ChatClientConnector {
       default: {
         const result = await this.app.client.chat.postMessage({
           channel,
-          text: `_${describeUnsupportedRequest(event)}_`,
+          text: describeUnsupportedRequest(event, appLink),
           mrkdwn: true,
           ...threadOpt,
         })

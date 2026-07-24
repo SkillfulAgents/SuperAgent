@@ -39,6 +39,7 @@ import {
   getSession,
   getSessionMetadata,
   sessionExists,
+  isSessionRegistered,
   updateSessionMetadata,
   deleteSession,
   removeMessage,
@@ -2124,7 +2125,14 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
 
 // GET /api/agents/:id/sessions/:sessionId/stream - SSE stream for real-time message updates
 agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
+  const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
+  if (
+    !(await sessionExists(agentSlug, sessionId)) &&
+    !(await isSessionRegistered(agentSlug, sessionId))
+  ) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
 
   return streamSSE(c, async (stream) => {
     let pingInterval: ReturnType<typeof setInterval> | null = null
@@ -2144,7 +2152,6 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       })
 
       // Send initial connection message (include slash commands for late-joining clients)
-      const agentSlug = getAgentId(c)
       const isActive = messagePersister.isSessionActive(sessionId)
       let slashCommands = messagePersister.getSlashCommands(sessionId)
       // Fall back to persisted metadata (e.g. after container restart)
