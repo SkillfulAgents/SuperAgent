@@ -143,6 +143,15 @@ export interface ManagedConnector {
   // True once the session_error notice has gone out for the current turn, so a
   // turn can't emit duplicate notices.
   turnNotified?: boolean
+  // True while a /stop is being processed for this chat. The priority lane runs
+  // concurrent /stops (they bypass the serial queue), so this latch keeps a double-tap
+  // or tap+typed /stop from double-interrupting or trailing a contradictory ack.
+  stopInFlight?: boolean
+  // Stall-nudge silence timer (see armStallNudge). Named to make its job
+  // unmistakable: it NEVER paints or clears the indicator.
+  stallNudgeTimer?: ReturnType<typeof setTimeout> | null
+  // True once this turn's stall nudge has gone out, so a turn nudges at most once.
+  stallNotified?: boolean
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────
@@ -184,6 +193,13 @@ class ChatIntegrationManager {
   // chain settles (see scheduleQueueEviction), so the map stays bounded.
   private messageQueues: Map<string, Promise<void>> = new Map()
   private lastSessionTouch: Map<string, number> = new Map()
+  // Per-(integration,chat) monotonic interrupt counter, bumped each time /stop actually
+  // interrupts a turn. A normal-message send captures it before its awaits and abandons
+  // itself if a concurrent /stop bumped it mid-flight — otherwise the send would resurrect
+  // a turn the user just stopped (the priority lane lets /stop interleave a suspended send).
+  // Keyed by the stable chat key (not the mutable ManagedConnector, which may not exist yet
+  // on a cold/reconnect path); evicted with the session in teardownManagedSession.
+  private stopEpochs: Map<string, number> = new Map()
 
   // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -647,9 +663,11 @@ class ChatIntegrationManager {
     const session = this.getOrCreateChatSession(integrationId, chatId)
     if (!session) return
 
-    // Clean up any previous subscription + its indicator tick
+    // Clean up any previous subscription + its indicator tick + any stall timer
+    // (a session swap must not leave a stale countdown running)
     session.sseUnsubscribe?.()
     stopIndicatorTick(session)
+    cancelStallNudge(session)
 
     const unsubscribe = messagePersister.addSSEClient(sessionId, (event: unknown) => {
       // Wake on a BUSY snapshot: an event means something changed, so re-arm the tick if the
@@ -657,7 +675,14 @@ class ChatIntegrationManager {
       // event is ignored — it must NOT arm a tick that nothing would sleep, nor cancel a pending
       // sleep. Synchronous and BEFORE the serialization queue, so a backed-up handler can't
       // delay the wake. The tick — not this — keeps painting.
-      armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(sessionId))
+      const eventActivity = messagePersister.getSessionActivity(sessionId)
+      armIndicatorIfBusy(session, sessionId, eventActivity)
+      // Any event is a sign of life: (re)arm the stall-nudge silence countdown.
+      // Arm-if-busy (not reset-if-armed) so a turn that started or resumed
+      // outside the dispatch points self-arms off its own events. Synchronous
+      // and BEFORE the queue, same reasoning as the wake above - a backed-up
+      // handler must not let the nudge fire while events are arriving.
+      armStallNudgeIfBusy(session, sessionId, eventActivity)
       // Serialize SSE event processing per chat session to prevent race conditions
       // (e.g. session_idle arriving while stream_delta's sendStreamingUpdate is still in-flight)
       this.enqueueSSEEvent(integrationId, chatId, event)
@@ -672,6 +697,9 @@ class ChatIntegrationManager {
     session.sessionId = sessionId
     const coldActivity = messagePersister.getSessionActivity(sessionId)
     armIndicatorIfBusy(session, sessionId, coldActivity)
+    // Same cold-snapshot symmetry for the stall nudge: a mid-turn re-subscribe
+    // (server restart, reconnect) starts a fresh countdown even before any event.
+    armStallNudgeIfBusy(session, sessionId, coldActivity)
     if (!BUSY_ACTIVITIES.has(coldActivity)) clearIndicator(session)
   }
 
@@ -840,6 +868,20 @@ class ChatIntegrationManager {
   // ── Message queue (serial per integration+chat) ─────────────────────
 
   private enqueueMessage(integrationId: string, message: IncomingMessage): void {
+    // Priority lane: /stop is an interrupt against the in-flight turn, not a turn
+    // of its own. It must act immediately, so it bypasses the serial per-chat
+    // queue instead of waiting behind an in-flight normal message (e.g. a cold
+    // container start that can take 20-30s). It still runs the full access gate
+    // and the existing /stop dispatch via handleIncomingMessage; it just isn't
+    // chained onto the queue.
+    if (isChatCommand(message.text, 'stop')) {
+      void this.handleIncomingMessage(integrationId, message).catch((err) => {
+        console.error(`[ChatIntegrationManager] Error handling /stop:`, err)
+        reportError(err, 'incoming-message', { integrationId, chatId: message.chatId })
+      })
+      return
+    }
+
     const queueKey = `${integrationId}:${message.chatId}`
     const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
     const next = current.then(() =>
@@ -904,14 +946,20 @@ class ChatIntegrationManager {
     // Telegram-only: /start is the Telegram onboarding convention and part of the
     // allowlist bootstrap UX. Other providers forward "/start" to the agent as a
     // normal message (their pre-allowlist behavior).
-    if (integration.provider === 'telegram' && message.text.trim().toLowerCase() === '/start') {
+    if (integration.provider === 'telegram' && isChatCommand(message.text, 'start')) {
       await conn.connector.sendMessage(chatId, { text: "You're connected. Send a message to start." }).catch(() => {})
       return
     }
 
     // Handle /clear command — reset the session for this chat
-    if (message.text.trim().toLowerCase() === '/clear') {
+    if (isChatCommand(message.text, 'clear')) {
       await this.clearChatSession(integrationId, chatId, conn.connector)
+      return
+    }
+
+    // Handle /stop command - interrupt the in-flight turn, keep the conversation
+    if (isChatCommand(message.text, 'stop')) {
+      await this.stopChatTurn(integration, chatId, conn.connector)
       return
     }
 
@@ -995,6 +1043,12 @@ class ChatIntegrationManager {
     }
 
     const sessionId = chatSession.sessionId
+    // Capture the interrupt epoch before the awaits below. A /stop can run concurrently
+    // (priority lane) and settle this session inactive while we're suspended; if it bumps
+    // the epoch we must abandon this send rather than resurrect the stopped turn (guarded
+    // before and after the container send below). Keyed by the stable chat key.
+    const stopKey = this.getChatSessionKey(integrationId, chatId)
+    const stopEpochAtEntry = this.stopEpochs.get(stopKey) ?? 0
 
     // Hoisted so the catch can reuse it for self-heal without re-downloading.
     let messageText = ''
@@ -1045,7 +1099,15 @@ class ChatIntegrationManager {
       })
       if (consumed) return
 
+      // A concurrent /stop (priority lane) settled this session while we were suspended in
+      // the awaits above. Re-check the interrupt epoch before submitting to the container:
+      // if the user stopped, abandon the message entirely — don't send it, don't activate.
+      // Mirrors the mid-flight revoke re-check above.
+      if ((this.stopEpochs.get(stopKey) ?? 0) !== stopEpochAtEntry) return
       await client.sendMessage(sessionId, messageText)
+      // Check again after the send: a /stop landing while it was in flight must not be
+      // re-activated here (the container-side interrupt discards the just-queued message).
+      if ((this.stopEpochs.get(stopKey) ?? 0) !== stopEpochAtEntry) return
       messagePersister.markSessionActive(sessionId, integration.agentSlug)
       const now = Date.now()
       const lastTouch = this.lastSessionTouch.get(chatSession.id) ?? 0
@@ -1061,6 +1123,11 @@ class ChatIntegrationManager {
       // with the same message. Transient failures (dead container, network) are
       // NOT session-gone, so they keep the retry prompt below.
       if (this.isSessionGoneError(err)) {
+        // A concurrent /stop abandoned this turn while we were mid-send (it bumped the epoch
+        // and settled the session). Do NOT self-heal it into a fresh session — that would
+        // recreate the exact turn the user just stopped. Checked BEFORE teardown deletes the
+        // epoch; /stop already acked, and the next genuine message self-heals normally.
+        if ((this.stopEpochs.get(stopKey) ?? 0) !== stopEpochAtEntry) return
         console.warn(`[ChatIntegrationManager] Agent session ${sessionId} gone in container; rotating chat ${chatId} to a fresh session`)
         breadcrumb('Chat agent session gone, self-healing', { integrationId, chatId, sessionId })
         this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
@@ -1098,6 +1165,9 @@ class ChatIntegrationManager {
       // message). Reset here, once per turn, so a single multi-segment turn can't
       // emit repeated notices.
       dispatched.turnNotified = false
+      // Same once-per-turn contract for the stall nudge, then start its countdown.
+      dispatched.stallNotified = false
+      armStallNudge(dispatched, sessionId)
     }
   }
 
@@ -1169,6 +1239,12 @@ class ChatIntegrationManager {
     await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
     messagePersister.markSessionActive(sessionId, integration.agentSlug)
     this.subscribeChatSession(integration.id, chatId, sessionId)
+    const managed = this.chatSessions.get(this.getChatSessionKey(integration.id, chatId))
+    if (managed) {
+      // First turn of a fresh session: start the stall-nudge countdown.
+      managed.stallNotified = false
+      armStallNudge(managed, sessionId)
+    }
   }
 
   /**
@@ -1189,6 +1265,7 @@ class ChatIntegrationManager {
   private stopSession(session: ManagedConnector): void {
     session.sseUnsubscribe?.()
     stopIndicatorTick(session)
+    cancelStallNudge(session)
     // Force-clear on teardown (unconditional, not the idempotent clearIndicator): the
     // session is going away, so settle the connector even if indicatorShown drifted.
     session.connector.stopWorking(session.chatId).catch(() => {})
@@ -1199,6 +1276,7 @@ class ChatIntegrationManager {
     const managed = this.chatSessions.get(key)
     if (managed) this.stopSession(managed)
     this.chatSessions.delete(key)
+    this.stopEpochs.delete(key)
     if (opts?.archive) {
       this.lastSessionTouch.delete(opts.archive)
       try { archiveChatIntegrationSession(opts.archive) } catch { /* best-effort */ }
@@ -1213,6 +1291,26 @@ class ChatIntegrationManager {
     try {
       const chatSession = getChatIntegrationSession(integrationId, chatId)
       if (chatSession) {
+        // Clear = stop + forget: without the interrupt, an in-flight turn keeps
+        // running orphaned in the container (burning tokens with nowhere to
+        // deliver) after the mapping is archived. Same shared path and same
+        // turn-lifecycle gate as /stop (NOT the indicator's BUSY_ACTIVITIES).
+        // Best-effort in its own try so a failed interrupt can never block the
+        // archive below.
+        if (messagePersister.isSessionActive(chatSession.sessionId)) {
+          try {
+            const integration = getChatIntegration(integrationId)
+            if (integration) {
+              const { interruptAgentSession } = await import('@shared/lib/container/interrupt-session')
+              await interruptAgentSession(integration.agentSlug, chatSession.sessionId)
+            }
+          } catch (err) {
+            console.error('[ChatIntegrationManager] Failed to interrupt before clear:', err)
+            reportError(err, 'clear-session-interrupt', { integrationId, chatId })
+          }
+          // Same card hygiene as /stop: an open question card would outlive the turn.
+          await connector.dismissOpenCards(chatId).catch(() => {})
+        }
         this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
       }
     } catch (err) {
@@ -1223,6 +1321,73 @@ class ChatIntegrationManager {
     await connector.sendMessage(chatId, {
       text: '🗑️ Session cleared. Your next message will start a fresh conversation.',
     }).catch(() => {})
+  }
+
+  /**
+   * /stop - interrupt the chat's in-flight turn via the app Stop button's shared
+   * path (interruptAgentSession always settles locally, even on a wedged
+   * container). Unlike /clear, the session mapping survives: the next message
+   * runs as a fresh turn in the same conversation. The whole in-flight turn is
+   * discarded, including container-queued mid-turn messages.
+   */
+  private async stopChatTurn(
+    integration: ChatIntegration,
+    chatId: string,
+    connector: ChatClientConnector,
+  ): Promise<void> {
+    const chatKey = this.getChatSessionKey(integration.id, chatId)
+    const managed = this.chatSessions.get(chatKey)
+    // A concurrent /stop (double-tap, or a tap racing a typed /stop) bypasses the serial
+    // queue via the priority lane, so two can reach here at once. The first stop's
+    // interrupt + "⏹ Stopped" ack is the turn's terminal notice; a second racing it must
+    // not double-interrupt or trail it with a contradictory "⏹ Nothing is running". The
+    // guard is await-free up to the flag set below, so the first call latches before it
+    // yields at the interrupt and the second returns silently. (The serial queue used to
+    // provide this ordering; the priority lane traded it away, so re-establish it here.)
+    if (managed?.stopInFlight) return
+
+    const chatSession = getChatIntegrationSession(integration.id, chatId)
+    const sessionId = chatSession?.sessionId
+    // Turn-lifecycle gate, NOT the indicator's BUSY_ACTIVITIES: a turn hung
+    // mid-stream ('streaming') or parked on a question ('awaiting') is still an
+    // in-flight turn the user must be able to stop - same any-time semantics as
+    // the app's Stop button.
+    if (!sessionId || !messagePersister.isSessionActive(sessionId)) {
+      await connector.sendMessage(chatId, { text: '⏹ Nothing is running right now.' }).catch(() => {})
+      return
+    }
+
+    // Bump the interrupt epoch (keyed by the stable chat key, NOT the mutable managed
+    // connector which may be absent on a cold/reconnect path) so a concurrent normal-message
+    // send abandons itself instead of resurrecting this stopped turn.
+    this.stopEpochs.set(chatKey, (this.stopEpochs.get(chatKey) ?? 0) + 1)
+
+    if (managed) {
+      // The stop ack is this turn's terminal notice: a stale session_error may
+      // already sit in the SSE queue, and the turnNotified latch keeps it from
+      // sending a second, contradictory one.
+      managed.stopInFlight = true
+      managed.turnNotified = true
+      cancelStallNudge(managed)
+    }
+
+    try {
+      // Lazy import, same idiom as the send path's container-manager import.
+      const { interruptAgentSession } = await import('@shared/lib/container/interrupt-session')
+      await interruptAgentSession(integration.agentSlug, sessionId)
+      // Clear the stopped turn's working indicator immediately, not on the next 1s tick — a
+      // rapid stop-then-send would otherwise leave the stale indicator up to collide with the
+      // new turn's messages.
+      if (managed) clearIndicator(managed)
+      // A question card left open would look answerable, but the turn is dead and
+      // a tap after this fails silently - strip open cards best-effort.
+      await connector.dismissOpenCards(chatId).catch(() => {})
+      await connector.sendMessage(chatId, { text: '⏹ Stopped. Send a message to start again.' }).catch(() => {})
+    } finally {
+      // Release the latch so a later /stop on a NEW turn isn't blocked; a throw here (a
+      // wedged interrupt past its 15s bound) must not strand the flag true forever.
+      if (managed) managed.stopInFlight = false
+    }
   }
 
   /** Clear a chat session by its DB row ID (called from API route). */
@@ -1834,6 +1999,87 @@ export function cancelIndicatorSleep(managed: ManagedConnector): void {
   }
 }
 
+// ── Stall nudge ─────────────────────────────────────────────────────────
+//
+// A silence timer, NOT an indicator timer: armed at turn dispatch, reset on every
+// SSE event (synchronously, before the serialization queue), cancelled on terminal
+// events and teardown. After STALL_NUDGE_MS of total silence it sends ONE
+// informational message pointing at /stop. It never paints or clears the
+// indicator - that stays 100% tick-driven.
+
+/** Silence threshold before the one-per-turn stall nudge. Generous so that most
+ * legitimately-silent long tools (builds, installs, browser waits) finish first. */
+export const STALL_NUDGE_MS = 7 * 60_000
+
+/** Frames /stop as optional and never asserts the agent died: a silent-but-alive
+ * tool past the threshold is expected, so a false positive must read as harmless. */
+export const STALL_NUDGE_TEXT =
+  '⏳ Still working on this. Could be a long-running step, or the turn might be stuck. If it looks hung, send /stop to reset it and try again.'
+
+/** Slack intercepts client-typed slash commands (they never reach the bot), so
+ * its nudge cannot advertise /stop. */
+export const STALL_NUDGE_TEXT_NO_COMMAND =
+  '⏳ Still working on this. Could be a long-running step, or the turn might be stuck.'
+
+/** Chat command matcher: accepts the bare command and the Telegram group form
+ * "/cmd@botname" (the form Telegram autocompletes in groups); anything else,
+ * e.g. "/stop now", stays a normal message for the agent. */
+export function isChatCommand(text: string, command: string): boolean {
+  return new RegExp(`^/${command}(@\\S+)?$`).test(text.trim().toLowerCase())
+}
+
+/**
+ * (Re)arm the silence countdown for a turn. Captures sessionId so a fire after a
+ * resubscribe/session swap is a no-op (checked against managed.sessionId).
+ */
+export function armStallNudge(managed: ManagedConnector, sessionId: string): void {
+  if (managed.stallNudgeTimer) clearTimeout(managed.stallNudgeTimer)
+  managed.stallNudgeTimer = setTimeout(() => onStallNudgeFired(managed, sessionId), STALL_NUDGE_MS)
+}
+
+/**
+ * Arm-if-busy: the self-healing arm, mirroring armIndicatorIfBusy. Any event or
+ * cold snapshot from a live agent-owed turn arms the countdown when none is
+ * armed, and resets it when one is - so a turn that started or resumed outside
+ * the dispatch points (a consumed question answer, a button resolve, a
+ * container-queued follow-up, a restart re-subscribe) still gets stall
+ * protection off its own events. 'awaiting' does not arm: the user owes input.
+ */
+export function armStallNudgeIfBusy(managed: ManagedConnector, sessionId: string, activity: SessionActivity): void {
+  if (activity === 'idle' || activity === 'awaiting') return
+  armStallNudge(managed, sessionId)
+}
+
+/** Cancel outright: terminal events, /stop, teardown, resubscribe. */
+export function cancelStallNudge(managed: ManagedConnector): void {
+  if (managed.stallNudgeTimer) clearTimeout(managed.stallNudgeTimer)
+  managed.stallNudgeTimer = null
+}
+
+function onStallNudgeFired(managed: ManagedConnector, sessionId: string): void {
+  managed.stallNudgeTimer = null
+  // Stale timer: the managed session moved on (resubscribe/swap). Never nudge
+  // the old session.
+  if (managed.sessionId !== sessionId) return
+  // At most once per turn.
+  if (managed.stallNotified) return
+  // Re-read reality: only nudge when the AGENT still owes progress. 'idle'
+  // means the turn settled (a cancel raced this fire); 'awaiting' means the
+  // USER owes input - a person pondering the agent's question is never nudged.
+  // Everything else (working/thinking/compacting/retrying/streaming) is an
+  // in-flight turn that has been silent the whole countdown - the hang signature.
+  const activity = messagePersister.getSessionActivity(sessionId)
+  if (activity === 'idle' || activity === 'awaiting') return
+  // Latch BEFORE sending: a missed nudge is cheaper than a double nudge (the
+  // deliberate opposite of the session_error notice, which re-opens its latch
+  // on delivery failure).
+  managed.stallNotified = true
+  const text = managed.integration.provider === 'slack' ? STALL_NUDGE_TEXT_NO_COMMAND : STALL_NUDGE_TEXT
+  managed.connector.sendMessage(managed.chatId, { text }).catch((err) => {
+    console.error('[ChatIntegrationManager] Failed to send stall nudge:', err)
+  })
+}
+
 /**
  * Start the debounce that stops the tick after INDICATOR_SLEEP_MS of confirmed non-busy.
  * ARM-ONCE: a no-op if a countdown is already pending, so the TICK can call this every
@@ -2005,6 +2251,16 @@ export async function processSSEEvent(
     case 'session_idle': {
       // Turn ended → settle the indicator instantly, then finalize the streamed text.
       // The tick sleeps itself once it reads the now-idle state.
+      // Re-read truth before killing the stall timer: a STALE queued idle (it
+      // waited behind a slow send while the next turn dispatched) must not
+      // cancel the new turn's countdown. The persister settles isActive BEFORE
+      // broadcasting terminals, so a real turn end always reads inactive here.
+      if (!managed.sessionId || !messagePersister.isSessionActive(managed.sessionId)) {
+        cancelStallNudge(managed)
+        // A genuine turn boundary also reopens the nudge latch, so a turn that
+        // self-arms outside the dispatch points (arm-if-busy) can nudge too.
+        managed.stallNotified = false
+      }
       clearIndicator(managed)
       await finalizeTurn(managed)
       break
@@ -2016,6 +2272,11 @@ export async function processSSEEvent(
       // it never strands, finalize the turn the same way session_idle does, then
       // surface a curated error so the user isn't left staring at a frozen reply.
       // The tick sleeps itself once it reads the now-idle/non-busy state.
+      // Same stale-event guard and latch-reopen as session_idle.
+      if (!managed.sessionId || !messagePersister.isSessionActive(managed.sessionId)) {
+        cancelStallNudge(managed)
+        managed.stallNotified = false
+      }
       clearIndicator(managed)
       await finalizeTurn(managed)
       if (!managed.turnNotified) {

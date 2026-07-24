@@ -166,6 +166,33 @@ describe('TelegramConnector — /start routing', () => {
   })
 })
 
+describe('TelegramConnector — ⏹ Stop reply-keyboard normalization', () => {
+  let connector: TelegramConnector
+  let emitted: IncomingMessage[]
+
+  beforeEach(() => {
+    connector = makeConnector()
+    emitted = collectEmits(connector)
+    ;(connector as any).hasCompletedFirstPoll = true
+  })
+
+  it('normalizes a ⏹ Stop keyboard tap to /stop', () => {
+    callHandleText(connector, makeCtx({ type: 'private', text: '⏹ Stop' }))
+    expect(emitted).toHaveLength(1)
+    expect(emitted[0].text).toBe('/stop')
+  })
+
+  it('normalizes a ⏹ Stop tap with surrounding whitespace (trimmed)', () => {
+    callHandleText(connector, makeCtx({ type: 'private', text: '  ⏹ Stop  ' }))
+    expect(emitted[0].text).toBe('/stop')
+  })
+
+  it('leaves ordinary text unchanged', () => {
+    callHandleText(connector, makeCtx({ type: 'private', text: 'stop the build' }))
+    expect(emitted[0].text).toBe('stop the build')
+  })
+})
+
 describe('TelegramConnector — first-poll batch flush', () => {
   let connector: TelegramConnector
   let emitted: IncomingMessage[]
@@ -277,34 +304,37 @@ describe('TelegramConnector — media handlers (photo/document)', () => {
 
 // ── Working indicator: dumb (no self-heartbeat) ─────────────────────────────────
 // The manager's per-session tick drives keep-alive now, so startWorking renders
-// the labeled draft once per call and never installs its own setInterval.
+// the labeled indicator message once per call and never installs its own setInterval.
 describe('startWorking (dumb, no self-heartbeat)', () => {
   function makeDmConnector() {
     const connector = new TelegramConnector({ botToken: 'fake:token' })
-    const sendRichMessageDraft = vi.fn().mockResolvedValue(true)
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 700 })
+    const editMessageText = vi.fn().mockResolvedValue(true)
+    const deleteMessage = vi.fn().mockResolvedValue(true)
     ;(connector as unknown as { bot: unknown }).bot = {
-      api: { raw: { sendRichMessageDraft }, sendChatAction: vi.fn() },
+      api: { raw: { sendRichMessageDraft: vi.fn() }, sendMessage, editMessageText, deleteMessage, sendChatAction: vi.fn() },
     }
-    return { connector, sendRichMessageDraft }
+    return { connector, sendMessage, editMessageText, deleteMessage }
   }
 
   it('renders exactly once per startWorking and never re-sends on a timer', async () => {
     vi.useFakeTimers()
     try {
-      const { connector, sendRichMessageDraft } = makeDmConnector()
-      await connector.startWorking('999', 'working') // positive id → private DM → native draft
-      expect(sendRichMessageDraft).toHaveBeenCalledTimes(1)
+      const { connector, sendMessage } = makeDmConnector()
+      await connector.startWorking('999', 'working') // positive id → private DM → real-message indicator
+      expect(sendMessage).toHaveBeenCalledTimes(1)
       await vi.advanceTimersByTimeAsync(5000)
-      expect(sendRichMessageDraft).toHaveBeenCalledTimes(1) // no heartbeat re-sends
+      expect(sendMessage).toHaveBeenCalledTimes(1) // no heartbeat re-sends
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('stopWorking resolves and leaves the draft id intact for stream reuse', async () => {
-    const { connector } = makeDmConnector()
+  it('stopWorking resolves and tears down the indicator message', async () => {
+    const { connector, deleteMessage } = makeDmConnector()
     await connector.startWorking('999', 'working')
     await expect(connector.stopWorking('999')).resolves.toBeUndefined()
+    expect(deleteMessage).toHaveBeenCalledWith('999', 700)
   })
 })
 

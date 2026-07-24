@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-integration-manager'
+import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, armStallNudge, type ManagedConnector } from './chat-integration-manager'
 import { MockChatClientConnector } from './mock-connector'
+import { messagePersister } from '@shared/lib/container/message-persister'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
 // ── Test helpers ────────────────────────────────────────────────────────
@@ -1184,5 +1185,67 @@ describe('processSSEEvent: immediate clears', () => {
     await processSSEEvent(managed, { type: 'stream_delta', text: '' })
     expect(getMock(managed).stoppedWorking).toEqual([])
     expect(managed.indicatorShown).toBe(true)
+  })
+})
+
+describe('stall nudge lifecycle in processSSEEvent', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('session_idle cancels an armed stall-nudge timer', async () => {
+    const managed = createManagedConnector({ sessionId: 'session-1' })
+    armStallNudge(managed, 'session-1')
+
+    await processSSEEvent(managed, { type: 'session_idle' })
+
+    expect(managed.stallNudgeTimer).toBeNull()
+  })
+
+  it('session_error cancels an armed stall-nudge timer', async () => {
+    const managed = createManagedConnector({ sessionId: 'session-1' })
+    armStallNudge(managed, 'session-1')
+
+    await processSSEEvent(managed, { type: 'session_error', apiErrorCode: null })
+
+    expect(managed.stallNudgeTimer).toBeNull()
+  })
+
+  it('does not send an error notice when turnNotified was already set (e.g. by /stop)', async () => {
+    const managed = createManagedConnector({ turnNotified: true })
+
+    await processSSEEvent(managed, { type: 'session_error', apiErrorCode: null })
+
+    expect(getMock(managed).sentMessages).toHaveLength(0)
+  })
+
+  it("a stale session_idle does not cancel a newer turn's armed timer", async () => {
+    // The event waited behind a slow send on the SSE queue while the next turn
+    // dispatched and armed; the re-read guard must skip the cancel (and must
+    // not reopen the latch mid-turn).
+    const managed = createManagedConnector({ sessionId: 'session-1', stallNotified: true })
+    armStallNudge(managed, 'session-1')
+    const activeSpy = vi.spyOn(messagePersister, 'isSessionActive').mockReturnValue(true)
+    try {
+      await processSSEEvent(managed, { type: 'session_idle' })
+      expect(managed.stallNudgeTimer).not.toBeNull()
+      expect(managed.stallNotified).toBe(true)
+    } finally {
+      activeSpy.mockRestore()
+    }
+  })
+
+  it('a genuine terminal event reopens the nudge latch for the next turn', async () => {
+    // A turn that self-arms outside the dispatch points (arm-if-busy) must not
+    // inherit a spent latch from the previous nudged turn.
+    const managed = createManagedConnector({ sessionId: 'session-1', stallNotified: true })
+
+    await processSSEEvent(managed, { type: 'session_idle' })
+
+    expect(managed.stallNotified).toBe(false)
   })
 })

@@ -11,7 +11,7 @@ export const telegramConfigSchema = z.object({
   chatId: z.string().optional(),
   // Rich Messages (Bot API 10.1). Defaults are applied in the connector.
   richMessages: z.boolean().optional(),        // global rollback switch (default: rich)
-  draftStreaming: z.boolean().optional(),       // animated DM streaming (default: on)
+  draftStreaming: z.boolean().optional(),       // animated DM draft reply streaming (default: on). The draft blocks typed input while streaming, so Stop is offered during working/thinking (no draft) via a docked ⏹ Stop reply keyboard; a mid-stream Stop is deferred until the reply finalizes. Set false for editable-message streaming (chunky) where typed /stop works throughout.
   skipEntityDetection: z.boolean().optional(),  // default: false (auto-detection ON)
 })
 
