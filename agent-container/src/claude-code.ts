@@ -1,6 +1,6 @@
 import { query, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { UUID } from 'crypto';
+import { randomUUID, type UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -29,6 +29,14 @@ import { fileHooks, resolveToolFilePath } from './file-hooks';
 type QueryWithAsyncCancel = Query & {
   cancelAsyncMessage(messageUuid: string): Promise<boolean>;
 };
+
+function isNewTurnEvidence(message: SDKMessage): boolean {
+  if (message.type !== 'system' || !('subtype' in message)) return false;
+  if (message.subtype === 'session_state_changed') {
+    return 'state' in message && message.state === 'running';
+  }
+  return message.subtype === 'status' && 'status' in message && message.status === 'requesting';
+}
 
 /** Generate prefixed MCP tool names from a tools array, optionally excluding some by name. */
 function mcpToolNames(
@@ -474,6 +482,11 @@ export class ClaudeCodeProcess extends EventEmitter {
   private lastTurnInformationals: SDKMessage[] = [];
   private lastResultMessage: SDKMessage | null = null;
   private lastSessionState: string | null = null;
+  private lastPostResultNewTurnEvidence: SDKMessage | null = null;
+  // Latest authoritative background-task snapshot for late-join replay. A
+  // reconnecting host that only sees result+idle would otherwise keep a stale
+  // local task hold forever (the live consumer self-heals when this arrives).
+  private lastBackgroundTasksChanged: SDKMessage | null = null;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
 
   constructor(options: ClaudeCodeProcessOptions) {
@@ -947,6 +960,13 @@ export class ClaudeCodeProcess extends EventEmitter {
     // a task id carried across the replacement would pin the session
     // unevictable forever (no terminal signal or snapshot ever comes).
     this.emit('query-start');
+    this.emitTrackedMessage({
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [],
+      session_id: this.claudeSessionId || this.sessionId,
+      uuid: randomUUID(),
+    });
   }
 
   async start(): Promise<void> {
@@ -984,6 +1004,10 @@ export class ClaudeCodeProcess extends EventEmitter {
 
     try {
       for await (const message of this.queryInstance) {
+        if (isNewTurnEvidence(message)) {
+          lastResultWasError = false;
+        }
+
         // Capture Claude session ID from init message
         if (message.type === 'system' && message.subtype === 'init' && message.session_id) {
           this.claudeSessionId = message.session_id;
@@ -1043,6 +1067,20 @@ export class ClaudeCodeProcess extends EventEmitter {
 
       if (isAbortError) {
         console.log(`[Session ${this.sessionId}] Query aborted`);
+        // Terminal idle on abort ONLY when this loop is exiting with no
+        // successor query. interrupt() restarts via initializeQuery() unless
+        // stop()/dispose set `stopping` first — emitting idle on a settings-
+        // change interrupt would falsely settle a continuing session. When
+        // stopping, the host usually settles via markSessionInterrupted; the
+        // frame here is for live symmetry and late-join replay.
+        if (this.stopping && generation === this.queryGeneration) {
+          this.emitTrackedMessage({
+            type: 'system',
+            subtype: 'session_state_changed',
+            state: 'idle',
+            session_id: this.claudeSessionId || this.sessionId,
+          } as SDKMessage);
+        }
       } else {
         console.error(`[Session ${this.sessionId}] Query error:`, error);
         // Only emit a synthetic result if the SDK hasn't already reported this
@@ -1062,15 +1100,27 @@ export class ClaudeCodeProcess extends EventEmitter {
             userError = errorMsg || 'An unexpected error occurred';
           }
           // Emit synthetic result so downstream (WebSocket → message-persister → UI)
-          // knows the query failed and can transition to error state
+          // knows the query failed and can transition to error state. Route
+          // through trackForLateJoinReplay so a reconnecting host can recover
+          // the turn end (the live path already settles on isError).
           const isFatal = errorMsg.includes('SIGKILL') || errorMsg.includes('SIGTERM');
-          this.emit('message', {
+          this.emitTrackedMessage({
             type: 'result',
             subtype: 'error',
             error: userError,
             session_id: this.claudeSessionId || this.sessionId,
             ...(isFatal && { fatal: true }),
-          });
+          } as SDKMessage);
+        }
+        // Always announce turn-over after an abnormal exit so replay and live
+        // consumers see a terminal idle (host live path also settles on error).
+        if (generation === this.queryGeneration) {
+          this.emitTrackedMessage({
+            type: 'system',
+            subtype: 'session_state_changed',
+            state: 'idle',
+            session_id: this.claudeSessionId || this.sessionId,
+          } as SDKMessage);
         }
         // Only emit if there are listeners to prevent crash
         if (this.listenerCount('error') > 0) {
@@ -1355,16 +1405,32 @@ export class ClaudeCodeProcess extends EventEmitter {
 
   /** Record the frames a late-joining WebSocket subscriber must not miss. */
   private trackForLateJoinReplay(message: SDKMessage): void {
-    const msg = message as { type: string; subtype?: string; state?: string };
-    if (msg.type === 'system' && msg.subtype === 'informational') {
+    if (isNewTurnEvidence(message) && this.lastResultMessage) {
+      this.lastPostResultNewTurnEvidence = message;
+      this.lastResultMessage = null;
+      this.lastTurnInformationals = [];
+    }
+    if (message.type === 'system' && message.subtype === 'informational') {
       this.currentTurnInformationals.push(message);
-    } else if (msg.type === 'result') {
+    } else if (message.type === 'result') {
       this.lastResultMessage = message;
       this.lastTurnInformationals = this.currentTurnInformationals;
       this.currentTurnInformationals = [];
-    } else if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
-      this.lastSessionState = msg.state ?? null;
+      this.lastPostResultNewTurnEvidence = null;
+    } else if (message.type === 'system' && message.subtype === 'background_tasks_changed') {
+      this.lastBackgroundTasksChanged = message;
+    } else if (message.type === 'system' && message.subtype === 'session_state_changed') {
+      this.lastSessionState = message.state ?? null;
+      if (message.state === 'idle') {
+        this.lastPostResultNewTurnEvidence = null;
+      }
     }
+  }
+
+  /** Track then emit — used for synthetic terminal frames outside the SDK loop. */
+  private emitTrackedMessage(message: SDKMessage): void {
+    this.trackForLateJoinReplay(message);
+    this.emit('message', message);
   }
 
   /**
@@ -1380,12 +1446,16 @@ export class ClaudeCodeProcess extends EventEmitter {
    * the host can ignore the catch-up when it already saw the live copies.
    */
   getLateJoinReplay(): unknown[] {
+    if (this.lastPostResultNewTurnEvidence) {
+      return [{ ...this.lastPostResultNewTurnEvidence, replayed: true }];
+    }
     if (this.lastSessionState !== 'idle' || !this.lastResultMessage) {
       return [];
     }
     return [
       ...this.lastTurnInformationals,
       this.lastResultMessage,
+      ...(this.lastBackgroundTasksChanged ? [this.lastBackgroundTasksChanged] : []),
       {
         type: 'system',
         subtype: 'session_state_changed',
