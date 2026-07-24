@@ -3,6 +3,7 @@ import { broadcastReview } from './review-broadcast'
 import { getScopeLabel, type ScopeLabel } from './scope-metadata'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 
 const REVIEW_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
 
@@ -133,6 +134,18 @@ export class ReviewManager {
     messagePersister.clearAwaitingInputForAgentIfUnblocked(agentSlug)
   }
 
+  // Phase 2 shadow-registry parity (dev/test only): after every mutation of
+  // `pending`, the registry's agent-scoped review view must mirror this store
+  // exactly — a missed or malformed write-through fails tests / logs in dev
+  // instead of silently diverging.
+  private shadowRegistryCheck(agentSlug: string, context: string): void {
+    if (process.env.NODE_ENV === 'production') return
+    const reviewStoreIds = [...this.pending.values()]
+      .filter((review) => review.details.agentSlug === agentSlug)
+      .map((review) => review.id)
+    userInputRequestManager.verifyReviewStoreParity({ agentSlug, context, reviewStoreIds })
+  }
+
   requestReview(details: ReviewDetails, signal?: AbortSignal): Promise<'allow' | 'deny'> {
     this.ensureAwaitingBlockerRegistered()
     const id = crypto.randomUUID()
@@ -141,6 +154,8 @@ export class ReviewManager {
       const settleTimedOut = () => {
         if (!this.pending.has(id)) return
         this.pending.delete(id)
+        userInputRequestManager.resolve(id, 'timeout')
+        this.shadowRegistryCheck(details.agentSlug, 'settleTimedOut')
         broadcastReview(details.agentSlug, {
           type: 'proxy_review_resolved',
           reviewId: id,
@@ -155,6 +170,8 @@ export class ReviewManager {
       const cleanup = () => {
         clearTimeout(timer)
         this.pending.delete(id)
+        userInputRequestManager.resolve(id, 'cancelled')
+        this.shadowRegistryCheck(details.agentSlug, 'abortCleanup')
         broadcastReview(details.agentSlug, {
           type: 'proxy_review_resolved',
           reviewId: id,
@@ -173,6 +190,17 @@ export class ReviewManager {
       }
 
       this.pending.set(id, { id, details, resolve, reject, timer })
+      // Shadow registry (Phase 2): reviews are agent-scoped — no sessionId in
+      // the proxied call, so the envelope carries agentSlug only.
+      userInputRequestManager.register({
+        id,
+        kind: details.xAgent ? 'x_agent_review' : 'proxy_review',
+        scope: { agentSlug: details.agentSlug },
+        blocking: true,
+        autoApproved: false,
+        payload: { ...details },
+      })
+      this.shadowRegistryCheck(details.agentSlug, 'requestReview')
 
       const displayText = generateReviewDisplayText(
         details.toolkit,
@@ -240,6 +268,8 @@ export class ReviewManager {
 
     clearTimeout(review.timer)
     this.pending.delete(id)
+    userInputRequestManager.resolve(id, decision === 'allow' ? 'answered' : 'declined')
+    this.shadowRegistryCheck(review.details.agentSlug, 'submitDecision')
     review.resolve(decision)
 
     // Broadcast resolution so UIs can dismiss the prompt
@@ -265,6 +295,7 @@ export class ReviewManager {
       ) {
         clearTimeout(review.timer)
         this.pending.delete(id)
+        userInputRequestManager.resolve(id, decision === 'allow' ? 'answered' : 'declined')
         review.resolve(decision)
 
         broadcastReview(agentSlug, {
@@ -274,6 +305,7 @@ export class ReviewManager {
         })
       }
     }
+    this.shadowRegistryCheck(agentSlug, 'resolveMatchingPending')
     this.clearAgentSessionsAwaitingIfIdle(agentSlug)
   }
 
@@ -297,6 +329,7 @@ export class ReviewManager {
       if (!hasLabel) continue
       clearTimeout(review.timer)
       this.pending.delete(id)
+      userInputRequestManager.resolve(id, decision === 'allow' ? 'answered' : 'declined')
       review.resolve(decision)
       broadcastReview(agentSlug, {
         type: 'proxy_review_resolved',
@@ -304,6 +337,7 @@ export class ReviewManager {
         decision,
       })
     }
+    this.shadowRegistryCheck(agentSlug, 'resolveMatchingPendingByLabel')
     this.clearAgentSessionsAwaitingIfIdle(agentSlug)
   }
 
@@ -325,6 +359,7 @@ export class ReviewManager {
       ) {
         clearTimeout(review.timer)
         this.pending.delete(id)
+        userInputRequestManager.resolve(id, decision === 'allow' ? 'answered' : 'declined')
         review.resolve(decision)
 
         broadcastReview(agentSlug, {
@@ -334,6 +369,7 @@ export class ReviewManager {
         })
       }
     }
+    this.shadowRegistryCheck(agentSlug, 'resolveMatchingXAgentByOperation')
     this.clearAgentSessionsAwaitingIfIdle(agentSlug)
   }
 
@@ -409,6 +445,7 @@ export class ReviewManager {
       if (review.details.agentSlug !== agentSlug) continue
       clearTimeout(review.timer)
       this.pending.delete(id)
+      userInputRequestManager.resolve(id, 'declined')
       review.resolve('deny')
 
       broadcastReview(agentSlug, {
@@ -417,6 +454,7 @@ export class ReviewManager {
         decision: 'deny',
       })
     }
+    this.shadowRegistryCheck(agentSlug, 'denyAllForAgent')
     this.clearAgentSessionsAwaitingIfIdle(agentSlug)
   }
 
@@ -425,6 +463,7 @@ export class ReviewManager {
     for (const [id, review] of this.pending) {
       clearTimeout(review.timer)
       this.pending.delete(id)
+      userInputRequestManager.resolve(id, 'cancelled')
       agentSlugs.add(review.details.agentSlug)
       broadcastReview(review.details.agentSlug, {
         type: 'proxy_review_resolved',
@@ -434,6 +473,7 @@ export class ReviewManager {
       review.reject(new Error('Review timeout'))
     }
     for (const agentSlug of agentSlugs) {
+      this.shadowRegistryCheck(agentSlug, 'rejectAll')
       this.clearAgentSessionsAwaitingIfIdle(agentSlug)
     }
   }

@@ -152,6 +152,7 @@ vi.mock('./container-manager', () => ({
 // Import after mocks are set up
 import { messagePersister } from './message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 
 function createMockClient(): ContainerClient & {
   _messageCallback: ((message: StreamMessage) => void) | null
@@ -396,7 +397,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
         sendToolResult('tool-par-1')
         // KNOWN SPLIT-BRAIN (pinned, not desired): the main-path user-message
-        // handler clears awaiting without consulting the stream shelves — it
+        // handler clears awaiting without consulting the stream stores — it
         // only defers to external review blockers. The second request's
         // replay entry is still parked (the card stack still shows it), but
         // the sidebar/header bit already reads "not waiting". Derived
@@ -413,7 +414,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
   // ==========================================================================
   // Documented divergence: computer-use lives in a separate store with
-  // route-driven clearing (the two-shelf split this suite exists to pin down)
+  // route-driven clearing (the two-store split this suite exists to pin down)
   // ==========================================================================
 
   describe('main stream: computer use (divergent two-store lifecycle)', () => {
@@ -444,10 +445,10 @@ describe('pending user-input request lifecycle (characterization)', () => {
       simulateToolUse(TOOL, 'cu-clear-1', { x: 1, y: 2 })
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-      // KNOWN SPLIT-BRAIN (pinned, not desired): the computer-use shelf is
+      // KNOWN SPLIT-BRAIN (pinned, not desired): the computer-use store is
       // cleared only via the decision route's explicit call, so the entry
       // survives the tool_result — but the main-path user-message handler
-      // still clears the awaiting bit without consulting this shelf. Card
+      // still clears the awaiting bit without consulting this store. Card
       // parked, light off. Derived awaiting state flips the second
       // expectation to `true`.
       sendToolResult('cu-clear-1')
@@ -471,7 +472,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
         // The route clear applies the shared waiting-light rule: with both
-        // shelves empty and no external blocker, the bit flips AND the wire
+        // stores empty and no external blocker, the bit flips AND the wire
         // says input was provided — together, atomically. (Before the unified
         // dispatch change it broadcast without flipping the bit, leaving the
         // wire and the bit disagreeing until the tool_result landed.)
@@ -494,7 +495,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
       // Clearing the computer-use entry must NOT flip awaiting: the secret
-      // is still parked on the other shelf.
+      // is still parked on the other store.
       messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'cu-clear-3')
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(0)
@@ -544,7 +545,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
       expect(sseEvents.filter((e) => e.type === 'capability_review_resolved')).toHaveLength(1)
       // KNOWN SPLIT-BRAIN (pinned, not desired): like the computer-use route
-      // clear, this door empties its shelf and broadcasts but leaves the
+      // clear, this door empties its store and broadcasts but leaves the
       // awaiting bit set — it stays true until later stream traffic (the
       // launched tool's own lifecycle) clears it.
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
@@ -552,12 +553,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
   })
 
   // ==========================================================================
-  // Cross-shelf awaiting arithmetic: input store + computer-use store +
+  // Cross-store awaiting arithmetic: input store + computer-use store +
   // external blocker source (the ReviewManager seam). Awaiting must survive
   // until the LAST wait across all three resolves.
   // ==========================================================================
 
-  describe('cross-shelf awaiting arithmetic', () => {
+  describe('cross-store awaiting arithmetic', () => {
     it('a held external blocker keeps awaiting alive through tool_results; the agent door releases it', () => {
       let blockerHeld = true
       const unregister = messagePersister.registerAwaitingBlockerSource(
@@ -584,7 +585,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
         // Once the blocker releases, the agent-level door clears it: both
-        // stream shelves are empty by now.
+        // stream stores are empty by now.
         blockerHeld = false
         messagePersister.clearAwaitingInputForAgentIfUnblocked(AGENT_SLUG)
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
@@ -593,7 +594,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       }
     })
 
-    it('the agent-level door checks stream shelves only — external blockers are the CALLER\'s contract', () => {
+    it('the agent-level door checks stream stores only — external blockers are the CALLER\'s contract', () => {
       let blockerHeld = true
       const unregister = messagePersister.registerAwaitingBlockerSource(
         (agentSlug) => agentSlug === AGENT_SLUG && blockerHeld
@@ -829,7 +830,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
 
-    it('the sidechain resolve applies the both-shelves rule: a parked computer-use keeps awaiting on', () => {
+    it('the sidechain resolve applies the both-stores rule: a parked computer-use keeps awaiting on', () => {
       sendSidechainToolUse(
         'AskUserQuestion',
         'side-q-1',
@@ -912,6 +913,218 @@ describe('pending user-input request lifecycle (characterization)', () => {
       } finally {
         unregister()
       }
+    })
+  })
+
+  // ==========================================================================
+  // Phase 2 shadow registry: every store mutation writes through to the
+  // UserInputRequestManager, whose per-store view must mirror the legacy
+  // stores exactly (the persister asserts this inline at every mutation —
+  // storeMismatches must stay 0). Its DERIVED awaiting projection is compared
+  // against the imperative bit: where the pinned split-brains make the bit
+  // wrong, the projection is right, and the divergence counter is the
+  // telemetry that sizes the Phase 3 flip.
+  // ==========================================================================
+
+  describe('shadow registry equivalence (Phase 2)', () => {
+    const KIND_BY_SSE_TYPE: Record<string, string> = {
+      secret_request: 'secret',
+      user_question_request: 'question',
+      connected_account_request: 'connected_account',
+      file_request: 'file',
+      remote_mcp_request: 'remote_mcp',
+      browser_input_request: 'browser_input',
+      script_run_request: 'script_run',
+    }
+
+    let consoleWarnSpy: ReturnType<typeof vi.spyOn>
+
+    beforeEach(() => {
+      userInputRequestManager.reset()
+      // Divergence telemetry warns on purpose in the split-brain tests below —
+      // keep the test output clean.
+      consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    })
+
+    afterEach(() => {
+      consoleWarnSpy.mockRestore()
+    })
+
+    it('every standard kind registers a typed entry mirroring the replay store, and settles with it', async () => {
+      for (const kindCase of STANDARD_KINDS) {
+        const toolId = `shadow-${kindCase.sseType}`
+        simulateToolUse(kindCase.toolName, toolId, kindCase.input)
+
+        await vi.waitFor(() => {
+          expect(
+            userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+          ).toContain(toolId)
+        })
+        const entry = userInputRequestManager
+          .getOpenRequestsForSession(SESSION_ID)
+          .find((r) => r.id === toolId)!
+        expect(entry.kind, kindCase.label).toBe(KIND_BY_SSE_TYPE[kindCase.sseType])
+        expect(entry.scope).toEqual({ agentSlug: AGENT_SLUG, sessionId: SESSION_ID })
+
+        // Exact mirror of the legacy replay store.
+        expect(
+          [...userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'stream')].sort()
+        ).toEqual(
+          messagePersister
+            .getPendingInputRequests(SESSION_ID)
+            .map((r) => r.toolUseId)
+            .sort()
+        )
+
+        sendToolResult(toolId)
+        expect(
+          userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+        ).not.toContain(toolId)
+        expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+          id: toolId,
+          kind: KIND_BY_SSE_TYPE[kindCase.sseType],
+          outcome: 'answered',
+        })
+      }
+      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
+    })
+
+    it('a stray main-path tool_result cannot evict the registry\'s computer-use entry (store-scoped resolve)', () => {
+      simulateToolUse('mcp__computer-use__computer_click', 'shadow-cu-1', { x: 1, y: 2 })
+      expect(userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'computer_use')).toEqual([
+        'shadow-cu-1',
+      ])
+
+      // Pinned divergence: the tool_result leaves the computer-use store
+      // untouched. The registry mirrors the STORE, not the tool_result — if it
+      // settled here, the inline parity assert would blow up this test.
+      sendToolResult('shadow-cu-1')
+      expect(userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'computer_use')).toEqual([
+        'shadow-cu-1',
+      ])
+
+      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-cu-1')
+      expect(userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'computer_use')).toEqual([])
+      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+        id: 'shadow-cu-1',
+        kind: 'computer_use',
+        outcome: 'answered',
+      })
+      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
+    })
+
+    it('parallel requests: the projection stays awaiting while the bit drops early (split-brain telemetry)', async () => {
+      simulateToolUse('mcp__user-input__request_secret', 'shadow-par-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      simulateToolUse('AskUserQuestion', 'shadow-par-2', {
+        questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
+      })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(true)
+
+      // KNOWN SPLIT-BRAIN (pinned at the main-path user-message handler): the
+      // first tool_result clears the bit while the second card is still
+      // parked. The derived projection keeps the light on — this is the
+      // behavior Phase 3 promotes to authoritative.
+      sendToolResult('shadow-par-1')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(true)
+
+      // The divergence check is deferred a microtask past the mutation.
+      await vi.waitFor(() => {
+        expect(userInputRequestManager.stats.awaitingDivergences).toBeGreaterThan(0)
+      })
+
+      sendToolResult('shadow-par-2')
+      expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
+      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
+    })
+
+    it('capability review: the registry settles on complete; the stuck bit is divergence telemetry', async () => {
+      mockAgentCapabilities.subagents = 'allow'
+      mockAgentCapabilities.workflows = 'review'
+      vi.mocked(mockClient.fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ grants: [] }),
+      } as unknown as Response)
+
+      simulateToolUse('Workflow', 'shadow-cap-1', { script: 'export const meta = {}' })
+      await vi.waitFor(() => {
+        expect(
+          userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+        ).toContain('shadow-cap-1')
+      })
+      expect(
+        userInputRequestManager.getOpenRequestsForSession(SESSION_ID)[0].kind
+      ).toBe('capability_review')
+
+      messagePersister.completeCapabilityReview(SESSION_ID, 'shadow-cap-1')
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
+      // Pinned: the early-clear door empties its store but never flips the
+      // bit. Projection right, bit wrong — counted, not thrown.
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      await vi.waitFor(() => {
+        expect(userInputRequestManager.stats.awaitingDivergences).toBeGreaterThan(0)
+      })
+      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
+    })
+
+    it('the direct-clear doors record the caller\'s actual outcome, not a blanket answered', async () => {
+      // Capability review declined via the decision route's door.
+      mockAgentCapabilities.subagents = 'allow'
+      mockAgentCapabilities.workflows = 'review'
+      vi.mocked(mockClient.fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ grants: [] }),
+      } as unknown as Response)
+      simulateToolUse('Workflow', 'shadow-out-1', { script: 'export const meta = {}' })
+      await vi.waitFor(() => {
+        expect(
+          userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+        ).toContain('shadow-out-1')
+      })
+      messagePersister.completeCapabilityReview(SESSION_ID, 'shadow-out-1', 'declined')
+      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+        id: 'shadow-out-1',
+        kind: 'capability_review',
+        outcome: 'declined',
+      })
+
+      // Computer use denied, then a second one consumed by an execution failure.
+      simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-2', { x: 1, y: 2 })
+      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-out-2', 'declined')
+      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+        id: 'shadow-out-2',
+        kind: 'computer_use',
+        outcome: 'declined',
+      })
+
+      simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-3', { x: 3, y: 4 })
+      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-out-3', 'invalidated')
+      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+        id: 'shadow-out-3',
+        kind: 'computer_use',
+        outcome: 'invalidated',
+      })
+      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
+    })
+
+    it('unsubscribe drops every session-scoped registry entry as invalidated', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'shadow-drop-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      simulateToolUse('mcp__computer-use__computer_click', 'shadow-drop-2', { x: 1, y: 2 })
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
+
+      messagePersister.unsubscribeFromSession(SESSION_ID)
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(
+        userInputRequestManager.stats.recentResolutions.slice(-2).map((r) => r.outcome)
+      ).toEqual(['invalidated', 'invalidated'])
     })
   })
 })

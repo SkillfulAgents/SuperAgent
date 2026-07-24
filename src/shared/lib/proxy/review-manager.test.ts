@@ -7,6 +7,7 @@ vi.mock('./review-broadcast', () => ({
 }))
 
 import { ReviewManager, humanizeActionName, generateReviewDisplayText } from './review-manager'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 
 describe('ReviewManager', () => {
   let manager: ReviewManager
@@ -656,5 +657,125 @@ describe('ReviewManager', () => {
       const call = mockBroadcastReview.mock.calls[0]
       expect(call[1]).not.toHaveProperty('xAgent')
     })
+  })
+})
+
+describe('ReviewManager shadow registry write-through (Phase 2)', () => {
+  let manager: ReviewManager
+
+  const DETAILS = {
+    agentSlug: 'shadow-agent',
+    accountId: 'acc-1',
+    toolkit: 'gmail',
+    method: 'GET',
+    targetPath: '/v1/messages',
+    matchedScopes: ['gmail.readonly'],
+    scopeDescriptions: { 'gmail.readonly': 'Read email' },
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.clearAllMocks()
+    manager = new ReviewManager()
+    userInputRequestManager.reset()
+  })
+
+  afterEach(() => {
+    manager.rejectAll()
+    vi.useRealTimers()
+  })
+
+  it('requestReview registers an agent-scoped proxy_review envelope', () => {
+    manager.requestReview(DETAILS).catch(() => {})
+    const open = userInputRequestManager.getAgentScopedRequests('shadow-agent')
+    expect(open).toHaveLength(1)
+    expect(open[0].kind).toBe('proxy_review')
+    expect(open[0].scope).toEqual({ agentSlug: 'shadow-agent' })
+    expect(open[0].blocking).toBe(true)
+    // The agent-scoped entry drives the derived projection for every session
+    // of the agent — the seam that replaces registerAwaitingBlockerSource.
+    expect(userInputRequestManager.isAgentAwaiting('shadow-agent')).toBe(true)
+    expect(userInputRequestManager.isSessionAwaiting('any-session', 'shadow-agent')).toBe(true)
+  })
+
+  it('an x-agent review registers as x_agent_review', () => {
+    manager
+      .requestXAgentReview('shadow-agent', 'target-agent', 'Target', 'invoke', 'hi')
+      .catch(() => {})
+    const open = userInputRequestManager.getAgentScopedRequests('shadow-agent')
+    expect(open).toHaveLength(1)
+    expect(open[0].kind).toBe('x_agent_review')
+  })
+
+  it('submitDecision settles the envelope with the decision outcome', async () => {
+    const promise = manager.requestReview(DETAILS)
+    const reviewId = manager.getPendingReviewsForAgent('shadow-agent')[0].id
+
+    manager.submitDecision(reviewId, 'allow')
+    await promise
+    expect(userInputRequestManager.getAgentScopedRequests('shadow-agent')).toHaveLength(0)
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+      id: reviewId,
+      kind: 'proxy_review',
+      outcome: 'answered',
+    })
+    expect(userInputRequestManager.isAgentAwaiting('shadow-agent')).toBe(false)
+  })
+
+  it('the 5-minute auto-deny settles the envelope as timeout', async () => {
+    const promise = manager.requestReview(DETAILS)
+    const reviewId = manager.getPendingReviewsForAgent('shadow-agent')[0].id
+
+    vi.advanceTimersByTime(5 * 60 * 1000)
+    await expect(promise).rejects.toThrow('Review timeout')
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+      id: reviewId,
+      kind: 'proxy_review',
+      outcome: 'timeout',
+    })
+    expect(userInputRequestManager.getAgentScopedRequests('shadow-agent')).toHaveLength(0)
+  })
+
+  it('an aborted request settles the envelope as cancelled', async () => {
+    const controller = new AbortController()
+    const promise = manager.requestReview(DETAILS, controller.signal)
+    const reviewId = manager.getPendingReviewsForAgent('shadow-agent')[0].id
+
+    controller.abort()
+    await expect(promise).rejects.toThrow('Request aborted')
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+      id: reviewId,
+      kind: 'proxy_review',
+      outcome: 'cancelled',
+    })
+  })
+
+  it('denyAllForAgent settles every envelope of the agent as declined', async () => {
+    const p1 = manager.requestReview(DETAILS)
+    const p2 = manager.requestReview({ ...DETAILS, targetPath: '/v1/other' })
+    expect(userInputRequestManager.getAgentScopedRequests('shadow-agent')).toHaveLength(2)
+
+    manager.denyAllForAgent('shadow-agent')
+    await Promise.all([p1, p2])
+    expect(userInputRequestManager.getAgentScopedRequests('shadow-agent')).toHaveLength(0)
+    expect(
+      userInputRequestManager.stats.recentResolutions.slice(-2).map((r) => r.outcome)
+    ).toEqual(['declined', 'declined'])
+  })
+
+  it('resolveMatchingPending sweeps matching envelopes with the decision outcome', async () => {
+    const promise = manager.requestReview(DETAILS)
+    manager.resolveMatchingPending('shadow-agent', 'gmail.readonly', 'allow')
+    await promise
+    expect(userInputRequestManager.getAgentScopedRequests('shadow-agent')).toHaveLength(0)
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)?.outcome).toBe('answered')
+  })
+
+  it('rejectAll settles every envelope as cancelled', async () => {
+    const promise = manager.requestReview(DETAILS)
+    manager.rejectAll()
+    await expect(promise).rejects.toThrow('Review timeout')
+    expect(userInputRequestManager.getAgentScopedRequests('shadow-agent')).toHaveLength(0)
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)?.outcome).toBe('cancelled')
   })
 })

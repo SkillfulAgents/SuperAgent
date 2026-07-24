@@ -2679,7 +2679,7 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
         return c.json({ error: 'Failed to reject capability launch' }, 500)
       }
 
-      messagePersister.completeCapabilityReview(sessionId, toolUseId)
+      messagePersister.completeCapabilityReview(sessionId, toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'capability_review', capability, withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2710,7 +2710,7 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
     if (scope === 'session') {
       messagePersister.grantSessionCapability(sessionId, capability)
     }
-    messagePersister.completeCapabilityReview(sessionId, toolUseId)
+    messagePersister.completeCapabilityReview(sessionId, toolUseId, 'answered')
 
     trackServerEvent('capability_launch_approved', { capability, scope })
     return c.json({ success: true })
@@ -2976,7 +2976,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject computer use request' }, 500)
       }
 
-      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId)
+      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'computer_use', method, withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2999,7 +2999,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       if (!resolveResponse.ok) {
         return c.json({ error: 'Failed to resolve computer use request' }, 500)
       }
-      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId)
+      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId, 'answered')
       return c.json({ success: true })
     }
 
@@ -3032,7 +3032,9 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
           body: JSON.stringify({ reason: `Error executing ${method}: ${errorMsg}` }),
         }
       ).catch(() => {})
-      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId)
+      // The user approved but execution blew up — the wait was consumed by a
+      // system failure, not a user decision.
+      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId, 'invalidated')
       return c.json({ success: true, error: errorMsg })
     }
 
@@ -3085,7 +3087,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to resolve computer use request' }, 500)
     }
 
-    messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId)
+    messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId, 'answered')
     trackServerEvent('computer_use_executed', { method, permissionLevel, grantType })
     return c.json({ success: true })
   } catch (error) {
