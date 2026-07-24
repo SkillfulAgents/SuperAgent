@@ -49,8 +49,8 @@ const GPT_SPEED_MULTIPLIERS = { slow: 0.5, fast: 2 } as const
 const GPT_55_SPEED_MULTIPLIERS = { slow: 0.5, fast: 2.5 } as const
 const PRIORITY_2X_MULTIPLIERS = { fast: 2 } as const
 
-// Anthropic fast mode is Opus 4.8 only (4.7's is deprecated, removal 2026-07-24).
-const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8'])
+// Anthropic fast mode covers Opus 5 and 4.8 (4.7's was removed 2026-07-24).
+const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8', 'claude-opus-5'])
 
 /** Claude entries with the speed tiers the Platform proxy can request. */
 function withPlatformClaudeSpeeds(catalog: ModelDefinition[]): ModelDefinition[] {
@@ -118,12 +118,20 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
   {
     id: 'claude-opus-4-8',
     label: 'Opus 4.8',
+    family: 'opus',
+    icon: ICON,
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-opus-4-8'),
+  },
+  {
+    id: 'claude-opus-5',
+    label: 'Opus 5',
     blurb: 'Most capable',
     family: 'opus',
     isLatest: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
-    pricing: pricingFor('claude-opus-4-8'),
+    pricing: pricingFor('claude-opus-5'),
   },
   {
     id: 'claude-fable-5',

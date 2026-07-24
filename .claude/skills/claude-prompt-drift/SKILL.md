@@ -1,5 +1,5 @@
 ---
-description: Detect drift in the Claude system prompt that agent-container sends to Anthropic. Captures two axes — the bare `claude_code` preset (Anthropic baseline) and agent-container's overlaid wire request — at the SDK version pinned in `agent-container/package-lock.json`, then stores versioned snapshots in `<skill>/snapshots/` (gitignored). Use when bumping `@anthropic-ai/claude-agent-sdk`, debugging unexpected model behavior after an SDK upgrade, previewing what a PR changes in the on-wire prompt, or auditing what Anthropic silently changed in the Claude Code preset.
+description: Detect drift in the Claude system prompt that agent-container sends to Anthropic. Captures two axes — the bare `claude_code` preset (Anthropic baseline) and agent-container's fully custom wire request — at the SDK version pinned in `agent-container/package-lock.json`, then stores versioned snapshots in `<skill>/snapshots/` (gitignored). Because SuperAgent REPLACES the preset with its own system prompt, preset drift never reaches our sessions automatically — every pure-claude change must be triaged for porting into system-prompt.md. Use when bumping `@anthropic-ai/claude-agent-sdk`, debugging unexpected model behavior after an SDK upgrade, previewing what a PR changes in the on-wire prompt, or auditing what Anthropic silently changed in the Claude Code preset.
 ---
 
 # Claude Prompt Drift Check
@@ -11,10 +11,28 @@ Capture + diff of the `/v1/messages` request body that `claude-agent-sdk` emits,
 | `pure-claude` | Bare `{ type: 'preset', preset: 'claude_code' }` baseline — no MCP, no append, no custom tools |
 | `superagent`  | What `agent-container` actually puts on the wire (skills, MCP, claudeMd, etc.)                |
 
-The diff *between* the two axes in a single snapshot is **our known modifications** — intentional, not interesting. The interesting signal is each axis's drift *across captures*:
+**Key architectural fact:** `claude-code.ts` passes `systemPrompt` as a plain string (rendered from `agent-container/src/system-prompt.md`), which REPLACES the `claude_code` preset entirely — the preset never reaches our sessions. Our prompt is a separate, parallel document covering similar ground in its own words, so when Anthropic improves the preset, our prompt silently falls behind unless someone ports the change. That protection is the point of this skill.
 
-- `pure-claude` drift → Anthropic changed the preset.
-- `superagent` drift → our overlay changed (added/removed an MCP server, edited claudeMd, bumped SDK, etc.).
+The interesting signal is each axis's drift *across captures*:
+
+- `pure-claude` drift → Anthropic changed the preset. **This is never merely informational** — because we replace the preset, no preset improvement reaches our agents automatically. Run the porting triage below on every hunk.
+- `superagent` drift → our own prompt/wiring changed (edited system-prompt.md, added/removed an MCP server, changed claudeMd, bumped SDK, etc.). Expected when we shipped prompt changes; a red flag when we didn't (means the SDK/CLI altered how it assembles our request).
+
+## Porting triage (mandatory when pure-claude drifts)
+
+For each hunk in the pure-claude `system.md` diff, decide **port / adapt / skip** against our prompt sources:
+
+- `agent-container/src/system-prompt.md` — the main session prompt
+- `agent-container/src/web-browser-agent-prompt.md`, `dashboard-builder-agent-prompt.md`, `computer-use-agent-prompt.md` — subagent prompts
+
+Triage rules:
+
+1. **Behavioral guidance** (tone, safety, communication, memory discipline — e.g. the 2.1.219 they/them pronoun paragraph): usually **port**, adapted to our prompt's voice and section structure. Anthropic adds these from behavioral data; our agents talk to real humans and inherit none of it.
+2. **Product-surface text** (fast mode, /commands, terminal UI, Claude Code feature descriptions): **skip** — describes their product, not ours.
+3. **Facts that go stale** (model rosters, model IDs, knowledge cutoffs, pricing): our main prompt deliberately carries none of these — keep it that way, but check the subagent prompts for hardcoded model IDs and route those to the `update-models` skill.
+4. **Tool-description drift** (`tools.md` diff): only actionable if our prompt or subagent prompts restate guidance about that tool — check before dismissing.
+
+Record the port/skip decision per hunk in the upgrade PR description so the next drift run doesn't re-litigate old hunks.
 
 ## Files in this skill
 
@@ -112,9 +130,9 @@ git worktree remove /tmp/sa-old
 
 Exits non-zero on drift (CI-friendly). Diff is per-axis on purpose — the two axes have different key shapes.
 
-## What "known modifications" means
+## What the between-axes diff means
 
-In a single capture, the diff between `pure-claude/<sdk>/<model>/system.md` and `superagent/<key>/<model>/system.md` is everything `agent-container` layers on top: skill listing, MCP instructions, custom claudeMd, etc. **That diff is expected and is not what this skill is for.** This skill tracks how each axis evolves over time.
+In a single capture, `pure-claude/<sdk>/<model>/system.md` and `superagent/<key>/<model>/system.md` are two unrelated documents — the preset vs our full replacement prompt (~80 vs ~700 lines, different section structure). Diffing them line-by-line is meaningless and is not what this skill is for. This skill tracks how each axis evolves over time; the pure axis exists purely as the canary for preset changes to feed the porting triage above.
 
 ## Noise handling
 
