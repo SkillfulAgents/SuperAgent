@@ -9,13 +9,20 @@
  * the issued access token authenticates through Authenticated() via the
  * bearer plugin.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { Hono } from 'hono'
 import { generateKeyPair, exportJWK, SignJWT, createLocalJWKSet, type JWTPayload } from 'jose'
+
+// Spy on Sentry reporting while keeping every other export real.
+const captureExceptionMock = vi.hoisted(() => vi.fn())
+vi.mock('@shared/lib/error-reporting', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/error-reporting')>()),
+  captureException: captureExceptionMock,
+}))
 
 const TEST_ISSUER = 'https://auth.test.example'
 const TEST_ORG = 'org_test_123'
@@ -465,5 +472,40 @@ describe('approval and ban enforcement', () => {
     expect(res.status).toBe(200)
     const user = dbModule.sqlite.prepare(`SELECT banned FROM user`).get() as { banned: number }
     expect(user.banned).toBe(0)
+  })
+})
+
+describe('observability', () => {
+  beforeEach(() => captureExceptionMock.mockClear())
+
+  it('does not report expected OAuth denials to Sentry', async () => {
+    const res = await exchangeRequest(await signGrant({ audience: 'https://other.example' }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe('invalid_grant')
+    expect(captureExceptionMock).not.toHaveBeenCalled()
+  })
+
+  it('reports an unexpected replay-table failure while still denying the client', async () => {
+    // Drop the replay table so jti consumption hits a real DB error (not a
+    // normal replay conflict). The client still sees a generic denial.
+    dbModule.sqlite.prepare(`DROP TABLE token_exchange_jti`).run()
+    try {
+      const res = await exchangeRequest(await signGrant())
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toBe('invalid_grant')
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          tags: expect.objectContaining({ component: 'token-exchange', operation: 'jti-consume' }),
+        }),
+      )
+    } finally {
+      dbModule.sqlite
+        .prepare('CREATE TABLE `token_exchange_jti` (`jti` text PRIMARY KEY NOT NULL, `expires_at` integer NOT NULL)')
+        .run()
+      dbModule.sqlite
+        .prepare('CREATE INDEX `token_exchange_jti_expires_at_idx` ON `token_exchange_jti` (`expires_at`)')
+        .run()
+    }
   })
 })

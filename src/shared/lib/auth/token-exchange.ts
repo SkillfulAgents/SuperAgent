@@ -1,4 +1,5 @@
 import { lt } from 'drizzle-orm'
+import { captureException } from '@shared/lib/error-reporting'
 import { db } from '@shared/lib/db'
 import { tokenExchangeJti } from '@shared/lib/db/schema'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
@@ -127,7 +128,9 @@ function consumeJti(jti: string, expSec: number): void {
     }
   } catch (error) {
     if (error instanceof TokenExchangeError) throw error
-    console.error('token exchange: jti consumption failed:', error)
+    // Replay is a normal conflict (handled above); reaching here means the
+    // replay table itself is failing — report it (never the jti value).
+    captureException(error, { tags: { component: 'token-exchange', operation: 'jti-consume' } })
     throw new TokenExchangeError('invalid_grant')
   }
 }
@@ -270,6 +273,12 @@ export async function exchangeDeploymentGrant(
   // auto-unban.
   const fresh = await ctx.internalAdapter.findUserById(user.id)
   if (!fresh) {
+    // Invariant violation: resolveUser just produced this user. Masked to the
+    // client as a generic denial, but a systemic occurrence must be visible.
+    captureException(new Error('token exchange: resolved user missing after provisioning'), {
+      tags: { component: 'token-exchange', operation: 'user-missing' },
+      extra: { userId: user.id },
+    })
     throw new TokenExchangeError('invalid_grant')
   }
   const banned = fresh as typeof fresh & { banned?: boolean | null; banExpires?: Date | null }
@@ -292,6 +301,10 @@ export async function exchangeDeploymentGrant(
     ipAddress: meta.ipAddress ?? '',
   })
   if (!session) {
+    captureException(new Error('token exchange: session creation returned no session'), {
+      tags: { component: 'token-exchange', operation: 'session-create' },
+      extra: { userId: fresh.id },
+    })
     throw new TokenExchangeError('invalid_grant')
   }
 

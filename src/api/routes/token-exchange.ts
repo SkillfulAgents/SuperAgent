@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
+import { captureException } from '@shared/lib/error-reporting'
 import { JWT_BEARER_GRANT_TYPE, type TokenExchangeErrorCode } from '@shared/lib/auth/token-exchange-schema'
 
 // Bound the raw form body and the assertion itself; a legitimate grant is a
@@ -93,9 +94,13 @@ tokenExchange.post('/exchange', async (c) => {
     return c.json(result, 200, NO_STORE_HEADERS)
   } catch (error) {
     if (error instanceof TokenExchangeError) {
+      // Expected OAuth denials are normal control flow — never reported.
+      // Internal failures masked as a denial are flagged by the service layer.
       return oauthError(c, 400, error.code)
     }
-    console.error('token exchange failed:', error)
+    // Genuinely unexpected failure. Report tags only — never the assertion,
+    // resulting token, jti, or any identity claim.
+    captureException(error, { tags: { component: 'token-exchange', operation: 'exchange' } })
     return oauthError(c, 500, 'server_error')
   }
 })
