@@ -170,6 +170,7 @@ vi.mock('./container-manager', () => ({
 
 // Import after mocks are set up
 import { messagePersister, redactStreamedToolInput } from './message-persister'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 
 describe('redactStreamedToolInput', () => {
@@ -2559,6 +2560,13 @@ describe('MessagePersister', () => {
   // ============================================================================
 
   describe('awaiting input status tracking', () => {
+    beforeEach(() => {
+      // Requests park mid-turn: production always has markSessionActive before
+      // a request event arrives, and the derived awaiting projection is gated
+      // on an active turn (an inactive session is never awaiting).
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    })
+
     // Helper to collect global notification events
     function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
       const events: any[] = []
@@ -2621,7 +2629,9 @@ describe('MessagePersister', () => {
       const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
 
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
-      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG)
+      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG, [
+        { toolUseId: 'recovered-1', toolName: 'mcp__user-input__request_secret' },
+      ])
 
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       expect(messagePersister.hasSessionsAwaitingInputForAgent(AGENT_SLUG)).toBe(true)
@@ -2631,14 +2641,32 @@ describe('MessagePersister', () => {
       expect(awaitingEvents[0].sessionId).toBe(SESSION_ID)
       expect(awaitingEvents[0].agentSlug).toBe(AGENT_SLUG)
 
+      // Recovered entries are synthesized (never broadcast, no payload) — the
+      // SSE replay must skip them; clients render the card from the transcript.
+      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+
+      // Its tool_result settles the recovered wait like any other request.
+      mockClient._sendMessage({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'recovered-1', content: 'secret-value' },
+          ],
+        },
+      })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+
       globalCleanup()
     })
 
     it('does not recover awaiting input for an inactive session', () => {
-      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG)
+      // A session with no active turn (here: no streaming state at all — the
+      // post-restart shape this fallback exists for) must not be recovered.
+      messagePersister.recoverSessionAwaitingInput('inactive-session-1', AGENT_SLUG, [
+        { toolUseId: 'recovered-2', toolName: 'mcp__user-input__request_secret' },
+      ])
 
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
-      expect(messagePersister.hasSessionsAwaitingInputForAgent(AGENT_SLUG)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput('inactive-session-1')).toBe(false)
     })
 
     it('sets isAwaitingInput after AskUserQuestion tool fires', () => {
@@ -2923,18 +2951,23 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
 
-    it('keeps isAwaitingInput on tool result while an external blocker (parked review) is active', () => {
+    it('keeps isAwaitingInput on tool result while a parked review is open', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
 
-      // A parked proxy/x-agent review keeps the agent awaiting even as an unrelated
-      // tool result lands. The review lives outside the stream maps, so it registers
-      // a blocker source rather than being visible in pendingInputRequests.
-      let reviewPending = true
-      // The persister singleton is shared across tests; unregister in finally so a
-      // failing assertion can't leak this predicate into later tests' blocker set.
-      const unregister = messagePersister.registerAwaitingBlockerSource(
-        (slug) => slug === AGENT_SLUG && reviewPending,
-      )
+      // A parked proxy/x-agent review keeps the agent awaiting even as an
+      // unrelated tool result lands. The review lives outside the stream maps
+      // as an agent-scoped registry entry — exactly what ReviewManager writes
+      // through on requestReview.
+      // The registry singleton is shared across tests; resolve in finally so a
+      // failing assertion can't leak this review into later tests.
+      userInputRequestManager.register({
+        id: 'blocker-review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: AGENT_SLUG },
+        blocking: true,
+        autoApproved: false,
+        payload: { toolkit: 'slack' },
+      })
 
       try {
         simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
@@ -2950,22 +2983,15 @@ describe('MessagePersister', () => {
           },
         })
 
-        // Must stay awaiting — the review blocker is still active.
+        // Must stay awaiting — the review is still open.
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-        // Once the review resolves, a later tool result settles the session normally.
-        reviewPending = false
-        mockClient._sendMessage({
-          type: 'user',
-          message: {
-            content: [
-              { type: 'tool_result', tool_use_id: 'tool-2', content: 'done' },
-            ],
-          },
-        })
+        // Once the review resolves, the agent-wide sync settles the session.
+        userInputRequestManager.resolve('blocker-review-1', 'answered')
+        messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
       } finally {
-        unregister()
+        userInputRequestManager.resolve('blocker-review-1', 'cancelled')
       }
     })
 
@@ -3393,6 +3419,12 @@ describe('MessagePersister', () => {
   // ============================================================================
 
   describe('automated session promotion', () => {
+    beforeEach(() => {
+      // Promotion fires on the awaiting rising edge, which requires an active
+      // turn — as in production, where the automated send marks active first.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    })
+
     function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
       const events: any[] = []
       const cleanup = messagePersister.addGlobalNotificationClient((data) => {
@@ -3705,6 +3737,12 @@ describe('MessagePersister', () => {
   // ============================================================================
 
   describe('Script run request detection', () => {
+    beforeEach(() => {
+      // Awaiting is derived and gated on an active turn — mark active as the
+      // real message send would before any request event arrives.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    })
+
     // Use existing simulateToolUse helper (already defined above in awaiting input tests)
     // Re-define locally since the other is scoped to that describe block
     function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {

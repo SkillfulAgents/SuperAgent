@@ -110,11 +110,16 @@ interface StreamingState {
   // Per-subagent streaming state, keyed by parent tool_use ID (supports concurrent background agents)
   activeSubagents: Map<string, SubagentStreamingState>
   slashCommands: SlashCommandInfo[] // Available slash commands from SDK
-  isAwaitingInput: boolean // True when session is waiting for user input (e.g., secret, file, question)
+  // Cache of the registry's derived awaiting projection (userInputRequestManager.isSessionAwaiting,
+  // gated on isActive), maintained by syncSessionAwaiting for edge-triggered broadcasts. Do not
+  // set imperatively — turn-boundary teardown paths reset it to false alongside isActive; every
+  // other transition must go through syncSessionAwaiting.
+  isAwaitingInput: boolean
   // TODO: computer-use and the other input requests are tracked in two separate maps with
-  // divergent clearing rules (this one is cleared only via explicit route calls; pendingInputRequests
-  // below is cleared on tool_result + turn boundaries — so e.g. interrupt clears one but not the
-  // other). Unify into a single store + single SSE replay loop. Tracked: SUP-213 (sibling of SUP-163).
+  // divergent clearing rules (this one survives an idle boundary for SSE replay and is cleared
+  // on session_active / decision routes / cancelAwaitingInput; pendingInputRequests below is
+  // cleared on tool_result + both turn boundaries). Unify into a single store + single SSE
+  // replay loop. Tracked: SUP-213 (sibling of SUP-163).
   pendingComputerUseRequests: Map<string, { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> // Pending computer use requests awaiting user approval (keyed by toolUseId)
   // Pending user-input request broadcasts (secret/connected_account/question/file/remote_mcp/
   // script_run/browser_input), keyed by toolUseId. These are one-shot SSE events, so a client
@@ -519,10 +524,13 @@ class MessagePersister {
 
   // Get pending user-input request broadcasts for a session (for SSE replay on (re)connect).
   // Returns the exact event payloads that were broadcast, so the route can re-send them verbatim.
+  // Entries synthesized by recoverSessionAwaitingInput are excluded: they were never broadcast
+  // and carry no payload — replaying one would render a broken card. Clients get those from
+  // the transcript instead.
   getPendingInputRequests(sessionId: string): Array<{ type: string; toolUseId: string; [k: string]: unknown }> {
     const state = this.streamingStates.get(sessionId)
     if (!state) return []
-    return Array.from(state.pendingInputRequests.values())
+    return Array.from(state.pendingInputRequests.values()).filter((r) => r.recovered !== true)
   }
 
   // Record an "Allow for this session" capability grant (decision route calls
@@ -554,13 +562,7 @@ class MessagePersister {
     userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
     this.shadowRegistryCheck(sessionId, 'completeCapabilityReview')
     this.broadcastToSSE(sessionId, { type: 'capability_review_resolved', toolUseId })
-    if (state.pendingInputRequests.size === 0) {
-      this.broadcastGlobal({
-        type: 'session_input_provided',
-        sessionId,
-        agentSlug: state.agentSlug,
-      })
-    }
+    this.syncSessionAwaiting(sessionId)
   }
 
   // Clear a pending computer use request (after approval/rejection)
@@ -574,21 +576,7 @@ class MessagePersister {
       state.pendingComputerUseRequests.delete(toolUseId)
       userInputRequestManager.resolveIfInStore(toolUseId, 'computer_use', outcome)
       this.shadowRegistryCheck(sessionId, 'clearPendingComputerUseRequest')
-      // Same waiting-light rule as the sidechain input clear: both stores,
-      // skip auto-approved — and defer to a parked proxy/x-agent review
-      // (external blocker), which is also a real wait.
-      if (
-        state.isAwaitingInput &&
-        !this.hasBlockingPendingRequests(state) &&
-        !this.hasExternalAwaitingBlocker(state.agentSlug)
-      ) {
-        state.isAwaitingInput = false
-        this.broadcastGlobal({
-          type: 'session_input_provided',
-          sessionId,
-          agentSlug: state.agentSlug,
-        })
-      }
+      this.syncSessionAwaiting(sessionId)
     }
   }
 
@@ -881,13 +869,30 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: true,
     })
+
+    // The session_active broadcast above wiped the previous turn's parked
+    // requests, so the projection here reflects only waits that genuinely
+    // survive a new message — an agent-scoped proxy/x-agent review. Syncing
+    // makes a session that joins mid-review show awaiting immediately (the
+    // review used to mark only the sessions active at request time).
+    this.syncSessionAwaiting(sessionId)
   }
 
-  // Mark session as awaiting user input and broadcast globally
-  private markSessionAwaitingInput(sessionId: string): void {
+  // Recompute the derived awaiting projection for a session and broadcast on
+  // the edges. `state.isAwaitingInput` is only a cache of the registry's
+  // `isSessionAwaiting` projection — this is the ONE place that flips it in
+  // response to requests opening/settling (turn-boundary teardown paths reset
+  // it directly, alongside isActive, without broadcasting). An inactive
+  // session is never awaiting: its parked requests died with the turn, even
+  // when a stale entry (or an agent-scoped review) is still open.
+  private syncSessionAwaiting(sessionId: string): void {
     const state = this.streamingStates.get(sessionId)
-    if (state && !state.isAwaitingInput) {
-      state.isAwaitingInput = true
+    if (!state) return
+    const derived =
+      state.isActive && userInputRequestManager.isSessionAwaiting(sessionId, state.agentSlug)
+    if (derived === state.isAwaitingInput) return
+    state.isAwaitingInput = derived
+    if (derived) {
       this.broadcastGlobal({
         type: 'session_awaiting_input',
         sessionId,
@@ -898,31 +903,7 @@ class MessagePersister {
           console.error('[MessagePersister] Failed to promote automated session:', err)
         })
       }
-    }
-  }
-
-  // Public door for host-owned waits that park outside the tool_use stream
-  // (proxy / MCP / x-agent review). Same bit as markSessionAwaitingInput.
-  markAwaitingInput(sessionId: string): void {
-    this.markSessionAwaitingInput(sessionId)
-  }
-
-  // Real waits only: non-auto pocket-A asks + any pocket-B computer-use approval.
-  // Proxy reviews live in ReviewManager and are gated by the caller before this runs.
-  private hasBlockingPendingRequests(state: StreamingState): boolean {
-    return (
-      [...state.pendingInputRequests.values()].some((r) => r.autoApproved !== true) ||
-      state.pendingComputerUseRequests.size > 0
-    )
-  }
-
-  // Clear awaiting on every session for an agent that has no remaining stream
-  // blockers. Caller must ensure no proxy reviews remain for the agent first.
-  clearAwaitingInputForAgentIfUnblocked(agentSlug: string): void {
-    for (const [sessionId, state] of this.streamingStates) {
-      if (state.agentSlug !== agentSlug || !state.isAwaitingInput) continue
-      if (this.hasBlockingPendingRequests(state)) continue
-      state.isAwaitingInput = false
+    } else {
       this.broadcastGlobal({
         type: 'session_input_provided',
         sessionId,
@@ -931,34 +912,19 @@ class MessagePersister {
     }
   }
 
-  // External "still waiting on the human" signals that live outside the stream's
-  // pending maps — proxy / x-agent reviews own their store in ReviewManager, which
-  // already imports this module, so it registers a source here rather than being
-  // imported back (that would cycle). Returns an unregister fn, mirroring
-  // addGlobalNotificationClient.
-  private awaitingBlockerSources = new Set<(agentSlug: string) => boolean>()
-
-  registerAwaitingBlockerSource(fn: (agentSlug: string) => boolean): () => void {
-    this.awaitingBlockerSources.add(fn)
-    return () => {
-      this.awaitingBlockerSources.delete(fn)
+  // Agent-wide recompute: agent-scoped requests (proxy / x-agent reviews) block
+  // every session of the agent, so ReviewManager calls this after each review
+  // opens or settles. Replaces the registerAwaitingBlockerSource predicate and
+  // the mark/clear pair ReviewManager used to drive imperatively.
+  syncAgentSessionsAwaiting(agentSlug: string): void {
+    for (const [sessionId, state] of this.streamingStates) {
+      if (state.agentSlug === agentSlug) this.syncSessionAwaiting(sessionId)
     }
   }
 
-  private hasExternalAwaitingBlocker(agentSlug: string | undefined): boolean {
-    if (!agentSlug) return false
-    for (const isBlocking of this.awaitingBlockerSources) {
-      if (isBlocking(agentSlug)) return true
-    }
-    return false
-  }
-
-  // Phase 2 shadow-registry parity (dev/test only, skipped in production).
-  // Store comparison runs synchronously — every mutation site writes through to
-  // the registry adjacent to the store mutation, so the two must already agree
-  // here. The awaiting-bit comparison is deferred a microtask: the imperative
-  // mark/clear that follows a store mutation lands later in the same
-  // synchronous stretch, and comparing early would report phantom divergence.
+  // Shadow-registry parity (dev/test only, skipped in production). Every store
+  // mutation site writes through to the registry adjacent to the store
+  // mutation, so the two must agree here.
   private shadowRegistryCheck(sessionId: string, context: string): void {
     if (process.env.NODE_ENV === 'production') return
     const state = this.streamingStates.get(sessionId)
@@ -968,16 +934,6 @@ class MessagePersister {
       context,
       streamStoreIds: [...state.pendingInputRequests.keys()],
       computerUseStoreIds: [...state.pendingComputerUseRequests.keys()],
-    })
-    queueMicrotask(() => {
-      const current = this.streamingStates.get(sessionId)
-      if (!current) return
-      userInputRequestManager.compareAwaitingProjection({
-        sessionId,
-        context,
-        agentSlug: current.agentSlug,
-        isAwaitingInput: current.isAwaitingInput,
-      })
     })
   }
 
@@ -1010,23 +966,56 @@ class MessagePersister {
 
     // Only tools with 'request_' prefix actually block waiting for user response
     // (schedule_task, deliver_file, search_* resolve immediately and don't block).
-    // computer-use AND request_script_run mark awaiting in their own handlers,
-    // which only do so when user approval is actually needed (not when
-    // auto-executed against a cached permission grant).
+    // computer-use AND request_script_run sync awaiting in their own handlers.
+    // The handler above already broadcast the request event, which registered
+    // it — the sync just picks the new entry up.
     if (isBlockingUserInputToolName(toolName)) {
-      this.markSessionAwaitingInput(sessionId)
+      this.syncSessionAwaiting(sessionId)
     }
+  }
+
+  // Blocking user-input tool name → the request event type its handler
+  // broadcasts. Recovery synthesizes store entries in this shape when the
+  // original one-shot event was missed. Keep in sync with the handlers'
+  // broadcast types (INPUT_REQUEST_TYPES).
+  private static readonly REQUEST_EVENT_TYPE_BY_TOOL_NAME: Record<string, string> = {
+    AskUserQuestion: 'user_question_request',
+    'mcp__user-input__request_secret': 'secret_request',
+    'mcp__user-input__request_connected_account': 'connected_account_request',
+    'mcp__user-input__request_file': 'file_request',
+    'mcp__user-input__request_remote_mcp': 'remote_mcp_request',
+    'mcp__user-input__request_browser_input': 'browser_input_request',
   }
 
   // Recover awaiting-input state from persisted messages when the one-shot
   // request stream event was missed but the unresolved tool call is visible.
-  recoverSessionAwaitingInput(sessionId: string, agentSlug?: string): void {
+  // Re-establishes the missed requests in the stream store and the registry
+  // (the derived awaiting projection needs real entries — there is no forced
+  // bit anymore), then recomputes awaiting. Entries are marked `recovered` so
+  // SSE replay skips them: they carry no payload, and connected clients render
+  // the card from the transcript that triggered this recovery in the first
+  // place. Resolution needs no special path — their tool_result (or the next
+  // turn boundary) clears them like any other stream-store entry.
+  recoverSessionAwaitingInput(
+    sessionId: string,
+    agentSlug: string | undefined,
+    unresolved: Array<{ toolUseId: string; toolName: string }>,
+  ): void {
     const state = this.streamingStates.get(sessionId)
     if (!state?.isActive) return
     if (agentSlug && !state.agentSlug) {
       state.agentSlug = agentSlug
     }
-    this.markSessionAwaitingInput(sessionId)
+    for (const { toolUseId, toolName } of unresolved) {
+      const type = MessagePersister.REQUEST_EVENT_TYPE_BY_TOOL_NAME[toolName]
+      if (!type || state.pendingInputRequests.has(toolUseId)) continue
+      const evt = { type, toolUseId, agentSlug: state.agentSlug, recovered: true }
+      state.pendingInputRequests.set(toolUseId, evt)
+      const shadow = streamEventToPendingRequest(sessionId, evt)
+      if (shadow) userInputRequestManager.register(shadow)
+      this.shadowRegistryCheck(sessionId, 'recoverSessionAwaitingInput')
+    }
+    this.syncSessionAwaiting(sessionId)
   }
 
   // Promote an automated session (cron/webhook/chat) to a regular session so it
@@ -1138,12 +1127,25 @@ class MessagePersister {
       if (state) {
         if (evt.type === 'session_active' || evt.type === 'session_idle') {
           state.pendingInputRequests.clear()
-          // Shadow registry (Phase 2): mirror the turn-boundary wipe. A new
-          // turn supersedes parked asks; an idle boundary cancels them.
+          // Mirror the turn-boundary wipe in the registry. A new turn
+          // supersedes parked asks; an idle boundary cancels them.
           userInputRequestManager.clearSessionStreamRequests(
             sessionId,
             evt.type === 'session_active' ? 'superseded' : 'cancelled',
           )
+          if (evt.type === 'session_active') {
+            // A new turn also supersedes computer-use approvals left over from
+            // a previous one. Historically this store was never cleared at
+            // turn boundaries (only by a decision or cancelAwaitingInput), so
+            // stale entries could survive an idle/interrupt — harmless when
+            // awaiting was an imperative bit, but the derived projection would
+            // read them as a live wait and flag the fresh turn as awaiting.
+            // (Idle keeps them for SSE replay of a still-parked approval.)
+            for (const id of state.pendingComputerUseRequests.keys()) {
+              userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
+            }
+            state.pendingComputerUseRequests.clear()
+          }
           this.shadowRegistryCheck(sessionId, `broadcast:${evt.type}`)
         } else if (MessagePersister.INPUT_REQUEST_TYPES.has(evt.type) && typeof evt.toolUseId === 'string') {
           state.pendingInputRequests.set(evt.toolUseId, evt as { type: string; toolUseId: string })
@@ -1381,19 +1383,10 @@ class MessagePersister {
           this.broadcastToSSE(sessionId, { type: 'messages_updated' })
           break
         }
-        // Clear awaiting input when tool results arrive (user provided input),
-        // unless a proxy / x-agent review is still parked for this agent. Those
-        // reviews live in ReviewManager, outside the stream's pending maps, so we
-        // ask via a registered blocker source instead of clearing blindly.
-        if (state.isAwaitingInput && !this.hasExternalAwaitingBlocker(state.agentSlug)) {
-          state.isAwaitingInput = false
-          this.broadcastGlobal({
-            type: 'session_input_provided',
-            sessionId,
-            agentSlug: state.agentSlug,
-          })
-        }
-        // Tool results come as 'user' type messages
+        // Tool results come as 'user' type messages. handleToolResults settles
+        // each answered request in the registry and recomputes awaiting from
+        // what actually remains open — answering one of several parallel
+        // requests no longer drops the waiting light while siblings are parked.
         this.handleToolResults(sessionId, content)
         // Broadcast refresh so frontend can detect the persisted user message
         // and clear the optimistic pending copy promptly.
@@ -4037,7 +4030,7 @@ ${continuation}`
         input,
         agentSlug,
       })
-      this.markSessionAwaitingInput(sessionId)
+      this.syncSessionAwaiting(sessionId)
 
       if (agentSlug) {
         notificationManager.triggerSessionWaitingInput(
@@ -4173,7 +4166,7 @@ ${continuation}`
       // handler) covers SUBAGENT-originated requests, whose sidechain paths
       // bypass that handler — without this the orange awaiting-input status
       // never flips and the agent shows "working" while parked on the user.
-      this.markSessionAwaitingInput(sessionId)
+      this.syncSessionAwaiting(sessionId)
 
       // Renderer-side gate handles suppression; see session_complete trigger.
       if (agentSlug) {
@@ -4261,7 +4254,7 @@ ${continuation}`
       // Only flip the global "awaiting input" status (which drives the orange agent-status
       // pill in the sidebar / tray) when the user actually has to respond.
       if (!autoApproved) {
-        this.markSessionAwaitingInput(sessionId)
+        this.syncSessionAwaiting(sessionId)
         // Renderer-side gate handles suppression; see session_complete trigger.
         if (agentSlug) {
           notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'script_run').catch((err) => {
@@ -4360,7 +4353,7 @@ ${continuation}`
         }
         this.shadowRegistryCheck(sessionId, 'handleComputerUseRequestTool')
       }
-      this.markSessionAwaitingInput(sessionId)
+      this.syncSessionAwaiting(sessionId)
 
       this.broadcastToSSE(sessionId, {
         type: 'computer_use_request',
@@ -4558,12 +4551,10 @@ ${continuation}`
   // Handle tool results - broadcast to SSE clients
   // Sidechain counterpart of handleToolResults, scoped to tracked input
   // requests only: ordinary subagent tool results (Bash, Read, …) stream
-  // constantly and must not broadcast main-path `tool_result` events or touch
-  // the awaiting flag. Unlike the main path's unconditional clear, awaiting is
-  // cleared only when no OTHER blocking request remains (the shared both-stores
-  // rule) — a main-agent question or a pending computer-use can be open in
-  // parallel with a subagent's browser_input — and never while a proxy/x-agent
-  // review is still parked for this agent.
+  // constantly and must not broadcast main-path `tool_result` events. The
+  // trailing sync recomputes awaiting from what remains open — a main-agent
+  // question, a pending computer-use, or a parked proxy/x-agent review keeps
+  // the session waiting even after a subagent's browser_input resolves.
   private resolveSidechainInputRequests(
     sessionId: string,
     state: StreamingState,
@@ -4590,18 +4581,7 @@ ${continuation}`
         isError: block.is_error || false,
       })
     }
-    if (
-      state.isAwaitingInput &&
-      !this.hasBlockingPendingRequests(state) &&
-      !this.hasExternalAwaitingBlocker(state.agentSlug)
-    ) {
-      state.isAwaitingInput = false
-      this.broadcastGlobal({
-        type: 'session_input_provided',
-        sessionId,
-        agentSlug: state.agentSlug,
-      })
-    }
+    this.syncSessionAwaiting(sessionId)
   }
 
   private handleToolResults(
@@ -4652,6 +4632,7 @@ ${continuation}`
           }
         }
       }
+      this.syncSessionAwaiting(sessionId)
     } catch (error) {
       console.error('Failed to handle tool results:', error)
     }

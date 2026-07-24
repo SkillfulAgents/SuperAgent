@@ -116,6 +116,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     markAllSessionsInactiveForAgent: vi.fn(),
     isSessionActive: vi.fn(() => false),
     isSessionAwaitingInput: vi.fn(() => false),
+    recoverSessionAwaitingInput: vi.fn(),
     getActiveSessionIdsForAgent: vi.fn(() => [] as string[]),
     hasActiveSessionsForAgent: vi.fn(() => false),
     hasSessionsAwaitingInputForAgent: vi.fn(() => false),
@@ -3189,6 +3190,109 @@ describe('DELETE /:id/sessions/:sessionId', () => {
 })
 
 // ============================================================================
+// Awaiting-input recovery from the persisted transcript
+// ============================================================================
+
+describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+  })
+
+  it('re-establishes the missed blocking requests of the trailing turn for an active session', async () => {
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    mockTransformMessages.mockReturnValue([
+      { id: 'm1', type: 'user', content: { text: 'go' }, toolCalls: [], createdAt: new Date() },
+      {
+        id: 'm2',
+        type: 'assistant',
+        content: { text: '' },
+        createdAt: new Date(),
+        toolCalls: [
+          // Resolved call: not recoverable.
+          { id: 'tool-done', name: 'Bash', input: {}, result: 'ok' },
+          // The missed blocking ask this fallback exists for.
+          { id: 'tool-q', name: 'AskUserQuestion', input: {} },
+          // script_run is excluded from isBlockingUserInputToolName (its
+          // handler decides blocking per-grant) — must not be recovered here.
+          { id: 'tool-sr', name: 'mcp__user-input__request_script_run', input: {} },
+        ],
+      },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+      'sess-1',
+      'test-agent',
+      [{ toolUseId: 'tool-q', toolName: 'AskUserQuestion' }],
+    )
+  })
+
+  it('a trailing QUEUED user message does not end the turn scan', async () => {
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    mockTransformMessages.mockReturnValue([
+      {
+        id: 'm1',
+        type: 'assistant',
+        content: { text: '' },
+        createdAt: new Date(),
+        toolCalls: [{ id: 'tool-q', name: 'mcp__user-input__request_secret', input: {} }],
+      },
+      // Queued mid-turn message: the turn is still the same one that parked.
+      { id: 'm2', type: 'user', queued: true, content: { text: 'also…' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    await getReq(app, URL)
+    expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+      'sess-1',
+      'test-agent',
+      [{ toolUseId: 'tool-q', toolName: 'mcp__user-input__request_secret' }],
+    )
+  })
+
+  it('does not recover when a later user message started a fresh turn', async () => {
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    mockTransformMessages.mockReturnValue([
+      {
+        id: 'm1',
+        type: 'assistant',
+        content: { text: '' },
+        createdAt: new Date(),
+        toolCalls: [{ id: 'tool-q', name: 'AskUserQuestion', input: {} }],
+      },
+      // A real (non-queued) user message supersedes the parked ask.
+      { id: 'm2', type: 'user', content: { text: 'never mind' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    await getReq(app, URL)
+    expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+  })
+
+  it('does not recover for an inactive session', async () => {
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+    mockTransformMessages.mockReturnValue([
+      {
+        id: 'm1',
+        type: 'assistant',
+        content: { text: '' },
+        createdAt: new Date(),
+        toolCalls: [{ id: 'tool-q', name: 'AskUserQuestion', input: {} }],
+      },
+    ])
+
+    await getReq(app, URL)
+    expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================================
 // User Message Broadcast & Typing Indicator Tests
 // ============================================================================
 
@@ -4531,19 +4635,22 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
     expect(body[1].hasUnreadNotifications).toBe(true)
   })
 
-  it('marks active sessions awaiting input when agent-level reviews are pending', async () => {
+  it('reports the persister awaiting status per session verbatim', async () => {
     vi.mocked(listSessionsByIds).mockResolvedValue([
       sessionInfo('s-live', '2026-01-02T10:00:00Z'),
       sessionInfo('s-idle', '2026-01-02T11:00:00Z'),
     ])
     vi.mocked(messagePersister.isSessionActive).mockImplementation((id: string) => id === 's-live')
-    mockGetPendingReviewsForAgent.mockReturnValue([{ id: 'review-1' }])
+    // Agent-level reviews are already folded into the persister's derived
+    // awaiting projection (they flag every active session of the agent) —
+    // the route adds no special-case of its own anymore.
+    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
+      (id: string) => id === 's-live',
+    )
 
     const res = await getReq(app, NOTABLE_URL)
     const body = await res.json() as Array<{ id: string; isAwaitingInput: boolean }>
     const bySessionId = new Map(body.map((s) => [s.id, s]))
-    // Agent-level review only flags LIVE sessions — idle ones can't be the
-    // session the review is waiting on.
     expect(bySessionId.get('s-live')?.isAwaitingInput).toBe(true)
     expect(bySessionId.get('s-idle')?.isAwaitingInput).toBe(false)
   })

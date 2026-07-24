@@ -6,12 +6,15 @@
  * awaiting → notify exactly once → resolve → drop the replay entry → clear
  * awaiting only when it was the last blocking wait.
  *
- * This file pins CURRENT behavior — including the known divergences it
- * documents inline (computer-use's separate store, capability review's early
- * clear). The sidechain matrix at the bottom is the acceptance table for the
- * unified dispatcher: every kind must surface from every delivery path. Rows
- * were `surfacesToday: false` before the dispatcher landed — those kinds hung
- * silently when a subagent called them.
+ * This file pins CURRENT behavior. The awaiting status is DERIVED from the
+ * userInputRequestManager registry (Phase 3): the split-brains this suite
+ * originally pinned as known-wrong — the first of two parallel requests
+ * dropping the waiting light, the computer-use and capability-review clear
+ * doors leaving the bit stuck — are fixed, and their tests now assert the
+ * correct arithmetic. The sidechain matrix at the bottom is the acceptance
+ * table for the unified dispatcher: every kind must surface from every
+ * delivery path. Rows were `surfacesToday: false` before the dispatcher
+ * landed — those kinds hung silently when a subagent called them.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ContainerClient, StreamMessage } from './types'
@@ -290,8 +293,16 @@ describe('pending user-input request lifecycle (characterization)', () => {
     originalE2eMock = process.env.E2E_MOCK
     process.env.E2E_MOCK = 'true'
 
+    // Agent-scoped entries (reviews) are not dropped by unsubscribe — wipe the
+    // registry so one test's review can't keep a later test's session awaiting.
+    userInputRequestManager.reset()
+
     mockClient = createMockClient()
     await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+    // Requests park mid-turn: production always has markSessionActive before
+    // any request event arrives, and the derived awaiting projection is gated
+    // on an active turn (an inactive session is never awaiting).
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const events: any[] = []
@@ -396,13 +407,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(2)
 
         sendToolResult('tool-par-1')
-        // KNOWN SPLIT-BRAIN (pinned, not desired): the main-path user-message
-        // handler clears awaiting without consulting the stream stores — it
-        // only defers to external review blockers. The second request's
-        // replay entry is still parked (the card stack still shows it), but
-        // the sidebar/header bit already reads "not waiting". Derived
-        // awaiting state flips this expectation to `true`.
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        // Derived awaiting: the projection consults what is actually still
+        // open, so answering the first request keeps the waiting light on
+        // while the second card is parked. (This was the pinned parallel-
+        // request split-brain before the flip: the imperative clear dropped
+        // the bit on the first tool_result.)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
         expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
 
         sendToolResult('tool-par-2')
@@ -441,24 +451,24 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(call.slice(0, 3)).toEqual([SESSION_ID, AGENT_SLUG, 'computer_use'])
     })
 
-    it('a tool_result alone does NOT drop the parked entry, yet it DOES clear awaiting', () => {
+    it('a tool_result alone does NOT drop the parked entry — and awaiting stays on with it', () => {
       simulateToolUse(TOOL, 'cu-clear-1', { x: 1, y: 2 })
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-      // KNOWN SPLIT-BRAIN (pinned, not desired): the computer-use store is
-      // cleared only via the decision route's explicit call, so the entry
-      // survives the tool_result — but the main-path user-message handler
-      // still clears the awaiting bit without consulting this store. Card
-      // parked, light off. Derived awaiting state flips the second
-      // expectation to `true`.
+      // The computer-use store is cleared only via the decision route's
+      // explicit call, so the entry survives a stray tool_result. Derived
+      // awaiting reads that store: card parked, light ON. (Before the flip
+      // this was a pinned split-brain — the imperative clear dropped the bit
+      // without consulting this store.)
       sendToolResult('cu-clear-1')
       expect(
         messagePersister.getPendingComputerUseRequests(SESSION_ID).map((r) => r.toolUseId)
       ).toContain('cu-clear-1')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
       messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'cu-clear-1')
       expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
 
     it('the route clear flips awaiting and broadcasts when it was the last blocking wait', () => {
@@ -534,7 +544,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(call.slice(0, 3)).toEqual([SESSION_ID, AGENT_SLUG, 'capability_review_workflows'])
     })
 
-    it('completeCapabilityReview drops the replay entry and broadcasts, but never flips the awaiting bit', async () => {
+    it('completeCapabilityReview drops the replay entry, broadcasts, and clears awaiting', async () => {
       simulateToolUse('Workflow', 'wf-lifecycle-2', { script: 'export const meta = {}' })
       await vi.waitFor(() => {
         expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
@@ -544,82 +554,78 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
       expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
       expect(sseEvents.filter((e) => e.type === 'capability_review_resolved')).toHaveLength(1)
-      // KNOWN SPLIT-BRAIN (pinned, not desired): like the computer-use route
-      // clear, this door empties its store and broadcasts but leaves the
-      // awaiting bit set — it stays true until later stream traffic (the
-      // launched tool's own lifecycle) clears it.
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      // Derived awaiting: settling the review settles the wait. (Before the
+      // flip this door emptied its store and broadcast but left the bit stuck
+      // until later stream traffic cleared it — a pinned split-brain.)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
   })
 
   // ==========================================================================
-  // Cross-store awaiting arithmetic: input store + computer-use store +
-  // external blocker source (the ReviewManager seam). Awaiting must survive
-  // until the LAST wait across all three resolves.
+  // Cross-store awaiting arithmetic: stream store + computer-use store +
+  // agent-scoped reviews (the ReviewManager seam — an agent-scoped registry
+  // entry). Awaiting must survive until the LAST wait across all three
+  // resolves. There is no side-channel: whatever is open in the registry IS
+  // the projection.
   // ==========================================================================
 
   describe('cross-store awaiting arithmetic', () => {
-    it('a held external blocker keeps awaiting alive through tool_results; the agent door releases it', () => {
-      let blockerHeld = true
-      const unregister = messagePersister.registerAwaitingBlockerSource(
-        (agentSlug) => agentSlug === AGENT_SLUG && blockerHeld
-      )
+    // What ReviewManager.requestReview writes through: an agent-scoped
+    // blocking entry (no sessionId — the proxied call has none).
+    function parkAgentReview(id: string) {
+      userInputRequestManager.register({
+        id,
+        kind: 'proxy_review',
+        scope: { agentSlug: AGENT_SLUG },
+        blocking: true,
+        autoApproved: false,
+        payload: { toolkit: 'slack' },
+      })
+      messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
+    }
 
-      try {
-        simulateToolUse('mcp__user-input__request_secret', 'mix-secret-1', {
-          secretName: 'API_KEY',
-          reason: 'Need it',
-        })
-        simulateToolUse('mcp__computer-use__computer_click', 'mix-cu-1', { x: 1, y: 2 })
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    it('a parked agent-scoped review keeps awaiting alive through tool_results and the cu clear', () => {
+      parkAgentReview('mix-review-1')
 
-        // The user-message clear defers to a held external blocker — this is
-        // the ONLY thing that saves the awaiting bit here: the still-parked
-        // computer-use entry would not (see the split-brain pins above).
-        sendToolResult('mix-secret-1')
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      simulateToolUse('mcp__user-input__request_secret', 'mix-secret-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      simulateToolUse('mcp__computer-use__computer_click', 'mix-cu-1', { x: 1, y: 2 })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-        // The computer-use route clear defers to the held external blocker
-        // (same waiting-light rule), so awaiting survives it too.
-        messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'mix-cu-1')
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      // The secret resolves, but the cu entry AND the review are still open.
+      sendToolResult('mix-secret-1')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-        // Once the blocker releases, the agent-level door clears it: both
-        // stream stores are empty by now.
-        blockerHeld = false
-        messagePersister.clearAwaitingInputForAgentIfUnblocked(AGENT_SLUG)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
-      } finally {
-        unregister()
-      }
+      // The cu entry resolves, but the review is still open.
+      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'mix-cu-1')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // The review settles — nothing is open anymore.
+      userInputRequestManager.resolve('mix-review-1', 'answered')
+      messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
 
-    it('the agent-level door checks stream stores only — external blockers are the CALLER\'s contract', () => {
-      let blockerHeld = true
-      const unregister = messagePersister.registerAwaitingBlockerSource(
-        (agentSlug) => agentSlug === AGENT_SLUG && blockerHeld
-      )
+    it('the agent-wide sync cannot clear awaiting while a review remains open', () => {
+      parkAgentReview('mix-review-2')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-      try {
-        messagePersister.markAwaitingInput(SESSION_ID)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      // Before the derived flip, the agent-level clear door trusted its
+      // caller to verify no reviews remained — a caller that forgot cleared
+      // awaiting under a live review. The projection makes that impossible:
+      // sync recomputes from the registry, and the review is still in it.
+      messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-        // A held user-message clear defers to the blocker source…
-        sendToolResult('unknown-tool-id')
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      // A stray tool_result on the session doesn't drop it either.
+      sendToolResult('unknown-tool-id')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-        // …but clearAwaitingInputForAgentIfUnblocked does NOT consult
-        // external blocker sources. Its documented contract is that the
-        // caller (ReviewManager) verifies no reviews remain before calling.
-        // Pinned: a caller that forgets this check clears awaiting while a
-        // review is still parked — nothing in the persister stops it.
-        messagePersister.clearAwaitingInputForAgentIfUnblocked(AGENT_SLUG)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
-
-        blockerHeld = false
-      } finally {
-        unregister()
-      }
+      userInputRequestManager.resolve('mix-review-2', 'declined')
+      messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
   })
 
@@ -886,47 +892,45 @@ describe('pending user-input request lifecycle (characterization)', () => {
       }
     })
 
-    it('the sidechain resolve defers to a held external blocker (parked proxy/x-agent review)', () => {
-      let blockerHeld = true
-      const unregister = messagePersister.registerAwaitingBlockerSource(
-        (agentSlug) => agentSlug === AGENT_SLUG && blockerHeld
+    it('the sidechain resolve keeps awaiting on while a proxy/x-agent review is parked', () => {
+      userInputRequestManager.register({
+        id: 'side-review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: AGENT_SLUG },
+        blocking: true,
+        autoApproved: false,
+        payload: { toolkit: 'slack' },
+      })
+      sendSidechainToolUse(
+        'mcp__user-input__request_secret',
+        'side-blk-1',
+        { secretName: 'BLK_KEY', reason: 'Blocked resolve' },
+        'parent-blk',
+        'complete'
       )
-      try {
-        sendSidechainToolUse(
-          'mcp__user-input__request_secret',
-          'side-blk-1',
-          { secretName: 'BLK_KEY', reason: 'Blocked resolve' },
-          'parent-blk',
-          'complete'
-        )
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-        // The subagent's ask resolves, but the review is still parked — the
-        // waiting light must stay on.
-        sendSidechainToolResult('side-blk-1', 'parent-blk')
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      // The subagent's ask resolves, but the review is still parked — the
+      // waiting light must stay on.
+      sendSidechainToolResult('side-blk-1', 'parent-blk')
+      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-        blockerHeld = false
-        messagePersister.clearAwaitingInputForAgentIfUnblocked(AGENT_SLUG)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
-      } finally {
-        unregister()
-      }
+      userInputRequestManager.resolve('side-review-1', 'answered')
+      messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
   })
 
   // ==========================================================================
-  // Phase 2 shadow registry: every store mutation writes through to the
+  // Shadow registry: every store mutation writes through to the
   // UserInputRequestManager, whose per-store view must mirror the legacy
   // stores exactly (the persister asserts this inline at every mutation —
-  // storeMismatches must stay 0). Its DERIVED awaiting projection is compared
-  // against the imperative bit: where the pinned split-brains make the bit
-  // wrong, the projection is right, and the divergence counter is the
-  // telemetry that sizes the Phase 3 flip.
+  // storeMismatches must stay 0). Its derived awaiting projection is what the
+  // persister's isSessionAwaitingInput now reports.
   // ==========================================================================
 
-  describe('shadow registry equivalence (Phase 2)', () => {
+  describe('shadow registry equivalence', () => {
     const KIND_BY_SSE_TYPE: Record<string, string> = {
       secret_request: 'secret',
       user_question_request: 'question',
@@ -936,19 +940,6 @@ describe('pending user-input request lifecycle (characterization)', () => {
       browser_input_request: 'browser_input',
       script_run_request: 'script_run',
     }
-
-    let consoleWarnSpy: ReturnType<typeof vi.spyOn>
-
-    beforeEach(() => {
-      userInputRequestManager.reset()
-      // Divergence telemetry warns on purpose in the split-brain tests below —
-      // keep the test output clean.
-      consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    })
-
-    afterEach(() => {
-      consoleWarnSpy.mockRestore()
-    })
 
     it('every standard kind registers a typed entry mirroring the replay store, and settles with it', async () => {
       for (const kindCase of STANDARD_KINDS) {
@@ -1013,7 +1004,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(userInputRequestManager.stats.storeMismatches).toBe(0)
     })
 
-    it('parallel requests: the projection stays awaiting while the bit drops early (split-brain telemetry)', async () => {
+    it('parallel requests: the reported status tracks the projection across partial resolves', () => {
       simulateToolUse('mcp__user-input__request_secret', 'shadow-par-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
@@ -1024,25 +1015,20 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(true)
 
-      // KNOWN SPLIT-BRAIN (pinned at the main-path user-message handler): the
-      // first tool_result clears the bit while the second card is still
-      // parked. The derived projection keeps the light on — this is the
-      // behavior Phase 3 promotes to authoritative.
+      // The first tool_result settles one request; the second card is still
+      // parked, so bit and projection both stay on — the persister's status
+      // IS the projection now.
       sendToolResult('shadow-par-1')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(true)
-
-      // The divergence check is deferred a microtask past the mutation.
-      await vi.waitFor(() => {
-        expect(userInputRequestManager.stats.awaitingDivergences).toBeGreaterThan(0)
-      })
 
       sendToolResult('shadow-par-2')
       expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
       expect(userInputRequestManager.stats.storeMismatches).toBe(0)
     })
 
-    it('capability review: the registry settles on complete; the stuck bit is divergence telemetry', async () => {
+    it('capability review: complete settles the registry entry and the reported status together', async () => {
       mockAgentCapabilities.subagents = 'allow'
       mockAgentCapabilities.workflows = 'review'
       vi.mocked(mockClient.fetch).mockResolvedValue({
@@ -1063,12 +1049,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       messagePersister.completeCapabilityReview(SESSION_ID, 'shadow-cap-1')
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
       expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
-      // Pinned: the early-clear door empties its store but never flips the
-      // bit. Projection right, bit wrong — counted, not thrown.
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
-      await vi.waitFor(() => {
-        expect(userInputRequestManager.stats.awaitingDivergences).toBeGreaterThan(0)
-      })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
       expect(userInputRequestManager.stats.storeMismatches).toBe(0)
     })
 

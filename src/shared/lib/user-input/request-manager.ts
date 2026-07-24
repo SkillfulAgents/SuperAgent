@@ -11,13 +11,13 @@ import {
  * Host-side registry of every pending user-input request, regardless of which
  * legacy store owns it (persister stream store, computer-use map, ReviewManager).
  *
- * Phase 2 — SHADOW MODE: the legacy stores stay authoritative and every
- * mutation writes through to this registry; nothing reads it for behavior.
- * `verifyStoreParity` asserts the mirror is exact at every store mutation
- * (throws under vitest, logs otherwise), and `compareAwaitingProjection`
- * counts divergence between the imperative awaiting bit and the projection
- * this registry derives — the known split-brains Phase 3 replaces the bit
- * to fix.
+ * Phase 3: the legacy stores stay authoritative for request CONTENTS (and
+ * every mutation still writes through, with `verifyStoreParity` asserting the
+ * mirror is exact), but the session "awaiting input" status is now DERIVED
+ * from this registry via `isSessionAwaiting` — the persister's bit is just an
+ * edge-detection cache of that projection. The imperative per-path mark/clear
+ * calls (and their split-brains: parallel requests, direct-clear doors,
+ * review blockers) are gone.
  */
 export class UserInputRequestManager {
   private requests = new Map<string, PendingUserInputRequest>()
@@ -30,10 +30,6 @@ export class UserInputRequestManager {
   }> = []
 
   private storeMismatchCount = 0
-  private awaitingDivergenceCount = 0
-  // Sessions currently known-diverged, so we warn once per divergence episode
-  // instead of on every mutation while it persists.
-  private divergedSessions = new Set<string>()
 
   /**
    * Register a pending request. First delivery wins: re-registering an id that
@@ -130,9 +126,9 @@ export class UserInputRequestManager {
   /**
    * Derived awaiting projection for a session: any open real wait scoped to
    * the session, plus any agent-scoped real wait of its agent (a parked review
-   * blocks every session of the agent — same semantics the imperative bit
-   * approximates today). Phase 3 flips the persister onto this; Phase 2 only
-   * compares it against the bit.
+   * blocks every session of the agent). This is the source of truth for
+   * "awaiting input" — the persister recomputes it after every registry
+   * transition and broadcasts on the edges.
    */
   isSessionAwaiting(sessionId: string, agentSlug?: string): boolean {
     for (const request of this.requests.values()) {
@@ -233,36 +229,9 @@ export class UserInputRequestManager {
     this.reportStoreMismatch(`agent=${check.agentSlug}`, check.context, [mismatch])
   }
 
-  /**
-   * Soft comparison of the imperative awaiting bit vs the derived projection.
-   * Never throws: the Phase 0 characterization suite pinned real split-brains
-   * where the bit is wrong, and this counter is the telemetry that sizes them.
-   * Warns once per divergence episode per session.
-   */
-  compareAwaitingProjection(check: {
-    sessionId: string
-    context: string
-    agentSlug: string | undefined
-    isAwaitingInput: boolean
-  }): void {
-    const projected = this.isSessionAwaiting(check.sessionId, check.agentSlug)
-    if (projected === check.isAwaitingInput) {
-      this.divergedSessions.delete(check.sessionId)
-      return
-    }
-    this.awaitingDivergenceCount++
-    if (this.divergedSessions.has(check.sessionId)) return
-    this.divergedSessions.add(check.sessionId)
-    console.warn(
-      `[UserInputRequestManager] awaiting divergence (session=${check.sessionId}, ` +
-        `context=${check.context}): bit=${check.isAwaitingInput} projection=${projected}`,
-    )
-  }
-
   get stats(): {
     open: number
     storeMismatches: number
-    awaitingDivergences: number
     recentResolutions: Array<{
       id: string
       kind: PendingUserInputRequest['kind']
@@ -272,7 +241,6 @@ export class UserInputRequestManager {
     return {
       open: this.requests.size,
       storeMismatches: this.storeMismatchCount,
-      awaitingDivergences: this.awaitingDivergenceCount,
       recentResolutions: [...this.recentResolutions],
     }
   }
@@ -282,8 +250,6 @@ export class UserInputRequestManager {
     this.requests.clear()
     this.recentResolutions = []
     this.storeMismatchCount = 0
-    this.awaitingDivergenceCount = 0
-    this.divergedSessions.clear()
   }
 }
 
