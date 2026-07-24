@@ -1072,6 +1072,46 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(userInputRequestManager.stats.shelfMismatches).toBe(0)
     })
 
+    it('the direct-clear doors record the caller\'s actual outcome, not a blanket answered', async () => {
+      // Capability review declined via the decision route's door.
+      mockAgentCapabilities.subagents = 'allow'
+      mockAgentCapabilities.workflows = 'review'
+      vi.mocked(mockClient.fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ grants: [] }),
+      } as unknown as Response)
+      simulateToolUse('Workflow', 'shadow-out-1', { script: 'export const meta = {}' })
+      await vi.waitFor(() => {
+        expect(
+          userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+        ).toContain('shadow-out-1')
+      })
+      messagePersister.completeCapabilityReview(SESSION_ID, 'shadow-out-1', 'declined')
+      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+        id: 'shadow-out-1',
+        kind: 'capability_review',
+        outcome: 'declined',
+      })
+
+      // Computer use denied, then a second one consumed by an execution failure.
+      simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-2', { x: 1, y: 2 })
+      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-out-2', 'declined')
+      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+        id: 'shadow-out-2',
+        kind: 'computer_use',
+        outcome: 'declined',
+      })
+
+      simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-3', { x: 3, y: 4 })
+      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-out-3', 'invalidated')
+      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+        id: 'shadow-out-3',
+        kind: 'computer_use',
+        outcome: 'invalidated',
+      })
+      expect(userInputRequestManager.stats.shelfMismatches).toBe(0)
+    })
+
     it('unsubscribe drops every session-scoped registry entry as invalidated', () => {
       simulateToolUse('mcp__user-input__request_secret', 'shadow-drop-1', {
         secretName: 'API_KEY',

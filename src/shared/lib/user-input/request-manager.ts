@@ -156,6 +156,28 @@ export class UserInputRequestManager {
     return false
   }
 
+  private static describeIdMismatch(
+    label: string,
+    shelfIds: string[],
+    registryIds: string[],
+  ): string | null {
+    const expected = [...shelfIds].sort()
+    const actual = [...registryIds].sort()
+    if (expected.length === actual.length && expected.every((id, i) => id === actual[i])) {
+      return null
+    }
+    return `${label}: shelf=[${expected.join(',')}] registry=[${actual.join(',')}]`
+  }
+
+  private reportShelfMismatch(scope: string, context: string, mismatches: string[]): void {
+    this.shelfMismatchCount++
+    const message =
+      `[UserInputRequestManager] shadow shelf mismatch (${scope}, ` +
+      `context=${context}): ${mismatches.join('; ')}`
+    if (process.env.VITEST) throw new Error(message)
+    console.error(message)
+  }
+
   /**
    * Shadow invariant: the registry's per-shelf view of a session must equal the
    * legacy shelf exactly, at every shelf mutation point. Under vitest a
@@ -168,25 +190,47 @@ export class UserInputRequestManager {
     streamShelfIds: string[]
     computerUseShelfIds: string[]
   }): void {
-    const mismatches: string[] = []
-    const compare = (shelf: UserInputRequestShelf, shelfIds: string[]) => {
-      const registryIds = this.getShelfIdsForSession(check.sessionId, shelf)
-      const expected = [...shelfIds].sort()
-      const actual = [...registryIds].sort()
-      if (expected.length !== actual.length || expected.some((id, i) => id !== actual[i])) {
-        mismatches.push(`${shelf}: shelf=[${expected.join(',')}] registry=[${actual.join(',')}]`)
-      }
-    }
-    compare('stream', check.streamShelfIds)
-    compare('computer_use', check.computerUseShelfIds)
+    const mismatches = [
+      UserInputRequestManager.describeIdMismatch(
+        'stream',
+        check.streamShelfIds,
+        this.getShelfIdsForSession(check.sessionId, 'stream'),
+      ),
+      UserInputRequestManager.describeIdMismatch(
+        'computer_use',
+        check.computerUseShelfIds,
+        this.getShelfIdsForSession(check.sessionId, 'computer_use'),
+      ),
+    ].filter((m): m is string => m !== null)
     if (mismatches.length === 0) return
+    this.reportShelfMismatch(`session=${check.sessionId}`, check.context, mismatches)
+  }
 
-    this.shelfMismatchCount++
-    const message =
-      `[UserInputRequestManager] shadow shelf mismatch (session=${check.sessionId}, ` +
-      `context=${check.context}): ${mismatches.join('; ')}`
-    if (process.env.VITEST) throw new Error(message)
-    console.error(message)
+  /**
+   * Same invariant for the review shelf: the registry's agent-scoped review
+   * view must equal ReviewManager's pending store for the agent, at every
+   * review mutation point.
+   */
+  verifyReviewShelfParity(check: {
+    agentSlug: string
+    context: string
+    reviewShelfIds: string[]
+  }): void {
+    const registryIds = [...this.requests.values()]
+      .filter(
+        (r) =>
+          r.scope.agentSlug === check.agentSlug &&
+          r.scope.sessionId === undefined &&
+          shelfForKind(r.kind) === 'review',
+      )
+      .map((r) => r.id)
+    const mismatch = UserInputRequestManager.describeIdMismatch(
+      'review',
+      check.reviewShelfIds,
+      registryIds,
+    )
+    if (mismatch === null) return
+    this.reportShelfMismatch(`agent=${check.agentSlug}`, check.context, [mismatch])
   }
 
   /**

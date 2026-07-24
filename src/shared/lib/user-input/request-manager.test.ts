@@ -194,6 +194,38 @@ describe('UserInputRequestManager', () => {
       expect(manager.stats.shelfMismatches).toBe(1)
     })
 
+    it('verifyReviewShelfParity compares only agent-scoped review entries', () => {
+      manager.register({
+        id: 'review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-a' },
+        blocking: true,
+        payload: { toolkit: 'slack' },
+      })
+      // Session-scoped stream noise for the same agent must not leak into the
+      // review comparison.
+      manager.register(secretRequest())
+
+      manager.verifyReviewShelfParity({
+        agentSlug: 'agent-a',
+        context: 'test',
+        reviewShelfIds: ['review-1'],
+      })
+      expect(manager.stats.shelfMismatches).toBe(0)
+    })
+
+    it('verifyReviewShelfParity throws under vitest when a review write-through was missed', () => {
+      // ReviewManager holds a review the registry never saw.
+      expect(() =>
+        manager.verifyReviewShelfParity({
+          agentSlug: 'agent-a',
+          context: 'test',
+          reviewShelfIds: ['review-orphan'],
+        }),
+      ).toThrow(/shadow shelf mismatch/)
+      expect(manager.stats.shelfMismatches).toBe(1)
+    })
+
     it('compareAwaitingProjection counts divergence and warns once per episode', () => {
       const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
       manager.register(secretRequest())

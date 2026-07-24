@@ -9,7 +9,7 @@ import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/requ
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
-import { streamEventToPendingRequest } from '@shared/lib/user-input/request-schema'
+import { streamEventToPendingRequest, type UserInputRequestOutcome } from '@shared/lib/user-input/request-schema'
 import { classifyResult } from './result-classification'
 import { parseBackgroundTasksChanged } from './background-tasks-changed'
 import { parseCommandLifecycle } from './command-lifecycle'
@@ -543,11 +543,15 @@ class MessagePersister {
   // tool_result cleanup at handleToolResult — an approved Task/Workflow runs for
   // minutes before its result arrives, and until then a refresh would replay (and
   // other connected clients would keep) a stale approval card.
-  completeCapabilityReview(sessionId: string, toolUseId: string): void {
+  completeCapabilityReview(
+    sessionId: string,
+    toolUseId: string,
+    outcome: UserInputRequestOutcome = 'answered',
+  ): void {
     const state = this.streamingStates.get(sessionId)
     if (!state) return
     state.pendingInputRequests.delete(toolUseId)
-    userInputRequestManager.resolveIfShelf(toolUseId, 'stream', 'answered')
+    userInputRequestManager.resolveIfShelf(toolUseId, 'stream', outcome)
     this.shadowRegistryCheck(sessionId, 'completeCapabilityReview')
     this.broadcastToSSE(sessionId, { type: 'capability_review_resolved', toolUseId })
     if (state.pendingInputRequests.size === 0) {
@@ -560,11 +564,15 @@ class MessagePersister {
   }
 
   // Clear a pending computer use request (after approval/rejection)
-  clearPendingComputerUseRequest(sessionId: string, toolUseId: string): void {
+  clearPendingComputerUseRequest(
+    sessionId: string,
+    toolUseId: string,
+    outcome: UserInputRequestOutcome = 'answered',
+  ): void {
     const state = this.streamingStates.get(sessionId)
     if (state) {
       state.pendingComputerUseRequests.delete(toolUseId)
-      userInputRequestManager.resolveIfShelf(toolUseId, 'computer_use', 'answered')
+      userInputRequestManager.resolveIfShelf(toolUseId, 'computer_use', outcome)
       this.shadowRegistryCheck(sessionId, 'clearPendingComputerUseRequest')
       // Same waiting-light rule as the sidechain input clear: both shelves,
       // skip auto-approved — and defer to a parked proxy/x-agent review
@@ -1839,7 +1847,7 @@ class MessagePersister {
         // everywhere instead of leaving it dangling until reconnect cleanup.
         if (typeof content.toolUseId === 'string') {
           if (state.pendingInputRequests.has(content.toolUseId)) {
-            this.completeCapabilityReview(sessionId, content.toolUseId)
+            this.completeCapabilityReview(sessionId, content.toolUseId, 'cancelled')
           } else {
             // No card yet — handleCapabilityReviewTool is still awaiting its
             // container grant lookup. Tombstone the id so the handler drops
