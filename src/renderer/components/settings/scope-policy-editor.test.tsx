@@ -18,8 +18,16 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...(args as [string, never])),
 }))
 
-const groupToggle = (group: string, decision: 'allow' | 'review' | 'block') =>
-  within(screen.getByTestId(`group-default-${group}`)).getByTestId(`policy-toggle-${decision}`)
+// Group headers use the dropdown variant: the trigger reports the current
+// decision via data-decision; picking a value goes through the portal menu.
+const groupDecision = (group: string) =>
+  within(screen.getByTestId(`group-default-${group}`)).getByTestId('policy-dropdown-trigger')
+
+const setGroupDecision = async (group: string, decision: 'allow' | 'review' | 'block' | 'default') => {
+  groupDecision(group).click()
+  const item = await screen.findByTestId(`policy-menu-${decision}`)
+  item.click()
+}
 
 describe('ScopePolicyEditor', () => {
   beforeEach(() => {
@@ -35,9 +43,9 @@ describe('ScopePolicyEditor', () => {
     )
     await waitFor(() => expect(screen.getByTestId('group-default-read')).toBeInTheDocument())
 
-    expect(groupToggle('read', 'allow')).toHaveAttribute('data-active', 'true')
-    expect(groupToggle('write', 'review')).toHaveAttribute('data-active', 'true')
-    expect(groupToggle('destructive', 'block')).toHaveAttribute('data-active', 'true')
+    expect(groupDecision('read')).toHaveAttribute('data-decision', 'allow')
+    expect(groupDecision('write')).toHaveAttribute('data-decision', 'review')
+    expect(groupDecision('destructive')).toHaveAttribute('data-decision', 'block')
   })
 
   it('does NOT pre-fill baseline once the account has any saved policy (groups show "default")', async () => {
@@ -48,11 +56,9 @@ describe('ScopePolicyEditor', () => {
     )
     await waitFor(() => expect(screen.getByTestId('group-default-read')).toBeInTheDocument())
 
-    // Every group default toggle is inactive (= inherit/default), NOT the baseline.
+    // Every group default is inherit/default, NOT the baseline.
     for (const group of ['read', 'write', 'destructive'] as const) {
-      for (const decision of ['allow', 'review', 'block'] as const) {
-        expect(groupToggle(group, decision)).toHaveAttribute('data-active', 'false')
-      }
+      expect(groupDecision(group)).toHaveAttribute('data-decision', 'default')
     }
   })
 
@@ -82,7 +88,7 @@ describe('ScopePolicyEditor', () => {
     expect(screen.getByTestId('scope-policy-save')).toBeDisabled()
 
     // Flip a risk-level default — now the editor differs from what's persisted.
-    groupToggle('read', 'allow').click()
+    await setGroupDecision('read', 'allow')
     await waitFor(() => expect(screen.getByTestId('scope-policy-save')).toBeEnabled())
   })
 
@@ -105,7 +111,7 @@ describe('ScopePolicyEditor', () => {
     )
     await waitFor(() => expect(screen.getByTestId('group-default-read')).toBeInTheDocument())
 
-    groupToggle('read', 'allow').click()
+    await setGroupDecision('read', 'allow')
     await waitFor(() => expect(screen.getByTestId('scope-policy-save')).toBeEnabled())
 
     screen.getByTestId('scope-policy-save').click()
