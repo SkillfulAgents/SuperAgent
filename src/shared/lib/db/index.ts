@@ -6,6 +6,7 @@ import fs from 'fs'
 import path from 'path'
 import { getDatabasePath, getDataDir } from '@shared/lib/config/data-dir'
 import { captureException } from '@shared/lib/error-reporting'
+import { instrumentSqliteIfEnabled } from './slow-query-instrumentation'
 
 // Run migrations on startup
 // This is safe to run on every start - it only applies pending migrations
@@ -37,7 +38,7 @@ function initDb() {
   }
 
   try {
-    _sqlite = new Database(dbPath)
+    _sqlite = instrumentSqliteIfEnabled(new Database(dbPath))
     _sqlite.pragma('journal_mode = WAL')
     _sqlite.pragma('foreign_keys = ON')
   } catch (err) {
