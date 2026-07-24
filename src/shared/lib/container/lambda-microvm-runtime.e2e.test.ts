@@ -71,18 +71,19 @@ describe.skipIf(!enabled)('LambdaMicroVmRuntimeClient e2e (real AWS)', () => {
       expect((await client.getInfoFromRuntime()).status).toBe('running')
 
       await client.stop() // plain stop -> suspend (default)
-      // Let the suspend settle (SuspendMicrovm completes in ~1s); the client maps
-      // SUSPENDED/SUSPENDING to 'running' since the VM auto-resumes on demand.
+      // Let the suspend settle (SuspendMicrovm completes in ~1s); UI maps
+      // SUSPENDED/SUSPENDING to stopped while the local proxy is kept for warm resume.
       await new Promise((r) => setTimeout(r, 10_000))
-      expect((await client.getInfoFromRuntime()).status).toBe('running')
+      expect((await client.getInfoFromRuntime()).status).toBe('stopped')
 
-      // No waitForHealthy kick: a normal request resumes + succeeds via the proxy.
+      // Transparent auto-resume via the proxy (no new RunMicrovm).
       const t0 = Date.now()
       const res = await client.fetch('/health')
       const resumeMs = Date.now() - t0
       expect(res.ok).toBe(true)
       console.log(`[E2E-RESUME] suspend -> /health ok (transparent auto-resume): ${resumeMs}ms`)
       expect(resumeMs).toBeLessThan(15_000)
+      expect((await client.getInfoFromRuntime()).status).toBe('running')
     } finally {
       await client.stop()
     }

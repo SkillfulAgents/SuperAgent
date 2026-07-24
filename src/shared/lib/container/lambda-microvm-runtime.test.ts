@@ -59,7 +59,6 @@ import {
   resolveMicrovmRuntimeConfigOrNull,
   isMicrovmRuntimeConfigured,
   getMicrovmRuntimeConfig,
-  resolveIdleSeconds,
 } from './lambda-microvm-runtime'
 import { readBootstrapEnv, resetBootstrapEnvStoreForTests } from './agent-bootstrap-env-store'
 
@@ -168,29 +167,6 @@ describe('microvm runtime config', () => {
   })
 })
 
-describe('resolveIdleSeconds', () => {
-  beforeEach(() => {
-    Object.assign(process.env, REQUIRED_ENV)
-  })
-
-  it('derives the idle window from the app auto-sleep setting (single source of truth)', () => {
-    autoSleepTimeoutMinutes.mockReturnValue(30)
-    expect(resolveIdleSeconds(getMicrovmRuntimeConfig())).toBe(1_800)
-  })
-
-  it('never idle-suspends (falls back to the lifetime cap) when auto-sleep is disabled', () => {
-    autoSleepTimeoutMinutes.mockReturnValue(0)
-    const config = getMicrovmRuntimeConfig()
-    expect(resolveIdleSeconds(config)).toBe(config.maxDurationSeconds)
-  })
-
-  it('clamps an app setting longer than the lifetime cap to maxDurationSeconds', () => {
-    autoSleepTimeoutMinutes.mockReturnValue(600) // 10h > 8h cap
-    const config = getMicrovmRuntimeConfig()
-    expect(resolveIdleSeconds(config)).toBe(config.maxDurationSeconds)
-  })
-})
-
 describe('LambdaMicroVmRuntimeClient eligibility', () => {
   it('isEligible only when runtime env is configured', () => {
     Object.assign(process.env, FULL_ENV)
@@ -259,8 +235,8 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(input.executionRoleArn).toBe('arn:exec')
     expect(input.egressNetworkConnectors).toEqual(['arn:egress'])
     expect(input.idlePolicy.autoResumeEnabled).toBe(true)
-    // idle tracks the app auto-sleep setting (30m); suspend/lifetime hit the 8h cap.
-    expect(input.idlePolicy.maxIdleDurationSeconds).toBe(1_800)
+    // Host owns product idle; AWS maxIdle = lifetime (not autoSleepTimeoutMinutes).
+    expect(input.idlePolicy.maxIdleDurationSeconds).toBe(28_800)
     expect(input.idlePolicy.suspendedDurationSeconds).toBe(28_800)
     expect(input.maximumDurationInSeconds).toBe(28_800)
     expect(typeof input.clientToken).toBe('string')
@@ -408,11 +384,18 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(await newClient().getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
   })
 
-  it('getInfoFromRuntime treats SUSPENDED as running (auto-resume on request)', async () => {
+  it('getInfoFromRuntime treats SUSPENDED as stopped (host-owned sleep; proxy kept)', async () => {
     const client = newClient()
     await client.start()
     responses.getState = 'SUSPENDED'
-    expect((await client.getInfoFromRuntime()).status).toBe('running')
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+  })
+
+  it('getInfoFromRuntime treats SUSPENDING as stopped', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'SUSPENDING'
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
   })
 
   it('getInfoFromRuntime reports stopped when the VM is TERMINATED and cleans up local state', async () => {
@@ -466,12 +449,13 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     stopSpy.mockRestore()
   })
 
-  it('background auto-sleep (escalateToForceStop:false) is a no-op — idlePolicy owns idle', async () => {
+  it('background auto-sleep (escalateToForceStop:false) suspends — host owns idle', async () => {
     const client = newClient()
     await client.start()
     sendMock.mockClear()
-    await client.stop({ escalateToForceStop: false })
-    expect(sendMock.mock.calls.some((c) => c[0].type === 'Suspend')).toBe(false)
+    const result = await client.stop({ escalateToForceStop: false })
+    expect(result).toEqual({ forceStopUsed: false, stopped: true })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Suspend')).toBe(true)
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
   })
 
@@ -487,7 +471,7 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(suspendCall![0].input).toEqual({ microvmIdentifier: 'mvm-1' })
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
 
-    // State is preserved: a subsequent start() short-circuits (no new RunMicrovm).
+    // State is preserved: a subsequent start() warm-resumes (no new RunMicrovm).
     sendMock.mockClear()
     responses.getState = 'SUSPENDED'
     await client.start()

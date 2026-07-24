@@ -19,7 +19,6 @@ import type {
 } from '@aws-sdk/client-lambda-microvms'
 import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-client'
 import type { ContainerConfig, ContainerInfo, ContainerStats, StartOptions, StopOptions, StopResult } from './types'
-import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import { setBootstrapEnv, clearBootstrapEnv } from './agent-bootstrap-env-store'
 
@@ -195,13 +194,6 @@ async function resolveHostApiBaseUrlForMicrovm(): Promise<string> {
 
   const port = hostAppPortSchema.parse(process.env.PORT)
   return `http://${privateIp}:${port}`
-}
-
-// Idle→suspend window: app settings are the single source of truth.
-export function resolveIdleSeconds(config: MicrovmRuntimeConfig): number {
-  const minutes = getSettings().app?.autoSleepTimeoutMinutes ?? 30
-  if (minutes <= 0) return config.maxDurationSeconds
-  return Math.min(minutes * 60, config.maxDurationSeconds)
 }
 
 // ---------------------------------------------------------------------------
@@ -462,8 +454,8 @@ export class LocalAuthForwardProxy {
 
 // MicroVM ids are AWS-generated (no deterministic name, no tag-filtered lookup),
 // so the agentId→microvm mapping + its loopback proxy live in process memory.
-// Lost on host-app restart: the orphaned VM is reclaimed by its idlePolicy
-// (idle→suspend→suspended-timeout→terminate) and the next start() re-runs.
+// Lost on host-app restart: the orphaned VM is reclaimed by suspendedDuration
+// (suspended-timeout→terminate) and the next start() re-runs.
 interface AgentMicrovmState {
   microvmId: string
   endpoint: string
@@ -541,8 +533,11 @@ async function runMicrovm(
   config: MicrovmRuntimeConfig,
   opts: { runHookPayload: string; clientToken: string; logStream: string },
 ): Promise<{ microvmId: string; endpoint: string }> {
+  // AWS IdlePolicy is all-or-nothing (idle + resume + suspended retention).
+  // Host AutoSleep owns product idle (explicit Suspend); maxIdle = lifetime so
+  // AWS is not a second product-sleep owner. Keep auto-resume + suspended GC.
   const idlePolicy = {
-    maxIdleDurationSeconds: resolveIdleSeconds(config),
+    maxIdleDurationSeconds: config.maxDurationSeconds,
     suspendedDurationSeconds: config.suspendedSeconds,
     autoResumeEnabled: true,
   }
@@ -667,7 +662,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   }
 
   async start(options?: StartOptions): Promise<void> {
-    if ((await this.getInfoFromRuntime()).status === 'running') return
+    // Warm path: same VM still SUSPENDED/RUNNING with local proxy — no RunMicrovm.
+    if (await this.tryWarmResume()) return
 
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
@@ -739,19 +735,16 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   // Proxy-level retry handles the suspend→resume 502 window for all HTTP calls.
 
-  async stop(options?: StopOptions): Promise<StopResult> {
+  async stop(_options?: StopOptions): Promise<StopResult> {
     this.terminateWebSocketConnections()
-    // Auto-sleep is handled by AWS idlePolicy; the host-app sweep is a no-op.
-    if (options?.escalateToForceStop === false) {
-      return { forceStopUsed: false, stopped: true }
-    }
+    // Host owns product sleep (manual stop + AutoSleep); always Suspend.
     await this.suspend()
     return { forceStopUsed: false, stopped: true }
   }
 
   stopSync(): void {
     // Terminate uses the async AWS API; sync shutdown only tears down WS + proxy.
-    // The VM itself is reclaimed by its idlePolicy.
+    // The VM itself is reclaimed by suspendedDurationSeconds.
     this.terminateWebSocketConnections()
     this.cleanupLocal()
   }
@@ -762,10 +755,12 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     try {
       const mvm = await getMicrovm(config.region, state.microvmId)
-      // SUSPENDED is "running on demand": idlePolicy.autoResumeEnabled wakes it
-      // on the next request through the proxy.
-      if (mvm.state === 'RUNNING' || mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') {
+      if (mvm.state === 'RUNNING') {
         return { status: 'running', port: state.proxyPort }
+      }
+      // Host-owned sleep: UI shows stopped; keep local proxy for warm resume.
+      if (mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') {
+        return { status: 'stopped', port: null }
       }
       // Terminal: VM is gone — drop state + proxy (mirror NotFound) so it isn't leaked.
       this.cleanupLocal()
@@ -799,6 +794,32 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   private async mintToken(microvmId: string): Promise<MicrovmAuthToken> {
     const config = getMicrovmRuntimeConfig()
     return createMicrovmAuthToken(config.region, microvmId, [config.agentPort], AUTH_TOKEN_EXPIRATION_MINUTES)
+  }
+
+  // Resume an already-tracked VM (RUNNING / SUSPENDED) without RunMicrovm.
+  private async tryWarmResume(): Promise<boolean> {
+    const state = agentStates.get(this.config.agentId)
+    if (!state) return false
+    const config = getMicrovmRuntimeConfig()
+    try {
+      const mvm = await getMicrovm(config.region, state.microvmId)
+      if (mvm.state === 'RUNNING') return true
+      if (mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') {
+        // Proxy /health kicks autoResumeEnabled; no new RunMicrovm.
+        if (!(await this.waitForHealthy(120_000, state.proxyPort))) {
+          throw new Error(`MicroVM agent ${state.microvmId} failed to resume`)
+        }
+        return true
+      }
+      this.cleanupLocal()
+      return false
+    } catch (error) {
+      if (isNotFound(error)) {
+        this.cleanupLocal()
+        return false
+      }
+      throw error
+    }
   }
 
   private async waitForRunning(region: string, microvmId: string, timeoutMs: number): Promise<void> {
