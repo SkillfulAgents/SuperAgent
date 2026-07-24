@@ -238,7 +238,7 @@ class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
   // Single-shot per-session backstop: armed when a result is seen under
   // state-events authority and the idle may still be lost on a dead socket.
-  // Never settles a turn whose result was not seen (#339 honesty).
+  // Never settles a turn whose result was not seen.
   private resultIdleGraceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
   // "Allow for this session" capability grants, keyed by sessionId. Display
   // bookkeeping ONLY — enforcement lives in the container (which persists its

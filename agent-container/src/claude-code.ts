@@ -1,6 +1,6 @@
 import { query, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { UUID } from 'crypto';
+import { randomUUID, type UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -29,6 +29,14 @@ import { fileHooks, resolveToolFilePath } from './file-hooks';
 type QueryWithAsyncCancel = Query & {
   cancelAsyncMessage(messageUuid: string): Promise<boolean>;
 };
+
+function isNewTurnEvidence(message: SDKMessage): boolean {
+  if (message.type !== 'system' || !('subtype' in message)) return false;
+  if (message.subtype === 'session_state_changed') {
+    return 'state' in message && message.state === 'running';
+  }
+  return message.subtype === 'status' && 'status' in message && message.status === 'requesting';
+}
 
 /** Generate prefixed MCP tool names from a tools array, optionally excluding some by name. */
 function mcpToolNames(
@@ -474,6 +482,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private lastTurnInformationals: SDKMessage[] = [];
   private lastResultMessage: SDKMessage | null = null;
   private lastSessionState: string | null = null;
+  private lastPostResultNewTurnEvidence: SDKMessage | null = null;
   // Latest authoritative background-task snapshot for late-join replay. A
   // reconnecting host that only sees result+idle would otherwise keep a stale
   // local task hold forever (the live consumer self-heals when this arrives).
@@ -951,6 +960,13 @@ export class ClaudeCodeProcess extends EventEmitter {
     // a task id carried across the replacement would pin the session
     // unevictable forever (no terminal signal or snapshot ever comes).
     this.emit('query-start');
+    this.emitTrackedMessage({
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [],
+      session_id: this.claudeSessionId || this.sessionId,
+      uuid: randomUUID(),
+    });
   }
 
   async start(): Promise<void> {
@@ -988,6 +1004,10 @@ export class ClaudeCodeProcess extends EventEmitter {
 
     try {
       for await (const message of this.queryInstance) {
+        if (isNewTurnEvidence(message)) {
+          lastResultWasError = false;
+        }
+
         // Capture Claude session ID from init message
         if (message.type === 'system' && message.subtype === 'init' && message.session_id) {
           this.claudeSessionId = message.session_id;
@@ -1385,17 +1405,25 @@ export class ClaudeCodeProcess extends EventEmitter {
 
   /** Record the frames a late-joining WebSocket subscriber must not miss. */
   private trackForLateJoinReplay(message: SDKMessage): void {
-    const msg = message as { type: string; subtype?: string; state?: string };
-    if (msg.type === 'system' && msg.subtype === 'informational') {
+    if (isNewTurnEvidence(message) && this.lastResultMessage) {
+      this.lastPostResultNewTurnEvidence = message;
+      this.lastResultMessage = null;
+      this.lastTurnInformationals = [];
+    }
+    if (message.type === 'system' && message.subtype === 'informational') {
       this.currentTurnInformationals.push(message);
-    } else if (msg.type === 'result') {
+    } else if (message.type === 'result') {
       this.lastResultMessage = message;
       this.lastTurnInformationals = this.currentTurnInformationals;
       this.currentTurnInformationals = [];
-    } else if (msg.type === 'system' && msg.subtype === 'background_tasks_changed') {
+      this.lastPostResultNewTurnEvidence = null;
+    } else if (message.type === 'system' && message.subtype === 'background_tasks_changed') {
       this.lastBackgroundTasksChanged = message;
-    } else if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
-      this.lastSessionState = msg.state ?? null;
+    } else if (message.type === 'system' && message.subtype === 'session_state_changed') {
+      this.lastSessionState = message.state ?? null;
+      if (message.state === 'idle') {
+        this.lastPostResultNewTurnEvidence = null;
+      }
     }
   }
 
@@ -1418,6 +1446,9 @@ export class ClaudeCodeProcess extends EventEmitter {
    * the host can ignore the catch-up when it already saw the live copies.
    */
   getLateJoinReplay(): unknown[] {
+    if (this.lastPostResultNewTurnEvidence) {
+      return [{ ...this.lastPostResultNewTurnEvidence, replayed: true }];
+    }
     if (this.lastSessionState !== 'idle' || !this.lastResultMessage) {
       return [];
     }
