@@ -1108,4 +1108,160 @@ describe('pending user-input request lifecycle (characterization)', () => {
       ).toEqual(['invalidated', 'invalidated'])
     })
   })
+
+  // ==========================================================================
+  // Turn-boundary and transport crossings: the awaiting projection must hold
+  // where a request's lifetime crosses a result, a runtime-started turn, a
+  // transport reattach, or a recovery→cancel sequence — the seams where the
+  // cache and its source of truth can drift apart.
+  // ==========================================================================
+
+  describe('turn-boundary and transport crossings', () => {
+    function parkAgentReview(id: string) {
+      userInputRequestManager.register({
+        id,
+        kind: 'proxy_review',
+        scope: { agentSlug: AGENT_SLUG },
+        blocking: true,
+        autoApproved: false,
+        payload: { toolkit: 'slack' },
+      })
+      messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
+    }
+
+    it('cancelAwaitingInput rejects recovered entries on the container despite the replay filter', async () => {
+      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG, [
+        { toolUseId: 'rec-cancel-1', toolName: 'AskUserQuestion' },
+      ])
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      // The replay filter hides the synthesized entry from reconnecting clients…
+      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+
+      // …but a replacement message must still clean it up container-side: the
+      // recovered ask is exactly the one whose container pending may still be
+      // live, and a late answer must not land on the abandoned turn.
+      await messagePersister.cancelAwaitingInput(SESSION_ID, AGENT_SLUG)
+
+      const rejectedUrls = mockContainerClientFetch.mock.calls
+        .map((call) => call[0])
+        .filter((url): url is string => typeof url === 'string' && url.endsWith('/reject'))
+      expect(rejectedUrls).toContain('/inputs/rec-cancel-1/reject')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('a clean success mid-turn re-derives awaiting instead of blind-clearing it', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const globalEvents: any[] = []
+      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+        globalEvents.push(data)
+      })
+      try {
+        // The runtime announces state-event authority: a result alone no
+        // longer settles the session.
+        mockClient._sendMessage({
+          type: 'system',
+          subtype: 'capabilities',
+          session_state_events: true,
+        })
+        parkAgentReview('boundary-review-1')
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+        mockClient._sendMessage({ type: 'result', subtype: 'success', num_turns: 1 })
+
+        // Still active (the runtime owns idle) and the review is still open —
+        // the session keeps reading awaiting, and no falling edge fires.
+        expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(globalEvents.filter((e) => e.type === 'session_input_provided')).toHaveLength(0)
+
+        // The review settles → the falling edge fires now, not never.
+        userInputRequestManager.resolve('boundary-review-1', 'answered')
+        messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(globalEvents.filter((e) => e.type === 'session_input_provided')).toHaveLength(1)
+      } finally {
+        cleanup()
+      }
+    })
+
+    it('a runtime-started turn picks up an already-parked agent review', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const globalEvents: any[] = []
+      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+        globalEvents.push(data)
+      })
+      try {
+        // End the current turn (result-driven idle — no authority announced).
+        mockClient._sendMessage({ type: 'result', subtype: 'success', num_turns: 1 })
+        expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+
+        // A review parks while the session is idle: an inactive session never
+        // reads awaiting.
+        parkAgentReview('boundary-review-2')
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+
+        // The runtime starts the next (queued) turn itself — no POST, no
+        // markSessionActive. The self-heal must sync the projection too.
+        mockClient._sendMessage({
+          type: 'system',
+          subtype: 'session_state_changed',
+          state: 'running',
+        })
+        expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(globalEvents.filter((e) => e.type === 'session_awaiting_input')).toHaveLength(1)
+      } finally {
+        cleanup()
+      }
+    })
+
+    it('a transport re-subscribe preserves parked requests, their registry entries, and replay', async () => {
+      simulateToolUse('mcp__user-input__request_secret', 'resub-secret-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // Reattach the stream (reconnect of an in-flight session). Only the
+      // transport may turn over — the wait itself is still parked.
+      const secondClient = createMockClient()
+      await messagePersister.subscribeToSession(SESSION_ID, secondClient, SESSION_ID, AGENT_SLUG)
+
+      // Replay store, registry entry, and cache all still agree, so a later
+      // sync must NOT clear the genuinely parked ask.
+      expect(
+        messagePersister.getPendingInputRequests(SESSION_ID).map((r) => r.toolUseId)
+      ).toEqual(['resub-secret-1'])
+      expect(
+        userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+      ).toContain('resub-secret-1')
+      messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // The parked ask resolves over the NEW transport and settles normally.
+      secondClient._sendMessage({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'resub-secret-1', content: 'resolved' },
+          ],
+        },
+      })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+    })
+
+    it('the markSessionIdle revert clears the awaiting cache an agent review had set', () => {
+      parkAgentReview('boundary-review-3')
+      // markSessionActive's trailing sync picks up the open review.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // The optimistic send fails → revert. An inactive session is never
+      // awaiting, review or not — the cache resets with isActive.
+      messagePersister.markSessionIdle(SESSION_ID)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+  })
 })

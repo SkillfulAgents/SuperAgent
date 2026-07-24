@@ -288,18 +288,28 @@ class MessagePersister {
     containerSessionId: string,
     agentSlug?: string
   ): Promise<void> {
-    // Preserve session-lifecycle flags across (re-)subscribe so callers that
+    // Preserve session-lifecycle state across (re-)subscribe so callers that
     // markSessionActive *before* subscribing (e.g. x-agent sync invoke) and
     // SSE reconnects of in-flight sessions don't lose their "currently busy"
-    // state when the listener reattaches.
+    // state when the listener reattaches. The pending-request stores carry
+    // over too: the awaiting cache is only meaningful while its source of
+    // truth survives — recreating the stores empty would let the next sync
+    // clear a genuinely parked wait, and would lose the reconnect replay data.
     const prior = this.streamingStates.get(sessionId)
     const priorIsActive = prior?.isActive ?? false
     const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
     const priorBackgroundTasks = prior?.activeBackgroundTasks ?? new Map()
+    const priorPendingInputRequests = prior?.pendingInputRequests ?? new Map()
+    const priorPendingComputerUseRequests = prior?.pendingComputerUseRequests ?? new Map()
 
-    // Unsubscribe if already subscribed (this also clears state, which is why
-    // we captured the flags above)
-    this.unsubscribeFromSession(sessionId)
+    // Detach only the transport if already subscribed. NOT unsubscribeFromSession:
+    // that is a full teardown — it drops the session's registry entries, which
+    // must outlive a transport reattach for the same live session.
+    const existingUnsubscribe = this.subscriptions.get(sessionId)
+    if (existingUnsubscribe) {
+      existingUnsubscribe()
+      this.subscriptions.delete(sessionId)
+    }
 
     // Initialize state
     this.streamingStates.set(sessionId, {
@@ -317,8 +327,8 @@ class MessagePersister {
       activeSubagents: new Map(),
       slashCommands: [],
       isAwaitingInput: priorIsAwaitingInput,
-      pendingComputerUseRequests: new Map(),
-      pendingInputRequests: new Map(),
+      pendingComputerUseRequests: priorPendingComputerUseRequests,
+      pendingInputRequests: priorPendingInputRequests,
       cancelledCapabilityReviews: new Set(),
       lastApiErrorCode: null,
       activeBackgroundTasks: priorBackgroundTasks,
@@ -380,6 +390,12 @@ class MessagePersister {
       this.persistAutomationStatus(sessionId, state, 'succeeded')
     }
     state.isActive = false
+    // Teardown resets the awaiting cache silently alongside isActive (an
+    // inactive session is never awaiting). isSessionAwaitingInput reports this
+    // bit raw, so leaving it set would strand "needs input" on an idle session
+    // — e.g. the markSessionIdle revert after markSessionActive's sync picked
+    // up an open agent-scoped review.
+    state.isAwaitingInput = false
     this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
     this.broadcastGlobal({
       type: 'session_idle',
@@ -601,10 +617,15 @@ class MessagePersister {
   async cancelAwaitingInput(sessionId: string, agentSlug: string): Promise<void> {
     if (!this.isSessionAwaitingInput(sessionId)) return
 
+    const state = this.streamingStates.get(sessionId)
+
     // Snapshot the pending tool ids from BOTH maps before interrupting. pendingInputRequests holds
     // the broadcast types (cleared by markSessionInterrupted's session_idle); computer_use lives in
-    // its own pendingComputerUseRequests map, which that broadcast does NOT clear.
-    const inputRequestIds = this.getPendingInputRequests(sessionId).map((r) => r.toolUseId)
+    // its own pendingComputerUseRequests map, which that broadcast does NOT clear. Read the store
+    // RAW — not getPendingInputRequests, whose replay filter hides recovered entries. Those are
+    // exactly the ones whose container-side pending may still be live (the host missed the original
+    // events), so skipping them would leave an abandoned request for a late click to land on.
+    const inputRequestIds = Array.from(state?.pendingInputRequests.values() ?? []).map((r) => r.toolUseId)
     const computerUseIds = this.getPendingComputerUseRequests(sessionId).map((r) => r.toolUseId)
 
     // Interrupt FIRST: abort the parked query so it can never resume into a filler reply.
@@ -615,7 +636,6 @@ class MessagePersister {
 
     // Clear the host-side computer_use bookkeeping explicitly — session_idle only clears
     // pendingInputRequests, so a leftover entry would replay a phantom approval card on reconnect.
-    const state = this.streamingStates.get(sessionId)
     for (const id of computerUseIds) {
       state?.pendingComputerUseRequests.delete(id)
       if (state) userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
@@ -1631,6 +1651,12 @@ class MessagePersister {
               agentSlug: state.agentSlug,
               isActive: true,
             })
+            // Same trailing sync as markSessionActive: the session_active
+            // broadcast above wiped the previous turn's parked requests, so
+            // this picks up only waits that survive a new turn — an
+            // agent-scoped review that was already parked when the runtime
+            // started this one.
+            this.syncSessionAwaiting(sessionId)
           }
         } else if (content.subtype === 'background_tasks_changed') {
           // Authoritative full snapshot of the session's live background tasks
@@ -1689,13 +1715,27 @@ class MessagePersister {
         const classification = classifyResult(content)
         const isError = classification.isError
         state.isStreaming = false
-        state.isAwaitingInput = false
         // On error the turn ends here, so settle isActive too BEFORE the single
         // emit. Collapsing every terminal flag change into ONE emit (reflecting
         // the final state) avoids a spurious working(true)→(false) pair — the
         // intermediate "isActive still true, streaming just cleared" snapshot
         // would read working=true and race connectors into a stuck indicator.
-        if (isError || classification.isInterrupt) state.isActive = false
+        // The awaiting cache follows the same rule: silent-clear ONLY where the
+        // session is actually settling (error/interrupt here, finalizeIdle
+        // below). A clean success can leave the session ACTIVE — the runtime
+        // owns idle under state-event authority, or background work remains —
+        // and an open agent-scoped review still blocks every active session,
+        // so re-derive instead: a blind clear would misreport "working" AND
+        // eat the falling edge (the review's later settle would see
+        // cache == derived and never broadcast session_input_provided).
+        if (isError || classification.isInterrupt) {
+          state.isActive = false
+          state.isAwaitingInput = false
+        } else if (state.stateEventsAuthority || this.openBackgroundWorkCount(state) > 0) {
+          this.syncSessionAwaiting(sessionId)
+        } else {
+          state.isAwaitingInput = false // finalizeIdle below settles the turn
+        }
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
 
