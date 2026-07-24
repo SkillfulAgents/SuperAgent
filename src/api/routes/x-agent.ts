@@ -14,9 +14,9 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { agentAcl } from '@shared/lib/db/schema'
+import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -91,6 +91,84 @@ async function getOwnersOfAgent(agentSlug: string): Promise<string[]> {
     .from(agentAcl)
     .where(and(eq(agentAcl.agentSlug, agentSlug), eq(agentAcl.role, 'owner')))
   return rows.map((r) => r.userId)
+}
+
+/**
+ * Resolve the user who sent the message currently driving an agent session.
+ * In shared sessions this can differ from the session creator, so invocation
+ * attribution must prefer the latest per-message author record.
+ */
+async function getLatestMessageAuthorUserId(
+  agentSlug: string,
+  sessionId: string,
+): Promise<string | undefined> {
+  try {
+    const rows = await db
+      .select({ userId: messageAuthor.userId })
+      .from(messageAuthor)
+      .where(and(
+        eq(messageAuthor.agentSlug, agentSlug),
+        eq(messageAuthor.sessionId, sessionId),
+      ))
+      .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
+      .limit(1)
+    return rows[0]?.userId
+  } catch (error) {
+    // Attribution is optional. A DB/read failure must never block the invoke.
+    console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {
+      agentSlug,
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return undefined
+  }
+}
+
+async function insertMessageAuthorBestEffort(params: {
+  id: string
+  sessionId: string
+  agentSlug: string
+  userId: string
+}): Promise<boolean> {
+  try {
+    await db.insert(messageAuthor).values(params)
+    return true
+  } catch (error) {
+    // Includes stale createdByUserId values whose user row has been deleted.
+    // The invocation remains usable; only the optional sender badge is lost.
+    console.warn('[x-agent] failed to record invoked message author; continuing unattributed', {
+      agentSlug: params.agentSlug,
+      sessionId: params.sessionId,
+      userId: params.userId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return false
+  }
+}
+
+async function deleteMessageAuthorBestEffort(messageUuid: string): Promise<void> {
+  try {
+    await db.delete(messageAuthor).where(eq(messageAuthor.id, messageUuid))
+  } catch (error) {
+    console.warn('[x-agent] failed to clean up invoked message attribution', {
+      messageUuid,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+async function getAgentDisplayNameBestEffort(agentSlug: string): Promise<string> {
+  try {
+    const agent = await getAgent(agentSlug)
+    return agent?.frontmatter.name || agentSlug
+  } catch (error) {
+    // Human-readable naming is cosmetic and must not gate agent invocation.
+    console.warn('[x-agent] failed to resolve caller display name; using slug', {
+      agentSlug,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return agentSlug
+  }
 }
 
 /**
@@ -497,6 +575,14 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     )
   }
 
+  // Capture the triggering message's author before a review prompt can pause
+  // this request and newer messages can arrive in a shared caller session.
+  // This remains a best-effort "latest author" heuristic until the container
+  // can pass the exact driving message UUID.
+  const triggeringUserId = isAuthMode() && _callerSessionId
+    ? await getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
+    : undefined
+
   const target = await getAgent(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
 
@@ -515,10 +601,19 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
-  // Attribute to session creator → caller agent's first owner (auth-mode fallback).
-  let attributedUserId: string | undefined = callerMeta?.createdByUserId
+  // Attribute to the triggering message author. Session creator and caller
+  // owner remain compatibility fallbacks for old sessions without author rows.
+  let attributedUserId: string | undefined = triggeringUserId ?? callerMeta?.createdByUserId
   if (!attributedUserId && isAuthMode()) {
-    attributedUserId = (await getOwnersOfAgent(callerSlug))[0]
+    try {
+      attributedUserId = (await getOwnersOfAgent(callerSlug))[0]
+    } catch (error) {
+      // ACL checks already ran above; this second lookup is attribution-only.
+      console.warn('[x-agent] failed to resolve caller owner for attribution; continuing unattributed', {
+        callerSlug,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
   }
 
   return runWithOptionalUser(attributedUserId, async () => {
@@ -537,7 +632,27 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         }
         messagePersister.markSessionActive(existingSessionId, targetSlug)
         stage = 'send_message'
-        await client.sendMessage(existingSessionId, prompt)
+        let messageUuid: string | undefined
+        if (isAuthMode() && attributedUserId) {
+          const candidateUuid = randomUUID()
+          const recorded = await insertMessageAuthorBestEffort({
+            id: candidateUuid,
+            sessionId: existingSessionId,
+            agentSlug: targetSlug,
+            userId: attributedUserId,
+          })
+          if (recorded) messageUuid = candidateUuid
+        }
+        try {
+          if (messageUuid) {
+            await client.sendMessage(existingSessionId, prompt, messageUuid)
+          } else {
+            await client.sendMessage(existingSessionId, prompt)
+          }
+        } catch (sendError) {
+          if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
+          throw sendError
+        }
 
         if (sync) {
           try {
@@ -566,11 +681,16 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       const agentLimits = getEffectiveAgentLimits()
       const customEnvVars = getCustomEnvVars()
       const targetPrefs = await readAgentPreferences(targetSlug)
+      const callerName = await getAgentDisplayNameBestEffort(callerSlug)
+      const initialMessageUuid = isAuthMode() && attributedUserId
+        ? randomUUID()
+        : undefined
 
       stage = 'create_session'
       const containerSession = await client.createSession({
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
         initialMessage: prompt,
+        ...(initialMessageUuid ? { initialMessageUuid } : {}),
         model: targetPrefs.defaultModel ?? getEffectiveModels().agentModel,
         browserModel: getEffectiveModels().browserModel,
         dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,
@@ -587,9 +707,18 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       // Mark active before any await so waitForIdle sees state if result arrives early.
       messagePersister.markSessionActive(newSessionId, targetSlug)
 
+      const authorRecorded = initialMessageUuid && attributedUserId
+        ? await insertMessageAuthorBestEffort({
+            id: initialMessageUuid,
+            sessionId: newSessionId,
+            agentSlug: targetSlug,
+            userId: attributedUserId,
+          })
+        : false
+
       stage = 'register_session'
       try {
-        await registerSession(targetSlug, newSessionId, `Invoked by ${callerSlug}`)
+        await registerSession(targetSlug, newSessionId, `Invoked by ${callerName}`)
       } catch (registerErr) {
         const message = registerErr instanceof Error ? registerErr.message : String(registerErr)
         console.error('[x-agent] invoke failed', {
@@ -609,6 +738,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
           })
         })
+        if (authorRecorded && initialMessageUuid) {
+          await deleteMessageAuthorBestEffort(initialMessageUuid)
+        }
         messagePersister.unsubscribeFromSession(newSessionId)
         return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
       }
@@ -616,7 +748,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       try {
         await updateSessionMetadata(targetSlug, newSessionId, {
           invokedByAgentSlug: callerSlug,
-          ...(attributedUserId ? { createdByUserId: attributedUserId } : {}),
+          ...(authorRecorded && attributedUserId ? { createdByUserId: attributedUserId } : {}),
         })
       } catch (metaErr) {
         console.warn('[x-agent] updateSessionMetadata failed (session usable, provenance not recorded)', {
