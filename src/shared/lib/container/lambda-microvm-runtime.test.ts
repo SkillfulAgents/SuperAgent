@@ -408,11 +408,32 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(await newClient().getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
   })
 
-  it('getInfoFromRuntime treats SUSPENDED as running (auto-resume on request)', async () => {
+  it('getInfoFromRuntime treats SUSPENDED as stopped (warm idle; local state kept)', async () => {
     const client = newClient()
     await client.start()
     responses.getState = 'SUSPENDED'
-    expect((await client.getInfoFromRuntime()).status).toBe('running')
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+
+    // Warm-idle must not drop local state — a later start() resumes, not Run.
+    responses.getState = 'RUNNING'
+    sendMock.mockClear()
+    await client.start()
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+  })
+
+  it('getInfoFromRuntime treats SUSPENDING as stopped (warm idle; local state kept)', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'SUSPENDING'
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+  })
+
+  it('stop() then getInfoFromRuntime reports stopped while suspended', async () => {
+    const client = newClient()
+    await client.start()
+    await client.stop()
+    responses.getState = 'SUSPENDED'
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
   })
 
   it('getInfoFromRuntime reports stopped when the VM is TERMINATED and cleans up local state', async () => {
@@ -466,13 +487,23 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     stopSpy.mockRestore()
   })
 
-  it('background auto-sleep (escalateToForceStop:false) is a no-op — idlePolicy owns idle', async () => {
+  it('background auto-sleep (escalateToForceStop:false) suspends via host AutoSleepMonitor', async () => {
     const client = newClient()
     await client.start()
     sendMock.mockClear()
     await client.stop({ escalateToForceStop: false })
-    expect(sendMock.mock.calls.some((c) => c[0].type === 'Suspend')).toBe(false)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Suspend')).toBe(true)
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+  })
+
+  it('seeds in-memory activity on start and exposes it for auto-sleep', async () => {
+    const client = newClient()
+    expect(client.getCachedLastActivityMs()).toBeUndefined()
+    const before = Date.now()
+    await client.start()
+    const activity = client.getCachedLastActivityMs()
+    expect(activity).toBeTypeOf('number')
+    expect(activity!).toBeGreaterThanOrEqual(before)
   })
 
   it('a plain stop() suspends (preserves state for warm resume), not terminate', async () => {
@@ -487,11 +518,16 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(suspendCall![0].input).toEqual({ microvmIdentifier: 'mvm-1' })
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
 
-    // State is preserved: a subsequent start() short-circuits (no new RunMicrovm).
+    // State is preserved: start() resumes via /health (no new RunMicrovm).
     sendMock.mockClear()
     responses.getState = 'SUSPENDED'
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      responses.getState = 'RUNNING'
+      return { ok: true } as Response
+    }))
     await client.start()
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+    expect((await client.getInfoFromRuntime()).status).toBe('running')
   })
 
   it('a plain stop() is a no-op suspend when already SUSPENDED', async () => {
@@ -533,8 +569,16 @@ describe('LocalAuthForwardProxy', () => {
     for (const p of proxies.splice(0)) p.stop()
   })
 
-  function makeProxy(mintToken: () => Promise<Record<string, string>>) {
-    const proxy = new LocalAuthForwardProxy({ endpoint: 'mvm.lambda-microvm.aws', agentPort: 3000, mintToken })
+  function makeProxy(
+    mintToken: () => Promise<Record<string, string>>,
+    onActivity?: () => void,
+  ) {
+    const proxy = new LocalAuthForwardProxy({
+      endpoint: 'mvm.lambda-microvm.aws',
+      agentPort: 3000,
+      mintToken,
+      onActivity,
+    })
     proxies.push(proxy)
     return proxy
   }
@@ -563,6 +607,17 @@ describe('LocalAuthForwardProxy', () => {
     expect(capturedRequest.headers!.host).toBe('mvm.lambda-microvm.aws')
     expect(capturedRequest.headers!['x-custom']).toBe('v')
     expect(capturedRequest.headers!.connection).toBeUndefined()
+  })
+
+  it('touches onActivity for real traffic but not /health liveness probes', async () => {
+    const onActivity = vi.fn()
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' }), onActivity).start()
+    await httpGet(port, '/health')
+    expect(onActivity).not.toHaveBeenCalled()
+    await httpGet(port, '/sessions')
+    expect(onActivity).toHaveBeenCalledTimes(1)
+    await httpGet(port, '/health?ready=1')
+    expect(onActivity).toHaveBeenCalledTimes(1)
   })
 
   it('caches the auth token across requests (mints once)', async () => {

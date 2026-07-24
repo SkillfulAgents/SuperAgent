@@ -289,6 +289,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     this.config = config
   }
 
+  // Default: no in-memory activity clock — AutoSleepMonitor uses listSessions().
+  getCachedLastActivityMs(): number | undefined {
+    return undefined
+  }
+
   /**
    * Emit an 'error' event without crashing the process.
    *

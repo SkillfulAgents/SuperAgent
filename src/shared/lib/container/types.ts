@@ -176,6 +176,10 @@ export interface ContainerClient {
   // Resource stats (memory, CPU usage)
   getStats(): Promise<ContainerStats | null>
 
+  // Host-side last activity for auto-sleep without session filesystem I/O.
+  // undefined = AutoSleepMonitor falls back to listSessions().
+  getCachedLastActivityMs(): number | undefined
+
   // Session management (proxied to container API)
   createSession(options: CreateSessionOptions): Promise<ContainerSession>
   getSession(sessionId: string): Promise<ContainerSession | null>

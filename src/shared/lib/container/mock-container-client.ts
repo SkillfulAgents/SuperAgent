@@ -2214,6 +2214,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
   }
 
+  getCachedLastActivityMs(): number | undefined {
+    return undefined
+  }
+
   getWebSocketBaseUrl(port: number): string {
     return `ws://127.0.0.1:${port}`
   }

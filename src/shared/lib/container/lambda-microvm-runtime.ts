@@ -228,6 +228,8 @@ export interface ProxyOptions {
   agentPort: number
   /** Mints a fresh auth-token map ({ "X-aws-proxy-auth": "<jwe>", ... }). */
   mintToken: () => Promise<MicrovmAuthToken>
+  /** Called on real user/agent traffic (not /health liveness probes). */
+  onActivity?: () => void
 }
 
 export class LocalAuthForwardProxy {
@@ -338,6 +340,7 @@ export class LocalAuthForwardProxy {
 
   // Replay requests across the brief resume window, where AWS may 502/refuse.
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (!isLivenessProbePath(req.url)) this.options.onActivity?.()
     let body: Buffer
     try {
       body = await this.readBody(req)
@@ -385,6 +388,7 @@ export class LocalAuthForwardProxy {
   }
 
   private async handleUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): Promise<void> {
+    this.options.onActivity?.()
     // A WS upgrade can't be replayed once piped, so kick the VM awake over HTTP
     // (with the same resume-retry HTTP requests get) before opening the stream.
     if (!(await this.waitForUpstreamReady())) {
@@ -461,9 +465,9 @@ export class LocalAuthForwardProxy {
 // ---------------------------------------------------------------------------
 
 // MicroVM ids are AWS-generated (no deterministic name, no tag-filtered lookup),
-// so the agentId→microvm mapping + its loopback proxy live in process memory.
-// Lost on host-app restart: the orphaned VM is reclaimed by its idlePolicy
-// (idle→suspend→suspended-timeout→terminate) and the next start() re-runs.
+// so the agentId→microvm mapping + loopback proxy + activity clock live in RAM.
+// Lost on host-app restart: orphaned VMs are reclaimed by idlePolicy
+// (idle→suspend→suspended-timeout→terminate); the next start() re-runs.
 interface AgentMicrovmState {
   microvmId: string
   endpoint: string
@@ -471,6 +475,19 @@ interface AgentMicrovmState {
   proxyPort: number
 }
 const agentStates = new Map<string, AgentMicrovmState>()
+
+// Host-side activity clock for AutoSleepMonitor (avoids S3 Files listSessions I/O).
+// Touched on real proxy traffic + start; /health liveness probes are excluded.
+const agentLastActivityAt = new Map<string, number>()
+
+function touchAgentActivity(agentId: string): void {
+  agentLastActivityAt.set(agentId, Date.now())
+}
+
+function isLivenessProbePath(url: string | undefined): boolean {
+  const path = (url ?? '/').split('?')[0] ?? '/'
+  return path === '/health'
+}
 
 type MicrovmDetail = { state?: string; endpoint?: string }
 
@@ -669,6 +686,10 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   async start(options?: StartOptions): Promise<void> {
     if ((await this.getInfoFromRuntime()).status === 'running') return
 
+    // Suspended VMs are UI-stopped but still warm — resume before RunMicrovm.
+    const existing = agentStates.get(this.config.agentId)
+    if (existing && (await this.resumeExisting(existing))) return
+
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
@@ -718,6 +739,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       endpoint: run.endpoint,
       agentPort: config.agentPort,
       mintToken: () => this.mintToken(run.microvmId),
+      onActivity: () => touchAgentActivity(this.config.agentId),
     })
     const proxyPort = await proxy.start()
     // Stop any stale proxy before overwriting state (no leaked port/listener); stash
@@ -725,6 +747,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     this.cleanupLocal()
     if (hasEnv) setBootstrapEnv(this.config.agentId, env)
     agentStates.set(this.config.agentId, { microvmId: run.microvmId, endpoint: run.endpoint, proxy, proxyPort })
+    touchAgentActivity(this.config.agentId)
 
     try {
       await this.waitForRunning(config.region, run.microvmId, 300_000)
@@ -739,14 +762,16 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   // Proxy-level retry handles the suspend→resume 502 window for all HTTP calls.
 
-  async stop(options?: StopOptions): Promise<StopResult> {
+  async stop(_options?: StopOptions): Promise<StopResult> {
     this.terminateWebSocketConnections()
-    // Auto-sleep is handled by AWS idlePolicy; the host-app sweep is a no-op.
-    if (options?.escalateToForceStop === false) {
-      return { forceStopUsed: false, stopped: true }
-    }
+    // Host AutoSleepMonitor owns product idle via in-memory activity; both the
+    // background sweep and an explicit stop suspend (idlePolicy is the orphan GC).
     await this.suspend()
     return { forceStopUsed: false, stopped: true }
+  }
+
+  getCachedLastActivityMs(): number | undefined {
+    return agentLastActivityAt.get(this.config.agentId)
   }
 
   stopSync(): void {
@@ -762,10 +787,12 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     try {
       const mvm = await getMicrovm(config.region, state.microvmId)
-      // SUSPENDED is "running on demand": idlePolicy.autoResumeEnabled wakes it
-      // on the next request through the proxy.
-      if (mvm.state === 'RUNNING' || mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') {
+      if (mvm.state === 'RUNNING') {
         return { status: 'running', port: state.proxyPort }
+      }
+      // Warm-idle: UI shows stopped; local proxy state is kept so start()/traffic can resume.
+      if (mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') {
+        return { status: 'stopped', port: null }
       }
       // Terminal: VM is gone — drop state + proxy (mirror NotFound) so it isn't leaked.
       this.cleanupLocal()
@@ -814,6 +841,41 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     throw new Error(`Timed out waiting for MicroVM ${microvmId} to become RUNNING`)
   }
 
+  // Resume a warm-suspended VM. Returns false when local state is stale (caller should Run).
+  // Avoid waitForHealthy here — it treats UI-stopped/suspended as dead and bails early.
+  private async resumeExisting(state: AgentMicrovmState): Promise<boolean> {
+    const config = getMicrovmRuntimeConfig()
+    try {
+      const mvm = await getMicrovm(config.region, state.microvmId)
+      if (mvm.state === 'TERMINATED' || mvm.state === 'TERMINATING') {
+        this.cleanupLocal()
+        return false
+      }
+      if (mvm.state !== 'RUNNING' && mvm.state !== 'SUSPENDED' && mvm.state !== 'SUSPENDING') {
+        this.cleanupLocal()
+        return false
+      }
+
+      const deadline = Date.now() + 120_000
+      while (Date.now() < deadline) {
+        if (await this.isHealthy(state.proxyPort)) break
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      }
+      if (!(await this.isHealthy(state.proxyPort))) {
+        throw new Error(`MicroVM agent ${state.microvmId} failed to become healthy`)
+      }
+      await this.waitForRunning(config.region, state.microvmId, 120_000)
+      touchAgentActivity(this.config.agentId)
+      return true
+    } catch (error) {
+      if (isNotFound(error)) {
+        this.cleanupLocal()
+        return false
+      }
+      throw error
+    }
+  }
+
   // Keep local proxy state so the next request auto-resumes the same VM.
   private async suspend(): Promise<void> {
     const state = agentStates.get(this.config.agentId)
@@ -855,6 +917,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const state = agentStates.get(this.config.agentId)
     state?.proxy.stop()
     agentStates.delete(this.config.agentId)
+    agentLastActivityAt.delete(this.config.agentId)
     clearBootstrapEnv(this.config.agentId)
   }
 }
@@ -862,6 +925,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 export function resetMicrovmRuntimeForTests(): void {
   for (const state of agentStates.values()) state.proxy.stop()
   agentStates.clear()
+  agentLastActivityAt.clear()
   memoizedClient = null
   memoizedConfig = null
   memoizedHostPrivateIp = undefined
