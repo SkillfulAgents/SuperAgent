@@ -1,19 +1,19 @@
 import {
   pendingUserInputRequestSchema,
-  shelfForKind,
+  storeForKind,
   type PendingUserInputRequest,
   type PendingUserInputRequestInput,
   type UserInputRequestOutcome,
-  type UserInputRequestShelf,
+  type UserInputRequestStore,
 } from './request-schema'
 
 /**
  * Host-side registry of every pending user-input request, regardless of which
- * legacy store owns it (persister stream shelf, computer-use map, ReviewManager).
+ * legacy store owns it (persister stream store, computer-use map, ReviewManager).
  *
- * Phase 2 — SHADOW MODE: the legacy shelves stay authoritative and every
+ * Phase 2 — SHADOW MODE: the legacy stores stay authoritative and every
  * mutation writes through to this registry; nothing reads it for behavior.
- * `verifyShelfParity` asserts the mirror is exact at every shelf mutation
+ * `verifyStoreParity` asserts the mirror is exact at every store mutation
  * (throws under vitest, logs otherwise), and `compareAwaitingProjection`
  * counts divergence between the imperative awaiting bit and the projection
  * this registry derives — the known split-brains Phase 3 replaces the bit
@@ -29,7 +29,7 @@ export class UserInputRequestManager {
     outcome: UserInputRequestOutcome
   }> = []
 
-  private shelfMismatchCount = 0
+  private storeMismatchCount = 0
   private awaitingDivergenceCount = 0
   // Sessions currently known-diverged, so we warn once per divergence episode
   // instead of on every mutation while it persists.
@@ -69,26 +69,26 @@ export class UserInputRequestManager {
   }
 
   /**
-   * Settle a request only if it lives on the given legacy shelf. Mirrors
-   * shelf-scoped deletes exactly: a main-path tool_result deletes blindly from
-   * the stream shelf, and must not evict a computer-use or review entry that
+   * Settle a request only if it lives on the given legacy store. Mirrors
+   * store-scoped deletes exactly: a main-path tool_result deletes blindly from
+   * the stream store, and must not evict a computer-use or review entry that
    * its own store still holds.
    */
-  resolveIfShelf(
+  resolveIfInStore(
     id: string,
-    shelf: UserInputRequestShelf,
+    store: UserInputRequestStore,
     outcome: UserInputRequestOutcome,
   ): PendingUserInputRequest | null {
     const request = this.requests.get(id)
-    if (!request || shelfForKind(request.kind) !== shelf) return null
+    if (!request || storeForKind(request.kind) !== store) return null
     return this.resolve(id, outcome)
   }
 
-  /** Mirror of the turn-boundary `pendingInputRequests.clear()` — stream shelf only. */
+  /** Mirror of the turn-boundary `pendingInputRequests.clear()` — stream store only. */
   clearSessionStreamRequests(sessionId: string, outcome: UserInputRequestOutcome): void {
     for (const request of [...this.requests.values()]) {
       if (request.scope.sessionId !== sessionId) continue
-      if (shelfForKind(request.kind) !== 'stream') continue
+      if (storeForKind(request.kind) !== 'stream') continue
       this.resolve(request.id, outcome)
     }
   }
@@ -117,9 +117,9 @@ export class UserInputRequestManager {
     )
   }
 
-  getShelfIdsForSession(sessionId: string, shelf: UserInputRequestShelf): string[] {
+  getStoreIdsForSession(sessionId: string, store: UserInputRequestStore): string[] {
     return [...this.requests.values()]
-      .filter((r) => r.scope.sessionId === sessionId && shelfForKind(r.kind) === shelf)
+      .filter((r) => r.scope.sessionId === sessionId && storeForKind(r.kind) === store)
       .map((r) => r.id)
   }
 
@@ -158,79 +158,79 @@ export class UserInputRequestManager {
 
   private static describeIdMismatch(
     label: string,
-    shelfIds: string[],
+    storeIds: string[],
     registryIds: string[],
   ): string | null {
-    const expected = [...shelfIds].sort()
+    const expected = [...storeIds].sort()
     const actual = [...registryIds].sort()
     if (expected.length === actual.length && expected.every((id, i) => id === actual[i])) {
       return null
     }
-    return `${label}: shelf=[${expected.join(',')}] registry=[${actual.join(',')}]`
+    return `${label}: store=[${expected.join(',')}] registry=[${actual.join(',')}]`
   }
 
-  private reportShelfMismatch(scope: string, context: string, mismatches: string[]): void {
-    this.shelfMismatchCount++
+  private reportStoreMismatch(scope: string, context: string, mismatches: string[]): void {
+    this.storeMismatchCount++
     const message =
-      `[UserInputRequestManager] shadow shelf mismatch (${scope}, ` +
+      `[UserInputRequestManager] shadow store mismatch (${scope}, ` +
       `context=${context}): ${mismatches.join('; ')}`
     if (process.env.VITEST) throw new Error(message)
     console.error(message)
   }
 
   /**
-   * Shadow invariant: the registry's per-shelf view of a session must equal the
-   * legacy shelf exactly, at every shelf mutation point. Under vitest a
+   * Shadow invariant: the registry's per-store view of a session must equal the
+   * legacy store exactly, at every store mutation point. Under vitest a
    * mismatch throws (mutation paths swallow errors in places, so tests should
-   * ALSO assert `stats.shelfMismatches === 0`); in dev it logs.
+   * ALSO assert `stats.storeMismatches === 0`); in dev it logs.
    */
-  verifyShelfParity(check: {
+  verifyStoreParity(check: {
     sessionId: string
     context: string
-    streamShelfIds: string[]
-    computerUseShelfIds: string[]
+    streamStoreIds: string[]
+    computerUseStoreIds: string[]
   }): void {
     const mismatches = [
       UserInputRequestManager.describeIdMismatch(
         'stream',
-        check.streamShelfIds,
-        this.getShelfIdsForSession(check.sessionId, 'stream'),
+        check.streamStoreIds,
+        this.getStoreIdsForSession(check.sessionId, 'stream'),
       ),
       UserInputRequestManager.describeIdMismatch(
         'computer_use',
-        check.computerUseShelfIds,
-        this.getShelfIdsForSession(check.sessionId, 'computer_use'),
+        check.computerUseStoreIds,
+        this.getStoreIdsForSession(check.sessionId, 'computer_use'),
       ),
     ].filter((m): m is string => m !== null)
     if (mismatches.length === 0) return
-    this.reportShelfMismatch(`session=${check.sessionId}`, check.context, mismatches)
+    this.reportStoreMismatch(`session=${check.sessionId}`, check.context, mismatches)
   }
 
   /**
-   * Same invariant for the review shelf: the registry's agent-scoped review
+   * Same invariant for the review store: the registry's agent-scoped review
    * view must equal ReviewManager's pending store for the agent, at every
    * review mutation point.
    */
-  verifyReviewShelfParity(check: {
+  verifyReviewStoreParity(check: {
     agentSlug: string
     context: string
-    reviewShelfIds: string[]
+    reviewStoreIds: string[]
   }): void {
     const registryIds = [...this.requests.values()]
       .filter(
         (r) =>
           r.scope.agentSlug === check.agentSlug &&
           r.scope.sessionId === undefined &&
-          shelfForKind(r.kind) === 'review',
+          storeForKind(r.kind) === 'review',
       )
       .map((r) => r.id)
     const mismatch = UserInputRequestManager.describeIdMismatch(
       'review',
-      check.reviewShelfIds,
+      check.reviewStoreIds,
       registryIds,
     )
     if (mismatch === null) return
-    this.reportShelfMismatch(`agent=${check.agentSlug}`, check.context, [mismatch])
+    this.reportStoreMismatch(`agent=${check.agentSlug}`, check.context, [mismatch])
   }
 
   /**
@@ -261,7 +261,7 @@ export class UserInputRequestManager {
 
   get stats(): {
     open: number
-    shelfMismatches: number
+    storeMismatches: number
     awaitingDivergences: number
     recentResolutions: Array<{
       id: string
@@ -271,7 +271,7 @@ export class UserInputRequestManager {
   } {
     return {
       open: this.requests.size,
-      shelfMismatches: this.shelfMismatchCount,
+      storeMismatches: this.storeMismatchCount,
       awaitingDivergences: this.awaitingDivergenceCount,
       recentResolutions: [...this.recentResolutions],
     }
@@ -281,7 +281,7 @@ export class UserInputRequestManager {
   reset(): void {
     this.requests.clear()
     this.recentResolutions = []
-    this.shelfMismatchCount = 0
+    this.storeMismatchCount = 0
     this.awaitingDivergenceCount = 0
     this.divergedSessions.clear()
   }

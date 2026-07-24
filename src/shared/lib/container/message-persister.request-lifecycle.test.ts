@@ -397,7 +397,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
         sendToolResult('tool-par-1')
         // KNOWN SPLIT-BRAIN (pinned, not desired): the main-path user-message
-        // handler clears awaiting without consulting the stream shelves — it
+        // handler clears awaiting without consulting the stream stores — it
         // only defers to external review blockers. The second request's
         // replay entry is still parked (the card stack still shows it), but
         // the sidebar/header bit already reads "not waiting". Derived
@@ -414,7 +414,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
   // ==========================================================================
   // Documented divergence: computer-use lives in a separate store with
-  // route-driven clearing (the two-shelf split this suite exists to pin down)
+  // route-driven clearing (the two-store split this suite exists to pin down)
   // ==========================================================================
 
   describe('main stream: computer use (divergent two-store lifecycle)', () => {
@@ -445,10 +445,10 @@ describe('pending user-input request lifecycle (characterization)', () => {
       simulateToolUse(TOOL, 'cu-clear-1', { x: 1, y: 2 })
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-      // KNOWN SPLIT-BRAIN (pinned, not desired): the computer-use shelf is
+      // KNOWN SPLIT-BRAIN (pinned, not desired): the computer-use store is
       // cleared only via the decision route's explicit call, so the entry
       // survives the tool_result — but the main-path user-message handler
-      // still clears the awaiting bit without consulting this shelf. Card
+      // still clears the awaiting bit without consulting this store. Card
       // parked, light off. Derived awaiting state flips the second
       // expectation to `true`.
       sendToolResult('cu-clear-1')
@@ -472,7 +472,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
         // The route clear applies the shared waiting-light rule: with both
-        // shelves empty and no external blocker, the bit flips AND the wire
+        // stores empty and no external blocker, the bit flips AND the wire
         // says input was provided — together, atomically. (Before the unified
         // dispatch change it broadcast without flipping the bit, leaving the
         // wire and the bit disagreeing until the tool_result landed.)
@@ -495,7 +495,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
       // Clearing the computer-use entry must NOT flip awaiting: the secret
-      // is still parked on the other shelf.
+      // is still parked on the other store.
       messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'cu-clear-3')
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(0)
@@ -545,7 +545,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
       expect(sseEvents.filter((e) => e.type === 'capability_review_resolved')).toHaveLength(1)
       // KNOWN SPLIT-BRAIN (pinned, not desired): like the computer-use route
-      // clear, this door empties its shelf and broadcasts but leaves the
+      // clear, this door empties its store and broadcasts but leaves the
       // awaiting bit set — it stays true until later stream traffic (the
       // launched tool's own lifecycle) clears it.
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
@@ -553,12 +553,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
   })
 
   // ==========================================================================
-  // Cross-shelf awaiting arithmetic: input store + computer-use store +
+  // Cross-store awaiting arithmetic: input store + computer-use store +
   // external blocker source (the ReviewManager seam). Awaiting must survive
   // until the LAST wait across all three resolves.
   // ==========================================================================
 
-  describe('cross-shelf awaiting arithmetic', () => {
+  describe('cross-store awaiting arithmetic', () => {
     it('a held external blocker keeps awaiting alive through tool_results; the agent door releases it', () => {
       let blockerHeld = true
       const unregister = messagePersister.registerAwaitingBlockerSource(
@@ -585,7 +585,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
         // Once the blocker releases, the agent-level door clears it: both
-        // stream shelves are empty by now.
+        // stream stores are empty by now.
         blockerHeld = false
         messagePersister.clearAwaitingInputForAgentIfUnblocked(AGENT_SLUG)
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
@@ -594,7 +594,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       }
     })
 
-    it('the agent-level door checks stream shelves only — external blockers are the CALLER\'s contract', () => {
+    it('the agent-level door checks stream stores only — external blockers are the CALLER\'s contract', () => {
       let blockerHeld = true
       const unregister = messagePersister.registerAwaitingBlockerSource(
         (agentSlug) => agentSlug === AGENT_SLUG && blockerHeld
@@ -830,7 +830,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
 
-    it('the sidechain resolve applies the both-shelves rule: a parked computer-use keeps awaiting on', () => {
+    it('the sidechain resolve applies the both-stores rule: a parked computer-use keeps awaiting on', () => {
       sendSidechainToolUse(
         'AskUserQuestion',
         'side-q-1',
@@ -917,10 +917,10 @@ describe('pending user-input request lifecycle (characterization)', () => {
   })
 
   // ==========================================================================
-  // Phase 2 shadow registry: every shelf mutation writes through to the
-  // UserInputRequestManager, whose per-shelf view must mirror the legacy
-  // shelves exactly (the persister asserts this inline at every mutation —
-  // shelfMismatches must stay 0). Its DERIVED awaiting projection is compared
+  // Phase 2 shadow registry: every store mutation writes through to the
+  // UserInputRequestManager, whose per-store view must mirror the legacy
+  // stores exactly (the persister asserts this inline at every mutation —
+  // storeMismatches must stay 0). Its DERIVED awaiting projection is compared
   // against the imperative bit: where the pinned split-brains make the bit
   // wrong, the projection is right, and the divergence counter is the
   // telemetry that sizes the Phase 3 flip.
@@ -950,7 +950,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       consoleWarnSpy.mockRestore()
     })
 
-    it('every standard kind registers a typed entry mirroring the replay shelf, and settles with it', async () => {
+    it('every standard kind registers a typed entry mirroring the replay store, and settles with it', async () => {
       for (const kindCase of STANDARD_KINDS) {
         const toolId = `shadow-${kindCase.sseType}`
         simulateToolUse(kindCase.toolName, toolId, kindCase.input)
@@ -966,9 +966,9 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(entry.kind, kindCase.label).toBe(KIND_BY_SSE_TYPE[kindCase.sseType])
         expect(entry.scope).toEqual({ agentSlug: AGENT_SLUG, sessionId: SESSION_ID })
 
-        // Exact mirror of the legacy replay shelf.
+        // Exact mirror of the legacy replay store.
         expect(
-          [...userInputRequestManager.getShelfIdsForSession(SESSION_ID, 'stream')].sort()
+          [...userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'stream')].sort()
         ).toEqual(
           messagePersister
             .getPendingInputRequests(SESSION_ID)
@@ -986,31 +986,31 @@ describe('pending user-input request lifecycle (characterization)', () => {
           outcome: 'answered',
         })
       }
-      expect(userInputRequestManager.stats.shelfMismatches).toBe(0)
+      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
     })
 
-    it('a stray main-path tool_result cannot evict the registry\'s computer-use entry (shelf-scoped resolve)', () => {
+    it('a stray main-path tool_result cannot evict the registry\'s computer-use entry (store-scoped resolve)', () => {
       simulateToolUse('mcp__computer-use__computer_click', 'shadow-cu-1', { x: 1, y: 2 })
-      expect(userInputRequestManager.getShelfIdsForSession(SESSION_ID, 'computer_use')).toEqual([
+      expect(userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'computer_use')).toEqual([
         'shadow-cu-1',
       ])
 
-      // Pinned divergence: the tool_result leaves the computer-use shelf
-      // untouched. The registry mirrors the SHELF, not the tool_result — if it
+      // Pinned divergence: the tool_result leaves the computer-use store
+      // untouched. The registry mirrors the STORE, not the tool_result — if it
       // settled here, the inline parity assert would blow up this test.
       sendToolResult('shadow-cu-1')
-      expect(userInputRequestManager.getShelfIdsForSession(SESSION_ID, 'computer_use')).toEqual([
+      expect(userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'computer_use')).toEqual([
         'shadow-cu-1',
       ])
 
       messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-cu-1')
-      expect(userInputRequestManager.getShelfIdsForSession(SESSION_ID, 'computer_use')).toEqual([])
+      expect(userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'computer_use')).toEqual([])
       expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
         id: 'shadow-cu-1',
         kind: 'computer_use',
         outcome: 'answered',
       })
-      expect(userInputRequestManager.stats.shelfMismatches).toBe(0)
+      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
     })
 
     it('parallel requests: the projection stays awaiting while the bit drops early (split-brain telemetry)', async () => {
@@ -1039,7 +1039,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
       sendToolResult('shadow-par-2')
       expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
-      expect(userInputRequestManager.stats.shelfMismatches).toBe(0)
+      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
     })
 
     it('capability review: the registry settles on complete; the stuck bit is divergence telemetry', async () => {
@@ -1063,13 +1063,13 @@ describe('pending user-input request lifecycle (characterization)', () => {
       messagePersister.completeCapabilityReview(SESSION_ID, 'shadow-cap-1')
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
       expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
-      // Pinned: the early-clear door empties its shelf but never flips the
+      // Pinned: the early-clear door empties its store but never flips the
       // bit. Projection right, bit wrong — counted, not thrown.
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       await vi.waitFor(() => {
         expect(userInputRequestManager.stats.awaitingDivergences).toBeGreaterThan(0)
       })
-      expect(userInputRequestManager.stats.shelfMismatches).toBe(0)
+      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
     })
 
     it('the direct-clear doors record the caller\'s actual outcome, not a blanket answered', async () => {
@@ -1109,7 +1109,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         kind: 'computer_use',
         outcome: 'invalidated',
       })
-      expect(userInputRequestManager.stats.shelfMismatches).toBe(0)
+      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
     })
 
     it('unsubscribe drops every session-scoped registry entry as invalidated', () => {

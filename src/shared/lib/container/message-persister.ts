@@ -551,7 +551,7 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionId)
     if (!state) return
     state.pendingInputRequests.delete(toolUseId)
-    userInputRequestManager.resolveIfShelf(toolUseId, 'stream', outcome)
+    userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
     this.shadowRegistryCheck(sessionId, 'completeCapabilityReview')
     this.broadcastToSSE(sessionId, { type: 'capability_review_resolved', toolUseId })
     if (state.pendingInputRequests.size === 0) {
@@ -572,9 +572,9 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionId)
     if (state) {
       state.pendingComputerUseRequests.delete(toolUseId)
-      userInputRequestManager.resolveIfShelf(toolUseId, 'computer_use', outcome)
+      userInputRequestManager.resolveIfInStore(toolUseId, 'computer_use', outcome)
       this.shadowRegistryCheck(sessionId, 'clearPendingComputerUseRequest')
-      // Same waiting-light rule as the sidechain input clear: both shelves,
+      // Same waiting-light rule as the sidechain input clear: both stores,
       // skip auto-approved — and defer to a parked proxy/x-agent review
       // (external blocker), which is also a real wait.
       if (
@@ -630,7 +630,7 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionId)
     for (const id of computerUseIds) {
       state?.pendingComputerUseRequests.delete(id)
-      if (state) userInputRequestManager.resolveIfShelf(id, 'computer_use', 'superseded')
+      if (state) userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
     }
     this.shadowRegistryCheck(sessionId, 'cancelAwaitingInput')
 
@@ -954,20 +954,20 @@ class MessagePersister {
   }
 
   // Phase 2 shadow-registry parity (dev/test only, skipped in production).
-  // Shelf comparison runs synchronously — every mutation site writes through to
-  // the registry adjacent to the shelf mutation, so the two must already agree
+  // Store comparison runs synchronously — every mutation site writes through to
+  // the registry adjacent to the store mutation, so the two must already agree
   // here. The awaiting-bit comparison is deferred a microtask: the imperative
-  // mark/clear that follows a shelf mutation lands later in the same
+  // mark/clear that follows a store mutation lands later in the same
   // synchronous stretch, and comparing early would report phantom divergence.
   private shadowRegistryCheck(sessionId: string, context: string): void {
     if (process.env.NODE_ENV === 'production') return
     const state = this.streamingStates.get(sessionId)
     if (!state) return
-    userInputRequestManager.verifyShelfParity({
+    userInputRequestManager.verifyStoreParity({
       sessionId,
       context,
-      streamShelfIds: [...state.pendingInputRequests.keys()],
-      computerUseShelfIds: [...state.pendingComputerUseRequests.keys()],
+      streamStoreIds: [...state.pendingInputRequests.keys()],
+      computerUseStoreIds: [...state.pendingComputerUseRequests.keys()],
     })
     queueMicrotask(() => {
       const current = this.streamingStates.get(sessionId)
@@ -4560,7 +4560,7 @@ ${continuation}`
   // requests only: ordinary subagent tool results (Bash, Read, …) stream
   // constantly and must not broadcast main-path `tool_result` events or touch
   // the awaiting flag. Unlike the main path's unconditional clear, awaiting is
-  // cleared only when no OTHER blocking request remains (the shared both-shelves
+  // cleared only when no OTHER blocking request remains (the shared both-stores
   // rule) — a main-agent question or a pending computer-use can be open in
   // parallel with a subagent's browser_input — and never while a proxy/x-agent
   // review is still parked for this agent.
@@ -4575,7 +4575,7 @@ ${continuation}`
       if (block.type !== 'tool_result' || !block.tool_use_id) continue
       if (!state.pendingInputRequests.has(block.tool_use_id)) continue
       state.pendingInputRequests.delete(block.tool_use_id)
-      userInputRequestManager.resolveIfShelf(
+      userInputRequestManager.resolveIfInStore(
         block.tool_use_id,
         'stream',
         block.is_error ? 'declined' : 'answered',
@@ -4619,7 +4619,7 @@ ${continuation}`
           // refresh) — its tool_result is in, so drop it from the replay store.
           state?.pendingInputRequests.delete(block.tool_use_id)
           if (state) {
-            userInputRequestManager.resolveIfShelf(
+            userInputRequestManager.resolveIfInStore(
               block.tool_use_id,
               'stream',
               block.is_error ? 'declined' : 'answered',

@@ -140,10 +140,10 @@ export class ReviewManager {
   // instead of silently diverging.
   private shadowRegistryCheck(agentSlug: string, context: string): void {
     if (process.env.NODE_ENV === 'production') return
-    const reviewShelfIds = [...this.pending.values()]
+    const reviewStoreIds = [...this.pending.values()]
       .filter((review) => review.details.agentSlug === agentSlug)
       .map((review) => review.id)
-    userInputRequestManager.verifyReviewShelfParity({ agentSlug, context, reviewShelfIds })
+    userInputRequestManager.verifyReviewStoreParity({ agentSlug, context, reviewStoreIds })
   }
 
   requestReview(details: ReviewDetails, signal?: AbortSignal): Promise<'allow' | 'deny'> {

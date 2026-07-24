@@ -4,11 +4,11 @@ import { z } from 'zod'
  * Typed model for "the agent is blocked on a human" — one envelope for every
  * pending user-input request regardless of which store currently owns it.
  *
- * Phase 2 (shadow registry): this model mirrors the existing shelves via
+ * Phase 2 (shadow registry): this model mirrors the existing stores via
  * write-through and is compared against them; nothing reads it for behavior
  * yet. The envelope is strict (we construct it), the per-kind payloads are
  * deliberately lenient (`looseObject` + `.catch`) so a malformed tool input
- * can never make the shadow diverge from the shelf it mirrors.
+ * can never make the shadow diverge from the store it mirrors.
  */
 
 export const USER_INPUT_REQUEST_KINDS = [
@@ -149,14 +149,14 @@ export type PendingUserInputRequest = z.infer<typeof pendingUserInputRequestSche
 export type PendingUserInputRequestInput = z.input<typeof pendingUserInputRequestSchema>
 
 /**
- * Which legacy shelf a kind lives on today. The shadow registry uses this to
- * mirror shelf-scoped operations exactly (e.g. the turn-boundary clear wipes
- * only the stream shelf; a stray tool_result must never evict a computer-use
- * entry the shelf still holds).
+ * Which legacy store a kind lives on today. The shadow registry uses this to
+ * mirror store-scoped operations exactly (e.g. the turn-boundary clear wipes
+ * only the stream store; a stray tool_result must never evict a computer-use
+ * entry the store still holds).
  */
-export type UserInputRequestShelf = 'stream' | 'computer_use' | 'review'
+export type UserInputRequestStore = 'stream' | 'computer_use' | 'review'
 
-export function shelfForKind(kind: UserInputRequestKind): UserInputRequestShelf {
+export function storeForKind(kind: UserInputRequestKind): UserInputRequestStore {
   if (kind === 'computer_use') return 'computer_use'
   if (kind === 'proxy_review' || kind === 'x_agent_review') return 'review'
   return 'stream'

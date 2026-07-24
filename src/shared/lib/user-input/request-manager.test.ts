@@ -85,8 +85,8 @@ describe('UserInputRequestManager', () => {
     })
   })
 
-  describe('resolveIfShelf', () => {
-    it('refuses to settle a request that lives on a different shelf', () => {
+  describe('resolveIfInStore', () => {
+    it('refuses to settle a request that lives on a different store', () => {
       manager.register({
         id: 'cu-1',
         kind: 'computer_use',
@@ -94,16 +94,16 @@ describe('UserInputRequestManager', () => {
         blocking: true,
         payload: { method: 'click' },
       })
-      // A stray main-path tool_result deletes blindly from the stream shelf —
+      // A stray main-path tool_result deletes blindly from the stream store —
       // it must not evict the computer-use entry its own store still holds.
-      expect(manager.resolveIfShelf('cu-1', 'stream', 'answered')).toBeNull()
+      expect(manager.resolveIfInStore('cu-1', 'stream', 'answered')).toBeNull()
       expect(manager.stats.open).toBe(1)
-      expect(manager.resolveIfShelf('cu-1', 'computer_use', 'answered')).not.toBeNull()
+      expect(manager.resolveIfInStore('cu-1', 'computer_use', 'answered')).not.toBeNull()
       expect(manager.stats.open).toBe(0)
     })
   })
 
-  describe('shelf-scoped clears', () => {
+  describe('store-scoped clears', () => {
     beforeEach(() => {
       manager.register(secretRequest({ id: 'stream-1' }))
       manager.register({
@@ -123,7 +123,7 @@ describe('UserInputRequestManager', () => {
       manager.register(secretRequest({ id: 'other-session', scope: { agentSlug: 'agent-a', sessionId: 'session-2' } }))
     })
 
-    it('clearSessionStreamRequests wipes only the session\'s stream shelf (turn-boundary mirror)', () => {
+    it('clearSessionStreamRequests wipes only the session\'s stream store (turn-boundary mirror)', () => {
       manager.clearSessionStreamRequests('session-1', 'cancelled')
       expect(manager.getOpenRequestsForSession('session-1').map((r) => r.id)).toEqual(['cu-1'])
       expect(manager.getOpenRequestsForSession('session-2')).toHaveLength(1)
@@ -170,31 +170,31 @@ describe('UserInputRequestManager', () => {
   })
 
   describe('shadow diagnostics', () => {
-    it('verifyShelfParity passes silently when both shelves match', () => {
+    it('verifyStoreParity passes silently when both stores match', () => {
       manager.register(secretRequest({ id: 'stream-1' }))
-      manager.verifyShelfParity({
+      manager.verifyStoreParity({
         sessionId: 'session-1',
         context: 'test',
-        streamShelfIds: ['stream-1'],
-        computerUseShelfIds: [],
+        streamStoreIds: ['stream-1'],
+        computerUseStoreIds: [],
       })
-      expect(manager.stats.shelfMismatches).toBe(0)
+      expect(manager.stats.storeMismatches).toBe(0)
     })
 
-    it('verifyShelfParity throws under vitest on a mismatch and counts it', () => {
+    it('verifyStoreParity throws under vitest on a mismatch and counts it', () => {
       manager.register(secretRequest({ id: 'stream-1' }))
       expect(() =>
-        manager.verifyShelfParity({
+        manager.verifyStoreParity({
           sessionId: 'session-1',
           context: 'test',
-          streamShelfIds: ['stream-1', 'stream-2'],
-          computerUseShelfIds: [],
+          streamStoreIds: ['stream-1', 'stream-2'],
+          computerUseStoreIds: [],
         }),
-      ).toThrow(/shadow shelf mismatch/)
-      expect(manager.stats.shelfMismatches).toBe(1)
+      ).toThrow(/shadow store mismatch/)
+      expect(manager.stats.storeMismatches).toBe(1)
     })
 
-    it('verifyReviewShelfParity compares only agent-scoped review entries', () => {
+    it('verifyReviewStoreParity compares only agent-scoped review entries', () => {
       manager.register({
         id: 'review-1',
         kind: 'proxy_review',
@@ -206,24 +206,24 @@ describe('UserInputRequestManager', () => {
       // review comparison.
       manager.register(secretRequest())
 
-      manager.verifyReviewShelfParity({
+      manager.verifyReviewStoreParity({
         agentSlug: 'agent-a',
         context: 'test',
-        reviewShelfIds: ['review-1'],
+        reviewStoreIds: ['review-1'],
       })
-      expect(manager.stats.shelfMismatches).toBe(0)
+      expect(manager.stats.storeMismatches).toBe(0)
     })
 
-    it('verifyReviewShelfParity throws under vitest when a review write-through was missed', () => {
+    it('verifyReviewStoreParity throws under vitest when a review write-through was missed', () => {
       // ReviewManager holds a review the registry never saw.
       expect(() =>
-        manager.verifyReviewShelfParity({
+        manager.verifyReviewStoreParity({
           agentSlug: 'agent-a',
           context: 'test',
-          reviewShelfIds: ['review-orphan'],
+          reviewStoreIds: ['review-orphan'],
         }),
-      ).toThrow(/shadow shelf mismatch/)
-      expect(manager.stats.shelfMismatches).toBe(1)
+      ).toThrow(/shadow store mismatch/)
+      expect(manager.stats.storeMismatches).toBe(1)
     })
 
     it('compareAwaitingProjection counts divergence and warns once per episode', () => {
@@ -255,7 +255,7 @@ describe('UserInputRequestManager', () => {
       manager.reset()
       expect(manager.stats).toEqual({
         open: 0,
-        shelfMismatches: 0,
+        storeMismatches: 0,
         awaitingDivergences: 0,
         recentResolutions: [],
       })
