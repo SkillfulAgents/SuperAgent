@@ -154,6 +154,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   proxyTokens: {},
   agentConnectedAccounts: {},
   scheduledTasks: {},
+  classifierRuns: {},
   notifications: {},
   connectedAccounts: {},
   userSettings: {},

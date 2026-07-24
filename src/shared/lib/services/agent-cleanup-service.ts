@@ -4,6 +4,7 @@ import {
   webhookTriggers,
   chatIntegrations,
   scheduledTasks,
+  classifierRuns,
   notifications,
   agentRemoteMcps,
   proxyAuditLog,
@@ -29,6 +30,8 @@ export async function cleanupAgentData(agentSlug: string): Promise<void> {
   // half-cleaned state (SUP-208).
   db.transaction(() => {
     db.delete(chatIntegrations).where(eq(chatIntegrations.agentSlug, agentSlug)).run()
+    // classifier_runs are per-fire children of scheduled_tasks — delete before the parent
+    db.delete(classifierRuns).where(eq(classifierRuns.agentSlug, agentSlug)).run()
     db.delete(scheduledTasks).where(eq(scheduledTasks.agentSlug, agentSlug)).run()
     db.delete(notifications).where(eq(notifications.agentSlug, agentSlug)).run()
     db.delete(agentConnectedAccounts).where(eq(agentConnectedAccounts.agentSlug, agentSlug)).run()

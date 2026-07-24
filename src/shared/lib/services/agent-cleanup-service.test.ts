@@ -141,6 +141,18 @@ describe('agent-cleanup-service', () => {
     }).run()
   }
 
+  function insertClassifierRun(id: string, agentSlug: string): void {
+    testDb.insert(schema.classifierRuns).values({
+      id,
+      scheduledTaskId: `st-${id}`,
+      agentSlug,
+      fireAt: new Date(),
+      status: 'classifying',
+      deadlineAt: new Date(),
+      createdAt: new Date(),
+    }).run()
+  }
+
   function insertNotification(id: string, agentSlug: string): void {
     testDb.insert(schema.notifications).values({
       id,
@@ -364,6 +376,17 @@ describe('agent-cleanup-service', () => {
 
       expect(countRows(schema.scheduledTasks, AGENT_SLUG)).toBe(0)
       expect(countRows(schema.scheduledTasks, OTHER_AGENT_SLUG)).toBe(1)
+    })
+
+    it('deletes classifier runs', async () => {
+      insertClassifierRun('cr-1', AGENT_SLUG)
+      insertClassifierRun('cr-2', AGENT_SLUG)
+      insertClassifierRun('cr-other', OTHER_AGENT_SLUG)
+
+      await cleanupAgentData(AGENT_SLUG)
+
+      expect(countRows(schema.classifierRuns, AGENT_SLUG)).toBe(0)
+      expect(countRows(schema.classifierRuns, OTHER_AGENT_SLUG)).toBe(1)
     })
 
     it('deletes notifications', async () => {

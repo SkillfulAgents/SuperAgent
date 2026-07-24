@@ -169,7 +169,8 @@ vi.mock('./container-manager', () => ({
 }))
 
 // Import after mocks are set up
-import { messagePersister, redactStreamedToolInput } from './message-persister'
+import { messagePersister, redactStreamedToolInput, isAgentVisibleScheduledTask } from './message-persister'
+import type { ScheduledTask } from '@shared/lib/db/schema'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 
 describe('redactStreamedToolInput', () => {
@@ -6331,5 +6332,14 @@ describe('MessagePersister connection lost mid-turn', () => {
     await dropConnection()
 
     expect(sseEvents.filter((e) => e.type === 'session_error')).toHaveLength(0)
+  })
+})
+
+describe('isAgentVisibleScheduledTask', () => {
+  it('hides classifier rows from agent schedule tools and keeps session rows', () => {
+    expect(isAgentVisibleScheduledTask({ executionMode: 'classifier' } as ScheduledTask)).toBe(false)
+    expect(isAgentVisibleScheduledTask({ executionMode: 'session' } as ScheduledTask)).toBe(true)
+    // Unknown/missing execution_mode falls back to the visible session path.
+    expect(isAgentVisibleScheduledTask({ executionMode: null } as unknown as ScheduledTask)).toBe(true)
   })
 })

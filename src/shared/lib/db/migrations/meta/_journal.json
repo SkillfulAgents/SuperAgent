@@ -225,6 +225,13 @@
       "when": 1784233277152,
       "tag": "0031_misty_sumo",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1784758698864,
+      "tag": "0032_lazy_madelyne_pryor",
+      "breakpoints": true
     }
   ]
 }

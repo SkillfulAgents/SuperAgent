@@ -282,6 +282,13 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       return c.json({ error: 'Task is not pending' }, 400)
     }
 
+    // No classifier runtime yet: a classifier row must never fire as a plain session.
+    if (task.executionMode === 'classifier') {
+      return c.json({
+        error: 'Classifier scheduled tasks cannot be run manually',
+      }, 400)
+    }
+
     // Session wake ("Wake now"): resume the target session instead of creating
     // a new one. deliverSessionWake is the same claimed path the scheduler
     // uses, so a poll firing at the same instant can never double-deliver.
