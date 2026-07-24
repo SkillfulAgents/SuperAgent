@@ -1,6 +1,6 @@
 import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
-import { admin, genericOAuth } from 'better-auth/plugins'
+import { admin, bearer, genericOAuth } from 'better-auth/plugins'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import * as schema from '@shared/lib/db/schema'
@@ -90,6 +90,9 @@ function createAuthInstance() {
       },
     },
     plugins: [
+      // Accepts the session token via `Authorization: Bearer` so non-browser
+      // clients (desktop app, watch) can call Authenticated() routes.
+      bearer(),
       admin({
         defaultRole: authSettings.defaultUserRole === 'admin' ? 'admin' : 'user',
       }),

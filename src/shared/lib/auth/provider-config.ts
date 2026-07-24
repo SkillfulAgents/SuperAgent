@@ -208,6 +208,13 @@ export function getPublicAuthProviders(
   return getEnabledProviderDefinitions(providers).map((definition) => definition.toPublicConfig())
 }
 
+// Whether the named provider is present and not explicitly disabled. Used to
+// gate flows (e.g. token exchange) that must not run when platform login has
+// been turned off, matching the interactive-login surface.
+export function isAuthProviderEnabled(id: string): boolean {
+  return resolveEnvAuthProviders().some((p) => p.id === id && p.enabled !== false)
+}
+
 // Issuer for the named provider, derived from `issuer` or `discoveryUrl`.
 export function getAuthProviderIssuer(id: string): string | undefined {
   const providers = resolveEnvAuthProviders()

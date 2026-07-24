@@ -36,6 +36,7 @@ import auditLogRouter from './routes/audit-log'
 import connectionLogsRouter from './routes/connection-logs'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
+import tokenExchange from './routes/token-exchange'
 import agentBootstrap from './routes/agent-bootstrap'
 import activityRouter from './routes/activity'
 import { initializeServices } from '@shared/lib/startup'
@@ -112,6 +113,26 @@ if (isAuthMode()) {
 // Auth enforcement middleware (signup mode, password policy, account lockout)
 if (isAuthMode()) {
   app.use('/api/auth/*', authEnforcementMiddleware)
+}
+
+// The bearer plugin echoes the session token in a JS-readable `set-auth-token`
+// response header on every sign-in. This app's browser client is cookie-only
+// and token clients receive their token from the exchange endpoint's JSON body,
+// so the header is never consumed — strip it to keep the session credential out
+// of reach of a renderer XSS. (The bearer plugin has no option to suppress it.)
+if (isAuthMode()) {
+  app.use('/api/auth/*', async (c, next) => {
+    await next()
+    if (c.res.headers.has('set-auth-token')) {
+      c.res.headers.delete('set-auth-token')
+    }
+  })
+}
+
+// RFC 7523 token endpoint — registered before the Better Auth wildcard so it
+// wins the route match, after the rate limiter + enforcement middleware above.
+if (isAuthMode()) {
+  app.route('/api/auth/token', tokenExchange)
 }
 
 // Mount Better Auth handler (only when AUTH_MODE is enabled)
