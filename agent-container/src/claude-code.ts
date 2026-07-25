@@ -59,6 +59,13 @@ import { createCapabilityGateHook, CAPABILITY_REVIEW_HOOK_TIMEOUT_S } from './ca
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 
+// Upper bound on how long a message waits for freshly (re)connected remote MCP
+// servers to finish their handshake. Comfortably inside the 5-minute interactive
+// idle eviction, and the same order as the interrupt() teardown the send path
+// already awaits.
+const REMOTE_MCP_READY_TIMEOUT_MS = 8_000;
+const REMOTE_MCP_READY_POLL_MS = 250;
+
 export const AGENT_BROWSER_BASH_WARNING =
   'STRONG WARNING: This Bash command is probably bypassing Gamut\'s browser integration. For website work, use the dedicated mcp__browser__browser_* tools; if they are deferred, load their exact full names with ToolSearch. The Bash command is still allowed, but continue with agent-browser only when the dedicated browser tools genuinely cannot perform the operation.';
 
@@ -579,6 +586,59 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
 
     return configs;
+  }
+
+  /**
+   * Hold the next message until the remote MCP servers this query just
+   * (re)connected have finished their handshake.
+   *
+   * createQuery() reconnects every MCP server from scratch, and the SDK runs
+   * that handshake CONCURRENTLY with the first turn. Meanwhile the system
+   * prompt — regenerated from the same REMOTE_MCPS — already tells the model
+   * the servers "are connected and their tools are available for use". The
+   * model believes it, calls mcp__<server>__<tool>, and gets "No such tool
+   * available": the exact symptom of a connection that never arrived.
+   *
+   * Only the connection-config-changed path calls this. An unchanged config
+   * means no re-query at all, hence no handshake in flight and nothing to wait
+   * for. The other re-query triggers (effort/speed/capability change, cold-start
+   * restart) race the same handshake, but there the user has not just connected
+   * a server they are about to ask about — and gating every wake-from-idle would
+   * tax a far more common path for a far rarer payoff.
+   */
+  private async waitForRemoteMcpsReady(
+    timeoutMs: number = REMOTE_MCP_READY_TIMEOUT_MS
+  ): Promise<void> {
+    // Keys are already sanitized, and they are exactly the keys handed to
+    // query() as mcpServers — so they match the names the SDK reports back.
+    const expected = Object.keys(this.buildRemoteMcpServers());
+    if (expected.length === 0 || !this.queryInstance) return;
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const statuses = await this.queryInstance.mcpServerStatus().catch(() => null);
+      // No control channel (older CLI, or a query already torn down): the turn
+      // must never hang on a diagnostic.
+      if (!statuses) return;
+
+      // Scoped to OUR servers by name. createQuery passes settingSources
+      // ['user','project'], so this list also carries user- and project-scoped
+      // servers whose health is not ours to block a turn on. A server missing
+      // from the list entirely is still starting up — keep waiting.
+      const settled = expected.every((name) => {
+        const status = statuses.find((s) => s.name === name)?.status;
+        // 'failed' | 'needs-auth' | 'disabled' never become 'connected'; waiting
+        // past them would burn the whole timeout on a server that is simply down.
+        return status !== undefined && status !== 'pending';
+      });
+      if (settled) return;
+
+      await new Promise((resolve) => setTimeout(resolve, REMOTE_MCP_READY_POLL_MS));
+    }
+
+    console.warn(
+      `[Session ${this.sessionId}] Remote MCP handshake still pending after ${timeoutMs}ms — delivering the message anyway`
+    );
   }
 
   /**
@@ -1216,6 +1276,14 @@ export class ClaudeCodeProcess extends EventEmitter {
         console.warn(`[Session ${this.sessionId}] setModel failed, falling back to restart:`, err);
         await this.interrupt();
       }
+    }
+
+    // Deliberately outside the branch chain above: BOTH the cold-session
+    // restart() and the interrupt() re-query rebuild the query with the new
+    // connection set, so both race the handshake. Guarded by the flag rather
+    // than by the branch, so an effort- or speed-only re-query pays nothing.
+    if (runtimeConnectionConfigChanged) {
+      await this.waitForRemoteMcpsReady();
     }
 
     // Create SDK user message format
