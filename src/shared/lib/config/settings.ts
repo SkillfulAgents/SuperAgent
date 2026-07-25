@@ -216,6 +216,17 @@ export interface PlatformAuthSettings {
   updatedAt: string
 }
 
+export interface CloudWorkspaceSettings {
+  deploymentUrl: string
+  orgId: string
+  /** Deployment session token (secret — never surfaced; use tokenPreview). */
+  token: string
+  tokenPreview: string
+  /** ISO expiry of the deployment token; re-minted within a refresh buffer. */
+  expiresAt: string
+  updatedAt: string
+}
+
 export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
@@ -236,6 +247,12 @@ export interface AppSettings {
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports?: boolean
   platformAuth?: PlatformAuthSettings
+  /**
+   * Desktop-only: the maintained cloud-workspace deployment token + its bound
+   * deployment. Absent until the org has a deployed cloud workspace and the
+   * grant exchange succeeds. Cleared on platform disconnect / org change.
+   */
+  cloudWorkspace?: CloudWorkspaceSettings
   /**
    * Desktop platform-notifications state: the OS-notification dedup watermark
    * (newest created_at already OS-notified). Content is never mirrored locally
@@ -514,6 +531,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     analyticsTargets: loaded.analyticsTargets,
     shareErrorReports: loaded.shareErrorReports,
     platformAuth: loaded.platformAuth,
+    cloudWorkspace: loaded.cloudWorkspace,
     platformNotifications: loaded.platformNotifications,
     enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
     // Sanitize per-field: an unknown tier (hand-edited file, future version)

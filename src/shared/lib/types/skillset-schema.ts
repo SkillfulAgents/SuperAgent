@@ -70,6 +70,23 @@ export const PlatformAuthSettingsSchema = z.object({
   updatedAt: z.string(),
 })
 
+// Persisted "cloud workspace" state: the durable deployment session token the
+// desktop app maintains for the org's cloud deployment. `token` is a secret
+// (only `tokenPreview` is ever surfaced). Bound to a specific `deploymentUrl` +
+// `orgId` so a platform-side deployment change invalidates it. Validated at the
+// settings boundary on read.
+export const CloudWorkspaceSettingsSchema = z.object({
+  deploymentUrl: z.string(),
+  orgId: z.string(),
+  token: z.string(),
+  tokenPreview: z.string(),
+  // ISO timestamp of the deployment token's expiry (from the exchange's
+  // `expires_in`); we re-mint before this within a refresh buffer.
+  expiresAt: z.string(),
+  updatedAt: z.string(),
+})
+export type CloudWorkspaceSettings = z.infer<typeof CloudWorkspaceSettingsSchema>
+
 // Shape returned by the platform proxy's `GET /v1/account` introspection
 // route. Validated at the boundary before it's persisted into settings.
 export const PlatformAccountInfoSchema = z.object({

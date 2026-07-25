@@ -7,6 +7,7 @@ import {
 import {
   fetchPlatformBillingInfo,
 } from '@shared/lib/services/platform-billing-service'
+import { refreshCloudWorkspace } from '@shared/lib/services/cloud-workspace-service'
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
 
 /**
@@ -104,6 +105,9 @@ class PlatformService {
         await this.refreshBilling().catch((error) =>
           captureException(error, { tags: { area: 'platform-service', op: 'refresh-billing' } }),
         )
+        // Desktop-only (self-gates off Electron): keep the cloud-workspace
+        // deployment token maintained on boot + connect. Never throws.
+        await refreshCloudWorkspace()
       } finally {
         this.isProcessing = false
       }

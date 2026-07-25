@@ -113,6 +113,7 @@ function usePlatformAuthCallbackListener(
 
     const handleCallback = (params: PlatformAuthCallbackParams) => {
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.invalidateQueries({ queryKey: ['cloud-workspace'] })
       callbackRef.current?.(params)
     }
 
@@ -189,6 +190,7 @@ export function useRedeemDownloadNonce() {
     onSuccess: async () => {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.invalidateQueries({ queryKey: ['cloud-workspace'] })
       queryClient.setQueryData<DownloadNonceOffer>(['download-nonce-offer'], { available: false })
       await applyPlatformDefaults().catch(() => {})
 
@@ -240,6 +242,7 @@ export function useSavePlatformAccessKey() {
     onSuccess: async () => {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.invalidateQueries({ queryKey: ['cloud-workspace'] })
       await applyPlatformDefaults().catch(() => {})
 
       triggerPlatformSkillsetSync(queryClient)

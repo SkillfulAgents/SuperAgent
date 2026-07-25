@@ -12,6 +12,7 @@ import { verifyOidcJwt } from '@shared/lib/auth/oidc-jwt'
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
 import { runWithRequestUser } from '@shared/lib/platform-attribution/request-context'
+import { clearCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
 
 export type PlatformAuthRecord = PlatformAuthSettings
 
@@ -468,6 +469,9 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
     // previous org. Runs *after* writing the new record so the polymorphic
     // reconcile sees the current auth.
     await reconcileAfterAuthChange()
+    // A deployment token minted for the previous org is no longer valid; drop
+    // it so the next refresh re-mints against the new org's workspace.
+    clearCloudWorkspaceRecord()
   }
 
   notifyPlatformServiceAuthChanged(true)
@@ -540,6 +544,9 @@ export async function refreshStoredPlatformAccount(): Promise<boolean> {
 
 async function clearPlatformAuth(): Promise<void> {
   writeRecord(null)
+  // The cloud-workspace deployment token is bound to the platform account;
+  // clear it alongside the platform token on disconnect.
+  clearCloudWorkspaceRecord()
   await reconcileAfterAuthChange()
   notifyPlatformServiceAuthChanged(false)
 }
