@@ -62,14 +62,15 @@ test.describe('Per-agent default model', () => {
     await agentPage.clickCreateAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
-    // Unset default: the card shows the app-wide fallback and no reset affordance.
+    // Unset default: already following the app-wide fallback, so the picker's
+    // reset-to-global action is disabled.
     const card = page.locator('[data-testid="home-default-model-card"]')
     await expect(card).toBeVisible()
-    await expect(page.locator('[data-testid="home-default-model-reset"]')).not.toBeVisible()
+    await card.locator('[data-testid="settings-model-trigger"]').click()
+    await expect(page.locator('[data-testid="settings-model-app-default"]')).toBeDisabled()
 
     // Picks keep the popover open, so alias, pin, and effort all happen in ONE
     // visit. The "Haiku" row (and its Latest chip) stores the bare alias …
-    await card.locator('[data-testid="settings-model-trigger"]').click()
     await page.locator('[data-testid="model-latest-haiku"]').click()
     await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText('Haiku · latest')
 
@@ -77,13 +78,13 @@ test.describe('Per-agent default model', () => {
     await page.locator(`[data-testid="model-pinned-${HAIKU_PINNED}"]`).click()
     await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText('Haiku 4.5')
 
-    // … and the effort slider sets the default effort. Then dismiss.
+    // … and the effort slider sets the default effort.
     await page.locator('[data-testid="effort-option-high"]').click()
     await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText('High')
-    await page.keyboard.press('Escape')
 
-    // A custom default surfaces the reset-to-global affordance.
-    await expect(page.locator('[data-testid="home-default-model-reset"]')).toBeVisible()
+    // A custom default arms the reset-to-global action. Then dismiss.
+    await expect(page.locator('[data-testid="settings-model-app-default"]')).toBeEnabled()
+    await page.keyboard.press('Escape')
 
     // The untouched composer adopts the agent default...
     await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Haiku 4.5')
@@ -100,17 +101,20 @@ test.describe('Per-agent default model', () => {
     expect(record.model).toBe(HAIKU_PINNED)
     expect(record.effort).toBe('high')
 
-    // Reset back to the global default: the card shows the Global hint again,
-    // the untouched composer follows it, and the next session is created with
-    // the app-wide default (bare 'opus' alias, resolved to the latest concrete
-    // id on the wire).
+    // Revert via the picker's reset-to-global action (the in-popover
+    // replacement for the old reset button): it disables itself once the
+    // override is gone, the untouched composer follows the app-wide default
+    // again, and the next session is created with it (bare 'opus' alias,
+    // resolved to the latest concrete id on the wire).
     const resetMessage = `Reset to global message ${tag}`
     await page.goBack()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
-    await page.locator('[data-testid="home-default-model-reset"]').click()
-    await expect(page.locator('[data-testid="home-default-model-reset"]')).not.toBeVisible()
-    await expect(card).toContainText('Global')
+    await card.locator('[data-testid="settings-model-trigger"]').click()
+    await page.locator('[data-testid="settings-model-app-default"]').click()
+    await expect(page.locator('[data-testid="settings-model-app-default"]')).toBeDisabled()
+    await page.keyboard.press('Escape')
+
     await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Opus')
 
     await page.locator('[data-testid="home-message-input"]').fill(resetMessage)

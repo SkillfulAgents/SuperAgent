@@ -3,6 +3,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { ChevronRight, PanelRightOpen } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { useFilePreview } from '@renderer/context/file-preview-context'
+import { HomeDefaultModel } from './home-default-model'
 
 interface HomeExtrasProps {
   agentSlug: string
@@ -17,6 +18,7 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
   return (
     <div className={cn("rounded-xl border bg-background py-2", className)}>
       <div className="divide-y divide-border/50">
+        <HomeDefaultModel agentSlug={agentSlug} />
         <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
         <ExtrasButton
           label="Agent Directory"
