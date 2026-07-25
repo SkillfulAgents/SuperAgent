@@ -6,6 +6,7 @@ import {
   getPlatformAuthStatus,
 } from '@shared/lib/services/platform-auth-service'
 import {
+  CloudWorkspaceError,
   exchangeGrantAtDeployment,
   fetchDeployments,
   requestDeploymentGrant,
@@ -54,18 +55,52 @@ export interface CloudWorkspaceStatus {
   discoveryFailed: boolean
 }
 
-const NOT_AVAILABLE: CloudWorkspaceStatus = {
+// Frozen: these are returned directly to callers, so they must not become a
+// shared mutable object a consumer can scribble on.
+const NOT_AVAILABLE: CloudWorkspaceStatus = Object.freeze({
   available: false,
   found: false,
   deploymentUrl: null,
   orgId: null,
   hasValidToken: false,
   discoveryFailed: false,
+})
+
+const NOT_FOUND: CloudWorkspaceStatus = Object.freeze({ ...NOT_AVAILABLE, available: true })
+
+const DISCOVERY_FAILED: CloudWorkspaceStatus = Object.freeze({
+  ...NOT_FOUND,
+  discoveryFailed: true,
+})
+
+/**
+ * Report a maintenance failure once per process per distinct cause.
+ *
+ * Everything here runs on a 30-minute poll, and the conditions that break it are
+ * typically persistent — offline, a token that isn't member-bound, a deployment
+ * too old to have the exchange endpoint. Capturing on every cycle would turn one
+ * broken install into a steady stream of identical Sentry events. The `cause`
+ * chain on {@link CloudWorkspaceError} carries the root error, so one report
+ * still has the detail.
+ */
+const reportedFailures = new Set<string>()
+
+function reportFailureOnce(
+  op: string,
+  error: unknown,
+  extra?: Record<string, unknown>,
+): void {
+  const status = error instanceof CloudWorkspaceError ? error.status : undefined
+  const key = `${op}:${status ?? (error instanceof Error ? error.message : 'unknown')}`
+  if (reportedFailures.has(key)) return
+  reportedFailures.add(key)
+  captureException(error, { tags: { area: 'cloud-workspace', op }, extra })
 }
 
-const NOT_FOUND: CloudWorkspaceStatus = { ...NOT_AVAILABLE, available: true }
-
-const DISCOVERY_FAILED: CloudWorkspaceStatus = { ...NOT_FOUND, discoveryFailed: true }
+/** Test seam: the once-per-process guard would otherwise leak between cases. */
+export function _resetCloudWorkspaceFailureReportingForTest(): void {
+  reportedFailures.clear()
+}
 
 // Electron-only: this is a desktop→cloud discovery. A cloud deployment
 // discovering itself is meaningless and can create deployment→deployment loops,
@@ -249,7 +284,7 @@ async function ensureDeploymentToken(
   } catch (error) {
     // Grant/exchange failure (e.g. a deployment without the exchange endpoint)
     // is non-fatal: the workspace still shows, just without a maintained token.
-    captureException(error, { tags: { area: 'cloud-workspace', op: 'ensure-token' } })
+    reportFailureOnce('ensure-token', error)
     return false
   }
 }
@@ -283,12 +318,20 @@ export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
     // Unreachable platform, 401, malformed body — we don't know whether a
     // workspace exists. Report it as such (the card offers a retry rather than
     // "create one"), and don't wipe a still-valid stored token.
-    captureException(error, { tags: { area: 'cloud-workspace', op: 'discover' } })
+    reportFailureOnce('discover', error)
     return DISCOVERY_FAILED
   }
 
+  // `/v1/me/deployments` answers for the *user*, who may belong to several orgs.
+  // Only the org we're currently acting as is ours to show or mint against —
+  // another org's workspace would render an "Open" link the account can't use
+  // and a grant the platform would refuse. Unknown org ⇒ don't filter.
+  const actingOrgId = getPlatformAuthStatus().orgId
   const deployed = deployments.find(
-    (d) => d.status === DEPLOYED_STATUS && d.deployment_url.length > 0,
+    (d) =>
+      d.status === DEPLOYED_STATUS &&
+      d.deployment_url.length > 0 &&
+      (!actingOrgId || d.org_id === actingOrgId),
   )
   if (!deployed) {
     clearCloudWorkspaceRecord()
@@ -300,12 +343,9 @@ export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
     // fail closed (no grant is minted or sent, no workspace surfaced) and flag
     // it. Reported as a failure, not as absence — the workspace does exist, we
     // just refuse to talk to the address we were handed.
-    captureException(new Error('cloud-workspace: unsafe deployment target'), {
-      tags: { area: 'cloud-workspace', op: 'validate-target' },
-      extra: {
-        deploymentUrl: deployed.deployment_url,
-        authorizationServer: deployed.authorization_server,
-      },
+    reportFailureOnce('validate-target', new Error('cloud-workspace: unsafe deployment target'), {
+      deploymentUrl: deployed.deployment_url,
+      authorizationServer: deployed.authorization_server,
     })
     clearCloudWorkspaceRecord()
     return DISCOVERY_FAILED
@@ -330,6 +370,6 @@ export async function refreshCloudWorkspace(): Promise<void> {
   try {
     await getCloudWorkspace()
   } catch (error) {
-    captureException(error, { tags: { area: 'cloud-workspace', op: 'refresh' } })
+    reportFailureOnce('refresh', error)
   }
 }

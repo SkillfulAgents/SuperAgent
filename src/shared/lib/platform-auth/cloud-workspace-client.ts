@@ -2,7 +2,6 @@ import {
   getPlatformAuthIssuerUrl,
   getPlatformProxyBaseUrl,
 } from '@shared/lib/platform-auth/config'
-import { captureException } from '@shared/lib/error-reporting'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import type { DiscoveryHostPolicy } from '@shared/lib/utils/url-safety'
 import {
@@ -33,12 +32,20 @@ import {
  * uses the pinned, manual-redirect `mcpSafeFetch` — see below.
  */
 
+/**
+ * Every failure in the chain surfaces as one of these, with the underlying
+ * network/parse error attached as `cause` — Sentry follows the cause chain, so
+ * the caller reports once and still gets the root cause. Callers must not
+ * capture separately: this runs on a 30-minute maintenance poll, and
+ * double-reporting a persistent condition is how you flood an error budget.
+ */
 export class CloudWorkspaceError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    options?: { cause?: unknown },
   ) {
-    super(message)
+    super(message, options)
     this.name = 'CloudWorkspaceError'
   }
 }
@@ -70,8 +77,7 @@ export async function fetchDeployments(token: string): Promise<DeploymentDiscove
       headers: { Authorization: `Bearer ${token}` },
     })
   } catch (error) {
-    captureException(error, { tags: { area: 'cloud-workspace', op: 'discover-fetch' } })
-    throw new CloudWorkspaceError('Could not reach the platform.', 502)
+    throw new CloudWorkspaceError('Could not reach the platform.', 502, { cause: error })
   }
   if (!res.ok) {
     throw new CloudWorkspaceError(`Deployment discovery failed (${res.status}).`, res.status)
@@ -79,8 +85,9 @@ export async function fetchDeployments(token: string): Promise<DeploymentDiscove
   const data = await res.json().catch(() => null)
   const parsed = DeploymentDiscoveryResponseSchema.safeParse(data)
   if (!parsed.success) {
-    captureException(parsed.error, { tags: { area: 'cloud-workspace', op: 'discover-parse' } })
-    throw new CloudWorkspaceError('The platform returned an unexpected response.', 502)
+    throw new CloudWorkspaceError('The platform returned an unexpected response.', 502, {
+      cause: parsed.error,
+    })
   }
   return parsed.data
 }
@@ -105,8 +112,9 @@ export async function requestDeploymentGrant(token: string, resourceUrl: string)
   try {
     res = await postForm(`${issuer}${DEPLOYMENT_ASSERTION_PATH}`, form)
   } catch (error) {
-    captureException(error, { tags: { area: 'cloud-workspace', op: 'grant-fetch' } })
-    throw new CloudWorkspaceError('Could not reach the platform auth server.', 502)
+    throw new CloudWorkspaceError('Could not reach the platform auth server.', 502, {
+      cause: error,
+    })
   }
   if (!res.ok) {
     throw new CloudWorkspaceError(`Grant request failed (${res.status}).`, res.status)
@@ -114,8 +122,9 @@ export async function requestDeploymentGrant(token: string, resourceUrl: string)
   const data = await res.json().catch(() => null)
   const parsed = DeploymentGrantResponseSchema.safeParse(data)
   if (!parsed.success) {
-    captureException(parsed.error, { tags: { area: 'cloud-workspace', op: 'grant-parse' } })
-    throw new CloudWorkspaceError('The platform returned an unexpected grant response.', 502)
+    throw new CloudWorkspaceError('The platform returned an unexpected grant response.', 502, {
+      cause: parsed.error,
+    })
   }
   return parsed.data.access_token
 }
@@ -146,8 +155,7 @@ export async function exchangeGrantAtDeployment(
   try {
     res = await mcpSafeFetch(`${base}${DEPLOYMENT_TOKEN_EXCHANGE_PATH}`, formInit(form), policy)
   } catch (error) {
-    captureException(error, { tags: { area: 'cloud-workspace', op: 'exchange-fetch' } })
-    throw new CloudWorkspaceError('Could not reach the cloud deployment.', 502)
+    throw new CloudWorkspaceError('Could not reach the cloud deployment.', 502, { cause: error })
   }
   if (!res.ok) {
     // Older deployments without the token-exchange endpoint 404/400 here — the
@@ -157,8 +165,9 @@ export async function exchangeGrantAtDeployment(
   const data = await res.json().catch(() => null)
   const parsed = DeploymentTokenResponseSchema.safeParse(data)
   if (!parsed.success) {
-    captureException(parsed.error, { tags: { area: 'cloud-workspace', op: 'exchange-parse' } })
-    throw new CloudWorkspaceError('The deployment returned an unexpected token response.', 502)
+    throw new CloudWorkspaceError('The deployment returned an unexpected token response.', 502, {
+      cause: parsed.error,
+    })
   }
   return { token: parsed.data.access_token, expiresInSec: parsed.data.expires_in }
 }

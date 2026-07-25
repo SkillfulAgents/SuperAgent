@@ -54,7 +54,10 @@ export const DeploymentGrantResponseSchema = z.object({
   access_token: z.string().min(1),
   issued_token_type: z.string(),
   token_type: z.string(),
-  expires_in: z.number(),
+  // Positive integer seconds. A zero/negative lifetime would persist a record
+  // that's already expired and churn a re-mint on every maintenance cycle, so
+  // reject it at the boundary instead.
+  expires_in: z.number().int().positive(),
 })
 
 /**
@@ -64,5 +67,8 @@ export const DeploymentGrantResponseSchema = z.object({
 export const DeploymentTokenResponseSchema = z.object({
   access_token: z.string().min(1),
   token_type: z.string(),
-  expires_in: z.number(),
+  // Positive integer seconds. A zero/negative lifetime would persist a record
+  // that's already expired and churn a re-mint on every maintenance cycle, so
+  // reject it at the boundary instead.
+  expires_in: z.number().int().positive(),
 })

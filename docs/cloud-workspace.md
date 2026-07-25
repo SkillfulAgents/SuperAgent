@@ -77,6 +77,10 @@ is deliberately **fully defensive — it never throws**; any failure degrades to
 - **found / not-found is driven by discovery**, decoupled from token success — an
   older deployment without the exchange endpoint still shows as found; the token
   just isn't minted (`hasValidToken: false`).
+- **Scoped to the acting org.** `/v1/me/deployments` answers for the *user*, who
+  may belong to several orgs, so entries are filtered to the org the app is
+  currently connected as. Another org's workspace would render an "Open" link
+  this account can't use and a grant the platform would refuse.
 - **"No workspace" and "couldn't check" are different answers.** A discovery
   that fails (unreachable, 401, malformed) returns `discoveryFailed: true`, and
   the card offers a retry. Only a *successful* discovery listing none shows the
@@ -97,6 +101,14 @@ is deliberately **fully defensive — it never throws**; any failure degrades to
 - Maintenance runs on boot, on connect, on Account-tab view, **and** on a
   low-frequency background poll in `PlatformService`, so a long-lived app stays
   valid without an Account visit.
+- **Failures are reported once per process, from the service only.** Because
+  maintenance re-runs every 30 minutes and the things that break it are usually
+  persistent (offline, a token that isn't member-bound, a deployment too old to
+  have the exchange endpoint), capturing every cycle would turn one broken
+  install into a stream of identical Sentry events. The client never captures —
+  it attaches the underlying error as `cause` on `CloudWorkspaceError` and
+  throws; `reportFailureOnce` in the service dedupes by op + status. Don't add a
+  `captureException` to the client.
 
 ## Electron-only, by design
 
