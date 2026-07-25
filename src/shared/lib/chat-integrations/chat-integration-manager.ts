@@ -1557,7 +1557,7 @@ class ChatIntegrationManager {
           const key = `${chatSession.integrationId}:${chatSession.externalChatId}`
           const managed = this.chatSessions.get(key)
           if (managed) {
-            await managed.connector.sendUserRequestCard(managed.chatId, card)
+            await managed.connector.sendUserRequestCard(managed.chatId, card, sessionId)
             return
           }
         }

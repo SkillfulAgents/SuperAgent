@@ -85,10 +85,12 @@ describe('resolveAppLinkContext', () => {
     })
   })
 
-  it('falls back to the superagent scheme when SUPERAGENT_PROTOCOL is unset', () => {
+  it('falls back to the superagent scheme when SUPERAGENT_PROTOCOL is unset or empty', () => {
     ;(process as { type?: string }).type = 'browser'
     delete process.env.SUPERAGENT_PROTOCOL
+    expect(resolveAppLinkContext('demo').url).toBe('superagent://agent/demo')
 
+    process.env.SUPERAGENT_PROTOCOL = ''
     expect(resolveAppLinkContext('demo').url).toBe('superagent://agent/demo')
   })
 

@@ -133,7 +133,9 @@ export interface AppLinkContext {
  */
 export function resolveAppLinkContext(agentSlug: string): AppLinkContext {
   if (process.type === 'browser') {
-    const scheme = process.env.SUPERAGENT_PROTOCOL ?? 'superagent'
+    // `||`, not `??`: an empty value must fall back too, or the link degrades to
+    // a scheme-less `://agent/…` that chat clients still render as a dead link.
+    const scheme = process.env.SUPERAGENT_PROTOCOL || 'superagent'
     return { isDesktop: true, url: `${scheme}://agent/${encodeURIComponent(agentSlug)}` }
   }
   const base = process.env.HOST_PUBLIC_URL?.trim().replace(/\/+$/, '')

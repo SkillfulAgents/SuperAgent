@@ -1027,8 +1027,10 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     return
   }
 
-  // Agent deep link — session-bearing links navigate directly (ready-gated);
-  // slug-only links keep the legacy fetch-latest flow.
+  // Agent deep link — session-bearing links navigate straight to the session;
+  // slug-only links resolve the agent's latest session first. Both bring the
+  // window up the same way, so a link that arrives after the window was closed
+  // recreates it instead of being dropped.
   const agentLink = parseAgentDeepLink(url, PROTOCOL_SCHEME)
   if (agentLink) {
     if (agentLink.sessionId) {
@@ -1037,20 +1039,25 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     }
     try {
       const slug = agentLink.agentSlug
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show()
-        mainWindow.focus()
-        fetch(`http://localhost:${actualApiPort}/api/agents/${slug}/sessions`)
-          .then(res => res.ok ? res.json() : [])
-          .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
-            const active = sessions.find(s => s.isActive)
-            const latest = active ?? sessions[0]
-            mainWindow!.webContents.send('navigate-to-agent', slug, latest?.id ?? null)
-          })
-          .catch(() => {
-            mainWindow!.webContents.send('navigate-to-agent', slug, null)
-          })
-      }
+      showOrCreateMainWindow()
+      fetch(`http://localhost:${actualApiPort}/api/agents/${encodeURIComponent(slug)}/sessions`)
+        .then(res => res.ok ? res.json() : [])
+        .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
+          if (!Array.isArray(sessions)) return null
+          const active = sessions.find(s => s.isActive)
+          return (active ?? sessions[0])?.id ?? null
+        })
+        .catch(() => null)
+        .then((sessionId: string | null) => {
+          sendToMainWindowWhenReady((win) =>
+            win.webContents.send('navigate-to-agent', slug, sessionId),
+          )
+        })
+        // Terminal catch: an unhandled rejection here is fatal (the process-level
+        // handler quits the app), and a failed deep link must never do that.
+        .catch((error) => {
+          console.error('Failed to navigate to agent from deep link:', error)
+        })
     } catch (error) {
       console.error('Failed to navigate to agent from deep link:', error)
     }

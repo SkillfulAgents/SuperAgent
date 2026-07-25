@@ -838,6 +838,10 @@ export class SlackConnector extends ChatClientConnector {
     const threadOpt = threadTs ? { thread_ts: threadTs } : {}
 
     if (isUnsupportedInChat(event)) {
+      // Sent unwrapped, NOT as `_…_` italic: the notice ends in a URL, and Slack
+      // refuses to render italic when a URL abuts the closing underscore — the
+      // markers leak into the message as literal characters. mrkdwn still
+      // auto-links the URL.
       const result = await this.app.client.chat.postMessage({
         channel,
         text: describeUnsupportedRequest(event, appLink),
@@ -934,6 +938,7 @@ export class SlackConnector extends ChatClientConnector {
       }
 
       default: {
+        // Unwrapped for the same reason as the isUnsupportedInChat branch above.
         const result = await this.app.client.chat.postMessage({
           channel,
           text: describeUnsupportedRequest(event, appLink),
