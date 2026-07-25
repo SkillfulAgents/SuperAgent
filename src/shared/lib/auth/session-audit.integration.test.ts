@@ -314,6 +314,145 @@ describe('token exchange', () => {
   })
 })
 
+/**
+ * The audit row answers "how did this session come to exist" for a reader.
+ * The `creation_method` column answers it for *code*, on a later request, when
+ * the endpoint context and the async-local tag are long gone — which is what
+ * the concurrent-session cap needs.
+ */
+describe('persisted creation method', () => {
+  interface SessionRow {
+    id: string
+    user_id: string
+    creation_method: string | null
+  }
+
+  function sessionRows(): SessionRow[] {
+    return dbModule.sqlite
+      .prepare(`SELECT id, user_id, creation_method FROM session ORDER BY rowid`)
+      .all() as SessionRow[]
+  }
+
+  it('stamps a password login onto the session row', async () => {
+    await authModule.getAuth().api.signUpEmail({
+      body: { email: 'stamp@example.com', password: PASSWORD, name: 'Stamp' },
+    })
+
+    expect(sessionRows().map((r) => r.creation_method)).toEqual(['password'])
+  })
+
+  it('stamps a token exchange onto the session row', async () => {
+    expect((await exchange(await signGrant())).status).toBe(200)
+
+    expect(sessionRows().map((r) => r.creation_method)).toEqual(['token-exchange'])
+  })
+
+  it('stamps an impersonation onto the session row', async () => {
+    const auth = authModule.getAuth()
+    await auth.api.signUpEmail({
+      body: { email: 'admin2@example.com', password: PASSWORD, name: 'Admin' },
+    })
+    await auth.api.signUpEmail({
+      body: { email: 'target2@example.com', password: PASSWORD, name: 'Target' },
+    })
+    const signIn = await auth.api.signInEmail({
+      body: { email: 'admin2@example.com', password: PASSWORD },
+      asResponse: true,
+    })
+    const targetId = (
+      dbModule.sqlite.prepare(`SELECT id FROM user WHERE email = ?`).get('target2@example.com') as {
+        id: string
+      }
+    ).id
+
+    await auth.api.impersonateUser({
+      body: { userId: targetId },
+      headers: new Headers({ authorization: `Bearer ${signIn.headers.get('set-auth-token')}` }),
+    })
+
+    expect(sessionRows().at(-1)!.creation_method).toBe('impersonation')
+  })
+
+  it('agrees with the audit row about the same session', async () => {
+    // Both derive from one function. If they ever disagree, one of the two
+    // readings of "how did this session come to exist" is wrong, and there is
+    // no way to tell which.
+    expect((await exchange(await signGrant())).status).toBe(200)
+
+    const [session] = sessionRows()
+    const [audit] = auditRows('session')
+    expect(audit.object_id).toBe(session.id)
+    expect(detailsOf(audit).method).toBe(session.creation_method)
+  })
+})
+
+describe('concurrent-session cap', () => {
+  const CAP = 2
+
+  function liveSessions(userId: string): { id: string; creation_method: string | null }[] {
+    return dbModule.sqlite
+      .prepare(`SELECT id, creation_method FROM session WHERE user_id = ? ORDER BY created_at`)
+      .all(userId) as { id: string; creation_method: string | null }[]
+  }
+
+  async function seedUserAtCap(): Promise<string> {
+    fs.writeFileSync(
+      path.join(tmpDir, 'settings.json'),
+      JSON.stringify({ auth: { requireAdminApproval: false, maxConcurrentSessions: CAP } }),
+    )
+    const { clearSettingsCache } = await import('@shared/lib/config/settings')
+    clearSettingsCache()
+
+    const auth = authModule.getAuth()
+    // The exchange provisions this same identity from the grant's email, so
+    // the desktop session and the browser logins land on one user.
+    await auth.api.signUpEmail({
+      body: { email: 'member@example.com', password: PASSWORD, name: 'Member One' },
+    })
+    return (
+      dbModule.sqlite.prepare(`SELECT id FROM user WHERE email = ?`).get('member@example.com') as {
+        id: string
+      }
+    ).id
+  }
+
+  it('keeps the exchanged session alive through repeated browser logins', async () => {
+    // The regression this guards: the exchanged session is the oldest, so
+    // oldest-first eviction takes it, the client re-mints, and that re-mint
+    // evicts a browser session — a loop that costs the user a session a day.
+    const userId = await seedUserAtCap()
+    expect((await exchange(await signGrant())).status).toBe(200)
+    const exchanged = liveSessions(userId).find((s) => s.creation_method === 'token-exchange')!
+
+    const auth = authModule.getAuth()
+    for (let i = 0; i < CAP + 2; i++) {
+      await auth.api.signInEmail({ body: { email: 'member@example.com', password: PASSWORD } })
+    }
+
+    const remaining = liveSessions(userId)
+    expect(remaining.map((s) => s.id)).toContain(exchanged.id)
+    // Everything else is still held to the cap.
+    expect(remaining.filter((s) => s.creation_method !== 'token-exchange')).toHaveLength(CAP)
+  })
+
+  it('does not spend a slot on the exchanged session', async () => {
+    // Installing the app must not cost the user a browser session.
+    const userId = await seedUserAtCap()
+    const auth = authModule.getAuth()
+    for (let i = 0; i < CAP - 1; i++) {
+      await auth.api.signInEmail({ body: { email: 'member@example.com', password: PASSWORD } })
+    }
+    const beforeIds = liveSessions(userId).map((s) => s.id)
+
+    expect((await exchange(await signGrant())).status).toBe(200)
+
+    const after = liveSessions(userId)
+    // Every prior session survives, and the only addition is the exchange.
+    expect(after.map((s) => s.id)).toEqual(expect.arrayContaining(beforeIds))
+    expect(after).toHaveLength(beforeIds.length + 1)
+  })
+})
+
 describe('symmetry', () => {
   it('makes both credential sources visible in one filterable object', async () => {
     const auth = authModule.getAuth()
