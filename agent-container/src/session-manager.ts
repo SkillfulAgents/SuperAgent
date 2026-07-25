@@ -425,7 +425,6 @@ export class SessionManager extends EventEmitter {
     if (!this.prewarmEnabled || this.shuttingDown) return;
 
     const key = warmProfileKey(profile);
-    const generation = this.warmGeneration;
     // Recorded even when a warm-up is already in flight, so that one can see
     // it has been superseded and hand over to this profile when it lands.
     this.desiredWarmKey = key;
@@ -440,6 +439,11 @@ export class SessionManager extends EventEmitter {
       await this.discardPrewarmed('wanted profile changed');
     }
     if (this.warming) return;
+
+    // Captured here, AFTER any discard above: discardPrewarmed bumps the
+    // generation, so reading it earlier would make this spawn reject itself on
+    // arrival and leave the next session cold.
+    const generation = this.warmGeneration;
     const promise = (async () => {
       const process = new ClaudeCodeProcess({
         sessionId: uuidv4(),

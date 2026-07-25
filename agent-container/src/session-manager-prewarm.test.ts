@@ -104,6 +104,8 @@ vi.mock('./claude-code', () => ({
 }))
 
 import { SessionManager } from './session-manager'
+import { nextWarmProfileFromRequest } from './warm-profile'
+import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies'
 
 const baseRequest = {
   initialMessage: 'hello',
@@ -114,6 +116,18 @@ const baseRequest = {
 describe('SessionManager pre-warm pool', () => {
   let manager: SessionManager
   let workDir: string
+
+  // Built through the same normalization createSession uses, so a profile
+  // handed to prewarm() directly keys identically to one derived from a
+  // request — otherwise the claim would miss for reasons unrelated to the test.
+  const profileFor = (model: string) =>
+    nextWarmProfileFromRequest({
+      ...baseRequest,
+      model,
+      workingDirectory: workDir,
+      speed: speedLevelSchema.parse(undefined),
+      capabilityPolicies: agentCapabilityPoliciesSchema.parse(undefined),
+    })
 
   beforeEach(() => {
     workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'prewarm-test-'))
@@ -180,6 +194,31 @@ describe('SessionManager pre-warm pool', () => {
     const replacement = MockClaudeProcess.spawned.at(-1)!
     expect(replacement.options.model).toBe('claude-sonnet-5')
     expect(replacement.prewarmCalls).toBe(1)
+    // Spawning it is not enough — it has to survive to be claimed. Discarding
+    // the stale process bumps the warm generation, so a replacement that
+    // captured the generation too early rejects itself on the way in and the
+    // next session pays a cold start anyway.
+    expect(replacement.disposeCalls).toBe(0)
+  })
+
+  // Reachable when two session creations overlap and refill for different
+  // profiles: the second refill finds the first one's process already parked.
+  it('parks a replacement that was spawned while another profile was parked', async () => {
+    await manager.prewarm(profileFor('claude-opus-4-8'))
+    const stale = MockClaudeProcess.spawned.at(-1)!
+
+    await manager.prewarm(profileFor('claude-sonnet-5'))
+    const replacement = MockClaudeProcess.spawned.at(-1)!
+
+    expect(stale.disposeCalls).toBe(1)
+    expect(replacement.disposeCalls).toBe(0)
+    // Claimable: the session it was warmed for gets it instead of starting cold.
+    const session = await manager.createSession({
+      ...baseRequest,
+      prewarmDefaults: { model: 'claude-sonnet-5' },
+      model: 'claude-sonnet-5',
+    })
+    expect(session.id).toBe(replacement.sessionId)
   })
 
   // Without a hint (cron, chat, cross-agent) the session's own shape is still
