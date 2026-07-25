@@ -536,8 +536,14 @@ class ContainerManager {
 
       // Build account metadata (names + IDs, no tokens)
       const accountMetadata: Record<string, Array<{ name: string; id: string }>> = {}
-      for (const { account } of accountMappings) {
-        if (account.status !== 'active') continue
+      const activeAccounts = accountMappings
+        .map(({ account }) => account)
+        .filter((account) => account.status === 'active')
+        .sort((a, b) =>
+          a.toolkitSlug.localeCompare(b.toolkitSlug) ||
+          a.id.localeCompare(b.id)
+        )
+      for (const account of activeAccounts) {
         if (!accountMetadata[account.toolkitSlug]) {
           accountMetadata[account.toolkitSlug] = []
         }
@@ -556,8 +562,10 @@ class ContainerManager {
         .where(eq(agentRemoteMcps.agentSlug, agentId))
 
       const mcpConfigs = mcpMappings
-        .filter(({ mcp }) => mcp.status === 'active')
-        .map(({ mcp }) => {
+        .map(({ mcp }) => mcp)
+        .filter((mcp) => mcp.status === 'active')
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((mcp) => {
           // Only pass tool names (not full schemas) to keep env var size small
           let toolNames: Array<{ name: string }> = []
           if (mcp.toolsJson) {
@@ -1176,4 +1184,3 @@ if (process.env.NODE_ENV !== 'production') {
 // Note: Graceful shutdown handlers are registered in the application entry point
 // (src/main/index.ts for Electron, src/web/server.ts for web)
 // This avoids side effects at module import time and allows proper cleanup coordination
-

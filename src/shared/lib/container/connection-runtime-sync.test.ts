@@ -159,6 +159,17 @@ describe('connection runtime synchronization', () => {
     ).resolves.toBe(false)
   })
 
+  it('reports a rejected env update without throwing', async () => {
+    mockWhere.mockResolvedValue([])
+    mockFetch.mockResolvedValue(
+      new Response('container unavailable', { status: 502 }),
+    )
+
+    await expect(
+      syncAgentConnectionEnvironment('agent-1', 'connected-accounts'),
+    ).resolves.toBe(false)
+  })
+
   it('does not contact a stopped container because startup rebuilds the projection', async () => {
     mockGetCachedInfo.mockReturnValue({ status: 'stopped', port: null })
 

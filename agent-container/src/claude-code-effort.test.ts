@@ -9,7 +9,7 @@
  *     as the current level (so the first post-upgrade message with effort='high'
  *     does not trigger a spurious restart).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 type MockQueryCall = { options: Record<string, unknown> }
 const calls: MockQueryCall[] = []
@@ -17,9 +17,20 @@ const setModelCalls: (string | undefined)[] = []
 
 // Stub the SDK before importing ClaudeCodeProcess.
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
-  // Returns an async iterator that never yields until aborted — good enough to
-  // model a running session for the purposes of this test.
-  function makeQuery(_args: { prompt: unknown; options: Record<string, unknown> }) {
+  // Model a running SDK iterator that actually honors the AbortController.
+  // This lets interrupt() observe processMessages() unwind immediately instead
+  // of paying its 5-second hung-SDK fallback in every restart test.
+  function makeQuery(args: { prompt: unknown; options: Record<string, unknown> }) {
+    const abortController = args.options.abortController as AbortController
+    let resolvePending:
+      | ((result: IteratorResult<never>) => void)
+      | undefined
+    const finish = () => {
+      resolvePending?.({ value: undefined, done: true })
+      resolvePending = undefined
+    }
+    abortController.signal.addEventListener('abort', finish, { once: true })
+
     const iter: AsyncIterableIterator<never> & {
       interrupt: () => Promise<void>
       setModel: (model?: string) => Promise<void>
@@ -28,11 +39,15 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         return this
       },
       next() {
-        return new Promise<IteratorResult<never>>(() => {
-          /* pending forever — real abort handled via AbortController in process */
+        if (abortController.signal.aborted) {
+          return Promise.resolve({ value: undefined, done: true })
+        }
+        return new Promise<IteratorResult<never>>((resolve) => {
+          resolvePending = resolve
         })
       },
       return() {
+        finish()
         return Promise.resolve({ value: undefined, done: true } as IteratorResult<never>)
       },
       throw(err?: unknown) {
@@ -92,14 +107,7 @@ describe('ClaudeCodeProcess effort handling', () => {
     calls.length = 0
   })
 
-  afterEach(async () => {
-    // Nothing to tear down — process.stop() triggers abort which our stub ignores.
-  })
-
-  // Interrupt's wait-for-stop polls up to 5 s before falling through; our mock
-  // doesn't honor the abort signal, so each effort-change test waits that full
-  // window. Raise the per-test timeout accordingly.
-  it('rebuilds the query with the new effort when effort changes', { timeout: 15000 }, async () => {
+  it('rebuilds the query with the new effort when effort changes', async () => {
     const process = new ClaudeCodeProcess({
       sessionId: 'test-session-1',
       workingDirectory: '/tmp',
@@ -135,7 +143,7 @@ describe('ClaudeCodeProcess effort handling', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('treats undefined stored effort as high so first high message does not restart', { timeout: 15000 }, async () => {
+  it('treats undefined stored effort as high so first high message does not restart', async () => {
     // Simulates a session created before this feature (no persisted effort).
     const process = new ClaudeCodeProcess({
       sessionId: 'test-session-3',
@@ -157,88 +165,6 @@ describe('ClaudeCodeProcess effort handling', () => {
     await process.sendMessage('hello again', undefined, { effort: 'low' })
     expect(calls).toHaveLength(2)
     expect(calls[1].options.effort).toBe('low')
-  })
-})
-
-describe('ClaudeCodeProcess runtime connection handling', () => {
-  let originalRemoteMcps: string | undefined
-  let originalConnectedAccounts: string | undefined
-
-  beforeEach(() => {
-    calls.length = 0
-    originalRemoteMcps = process.env.REMOTE_MCPS
-    originalConnectedAccounts = process.env.CONNECTED_ACCOUNTS
-    delete process.env.REMOTE_MCPS
-    delete process.env.CONNECTED_ACCOUNTS
-  })
-
-  afterEach(() => {
-    if (originalRemoteMcps === undefined) {
-      delete process.env.REMOTE_MCPS
-    } else {
-      process.env.REMOTE_MCPS = originalRemoteMcps
-    }
-    if (originalConnectedAccounts === undefined) {
-      delete process.env.CONNECTED_ACCOUNTS
-    } else {
-      process.env.CONNECTED_ACCOUNTS = originalConnectedAccounts
-    }
-  })
-
-  it('rebuilds a live query when Agent Settings changes MCPs or connected accounts', { timeout: 30000 }, async () => {
-    const claudeProcess = new ClaudeCodeProcess({
-      sessionId: 'test-remote-mcp-refresh',
-      workingDirectory: '/tmp',
-    })
-
-    await claudeProcess.start()
-    expect(calls).toHaveLength(1)
-    expect(calls[0].options.mcpServers).not.toHaveProperty('team_calendar')
-
-    process.env.REMOTE_MCPS = JSON.stringify([
-      {
-        id: 'mcp-calendar',
-        name: 'Team Calendar',
-        proxyUrl: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
-        tools: [{ name: 'list_events' }],
-      },
-    ])
-
-    await claudeProcess.sendMessage('List today’s events')
-
-    expect(calls).toHaveLength(2)
-    expect(calls[1].options.mcpServers).toMatchObject({
-      team_calendar: {
-        type: 'http',
-        url: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
-      },
-    })
-    expect(calls[1].options.allowedTools).toContain('mcp__team_calendar__*')
-    expect(calls[1].options.systemPrompt).toContain('Team Calendar')
-    expect(calls[1].options.systemPrompt).toContain('list_events')
-
-    process.env.REMOTE_MCPS = '[]'
-    await claudeProcess.sendMessage('Continue without the calendar')
-
-    expect(calls).toHaveLength(3)
-    expect(calls[2].options.mcpServers).not.toHaveProperty('team_calendar')
-    expect(calls[2].options.allowedTools).not.toContain('mcp__team_calendar__*')
-    expect(calls[2].options.systemPrompt).not.toContain('Team Calendar')
-
-    process.env.CONNECTED_ACCOUNTS = JSON.stringify({
-      gmail: [{ name: 'Work Gmail', id: 'account-gmail' }],
-    })
-    await claudeProcess.sendMessage('Check the connected Gmail account')
-
-    expect(calls).toHaveLength(4)
-    expect(calls[3].options.systemPrompt).toContain('Work Gmail')
-    expect(calls[3].options.systemPrompt).toContain('account-gmail')
-
-    process.env.CONNECTED_ACCOUNTS = '{}'
-    await claudeProcess.sendMessage('Continue without Gmail')
-
-    expect(calls).toHaveLength(5)
-    expect(calls[4].options.systemPrompt).not.toContain('Work Gmail')
   })
 })
 

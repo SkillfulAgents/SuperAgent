@@ -658,6 +658,10 @@ describe('SUP-199: remote MCP assignment ownership (AUTH_MODE)', () => {
     })
 
     expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      success: true,
+      liveRefresh: false,
+    })
     expect(mockDbInsertValues).toHaveBeenCalledTimes(1)
     expect(mockDbInsertValues).toHaveBeenCalledWith([
       expect.objectContaining({ agentSlug: 'my-agent', remoteMcpId: 'my-mcp-id' }),
@@ -737,6 +741,7 @@ describe('unlink ownership: cross-user account/MCP unlink from a shared agent (A
       method: 'DELETE',
     })
     expect(res.status).toBe(204)
+    expect(res.headers.get('X-Superagent-Live-Refresh')).toBe('false')
     expect(mockDbDeleteWhere).toHaveBeenCalledTimes(1)
   })
 })
