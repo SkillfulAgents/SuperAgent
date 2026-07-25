@@ -167,12 +167,12 @@ describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () =>
     const mgr = chatIntegrationManager as unknown as {
       getChatSessionKey: (i: string, c: string) => string
       chatSessions: Map<string, unknown>
-      handleSSEEvent: (i: string, c: string, e: unknown) => Promise<void>
+      handleSSEEvent: (i: string, c: string, e: unknown, sessionId: string) => Promise<void>
     }
     const key = mgr.getChatSessionKey(INT, 'chat-denied')
     mgr.chatSessions.set(key, { chatId: 'chat-denied', integrationId: INT })
 
-    await mgr.handleSSEEvent(INT, 'chat-denied', { type: 'assistant' })
+    await mgr.handleSSEEvent(INT, 'chat-denied', { type: 'assistant' }, 'sess-test')
 
     // The fail-closed guard returns before reading integration config or forwarding.
     expect(mockGetChatIntegration).not.toHaveBeenCalled()
