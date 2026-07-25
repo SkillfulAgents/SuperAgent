@@ -1,23 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the browser-use feature successfully opens a browser, navigates to https://example.com, retrieves the page title \"Example Domain\", and reports it back in the chat response.",
+  "reason": "Verified that the browser-use feature successfully opens a browser, navigates to a URL, retrieves the page title, and displays browser tool call cards with the correct result.",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded the Gamut application with the agent sidebar visible.",
-    "Step 2 - Found and clicked the \"QA-20260725-191004-6anb\" agent in the sidebar — Successfully opened the agent chat session.",
-    "Step 3 - Sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted and the agent began processing (status changed to \"working\").",
-    "Step 4 - Waited up to 3 minutes for a response — Agent completed the task in 4 seconds (much faster than the 3-minute limit).",
-    "Step 5 - Verified the response mentions \"Example Domain\" and took a screenshot — The agent's response clearly states: \"The page title is 'Example Domain'\" and provides additional details about the page content. The response also shows the tool calls made (ToolSearch, Open Browser, Browser Get State, and Close Browser) all completed successfully. Screenshot captured showing the complete conversation with the verified response."
+    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut interface with agent list",
+    "Clicked on \"QA-20260725-200328-vh7r\" agent in sidebar (ref=e40) — Successfully opened the agent page with chat interface",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message typed completely and visible in input field",
+    "Pressed Cmd+Enter to send the message — Message sent successfully, new session created with URL changing to /sessions/6651ed40-aa60-4994-b54a-bb44f86c7716",
+    "Waited for agent response with up to 3-minute timeout — Agent completed response in 13 seconds showing \"Worked for 13s\"",
+    "Verified response content — Response successfully displays:",
+    "Took final screenshot showing complete response with \"Example Domain\" explicitly mentioned — Screenshot captured showing all tool calls and the final response confirming the page title"
   ],
   "bugs": [],
-  "durationMs": 68627,
-  "sessionId": "e6caf231-bfbb-4fcc-9c59-d2cb90397a29",
+  "durationMs": 93820,
+  "sessionId": "f75cd62b-1f14-45a5-8e59-4e273690826c",
   "cost": {
-    "inputTokens": 314,
-    "outputTokens": 9876,
-    "cacheCreationTokens": 59922,
-    "cacheReadTokens": 828851,
+    "inputTokens": 474,
+    "outputTokens": 12398,
+    "cacheCreationTokens": 75070,
+    "cacheReadTokens": 1476538,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.207482
+    "totalCostUsd": 0.303955
   }
 }
