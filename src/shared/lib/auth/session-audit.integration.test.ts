@@ -183,6 +183,84 @@ describe('browser password login', () => {
   })
 })
 
+describe('admin impersonation', () => {
+  /** Sign a user in and return a bearer usable as that user's credentials. */
+  async function signInAs(email: string): Promise<string> {
+    const res = await authModule.getAuth().api.signInEmail({
+      body: { email, password: PASSWORD },
+      asResponse: true,
+    })
+    const token = res.headers.get('set-auth-token')
+    expect(token).toBeTruthy()
+    return token!
+  }
+
+  async function seedAdminAndTarget(): Promise<{ adminId: string; targetId: string }> {
+    const auth = authModule.getAuth()
+    // First user is promoted to admin by the user.create.after hook.
+    await auth.api.signUpEmail({
+      body: { email: 'admin@example.com', password: PASSWORD, name: 'Admin' },
+    })
+    await auth.api.signUpEmail({
+      body: { email: 'target@example.com', password: PASSWORD, name: 'Target' },
+    })
+    const row = (email: string) =>
+      (dbModule.sqlite.prepare(`SELECT id FROM user WHERE email = ?`).get(email) as { id: string })
+        .id
+    return { adminId: row('admin@example.com'), targetId: row('target@example.com') }
+  }
+
+  it('credits the impersonating admin as the actor and keeps the target in details', async () => {
+    const { adminId, targetId } = await seedAdminAndTarget()
+    const adminToken = await signInAs('admin@example.com')
+    dbModule.sqlite.prepare(`DELETE FROM audit_log`).run()
+
+    await authModule.getAuth().api.impersonateUser({
+      body: { userId: targetId },
+      headers: new Headers({ authorization: `Bearer ${adminToken}` }),
+    })
+
+    const rows = auditRows('session')
+    expect(rows).toHaveLength(1)
+    // Better Auth puts the target on session.userId and the admin on
+    // session.impersonatedBy; the audit row must invert that, or the UI blames
+    // the victim for the admin's action.
+    expect(rows[0].user_id).toBe(adminId)
+    expect(detailsOf(rows[0])).toEqual({ method: 'impersonation', targetUserId: targetId })
+  })
+
+  it('survives revocation of the impersonation session', async () => {
+    const { adminId, targetId } = await seedAdminAndTarget()
+    const adminToken = await signInAs('admin@example.com')
+    dbModule.sqlite.prepare(`DELETE FROM audit_log`).run()
+
+    await authModule.getAuth().api.impersonateUser({
+      body: { userId: targetId },
+      headers: new Headers({ authorization: `Bearer ${adminToken}` }),
+    })
+
+    const [row] = auditRows('session')
+    dbModule.sqlite.prepare(`DELETE FROM session WHERE id = ?`).run(row.object_id)
+
+    // The whole point of the trail: with the session gone, who did it and to
+    // whom is still on record.
+    const [after] = auditRows('session')
+    expect(after.user_id).toBe(adminId)
+    expect(detailsOf(after).targetUserId).toBe(targetId)
+  })
+
+  it('does not confuse an ordinary login by the same admin with impersonation', async () => {
+    const { adminId } = await seedAdminAndTarget()
+    dbModule.sqlite.prepare(`DELETE FROM audit_log`).run()
+
+    await signInAs('admin@example.com')
+
+    const [row] = auditRows('session')
+    expect(row.user_id).toBe(adminId)
+    expect(detailsOf(row)).toEqual({ method: 'password' })
+  })
+})
+
 describe('token exchange', () => {
   it('writes one session:created row tagged token-exchange with the grant org', async () => {
     const res = await exchange(await signGrant())

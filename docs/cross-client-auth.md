@@ -148,15 +148,26 @@ and would make the exchange look anomalous. All paths land in the one
 
 | Field | Value |
 | --- | --- |
-| `method` | `password` (`/sign-in/email`, `/sign-up/email`), `oidc` (`/callback/:id`, `/oauth2/callback/:providerId`), `impersonation` (`/admin/impersonate-user`), `token-exchange`, or `unknown` |
+| `method` | `password` (`/sign-in/email`, `/sign-up/email`), `oidc` (`/callback/:id`, `/oauth2/callback/:providerId`), `impersonation`, `token-exchange`, or `unknown` |
 | `orgId` | Only for `token-exchange` — the grant's `org_id`. Omitted otherwise |
+| `targetUserId` | Only for `impersonation` — the impersonated user (see below) |
 
 No token, assertion, `jti`, email, name, IP, or user-agent ever reaches
-`details`. The user is identified by the row's `userId` foreign key; the
+`details`. People are identified by id (foreign keys the audit UI resolves); the
 user-agent already lives on the session row for the sessions list, and copying
 attacker-controlled text into a durable trail would add surface without adding
 information. `method` is also the client distinction — it is the granularity we
 can actually verify, unlike a label parsed out of a `User-Agent` string.
+
+**Impersonation inverts actor and subject.** Better Auth puts the impersonated
+user on `session.userId` and the admin who initiated it on
+`session.impersonatedBy`. Every other audit row treats `userId` as the actor, so
+recording the session as-is would blame the target for a privileged action taken
+against them — and revoking the session would take the only trace of who did it
+with it. The audit row therefore records the **admin** as `userId` and the target
+as `details.targetUserId`. The `impersonatedBy` column, not the endpoint path, is
+what identifies these: it is what the plugin actually wrote, and it carries the
+actor the path cannot.
 
 Endpoint paths are matched **exactly**, against the registered path templates
 Better Auth puts on the hook context. A path that stops minting sessions

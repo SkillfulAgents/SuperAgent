@@ -101,6 +101,39 @@ describe('auditSessionCreated', () => {
     expect(Object.keys(logAuditEventMock.mock.calls[0][0].details)).toEqual(['method'])
   })
 
+  it('credits the impersonating admin as the actor, not the impersonated user', async () => {
+    await auditSessionCreated(
+      { id: 'sess_imp', userId: 'target_user', impersonatedBy: 'admin_user' },
+      '/admin/impersonate-user',
+    )
+
+    expect(logAuditEventMock).toHaveBeenCalledWith({
+      userId: 'admin_user',
+      object: 'session',
+      objectId: 'sess_imp',
+      action: 'created',
+      details: { method: 'impersonation', targetUserId: 'target_user' },
+    })
+  })
+
+  it('recognizes impersonation from the session column even without the path', async () => {
+    await auditSessionCreated({ id: 'sess_imp', userId: 'target', impersonatedBy: 'admin' })
+
+    const call = logAuditEventMock.mock.calls[0][0]
+    expect(call.userId).toBe('admin')
+    expect(call.details.method).toBe('impersonation')
+  })
+
+  it('treats an absent or blank impersonatedBy as an ordinary session', async () => {
+    await auditSessionCreated({ ...SESSION, impersonatedBy: '' }, '/sign-in/email')
+    await auditSessionCreated({ ...SESSION, impersonatedBy: null }, '/sign-in/email')
+
+    for (const [call] of logAuditEventMock.mock.calls) {
+      expect(call.userId).toBe('user_1')
+      expect(call.details).toEqual({ method: 'password' })
+    }
+  })
+
   it('never carries anything beyond the attribution into details', async () => {
     await auditSessionCreated(SESSION, '/oauth2/callback/:providerId')
 
