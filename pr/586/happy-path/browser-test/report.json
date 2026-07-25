@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the information in the chat response.",
+  "reason": "Verified browser use feature - agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the response.",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded the application homepage showing \"Your Agents\" section with available agents.",
-    "Step 2 - Clicked on agent \"QA-20260725-230106-4137\" in the sidebar — Successfully opened the agent chat interface with URL changing to /agents/qa-20260725-230106-4137-obbpaprgta/sessions/...",
-    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted to the agent and acknowledged.",
-    "Step 4 - Waited for response (up to 3 minutes) — Agent completed the task in 11 seconds (\"Worked for 11s\"), executing browser operations including opening browser, getting page state, and closing browser.",
-    "Step 5 - Verified response mentions \"Example Domain\" — Response successfully displays: \"The page title is 'Example Domain' — the page has a single heading with that text, a short paragraph noting the domain is for documentation examples, and a 'Learn more' link. Browser is closed.\""
+    "Navigated to http://localhost:47891 - Successfully loaded the Gamut application home page with agent list visible in sidebar.",
+    "Clicked on \"QA-20260725-234836-s0gk\" agent in sidebar - Successfully navigated to the agent's chat interface at /agents/qa-20260725-234836-s0gk-nxnxl28ico.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the message input field - Message was successfully entered and displayed in the input field.",
+    "Clicked Send button to send the message - Message was successfully sent and a new chat session was created at /agents/qa-20260725-234836-s0gk-nxnxl28ico/sessions/f38621bf-57b3-46c9-b6af-4b147f9c9d1c.",
+    "Waited for agent response (up to 3 minutes) - Agent completed processing within 18 seconds, as shown by \"Worked for 18s\" message.",
+    "Verified response mentions \"Example Domain\" - Response clearly states \"The page title is Example Domain. Browser closed.\" with green checkmarks showing all browser tools (Open Browser, Browser Get State, Close Browser) executed successfully."
   ],
   "bugs": [],
-  "durationMs": 144863,
-  "sessionId": "c06fd2bb-feca-4cc1-b017-6cc55fe33fc5",
+  "durationMs": 124889,
+  "sessionId": "071d4a7a-102a-4a37-8896-c02e4dabfd7d",
   "cost": {
-    "inputTokens": 338,
-    "outputTokens": 10429,
-    "cacheCreationTokens": 46926,
-    "cacheReadTokens": 829807,
+    "inputTokens": 520,
+    "outputTokens": 14043,
+    "cacheCreationTokens": 87626,
+    "cacheReadTokens": 1619547,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.194121
+    "totalCostUsd": 0.342222
   }
 }
