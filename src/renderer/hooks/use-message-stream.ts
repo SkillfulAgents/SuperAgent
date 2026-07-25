@@ -440,6 +440,10 @@ function getOrCreateEventSource(
         // safety-net poll. Without this, a late join only recovers on the next poll
         // tick, which races the assertion timeout in tests and shows a stale UI in prod.
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        // Resync the unified pending-request store too: its create/resolve
+        // events are one-shot, so anything settled or opened while this
+        // stream was down must be recovered from the snapshot endpoint.
+        queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
         // Fetch current browser status to sync state (handles missed events)
         fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
           .then((res) => res.json())
@@ -1000,6 +1004,13 @@ function getOrCreateEventSource(
         if (t) {
           sessionThinking.set(sessionId, { blocks: closeOpenThinkingBlocks(t.blocks), isThinking: false })
         }
+      }
+      else if (data.type === 'user_request_created' || data.type === 'user_request_resolved') {
+        // Unified wire: the event is an invalidation trigger, not a data
+        // carrier — the refetch reads the server registry snapshot, so a
+        // burst of events collapses into one consistent read and a stale
+        // in-flight response can never overwrite a newer one.
+        queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
       }
       else if (data.type === 'secret_request') {
         // Agent is requesting a secret from the user

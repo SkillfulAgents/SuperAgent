@@ -68,6 +68,32 @@ describe('ReviewManager', () => {
     expect(result).toBe(false)
   })
 
+  it('registers the review envelope with the full details plus the derived displayText', async () => {
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1',
+      accountId: 'acc-1',
+      toolkit: 'gmail',
+      method: 'GET',
+      targetPath: '/gmail/v1/users/me/messages',
+      matchedScopes: ['gmail.readonly'],
+      scopeDescriptions: { 'gmail.readonly': 'Read email' },
+    })
+
+    // The unified wire renders review cards from this envelope alone — it must
+    // carry everything the legacy poll response carried, displayText included.
+    const [entry] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    expect(entry.kind).toBe('proxy_review')
+    const payload = entry.payload as Record<string, unknown>
+    expect(payload.toolkit).toBe('gmail')
+    expect(payload.targetPath).toBe('/gmail/v1/users/me/messages')
+    expect(payload.scopeDescriptions).toEqual({ 'gmail.readonly': 'Read email' })
+    expect(typeof payload.displayText).toBe('string')
+    expect((payload.displayText as string).length).toBeGreaterThan(0)
+
+    manager.submitDecision(entry.id, 'deny')
+    await promise
+  })
+
   it('resolveMatchingPendingByLabel resolves sibling reviews sharing the risk label', async () => {
     // Two write-labelled requests (gmail.send, gmail.compose) + one read (gmail.readonly).
     const send = manager.requestReview({

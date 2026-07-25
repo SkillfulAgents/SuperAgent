@@ -165,18 +165,6 @@ export class ReviewManager {
       }
 
       this.pending.set(id, { id, details, resolve, reject, timer })
-      // Reviews are agent-scoped — no sessionId in the proxied call, so the
-      // envelope carries agentSlug only. The registry entry is what makes the
-      // agent's sessions read as awaiting while the review is parked.
-      userInputRequestManager.register({
-        id,
-        kind: details.xAgent ? 'x_agent_review' : 'proxy_review',
-        scope: { agentSlug: details.agentSlug },
-        blocking: true,
-        autoApproved: false,
-        payload: { ...details },
-      })
-      this.shadowRegistryCheck(details.agentSlug, 'requestReview')
 
       const displayText = generateReviewDisplayText(
         details.toolkit,
@@ -185,6 +173,21 @@ export class ReviewManager {
         details.scopeDescriptions,
         details.endpointDescription,
       )
+
+      // Reviews are agent-scoped — no sessionId in the proxied call, so the
+      // envelope carries agentSlug only. The registry entry is what makes the
+      // agent's sessions read as awaiting while the review is parked. The
+      // payload carries the full details plus the derived display text so the
+      // unified wire can render the review card without the legacy poll.
+      userInputRequestManager.register({
+        id,
+        kind: details.xAgent ? 'x_agent_review' : 'proxy_review',
+        scope: { agentSlug: details.agentSlug },
+        blocking: true,
+        autoApproved: false,
+        payload: { ...details, displayText },
+      })
+      this.shadowRegistryCheck(details.agentSlug, 'requestReview')
 
       // Broadcast review request to agent's active sessions
       broadcastReview(details.agentSlug, {

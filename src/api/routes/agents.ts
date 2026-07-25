@@ -28,6 +28,7 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import {
   listSessions,
   listSessionsByIds,
@@ -5392,6 +5393,24 @@ async function cleanupStaleUploads() {
 // Run cleanup on startup and every 30 minutes
 cleanupStaleUploads()
 setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
+
+// =============================================================================
+// Pending user-input requests (unified wire)
+// =============================================================================
+
+// GET /api/agents/:id/pending-requests?sessionId= — snapshot of the open
+// user-input requests visible to the agent, optionally narrowed to a session's
+// view (its own requests plus the agent-scoped reviews that block every
+// session of the agent). This is the recovery source for the unified client
+// store: mount, reconnect, and invalidation refetch from here; live updates
+// arrive as user_request_created / user_request_resolved on the session and
+// global SSE streams. Legacy per-type events keep firing during the client
+// migration.
+agents.get('/:id/pending-requests', AgentRead(), (c) => {
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.query('sessionId') || undefined
+  return c.json({ requests: userInputRequestManager.getSnapshotForScope(agentSlug, sessionId) })
+})
 
 // =============================================================================
 // Proxy review endpoints

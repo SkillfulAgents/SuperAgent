@@ -54,10 +54,17 @@ vi.mock('./insufficient-balance-card', () => ({
   InsufficientBalanceCard: () => <div data-testid="insufficient-balance-card" />,
 }))
 
-let mockProxyReviewsData: { reviews: Array<Record<string, unknown>> } = { reviews: [] }
-vi.mock('@renderer/hooks/use-proxy-reviews', () => ({
-  usePendingProxyReviews: () => ({ data: mockProxyReviewsData, refetch: vi.fn() }),
+// Mock the unified pending-request store — the indicator derives awaiting
+// from its blocking projection (same predicate as the server status).
+type MockPendingRequest = { id: string; kind: string; blocking: boolean; autoApproved: boolean }
+let mockPendingUserRequests: MockPendingRequest[] = []
+vi.mock('@renderer/hooks/use-pending-user-requests', () => ({
+  usePendingUserRequests: () => ({ data: mockPendingUserRequests }),
 }))
+
+function blockingRequest(kind: string, overrides: Partial<MockPendingRequest> = {}): MockPendingRequest {
+  return { id: `req-${kind}`, kind, blocking: true, autoApproved: false, ...overrides }
+}
 
 describe('AgentActivityIndicator', () => {
   beforeEach(() => {
@@ -79,7 +86,7 @@ describe('AgentActivityIndicator', () => {
       backgroundTasks: [],
     })
     mockMessages.length = 0
-    mockProxyReviewsData = { reviews: [] }
+    mockPendingUserRequests = []
   })
 
   it('returns null when not active and no error', () => {
@@ -196,7 +203,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending secret requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'API_KEY' }]
+    mockPendingUserRequests = [blockingRequest('secret')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -206,10 +213,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending question requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingQuestionRequests = [{
-      toolUseId: 't1',
-      questions: [{ question: 'Pick one', header: 'DB', options: [], multiSelect: false }],
-    }]
+    mockPendingUserRequests = [blockingRequest('question')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -218,7 +222,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending connected account requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingConnectedAccountRequests = [{ toolUseId: 't1', toolkit: 'github' }]
+    mockPendingUserRequests = [blockingRequest('connected_account')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -227,7 +231,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending file requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingFileRequests = [{ toolUseId: 't1', description: 'Upload CSV' }]
+    mockPendingUserRequests = [blockingRequest('file')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -236,7 +240,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending remote MCP requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingRemoteMcpRequests = [{ toolUseId: 't1', url: 'https://example.com' }]
+    mockPendingUserRequests = [blockingRequest('remote_mcp')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -245,7 +249,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending browser input requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingBrowserInputRequests = [{ toolUseId: 't1', message: 'Login', requirements: [] }]
+    mockPendingUserRequests = [blockingRequest('browser_input')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -264,27 +268,49 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when a proxy review is pending', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockProxyReviewsData = {
-      reviews: [{
-        id: 'r-1',
-        agentSlug: 'agent-1',
-        accountId: 'a1',
-        toolkit: 'gmail',
-        method: 'POST',
-        targetPath: '/send',
-        matchedScopes: ['GMAIL_SEND_EMAIL'],
-        scopeDescriptions: {},
-      }],
-    }
+    mockPendingUserRequests = [blockingRequest('proxy_review')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
     expect(screen.queryByText('Working...')).not.toBeInTheDocument()
   })
 
+  it.each(['script_run', 'computer_use', 'capability_review'])(
+    'shows "Waiting for input..." for %s — kinds the per-type list used to omit',
+    (kind) => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockPendingUserRequests = [blockingRequest(kind)]
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
+      expect(screen.queryByText('Working...')).not.toBeInTheDocument()
+    },
+  )
+
+  it('a non-blocking entry is not a wait — the indicator keeps "Working..."', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockPendingUserRequests = [blockingRequest('secret', { blocking: false })]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('Working...')).toBeInTheDocument()
+    expect(screen.queryByText('Waiting for input...')).not.toBeInTheDocument()
+  })
+
+  it('an auto-approved entry is not a wait — the indicator keeps "Working..."', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockPendingUserRequests = [blockingRequest('script_run', { autoApproved: true })]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('Working...')).toBeInTheDocument()
+    expect(screen.queryByText('Waiting for input...')).not.toBeInTheDocument()
+  })
+
   it('does not show "Waiting for input..." when not active even if pending requests exist', () => {
     mockStreamState.isActive = false
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'KEY' }]
+    mockPendingUserRequests = [blockingRequest('secret')]
 
     const { container } = render(
       <AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />
@@ -331,7 +357,7 @@ describe('AgentActivityIndicator', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.isCompacting = true
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'KEY' }]
+    mockPendingUserRequests = [blockingRequest('secret')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -341,7 +367,7 @@ describe('AgentActivityIndicator', () => {
   it('"Waiting for input..." takes priority over TodoWrite activeForm', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'KEY' }]
+    mockPendingUserRequests = [blockingRequest('secret')]
     mockMessages.push({
       id: 'msg-1',
       type: 'assistant',

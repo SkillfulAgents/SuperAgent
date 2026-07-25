@@ -1264,4 +1264,140 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
   })
+
+  // ==========================================================================
+  // Unified wire: every registry transition broadcasts ONE typed event —
+  // user_request_created / user_request_resolved — alongside the legacy
+  // per-type events, to the global stream always and the session stream when
+  // session-scoped. Whatever mutation path drives the transition, the wire
+  // sees it: that is the property that makes silent settles impossible here.
+  // ==========================================================================
+
+  describe('unified wire broadcasts', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let globalEvents: any[]
+    let globalCleanup: () => void
+
+    beforeEach(() => {
+      globalEvents = []
+      globalCleanup = messagePersister.addGlobalNotificationClient((data) => {
+        globalEvents.push(data)
+      })
+    })
+
+    afterEach(() => {
+      globalCleanup()
+    })
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const createdFor = (events: any[], id: string) =>
+      events.filter((e) => e.type === 'user_request_created' && e.request?.id === id)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const resolvedFor = (events: any[], id: string) =>
+      events.filter((e) => e.type === 'user_request_resolved' && e.requestId === id)
+
+    it('a stream kind emits created on BOTH streams and resolved on its tool_result', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'wire-secret-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+
+      const created = createdFor(globalEvents, 'wire-secret-1')
+      expect(created).toHaveLength(1)
+      expect(created[0].request.kind).toBe('secret')
+      expect(created[0].request.scope).toEqual({ agentSlug: AGENT_SLUG, sessionId: SESSION_ID })
+      expect(created[0].request.payload.secretName).toBe('API_KEY')
+      expect(createdFor(sseEvents, 'wire-secret-1')).toHaveLength(1)
+
+      sendToolResult('wire-secret-1')
+      const resolved = resolvedFor(globalEvents, 'wire-secret-1')
+      expect(resolved).toHaveLength(1)
+      expect(resolved[0].outcome).toBe('answered')
+      expect(resolved[0].kind).toBe('secret')
+      expect(resolvedFor(sseEvents, 'wire-secret-1')).toHaveLength(1)
+    })
+
+    it('a turn boundary settles parked entries onto the wire (no silent clears)', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'wire-boundary-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      // The idle boundary cancels the parked ask; the wire must say so.
+      mockClient._sendMessage({ type: 'result', subtype: 'success', num_turns: 1 })
+      const resolved = resolvedFor(globalEvents, 'wire-boundary-1')
+      expect(resolved).toHaveLength(1)
+      expect(resolved[0].outcome).toBe('cancelled')
+    })
+
+    it('wire events carry a top-level agentSlug — the global-stream ACL filter reads only that', () => {
+      // notifications.ts filters global events by the TOP-LEVEL agentSlug and
+      // forwards anything without one to every authenticated user. Nesting
+      // the slug inside request.scope/scope would broadcast full request
+      // payloads (secret names, scripts, review details) tenant-wide.
+      simulateToolUse('mcp__user-input__request_secret', 'wire-acl-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      const created = createdFor(globalEvents, 'wire-acl-1')
+      expect(created).toHaveLength(1)
+      expect(created[0].agentSlug).toBe(AGENT_SLUG)
+
+      sendToolResult('wire-acl-1')
+      const resolved = resolvedFor(globalEvents, 'wire-acl-1')
+      expect(resolved).toHaveLength(1)
+      expect(resolved[0].agentSlug).toBe(AGENT_SLUG)
+    })
+
+    it('an agent-scoped review emits on the global stream only (it has no session stream)', () => {
+      userInputRequestManager.register({
+        id: 'wire-review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: AGENT_SLUG },
+        blocking: true,
+        autoApproved: false,
+        payload: { toolkit: 'slack' },
+      })
+      expect(createdFor(globalEvents, 'wire-review-1')).toHaveLength(1)
+      expect(createdFor(sseEvents, 'wire-review-1')).toHaveLength(0)
+
+      userInputRequestManager.resolve('wire-review-1', 'declined')
+      const resolved = resolvedFor(globalEvents, 'wire-review-1')
+      expect(resolved).toHaveLength(1)
+      expect(resolved[0].outcome).toBe('declined')
+    })
+
+    it('recovery synthetics never hit the wire — the transcript renders those cards', () => {
+      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG, [
+        { toolUseId: 'wire-recovered-1', toolName: 'AskUserQuestion' },
+      ])
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(createdFor(globalEvents, 'wire-recovered-1')).toHaveLength(0)
+      expect(createdFor(sseEvents, 'wire-recovered-1')).toHaveLength(0)
+    })
+
+    it('the snapshot a reconnecting client fetches matches the wire it missed', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'wire-snap-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      userInputRequestManager.register({
+        id: 'wire-snap-review',
+        kind: 'proxy_review',
+        scope: { agentSlug: AGENT_SLUG },
+        blocking: true,
+        autoApproved: false,
+        payload: { toolkit: 'slack' },
+      })
+
+      const ids = userInputRequestManager
+        .getSnapshotForScope(AGENT_SLUG, SESSION_ID)
+        .map((r) => r.id)
+        .sort()
+      expect(ids).toEqual(['wire-snap-1', 'wire-snap-review'])
+
+      userInputRequestManager.resolve('wire-snap-review', 'answered')
+      sendToolResult('wire-snap-1')
+      expect(userInputRequestManager.getSnapshotForScope(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
+    })
+  })
 })

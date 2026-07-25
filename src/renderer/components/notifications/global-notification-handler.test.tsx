@@ -216,6 +216,44 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     expect(proxyReviewCalls.length).toBe(1)
   })
 
+  it('user_request_created/resolved invalidate the unified store AND the legacy review poll', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+
+    // A dashboard-triggered review can exist with NO session anywhere — this
+    // global event is its only push signal, so it must nudge both the unified
+    // store and the dashboard panel's legacy poll (still unmigrated).
+    simulateSSEMessage(es, {
+      type: 'user_request_created',
+      request: {
+        id: 'rev-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'my-agent' },
+        blocking: true,
+        autoApproved: false,
+        payload: {},
+      },
+    })
+    simulateSSEMessage(es, {
+      type: 'user_request_resolved',
+      requestId: 'rev-1',
+      kind: 'proxy_review',
+      outcome: 'answered',
+      scope: { agentSlug: 'my-agent' },
+    })
+
+    const keys = invalidateSpy.mock.calls.map((call) => (call[0] as { queryKey?: unknown[] }).queryKey?.[0])
+    expect(keys.filter((k) => k === 'pending-user-requests')).toHaveLength(2)
+    expect(keys.filter((k) => k === 'proxy-reviews')).toHaveLength(2)
+  })
+
   // SECURITY: focus-aware gate — when an actionable session_waiting fires
   // while the window is visible-but-unfocused (jsdom: hasFocus() === false),
   // the OS notification should still fire because the user is effectively

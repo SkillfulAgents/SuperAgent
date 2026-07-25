@@ -156,6 +156,15 @@ export type PendingUserInputRequestInput = z.input<typeof pendingUserInputReques
  */
 export type UserInputRequestStore = 'stream' | 'computer_use' | 'review'
 
+/**
+ * Whether a request may be sent to clients (wire events, snapshots). Entries
+ * synthesized by transcript recovery carry no renderable payload — sending one
+ * would draw a broken card; the transcript renders those instead.
+ */
+export function isReplayableUserInputRequest(request: PendingUserInputRequest): boolean {
+  return (request.payload as Record<string, unknown>).recovered !== true
+}
+
 export function storeForKind(kind: UserInputRequestKind): UserInputRequestStore {
   if (kind === 'computer_use') return 'computer_use'
   if (kind === 'proxy_review' || kind === 'x_agent_review') return 'review'

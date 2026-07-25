@@ -8,8 +8,12 @@ import type { RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request
 import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/request-browser-input'
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
-import { streamEventToPendingRequest, type UserInputRequestOutcome } from '@shared/lib/user-input/request-schema'
+import { userInputRequestManager, type UserInputRequestTransition } from '@shared/lib/user-input/request-manager'
+import {
+  isReplayableUserInputRequest,
+  streamEventToPendingRequest,
+  type UserInputRequestOutcome,
+} from '@shared/lib/user-input/request-schema'
 import { classifyResult } from './result-classification'
 import { parseBackgroundTasksChanged } from './background-tasks-changed'
 import { parseCommandLifecycle } from './command-lifecycle'
@@ -260,6 +264,42 @@ class MessagePersister {
   // subscribeToSession() calls for the same session share the underlying
   // promise so we don't double-install listeners or double-tear-down state.
   private subscribingNow: Map<string, Promise<void>> = new Map()
+
+  constructor() {
+    // Unified wire: every registry transition — no matter which of the many
+    // mutation paths drove it — broadcasts ONE typed event, alongside the
+    // legacy per-type events, to the global stream always and to the session
+    // stream when session-scoped. Emitting from the registry's single funnel
+    // (instead of per-callsite) is what makes a silent settle impossible on
+    // this wire. Legacy events keep firing during the client migration.
+    userInputRequestManager.onTransition((transition) => {
+      this.broadcastRequestTransition(transition)
+    })
+  }
+
+  private broadcastRequestTransition(transition: UserInputRequestTransition): void {
+    const { request } = transition
+    if (!isReplayableUserInputRequest(request)) return
+    // agentSlug MUST be at the top level: the global-stream ACL filter
+    // (notifications.ts) reads only that field and forwards events without
+    // one to every authenticated user — nesting the slug inside scope would
+    // broadcast request payloads tenant-wide in auth mode.
+    const event =
+      transition.type === 'created'
+        ? { type: 'user_request_created', agentSlug: request.scope.agentSlug, request }
+        : {
+            type: 'user_request_resolved',
+            agentSlug: request.scope.agentSlug,
+            requestId: request.id,
+            kind: request.kind,
+            outcome: transition.outcome,
+            scope: request.scope,
+          }
+    this.broadcastGlobal(event)
+    if (request.scope.sessionId) {
+      this.broadcastToSSE(request.scope.sessionId, event)
+    }
+  }
 
   // Subscribe to a session's messages for SSE streaming.
   // Returns a promise that resolves when the WebSocket connection is ready.
