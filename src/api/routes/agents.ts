@@ -3447,9 +3447,7 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'unassigned', details: { agentSlug: slug } })
     const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
-    return c.body(null, 204, {
-      'X-Superagent-Live-Refresh': String(liveRefresh),
-    })
+    return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove account mapping:', error)
     return c.json({ error: 'Failed to remove account mapping' }, 500)
@@ -3566,9 +3564,7 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'unassigned', details: { agentSlug: slug } })
     const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
-    return c.body(null, 204, {
-      'X-Superagent-Live-Refresh': String(liveRefresh),
-    })
+    return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove remote MCP from agent:', error)
     return c.json({ error: 'Failed to remove remote MCP from agent' }, 500)

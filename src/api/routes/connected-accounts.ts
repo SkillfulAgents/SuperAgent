@@ -587,9 +587,7 @@ connectedAccountsRouter.delete('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'disconnected', details: { toolkitSlug: existing.toolkitSlug } })
 
-    return c.body(null, 204, {
-      'X-Superagent-Live-Refresh': String(liveRefresh),
-    })
+    return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to delete connected account:', error)
     return c.json({ error: 'Failed to delete connected account' }, 500)

@@ -36,12 +36,6 @@ function warnIfLiveRefreshFailed(result: unknown): void {
   }
 }
 
-function warnIfLiveRefreshHeaderFailed(response: Response): void {
-  if (response.headers?.get('X-Superagent-Live-Refresh') === 'false') {
-    warnIfLiveRefreshFailed({ liveRefresh: false })
-  }
-}
-
 /**
  * Fetch all registered remote MCP servers
  */
@@ -145,7 +139,6 @@ export function useDeleteRemoteMcp() {
         const error = await res.json()
         throw new Error(error.error || 'Failed to delete MCP server')
       }
-      warnIfLiveRefreshHeaderFailed(res)
       warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     },
     onSuccess: (_, id) => {
@@ -205,7 +198,6 @@ export function useRemoveMcpFromAgent() {
         const error = await res.json()
         throw new Error(error.error || 'Failed to remove MCP from agent')
       }
-      warnIfLiveRefreshHeaderFailed(res)
       warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     },
     onSuccess: (_, { mcpId }) => {

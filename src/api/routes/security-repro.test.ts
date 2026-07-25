@@ -722,7 +722,8 @@ describe('unlink ownership: cross-user account/MCP unlink from a shared agent (A
     const res = await appWithAgents().request('http://localhost/api/agents/my-agent/connected-accounts/my-account-id', {
       method: 'DELETE',
     })
-    expect(res.status).toBe(204)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, liveRefresh: false })
     expect(mockDbDeleteWhere).toHaveBeenCalledTimes(1)
   })
 
@@ -740,8 +741,8 @@ describe('unlink ownership: cross-user account/MCP unlink from a shared agent (A
     const res = await appWithAgents().request('http://localhost/api/agents/my-agent/remote-mcps/my-mcp-id', {
       method: 'DELETE',
     })
-    expect(res.status).toBe(204)
-    expect(res.headers.get('X-Superagent-Live-Refresh')).toBe('false')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, liveRefresh: false })
     expect(mockDbDeleteWhere).toHaveBeenCalledTimes(1)
   })
 })

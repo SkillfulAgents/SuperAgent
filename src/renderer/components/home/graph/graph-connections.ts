@@ -43,12 +43,6 @@ function warnIfLiveRefreshFailed(result: unknown): void {
   }
 }
 
-function warnIfLiveRefreshHeaderFailed(response: Response): void {
-  if (response.headers?.get('X-Superagent-Live-Refresh') === 'false') {
-    warnIfLiveRefreshFailed({ liveRefresh: false })
-  }
-}
-
 /**
  * Remove the relationship behind an edge; true = something changed.
  * Resource edges unlink the account/MCP; agent↔agent edges revoke invoke
@@ -68,7 +62,6 @@ export async function deleteGraphConnection(edge: GraphEdgeSpec): Promise<boolea
         { method: 'DELETE' },
       )
       if (!res.ok) throw new Error(`Failed to unlink (${res.status})`)
-      warnIfLiveRefreshHeaderFailed(res)
       warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
       toast.success(resourceKind === 'account' ? 'Account unlinked' : 'MCP server unlinked')
       return true

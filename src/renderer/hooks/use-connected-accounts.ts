@@ -37,12 +37,6 @@ function warnIfLiveRefreshFailed(result: unknown): void {
   }
 }
 
-function warnIfLiveRefreshHeaderFailed(response: Response): void {
-  if (response.headers?.get('X-Superagent-Live-Refresh') === 'false') {
-    warnIfLiveRefreshFailed({ liveRefresh: false })
-  }
-}
-
 interface ConnectedAccountsResponse {
   accounts: ConnectedAccount[]
 }
@@ -141,7 +135,6 @@ export function useDeleteConnectedAccount() {
         const error = await res.json().catch(() => ({}))
         throw new Error(error.error || 'Failed to delete account')
       }
-      warnIfLiveRefreshHeaderFailed(res)
       warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     },
     onSuccess: (_, accountId) => {
@@ -230,7 +223,6 @@ export function useRemoveAgentConnectedAccount() {
         method: 'DELETE',
       })
       if (!res.ok) throw new Error('Failed to remove account from agent')
-      warnIfLiveRefreshHeaderFailed(res)
       warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     },
     onSuccess: (_, { accountId }) => {

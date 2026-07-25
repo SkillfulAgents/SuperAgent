@@ -536,7 +536,8 @@ describe('Agent Settings remote MCP live sync', () => {
       { method: 'DELETE' },
     )
 
-    expect(res.status).toBe(204)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, liveRefresh: true })
     const envCall = mockContainerFetch.mock.calls.find(([path]) => path === '/env')
     expect(envCall).toBeDefined()
     const envBody = JSON.parse(envCall![1].body as string)

@@ -15,12 +15,10 @@ function response(
   body: unknown,
   ok = true,
   status = 200,
-  headers: Record<string, string> = {},
 ): Response {
   return {
     ok,
     status,
-    headers: new Headers(headers),
     json: async () => body,
   } as Response
 }
@@ -80,9 +78,7 @@ describe('deleteGraphConnection — resource edges', () => {
 
   it('keeps the saved unlink and warns when the live refresh fails', async () => {
     apiFetchMock.mockResolvedValueOnce(
-      response(null, true, 204, {
-        'X-Superagent-Live-Refresh': 'false',
-      }),
+      response({ success: true, liveRefresh: false }),
     )
 
     const changed = await deleteGraphConnection({

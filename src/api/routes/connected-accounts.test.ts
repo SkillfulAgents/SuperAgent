@@ -311,7 +311,8 @@ describe('connected-accounts reconnect flow', () => {
         method: 'DELETE',
       })
 
-      expect(res.status).toBe(204)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ success: true, liveRefresh: true })
       expect(mockCancelTriggersForConnectedAccount).toHaveBeenCalledWith('existing-acc')
       expect(mockDeleteConnection).toHaveBeenCalledWith('remote-conn', 'github')
       expect(mockDbDeleteWhere).toHaveBeenCalledWith({ col: 'id', val: 'existing-acc' })
@@ -331,7 +332,6 @@ describe('connected-accounts reconnect flow', () => {
         'existing-acc',
       )
       expect(mockSyncConnectedAccountAgents).toHaveBeenCalledWith(['agent-a'])
-      expect(res.headers.get('X-Superagent-Live-Refresh')).toBe('true')
     })
 
     it('still deletes the local row when remote provider cleanup fails', async () => {
@@ -349,7 +349,8 @@ describe('connected-accounts reconnect flow', () => {
         method: 'DELETE',
       })
 
-      expect(res.status).toBe(204)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ success: true, liveRefresh: true })
       expect(mockCancelTriggersForConnectedAccount).toHaveBeenCalledWith('existing-acc')
       expect(mockDbDeleteWhere).toHaveBeenCalledWith({ col: 'id', val: 'existing-acc' })
       expect(warnSpy).toHaveBeenCalledWith('Failed to delete connection from provider:', expect.any(Error))
