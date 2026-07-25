@@ -166,4 +166,19 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     expect(calls).toHaveLength(5)
     expect(calls[4].options.systemPrompt).not.toContain('Work Gmail')
   })
+
+  it('treats unset and serialized empty projections as equivalent', async () => {
+    claudeProcess = new ClaudeCodeProcess({
+      sessionId: 'test-empty-runtime-connections',
+      workingDirectory: '/tmp',
+    })
+
+    await claudeProcess.start()
+    process.env.REMOTE_MCPS = '[]'
+    process.env.CONNECTED_ACCOUNTS = '{}'
+
+    await claudeProcess.sendMessage('Continue without connections')
+
+    expect(calls).toHaveLength(1)
+  })
 })

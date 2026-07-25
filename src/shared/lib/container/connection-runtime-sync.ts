@@ -7,6 +7,10 @@ import {
 } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { containerManager } from './container-manager'
+import {
+  buildConnectedAccountsProjection,
+  buildRemoteMcpProjection,
+} from './connection-runtime-projections'
 
 type RuntimeClient = Pick<
   ReturnType<typeof containerManager.getClient>,
@@ -14,27 +18,6 @@ type RuntimeClient = Pick<
 >
 
 export type ConnectionRuntimeKind = 'connected-accounts' | 'remote-mcps'
-
-function parseToolNames(toolsJson: string | null): Array<{ name: string }> {
-  if (!toolsJson) return []
-  try {
-    const tools = JSON.parse(toolsJson) as unknown
-    if (!Array.isArray(tools)) return []
-    return tools.flatMap((tool) => {
-      if (
-        typeof tool === 'object' &&
-        tool !== null &&
-        'name' in tool &&
-        typeof tool.name === 'string'
-      ) {
-        return [{ name: tool.name }]
-      }
-      return []
-    })
-  } catch {
-    return []
-  }
-}
 
 export async function updateConnectedAccountsEnvironment(
   agentSlug: string,
@@ -49,22 +32,9 @@ export async function updateConnectedAccountsEnvironment(
     )
     .where(eq(agentConnectedAccounts.agentSlug, agentSlug))
 
-  const metadata: Record<string, Array<{ name: string; id: string }>> = {}
-  const activeAccounts = mappings
-    .map(({ account }) => account)
-    .filter((account) => account.status === 'active')
-    .sort((a, b) =>
-      a.toolkitSlug.localeCompare(b.toolkitSlug) ||
-      a.id.localeCompare(b.id),
-    )
-
-  for (const account of activeAccounts) {
-    metadata[account.toolkitSlug] ??= []
-    metadata[account.toolkitSlug].push({
-      name: account.displayName,
-      id: account.id,
-    })
-  }
+  const metadata = buildConnectedAccountsProjection(
+    mappings.map(({ account }) => account),
+  )
 
   return client.fetch('/env', {
     method: 'POST',
@@ -90,16 +60,11 @@ export async function updateRemoteMcpEnvironment(
     )
     .where(eq(agentRemoteMcps.agentSlug, agentSlug))
 
-  const configs = mappings
-    .map(({ mcp }) => mcp)
-    .filter((mcp) => mcp.status === 'active')
-    .sort((a, b) => a.id.localeCompare(b.id))
-    .map((mcp) => ({
-      id: mcp.id,
-      name: mcp.name,
-      proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${agentSlug}/${mcp.id}`,
-      tools: parseToolNames(mcp.toolsJson),
-    }))
+  const configs = buildRemoteMcpProjection(
+    mappings.map(({ mcp }) => mcp),
+    agentSlug,
+    hostApiBaseUrl,
+  )
 
   return client.fetch('/env', {
     method: 'POST',

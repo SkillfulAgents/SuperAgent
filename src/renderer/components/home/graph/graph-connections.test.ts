@@ -90,7 +90,7 @@ describe('deleteGraphConnection — resource edges', () => {
 
     expect(changed).toBe(true)
     expect(toast.warning).toHaveBeenCalledWith(
-      expect.stringContaining('need a restart'),
+      'One or more running agents need a restart to apply the latest connection state.',
     )
     expect(toast.error).not.toHaveBeenCalled()
   })
@@ -199,7 +199,7 @@ describe('createDrawnConnection', () => {
 
     expect(changed).toBe(true)
     expect(toast.warning).toHaveBeenCalledWith(
-      expect.stringContaining('need a restart'),
+      'One or more running agents need a restart to apply the latest connection state.',
     )
     expect(toast.error).not.toHaveBeenCalled()
   })

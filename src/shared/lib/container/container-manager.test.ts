@@ -329,7 +329,12 @@ describe('containerManager.ensureRunning — env var construction', () => {
         { id: 'gmail-a', toolkitSlug: 'gmail', displayName: 'Gmail A', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
       ],
       [
-        { id: 'mcp-z', name: 'Zed', status: 'active', toolsJson: '[]' },
+        {
+          id: 'mcp-z',
+          name: 'Zed',
+          status: 'active',
+          toolsJson: JSON.stringify([{ name: 'search' }, { invalid: true }]),
+        },
         { id: 'mcp-disabled', name: 'Disabled', status: 'auth_required', toolsJson: null },
         { id: 'mcp-a', name: 'Alpha', status: 'active', toolsJson: '[]' },
       ],
@@ -345,8 +350,10 @@ describe('containerManager.ensureRunning — env var construction', () => {
       ],
       slack: [{ name: 'Slack Z', id: 'slack-z' }],
     })
-    expect(JSON.parse(envVars.REMOTE_MCPS).map((mcp: { id: string }) => mcp.id))
+    const mcpConfigs = JSON.parse(envVars.REMOTE_MCPS)
+    expect(mcpConfigs.map((mcp: { id: string }) => mcp.id))
       .toEqual(['mcp-a', 'mcp-z'])
+    expect(mcpConfigs[1].tools).toEqual([{ name: 'search' }])
   })
 
   it('sets TZ env var from resolveTimezoneForAgent', async () => {

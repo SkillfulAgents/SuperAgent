@@ -300,9 +300,7 @@ connectedAccountsRouter.post('/complete', async (c) => {
       logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
     }
 
-    const liveRefresh = reconnectAccountId
-      ? await syncAgentsAssignedConnectedAccount(id)
-      : true
+    const liveRefresh = await syncAgentsAssignedConnectedAccount(id)
 
     return c.json({
       success: true,
@@ -430,9 +428,9 @@ connectedAccountsRouter.get('/callback', async (c) => {
       logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
     }
 
-    if (reconnectAccountId) {
-      await syncAgentsAssignedConnectedAccount(id)
-    }
+    // This HTML callback has no renderer response channel for a refresh
+    // warning. The sync remains best-effort and logs failures server-side.
+    await syncAgentsAssignedConnectedAccount(id)
 
     return c.html(
       generateCallbackHtml({

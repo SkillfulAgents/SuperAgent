@@ -295,6 +295,9 @@ describe('connected-accounts reconnect flow', () => {
       expect(res.status).toBe(200)
       expect(mockDbInsertValues).toHaveBeenCalled()
       expect(mockDbUpdateSet).not.toHaveBeenCalled()
+      expect(mockSyncAgentsAssignedConnectedAccount).toHaveBeenCalledWith(
+        expect.any(String),
+      )
     })
   })
 

@@ -10,6 +10,7 @@
 
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
+import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
 import type { GraphEdgeSpec } from './use-graph-data'
 
 export function nodeKind(nodeId: string): string {
@@ -29,19 +30,6 @@ export function drawnConnectionKind(source: string, target: string): 'invoke' | 
 }
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
-
-function warnIfLiveRefreshFailed(result: unknown): void {
-  if (
-    typeof result === 'object' &&
-    result !== null &&
-    'liveRefresh' in result &&
-    result.liveRefresh === false
-  ) {
-    toast.warning(
-      'Connection saved, but one or more running agents need a restart to refresh it.',
-    )
-  }
-}
 
 /**
  * Remove the relationship behind an edge; true = something changed.

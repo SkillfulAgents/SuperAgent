@@ -1,8 +1,8 @@
 import { apiFetch } from '@renderer/lib/api'
+import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
 
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
 import type {
   AgentRemoteMcpDto,
   PublicAgentRemoteMcp,
@@ -22,19 +22,6 @@ export interface RemoteMcpServer {
 }
 
 export type AgentRemoteMcp = PublicAgentRemoteMcp
-
-function warnIfLiveRefreshFailed(result: unknown): void {
-  if (
-    typeof result === 'object' &&
-    result !== null &&
-    'liveRefresh' in result &&
-    result.liveRefresh === false
-  ) {
-    toast.warning(
-      'Connection saved, but one or more running agents need a restart to refresh it.',
-    )
-  }
-}
 
 /**
  * Fetch all registered remote MCP servers

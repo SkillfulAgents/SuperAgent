@@ -124,8 +124,8 @@ function parseRemoteMcps(): RemoteMcpConfig[] {
 
 function runtimeConnectionConfigSnapshot(): string {
   return JSON.stringify([
-    process.env.CONNECTED_ACCOUNTS ?? '',
-    process.env.REMOTE_MCPS ?? '',
+    process.env.CONNECTED_ACCOUNTS || '{}',
+    process.env.REMOTE_MCPS || '[]',
   ])
 }
 

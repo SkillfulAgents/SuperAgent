@@ -1,8 +1,8 @@
 import { apiFetch } from '@renderer/lib/api'
+import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
 
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { Provider } from '@shared/lib/account-providers/service-catalog'
 import type {
@@ -23,19 +23,6 @@ export interface ConnectedAccount {
 }
 
 export type AgentConnectedAccount = PublicAgentConnectedAccount
-
-function warnIfLiveRefreshFailed(result: unknown): void {
-  if (
-    typeof result === 'object' &&
-    result !== null &&
-    'liveRefresh' in result &&
-    result.liveRefresh === false
-  ) {
-    toast.warning(
-      'Connection saved, but one or more running agents need a restart to refresh it.',
-    )
-  }
-}
 
 interface ConnectedAccountsResponse {
   accounts: ConnectedAccount[]

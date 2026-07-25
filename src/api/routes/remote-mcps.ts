@@ -426,6 +426,8 @@ remoteMcps.get('/oauth-callback', async (c) => {
         })
         .where(eq(remoteMcpServers.id, result.mcpId))
     }
+    // This HTML callback has no renderer response channel for a refresh
+    // warning. The sync remains best-effort and logs failures server-side.
     if (assignedAgentSlugs) await syncRemoteMcpAgents(assignedAgentSlugs)
   } catch (err: any) {
     // Tool discovery failed — delete the server so we don't leave a broken entry

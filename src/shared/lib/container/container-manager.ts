@@ -20,6 +20,10 @@ import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'
+import {
+  buildConnectedAccountsProjection,
+  buildRemoteMcpProjection,
+} from './connection-runtime-projections'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -535,23 +539,9 @@ class ContainerManager {
         .where(eq(agentConnectedAccounts.agentSlug, agentId))
 
       // Build account metadata (names + IDs, no tokens)
-      const accountMetadata: Record<string, Array<{ name: string; id: string }>> = {}
-      const activeAccounts = accountMappings
-        .map(({ account }) => account)
-        .filter((account) => account.status === 'active')
-        .sort((a, b) =>
-          a.toolkitSlug.localeCompare(b.toolkitSlug) ||
-          a.id.localeCompare(b.id)
-        )
-      for (const account of activeAccounts) {
-        if (!accountMetadata[account.toolkitSlug]) {
-          accountMetadata[account.toolkitSlug] = []
-        }
-        accountMetadata[account.toolkitSlug].push({
-          name: account.displayName,
-          id: account.id,
-        })
-      }
+      const accountMetadata = buildConnectedAccountsProjection(
+        accountMappings.map(({ account }) => account),
+      )
       envVars['CONNECTED_ACCOUNTS'] = JSON.stringify(accountMetadata)
 
       // Fetch remote MCPs for this agent
@@ -561,23 +551,11 @@ class ContainerManager {
         .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
         .where(eq(agentRemoteMcps.agentSlug, agentId))
 
-      const mcpConfigs = mcpMappings
-        .map(({ mcp }) => mcp)
-        .filter((mcp) => mcp.status === 'active')
-        .sort((a, b) => a.id.localeCompare(b.id))
-        .map((mcp) => {
-          // Only pass tool names (not full schemas) to keep env var size small
-          let toolNames: Array<{ name: string }> = []
-          if (mcp.toolsJson) {
-            try { toolNames = JSON.parse(mcp.toolsJson).map((t: any) => ({ name: t.name })) } catch { /* ignore */ }
-          }
-          return {
-            id: mcp.id,
-            name: mcp.name,
-            proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${agentId}/${mcp.id}`,
-            tools: toolNames,
-          }
-        })
+      const mcpConfigs = buildRemoteMcpProjection(
+        mcpMappings.map(({ mcp }) => mcp),
+        agentId,
+        hostApiBaseUrl,
+      )
 
       if (mcpConfigs.length > 0) {
         envVars['REMOTE_MCPS'] = JSON.stringify(mcpConfigs)
