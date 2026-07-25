@@ -379,12 +379,6 @@ export class MessageQueue {
   }
 }
 
-// Module-level reference to the current process (one per container)
-let currentProcess: ClaudeCodeProcess | null = null;
-export function getCurrentProcess(): ClaudeCodeProcess | null {
-  return currentProcess;
-}
-
 export interface ClaudeCodeProcessOptions {
   sessionId: string;
   workingDirectory: string;
@@ -514,8 +508,6 @@ export class ClaudeCodeProcess extends EventEmitter {
       options.webFetchProvider,
       options.capabilityPolicies
     );
-    // Set module-level reference for tools that need access to the process
-    currentProcess = this;
   }
 
   /**
@@ -712,7 +704,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
       }), this.speed),
       mcpServers: {
-        'user-input': createUserInputMcpServer(),
+        'user-input': createUserInputMcpServer(() => this),
         'browser': createBrowserMcpServer(browserMcpTools),
         'dashboards': createDashboardsMcpServer(),
         'agents': createAgentsMcpServer(() => this.sessionId),

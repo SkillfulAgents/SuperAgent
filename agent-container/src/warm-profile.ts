@@ -81,13 +81,29 @@ function buildProfile(
 }
 
 /**
- * Stable identity for a profile. Key equality is the whole safety argument
- * for handing a warm process to a request, so it is computed from a
- * key-sorted serialization rather than plain JSON.stringify (whose output
- * depends on insertion order).
+ * Stable identity for a profile. Key equality is the whole safety argument for
+ * handing a warm process to a request, so every field has to reach the key at
+ * every depth.
+ *
+ * Hand-rolled rather than `JSON.stringify(profile, sortedKeys)`: that replacer
+ * form is a whitelist applied at EVERY level, so nested objects
+ * (capabilityPolicies, customEnvVars) collapse to `{}` — an allow-policy
+ * profile and a block-policy one would share a key, and a restricted session
+ * could claim a process warmed with the capability tools baked in.
  */
 export function warmProfileKey(profile: WarmProfile): string {
-  return JSON.stringify(profile, Object.keys(profile).sort());
+  return stableStringify(profile);
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  // Arrays are order-significant (modelPromptHints, availableEnvVars): a
+  // different order really is a different prompt, so don't sort them.
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(',')}}`;
 }
 
 /**

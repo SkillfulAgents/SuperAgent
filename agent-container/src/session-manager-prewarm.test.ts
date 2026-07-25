@@ -243,6 +243,55 @@ describe('SessionManager pre-warm pool', () => {
     expect(session.id).not.toBe(warmed.sessionId)
   })
 
+  // Nested profile fields decide what the process is BUILT with, so they have
+  // to reach the key. A block-policy session claiming a process warmed under
+  // allow would run with the capability tools baked into its query.
+  it('does not share a warm process across differing capability policies', async () => {
+    await manager.createSession({
+      ...baseRequest,
+      capabilityPolicies: { subagents: 'allow', workflows: 'allow' },
+    })
+    const warmed = MockClaudeProcess.spawned.at(-1)!
+
+    const session = await manager.createSession({
+      ...baseRequest,
+      capabilityPolicies: { subagents: 'block', workflows: 'block' },
+    })
+
+    expect(session.id).not.toBe(warmed.sessionId)
+    expect(warmed.disposeCalls).toBe(1)
+  })
+
+  it('does not share a warm process across differing custom env vars', async () => {
+    await manager.createSession({ ...baseRequest, customEnvVars: { API_BASE: 'one' } })
+    const warmed = MockClaudeProcess.spawned.at(-1)!
+
+    const session = await manager.createSession({ ...baseRequest, customEnvVars: { API_BASE: 'two' } })
+
+    expect(session.id).not.toBe(warmed.sessionId)
+    expect(warmed.disposeCalls).toBe(1)
+  })
+
+  // The process is spawned with a snapshot of the environment, so one that is
+  // still spawning when /env writes is just as stale as a parked one — and its
+  // profile is unchanged, so nothing else would reject it.
+  it('rejects a warm-up that was already spawning when the environment changed', async () => {
+    let release!: () => void
+    prewarmGate = new Promise<void>((r) => (release = r))
+
+    await manager.createSession(baseRequest)
+    const inFlight = MockClaudeProcess.spawned.at(-1)!
+
+    await manager.discardPrewarmed('env var REMOTE_MCPS changed')
+    release()
+
+    await vi.waitFor(() => expect(inFlight.disposeCalls).toBe(1))
+    // And nothing stale is left parked for the next session to claim.
+    prewarmGate = null
+    const session = await manager.createSession(baseRequest)
+    expect(session.id).not.toBe(inFlight.sessionId)
+  })
+
   // Otherwise a CLI nobody can use sits on memory until the next createSession.
   it('disposes a warm-up that finishes after a session asked for something else', async () => {
     let release!: () => void

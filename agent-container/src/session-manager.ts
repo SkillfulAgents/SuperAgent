@@ -77,6 +77,10 @@ export class SessionManager extends EventEmitter {
   // instead of parking a process nobody will accept.
   private desiredWarmKey: string | null = null;
   private pendingProfile: WarmProfile | null = null;
+  // Bumped by discardPrewarmed. A warm-up captures the value at spawn time and
+  // disposes itself if it no longer matches, which is the only way to reject a
+  // process that was already spawning when the environment changed.
+  private warmGeneration = 0;
   private shuttingDown = false;
   private readonly warmProfileStore: WarmProfileStore;
   // Kill switch for the parked subprocess, so a container can fall back to
@@ -421,6 +425,7 @@ export class SessionManager extends EventEmitter {
     if (!this.prewarmEnabled || this.shuttingDown) return;
 
     const key = warmProfileKey(profile);
+    const generation = this.warmGeneration;
     // Recorded even when a warm-up is already in flight, so that one can see
     // it has been superseded and hand over to this profile when it lands.
     this.desiredWarmKey = key;
@@ -462,7 +467,7 @@ export class SessionManager extends EventEmitter {
         // session switched the agent default). Parking this one would leave a
         // CLI nobody can accept holding memory, so drop it and warm for what
         // is wanted now.
-        if (this.shuttingDown || this.desiredWarmKey !== key) {
+        if (this.shuttingDown || this.desiredWarmKey !== key || this.warmGeneration !== generation) {
           await process.dispose().catch(() => undefined);
           return;
         }
@@ -504,6 +509,11 @@ export class SessionManager extends EventEmitter {
    * session would silently run against the old MCP set.
    */
   async discardPrewarmed(reason: string): Promise<void> {
+    // Bumped synchronously, before any await and whether or not a process is
+    // parked right now: a warm-up still spawning captured the OLD environment
+    // when it built its query options, so it must be invalidated too. Its
+    // profile is unchanged, so desiredWarmKey would happily park it.
+    this.warmGeneration++;
     const warm = this.warm;
     if (!warm) return;
     this.warm = null;
