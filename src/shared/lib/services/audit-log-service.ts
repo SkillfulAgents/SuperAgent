@@ -19,6 +19,11 @@ export const AUDIT_EVENT_MAP = {
   settings:         ['updated', 'factory_reset'],
   policy:           ['updated'],
   user:             ['invited', 'reset_password'],
+  // Authentication events. Every path that mints a session records `created`
+  // with a `method` detail — see auth/session-audit.ts. Revocation is not
+  // audited yet; it would have to cover sign-out, admin revoke, and the
+  // concurrent-session reaper together or it would read as a gap.
+  session:          ['created'],
 } as const satisfies Record<string, readonly string[]>
 
 export type AuditObject = keyof typeof AUDIT_EVENT_MAP

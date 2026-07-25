@@ -8,6 +8,7 @@ import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
 import { getSettings, DEFAULT_AUTH_SETTINGS } from '@shared/lib/config/settings'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
+import { auditSessionCreated } from './session-audit'
 import { getGenericOAuthProviderConfigs } from './provider-config'
 
 // Re-export isAuthMode from its own file (no better-auth imports)
@@ -174,13 +175,26 @@ function createAuthInstance() {
       },
       session: {
         create: {
-          after: async (session) => {
+          after: async (session, context) => {
             try {
               const sessSettings = getSettings()
               const sessAuth = { ...DEFAULT_AUTH_SETTINGS, ...sessSettings.auth }
               enforceMaxConcurrentSessions(session.userId, sessAuth.maxConcurrentSessions ?? 5)
             } catch (err) {
               console.error('Failed to enforce max concurrent sessions:', err)
+            }
+            // Every session-creation path lands here — browser password login,
+            // platform OIDC, admin impersonation, and the RFC 7523 token
+            // exchange — so one audit row per session comes from one place.
+            // Its own try/catch: enforcement failing must not swallow the
+            // record of the credential that was just issued.
+            try {
+              // Declared as GenericEndpointContext, but the object Better Auth
+              // actually stores is a Partial — outside an endpoint it is null,
+              // and `path` can be absent even when it is not.
+              await auditSessionCreated(session, context?.path)
+            } catch (err) {
+              console.error('Failed to audit session creation:', err)
             }
           },
         },

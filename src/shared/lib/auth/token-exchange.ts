@@ -8,6 +8,7 @@ import { getAuth } from './index'
 import { getAppBaseUrl } from './config'
 import { verifyOidcJwt } from './oidc-jwt'
 import { getAuthProviderIssuer, isAuthProviderEnabled } from './provider-config'
+import { withSessionAuditContext } from './session-audit'
 import {
   DEPLOYMENT_ASSERTION_TYP,
   DeploymentGrantClaimsSchema,
@@ -308,10 +309,18 @@ export async function exchangeDeploymentGrant(
 
   // Session hygiene: record where this session came from so users can see
   // and revoke it in the sessions list.
-  const session = await ctx.internalAdapter.createSession(fresh.id, false, {
-    userAgent: meta.userAgent?.slice(0, 512) || 'token-exchange',
-    ipAddress: meta.ipAddress ?? '',
-  })
+  //
+  // Wrapped so the session.create.after hook can attribute the audit row: this
+  // call is not a Better Auth endpoint, so there is no endpoint path for the
+  // hook to read, and the grant's org is only known here.
+  const session = await withSessionAuditContext(
+    { method: 'token-exchange', orgId: claims.org_id },
+    () =>
+      ctx.internalAdapter.createSession(fresh.id, false, {
+        userAgent: meta.userAgent?.slice(0, 512) || 'token-exchange',
+        ipAddress: meta.ipAddress ?? '',
+      }),
+  )
   if (!session) {
     captureException(new Error('token exchange: session creation returned no session'), {
       tags: { component: 'token-exchange', operation: 'session-create' },
