@@ -457,6 +457,7 @@ import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@s
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, getSecret, keyToEnvVar, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
@@ -3192,6 +3193,82 @@ describe('DELETE /:id/sessions/:sessionId', () => {
 // ============================================================================
 // Awaiting-input recovery from the persisted transcript
 // ============================================================================
+
+describe('pending-requests snapshot — GET /:id/pending-requests', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    userInputRequestManager.reset()
+  })
+
+  afterEach(() => {
+    userInputRequestManager.reset()
+  })
+
+  function park(id: string, sessionId?: string, payload: Record<string, unknown> = { secretName: 'K' }) {
+    userInputRequestManager.register({
+      id,
+      kind: sessionId ? 'secret' : 'proxy_review',
+      scope: { agentSlug: 'test-agent', ...(sessionId ? { sessionId } : {}) },
+      blocking: true,
+      autoApproved: false,
+      payload,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+  }
+
+  it('a session view unions its own requests with the agent-scoped reviews', async () => {
+    park('req-mine', 'sess-1')
+    park('req-other-session', 'sess-2')
+    park('req-review')
+
+    const res = await getReq(app, '/api/agents/test-agent/pending-requests?sessionId=sess-1')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { requests: Array<{ id: string }> }
+    expect(body.requests.map((r) => r.id).sort()).toEqual(['req-mine', 'req-review'])
+  })
+
+  it('an agent view returns everything in the agent scope', async () => {
+    park('req-mine', 'sess-1')
+    park('req-review')
+
+    const res = await getReq(app, '/api/agents/test-agent/pending-requests')
+    const body = (await res.json()) as { requests: Array<{ id: string }> }
+    expect(body.requests.map((r) => r.id).sort()).toEqual(['req-mine', 'req-review'])
+  })
+
+  it('recovery synthetics stay in the snapshot — payload-less, but still blocking waits', async () => {
+    park('req-live', 'sess-1')
+    park('req-recovered', 'sess-1', { recovered: true })
+
+    const res = await getReq(app, '/api/agents/test-agent/pending-requests?sessionId=sess-1')
+    const body = (await res.json()) as { requests: Array<{ id: string }> }
+    expect(body.requests.map((r) => r.id).sort()).toEqual(['req-live', 'req-recovered'])
+  })
+
+  it("a sessionId belonging to a DIFFERENT agent leaks nothing through this agent's gate", async () => {
+    // AgentRead() authorizes :id only — the sessionId query param is caller
+    // input, so a foreign session must contribute zero entries to the view.
+    userInputRequestManager.register({
+      id: 'req-foreign',
+      kind: 'secret',
+      scope: { agentSlug: 'other-agent', sessionId: 'sess-foreign' },
+      blocking: true,
+      autoApproved: false,
+      payload: { secretName: 'OTHER_AGENTS_SECRET' },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    park('req-review')
+
+    const res = await getReq(app, '/api/agents/test-agent/pending-requests?sessionId=sess-foreign')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { requests: Array<{ id: string }> }
+    expect(body.requests.map((r) => r.id)).toEqual(['req-review'])
+  })
+})
 
 describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', () => {
   let app: ReturnType<typeof createApp>

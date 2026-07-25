@@ -169,6 +169,135 @@ describe('UserInputRequestManager', () => {
     })
   })
 
+  describe('transition listeners (unified wire feed)', () => {
+    it('emits exactly one created per accepted registration and one resolved per settlement', () => {
+      const transitions: Array<{ type: string; id: string; outcome?: string }> = []
+      manager.onTransition((t) => transitions.push({ type: t.type, id: t.request.id, outcome: t.outcome }))
+
+      manager.register(secretRequest())
+      // First-delivery-wins duplicate must NOT re-emit.
+      manager.register(secretRequest({ payload: { secretName: 'DUP' } }))
+      manager.resolve('tool-1', 'answered')
+      // Idempotent resolve of an unknown id must not emit.
+      manager.resolve('tool-1', 'answered')
+
+      expect(transitions).toEqual([
+        { type: 'created', id: 'tool-1', outcome: undefined },
+        { type: 'resolved', id: 'tool-1', outcome: 'answered' },
+      ])
+    })
+
+    it('a malformed registration emits nothing', () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const transitions: string[] = []
+      manager.onTransition((t) => transitions.push(t.type))
+      manager.register({ id: '', kind: 'secret', scope: {}, blocking: true, payload: {} } as PendingUserInputRequestInput)
+      expect(transitions).toEqual([])
+    })
+
+    it('store-scoped clears emit resolved with the boundary outcome', () => {
+      const outcomes: Array<{ id: string; outcome?: string }> = []
+      manager.onTransition((t) => {
+        if (t.type === 'resolved') outcomes.push({ id: t.request.id, outcome: t.outcome })
+      })
+      manager.register(secretRequest({ id: 'clear-1' }))
+      manager.register(secretRequest({ id: 'clear-2' }))
+      manager.clearSessionStreamRequests('session-1', 'superseded')
+      expect(outcomes).toEqual([
+        { id: 'clear-1', outcome: 'superseded' },
+        { id: 'clear-2', outcome: 'superseded' },
+      ])
+    })
+
+    it('a throwing listener is swallowed and does not break the mutation or other listeners', () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const seen: string[] = []
+      manager.onTransition(() => {
+        throw new Error('listener boom')
+      })
+      manager.onTransition((t) => seen.push(t.type))
+      const stored = manager.register(secretRequest())
+      expect(stored).not.toBeNull()
+      expect(seen).toEqual(['created'])
+    })
+
+    it('unsubscribe stops delivery', () => {
+      const seen: string[] = []
+      const unsubscribe = manager.onTransition((t) => seen.push(t.type))
+      unsubscribe()
+      manager.register(secretRequest())
+      expect(seen).toEqual([])
+    })
+  })
+
+  describe('getSnapshotForScope', () => {
+    it("a session scope unions its own requests with the agent's agent-scoped reviews", () => {
+      manager.register(secretRequest({ id: 'mine-1' }))
+      manager.register(secretRequest({ id: 'other-1', scope: { agentSlug: 'agent-a', sessionId: 'session-other' } }))
+      manager.register({
+        id: 'review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-a' },
+        blocking: true,
+        payload: { toolkit: 'slack' },
+      } as PendingUserInputRequestInput)
+      manager.register({
+        id: 'review-b',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-b' },
+        blocking: true,
+        payload: { toolkit: 'github' },
+      } as PendingUserInputRequestInput)
+
+      const ids = manager.getSnapshotForScope('agent-a', 'session-1').map((r) => r.id).sort()
+      expect(ids).toEqual(['mine-1', 'review-1'])
+    })
+
+    it("a session view never crosses agents — another agent's sessionId returns none of its requests", () => {
+      // The sessionId reaches getSnapshotForScope from an unvalidated query
+      // param behind an AgentRead gate on the AGENT only; matching on
+      // sessionId alone would hand agent-a's viewer agent-b's payloads.
+      manager.register(
+        secretRequest({ id: 'foreign-1', scope: { agentSlug: 'agent-b', sessionId: 'session-b' } }),
+      )
+      manager.register({
+        id: 'review-a',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-a' },
+        blocking: true,
+        payload: { toolkit: 'slack' },
+      } as PendingUserInputRequestInput)
+
+      const ids = manager.getSnapshotForScope('agent-a', 'session-b').map((r) => r.id)
+      expect(ids).toEqual(['review-a'])
+    })
+
+    it('an agent scope returns everything in the agent, sessions included', () => {
+      manager.register(secretRequest({ id: 'mine-1' }))
+      manager.register({
+        id: 'review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-a' },
+        blocking: true,
+        payload: { toolkit: 'slack' },
+      } as PendingUserInputRequestInput)
+      const ids = manager.getSnapshotForScope('agent-a').map((r) => r.id).sort()
+      expect(ids).toEqual(['mine-1', 'review-1'])
+    })
+
+    it('recovery synthetics ARE in the snapshot — a recovered wait is still a blocking wait', () => {
+      // They stay off the WIRE (no renderable payload to push), but the
+      // snapshot is the awaiting-status source for clients: excluding them
+      // made the activity indicator read "Working…" while the server and the
+      // transcript-rendered card both said awaiting input. The per-kind card
+      // guards drop the payload-less entries, so no broken card renders.
+      manager.register(secretRequest({ id: 'live-1' }))
+      manager.register(secretRequest({ id: 'recovered-1', payload: { recovered: true } }))
+      const ids = manager.getSnapshotForScope('agent-a', 'session-1').map((r) => r.id).sort()
+      expect(ids).toEqual(['live-1', 'recovered-1'])
+    })
+  })
+
   describe('shadow diagnostics', () => {
     it('verifyStoreParity passes silently when both stores match', () => {
       manager.register(secretRequest({ id: 'stream-1' }))

@@ -354,6 +354,22 @@ export function GlobalNotificationHandler() {
             break
           }
 
+          case 'user_request_created':
+          case 'user_request_resolved':
+            // Unified pending-request wire. Invalidation, not data: the
+            // refetch reads the server registry snapshot. This is the live
+            // path for agent-scoped reviews (they have no session stream) and
+            // the cross-tab/cross-session sync for everything else; the
+            // store's interval refetch is the safety net for a missed event.
+            queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
+            // The dashboard's pending-reviews panel still reads the legacy
+            // poll (its store migration is a later phase). Nudging it here
+            // makes dashboard-triggered reviews — which may have NO session
+            // anywhere — appear/settle on creation, decision, timeout, and
+            // auto-deny instead of on the next 30s poll tick.
+            queryClient.invalidateQueries({ queryKey: ['proxy-reviews'] })
+            break
+
           case 'agent_status_changed':
             // Agent started/stopped - update agent list and artifacts
             queryClient.invalidateQueries({ queryKey: ['agents'] })

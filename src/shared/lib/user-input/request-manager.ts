@@ -19,8 +19,23 @@ import {
  * calls (and their split-brains: parallel requests, direct-clear doors,
  * review blockers) are gone.
  */
+/**
+ * A registry transition: exactly one 'created' per accepted registration and
+ * one 'resolved' per settlement, no matter which of the many mutation paths
+ * drove it. This is the single feed for the unified wire events
+ * (user_request_created / user_request_resolved) — emitting from here instead
+ * of per-callsite is what makes silent-exit bugs structurally impossible.
+ */
+export interface UserInputRequestTransition {
+  type: 'created' | 'resolved'
+  request: PendingUserInputRequest
+  outcome?: UserInputRequestOutcome
+}
+
 export class UserInputRequestManager {
   private requests = new Map<string, PendingUserInputRequest>()
+
+  private transitionListeners = new Set<(transition: UserInputRequestTransition) => void>()
 
   /** Bounded trail of recent settlements, for shadow-mode debugging and tests. */
   private recentResolutions: Array<{
@@ -51,6 +66,7 @@ export class UserInputRequestManager {
       return null
     }
     this.requests.set(parsed.data.id, parsed.data)
+    this.emitTransition({ type: 'created', request: parsed.data })
     return parsed.data
   }
 
@@ -61,7 +77,27 @@ export class UserInputRequestManager {
     this.requests.delete(id)
     this.recentResolutions.push({ id, kind: request.kind, outcome })
     if (this.recentResolutions.length > 100) this.recentResolutions.shift()
+    this.emitTransition({ type: 'resolved', request, outcome })
     return request
+  }
+
+  /**
+   * Subscribe to registry transitions. Listener errors are swallowed: wire
+   * fan-out must never break the mutation path that triggered it.
+   */
+  onTransition(listener: (transition: UserInputRequestTransition) => void): () => void {
+    this.transitionListeners.add(listener)
+    return () => this.transitionListeners.delete(listener)
+  }
+
+  private emitTransition(transition: UserInputRequestTransition): void {
+    for (const listener of this.transitionListeners) {
+      try {
+        listener(transition)
+      } catch (error) {
+        console.error('[UserInputRequestManager] transition listener failed:', error)
+      }
+    }
   }
 
   /**
@@ -111,6 +147,30 @@ export class UserInputRequestManager {
     return [...this.requests.values()].filter(
       (r) => r.scope.agentSlug === agentSlug && r.scope.sessionId === undefined,
     )
+  }
+
+  /**
+   * Wire snapshot for a scope. A session's view is its own requests plus the
+   * agent-scoped requests of its agent (a parked review blocks — and renders
+   * in — every session of the agent); an agent's view is everything in its
+   * scope. Recovery synthetics are INCLUDED: they are real blocking waits and
+   * the snapshot is the clients' awaiting-status source — excluding them made
+   * the activity indicator read "Working…" against a visible recovered card.
+   * They carry no renderable payload, so the per-kind card guards drop them
+   * (the transcript renders the card); only the wire EVENTS filter them.
+   */
+  getSnapshotForScope(agentSlug: string, sessionId?: string): PendingUserInputRequest[] {
+    return [...this.requests.values()].filter((r) => {
+      // Agent check FIRST, unconditionally: sessionId arrives from an
+      // unvalidated query param behind an AgentRead gate on the agent alone,
+      // so matching on sessionId by itself would hand this agent's viewer
+      // another agent's session-scoped payloads.
+      if (r.scope.agentSlug !== agentSlug) return false
+      if (sessionId !== undefined) {
+        return r.scope.sessionId === sessionId || r.scope.sessionId === undefined
+      }
+      return true
+    })
   }
 
   getStoreIdsForSession(sessionId: string, store: UserInputRequestStore): string[] {
