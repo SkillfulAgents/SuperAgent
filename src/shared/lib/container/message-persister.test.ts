@@ -3113,7 +3113,7 @@ describe('MessagePersister', () => {
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
       })
 
-      it('sweeps pendingComputerUseRequests (the separate map) and interrupts', async () => {
+      it('sweeps the pending computer-use entries and interrupts', async () => {
         vi.stubEnv('E2E_MOCK', 'true') // skip the host platform gate so the request goes pending
         try {
           messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)

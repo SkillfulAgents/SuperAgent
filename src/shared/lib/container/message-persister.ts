@@ -119,12 +119,11 @@ interface StreamingState {
   // set imperatively — turn-boundary teardown paths reset it to false alongside isActive; every
   // other transition must go through syncSessionAwaiting.
   isAwaitingInput: boolean
-  // TODO: computer-use and the other input requests are tracked in two separate maps with
-  // divergent clearing rules (this one survives an idle boundary for SSE replay and is cleared
-  // on session_active / decision routes / cancelAwaitingInput; pendingInputRequests below is
-  // cleared on tool_result + both turn boundaries). Unify into a single store + single SSE
-  // replay loop. Tracked: SUP-213 (sibling of SUP-163).
-  pendingComputerUseRequests: Map<string, { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> // Pending computer use requests awaiting user approval (keyed by toolUseId)
+  // Computer-use requests live ONLY in userInputRequestManager (kind
+  // 'computer_use'), not here: their clearing rules diverge from the stream
+  // store (they survive an idle boundary for SSE replay; cleared on
+  // session_active / decision routes / cancelAwaitingInput), which the
+  // registry expresses via storeForKind — see getPendingComputerUseRequests.
   // Pending user-input request broadcasts (secret/connected_account/question/file/remote_mcp/
   // script_run/browser_input), keyed by toolUseId. These are one-shot SSE events, so a client
   // that connects AFTER they fire would never see them; we store the exact payloads here and the
@@ -347,7 +346,6 @@ class MessagePersister {
     const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
     const priorBackgroundTasks = prior?.activeBackgroundTasks ?? new Map()
     const priorPendingInputRequests = prior?.pendingInputRequests ?? new Map()
-    const priorPendingComputerUseRequests = prior?.pendingComputerUseRequests ?? new Map()
 
     // Detach only the transport if already subscribed. NOT unsubscribeFromSession:
     // that is a full teardown — it drops the session's registry entries, which
@@ -374,7 +372,6 @@ class MessagePersister {
       activeSubagents: new Map(),
       slashCommands: [],
       isAwaitingInput: priorIsAwaitingInput,
-      pendingComputerUseRequests: priorPendingComputerUseRequests,
       pendingInputRequests: priorPendingInputRequests,
       cancelledCapabilityReviews: new Set(),
       lastApiErrorCode: null,
@@ -578,11 +575,30 @@ class MessagePersister {
     return state ? this.computeActivity(state) : 'idle'
   }
 
-  // Get pending computer use requests for a session (for SSE replay on reconnect)
+  // Get pending computer use requests for a session (for SSE replay on reconnect).
+  // Sourced from the registry — the persister no longer keeps its own
+  // computer-use map. The legacy event shape is rebuilt from the envelope for
+  // the replay route and the decision endpoints.
   getPendingComputerUseRequests(sessionId: string): Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> {
-    const state = this.streamingStates.get(sessionId)
-    if (!state) return []
-    return Array.from(state.pendingComputerUseRequests.values())
+    return userInputRequestManager
+      .getOpenRequestsForSession(sessionId)
+      .filter((r) => r.kind === 'computer_use')
+      .map((r) => {
+        const payload = r.payload as {
+          method?: string
+          params?: Record<string, unknown>
+          permissionLevel?: string
+          appName?: string
+        }
+        return {
+          toolUseId: r.id,
+          method: payload.method ?? '',
+          params: payload.params ?? {},
+          permissionLevel: payload.permissionLevel ?? '',
+          appName: payload.appName,
+          agentSlug: r.scope.agentSlug,
+        }
+      })
   }
 
   // Get pending user-input request broadcasts for a session (for SSE replay on (re)connect).
@@ -634,13 +650,8 @@ class MessagePersister {
     toolUseId: string,
     outcome: UserInputRequestOutcome = 'answered',
   ): void {
-    const state = this.streamingStates.get(sessionId)
-    if (state) {
-      state.pendingComputerUseRequests.delete(toolUseId)
-      userInputRequestManager.resolveIfInStore(toolUseId, 'computer_use', outcome)
-      this.shadowRegistryCheck(sessionId, 'clearPendingComputerUseRequest')
-      this.syncSessionAwaiting(sessionId)
-    }
+    userInputRequestManager.resolveIfInStore(toolUseId, 'computer_use', outcome)
+    this.syncSessionAwaiting(sessionId)
   }
 
   // When a new message arrives while the session is awaiting user input, cancel the
@@ -666,9 +677,9 @@ class MessagePersister {
 
     const state = this.streamingStates.get(sessionId)
 
-    // Snapshot the pending tool ids from BOTH maps before interrupting. pendingInputRequests holds
-    // the broadcast types (cleared by markSessionInterrupted's session_idle); computer_use lives in
-    // its own pendingComputerUseRequests map, which that broadcast does NOT clear. Read the store
+    // Snapshot the pending tool ids from BOTH stores before interrupting. pendingInputRequests
+    // holds the broadcast types (cleared by markSessionInterrupted's session_idle); computer_use
+    // lives only in the registry, which that broadcast does NOT clear. Read the stream store
     // RAW — not getPendingInputRequests, whose replay filter hides recovered entries. Those are
     // exactly the ones whose container-side pending may still be live (the host missed the original
     // events), so skipping them would leave an abandoned request for a late click to land on.
@@ -682,10 +693,9 @@ class MessagePersister {
     await this.markSessionInterrupted(sessionId)
 
     // Clear the host-side computer_use bookkeeping explicitly — session_idle only clears
-    // pendingInputRequests, so a leftover entry would replay a phantom approval card on reconnect.
+    // the stream store, so a leftover entry would replay a phantom approval card on reconnect.
     for (const id of computerUseIds) {
-      state?.pendingComputerUseRequests.delete(id)
-      if (state) userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
+      userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
     }
     this.shadowRegistryCheck(sessionId, 'cancelAwaitingInput')
 
@@ -888,7 +898,6 @@ class MessagePersister {
         activeSubagents: new Map(),
         slashCommands: [],
         isAwaitingInput: false,
-        pendingComputerUseRequests: new Map(),
         pendingInputRequests: new Map(),
         cancelledCapabilityReviews: new Set(),
         lastApiErrorCode: null,
@@ -1000,7 +1009,6 @@ class MessagePersister {
       sessionId,
       context,
       streamStoreIds: [...state.pendingInputRequests.keys()],
-      computerUseStoreIds: [...state.pendingComputerUseRequests.keys()],
     })
   }
 
@@ -1013,22 +1021,31 @@ class MessagePersister {
     toolUseId: string,
     toolInput: string,
     agentSlug?: string,
+    parentToolUseId?: string,
   ): void {
     const state = this.streamingStates.get(sessionId)
-    if (state?.pendingInputRequests.has(toolUseId)) return
+    // A recovered stub does NOT dedupe: transcript recovery can synthesize a
+    // payload-less entry before the stream event lands, and the real dispatch
+    // must go through to re-broadcast the event and upgrade the registry entry
+    // (register() replaces recovered synthetics; clients never got a
+    // renderable event for the stub).
+    const existing = state?.pendingInputRequests.get(toolUseId) as
+      | { recovered?: boolean }
+      | undefined
+    if (existing && existing.recovered !== true) return
 
     if (toolName === 'AskUserQuestion') {
-      this.handleAskUserQuestionTool(sessionId, toolUseId, toolInput, agentSlug)
+      this.handleAskUserQuestionTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
     } else if (toolName === 'mcp__user-input__request_secret') {
-      this.handleSecretRequestTool(sessionId, toolUseId, toolInput, agentSlug)
+      this.handleSecretRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
     } else if (toolName === 'mcp__user-input__request_connected_account') {
-      this.handleConnectedAccountRequestTool(sessionId, toolUseId, toolInput, agentSlug)
+      this.handleConnectedAccountRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
     } else if (toolName === 'mcp__user-input__request_file') {
-      this.handleFileRequestTool(sessionId, toolUseId, toolInput, agentSlug)
+      this.handleFileRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
     } else if (toolName === 'mcp__user-input__request_remote_mcp') {
-      this.handleRemoteMcpRequestTool(sessionId, toolUseId, toolInput, agentSlug)
+      this.handleRemoteMcpRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
     } else if (toolName === 'mcp__user-input__request_browser_input') {
-      this.handleBrowserInputRequestTool(sessionId, toolUseId, toolInput, agentSlug)
+      this.handleBrowserInputRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
     }
 
     // Only tools with 'request_' prefix actually block waiting for user response
@@ -1202,16 +1219,15 @@ class MessagePersister {
           )
           if (evt.type === 'session_active') {
             // A new turn also supersedes computer-use approvals left over from
-            // a previous one. Historically this store was never cleared at
-            // turn boundaries (only by a decision or cancelAwaitingInput), so
+            // a previous one. Historically these were never cleared at turn
+            // boundaries (only by a decision or cancelAwaitingInput), so
             // stale entries could survive an idle/interrupt — harmless when
             // awaiting was an imperative bit, but the derived projection would
             // read them as a live wait and flag the fresh turn as awaiting.
             // (Idle keeps them for SSE replay of a still-parked approval.)
-            for (const id of state.pendingComputerUseRequests.keys()) {
+            for (const id of userInputRequestManager.getStoreIdsForSession(sessionId, 'computer_use')) {
               userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
             }
-            state.pendingComputerUseRequests.clear()
           }
           this.shadowRegistryCheck(sessionId, `broadcast:${evt.type}`)
         } else if (MessagePersister.INPUT_REQUEST_TYPES.has(evt.type) && typeof evt.toolUseId === 'string') {
@@ -2155,6 +2171,7 @@ class MessagePersister {
               block.id,
               input,
               state.agentSlug,
+              parentToolId,
             )
             if (block.name === 'mcp__user-input__request_script_run') {
               this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug)
@@ -2166,6 +2183,7 @@ class MessagePersister {
                 block.name,
                 input,
                 state.agentSlug,
+                parentToolId,
               )
             }
           }
@@ -2345,6 +2363,38 @@ class MessagePersister {
       state.completedSubagentIds.add(sub.agentId)
     }
     state.activeSubagents.delete(parentToolId)
+    this.invalidateSubagentRequests(sessionId, state, parentToolId)
+  }
+
+  // A terminated subagent can leave a parked request nothing will ever answer
+  // (it died before its tool_result). Settle its registry entries, drop the
+  // replay mirrors, reject the container-side pendings so a late click can't
+  // land, and recompute awaiting. A subagent that resolved its requests
+  // normally has no entries left under its parent — this is then a no-op.
+  private invalidateSubagentRequests(
+    sessionId: string,
+    state: StreamingState,
+    parentToolId: string,
+  ): void {
+    const orphaned = userInputRequestManager.resolveRequestsByParent(parentToolId, 'invalidated')
+    if (orphaned.length === 0) return
+    for (const request of orphaned) {
+      state.pendingInputRequests.delete(request.id)
+      if (state.agentSlug) {
+        this.rejectContainerInput(
+          state.agentSlug,
+          request.id,
+          'The subagent that asked for this input was terminated.',
+        ).catch((e) =>
+          console.error(
+            `[MessagePersister] dead-subagent reject failed for ${request.id}:`,
+            e,
+          ),
+        )
+      }
+    }
+    this.shadowRegistryCheck(sessionId, 'invalidateSubagentRequests')
+    this.syncSessionAwaiting(sessionId)
   }
 
   // Handle subagent stream events — mirrors handleStreamEvent but with subagent_ prefixed SSE events
@@ -2421,6 +2471,7 @@ class MessagePersister {
             sub.currentToolUse.id,
             sub.currentToolInput,
             state.agentSlug,
+            parentToolId,
           )
 
           if (sub.currentToolUse.name === 'mcp__user-input__request_script_run') {
@@ -2438,7 +2489,8 @@ class MessagePersister {
               sub.currentToolUse.id,
               sub.currentToolUse.name,
               sub.currentToolInput,
-              state.agentSlug
+              state.agentSlug,
+              parentToolId,
             )
           }
 
@@ -2774,7 +2826,8 @@ class MessagePersister {
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       // Parse the tool input to get secretName and reason
@@ -2798,6 +2851,7 @@ class MessagePersister {
         secretName: input.secretName,
         reason: input.reason,
         agentSlug,
+        ...(parentToolUseId ? { parentToolUseId } : {}),
       })
 
       // Renderer's notification gate decides whether to show the OS popup
@@ -2817,7 +2871,8 @@ class MessagePersister {
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       // Parse the tool input to get toolkit and reason
@@ -2841,6 +2896,7 @@ class MessagePersister {
         toolkit: input.toolkit.toLowerCase(),
         reason: input.reason,
         agentSlug,
+        ...(parentToolUseId ? { parentToolUseId } : {}),
       })
 
       // Renderer-side gate handles suppression; see session_complete trigger.
@@ -4014,7 +4070,8 @@ ${continuation}`
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       // Parse the tool input to get questions
@@ -4037,6 +4094,7 @@ ${continuation}`
         toolUseId,
         questions: input.questions,
         agentSlug,
+        ...(parentToolUseId ? { parentToolUseId } : {}),
       })
 
       // Renderer-side gate handles suppression; see session_complete trigger.
@@ -4138,7 +4196,8 @@ ${continuation}`
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       let input: RequestFileInput = {}
@@ -4161,6 +4220,7 @@ ${continuation}`
         description: input.description,
         fileTypes: input.fileTypes,
         agentSlug,
+        ...(parentToolUseId ? { parentToolUseId } : {}),
       })
 
       // Renderer-side gate handles suppression; see session_complete trigger.
@@ -4179,7 +4239,8 @@ ${continuation}`
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       let input: RequestRemoteMcpInput = {}
@@ -4204,6 +4265,7 @@ ${continuation}`
         reason: input.reason,
         authHint: input.authHint,
         agentSlug,
+        ...(parentToolUseId ? { parentToolUseId } : {}),
       })
 
       // Renderer-side gate handles suppression; see session_complete trigger.
@@ -4222,7 +4284,8 @@ ${continuation}`
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       let input: RequestBrowserInputInput = {}
@@ -4246,6 +4309,7 @@ ${continuation}`
         // string) to [] so the renderer never calls `.map()` on a non-array.
         requirements: Array.isArray(input.requirements) ? input.requirements : [],
         agentSlug,
+        ...(parentToolUseId ? { parentToolUseId } : {}),
       })
 
       // The request always blocks on the user, no matter which stream it came
@@ -4363,6 +4427,7 @@ ${continuation}`
     toolName: string,
     toolInput: string,
     agentSlug?: string,
+    parentToolUseId?: string,
   ): Promise<void> {
     try {
       // Extract AC method from tool name: mcp__computer-use__computer_launch -> launch.
@@ -4423,23 +4488,18 @@ ${continuation}`
         }
       }
 
-      // Permission needed — track and broadcast to UI for user approval
-      const state = this.streamingStates.get(sessionId)
-      if (state) {
-        // Guard against duplicate entries (e.g., SSE event replayed)
-        if (!state.pendingComputerUseRequests.has(toolUseId)) {
-          state.pendingComputerUseRequests.set(toolUseId, { toolUseId, method, params, permissionLevel, appName, agentSlug })
-          userInputRequestManager.register({
-            id: toolUseId,
-            kind: 'computer_use',
-            scope: { agentSlug, sessionId },
-            blocking: true,
-            autoApproved: false,
-            payload: { method, params, permissionLevel, appName },
-          })
-        }
-        this.shadowRegistryCheck(sessionId, 'handleComputerUseRequestTool')
-      }
+      // Permission needed — register and broadcast to UI for user approval.
+      // register() is first-delivery-wins, so a duplicate delivery (e.g. an
+      // SSE event replayed) cannot double-enter the registry.
+      userInputRequestManager.register({
+        id: toolUseId,
+        kind: 'computer_use',
+        scope: { agentSlug, sessionId },
+        blocking: true,
+        autoApproved: false,
+        parentToolUseId,
+        payload: { method, params, permissionLevel, appName },
+      })
       this.syncSessionAwaiting(sessionId)
 
       this.broadcastToSSE(sessionId, {

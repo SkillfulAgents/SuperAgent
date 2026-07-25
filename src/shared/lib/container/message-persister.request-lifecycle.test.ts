@@ -423,11 +423,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
   )
 
   // ==========================================================================
-  // Documented divergence: computer-use lives in a separate store with
-  // route-driven clearing (the two-store split this suite exists to pin down)
+  // Documented divergence: computer-use has route-driven clearing and
+  // survives idle boundaries — the registry expresses this as a distinct
+  // store label (storeForKind), no longer as a separate map
   // ==========================================================================
 
-  describe('main stream: computer use (divergent two-store lifecycle)', () => {
+  describe('main stream: computer use (divergent clearing rules)', () => {
     const TOOL = 'mcp__computer-use__computer_click'
 
     it('opens into the computer-use store, NOT the input-request store', async () => {
@@ -1266,6 +1267,101 @@ describe('pending user-input request lifecycle (characterization)', () => {
   })
 
   // ==========================================================================
+  // Dead-subagent invalidation: a subagent that terminates with a parked
+  // request leaves an unanswerable card. Its registry entries are linked by
+  // parentToolUseId at dispatch, and subagent completion invalidates them —
+  // registry, replay store, container pending, and awaiting status together.
+  // ==========================================================================
+
+  describe('dead-subagent request invalidation', () => {
+    function sendSidechainToolUse(parentToolId: string, toolId: string) {
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: parentToolId,
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: toolId,
+              name: 'mcp__user-input__request_browser_input',
+              input: { message: 'Log in', requirements: [] },
+            },
+          ],
+        },
+      })
+    }
+
+    it('a subagent that dies with a parked request invalidates it everywhere', async () => {
+      sendSidechainToolUse('parent-dead-1', 'side-orphan-1')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(1)
+
+      // The subagent finishes WITHOUT a tool_result for the parked ask
+      // (killed, errored, or torn down) — sidechain 'result' is its terminal
+      // frame. Nothing can answer the request anymore.
+      mockClient._sendMessage({
+        type: 'result',
+        parent_tool_use_id: 'parent-dead-1',
+        subtype: 'success',
+      })
+
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      expect(
+        userInputRequestManager.stats.recentResolutions.find((r) => r.id === 'side-orphan-1')
+          ?.outcome,
+      ).toBe('invalidated')
+      // The unified wire tells clients the card is dead.
+      const resolved = sseEvents.filter(
+        (e) => e.type === 'user_request_resolved' && e.requestId === 'side-orphan-1',
+      )
+      expect(resolved).toHaveLength(1)
+      expect(resolved[0].outcome).toBe('invalidated')
+      // The container-side pending is rejected so a late click can't land.
+      await vi.waitFor(() => {
+        expect(
+          mockContainerClientFetch.mock.calls.some(
+            (c) => c[0] === '/inputs/side-orphan-1/reject',
+          ),
+        ).toBe(true)
+      })
+    })
+
+    it("a sibling subagent's death leaves another subagent's parked request open", () => {
+      sendSidechainToolUse('parent-alive-1', 'side-kept-1')
+      sendSidechainToolUse('parent-dying-1', 'side-dropped-1')
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
+
+      mockClient._sendMessage({
+        type: 'result',
+        parent_tool_use_id: 'parent-dying-1',
+        subtype: 'success',
+      })
+
+      const open = userInputRequestManager.getOpenRequestsForSession(SESSION_ID)
+      expect(open.map((r) => r.id)).toEqual(['side-kept-1'])
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it("a main-agent request has no parent linkage and survives subagent completions", () => {
+      simulateToolUse('mcp__user-input__request_secret', 'main-secret-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        parent_tool_use_id: 'parent-unrelated-1',
+        subtype: 'success',
+      })
+      expect(
+        userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id),
+      ).toEqual(['main-secret-1'])
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+  })
+
+  // ==========================================================================
   // Unified wire: every registry transition broadcasts ONE typed event —
   // user_request_created / user_request_resolved — alongside the legacy
   // per-type events, to the global stream always and the session stream when
@@ -1408,6 +1504,33 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       expect(createdFor(globalEvents, 'wire-recovered-1')).toHaveLength(0)
       expect(createdFor(sseEvents, 'wire-recovered-1')).toHaveLength(0)
+    })
+
+    it('the real registration upgrades a recovered synthetic and finally hits the wire', () => {
+      // Recovery beat the stream event (the GET-messages read raced the
+      // container stream). Without the upgrade, the payload-less stub blocks
+      // the real registration forever: clients never receive a renderable
+      // user_request_created and the snapshot serves a stub the card guards
+      // drop.
+      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG, [
+        { toolUseId: 'wire-upgrade-1', toolName: 'mcp__user-input__request_secret' },
+      ])
+      expect(createdFor(globalEvents, 'wire-upgrade-1')).toHaveLength(0)
+
+      simulateToolUse('mcp__user-input__request_secret', 'wire-upgrade-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+
+      const created = createdFor(globalEvents, 'wire-upgrade-1')
+      expect(created).toHaveLength(1)
+      expect(created[0].request.payload.secretName).toBe('API_KEY')
+
+      const entry = userInputRequestManager
+        .getSnapshotForScope(AGENT_SLUG, SESSION_ID)
+        .find((r) => r.id === 'wire-upgrade-1')
+      expect((entry?.payload as { recovered?: boolean }).recovered).toBeUndefined()
+      expect((entry?.payload as { secretName?: string }).secretName).toBe('API_KEY')
     })
 
     it('the snapshot a reconnecting client fetches matches the wire it missed', () => {

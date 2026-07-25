@@ -53,6 +53,13 @@ const baseRequest = z.object({
   blocking: z.boolean(),
   /** Auto-approved asks (e.g. allowlisted script_run) are visible but never block. */
   autoApproved: z.boolean().default(false),
+  /**
+   * The Task tool_use that spawned the asking subagent, when the request came
+   * from a sidechain. Subagent termination invalidates every open request
+   * registered under its parent — without this linkage a dead subagent's card
+   * is orphaned until a coarser boundary clears it.
+   */
+  parentToolUseId: z.string().optional(),
 })
 
 const lenientString = z.string().optional().catch(undefined)
@@ -194,7 +201,14 @@ export function streamEventToPendingRequest(
 ): PendingUserInputRequestInput | null {
   const kind = STREAM_EVENT_TYPE_TO_KIND[evt.type]
   if (!kind) return null
-  const { type: _type, toolUseId: _toolUseId, agentSlug, autoApproved, ...payload } = evt
+  const {
+    type: _type,
+    toolUseId: _toolUseId,
+    agentSlug,
+    autoApproved,
+    parentToolUseId,
+    ...payload
+  } = evt
   return {
     id: evt.toolUseId,
     kind,
@@ -204,6 +218,7 @@ export function streamEventToPendingRequest(
     },
     blocking: true,
     autoApproved: autoApproved === true,
+    parentToolUseId: typeof parentToolUseId === 'string' ? parentToolUseId : undefined,
     payload,
   } as PendingUserInputRequestInput
 }

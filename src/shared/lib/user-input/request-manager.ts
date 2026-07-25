@@ -51,23 +51,35 @@ export class UserInputRequestManager {
    * is still open returns the original entry unchanged (stream stop and
    * complete-assistant can both carry the same tool_use).
    *
+   * One exception: a real registration REPLACES a recovered synthetic for the
+   * same id. Transcript recovery can synthesize a payload-less stub before the
+   * stream event lands; the stub's 'created' transition is filtered off the
+   * wire, so the upgrade emits 'created' again — the first renderable event
+   * clients get for the id. A recovered input never replaces anything.
+   *
    * Never throws — a malformed envelope is logged and dropped so shadow-mode
    * registration can never break a production delivery path.
    */
   register(input: PendingUserInputRequestInput): PendingUserInputRequest | null {
     const existing = this.requests.get(input.id)
-    if (existing) return existing
+    if (existing && !UserInputRequestManager.isRecoveredSynthetic(existing)) return existing
     const parsed = pendingUserInputRequestSchema.safeParse(input)
     if (!parsed.success) {
+      if (existing) return existing
       console.error(
         `[UserInputRequestManager] Dropped malformed request registration (id=${input.id}):`,
         parsed.error.message,
       )
       return null
     }
+    if (existing && UserInputRequestManager.isRecoveredSynthetic(parsed.data)) return existing
     this.requests.set(parsed.data.id, parsed.data)
     this.emitTransition({ type: 'created', request: parsed.data })
     return parsed.data
+  }
+
+  private static isRecoveredSynthetic(request: PendingUserInputRequest): boolean {
+    return (request.payload as Record<string, unknown>).recovered === true
   }
 
   /** Settle and remove a request. Idempotent: unknown ids are a no-op (null). */
@@ -125,6 +137,24 @@ export class UserInputRequestManager {
     }
   }
 
+  /**
+   * Settle every open request registered under a parent Task tool_use — the
+   * dead-subagent sweep. Returns what was settled so the caller can clean up
+   * its mirrors (replay store, container pendings).
+   */
+  resolveRequestsByParent(
+    parentToolUseId: string,
+    outcome: UserInputRequestOutcome = 'invalidated',
+  ): PendingUserInputRequest[] {
+    const settled: PendingUserInputRequest[] = []
+    for (const request of [...this.requests.values()]) {
+      if (request.parentToolUseId !== parentToolUseId) continue
+      const resolved = this.resolve(request.id, outcome)
+      if (resolved) settled.push(resolved)
+    }
+    return settled
+  }
+
   /** Mirror of `streamingStates.delete` — every session-scoped entry dies with the state. */
   dropSessionRequests(sessionId: string, outcome: UserInputRequestOutcome = 'invalidated'): void {
     for (const request of [...this.requests.values()]) {
@@ -133,8 +163,18 @@ export class UserInputRequestManager {
     }
   }
 
+  /** Look up a single open request by id. */
+  getOpenRequest(id: string): PendingUserInputRequest | null {
+    return this.requests.get(id) ?? null
+  }
+
   getOpenRequestsForSession(sessionId: string): PendingUserInputRequest[] {
     return [...this.requests.values()].filter((r) => r.scope.sessionId === sessionId)
+  }
+
+  /** Every open request of a store, across all scopes (e.g. shutdown sweeps). */
+  getOpenRequestsForStore(store: UserInputRequestStore): PendingUserInputRequest[] {
+    return [...this.requests.values()].filter((r) => storeForKind(r.kind) === store)
   }
 
   /** Session-scoped AND agent-scoped entries for the agent. */
@@ -244,49 +284,30 @@ export class UserInputRequestManager {
     sessionId: string
     context: string
     streamStoreIds: string[]
-    computerUseStoreIds: string[]
   }): void {
-    const mismatches = [
-      UserInputRequestManager.describeIdMismatch(
-        'stream',
-        check.streamStoreIds,
-        this.getStoreIdsForSession(check.sessionId, 'stream'),
-      ),
-      UserInputRequestManager.describeIdMismatch(
-        'computer_use',
-        check.computerUseStoreIds,
-        this.getStoreIdsForSession(check.sessionId, 'computer_use'),
-      ),
-    ].filter((m): m is string => m !== null)
-    if (mismatches.length === 0) return
-    this.reportStoreMismatch(`session=${check.sessionId}`, check.context, mismatches)
+    const mismatch = UserInputRequestManager.describeIdMismatch(
+      'stream',
+      check.streamStoreIds,
+      this.getStoreIdsForSession(check.sessionId, 'stream'),
+    )
+    if (mismatch === null) return
+    this.reportStoreMismatch(`session=${check.sessionId}`, check.context, [mismatch])
   }
 
   /**
-   * Same invariant for the review store: the registry's agent-scoped review
-   * view must equal ReviewManager's pending store for the agent, at every
-   * review mutation point.
+   * Review-side invariant, one-directional: every promise settler ReviewManager
+   * holds must correspond to an open review-store entry — a settler without
+   * one is a parked proxied call no sweep can ever reach (the silent-exit bug
+   * class). The converse is NOT an invariant: registry entries without
+   * settlers are legitimate (feeders other than requestReview own no promise).
    */
-  verifyReviewStoreParity(check: {
-    agentSlug: string
-    context: string
-    reviewStoreIds: string[]
-  }): void {
-    const registryIds = [...this.requests.values()]
-      .filter(
-        (r) =>
-          r.scope.agentSlug === check.agentSlug &&
-          r.scope.sessionId === undefined &&
-          storeForKind(r.kind) === 'review',
-      )
-      .map((r) => r.id)
-    const mismatch = UserInputRequestManager.describeIdMismatch(
-      'review',
-      check.reviewStoreIds,
-      registryIds,
-    )
-    if (mismatch === null) return
-    this.reportStoreMismatch(`agent=${check.agentSlug}`, check.context, [mismatch])
+  verifyReviewSettlerParity(check: { context: string; settlerIds: string[] }): void {
+    const registryIds = new Set(this.getOpenRequestsForStore('review').map((r) => r.id))
+    const orphans = check.settlerIds.filter((id) => !registryIds.has(id))
+    if (orphans.length === 0) return
+    this.reportStoreMismatch('review-settlers', check.context, [
+      `orphaned settlers=[${[...orphans].sort().join(',')}]`,
+    ])
   }
 
   get stats(): {

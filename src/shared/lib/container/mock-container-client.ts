@@ -861,6 +861,87 @@ export class SubagentBrowserInputScenario implements MockScenario {
   }
 }
 
+/**
+ * A background subagent parks on request_browser_input and then DIES — its
+ * sidechain 'result' arrives with no tool_result for the parked ask — while
+ * the main turn keeps running. The host must invalidate the orphaned request
+ * (card gone, status back to working) instead of leaving an unanswerable card
+ * until a turn boundary. The main turn ends on its own afterwards.
+ */
+export class DeadSubagentInputScenario implements MockScenario {
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const parentToolId = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const subToolId = `subtool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+
+    client.writeJsonlEntry(sessionId, {
+      type: 'user',
+      message: { content: userMessage },
+      timestamp: new Date().toISOString(),
+    })
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, 10)
+
+    // The subagent's request arrives as a complete sidechain assistant message.
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          parent_tool_use_id: parentToolId,
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: subToolId,
+                name: 'mcp__user-input__request_browser_input',
+                input: {
+                  message: 'Log in to GitHub to finish the submission.',
+                  requirements: ['Log in to GitHub'],
+                },
+              },
+            ],
+          },
+        },
+      })
+    }, 60)
+
+    // The subagent dies ~2.5s later: its terminal sidechain 'result' frame
+    // arrives while the browser_input has no tool_result. Long enough for a
+    // spec to assert the card + awaiting window first.
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: {
+          type: 'result',
+          parent_tool_use_id: parentToolId,
+          subtype: 'success',
+        },
+      })
+    }, 2500)
+
+    // The main turn continues briefly, then settles on its own — the parked
+    // ask must NOT be what ends it.
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'The subagent stopped; continuing without it.' }],
+        },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, 5000)
+  }
+}
+
 function getMessageParam(userMessage: string, key: string): string | undefined {
   const prefix = `${key}=`
   const rawValue = userMessage
@@ -1589,6 +1670,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       },
     ])],
     ['subagent browser input', new SubagentBrowserInputScenario()],
+    ['dead subagent input', new DeadSubagentInputScenario()],
     // Proxy review scenario for E2E tests
     // Cross-store mix: container input asks + a parked ReviewManager review
     ['mixed pending', new MixedPendingRequestsScenario()],
