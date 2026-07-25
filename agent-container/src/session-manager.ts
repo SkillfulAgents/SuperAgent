@@ -9,6 +9,13 @@ import * as fs from 'fs';
 import { releaseBrowserLock } from './browser-state';
 import { claudeSettingsSchema, SESSION_RETENTION_DAYS } from './claude-settings-schema';
 import { SessionSettlementTracker } from './session-settlement';
+import {
+  WarmProfileStore,
+  nextWarmProfileFromRequest,
+  sessionProfileFromRequest,
+  warmProfileKey,
+  type WarmProfile,
+} from './warm-profile';
 
 interface SessionData {
   session: Session;
@@ -60,6 +67,21 @@ export class SessionManager extends EventEmitter {
   private readonly automatedIdleEvictionMs: number;
   private readonly wakeGraceMs: number | undefined;
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
+  // A CLI subprocess spawned ahead of demand, parked past its initialize
+  // handshake. Keyed by the profile it was built for — it may only serve a
+  // request whose options would be identical. See claimPrewarmed().
+  private warm: { key: string; process: ClaudeCodeProcess } | null = null;
+  private warming: { key: string; promise: Promise<void> } | null = null;
+  // Key of the profile we currently want parked. A warm-up that resolves after
+  // this has moved on (a later session changed the default) disposes itself
+  // instead of parking a process nobody will accept.
+  private desiredWarmKey: string | null = null;
+  private pendingProfile: WarmProfile | null = null;
+  private shuttingDown = false;
+  private readonly warmProfileStore: WarmProfileStore;
+  // Kill switch for the parked subprocess, so a container can fall back to
+  // cold starts (SESSION_PREWARM=0) without a redeploy.
+  private readonly prewarmEnabled: boolean;
 
   constructor(
     baseWorkingDirectory: string = '/workspace',
@@ -68,11 +90,15 @@ export class SessionManager extends EventEmitter {
       automatedIdleEvictionMs?: number;
       wakeGraceMs?: number;
       evictionPollMs?: number;
+      prewarmEnabled?: boolean;
     }
   ) {
     super();
     this.baseWorkingDirectory = baseWorkingDirectory;
     this.persistence = new SessionPersistence();
+    this.warmProfileStore = new WarmProfileStore(baseWorkingDirectory);
+    this.prewarmEnabled =
+      options?.prewarmEnabled ?? !['0', 'false'].includes((process.env.SESSION_PREWARM ?? '').trim().toLowerCase());
     this.wakeGraceMs = options?.wakeGraceMs;
     this.idleEvictionMs =
       options?.idleEvictionMs ??
@@ -181,26 +207,36 @@ export class SessionManager extends EventEmitter {
       fs.mkdirSync(workingDirectory, { recursive: true });
     }
 
-    const process = new ClaudeCodeProcess({
-      sessionId: tempSessionId,
-      workingDirectory,
-      userSystemPrompt: request.systemPrompt,
-      modelPromptHints: request.modelPromptHints,
-      availableEnvVars: request.availableEnvVars,
-      model: request.model,
-      browserModel: request.browserModel,
-      dashboardBuilderModel: request.dashboardBuilderModel,
-      webSearchProvider: request.webSearchProvider,
-      webFetchProvider: request.webFetchProvider,
-      maxOutputTokens: request.maxOutputTokens,
-      maxThinkingTokens: request.maxThinkingTokens,
-      maxTurns: request.maxTurns,
-      maxBudgetUsd: request.maxBudgetUsd,
-      customEnvVars: request.customEnvVars,
-      effort: request.effort,
-      speed,
-      capabilityPolicies,
-    });
+    // Normalized before the profiles are derived so a key matches what the
+    // process is actually built with (an absent policy/speed and its parsed
+    // default must not look like two different profiles). The session's own
+    // shape decides whether a parked process fits; the host's default shape
+    // decides what to warm next.
+    const normalized = { ...request, speed, capabilityPolicies, workingDirectory };
+    const sessionProfile = sessionProfileFromRequest(normalized);
+    const nextProfile = nextWarmProfileFromRequest(normalized);
+    const process =
+      (await this.claimPrewarmed(sessionProfile)) ??
+      new ClaudeCodeProcess({
+        sessionId: tempSessionId,
+        workingDirectory,
+        userSystemPrompt: request.systemPrompt,
+        modelPromptHints: request.modelPromptHints,
+        availableEnvVars: request.availableEnvVars,
+        model: request.model,
+        browserModel: request.browserModel,
+        dashboardBuilderModel: request.dashboardBuilderModel,
+        webSearchProvider: request.webSearchProvider,
+        webFetchProvider: request.webFetchProvider,
+        maxOutputTokens: request.maxOutputTokens,
+        maxThinkingTokens: request.maxThinkingTokens,
+        maxTurns: request.maxTurns,
+        maxBudgetUsd: request.maxBudgetUsd,
+        customEnvVars: request.customEnvVars,
+        effort: request.effort,
+        speed,
+        capabilityPolicies,
+      });
 
     // Promise to capture Claude's session ID and slash commands (emitted after first message is sent)
     const initCompletePromise = new Promise<string>((resolve, reject) => {
@@ -334,8 +370,145 @@ export class SessionManager extends EventEmitter {
 
     this.sessions.set(sessionId, sessionData);
 
+    // Refill for the next session, and remember the shape across restarts.
+    // Deliberately after the session is live: the warm spawn costs ~1s of CPU
+    // and must never sit in front of the request that triggered it.
+    this.warmProfileStore.write(nextProfile);
+    void this.prewarm(nextProfile);
+
     console.log(`Created session ${sessionId} with working directory ${workingDirectory}`);
     return session;
+  }
+
+  /**
+   * Take the pre-warmed process for this profile, if one is ready or on its
+   * way. A warm process has its CLI already spawned and initialized, so the
+   * session's `init` (and canonical id) arrives in milliseconds.
+   *
+   * Awaiting an in-flight warm-up for the SAME profile is never worse than
+   * spawning cold — both pay one boot, and this way we don't run two. A
+   * MISMATCHED warm process is discarded rather than kept: its options bake in
+   * the wrong model/effort/prompt, and the profile that just arrived is the
+   * better predictor of the next one.
+   */
+  private async claimPrewarmed(profile: WarmProfile): Promise<ClaudeCodeProcess | null> {
+    const key = warmProfileKey(profile);
+
+    if (this.warming && this.warming.key === key) {
+      await this.warming.promise.catch(() => undefined);
+    }
+
+    const warm = this.warm;
+    if (!warm) return null;
+    this.warm = null;
+
+    if (warm.key !== key) {
+      console.log('[SessionManager] Discarding pre-warmed process: session parameters changed');
+      await warm.process.dispose().catch(() => undefined);
+      return null;
+    }
+
+    console.log('[SessionManager] Using pre-warmed process for new session');
+    return warm.process;
+  }
+
+  /**
+   * Spawn a CLI subprocess for `profile` and park it, initialized, until the
+   * next matching createSession. Best-effort throughout: any failure here just
+   * means the next session starts cold, so it must never reject into a caller.
+   */
+  async prewarm(profile: WarmProfile): Promise<void> {
+    if (!this.prewarmEnabled || this.shuttingDown) return;
+
+    const key = warmProfileKey(profile);
+    // Recorded even when a warm-up is already in flight, so that one can see
+    // it has been superseded and hand over to this profile when it lands.
+    this.desiredWarmKey = key;
+    this.pendingProfile = profile;
+
+    if (this.warm) {
+      if (this.warm.key === key) return;
+      // Parked for a profile we no longer expect — e.g. the boot warm-up used
+      // the last container's profile and the agent's default has since
+      // changed. Leaving it would strand every future session on a cold start
+      // while an unusable CLI holds memory.
+      await this.discardPrewarmed('wanted profile changed');
+    }
+    if (this.warming) return;
+    const promise = (async () => {
+      const process = new ClaudeCodeProcess({
+        sessionId: uuidv4(),
+        workingDirectory: profile.workingDirectory || this.baseWorkingDirectory,
+        userSystemPrompt: profile.systemPrompt,
+        modelPromptHints: profile.modelPromptHints,
+        availableEnvVars: profile.availableEnvVars,
+        model: profile.model,
+        browserModel: profile.browserModel,
+        dashboardBuilderModel: profile.dashboardBuilderModel,
+        webSearchProvider: profile.webSearchProvider,
+        webFetchProvider: profile.webFetchProvider,
+        maxOutputTokens: profile.maxOutputTokens,
+        maxThinkingTokens: profile.maxThinkingTokens,
+        maxTurns: profile.maxTurns,
+        maxBudgetUsd: profile.maxBudgetUsd,
+        customEnvVars: profile.customEnvVars,
+        effort: profile.effort,
+        speed: profile.speed,
+        capabilityPolicies: profile.capabilityPolicies,
+      });
+      try {
+        await process.prewarm();
+        // The wanted profile may have changed while this was spawning (a
+        // session switched the agent default). Parking this one would leave a
+        // CLI nobody can accept holding memory, so drop it and warm for what
+        // is wanted now.
+        if (this.shuttingDown || this.desiredWarmKey !== key) {
+          await process.dispose().catch(() => undefined);
+          return;
+        }
+        this.warm = { key, process };
+        console.log('[SessionManager] Pre-warmed a CLI subprocess for the next session');
+      } catch (error) {
+        console.error('[SessionManager] Pre-warm failed (next session starts cold):', error);
+        await process.dispose().catch(() => undefined);
+      }
+    })().finally(() => {
+      if (this.warming?.key === key) this.warming = null;
+    });
+
+    this.warming = { key, promise };
+    await promise;
+
+    // A profile that arrived mid-spawn was recorded but not acted on (this
+    // call held the in-flight slot), so pick it up now that the slot is free.
+    if (!this.warm && this.desiredWarmKey !== null && this.desiredWarmKey !== key && !this.shuttingDown) {
+      const wanted = this.pendingProfile;
+      if (wanted) void this.prewarm(wanted);
+    }
+  }
+
+  /**
+   * Pre-warm from the last persisted profile. Called at boot so the first
+   * session after a container wake — the slowest one, with nothing in page
+   * cache — is also served warm.
+   */
+  prewarmFromLastProfile(): void {
+    const profile = this.warmProfileStore.read();
+    if (!profile) return;
+    void this.prewarm(profile);
+  }
+
+  /**
+   * Drop the parked process. Its options bake in a snapshot of the remote-MCP
+   * env, so anything that rewrites that env must invalidate it or the next
+   * session would silently run against the old MCP set.
+   */
+  async discardPrewarmed(reason: string): Promise<void> {
+    const warm = this.warm;
+    if (!warm) return;
+    this.warm = null;
+    console.log(`[SessionManager] Discarding pre-warmed process: ${reason}`);
+    await warm.process.dispose().catch(() => undefined);
   }
 
   /**
@@ -732,6 +905,11 @@ export class SessionManager extends EventEmitter {
       clearInterval(this.evictionTimer);
       this.evictionTimer = null;
     }
+    // Latches before the in-flight warm-up is awaited so a spawn that lands
+    // mid-shutdown disposes itself instead of parking an orphan subprocess.
+    this.shuttingDown = true;
+    await this.warming?.promise.catch(() => undefined);
+    await this.discardPrewarmed('container shutting down');
     const sessionIds = Array.from(this.sessions.keys());
     console.log(`Stopping ${sessionIds.length} active session(s)...`);
 

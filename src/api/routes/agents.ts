@@ -1618,6 +1618,15 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       maxBrowserTabs: getSettings().app?.maxBrowserTabs,
       effort: runtimeOptions.effort ?? agentPrefs.defaultEffort,
       speed: runtimeOptions.speed ?? agentPrefs.defaultSpeed,
+      // Same preference chain MINUS the per-session pick: this is what the
+      // composer will send next time (it only puts model/effort/speed on the
+      // wire when the user explicitly chooses one), so it is what the
+      // container should pre-warm for.
+      prewarmDefaults: {
+        model: agentPrefs.defaultModel ?? getEffectiveModels().agentModel,
+        effort: agentPrefs.defaultEffort,
+        speed: agentPrefs.defaultSpeed,
+      },
     })
     const sessionId = containerSession.id
 
