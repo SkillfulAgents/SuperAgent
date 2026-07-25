@@ -450,8 +450,18 @@ app.post('/env', async (c) => {
     process.env[body.key] = body.value;
     console.log(`[ENV] Set environment variable: ${body.key} (${body.value.length} chars)`);
 
+    // A pre-warmed subprocess captured the old env when it spawned (REMOTE_MCPS
+    // in particular is read while building its query options), so it would run
+    // the next session against a stale view. Invalidated here — immediately
+    // after the env changes and BEFORE the awaited file write below — so a
+    // session arriving in that window cannot claim the stale process. The
+    // generation bump inside is synchronous and also rejects a warm-up that is
+    // still spawning; the next createSession re-warms from the current env.
+    const discarded = sessionManager.discardPrewarmed(`env var ${body.key} changed`);
+
     // Also write to .env file (for uv/python scripts)
     await updateEnvFile(body.key, body.value);
+    await discarded;
 
     // Verify it was set in process.env
     if (process.env[body.key] !== body.value) {
@@ -2566,6 +2576,13 @@ function handleBrowserStreamConnection(ws: WebSocket) {
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 }
+
+// Spawn a CLI subprocess for the shape of the last session this workspace ran,
+// so the first session after a wake doesn't pay the boot cost inline. No-op
+// until a session has been created here at least once. Kicked off before the
+// dashboard scan below: on a cold container the two compete for the same two
+// CPUs, and only this one is in front of a waiting user.
+sessionManager.prewarmFromLastProfile();
 
 // Start dashboard processes asynchronously (don't block server startup)
 dashboardManager.scanAndStartAll().catch((error) => {

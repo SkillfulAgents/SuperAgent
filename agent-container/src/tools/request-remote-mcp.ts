@@ -9,10 +9,26 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { inputManager } from '../input-manager'
-import { getCurrentProcess } from '../claude-code'
 import { sanitizeMcpName } from '../sanitize-mcp-name'
 
-export const requestRemoteMcpTool = tool(
+/**
+ * The one capability this tool needs from the process that owns the query it
+ * is running inside. Structural rather than the ClaudeCodeProcess type so the
+ * tool module doesn't import back into claude-code.ts.
+ */
+export interface RemoteMcpInjectionTarget {
+  addRemoteMcpServer(name: string): void
+}
+
+/**
+ * Bound to its OWNING process, not to a module global. The container can hold
+ * processes that are not the caller — other live sessions, and the pre-warmed
+ * one parked for the next session — and injecting the approved MCP into any of
+ * them would leave the session that asked for it without the tools, because
+ * only the owning query restarts.
+ */
+export function createRequestRemoteMcpTool(getProcess: () => RemoteMcpInjectionTarget | null) {
+  return tool(
   'request_remote_mcp',
   `Request access to a remote MCP server. The user will be prompted to connect the MCP server (potentially going through OAuth), then assign it to this agent. After approval, the MCP tools become available.
 
@@ -90,7 +106,7 @@ Use this when you need to interact with an MCP server that hasn't been configure
             mcpInfo = `\n\n${mcpBlocks.join('\n\n')}`
 
             // Trigger interrupt + restart so the new query picks up the MCP from env var.
-            const proc = getCurrentProcess()
+            const proc = getProcess()
             if (proc) {
               matchingMcps.forEach((matchingMcp) => proc.addRemoteMcpServer(matchingMcp.name))
             } else {
@@ -150,3 +166,4 @@ Use this when you need to interact with an MCP server that hasn't been configure
     }
   }
 )
+}

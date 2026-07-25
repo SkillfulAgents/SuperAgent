@@ -137,6 +137,7 @@ describe('SessionManager idle eviction', () => {
     nextStartDelayMs = 0
     // Interactive waits IDLE_MS; automated (cron/webhook) evicts immediately when idle.
     manager = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: IDLE_MS,
       automatedIdleEvictionMs: 0,
     })
@@ -266,6 +267,7 @@ describe('SessionManager idle eviction', () => {
     // the single final idle. A threshold-0 sweep landing after result #1
     // must not kill the queued turns.
     const promoOff = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: 0,
       automatedIdleEvictionMs: 0,
     })
@@ -417,6 +419,7 @@ describe('SessionManager idle eviction', () => {
   it('holds through the completion-wake gap and evicts only after the wake turn settles', async () => {
     // Automated threshold 0 — the exact class exposed to the wake-gap race.
     const gapManager = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: IDLE_MS,
       automatedIdleEvictionMs: 0,
       wakeGraceMs: 60_000,
@@ -445,6 +448,7 @@ describe('SessionManager idle eviction', () => {
 
   it('settles after the wake grace expires when no wake ever comes', async () => {
     const graceManager = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: IDLE_MS,
       automatedIdleEvictionMs: 0,
       wakeGraceMs: 5,
@@ -481,6 +485,7 @@ describe('SessionManager idle eviction', () => {
     // Resume via a bare getSession — a human message would (correctly)
     // promote the session to interactive instead.
     const restarted = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: 60 * 60_000,
       automatedIdleEvictionMs: 0,
     })
@@ -498,6 +503,7 @@ describe('SessionManager idle eviction', () => {
 
   it('a human message promotes an automated session to the interactive class', async () => {
     const promoManager = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: 60 * 60_000, // interactive effectively off
       automatedIdleEvictionMs: 0,
     })
@@ -591,6 +597,7 @@ describe('SessionManager idle eviction', () => {
     await manager.stopAll()
 
     const restarted = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: IDLE_MS,
       automatedIdleEvictionMs: 0,
     })
@@ -614,6 +621,7 @@ describe('SessionManager idle eviction', () => {
     await manager.stopAll()
 
     const restarted = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: IDLE_MS,
       automatedIdleEvictionMs: 0,
     })
@@ -643,6 +651,7 @@ describe('SessionManager idle eviction', () => {
     await manager.stopAll()
 
     const restarted = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: IDLE_MS,
       automatedIdleEvictionMs: 0,
     })
@@ -682,6 +691,7 @@ describe('SessionManager idle eviction', () => {
 
   it('a shouldQuery:false append does NOT promote an automated session', async () => {
     const promoManager = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: 60 * 60_000,
       automatedIdleEvictionMs: 0,
     })

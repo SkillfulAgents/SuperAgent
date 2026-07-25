@@ -64,6 +64,21 @@ export interface CreateSessionOptions {
   maxBrowserTabs?: number // Max browser tabs allowed (default 10)
   effort?: EffortLevel // Initial thinking effort level
   speed?: SpeedLevel // Initial processing speed tier
+  /**
+   * What the NEXT session on this agent will most likely ask for: the agent's
+   * default model/effort/speed with the global fallback applied, ignoring any
+   * per-session pick in `model`/`effort`/`speed` above.
+   *
+   * The container pre-warms a CLI subprocess for this shape. Without it the
+   * container can only guess from the session it just ran, so a single one-off
+   * model pick would leave it warmed for the wrong configuration — the next
+   * default session would discard that process and start cold.
+   */
+  prewarmDefaults?: {
+    model?: string
+    effort?: EffortLevel
+    speed?: SpeedLevel
+  }
 }
 
 export interface StartOptions {
