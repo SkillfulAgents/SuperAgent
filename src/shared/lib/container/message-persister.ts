@@ -129,6 +129,14 @@ interface StreamingState {
   // that connects AFTER they fire would never see them; we store the exact payloads here and the
   // /stream route replays them on (re)connect. Cleared at turn boundaries (session_active/idle).
   pendingInputRequests: Map<string, { type: string; toolUseId: string; [k: string]: unknown }>
+  // Requests settled by a decision route while their transcript tool_result is
+  // still HELD BACK (parallel tool calls release every sibling's result only
+  // when the last one settles). The messages route stamps these outcomes onto
+  // the transcript so history consumers — the client's refresh fallback, the
+  // transcript card, the recovery scan — see a completed call instead of
+  // resurrecting a decided one. Cleared at turn boundaries, when the real
+  // results are in the transcript.
+  settledInputRequests: Map<string, UserInputRequestOutcome>
   // Tombstones for capability reviews cancelled BEFORE their card was stored:
   // handleCapabilityReviewTool awaits a container grant lookup before it
   // broadcasts, so a capability_review_cancelled frame can win that race —
@@ -346,6 +354,7 @@ class MessagePersister {
     const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
     const priorBackgroundTasks = prior?.activeBackgroundTasks ?? new Map()
     const priorPendingInputRequests = prior?.pendingInputRequests ?? new Map()
+    const priorSettledInputRequests = prior?.settledInputRequests ?? new Map()
 
     // Detach only the transport if already subscribed. NOT unsubscribeFromSession:
     // that is a full teardown — it drops the session's registry entries, which
@@ -373,6 +382,7 @@ class MessagePersister {
       slashCommands: [],
       isAwaitingInput: priorIsAwaitingInput,
       pendingInputRequests: priorPendingInputRequests,
+      settledInputRequests: priorSettledInputRequests,
       cancelledCapabilityReviews: new Set(),
       lastApiErrorCode: null,
       activeBackgroundTasks: priorBackgroundTasks,
@@ -601,6 +611,13 @@ class MessagePersister {
       })
   }
 
+  // Requests a decision route settled while their transcript tool_result is
+  // still held back by parallel siblings. The messages route stamps these
+  // outcomes onto the transcript.
+  getSettledInputRequests(sessionId: string): Map<string, UserInputRequestOutcome> {
+    return this.streamingStates.get(sessionId)?.settledInputRequests ?? new Map()
+  }
+
   // Get pending user-input request broadcasts for a session (for SSE replay on (re)connect).
   // Returns the exact event payloads that were broadcast, so the route can re-send them verbatim.
   // Entries synthesized by recoverSessionAwaitingInput are excluded: they were never broadcast
@@ -642,6 +659,45 @@ class MessagePersister {
     this.shadowRegistryCheck(sessionId, 'completeCapabilityReview')
     this.broadcastToSSE(sessionId, { type: 'capability_review_resolved', toolUseId })
     this.syncSessionAwaiting(sessionId)
+  }
+
+  // Settle a stream-store request the moment its decision succeeds. The
+  // transcript tool_result normally does this cleanup, but parallel tool
+  // calls hold every sibling's result until the LAST one resolves — without
+  // an explicit settle the decided entry stays open: the snapshot keeps
+  // serving it, a reload resurrects the card, and the stale card can act on
+  // a request that was already declined. Mirrors completeCapabilityReview;
+  // the real tool_result arriving later is a no-op. Callers that only know
+  // the toolUseId (chat connectors) pass sessionId undefined — the registry
+  // entry's scope supplies it.
+  completeInputRequest(
+    sessionId: string | undefined,
+    toolUseId: string,
+    outcome: UserInputRequestOutcome,
+  ): void {
+    const scopeSessionId =
+      sessionId ?? userInputRequestManager.getOpenRequest(toolUseId)?.scope.sessionId
+    if (!scopeSessionId) return
+    const state = this.streamingStates.get(scopeSessionId)
+    const hadStoreEntry = state?.pendingInputRequests.delete(toolUseId) ?? false
+    const settled = userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
+    if (state && (hadStoreEntry || settled)) {
+      state.settledInputRequests.set(toolUseId, outcome)
+    }
+    if (state) this.shadowRegistryCheck(scopeSessionId, 'completeInputRequest')
+    if (hadStoreEntry || settled) {
+      // Same broadcast the tool_result path emits — the resolving tab already
+      // removed its card optimistically; every other tab drops it off this
+      // event. Card removal is idempotent, so the later real tool_result
+      // broadcasting again is harmless.
+      this.broadcastToSSE(scopeSessionId, {
+        type: 'tool_result',
+        toolUseId,
+        result: outcome === 'answered' ? 'User provided input' : 'User declined the request',
+        isError: outcome !== 'answered',
+      })
+    }
+    this.syncSessionAwaiting(scopeSessionId)
   }
 
   // Clear a pending computer use request (after approval/rejection)
@@ -899,6 +955,7 @@ class MessagePersister {
         slashCommands: [],
         isAwaitingInput: false,
         pendingInputRequests: new Map(),
+        settledInputRequests: new Map(),
         cancelledCapabilityReviews: new Set(),
         lastApiErrorCode: null,
         activeBackgroundTasks: new Map(),
@@ -1211,6 +1268,9 @@ class MessagePersister {
       if (state) {
         if (evt.type === 'session_active' || evt.type === 'session_idle') {
           state.pendingInputRequests.clear()
+          // The turn boundary lands the held-back sibling results in the
+          // transcript — the settled-outcome stamps are no longer needed.
+          state.settledInputRequests.clear()
           // Mirror the turn-boundary wipe in the registry. A new turn
           // supersedes parked asks; an idle boundary cancels them.
           userInputRequestManager.clearSessionStreamRequests(
