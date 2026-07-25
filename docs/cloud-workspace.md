@@ -77,12 +77,23 @@ is deliberately **fully defensive — it never throws**; any failure degrades to
 - **found / not-found is driven by discovery**, decoupled from token success — an
   older deployment without the exchange endpoint still shows as found; the token
   just isn't minted (`hasValidToken: false`).
-- The record is **principal-scoped**: it stores the `userId`/`memberId` it was
-  minted for, is only reused while those still match, is cleared whenever the
-  acting **org OR user/member** changes (`savePlatformAuth`) or on disconnect,
-  and the principal is re-checked immediately before the write so a refresh
-  still in flight across an account change can't resurrect the old token. A
-  same-user metadata refresh does not churn it.
+- **"No workspace" and "couldn't check" are different answers.** A discovery
+  that fails (unreachable, 401, malformed) returns `discoveryFailed: true`, and
+  the card offers a retry. Only a *successful* discovery listing none shows the
+  create-a-workspace CTA — otherwise an outage would invite the user to create a
+  second workspace they already have.
+- The record is **principal-scoped**: it stores the `userId`/`memberId` **and a
+  fingerprint of the platform credential** it was minted under, is only reused
+  while all three still match, is cleared whenever the acting **org OR
+  user/member** changes (`savePlatformAuth`) or on disconnect, and the principal
+  is re-checked immediately before the write so a refresh still in flight across
+  an account change can't resurrect the old token. A same-user metadata refresh
+  does not churn it.
+  The fingerprint is load-bearing, not belt-and-braces: `userId`/`memberId` can
+  both be null on a connection whose introspection never filled them in, and on
+  a *disconnected* app — so comparing only those makes two different accounts,
+  or an account and no account, look identical. An unidentifiable principal is
+  never equal to anything, including another unidentifiable one.
 - Maintenance runs on boot, on connect, on Account-tab view, **and** on a
   low-frequency background poll in `PlatformService`, so a long-lived app stays
   valid without an Account visit.
@@ -112,8 +123,10 @@ so it must never run inside an auth-mode web deployment.
   MCP server, wrong for a remotely supplied URL, which could otherwise be aimed
   at the user's own machine. This flow therefore passes an **explicit**
   `allowLocalhost`, true only when `SUPERAGENT_IS_PACKAGED === '0'` (published
-  from `app.isPackaged` by the Electron main entry on every launch) or under
-  E2E. Unset counts as packaged.
+  from `app.isPackaged` by the Electron main entry on every launch) or
+  `E2E_MOCK === 'true'`. Both are exact-value checks — env vars are strings, so
+  a presence test would also open this up for `E2E_MOCK=false`. Unset counts as
+  packaged.
 - **The exchange is a pinned fetch.** The one call carrying a credential to a
   remote host goes through `mcpSafeFetch`, not bare `fetch`: the socket is
   pinned to the vetted resolved address (so a DNS rebind between validation and

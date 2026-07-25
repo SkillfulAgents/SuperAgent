@@ -11,6 +11,11 @@ export interface CloudWorkspaceResponse {
   orgId: string | null
   /** Whether a live deployment token is held (infra/diagnostic). */
   hasValidToken: boolean
+  /**
+   * Discovery failed, so `found: false` means "couldn't check" — not "there
+   * isn't one". Show a retry, never the create-a-workspace CTA.
+   */
+  discoveryFailed: boolean
 }
 
 /**

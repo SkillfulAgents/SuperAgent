@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 
 import { getCloudWorkspace } from './cloud-workspace-service'
 import {
@@ -72,7 +73,13 @@ const LOOPBACK = {
   status: 'deployed',
 }
 
+const TOKEN = 'plat_sa_key'
 const PRINCIPAL = { userId: 'usr_1', memberId: 'sub_1' }
+
+/** Mirrors the service's fingerprint so fixtures represent a real match. */
+function fingerprintOf(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 32)
+}
 
 function connectedAs(principal: { userId: string | null; memberId: string | null }) {
   return { connected: true, ...principal } as unknown as ReturnType<typeof getPlatformAuthStatus>
@@ -94,6 +101,7 @@ function storedRecord(overrides: Record<string, unknown> = {}) {
     updatedAt: isoIn(-3600_000),
     userId: PRINCIPAL.userId,
     memberId: PRINCIPAL.memberId,
+    tokenFingerprint: fingerprintOf(TOKEN),
     ...overrides,
   } as ReturnType<typeof readCloudWorkspaceRecord>
 }
@@ -115,7 +123,7 @@ describe('getCloudWorkspace', () => {
     // refused in this configuration.
     process.env.SUPERAGENT_IS_PACKAGED = '1'
     delete process.env.E2E_MOCK
-    mockGetToken.mockReturnValue('plat_sa_key')
+    mockGetToken.mockReturnValue(TOKEN)
     mockAuthStatus.mockReturnValue(connectedAs(PRINCIPAL))
     mockReadRecord.mockReturnValue(null)
   })
@@ -141,6 +149,7 @@ describe('getCloudWorkspace', () => {
       deploymentUrl: null,
       orgId: null,
       hasValidToken: false,
+      discoveryFailed: false,
     })
     expect(mockFetchDeployments).not.toHaveBeenCalled()
   })
@@ -153,22 +162,29 @@ describe('getCloudWorkspace', () => {
     expect(mockFetchDeployments).not.toHaveBeenCalled()
   })
 
-  it('sends the raw token and, on discovery failure, stays available without wiping the token', async () => {
+  it('sends the raw token and, on discovery failure, reports it as unknown — not absent', async () => {
     mockFetchDeployments.mockRejectedValue(new Error('401'))
     const status = await getCloudWorkspace()
-    expect(mockFetchDeployments).toHaveBeenCalledWith('plat_sa_key')
-    expect(status).toMatchObject({ available: true, found: false, hasValidToken: false })
+    expect(mockFetchDeployments).toHaveBeenCalledWith(TOKEN)
+    expect(status).toMatchObject({
+      available: true,
+      found: false,
+      hasValidToken: false,
+      // Distinguishes "couldn't check" from "there isn't one", so the card
+      // offers a retry instead of telling the user to create a second one.
+      discoveryFailed: true,
+    })
     // A transient discovery failure must not clear a still-valid stored token.
     expect(mockClearRecord).not.toHaveBeenCalled()
   })
 
-  it('clears the record and reports not-found when there is no deployed workspace', async () => {
+  it('clears the record and reports confirmed not-found when discovery lists none', async () => {
     mockFetchDeployments.mockResolvedValue([
       { ...DEPLOYED, status: 'deploying' },
       { ...DEPLOYED, deployment_url: '', status: 'deployed' },
     ])
     const status = await getCloudWorkspace()
-    expect(status).toMatchObject({ found: false, deploymentUrl: null })
+    expect(status).toMatchObject({ found: false, deploymentUrl: null, discoveryFailed: false })
     expect(mockClearRecord).toHaveBeenCalledOnce()
     expect(mockRequestGrant).not.toHaveBeenCalled()
   })
@@ -214,6 +230,18 @@ describe('getCloudWorkspace', () => {
 
     expect(mockValidateUrl).toHaveBeenCalledWith(LOOPBACK.deployment_url, { allowLocalhost: false })
     expect(status).toMatchObject({ available: true, found: false, deploymentUrl: null })
+    expect(mockRequestGrant).not.toHaveBeenCalled()
+    expect(mockExchange).not.toHaveBeenCalled()
+  })
+
+  it('refuses a loopback deployment target when E2E_MOCK is a falsy string', async () => {
+    // Env vars are strings: a presence check would read 'false' as enabled.
+    process.env.E2E_MOCK = 'false'
+    mockFetchDeployments.mockResolvedValue([LOOPBACK])
+
+    const status = await getCloudWorkspace()
+
+    expect(status).toMatchObject({ found: false })
     expect(mockRequestGrant).not.toHaveBeenCalled()
     expect(mockExchange).not.toHaveBeenCalled()
   })
@@ -322,13 +350,66 @@ describe('getCloudWorkspace', () => {
 
   it('re-mints rather than reusing a legacy record with no principal', async () => {
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
-    mockReadRecord.mockReturnValue(storedRecord({ userId: null, memberId: null }))
+    mockReadRecord.mockReturnValue(
+      storedRecord({ userId: null, memberId: null, tokenFingerprint: null }),
+    )
     mockRequestGrant.mockResolvedValue('grant.jwt')
     mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
 
     await getCloudWorkspace()
 
     expect(mockRequestGrant).toHaveBeenCalledOnce()
+  })
+
+  it('re-mints rather than reusing an id-less record for an id-less account', async () => {
+    // Both sides have null userId/memberId — comparing only those would read as
+    // "same account" and hand this connection the previous one's session.
+    mockFetchDeployments.mockResolvedValue([DEPLOYED])
+    mockAuthStatus.mockReturnValue(connectedAs({ userId: null, memberId: null }))
+    mockReadRecord.mockReturnValue(
+      storedRecord({
+        userId: null,
+        memberId: null,
+        tokenFingerprint: fingerprintOf('a_different_account_token'),
+      }),
+    )
+    mockRequestGrant.mockResolvedValue('grant.jwt')
+    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
+
+    await getCloudWorkspace()
+
+    expect(mockRequestGrant).toHaveBeenCalledOnce()
+    expect(mockWriteRecord.mock.calls[0][0]).toMatchObject({
+      tokenFingerprint: fingerprintOf(TOKEN),
+    })
+  })
+
+  it('reuses an id-less record only when the same credential is in hand', async () => {
+    mockFetchDeployments.mockResolvedValue([DEPLOYED])
+    mockAuthStatus.mockReturnValue(connectedAs({ userId: null, memberId: null }))
+    mockReadRecord.mockReturnValue(storedRecord({ userId: null, memberId: null }))
+
+    const status = await getCloudWorkspace()
+
+    expect(mockRequestGrant).not.toHaveBeenCalled()
+    expect(status).toMatchObject({ found: true, hasValidToken: true })
+  })
+
+  it('does not persist when an id-less account disconnects mid-flight', async () => {
+    // The old comparison saw null/null before and null/null after, and wrote
+    // the credential back over the disconnect's clear.
+    mockFetchDeployments.mockResolvedValue([DEPLOYED])
+    mockRequestGrant.mockResolvedValue('grant.jwt')
+    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
+    mockAuthStatus
+      .mockReturnValueOnce(connectedAs({ userId: null, memberId: null }))
+      .mockReturnValue(DISCONNECTED)
+    mockGetToken.mockReturnValueOnce(TOKEN).mockReturnValueOnce(TOKEN).mockReturnValue(null)
+
+    const status = await getCloudWorkspace()
+
+    expect(mockWriteRecord).not.toHaveBeenCalled()
+    expect(status).toMatchObject({ hasValidToken: false })
   })
 
   it('does not persist a token when the account disconnected mid-flight', async () => {

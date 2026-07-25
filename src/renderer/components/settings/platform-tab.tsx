@@ -242,8 +242,27 @@ function CloudWorkspaceCard({
               </Button>
             }
           />
+        ) : !data || data.discoveryFailed ? (
+          // Discovery didn't complete, so we don't know whether a workspace
+          // exists. Offer a retry — claiming "none yet" here would push the user
+          // to create a second one.
+          <SettingRow
+            name="Cloud workspace"
+            subtitle="Couldn't check for a cloud workspace right now"
+            right={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void refetch()}
+                disabled={isFetching}
+              >
+                Retry
+              </Button>
+            }
+          />
         ) : (
-          // No deployed workspace yet — CTA to create one on the web dashboard.
+          // Discovery succeeded and listed none — CTA to create one on the web
+          // dashboard.
           <SettingRow
             name="Cloud workspace"
             subtitle="No cloud workspace yet for this organization"

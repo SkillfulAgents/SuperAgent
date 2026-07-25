@@ -229,6 +229,8 @@ export interface CloudWorkspaceSettings {
   userId: string | null
   /** Per-org membership the deployment session belongs to. */
   memberId: string | null
+  /** Fingerprint of the platform credential it was minted under; null ⇒ re-mint. */
+  tokenFingerprint: string | null
 }
 
 export interface AppSettings {

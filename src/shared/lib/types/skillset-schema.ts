@@ -91,6 +91,12 @@ export const CloudWorkspaceSettingsSchema = z.object({
   // re-mint instead of reusing another account's session.
   userId: z.string().nullish().transform((v) => v ?? null),
   memberId: z.string().nullish().transform((v) => v ?? null),
+  // Non-reversible id for the platform credential the session was minted under.
+  // Ids can be absent on a connection whose introspection never filled them in,
+  // and null == null would then read as "same account"; this is always present
+  // on a live connection, so it's what actually keeps sessions from crossing
+  // accounts. Null (legacy record) ⇒ unattributable ⇒ re-mint.
+  tokenFingerprint: z.string().nullish().transform((v) => v ?? null),
 })
 export type CloudWorkspaceSettings = z.infer<typeof CloudWorkspaceSettingsSchema>
 

@@ -818,6 +818,7 @@ describe('platform-auth-service', () => {
         updatedAt: new Date().toISOString(),
         userId: 'user_a',
         memberId: 'sub_a',
+        tokenFingerprint: 'fingerprint_a',
       })
     }
 

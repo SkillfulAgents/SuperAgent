@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 import { captureException } from '@shared/lib/error-reporting'
 import {
   getPlatformAccessToken,
@@ -43,6 +45,13 @@ export interface CloudWorkspaceStatus {
   orgId: string | null
   /** Whether a live deployment token is held (infra/diagnostic). */
   hasValidToken: boolean
+  /**
+   * Discovery itself failed (unreachable platform, 401, malformed response), so
+   * `found: false` means "unknown", NOT "confirmed absent". Kept distinct so the
+   * UI offers a retry instead of telling the user to create a workspace they
+   * may well already have.
+   */
+  discoveryFailed: boolean
 }
 
 const NOT_AVAILABLE: CloudWorkspaceStatus = {
@@ -51,7 +60,12 @@ const NOT_AVAILABLE: CloudWorkspaceStatus = {
   deploymentUrl: null,
   orgId: null,
   hasValidToken: false,
+  discoveryFailed: false,
 }
+
+const NOT_FOUND: CloudWorkspaceStatus = { ...NOT_AVAILABLE, available: true }
+
+const DISCOVERY_FAILED: CloudWorkspaceStatus = { ...NOT_FOUND, discoveryFailed: true }
 
 // Electron-only: this is a desktop→cloud discovery. A cloud deployment
 // discovering itself is meaningless and can create deployment→deployment loops,
@@ -77,8 +91,10 @@ function isElectronMain(): boolean {
  * '0' — including unset — counts as packaged, so this fails closed.
  */
 function deploymentHostPolicy(): DiscoveryHostPolicy {
+  // Both are exact-value checks: env vars are strings, so a presence test would
+  // also open this up for `SUPERAGENT_IS_PACKAGED=1` … or `E2E_MOCK=false`.
   const unpackaged = process.env.SUPERAGENT_IS_PACKAGED === '0'
-  return { allowLocalhost: unpackaged || Boolean(process.env.E2E_MOCK) }
+  return { allowLocalhost: unpackaged || process.env.E2E_MOCK === 'true' }
 }
 
 /**
@@ -106,23 +122,61 @@ async function isDeploymentTargetSafe(entry: DeploymentDiscoveryEntry): Promise<
 }
 
 /**
- * The account the deployment token would belong to. Reads the live auth record
- * rather than a cached value so it reflects a disconnect that happened while a
- * refresh was in flight.
+ * The account a deployment token belongs to. Read live (not cached) so it
+ * reflects a disconnect that happened while a refresh was in flight.
+ *
+ * `userId`/`memberId` alone are not enough to identify an account: a connection
+ * whose introspection never filled them in carries nulls, and so does a
+ * *disconnected* app. Comparing those would make two different accounts — or an
+ * account and no account at all — look identical. So the principal also carries
+ * `connected` and a fingerprint of the platform credential itself, which is
+ * always present on a live connection and always differs between accounts.
  */
 interface CloudWorkspacePrincipal {
+  connected: boolean
   userId: string | null
   memberId: string | null
+  /** Stable, non-reversible id for the platform credential in hand. */
+  tokenFingerprint: string | null
+}
+
+const NO_PRINCIPAL: CloudWorkspacePrincipal = {
+  connected: false,
+  userId: null,
+  memberId: null,
+  tokenFingerprint: null,
+}
+
+function fingerprintToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 32)
 }
 
 function readPrincipal(): CloudWorkspacePrincipal {
   const status = getPlatformAuthStatus()
-  if (!status.connected) return { userId: null, memberId: null }
-  return { userId: status.userId ?? null, memberId: status.memberId ?? null }
+  const token = getPlatformAccessToken()
+  if (!status.connected || !token) return NO_PRINCIPAL
+  return {
+    connected: true,
+    userId: status.userId ?? null,
+    memberId: status.memberId ?? null,
+    tokenFingerprint: fingerprintToken(token),
+  }
 }
 
+/**
+ * True only for two *known, live* principals that are the same account. An
+ * unidentifiable principal (disconnected, or no credential to fingerprint) is
+ * never equal to anything — including another unidentifiable one, which is what
+ * would otherwise let a token leak across accounts or survive a disconnect.
+ */
 function samePrincipal(a: CloudWorkspacePrincipal, b: CloudWorkspacePrincipal): boolean {
-  return a.userId === b.userId && a.memberId === b.memberId
+  if (!a.connected || !b.connected) return false
+  if (!a.tokenFingerprint || !b.tokenFingerprint) return false
+  return (
+    a.tokenFingerprint === b.tokenFingerprint &&
+    a.userId === b.userId &&
+    a.memberId === b.memberId
+  )
 }
 
 function isRecordValidFor(
@@ -136,9 +190,16 @@ function isRecordValidFor(
   if (record.deploymentUrl !== entry.deployment_url) return false
   if (record.orgId !== entry.org_id) return false
   // …and to the acting account: the token is a session for one specific user on
-  // that deployment, never reusable by another (a legacy record carries no
-  // principal, so it reads as a mismatch and gets re-minted).
-  if (!samePrincipal({ userId: record.userId, memberId: record.memberId }, principal)) return false
+  // that deployment, never reusable by another. A record with no fingerprint
+  // (written before this binding existed) is not attributable to anyone, so it
+  // is re-minted rather than trusted.
+  const recordPrincipal: CloudWorkspacePrincipal = {
+    connected: Boolean(record.tokenFingerprint),
+    userId: record.userId,
+    memberId: record.memberId,
+    tokenFingerprint: record.tokenFingerprint,
+  }
+  if (!samePrincipal(recordPrincipal, principal)) return false
   const expiresAtMs = Date.parse(record.expiresAt)
   if (Number.isNaN(expiresAtMs)) return false
   return expiresAtMs - Date.now() > REFRESH_BUFFER_MS
@@ -156,6 +217,10 @@ async function ensureDeploymentToken(
 ): Promise<boolean> {
   const principal = readPrincipal()
   if (isRecordValidFor(readCloudWorkspaceRecord(), entry, principal)) return true
+  // Nothing to attribute a new token to — don't mint one we couldn't safely
+  // reuse anyway. (Unreachable via getCloudWorkspace, which needs a token to get
+  // this far; belt-and-braces for any other caller.)
+  if (!principal.connected) return false
 
   try {
     const grant = await requestDeploymentGrant(subjectToken, entry.authorization_server)
@@ -178,6 +243,7 @@ async function ensureDeploymentToken(
       updatedAt: new Date().toISOString(),
       userId: principal.userId,
       memberId: principal.memberId,
+      tokenFingerprint: principal.tokenFingerprint,
     })
     return true
   } catch (error) {
@@ -190,12 +256,16 @@ async function ensureDeploymentToken(
 
 /**
  * Resolve the cloud-workspace status and maintain the deployment token. Fully
- * defensive: any failure degrades to "not found" rather than throwing.
+ * defensive: any failure degrades rather than throwing.
  *
  * Runs the discover → ensure-token algorithm:
  *  1. discover deployments (drives found/not-found)
  *  2. if a deployed workspace exists, ensure a valid deployment token for it
  *  3. otherwise clear any stale stored token
+ *
+ * Note the difference between the two "no workspace" outcomes: a *successful*
+ * discovery that lists none is `found: false`, while a discovery that failed is
+ * additionally `discoveryFailed: true` — absence we couldn't confirm.
  */
 export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
   if (!isElectronMain()) return NOT_AVAILABLE
@@ -203,17 +273,18 @@ export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
   const token = getPlatformAccessToken()
   if (!token) {
     clearCloudWorkspaceRecord()
-    return { ...NOT_AVAILABLE, available: false }
+    return NOT_AVAILABLE
   }
 
   let deployments: DeploymentDiscoveryEntry[]
   try {
     deployments = await fetchDeployments(token)
   } catch (error) {
-    // Discovery failed (unreachable, or the token isn't member-bound). Keep the
-    // section available but empty; don't wipe a still-valid stored token.
+    // Unreachable platform, 401, malformed body — we don't know whether a
+    // workspace exists. Report it as such (the card offers a retry rather than
+    // "create one"), and don't wipe a still-valid stored token.
     captureException(error, { tags: { area: 'cloud-workspace', op: 'discover' } })
-    return { available: true, found: false, deploymentUrl: null, orgId: null, hasValidToken: false }
+    return DISCOVERY_FAILED
   }
 
   const deployed = deployments.find(
@@ -221,12 +292,14 @@ export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
   )
   if (!deployed) {
     clearCloudWorkspaceRecord()
-    return { available: true, found: false, deploymentUrl: null, orgId: null, hasValidToken: false }
+    return NOT_FOUND
   }
 
   if (!(await isDeploymentTargetSafe(deployed))) {
     // A mismatched/unsafe deployment URL is a signal, not normal control flow:
-    // fail closed (no grant is minted or sent, no workspace surfaced) and flag it.
+    // fail closed (no grant is minted or sent, no workspace surfaced) and flag
+    // it. Reported as a failure, not as absence — the workspace does exist, we
+    // just refuse to talk to the address we were handed.
     captureException(new Error('cloud-workspace: unsafe deployment target'), {
       tags: { area: 'cloud-workspace', op: 'validate-target' },
       extra: {
@@ -235,7 +308,7 @@ export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
       },
     })
     clearCloudWorkspaceRecord()
-    return { available: true, found: false, deploymentUrl: null, orgId: null, hasValidToken: false }
+    return DISCOVERY_FAILED
   }
 
   const hasValidToken = await ensureDeploymentToken(token, deployed)
@@ -245,6 +318,7 @@ export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
     deploymentUrl: deployed.deployment_url,
     orgId: deployed.org_id,
     hasValidToken,
+    discoveryFailed: false,
   }
 }
 
