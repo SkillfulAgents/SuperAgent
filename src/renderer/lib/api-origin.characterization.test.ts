@@ -42,6 +42,18 @@
  * fallbacks count as branches, and only the leading position of a template or
  * concatenation decides the origin at all.
  *
+ * **Why transforms are opaque.** Deriving *from* the base URL is not the same
+ * as keeping it. `replace`, `slice`, and `substring` can each strip the scheme
+ * and host — `base.replace('https://api.example.com', '')` is a same-origin
+ * path with impeccable provenance — so no method call is treated as
+ * origin-preserving. The one place that legitimately rewrites the scheme is
+ * pinned and explained instead.
+ *
+ * **Why lookups follow the initializer.** Resolving an identifier continues
+ * from where it was declared, not from the call site. Otherwise a block that
+ * shadows `baseUrl` with `getApiBaseUrl()` retroactively validates an outer
+ * `url` that was built before that declaration existed.
+ *
  * The `scanner` suite at the bottom asserts each of these directly, on
  * synthetic sources, so they do not rest on inspection of the real tree.
  */
@@ -245,10 +257,12 @@ function analyzeOrigin(node: ts.Node, from: ts.Node, seen = new Set<string>()): 
     if (ts.isIdentifier(node.expression) && node.expression.text === 'getApiBaseUrl') {
       return { derives: true, literals: [] }
     }
-    // A string transform keeps its receiver's origin: `baseUrl.replace(…)`.
-    if (ts.isPropertyAccessExpression(node.expression)) {
-      return analyzeOrigin(node.expression.expression, from, seen)
-    }
+    // Any other call — including a method on a derived receiver — is opaque.
+    // `replace`, `slice`, and `substring` can all strip or rewrite the scheme
+    // and host, so `base.replace('https://api.example.com', '')` yields a
+    // same-origin path while still "coming from" the base URL. A transform
+    // that genuinely preserves the origin has to be pinned and read, not
+    // inferred from the receiver.
     return NOTHING
   }
 
@@ -285,7 +299,12 @@ function analyzeOrigin(node: ts.Node, from: ts.Node, seen = new Set<string>()): 
     if (seen.has(node.text)) return NOTHING
     const initializer = findDeclarationInScope(node.text, from)
     if (!initializer) return NOTHING
-    return analyzeOrigin(initializer, from, new Set([...seen, node.text]))
+    // Continue from the initializer, not the original call site: names inside
+    // it must resolve where it was written. Keeping the call site as the
+    // lookup origin lets an inner block that shadows `baseUrl` with
+    // `getApiBaseUrl()` retroactively validate an outer `url` that never saw
+    // that declaration.
+    return analyzeOrigin(initializer, initializer, new Set([...seen, node.text]))
   }
 
   return NOTHING
@@ -572,13 +591,56 @@ describe('scanner', () => {
     expect(site.originLiterals).toContain('/api/agents/')
   })
 
-  it('follows a string transform of the base URL', () => {
-    // use-browser-stream does exactly this to swap http:// for ws://.
+  it('rejects a string transform of the base URL', () => {
+    // A method call is opaque, however derived its receiver. `replace`,
+    // `slice`, and `substring` can each strip the scheme and host outright:
+    // `base.replace('https://api.example.com', '')` produces a same-origin
+    // path that still "comes from" the base URL. use-browser-stream does swap
+    // http:// for ws:// this way, and is pinned and explained rather than
+    // inferred.
     const [site] = scan(`
       function f() {
         const base = getApiBaseUrl()
         const host = base.replace(/^https?:\\/\\//, '')
         return fetch(host)
+      }
+    `)
+    expect(site.derivesOrigin).toBe(false)
+  })
+
+  it('rejects a transform that strips the origin outright', () => {
+    const [site] = scan(`
+      function f() {
+        const base = getApiBaseUrl()
+        return fetch(base.replace('https://api.example.com', '') + '/api/x')
+      }
+    `)
+    expect(site.derivesOrigin).toBe(false)
+  })
+
+  it('resolves an initializer from its own scope, not the call site', () => {
+    // `url` is built where `baseUrl` is same-origin. An inner block that
+    // shadows `baseUrl` with getApiBaseUrl() must not retroactively validate
+    // it — the initializer never saw that declaration.
+    const [site] = scan(`
+      const baseUrl = window.location.origin
+      const url = \`\${baseUrl}/api/agents\`
+      function load() {
+        const baseUrl = getApiBaseUrl()
+        void baseUrl
+        return fetch(url)
+      }
+    `)
+    expect(site.derivesOrigin).toBe(false)
+  })
+
+  it('still resolves a chain declared alongside the call', () => {
+    // The ordinary shape — global-notification-handler.tsx does exactly this.
+    const [site] = scan(`
+      function load() {
+        const baseUrl = getApiBaseUrl()
+        const url = \`\${baseUrl}/api/notifications/stream\`
+        return fetch(url)
       }
     `)
     expect(site.derivesOrigin).toBe(true)
