@@ -160,13 +160,16 @@ describe('ClaudeCodeProcess effort handling', () => {
   })
 })
 
-describe('ClaudeCodeProcess remote MCP handling', () => {
+describe('ClaudeCodeProcess runtime connection handling', () => {
   let originalRemoteMcps: string | undefined
+  let originalConnectedAccounts: string | undefined
 
   beforeEach(() => {
     calls.length = 0
     originalRemoteMcps = process.env.REMOTE_MCPS
+    originalConnectedAccounts = process.env.CONNECTED_ACCOUNTS
     delete process.env.REMOTE_MCPS
+    delete process.env.CONNECTED_ACCOUNTS
   })
 
   afterEach(() => {
@@ -175,9 +178,14 @@ describe('ClaudeCodeProcess remote MCP handling', () => {
     } else {
       process.env.REMOTE_MCPS = originalRemoteMcps
     }
+    if (originalConnectedAccounts === undefined) {
+      delete process.env.CONNECTED_ACCOUNTS
+    } else {
+      process.env.CONNECTED_ACCOUNTS = originalConnectedAccounts
+    }
   })
 
-  it('rebuilds a live query when Agent Settings adds or removes an MCP', { timeout: 20000 }, async () => {
+  it('rebuilds a live query when Agent Settings changes MCPs or connected accounts', { timeout: 30000 }, async () => {
     const claudeProcess = new ClaudeCodeProcess({
       sessionId: 'test-remote-mcp-refresh',
       workingDirectory: '/tmp',
@@ -216,6 +224,21 @@ describe('ClaudeCodeProcess remote MCP handling', () => {
     expect(calls[2].options.mcpServers).not.toHaveProperty('team_calendar')
     expect(calls[2].options.allowedTools).not.toContain('mcp__team_calendar__*')
     expect(calls[2].options.systemPrompt).not.toContain('Team Calendar')
+
+    process.env.CONNECTED_ACCOUNTS = JSON.stringify({
+      gmail: [{ name: 'Work Gmail', id: 'account-gmail' }],
+    })
+    await claudeProcess.sendMessage('Check the connected Gmail account')
+
+    expect(calls).toHaveLength(4)
+    expect(calls[3].options.systemPrompt).toContain('Work Gmail')
+    expect(calls[3].options.systemPrompt).toContain('account-gmail')
+
+    process.env.CONNECTED_ACCOUNTS = '{}'
+    await claudeProcess.sendMessage('Continue without Gmail')
+
+    expect(calls).toHaveLength(5)
+    expect(calls[4].options.systemPrompt).not.toContain('Work Gmail')
   })
 })
 

@@ -17,6 +17,11 @@ import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { countActiveTriggersPerAccount, cancelTriggersForConnectedAccount } from '@shared/lib/services/webhook-trigger-service'
+import {
+  findAgentsAssignedConnectedAccount,
+  syncAgentsAssignedConnectedAccount,
+  syncConnectedAccountAgents,
+} from '@shared/lib/container/connection-runtime-sync'
 
 const connectedAccountsRouter = new Hono()
 
@@ -295,8 +300,13 @@ connectedAccountsRouter.post('/complete', async (c) => {
       logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
     }
 
+    const liveRefresh = reconnectAccountId
+      ? await syncAgentsAssignedConnectedAccount(id)
+      : true
+
     return c.json({
       success: true,
+      liveRefresh,
       account: {
         id,
         providerConnectionId: connectionId,
@@ -420,6 +430,10 @@ connectedAccountsRouter.get('/callback', async (c) => {
       logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
     }
 
+    if (reconnectAccountId) {
+      await syncAgentsAssignedConnectedAccount(id)
+    }
+
     return c.html(
       generateCallbackHtml({
         success: true,
@@ -521,8 +535,10 @@ connectedAccountsRouter.patch('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =>
       .where(eq(connectedAccounts.id, id))
       .limit(1)
 
+    const liveRefresh = await syncAgentsAssignedConnectedAccount(id)
     return c.json({
       account: { ...updated, provider: getProvider(updated.toolkitSlug) },
+      liveRefresh,
     })
   } catch (error) {
     console.error('Failed to update connected account:', error)
@@ -558,11 +574,22 @@ connectedAccountsRouter.delete('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =
       console.warn('Failed to delete connection from provider:', error)
     }
 
+    let assignedAgentSlugs: string[] | null = null
+    try {
+      assignedAgentSlugs = await findAgentsAssignedConnectedAccount(id)
+    } catch (error) {
+      console.warn(`Failed to resolve agents assigned account ${id} before delete:`, error)
+    }
     await db.delete(connectedAccounts).where(eq(connectedAccounts.id, id))
+    const liveRefresh = assignedAgentSlugs
+      ? await syncConnectedAccountAgents(assignedAgentSlugs)
+      : false
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'disconnected', details: { toolkitSlug: existing.toolkitSlug } })
 
-    return c.body(null, 204)
+    return c.body(null, 204, {
+      'X-Superagent-Live-Refresh': String(liveRefresh),
+    })
   } catch (error) {
     console.error('Failed to delete connected account:', error)
     return c.json({ error: 'Failed to delete connected account' }, 500)

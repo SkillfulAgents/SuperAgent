@@ -4,15 +4,25 @@ import type { GraphEdgeSpec } from './use-graph-data'
 
 vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
 vi.mock('sonner', () => ({
-  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
 }))
 
 const { apiFetch } = await import('@renderer/lib/api')
 const { toast } = await import('sonner')
 const apiFetchMock = vi.mocked(apiFetch)
 
-function response(body: unknown, ok = true, status = 200): Response {
-  return { ok, status, json: async () => body } as Response
+function response(
+  body: unknown,
+  ok = true,
+  status = 200,
+  headers: Record<string, string> = {},
+): Response {
+  return {
+    ok,
+    status,
+    headers: new Headers(headers),
+    json: async () => body,
+  } as Response
 }
 
 const permissionEdge = (a: string, b: string, policyCallers: string[]): GraphEdgeSpec => ({
@@ -66,6 +76,27 @@ describe('deleteGraphConnection — resource edges', () => {
     expect(apiFetchMock).toHaveBeenCalledWith('/api/agents/a/remote-mcps/m', { method: 'DELETE' })
     expect(toast.error).toHaveBeenCalled()
     expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it('keeps the saved unlink and warns when the live refresh fails', async () => {
+    apiFetchMock.mockResolvedValueOnce(
+      response(null, true, 204, {
+        'X-Superagent-Live-Refresh': 'false',
+      }),
+    )
+
+    const changed = await deleteGraphConnection({
+      id: 'agent:a->mcp:m',
+      source: 'agent:a',
+      target: 'mcp:m',
+      variant: 'resource',
+    })
+
+    expect(changed).toBe(true)
+    expect(toast.warning).toHaveBeenCalledWith(
+      expect.stringContaining('need a restart'),
+    )
+    expect(toast.error).not.toHaveBeenCalled()
   })
 })
 
@@ -163,6 +194,18 @@ describe('createDrawnConnection', () => {
     const [url, init] = apiFetchMock.mock.calls[0]
     expect(url).toBe('/api/agents/a/remote-mcps')
     expect(JSON.parse(init?.body as string)).toEqual({ mcpIds: ['m'] })
+  })
+
+  it('keeps the saved link and warns when the live refresh fails', async () => {
+    apiFetchMock.mockResolvedValueOnce(response({ liveRefresh: false }))
+
+    const changed = await createDrawnConnection('agent:a', 'account:acc')
+
+    expect(changed).toBe(true)
+    expect(toast.warning).toHaveBeenCalledWith(
+      expect.stringContaining('need a restart'),
+    )
+    expect(toast.error).not.toHaveBeenCalled()
   })
 
   it('refuses undrawable pairs without a request', async () => {

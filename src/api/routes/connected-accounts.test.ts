@@ -122,10 +122,23 @@ vi.mock('@shared/lib/services/audit-log-service', () => ({
 
 const mockCountActiveTriggersPerAccount = vi.fn()
 const mockCancelTriggersForConnectedAccount = vi.fn()
+const mockFindAgentsAssignedConnectedAccount = vi.fn()
+  .mockResolvedValue(['agent-a'])
+const mockSyncAgentsAssignedConnectedAccount = vi.fn().mockResolvedValue(true)
+const mockSyncConnectedAccountAgents = vi.fn().mockResolvedValue(true)
 
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   countActiveTriggersPerAccount: (...args: unknown[]) => mockCountActiveTriggersPerAccount(...args),
   cancelTriggersForConnectedAccount: (...args: unknown[]) => mockCancelTriggersForConnectedAccount(...args),
+}))
+
+vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
+  findAgentsAssignedConnectedAccount: (...args: unknown[]) =>
+    mockFindAgentsAssignedConnectedAccount(...args),
+  syncAgentsAssignedConnectedAccount: (...args: unknown[]) =>
+    mockSyncAgentsAssignedConnectedAccount(...args),
+  syncConnectedAccountAgents: (...args: unknown[]) =>
+    mockSyncConnectedAccountAgents(...args),
 }))
 
 import connectedAccountsRouter from './connected-accounts'
@@ -217,6 +230,10 @@ describe('connected-accounts reconnect flow', () => {
         displayName: 'My GitHub',
       }))
       expect(mockDbInsertValues).not.toHaveBeenCalled()
+      expect(await res.json()).toMatchObject({ liveRefresh: true })
+      expect(mockSyncAgentsAssignedConnectedAccount).toHaveBeenCalledWith(
+        'existing-acc',
+      )
     })
 
     it('deletes old remote connection after reconnect', async () => {
@@ -310,6 +327,11 @@ describe('connected-accounts reconnect flow', () => {
         .toBeLessThan(mockDeleteConnection.mock.invocationCallOrder[0])
       expect(mockDeleteConnection.mock.invocationCallOrder[0])
         .toBeLessThan(mockDbDeleteWhere.mock.invocationCallOrder[0])
+      expect(mockFindAgentsAssignedConnectedAccount).toHaveBeenCalledWith(
+        'existing-acc',
+      )
+      expect(mockSyncConnectedAccountAgents).toHaveBeenCalledWith(['agent-a'])
+      expect(res.headers.get('X-Superagent-Live-Refresh')).toBe('true')
     })
 
     it('still deletes the local row when remote provider cleanup fails', async () => {

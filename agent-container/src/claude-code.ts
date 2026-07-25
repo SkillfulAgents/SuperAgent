@@ -122,6 +122,13 @@ function parseRemoteMcps(): RemoteMcpConfig[] {
   }
 }
 
+function runtimeConnectionConfigSnapshot(): string {
+  return JSON.stringify([
+    process.env.CONNECTED_ACCOUNTS ?? '',
+    process.env.REMOTE_MCPS ?? '',
+  ])
+}
+
 /**
  * Parses connected accounts metadata from the CONNECTED_ACCOUNTS env var.
  * Format: {"toolkit": [{"name": "Display Name", "id": "uuid"}, ...]}
@@ -429,12 +436,11 @@ export class ClaudeCodeProcess extends EventEmitter {
   private effort: EffortLevel | undefined;
   private speed: SpeedLevel | undefined;
   private capabilityPolicies: AgentCapabilityPolicies | undefined;
-  // REMOTE_MCPS is mutable at runtime when Agent Settings connections change,
-  // but the SDK snapshots MCP servers, allowed tool patterns, and the system
-  // prompt when query() is created. Track the exact env value baked into the
-  // current query so the next user message can refresh a stale query before it
-  // is delivered.
-  private remoteMcpConfigSnapshot = '';
+  // Connection metadata is mutable at runtime when Agent Settings changes.
+  // The SDK snapshots MCP servers, allowed tool patterns, and the system prompt
+  // when query() is created, so the next user message must refresh a stale
+  // query before it is delivered.
+  private runtimeConnectionSnapshot = '';
   // Session-scoped review grants ("Allow for this session"). Scoped to the
   // SESSION, not the process: they must survive idle-eviction + resume (the
   // session-manager persists them via the 'capability-grant' event), or the
@@ -577,7 +583,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private createQuery(): Query {
     const remoteMcpConfigs = this.buildRemoteMcpServers();
     const remoteMcpToolPatterns = Object.keys(remoteMcpConfigs).map(name => `mcp__${name}__*`);
-    this.remoteMcpConfigSnapshot = process.env.REMOTE_MCPS ?? '';
+    this.runtimeConnectionSnapshot = runtimeConnectionConfigSnapshot();
 
     // Browser tools are bound per-session via a getter read on every request:
     // this.sessionId changes when the query (re)starts, and a module-global id
@@ -1100,12 +1106,12 @@ export class ClaudeCodeProcess extends EventEmitter {
     const effort = options?.effort;
     const speed = options?.speed;
     const model = options?.model;
-    const remoteMcpConfigChanged =
-      (process.env.REMOTE_MCPS ?? '') !== this.remoteMcpConfigSnapshot;
+    const runtimeConnectionConfigChanged =
+      runtimeConnectionConfigSnapshot() !== this.runtimeConnectionSnapshot;
 
-    if (remoteMcpConfigChanged) {
-      // The prompt's "Remote MCP Servers (Available)" section is generated
-      // from REMOTE_MCPS too, so refresh it alongside the query tool config.
+    if (runtimeConnectionConfigChanged) {
+      // The prompt's connected-account and remote-MCP sections are generated
+      // from runtime env metadata, so refresh them alongside the query config.
       this.systemPrompt = generateSystemPrompt(
         this.availableEnvVars,
         this.userSystemPrompt,
@@ -1171,7 +1177,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         await this.currentStop.catch(() => undefined);
       }
       await this.restart();
-    } else if (effortChanged || speedChanged || capabilityBlockChanged || remoteMcpConfigChanged) {
+    } else if (effortChanged || speedChanged || capabilityBlockChanged || runtimeConnectionConfigChanged) {
       // Effort can only be set at query creation time — the SDK has no setEffort
       // facility — so any effort change forces an interrupt + re-query. Speed
       // lives in the query env (ANTHROPIC_CUSTOM_HEADERS), which is likewise
@@ -1182,7 +1188,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       if (effortChanged) reasons.push(`effort ${currentEffort} -> ${effort}`);
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
-      if (remoteMcpConfigChanged) reasons.push('remote MCP configuration changed');
+      if (runtimeConnectionConfigChanged) reasons.push('runtime connection configuration changed');
       if (modelChanged) reasons.push(`model -> ${this.model}`);
       console.log(`[Session ${this.sessionId}] Restarting query (${reasons.join(', ')})`);
       await this.interrupt();

@@ -30,6 +30,25 @@ export function drawnConnectionKind(source: string, target: string): 'invoke' | 
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
+function warnIfLiveRefreshFailed(result: unknown): void {
+  if (
+    typeof result === 'object' &&
+    result !== null &&
+    'liveRefresh' in result &&
+    result.liveRefresh === false
+  ) {
+    toast.warning(
+      'Connection saved, but one or more running agents need a restart to refresh it.',
+    )
+  }
+}
+
+function warnIfLiveRefreshHeaderFailed(response: Response): void {
+  if (response.headers?.get('X-Superagent-Live-Refresh') === 'false') {
+    warnIfLiveRefreshFailed({ liveRefresh: false })
+  }
+}
+
 /**
  * Remove the relationship behind an edge; true = something changed.
  * Resource edges unlink the account/MCP; agent↔agent edges revoke invoke
@@ -49,6 +68,8 @@ export async function deleteGraphConnection(edge: GraphEdgeSpec): Promise<boolea
         { method: 'DELETE' },
       )
       if (!res.ok) throw new Error(`Failed to unlink (${res.status})`)
+      warnIfLiveRefreshHeaderFailed(res)
+      warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
       toast.success(resourceKind === 'account' ? 'Account unlinked' : 'MCP server unlinked')
       return true
     }
@@ -134,6 +155,7 @@ export async function createDrawnConnection(source: string, target: string): Pro
             body: JSON.stringify({ mcpIds: [resourceId] }),
           })
     if (!res.ok) throw new Error(`Failed to link (${res.status})`)
+    warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     toast.success(kind === 'account' ? 'Account linked to agent' : 'MCP server linked to agent')
     return true
   } catch (error) {
