@@ -132,6 +132,55 @@ exists before a session is minted.
 Exchanged sessions record the caller's `User-Agent` and IP, so they are
 distinguishable and revocable in the admin sessions list.
 
+### 7. Audit trail
+
+Every session this deployment mints writes one `session` / `created` audit row
+(`src/shared/lib/auth/session-audit.ts`), so credential issuance survives the
+session itself being revoked or expiring — a deployment-owned record that does
+not require reading platform logs across the trust boundary.
+
+Auditing is deliberately **uniform across every path**, not exchange-only: a
+trail that showed headless exchanges but not browser logins would read as a bug
+and would make the exchange look anomalous. All paths land in the one
+`session.create.after` database hook in `src/shared/lib/auth/index.ts`.
+
+`details` carries the attribution and nothing else:
+
+| Field | Value |
+| --- | --- |
+| `method` | `password` (`/sign-in/email`, `/sign-up/email`), `oidc` (`/callback/:id`, `/oauth2/callback/:providerId`), `impersonation`, `token-exchange`, or `unknown` |
+| `orgId` | Only for `token-exchange` — the grant's `org_id`. Omitted otherwise |
+| `targetUserId` | Only for `impersonation` — the impersonated user (see below) |
+
+No token, assertion, `jti`, email, name, IP, or user-agent ever reaches
+`details`. People are identified by id (foreign keys the audit UI resolves); the
+user-agent already lives on the session row for the sessions list, and copying
+attacker-controlled text into a durable trail would add surface without adding
+information. `method` is also the client distinction — it is the granularity we
+can actually verify, unlike a label parsed out of a `User-Agent` string.
+
+**Impersonation inverts actor and subject.** Better Auth puts the impersonated
+user on `session.userId` and the admin who initiated it on
+`session.impersonatedBy`. Every other audit row treats `userId` as the actor, so
+recording the session as-is would blame the target for a privileged action taken
+against them — and revoking the session would take the only trace of who did it
+with it. The audit row therefore records the **admin** as `userId` and the target
+as `details.targetUserId`. The `impersonatedBy` column, not the endpoint path, is
+what identifies these: it is what the plugin actually wrote, and it carries the
+actor the path cannot.
+
+Endpoint paths are matched **exactly**, against the registered path templates
+Better Auth puts on the hook context. A path that stops minting sessions
+upstream just stops appearing; a new one that starts is recorded as `unknown`
+until it is added — the safe direction to be wrong in. The token exchange is
+not an endpoint, so it has no path: it tags its `createSession` call through an
+`AsyncLocalStorage` scope (async-local rather than a module flag so two
+concurrent exchanges cannot read each other's tag).
+
+Revocation is **not** audited yet. It would have to cover sign-out, admin
+revoke, and the concurrent-session reaper in one change or it would reproduce
+exactly the asymmetry this closed.
+
 ## Audience configuration (important for cloud deployments)
 
 The endpoint verifies `aud` against `getAppBaseUrl()`
@@ -152,6 +201,9 @@ For the exchange to work, this value must equal the canonical
 - Integration suite: `src/shared/lib/auth/token-exchange.integration.test.ts`
   (real Better Auth + real SQLite: contract, replay/concurrency, provisioning,
   ban/pending, bearer-through-`Authenticated()`).
+- Audit trail: `src/shared/lib/auth/session-audit.integration.test.ts` (real
+  password login and real exchange, side by side, asserting one row each and no
+  sensitive fields) plus `session-audit.test.ts` for the mapping itself.
 - Config precedence: `src/shared/lib/auth/config.test.ts`.
 - Live two-service chain: seed the platform repo's local stack and drive
   discovery → RFC 8693 → RFC 7523 → bearer calls; see the platform repo's
