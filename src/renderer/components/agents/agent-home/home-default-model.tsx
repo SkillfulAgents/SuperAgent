@@ -1,4 +1,3 @@
-import { cn } from '@shared/lib/utils/cn'
 import { useModelSettings } from '@renderer/hooks/use-settings'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
@@ -6,7 +5,6 @@ import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 
 interface HomeDefaultModelProps {
   agentSlug: string
-  className?: string
 }
 
 /**
@@ -17,7 +15,7 @@ interface HomeDefaultModelProps {
  * per-session pick still wins over both. The picker's footer reverts to
  * following the app-wide default.
  */
-export function HomeDefaultModel({ agentSlug, className }: HomeDefaultModelProps) {
+export function HomeDefaultModel({ agentSlug }: HomeDefaultModelProps) {
   // Picker-safe endpoint — the card renders for every agent member, admin or not.
   const { data: settings } = useModelSettings()
   const { data: prefs } = useAgentPreferences(agentSlug)
@@ -30,10 +28,10 @@ export function HomeDefaultModel({ agentSlug, className }: HomeDefaultModelProps
 
   return (
     <div
-      className={cn('flex items-center justify-between gap-2 py-2 px-4', className)}
+      className="flex items-center justify-between gap-2 py-2 px-4"
       data-testid="home-default-model-card"
     >
-      <span className="text-sm font-medium text-muted-foreground">Agent default model</span>
+      <span className="text-sm font-medium text-muted-foreground">Agent Default Model</span>
       <SettingsModelSelect
         model={displayModel}
         onModelChange={(m) => updatePreferences.mutate({ defaultModel: m })}
