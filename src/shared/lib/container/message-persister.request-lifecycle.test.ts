@@ -423,11 +423,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
   )
 
   // ==========================================================================
-  // Documented divergence: computer-use lives in a separate store with
-  // route-driven clearing (the two-store split this suite exists to pin down)
+  // Documented divergence: computer-use has route-driven clearing and
+  // survives idle boundaries — the registry expresses this as a distinct
+  // store label (storeForKind), no longer as a separate map
   // ==========================================================================
 
-  describe('main stream: computer use (divergent two-store lifecycle)', () => {
+  describe('main stream: computer use (divergent clearing rules)', () => {
     const TOOL = 'mcp__computer-use__computer_click'
 
     it('opens into the computer-use store, NOT the input-request store', async () => {
@@ -1266,6 +1267,231 @@ describe('pending user-input request lifecycle (characterization)', () => {
   })
 
   // ==========================================================================
+  // Decision-route settle: a successful decision must settle its request
+  // immediately. The transcript tool_result normally does the cleanup, but
+  // parallel tool calls hold every sibling's result until the LAST one
+  // resolves — without an explicit settle, the decided entry stays open, the
+  // snapshot keeps serving it, a reload resurrects the card, and the stale
+  // card can act on a request that was already declined.
+  // ==========================================================================
+
+  describe('decision settle under parallel tool calls', () => {
+    it('completeInputRequest settles one of two parallel asks without waiting for its tool_result', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'par-secret-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      simulateToolUse('AskUserQuestion', 'par-question-1', {
+        questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
+      })
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      messagePersister.completeInputRequest(SESSION_ID, 'par-secret-1', 'declined')
+
+      // Registry and replay store both drop the declined ask NOW — a reload
+      // must not resurrect it. The surviving question keeps the light on.
+      expect(
+        userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id),
+      ).toEqual(['par-question-1'])
+      expect(messagePersister.getPendingInputRequests(SESSION_ID).map((r) => r.toolUseId)).toEqual(
+        ['par-question-1'],
+      )
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(
+        userInputRequestManager.stats.recentResolutions.find((r) => r.id === 'par-secret-1')
+          ?.outcome,
+      ).toBe('declined')
+
+      // Other tabs drop the card off the same broadcast the tool_result path
+      // emits.
+      const toolResults = sseEvents.filter(
+        (e) => e.type === 'tool_result' && e.toolUseId === 'par-secret-1',
+      )
+      expect(toolResults).toHaveLength(1)
+      expect(toolResults[0].isError).toBe(true)
+
+      // When the CLI finally releases the parallel siblings' results, the
+      // already-settled ask is a no-op — no double resolution.
+      sendToolResult('par-secret-1')
+      expect(
+        userInputRequestManager.stats.recentResolutions.filter((r) => r.id === 'par-secret-1'),
+      ).toHaveLength(1)
+
+      sendToolResult('par-question-1')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('the settled outcome is stamped for the messages route until the turn boundary clears it', () => {
+      // The transcript still shows the declined call as unresolved while its
+      // sibling holds the results back — the messages route stamps this
+      // outcome so history consumers see a completed call.
+      simulateToolUse('mcp__user-input__request_secret', 'par-stamp-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      messagePersister.completeInputRequest(SESSION_ID, 'par-stamp-1', 'declined')
+      expect(messagePersister.getSettledInputRequests(SESSION_ID).get('par-stamp-1')).toBe(
+        'declined',
+      )
+
+      // The turn boundary lands the real results in the transcript — the
+      // stamp expires with it.
+      mockClient._sendMessage({ type: 'result', subtype: 'success', num_turns: 1 })
+      expect(messagePersister.getSettledInputRequests(SESSION_ID).size).toBe(0)
+    })
+
+    it('settling the last parked ask clears awaiting, and callers without a sessionId derive it', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'par-solo-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // Chat connectors know only the toolUseId — the registry entry's scope
+      // supplies the session.
+      messagePersister.completeInputRequest(undefined, 'par-solo-1', 'answered')
+
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+  })
+
+  // ==========================================================================
+  // Dead-subagent invalidation: a subagent that terminates with a parked
+  // request leaves an unanswerable card. Its registry entries are linked by
+  // parentToolUseId at dispatch, and subagent completion invalidates them —
+  // registry, replay store, container pending, and awaiting status together.
+  // ==========================================================================
+
+  describe('dead-subagent request invalidation', () => {
+    function sendSidechainToolUse(parentToolId: string, toolId: string) {
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: parentToolId,
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: toolId,
+              name: 'mcp__user-input__request_browser_input',
+              input: { message: 'Log in', requirements: [] },
+            },
+          ],
+        },
+      })
+    }
+
+    it('a subagent that dies with a parked request invalidates it everywhere', async () => {
+      sendSidechainToolUse('parent-dead-1', 'side-orphan-1')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(1)
+
+      // The subagent finishes WITHOUT a tool_result for the parked ask
+      // (killed, errored, or torn down) — sidechain 'result' is its terminal
+      // frame. Nothing can answer the request anymore.
+      mockClient._sendMessage({
+        type: 'result',
+        parent_tool_use_id: 'parent-dead-1',
+        subtype: 'success',
+      })
+
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      expect(
+        userInputRequestManager.stats.recentResolutions.find((r) => r.id === 'side-orphan-1')
+          ?.outcome,
+      ).toBe('invalidated')
+      // The unified wire tells clients the card is dead.
+      const resolved = sseEvents.filter(
+        (e) => e.type === 'user_request_resolved' && e.requestId === 'side-orphan-1',
+      )
+      expect(resolved).toHaveLength(1)
+      expect(resolved[0].outcome).toBe('invalidated')
+      // The container-side pending is rejected so a late click can't land.
+      await vi.waitFor(() => {
+        expect(
+          mockContainerClientFetch.mock.calls.some(
+            (c) => c[0] === '/inputs/side-orphan-1/reject',
+          ),
+        ).toBe(true)
+      })
+    })
+
+    it('a dead subagent also invalidates its parked script_run approval', () => {
+      // script_run is dispatched ADJACENT to the blocking-tool funnel (its own
+      // handler call at the sidechain sites), so its parent threading is a
+      // separate seam from the six funnel kinds — and unlike capability
+      // reviews it has no container-side cancelled-frame cleanup to fall
+      // back on.
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'parent-script-1',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'side-script-1',
+              name: 'mcp__user-input__request_script_run',
+              input: { script: 'sw_vers', explanation: 'Version', scriptType: 'shell' },
+            },
+          ],
+        },
+      })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(
+        userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id),
+      ).toEqual(['side-script-1'])
+
+      mockClient._sendMessage({
+        type: 'result',
+        parent_tool_use_id: 'parent-script-1',
+        subtype: 'success',
+      })
+
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(
+        userInputRequestManager.stats.recentResolutions.find((r) => r.id === 'side-script-1')
+          ?.outcome,
+      ).toBe('invalidated')
+    })
+
+    it("a sibling subagent's death leaves another subagent's parked request open", () => {
+      sendSidechainToolUse('parent-alive-1', 'side-kept-1')
+      sendSidechainToolUse('parent-dying-1', 'side-dropped-1')
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
+
+      mockClient._sendMessage({
+        type: 'result',
+        parent_tool_use_id: 'parent-dying-1',
+        subtype: 'success',
+      })
+
+      const open = userInputRequestManager.getOpenRequestsForSession(SESSION_ID)
+      expect(open.map((r) => r.id)).toEqual(['side-kept-1'])
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it("a main-agent request has no parent linkage and survives subagent completions", () => {
+      simulateToolUse('mcp__user-input__request_secret', 'main-secret-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        parent_tool_use_id: 'parent-unrelated-1',
+        subtype: 'success',
+      })
+      expect(
+        userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id),
+      ).toEqual(['main-secret-1'])
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+  })
+
+  // ==========================================================================
   // Unified wire: every registry transition broadcasts ONE typed event —
   // user_request_created / user_request_resolved — alongside the legacy
   // per-type events, to the global stream always and the session stream when
@@ -1408,6 +1634,33 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       expect(createdFor(globalEvents, 'wire-recovered-1')).toHaveLength(0)
       expect(createdFor(sseEvents, 'wire-recovered-1')).toHaveLength(0)
+    })
+
+    it('the real registration upgrades a recovered synthetic and finally hits the wire', () => {
+      // Recovery beat the stream event (the GET-messages read raced the
+      // container stream). Without the upgrade, the payload-less stub blocks
+      // the real registration forever: clients never receive a renderable
+      // user_request_created and the snapshot serves a stub the card guards
+      // drop.
+      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG, [
+        { toolUseId: 'wire-upgrade-1', toolName: 'mcp__user-input__request_secret' },
+      ])
+      expect(createdFor(globalEvents, 'wire-upgrade-1')).toHaveLength(0)
+
+      simulateToolUse('mcp__user-input__request_secret', 'wire-upgrade-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+
+      const created = createdFor(globalEvents, 'wire-upgrade-1')
+      expect(created).toHaveLength(1)
+      expect(created[0].request.payload.secretName).toBe('API_KEY')
+
+      const entry = userInputRequestManager
+        .getSnapshotForScope(AGENT_SLUG, SESSION_ID)
+        .find((r) => r.id === 'wire-upgrade-1')
+      expect((entry?.payload as { recovered?: boolean }).recovered).toBeUndefined()
+      expect((entry?.payload as { secretName?: string }).secretName).toBe('API_KEY')
     })
 
     it('the snapshot a reconnecting client fetches matches the wire it missed', () => {

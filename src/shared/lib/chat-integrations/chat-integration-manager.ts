@@ -1650,6 +1650,11 @@ class ChatIntegrationManager {
           const text = await resolveResponse.text().catch(() => '')
           console.error(`[ChatIntegrationManager] Failed to resolve question ${toolUseId}:`, text)
           reportError(new Error(`Resolve question failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
+        } else {
+          // Settle immediately — parallel tool calls hold the transcript
+          // tool_result until every sibling resolves. The registry entry's
+          // scope supplies the session.
+          messagePersister.completeInputRequest(undefined, toolUseId, 'answered')
         }
         return
       }
@@ -1666,6 +1671,8 @@ class ChatIntegrationManager {
         const text = await resolveResponse.text().catch(() => '')
         console.error(`[ChatIntegrationManager] Failed to resolve input ${toolUseId}:`, text)
         reportError(new Error(`Resolve input failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
+      } else {
+        messagePersister.completeInputRequest(undefined, toolUseId, 'answered')
       }
     } catch (err) {
       console.error(`[ChatIntegrationManager] Failed to handle interactive response:`, err)

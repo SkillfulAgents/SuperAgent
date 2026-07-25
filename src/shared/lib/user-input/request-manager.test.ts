@@ -42,6 +42,44 @@ describe('UserInputRequestManager', () => {
       expect((open[0].payload as { secretName?: string }).secretName).toBe('FIRST')
     })
 
+    it('upgrades a recovered synthetic when the real registration replays', () => {
+      // GET-messages recovery can synthesize a payload-less stub before the
+      // stream event lands (the recovery read races the container stream).
+      // The real registration must replace the stub — and emit the 'created'
+      // transition, because the stub's was filtered off the wire, so this is
+      // the first event clients can actually render.
+      const transitions: Array<{ type: string; payload: unknown }> = []
+      manager.onTransition((t) => transitions.push({ type: t.type, payload: t.request.payload }))
+
+      manager.register(secretRequest({ payload: { recovered: true } }))
+      const upgraded = manager.register(
+        secretRequest({ payload: { secretName: 'API_KEY', reason: 'Need it' } }),
+      )
+
+      expect((upgraded!.payload as { secretName?: string }).secretName).toBe('API_KEY')
+      expect((upgraded!.payload as { recovered?: boolean }).recovered).toBeUndefined()
+      expect(manager.stats.open).toBe(1)
+      expect(transitions.map((t) => t.type)).toEqual(['created', 'created'])
+      expect((transitions[1].payload as { secretName?: string }).secretName).toBe('API_KEY')
+    })
+
+    it('never downgrades: a recovered synthetic cannot replace a real entry', () => {
+      const first = manager.register(secretRequest({ payload: { secretName: 'REAL' } }))
+      const second = manager.register(secretRequest({ payload: { recovered: true } }))
+      expect(second).toBe(first)
+      const third = manager.register(secretRequest({ payload: { recovered: true } }))
+      expect(third).toBe(first)
+    })
+
+    it('a second recovered synthetic does not re-emit over an existing one', () => {
+      const transitions: string[] = []
+      manager.onTransition((t) => transitions.push(t.type))
+      const first = manager.register(secretRequest({ payload: { recovered: true } }))
+      const second = manager.register(secretRequest({ payload: { recovered: true } }))
+      expect(second).toBe(first)
+      expect(transitions).toEqual(['created'])
+    })
+
     it('drops a malformed envelope without throwing (shadow mode must never break delivery)', () => {
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
       const stored = manager.register({
@@ -305,7 +343,6 @@ describe('UserInputRequestManager', () => {
         sessionId: 'session-1',
         context: 'test',
         streamStoreIds: ['stream-1'],
-        computerUseStoreIds: [],
       })
       expect(manager.stats.storeMismatches).toBe(0)
     })
@@ -317,13 +354,12 @@ describe('UserInputRequestManager', () => {
           sessionId: 'session-1',
           context: 'test',
           streamStoreIds: ['stream-1', 'stream-2'],
-          computerUseStoreIds: [],
         }),
       ).toThrow(/shadow store mismatch/)
       expect(manager.stats.storeMismatches).toBe(1)
     })
 
-    it('verifyReviewStoreParity compares only agent-scoped review entries', () => {
+    it('verifyReviewSettlerParity accepts settlers backed by open review entries', () => {
       manager.register({
         id: 'review-1',
         kind: 'proxy_review',
@@ -331,26 +367,29 @@ describe('UserInputRequestManager', () => {
         blocking: true,
         payload: { toolkit: 'slack' },
       })
-      // Session-scoped stream noise for the same agent must not leak into the
-      // review comparison.
-      manager.register(secretRequest())
-
-      manager.verifyReviewStoreParity({
-        agentSlug: 'agent-a',
-        context: 'test',
-        reviewStoreIds: ['review-1'],
-      })
+      manager.verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-1'] })
       expect(manager.stats.storeMismatches).toBe(0)
     })
 
-    it('verifyReviewStoreParity throws under vitest when a review write-through was missed', () => {
-      // ReviewManager holds a review the registry never saw.
+    it('verifyReviewSettlerParity accepts review entries without settlers', () => {
+      // Feeders other than requestReview own no promise — an entry without a
+      // settler is a legitimate pending review, not a mismatch.
+      manager.register({
+        id: 'review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-a' },
+        blocking: true,
+        payload: { toolkit: 'slack' },
+      })
+      manager.verifyReviewSettlerParity({ context: 'test', settlerIds: [] })
+      expect(manager.stats.storeMismatches).toBe(0)
+    })
+
+    it('verifyReviewSettlerParity throws under vitest on an orphaned settler', () => {
+      // A settler without a registry entry is a parked proxied call no sweep
+      // can ever reach.
       expect(() =>
-        manager.verifyReviewStoreParity({
-          agentSlug: 'agent-a',
-          context: 'test',
-          reviewStoreIds: ['review-orphan'],
-        }),
+        manager.verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-orphan'] }),
       ).toThrow(/shadow store mismatch/)
       expect(manager.stats.storeMismatches).toBe(1)
     })

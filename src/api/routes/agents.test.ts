@@ -124,7 +124,10 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     subscribeToSession: vi.fn(),
     unsubscribeFromSession: vi.fn(),
     markSessionActive: vi.fn(),
+    markSessionInterrupted: vi.fn(),
     cancelAwaitingInput: vi.fn(),
+    completeInputRequest: vi.fn(),
+    getSettledInputRequests: vi.fn(() => new Map()),
     broadcastSessionEvent: vi.fn(),
   },
 }))
@@ -3226,6 +3229,109 @@ describe('DELETE /:id/sessions/:sessionId', () => {
 // Awaiting-input recovery from the persisted transcript
 // ============================================================================
 
+describe('decision routes settle their request immediately', () => {
+  // The transcript tool_result normally cleans up the stream store and
+  // registry, but parallel tool calls hold every sibling's result until the
+  // last one resolves. A successful decision must settle its own request NOW
+  // — otherwise the snapshot keeps serving it, a reload resurrects the card,
+  // and the stale card can act on a request that was already declined.
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    mockContainerFetch.mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), { status: 200 }),
+    )
+  })
+
+  const CASES: Array<{
+    label: string
+    url: string
+    body: Record<string, unknown>
+    outcome: 'answered' | 'declined'
+  }> = [
+    {
+      label: 'secret decline',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-secret',
+      body: { toolUseId: 'tool-dec-1', secretName: 'K', decline: true },
+      outcome: 'declined',
+    },
+    {
+      label: 'question decline',
+      url: '/api/agents/test-agent/sessions/sess-1/answer-question',
+      body: { toolUseId: 'tool-dec-2', decline: true },
+      outcome: 'declined',
+    },
+    {
+      label: 'question answer',
+      url: '/api/agents/test-agent/sessions/sess-1/answer-question',
+      body: { toolUseId: 'tool-dec-3', answers: { 'Pick DB': 'sqlite' } },
+      outcome: 'answered',
+    },
+    {
+      label: 'browser input complete',
+      url: '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      body: { toolUseId: 'tool-dec-4' },
+      outcome: 'answered',
+    },
+    {
+      label: 'browser input decline',
+      url: '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      body: { toolUseId: 'tool-dec-5', decline: true },
+      outcome: 'declined',
+    },
+    {
+      label: 'script run deny',
+      url: '/api/agents/test-agent/sessions/sess-1/run-script',
+      body: { toolUseId: 'tool-dec-6', decline: true },
+      outcome: 'declined',
+    },
+    {
+      label: 'file decline',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-file',
+      body: { toolUseId: 'tool-dec-7', decline: true },
+      outcome: 'declined',
+    },
+    {
+      label: 'connected account decline',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-connected-account',
+      body: { toolUseId: 'tool-dec-8', toolkit: 'github', decline: true },
+      outcome: 'declined',
+    },
+    {
+      label: 'remote MCP decline',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-remote-mcp',
+      body: { toolUseId: 'tool-dec-9', decline: true },
+      outcome: 'declined',
+    },
+  ]
+
+  it.each(CASES)('$label settles as $outcome', async ({ url, body, outcome }) => {
+    const res = await postJson(app, url, body)
+    expect(res.status).toBe(200)
+    expect(messagePersister.completeInputRequest).toHaveBeenCalledWith(
+      'sess-1',
+      body.toolUseId,
+      outcome,
+    )
+  })
+
+  it('a failed container reject does NOT settle the request', async () => {
+    mockContainerFetch.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'no pending' }), { status: 404 }),
+    )
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-dec-10',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(500)
+    expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+  })
+})
+
 describe('pending-requests snapshot — GET /:id/pending-requests', () => {
   let app: ReturnType<typeof createApp>
 
@@ -3382,6 +3488,45 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
 
     await getReq(app, URL)
     expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+  })
+
+  it('a decision-settled request is stamped resolved and excluded from recovery', async () => {
+    // Parallel tool calls hold every sibling's transcript result until the
+    // last one settles — the declined call still looks unresolved here.
+    // Without the stamp, a reload resurrects its card (history fallback) and
+    // recovery re-asserts awaiting for a request nothing can answer anymore.
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
+      new Map([['tool-declined', 'declined']]),
+    )
+    mockTransformMessages.mockReturnValue([
+      {
+        id: 'm1',
+        type: 'assistant',
+        content: { text: '' },
+        createdAt: new Date(),
+        toolCalls: [
+          { id: 'tool-declined', name: 'mcp__user-input__request_secret', input: {} },
+          { id: 'tool-open', name: 'AskUserQuestion', input: {} },
+        ],
+      },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Array<{
+      toolCalls?: Array<{ id: string; result?: string }>
+    }>
+    const toolCalls = body[0].toolCalls ?? []
+    expect(toolCalls.find((t) => t.id === 'tool-declined')?.result).toBe(
+      'User declined the request',
+    )
+    expect(toolCalls.find((t) => t.id === 'tool-open')?.result).toBeUndefined()
+    expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+      'sess-1',
+      'test-agent',
+      [{ toolUseId: 'tool-open', toolName: 'AskUserQuestion' }],
+    )
   })
 
   it('does not recover for an inactive session', async () => {

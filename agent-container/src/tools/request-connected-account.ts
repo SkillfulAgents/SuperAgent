@@ -64,10 +64,10 @@ Common toolkits include gmail, slack, github, notion, linear, salesforce, and ma
     try {
       // This blocks until the user provides or declines access
       // The access tokens are set via /env endpoint before resolving
-      await inputManager.createPending(
+      await inputManager.createPendingWithType<string>(
         toolUseId,
-        `CONNECTED_ACCOUNT_${toolkitLower.toUpperCase()}`,
-        args.reason
+        'connected_account',
+        { toolkit: toolkitLower, reason: args.reason }
       )
 
       // If we get here, the user provided access

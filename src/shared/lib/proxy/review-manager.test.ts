@@ -805,3 +805,99 @@ describe('ReviewManager shadow registry write-through (Phase 2)', () => {
     expect(userInputRequestManager.stats.recentResolutions.at(-1)?.outcome).toBe('cancelled')
   })
 })
+
+describe('ReviewManager as registry adapter (Phase 5)', () => {
+  let manager: ReviewManager
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.clearAllMocks()
+    manager = new ReviewManager()
+    userInputRequestManager.reset()
+  })
+
+  afterEach(() => {
+    manager.rejectAll()
+    vi.useRealTimers()
+  })
+
+  // A review entry that exists only in the registry (no blocked promise —
+  // e.g. one restored by a future recovery path, or registered by another
+  // feeder). The adapter must treat the registry as the pending store, so
+  // these are visible, decidable, and sweepable exactly like promise-backed
+  // ones.
+  function registerRegistryOnlyReview(id: string, agentSlug = 'adapter-agent') {
+    userInputRequestManager.register({
+      id,
+      kind: 'proxy_review',
+      scope: { agentSlug },
+      blocking: true,
+      autoApproved: false,
+      payload: {
+        agentSlug,
+        accountId: 'acc-1',
+        toolkit: 'gmail',
+        method: 'GET',
+        targetPath: '/gmail/v1/users/me/messages',
+        matchedScopes: ['gmail.readonly'],
+        scopeDescriptions: { 'gmail.readonly': 'Read email' },
+        displayText: 'Allow reading email?',
+      },
+    })
+  }
+
+  it('getPendingReviewsForAgent reads the registry, not a private copy', () => {
+    registerRegistryOnlyReview('registry-review-1')
+    const pending = manager.getPendingReviewsForAgent('adapter-agent')
+    expect(pending).toHaveLength(1)
+    expect(pending[0].id).toBe('registry-review-1')
+    expect(pending[0].toolkit).toBe('gmail')
+    expect(pending[0].matchedScopes).toEqual(['gmail.readonly'])
+    expect(pending[0].displayText).toBe('Allow reading email?')
+  })
+
+  it('submitDecision settles a registry-only review entry', () => {
+    registerRegistryOnlyReview('registry-review-2')
+    expect(manager.submitDecision('registry-review-2', 'allow')).toBe(true)
+    expect(userInputRequestManager.getAgentScopedRequests('adapter-agent')).toHaveLength(0)
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+      id: 'registry-review-2',
+      kind: 'proxy_review',
+      outcome: 'answered',
+    })
+    expect(mockBroadcastReview).toHaveBeenCalledWith(
+      'adapter-agent',
+      expect.objectContaining({ type: 'proxy_review_resolved', reviewId: 'registry-review-2' }),
+    )
+  })
+
+  it('denyAllForAgent sweeps registry-only review entries', () => {
+    registerRegistryOnlyReview('registry-review-3')
+    registerRegistryOnlyReview('registry-review-4')
+    manager.denyAllForAgent('adapter-agent')
+    expect(userInputRequestManager.getAgentScopedRequests('adapter-agent')).toHaveLength(0)
+  })
+
+  it('SECURITY: submitDecision refuses to settle a non-review registry entry', () => {
+    // The decision routes accept a caller-supplied id. If the adapter resolved
+    // whatever the registry holds under that id, a review decision could
+    // settle a parked secret/question/computer-use wait out from under its
+    // own decision flow.
+    userInputRequestManager.register({
+      id: 'stream-tool-1',
+      kind: 'secret',
+      scope: { agentSlug: 'adapter-agent', sessionId: 'session-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: { secretName: 'API_KEY' },
+    })
+    expect(manager.submitDecision('stream-tool-1', 'allow')).toBe(false)
+    expect(userInputRequestManager.getOpenRequestsForSession('session-1')).toHaveLength(1)
+  })
+
+  it('SECURITY: expectedAgentSlug still gates registry-only entries', () => {
+    registerRegistryOnlyReview('registry-review-5')
+    expect(manager.submitDecision('registry-review-5', 'allow', 'other-agent')).toBe(false)
+    expect(userInputRequestManager.getAgentScopedRequests('adapter-agent')).toHaveLength(1)
+  })
+})

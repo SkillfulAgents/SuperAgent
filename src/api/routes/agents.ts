@@ -1728,6 +1728,27 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
 
+    // Parallel tool calls hold every sibling's transcript result until the
+    // LAST one resolves, so a request the user already decided still looks
+    // unresolved here. Stamp the settled outcome onto the transcript so every
+    // history consumer — the client's refresh fallback, the transcript card,
+    // and the recovery scan below — sees a completed call instead of
+    // resurrecting a decided one.
+    const settledRequests = messagePersister.getSettledInputRequests(sessionId)
+    if (settledRequests.size > 0) {
+      for (const item of transformed) {
+        if (item.type !== 'assistant') continue
+        for (const toolCall of item.toolCalls) {
+          if (toolCall.result !== undefined) continue
+          const outcome = settledRequests.get(toolCall.id)
+          if (outcome !== undefined) {
+            toolCall.result =
+              outcome === 'answered' ? 'User provided input' : 'User declined the request'
+          }
+        }
+      }
+    }
+
     if (messagePersister.isSessionActive(sessionId)) {
       const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
       if (unresolvedRequests.length > 0) {
@@ -2340,6 +2361,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
         return c.json({ error: 'Failed to reject secret request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'secret', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2404,6 +2426,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
       return c.json({ error: 'Secret saved but failed to notify agent' }, 500)
     }
     console.log(`[provide-secret] Request ${toolUseId} resolved successfully`)
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true, saved: true })
   } catch (error) {
@@ -2448,6 +2471,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
         return c.json({ error: 'Failed to reject request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'connected_account', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2554,6 +2578,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     console.log(
       `[provide-connected-account] Request ${toolUseId} resolved successfully`
     )
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({
       success: true,
@@ -2601,6 +2626,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
         return c.json({ error: 'Failed to reject question request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'question', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2632,6 +2658,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
       return c.json({ error: 'Failed to submit answers' }, 500)
     }
     console.log(`[answer-question] Request ${toolUseId} resolved successfully`)
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true })
   } catch (error) {
@@ -2757,8 +2784,10 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
         return c.json({ error: 'Failed to reject browser input request' }, 500)
       }
 
-      // Interrupt the session so the user can chat directly with the agent
       const sessionId = c.req.param('sessionId')
+      messagePersister.completeInputRequest(sessionId, toolUseId, 'declined')
+
+      // Interrupt the session so the user can chat directly with the agent
       try {
         await client.interruptSession(sessionId)
       } catch (e) {
@@ -2792,6 +2821,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       return c.json({ error: 'Failed to complete browser input request' }, 500)
     }
 
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to complete browser input:', error)
@@ -2836,6 +2866,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject script run request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'script_run', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2922,6 +2953,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to resolve script run request' }, 500)
     }
 
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
     trackServerEvent('script_executed', { scriptType, exitCode })
     return c.json({ success: true })
   } catch (error) {
@@ -3652,6 +3684,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
         console.error('Failed to reject remote MCP request:', await rejectResponse.text())
         return c.json({ error: 'Failed to decline the request in container' }, 502)
       }
+      messagePersister.completeInputRequest(c.req.param('sessionId'), body.toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'remote_mcp', withReason: !!body.declineReason })
       return c.json({ success: true, status: 'declined' })
     }
@@ -3724,6 +3757,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       return c.json({ error: 'Failed to resolve the request in container' }, 502)
     }
 
+    messagePersister.completeInputRequest(c.req.param('sessionId'), body.toolUseId, 'answered')
     return c.json({ success: true, status: 'provided' })
   } catch (error) {
     console.error('Failed to provide remote MCP:', error)
@@ -4908,6 +4942,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject file request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'file', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -4939,6 +4974,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to notify agent of uploaded file' }, 500)
     }
     console.log(`[provide-file] Request ${toolUseId} resolved successfully`)
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true, filePath })
   } catch (error) {
