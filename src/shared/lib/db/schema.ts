@@ -71,6 +71,19 @@ export const authAccount = sqliteTable('account', {
     .notNull(),
 }, (table) => ({
   userIdIdx: index('account_userId_idx').on(table.userId),
+  // One stable mapping per external identity: (providerId, accountId) is the
+  // durable lookup for token-exchange provisioning and must never fork.
+  providerAccountIdx: uniqueIndex('account_provider_account_unique').on(table.providerId, table.accountId),
+}))
+
+// Single-use `jti` replay guard for the RFC 7523 token-exchange endpoint.
+// The primary key makes consumption atomic: only the request whose INSERT
+// lands may mint a session for that grant. Rows expire with the grant's exp.
+export const tokenExchangeJti = sqliteTable('token_exchange_jti', {
+  jti: text('jti').primaryKey(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  expiresAtIdx: index('token_exchange_jti_expires_at_idx').on(table.expiresAt),
 }))
 
 export const verification = sqliteTable('verification', {
