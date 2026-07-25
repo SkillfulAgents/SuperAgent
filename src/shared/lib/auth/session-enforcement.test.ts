@@ -3,9 +3,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // Track delete calls to verify which sessions are removed
 const deletedSessionIds: string[] = []
 
-// Configurable session list returned by the mock DB. `creationMethod` is
-// optional so the pre-existing cases below still read as plain session lists.
-let mockSessions: { id: string; createdAt: Date; creationMethod?: string | null }[] = []
+// Configurable session list returned by the mock DB. `creationMethod` and
+// `expiresAt` are optional so the pre-existing cases below still read as plain
+// session lists; a row with no expiry counts as live.
+let mockSessions: {
+  id: string
+  createdAt: Date
+  expiresAt?: Date
+  creationMethod?: string | null
+}[] = []
+
+const HOUR = 60 * 60 * 1000
+const past = (hours: number) => new Date(Date.now() - hours * HOUR)
+const future = (hours: number) => new Date(Date.now() + hours * HOUR)
 
 vi.mock('drizzle-orm', () => ({
   eq: (col: unknown, val: unknown) => ({ col, val }),
@@ -15,6 +25,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   authSession: {
     id: 'id',
     createdAt: 'createdAt',
+    expiresAt: 'expiresAt',
     userId: 'userId',
     creationMethod: 'creationMethod',
   },
@@ -134,7 +145,7 @@ describe('enforceMaxConcurrentSessions', () => {
   })
 })
 
-describe('enforceMaxConcurrentSessions — token-exchange exemption', () => {
+describe('enforceMaxConcurrentSessions — non-interactive sessions', () => {
   beforeEach(() => {
     mockSessions = []
     deletedSessionIds.length = 0
@@ -172,9 +183,10 @@ describe('enforceMaxConcurrentSessions — token-exchange exemption', () => {
     expect(deletedSessionIds).toEqual([])
   })
 
-  it('leaves several token-exchange sessions alone regardless of the cap', () => {
-    // A user with the app on more than one machine. None of them counts, and
-    // none of them is a candidate — even at a cap of one.
+  it('holds several token-exchange sessions clear of the interactive cap', () => {
+    // A user with the app on more than one machine. None of them counts
+    // against the interactive cap, or is a candidate for it — even at a cap
+    // of one. They are bounded by their own ceiling instead.
     mockSessions = [
       { id: 'laptop', createdAt: new Date('2025-01-01'), creationMethod: 'token-exchange' },
       { id: 'desktop', createdAt: new Date('2025-01-02'), creationMethod: 'token-exchange' },
@@ -184,6 +196,64 @@ describe('enforceMaxConcurrentSessions — token-exchange exemption', () => {
     const deleted = enforceMaxConcurrentSessions('user1', 1)
     expect(deleted).toBe(0)
     expect(deletedSessionIds).toEqual([])
+  })
+
+  it('prunes expired token-exchange sessions', () => {
+    // Nothing else in the codebase deletes expired sessions, and a client
+    // re-mints on a schedule — so without this, exempting them from the
+    // interactive cap would mean a row per re-mint, forever.
+    mockSessions = [
+      { id: 'dead1', createdAt: past(3), expiresAt: past(2), creationMethod: 'token-exchange' },
+      { id: 'dead2', createdAt: past(2), expiresAt: past(1), creationMethod: 'token-exchange' },
+      { id: 'live', createdAt: past(1), expiresAt: future(1), creationMethod: 'token-exchange' },
+      { id: 's1', createdAt: past(1), expiresAt: future(1), creationMethod: 'password' },
+    ]
+
+    const deleted = enforceMaxConcurrentSessions('user1', 5)
+    expect(deleted).toBe(2)
+    expect(deletedSessionIds.sort()).toEqual(['dead1', 'dead2'])
+  })
+
+  it('bounds live token-exchange sessions by their own ceiling, oldest first', () => {
+    // The backstop: even with nothing expiring, the table cannot grow forever.
+    mockSessions = Array.from({ length: 13 }, (_, i) => ({
+      id: `x${i}`,
+      createdAt: past(20 - i),
+      expiresAt: future(1),
+      creationMethod: 'token-exchange',
+    }))
+
+    const deleted = enforceMaxConcurrentSessions('user1', 5)
+    expect(deleted).toBe(3)
+    expect(deletedSessionIds).toEqual(['x0', 'x1', 'x2'])
+  })
+
+  it('does not let expired exchange rows consume the interactive cap', () => {
+    // Pruning them must not evict a browser session as a side effect.
+    mockSessions = [
+      { id: 'dead', createdAt: past(3), expiresAt: past(2), creationMethod: 'token-exchange' },
+      { id: 's1', createdAt: past(2), expiresAt: future(1), creationMethod: 'password' },
+      { id: 's2', createdAt: past(1), expiresAt: future(1), creationMethod: 'password' },
+    ]
+
+    const deleted = enforceMaxConcurrentSessions('user1', 2)
+    expect(deleted).toBe(1)
+    expect(deletedSessionIds).toEqual(['dead'])
+  })
+
+  it('leaves expired interactive sessions counted, as before', () => {
+    // Deliberately unchanged: those rows are counted today, so dropping them
+    // would change the effective cap for every existing deployment. Separate
+    // decision, separate change.
+    mockSessions = [
+      { id: 's1', createdAt: past(3), expiresAt: past(2), creationMethod: 'password' },
+      { id: 's2', createdAt: past(2), expiresAt: future(1), creationMethod: 'password' },
+      { id: 's3', createdAt: past(1), expiresAt: future(1), creationMethod: 'password' },
+    ]
+
+    const deleted = enforceMaxConcurrentSessions('user1', 2)
+    expect(deleted).toBe(1)
+    expect(deletedSessionIds).toEqual(['s1'])
   })
 
   it('still caps other methods, including impersonation', () => {

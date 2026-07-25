@@ -435,6 +435,20 @@ describe('concurrent-session cap', () => {
     expect(remaining.filter((s) => s.creation_method !== 'token-exchange')).toHaveLength(CAP)
   })
 
+  it('does not let repeated exchanges grow the session table without bound', async () => {
+    // Holding these clear of the interactive cap removed the only thing that
+    // ever deleted them, and nothing else in the codebase prunes expired
+    // sessions — so a client that re-mints on a schedule would add a row every
+    // time, forever, to a table read in full on every login.
+    const userId = await seedUserAtCap()
+    for (let i = 0; i < 14; i++) {
+      expect((await exchange(await signGrant())).status).toBe(200)
+    }
+
+    const exchanged = liveSessions(userId).filter((s) => s.creation_method === 'token-exchange')
+    expect(exchanged.length).toBeLessThanOrEqual(10)
+  })
+
   it('does not spend a slot on the exchanged session', async () => {
     // Installing the app must not cost the user a browser session.
     const userId = await seedUserAtCap()

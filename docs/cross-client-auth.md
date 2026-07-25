@@ -132,6 +132,29 @@ exists before a session is minted.
 Exchanged sessions record the caller's `User-Agent` and IP, so they are
 distinguishable and revocable in the admin sessions list.
 
+They are also **held to a separate bound** from browser logins
+(`session-enforcement.ts`). `maxConcurrentSessions` exists to limit how many
+*interactive* sessions a user accumulates; an exchanged session is not one of
+those — it belongs to an installed client, is re-minted on a schedule the user
+never sees, and is revoked by disconnecting that client. Mixing the two evicts
+in both directions: eviction is oldest-first, so a daily re-mint walks a user's
+long-lived browser sessions off the end, while a few browser logins evict the
+client's session, which re-mints, which evicts another browser session.
+
+The two groups therefore never evict each other. Exchanged sessions get their
+own ceiling rather than no ceiling — nothing in this codebase prunes expired
+sessions, so "never evicted" would mean a row per re-mint forever, in a table
+read in full on every login. Expired ones are dropped first, so the ceiling is
+spent on sessions that can still authenticate; in the steady state that leaves
+roughly one row per machine. Expired *interactive* rows are still counted, as
+they always have been — dropping those would change the effective cap for every
+existing deployment, which is a separate decision.
+
+Which group a session belongs to is read from `session.creation_method`, written
+once at creation (see §7) — the cap has to recognize an installed client's
+session on a *later* login, when the endpoint context and async-local tag that
+identified it are long gone.
+
 ### 7. Audit trail
 
 Every session this deployment mints writes one `session` / `created` audit row
