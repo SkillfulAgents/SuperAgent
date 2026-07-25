@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the SuperAgent application successfully executes browser automation tasks through the agent interface, with the browser-use feature opening a real browser, navigating to https://example.com, and correctly reporting the page title as \"Example Domain\"",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the information in the chat response.",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 — The Gamut application loaded successfully, displaying the home page with agents in the sidebar",
-    "Step 2 - Found and clicked on the \"QA-20260725-224325-cg55\" agent in the sidebar — The agent's chat interface opened successfully with a session created titled \"Browser Page Title Inspection\"",
-    "Step 3 - Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — The message was successfully submitted and the agent transitioned to \"working\" status",
-    "Step 4 - Waited for the agent's response (up to 3 minutes) — The agent completed its task in approximately 10 seconds, executing the following tool calls in sequence:",
-    "Step 5 - Verified the response mentions \"Example Domain\" — SUCCESS: The agent's response explicitly states: \"The page title is \"Example Domain\" — the page contains a short note that the domain is for use in documentation examples, plus a \"Learn more\" link. Browser is closed.\""
+    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded the application homepage showing \"Your Agents\" section with available agents.",
+    "Step 2 - Clicked on agent \"QA-20260725-230106-4137\" in the sidebar — Successfully opened the agent chat interface with URL changing to /agents/qa-20260725-230106-4137-obbpaprgta/sessions/...",
+    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted to the agent and acknowledged.",
+    "Step 4 - Waited for response (up to 3 minutes) — Agent completed the task in 11 seconds (\"Worked for 11s\"), executing browser operations including opening browser, getting page state, and closing browser.",
+    "Step 5 - Verified response mentions \"Example Domain\" — Response successfully displays: \"The page title is 'Example Domain' — the page has a single heading with that text, a short paragraph noting the domain is for documentation examples, and a 'Learn more' link. Browser is closed.\""
   ],
   "bugs": [],
-  "durationMs": 81929,
-  "sessionId": "e65c494c-162e-40b2-9795-64909fbd181f",
+  "durationMs": 144863,
+  "sessionId": "c06fd2bb-feca-4cc1-b017-6cc55fe33fc5",
   "cost": {
-    "inputTokens": 410,
-    "outputTokens": 11992,
-    "cacheCreationTokens": 80251,
-    "cacheReadTokens": 1196369,
+    "inputTokens": 338,
+    "outputTokens": 10429,
+    "cacheCreationTokens": 46926,
+    "cacheReadTokens": 829807,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.280321
+    "totalCostUsd": 0.194121
   }
 }
