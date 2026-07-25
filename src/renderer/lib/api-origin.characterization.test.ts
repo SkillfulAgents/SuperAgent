@@ -14,10 +14,11 @@
  * browser, it works in Electron dev, and it only breaks where the API is not
  * the origin the document was loaded from. So this suite pins the truth:
  *
- *   1. Every network primitive traces back to `getApiBaseUrl()` through its own
- *      file's declarations, or is pinned below by call site.
- *   2. None passes a hardcoded same-origin `/api` path.
- *   3. The set of modules that bypass `apiFetch` is an explicit inventory.
+ *   1. Every network primitive takes its origin from `getApiBaseUrl()` on
+ *      *every* branch, or is pinned below by exact call site.
+ *   2. None can lead with a hardcoded same-origin `/api` path, on any branch.
+ *   3. Each pin matches exactly one real call — no shared pins, no stale ones.
+ *   4. The set of modules that bypass `apiFetch` is an explicit inventory.
  *
  * This is characterization, not policy: it asserts what is true today so that
  * changing it is a deliberate edit to this file rather than a silent drift. If
@@ -29,14 +30,20 @@
  * `Authorization` headers cannot be attached to an `<img>`, an `EventSource`,
  * or a `WebSocket`.
  *
- * **Why the parser and not a regex.** Two things a text scan cannot do, both of
- * which let a real bypass through: recognize `window.fetch(...)` and
- * `globalThis.fetch(...)` as the same primitive as `fetch(...)`, and tell
+ * **Why the parser and not a regex.** A text scan cannot recognize
+ * `window.fetch(...)` as the same primitive as `fetch(...)`, and cannot tell
  * `const baseUrl = getApiBaseUrl()` from `const baseUrl = window.location.origin`
- * — a name proves nothing about provenance. So call sites are found in the AST,
- * and each URL expression is resolved through the enclosing scope's
- * declarations until it either reaches `getApiBaseUrl()` or runs out. The
- * `scanner` suite at the bottom asserts both of those directly.
+ * — a name proves nothing about provenance. So call sites come from the AST and
+ * each URL expression is resolved through its enclosing scope's declarations.
+ *
+ * **Why per branch.** Containment is not derivation. `getApiBaseUrl()` appears
+ * in `flag ? getApiBaseUrl() + '/api/x' : '/api/x'`, which is same-origin half
+ * the time — so a conditional derives only when *both* arms do, `??`/`||`
+ * fallbacks count as branches, and only the leading position of a template or
+ * concatenation decides the origin at all.
+ *
+ * The `scanner` suite at the bottom asserts each of these directly, on
+ * synthetic sources, so they do not rest on inspection of the real tree.
  */
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
@@ -51,24 +58,38 @@ const GLOBAL_RECEIVERS = new Set(['window', 'globalThis', 'self', 'global'])
 const PRIMITIVE_CONSTRUCTORS = new Set(['EventSource', 'WebSocket'])
 
 /**
- * Individual call sites whose URL cannot be traced to `getApiBaseUrl()` within
- * their own file, and where it actually comes from. Keyed by call site rather
- * than by module: trusting a whole module would silently bless the *next* call
- * added to it, which is the kind of drift this suite exists to catch.
+ * Individual call sites whose URL the analysis below cannot resolve to
+ * `getApiBaseUrl()`, and where it actually comes from.
  *
- * The key embeds the first-argument text, so changing what a pinned call passes
- * re-opens it for review instead of riding on the old exemption.
+ * Keyed `file::scope::primitive(argument)`. Every part is load-bearing:
+ * per-module keys would bless the *next* call added to the module, and the
+ * enclosing scope is what separates the two `createSocket` methods in
+ * `lib/stt.ts`, which are otherwise identical calls. The argument text is
+ * included so changing what a pinned call passes re-opens it for review rather
+ * than riding on the old exemption.
+ *
+ * Every key must match exactly one real call — asserted below, so a pin cannot
+ * cover two sites at once or quietly outlive the call it was written for.
  */
 const PINNED_CALL_SITES: Record<string, string> = {
-  'components/file-preview/renderers/use-file-content.ts::fetch(url)':
+  'components/file-preview/renderers/use-file-content.ts::useFileContent::fetch(url)':
     'prebuilt `url` prop; composed by file-preview-tray-content.tsx from getApiBaseUrl()',
-  'components/file-preview/renderers/audio-renderer.tsx::fetch(url)':
+  'components/file-preview/renderers/audio-renderer.tsx::AudioRenderer.decodeWaveform::fetch(url)':
     'prebuilt `url` prop; same origin as use-file-content.ts above',
-  'lib/stt.ts::WebSocket(url)':
-    'third-party STT provider, not this API — must NOT follow the API origin',
-  'lib/voice-agent-deepgram.ts::WebSocket(url)':
-    'third-party Deepgram socket — must NOT follow the API origin',
-  'lib/voice-agent-openai.ts::WebSocket(url)':
+  // Not third-party — this one IS our API, reached over ws:// instead of http://.
+  'hooks/use-browser-stream.ts::useBrowserStream::WebSocket(wsUrl)':
+    'the only site that does scheme surgery: it splits getApiBaseUrl() into a ' +
+    "literal 'ws'/'wss' scheme and a host, so no single leading expression " +
+    'derives the origin even though the host does. The `window.location.host` ' +
+    'fallback is correct — getApiBaseUrl() is empty in web mode, where ' +
+    'same-origin is the right answer. Re-read this if the API origin ever moves.',
+  'lib/stt.ts::DeepgramAdapter.createSocket::WebSocket(url)':
+    'third-party Deepgram STT endpoint, not this API — must NOT follow the API origin',
+  'lib/stt.ts::OpenaiAdapter.createSocket::WebSocket(url)':
+    'third-party OpenAI STT endpoint, not this API — must NOT follow the API origin',
+  'lib/voice-agent-deepgram.ts::DeepgramVoiceAgentAdapter.connect::WebSocket(url)':
+    'third-party Deepgram voice-agent socket — must NOT follow the API origin',
+  'lib/voice-agent-openai.ts::OpenAIVoiceAgentAdapter.connect::WebSocket(url)':
     'third-party OpenAI realtime socket — must NOT follow the API origin',
 }
 
@@ -117,11 +138,14 @@ interface CallSite {
   primitive: string
   /** Source text of the first argument, or '' when called with none. */
   argument: string
-  /** `file::primitive(argument)` — the pinning key. */
+  /** Dotted enclosing class/function path, e.g. `DeepgramAdapter.createSocket`. */
+  scope: string
+  /** `file::scope::primitive(argument)` — the pinning key. */
   key: string
-  /** The first argument as a plain string literal, when it is one. */
-  literal: string | null
-  tracesToApiBaseUrl: boolean
+  /** String literals that could stand at the front of the URL, across all branches. */
+  originLiterals: string[]
+  /** True only when every branch takes its origin from `getApiBaseUrl()`. */
+  derivesOrigin: boolean
 }
 
 function parseSource(fileName: string, text: string): ts.SourceFile {
@@ -192,40 +216,108 @@ function findDeclarationInScope(name: string, from: ts.Node): ts.Expression | un
   return undefined
 }
 
-/**
- * Whether `expr` actually derives from `getApiBaseUrl()`, following identifiers
- * through their declarations. This is the check a name test cannot make:
- * `const baseUrl = window.location.origin` reaches nothing and fails here.
- */
-function tracesToApiBaseUrl(expr: ts.Node, origin: ts.Node, seen = new Set<string>()): boolean {
-  if (seen.size > 12) return false // pathological chains: give up rather than hang
-  let found = false
+interface OriginAnalysis {
+  /** True only when EVERY path this expression can take derives from the base URL. */
+  derives: boolean
+  /** String literals that could stand at the front of the URL, across all paths. */
+  literals: string[]
+}
 
-  const visit = (node: ts.Node): void => {
-    if (found) return
-    if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === 'getApiBaseUrl'
-    ) {
-      found = true
-      return
+const NOTHING: OriginAnalysis = { derives: false, literals: [] }
+
+/**
+ * What determines the origin of a URL expression, examined per branch.
+ *
+ * A containment test ("does `getApiBaseUrl` appear anywhere in here") is not
+ * enough: `flag ? getApiBaseUrl() + '/api/x' : '/api/x'` contains it and is
+ * still same-origin half the time. So a conditional derives only when *both*
+ * arms do, and the literals from both arms are reported together.
+ *
+ * Only the leading position matters. `` `${base}/api/x` `` takes its origin
+ * from `base`; `` `/api/${id}` `` is same-origin no matter what `id` holds.
+ */
+function analyzeOrigin(node: ts.Node, from: ts.Node, seen = new Set<string>()): OriginAnalysis {
+  if (seen.size > 12) return NOTHING // pathological chains: give up rather than hang
+
+  if (ts.isParenthesizedExpression(node)) return analyzeOrigin(node.expression, from, seen)
+
+  if (ts.isCallExpression(node)) {
+    if (ts.isIdentifier(node.expression) && node.expression.text === 'getApiBaseUrl') {
+      return { derives: true, literals: [] }
     }
-    if (ts.isIdentifier(node) && !seen.has(node.text)) {
-      const initializer = findDeclarationInScope(node.text, origin)
-      if (initializer) {
-        seen.add(node.text)
-        if (tracesToApiBaseUrl(initializer, origin, seen)) {
-          found = true
-          return
-        }
-      }
+    // A string transform keeps its receiver's origin: `baseUrl.replace(…)`.
+    if (ts.isPropertyAccessExpression(node.expression)) {
+      return analyzeOrigin(node.expression.expression, from, seen)
     }
-    ts.forEachChild(node, visit)
+    return NOTHING
   }
 
-  visit(expr)
-  return found
+  // Every arm must derive; every arm's literals count.
+  if (ts.isConditionalExpression(node)) {
+    const a = analyzeOrigin(node.whenTrue, from, seen)
+    const b = analyzeOrigin(node.whenFalse, from, seen)
+    return { derives: a.derives && b.derives, literals: [...a.literals, ...b.literals] }
+  }
+
+  if (ts.isBinaryExpression(node)) {
+    const op = node.operatorToken.kind
+    // Concatenation: the left operand fixes the origin.
+    if (op === ts.SyntaxKind.PlusToken) return analyzeOrigin(node.left, from, seen)
+    // Fallbacks are branches like a conditional.
+    if (op === ts.SyntaxKind.QuestionQuestionToken || op === ts.SyntaxKind.BarBarToken) {
+      const a = analyzeOrigin(node.left, from, seen)
+      const b = analyzeOrigin(node.right, from, seen)
+      return { derives: a.derives && b.derives, literals: [...a.literals, ...b.literals] }
+    }
+    return NOTHING
+  }
+
+  if (ts.isTemplateExpression(node)) {
+    // A non-empty head means a literal leads, whatever follows.
+    if (node.head.text.length > 0) return { derives: false, literals: [node.head.text] }
+    const first = node.templateSpans[0]
+    return first ? analyzeOrigin(first.expression, from, seen) : NOTHING
+  }
+
+  if (ts.isStringLiteralLike(node)) return { derives: false, literals: [node.text] }
+
+  if (ts.isIdentifier(node)) {
+    if (seen.has(node.text)) return NOTHING
+    const initializer = findDeclarationInScope(node.text, from)
+    if (!initializer) return NOTHING
+    return analyzeOrigin(initializer, from, new Set([...seen, node.text]))
+  }
+
+  return NOTHING
+}
+
+/**
+ * Dotted path of the enclosing class/function names, e.g.
+ * `DeepgramAdapter.createSocket`. Line numbers would churn on every edit above
+ * a call; the method name alone is not unique either — `stt.ts` has two
+ * `createSocket` methods, one per adapter class.
+ */
+function enclosingScopePath(node: ts.Node): string {
+  const names: string[] = []
+  for (let cursor: ts.Node | undefined = node.parent; cursor; cursor = cursor.parent) {
+    if (
+      (ts.isClassDeclaration(cursor) ||
+        ts.isFunctionDeclaration(cursor) ||
+        ts.isMethodDeclaration(cursor)) &&
+      cursor.name &&
+      ts.isIdentifier(cursor.name)
+    ) {
+      names.push(cursor.name.text)
+    } else if (
+      ts.isVariableDeclaration(cursor) &&
+      ts.isIdentifier(cursor.name) &&
+      cursor.initializer &&
+      (ts.isArrowFunction(cursor.initializer) || ts.isFunctionExpression(cursor.initializer))
+    ) {
+      names.push(cursor.name.text)
+    }
+  }
+  return names.reverse().join('.') || 'module'
 }
 
 /** Every network primitive call in one module. */
@@ -238,14 +330,17 @@ function scanSource(relativePath: string, text: string): CallSite[] {
     if (primitive) {
       const first = (node as ts.CallExpression | ts.NewExpression).arguments?.[0]
       const argument = first ? first.getText(sourceFile) : ''
+      const scope = enclosingScopePath(node)
+      const origin = first ? analyzeOrigin(first, first) : NOTHING
       sites.push({
         file: relativePath,
         line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
         primitive,
         argument,
-        key: `${relativePath}::${primitive}(${argument})`,
-        literal: first && ts.isStringLiteralLike(first) ? first.text : null,
-        tracesToApiBaseUrl: first ? tracesToApiBaseUrl(first, first) : false,
+        scope,
+        key: `${relativePath}::${scope}::${primitive}(${argument})`,
+        originLiterals: origin.literals,
+        derivesOrigin: origin.derives,
       })
     }
     ts.forEachChild(node, visit)
@@ -303,19 +398,39 @@ function directBaseUrlConsumers(): string[] {
 describe('renderer API origin', () => {
   it('traces every network primitive back to getApiBaseUrl()', () => {
     const unaccounted = allCallSites().filter(
-      (site) => !site.tracesToApiBaseUrl && !(site.key in PINNED_CALL_SITES),
+      (site) => !site.derivesOrigin && !(site.key in PINNED_CALL_SITES),
     )
 
-    expect(unaccounted.map((s) => `${s.file}:${s.line} ${s.primitive}(${s.argument})`)).toEqual([])
+    expect(unaccounted.map((s) => `${s.file}:${s.line} ${s.scope} ${s.primitive}(${s.argument})`))
+      .toEqual([])
   })
 
   it('never hardcodes a same-origin /api path into a network primitive', () => {
     // The failure this catches: `fetch('/api/agents')` works in the browser and
     // in Electron dev, and silently talks to the wrong server anywhere the API
-    // is not the document's origin.
-    const sameOrigin = allCallSites().filter((site) => site.literal?.startsWith('/api'))
+    // is not the document's origin. Checked across every branch, so a
+    // conditional with one same-origin arm is caught too.
+    const sameOrigin = allCallSites().filter((site) =>
+      site.originLiterals.some((literal) => literal.startsWith('/api')),
+    )
 
     expect(sameOrigin.map((s) => `${s.file}:${s.line} ${s.primitive}`)).toEqual([])
+  })
+
+  it('matches every pinned call site to exactly one real call', () => {
+    // Pins are exemptions, so they have to name one call and keep naming it. A
+    // key that matches two calls exempts both (and every future twin); a key
+    // that matches none is a stale exemption nobody will notice has expired.
+    const counts = new Map<string, number>()
+    for (const site of allCallSites()) {
+      counts.set(site.key, (counts.get(site.key) ?? 0) + 1)
+    }
+
+    const mismatched = Object.keys(PINNED_CALL_SITES)
+      .map((key) => ({ key, matches: counts.get(key) ?? 0 }))
+      .filter(({ matches }) => matches !== 1)
+
+    expect(mismatched).toEqual([])
   })
 
   it('pins the set of modules that compose API URLs without apiFetch', () => {
@@ -341,7 +456,7 @@ describe('renderer API origin', () => {
       expect(sites.length, `${module} should still open a socket`).toBeGreaterThan(0)
       for (const site of sites) {
         expect(
-          site.tracesToApiBaseUrl,
+          site.derivesOrigin,
           `${module}:${site.line} must not follow the API origin`,
         ).toBe(false)
       }
@@ -366,7 +481,7 @@ describe('scanner', () => {
   ])('recognizes a %s fetch call', (_label, code) => {
     const [site] = scan(code)
     expect(site?.primitive).toBe('fetch')
-    expect(site?.literal).toBe('/api/agents')
+    expect(site?.originLiterals).toEqual(['/api/agents'])
   })
 
   it.each([
@@ -399,7 +514,7 @@ describe('scanner', () => {
         return fetch(url)
       }
     `)
-    expect(site.tracesToApiBaseUrl).toBe(true)
+    expect(site.derivesOrigin).toBe(true)
   })
 
   it('rejects an identifier that merely happens to be named baseUrl', () => {
@@ -410,12 +525,75 @@ describe('scanner', () => {
         return fetch(\`\${baseUrl}/api/agents\`)
       }
     `)
-    expect(site.tracesToApiBaseUrl).toBe(false)
+    expect(site.derivesOrigin).toBe(false)
   })
 
   it('rejects a URL that arrives as a parameter', () => {
     const [site] = scan(`function load(url: string) { return fetch(url) }`)
-    expect(site.tracesToApiBaseUrl).toBe(false)
+    expect(site.derivesOrigin).toBe(false)
+  })
+
+  it('rejects a conditional where only one arm uses the base URL', () => {
+    // Containment is not derivation. This expression mentions getApiBaseUrl()
+    // and is still same-origin half the time.
+    const [site] = scan(`
+      function load(flag: boolean) {
+        return fetch(flag ? getApiBaseUrl() + '/api/agents' : '/api/agents')
+      }
+    `)
+    expect(site.derivesOrigin).toBe(false)
+    // And the same-origin arm's literal is still surfaced, so the more
+    // specific assertion catches it too rather than only the general one.
+    expect(site.originLiterals).toContain('/api/agents')
+  })
+
+  it('accepts a conditional where every arm uses the base URL', () => {
+    const [site] = scan(`
+      function load(flag: boolean) {
+        const base = getApiBaseUrl()
+        return fetch(flag ? \`\${base}/api/a\` : \`\${base}/api/b\`)
+      }
+    `)
+    expect(site.derivesOrigin).toBe(true)
+  })
+
+  it('rejects a same-origin fallback behind ?? or ||', () => {
+    // `base || '/api/x'` reads as a harmless default and is a same-origin
+    // request whenever base is empty — which is exactly what web mode does.
+    const [a] = scan(`function f() { const base = getApiBaseUrl(); return fetch(base ?? '/api/x') }`)
+    const [b] = scan(`function f() { const base = getApiBaseUrl(); return fetch(base || '/api/x') }`)
+    expect([a.derivesOrigin, b.derivesOrigin]).toEqual([false, false])
+  })
+
+  it('rejects a template whose literal leads', () => {
+    // `/api/${id}` is same-origin no matter what `id` holds.
+    const [site] = scan(`function f(id: string) { return fetch(\`/api/agents/\${id}\`) }`)
+    expect(site.derivesOrigin).toBe(false)
+    expect(site.originLiterals).toContain('/api/agents/')
+  })
+
+  it('follows a string transform of the base URL', () => {
+    // use-browser-stream does exactly this to swap http:// for ws://.
+    const [site] = scan(`
+      function f() {
+        const base = getApiBaseUrl()
+        const host = base.replace(/^https?:\\/\\//, '')
+        return fetch(host)
+      }
+    `)
+    expect(site.derivesOrigin).toBe(true)
+  })
+
+  it('gives two identical calls in one file distinct identities', () => {
+    // lib/stt.ts really does have two `new WebSocket(url, …)` calls, one per
+    // adapter class. A key without the enclosing scope would cover both, so
+    // one pin would exempt the other for free.
+    const sites = scan(`
+      class A { createSocket() { const url = 'wss://a'; return new WebSocket(url) } }
+      class B { createSocket() { const url = 'wss://b'; return new WebSocket(url) } }
+    `)
+    expect(sites.map((s) => s.scope)).toEqual(['A.createSocket', 'B.createSocket'])
+    expect(new Set(sites.map((s) => s.key)).size).toBe(2)
   })
 
   it('prefers the nearest declaration when a name is shadowed', () => {
@@ -427,6 +605,6 @@ describe('scanner', () => {
         return fetch(\`\${baseUrl}/api/b\`)
       }
     `)
-    expect(sites.map((s) => s.tracesToApiBaseUrl)).toEqual([true, false])
+    expect(sites.map((s) => s.derivesOrigin)).toEqual([true, false])
   })
 })
