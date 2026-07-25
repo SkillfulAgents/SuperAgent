@@ -19,6 +19,7 @@ export default defineConfig({
     __RENDER_TRACKING__: JSON.stringify(process.env.RENDER_TRACKING === 'true'),
     'globalThis.__PLATFORM_BASE_URL__': JSON.stringify(process.env.PLATFORM_BASE_URL || ''),
     'globalThis.__PLATFORM_PROXY_URL__': JSON.stringify(process.env.PLATFORM_PROXY_URL || ''),
+    'globalThis.__PLATFORM_AUTH_ISSUER_URL__': JSON.stringify(process.env.PLATFORM_AUTH_ISSUER_URL || ''),
   },
   plugins: [
     react(),

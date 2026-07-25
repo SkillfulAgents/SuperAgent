@@ -65,6 +65,13 @@ if (!app.isPackaged) {
   app.name = 'Superagent-Dev'
 }
 
+// Publish the packaged/dev distinction to `shared/` code, which can't import
+// electron. Written unconditionally on every launch, so a shipped build always
+// clobbers an inherited or spoofed value. Readers must treat "unset" as
+// packaged — see `cloud-workspace-service`, which trusts a loopback deployment
+// target only in a dev build.
+process.env.SUPERAGENT_IS_PACKAGED = app.isPackaged ? '1' : '0'
+
 // Set Electron-specific data directory BEFORE importing API.
 //
 // LOAD-BEARING (Gamut rebrand — DATA-0 / FIX H1): the production data dir is pinned to

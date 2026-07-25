@@ -1,12 +1,49 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import {
   isLocalhostHost,
   isPrivateHost,
   isHostOrSubdomain,
   tryParseUrl,
   validateHttpUrl,
+  validateMcpDiscoveryUrl,
   validateSafeCloneUrl,
 } from './url-safety'
+
+describe('validateMcpDiscoveryUrl localhost policy', () => {
+  const originalType = (process as { type?: string }).type
+
+  afterEach(() => {
+    if (originalType === undefined) delete (process as { type?: string }).type
+    else (process as { type?: string }).type = originalType
+  })
+
+  it('allows loopback on the Electron main process by default', async () => {
+    ;(process as { type?: string }).type = 'browser'
+    await expect(validateMcpDiscoveryUrl('http://127.0.0.1:8899')).resolves.toBeInstanceOf(URL)
+  })
+
+  it('rejects loopback when the caller explicitly disallows it, even on Electron', async () => {
+    // The default exception exists for user-configured local targets. A caller
+    // following a remotely supplied URL opts out, and that must win.
+    ;(process as { type?: string }).type = 'browser'
+    await expect(
+      validateMcpDiscoveryUrl('http://127.0.0.1:8899', { allowLocalhost: false }),
+    ).rejects.toThrow(/private or loopback/)
+    await expect(
+      validateMcpDiscoveryUrl('http://localhost:8899', { allowLocalhost: false }),
+    ).rejects.toThrow(/private or loopback/)
+  })
+
+  it('never allows non-loopback private addresses, even with allowLocalhost', async () => {
+    ;(process as { type?: string }).type = 'browser'
+    await expect(
+      validateMcpDiscoveryUrl('http://192.168.1.10', { allowLocalhost: true }),
+    ).rejects.toThrow(/private or loopback/)
+    await expect(
+      validateMcpDiscoveryUrl('http://169.254.169.254', { allowLocalhost: true }),
+    ).rejects.toThrow(/private or loopback/)
+  })
+})
 
 describe('isLocalhostHost', () => {
   it.each([

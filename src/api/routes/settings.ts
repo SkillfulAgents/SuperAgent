@@ -589,6 +589,9 @@ settings.put('/', async (c) => {
       customEnvVars: body.customEnvVars !== undefined ? body.customEnvVars : currentSettings.customEnvVars,
       skillsets: currentSettings.skillsets,
       platformAuth: currentSettings.platformAuth,
+      // Preserve the maintained cloud-workspace deployment token across global
+      // settings writes; it's owned by the platform-auth flow, not this route.
+      cloudWorkspace: currentSettings.cloudWorkspace,
       auth: body.auth !== undefined ? { ...currentSettings.auth, ...body.auth } : currentSettings.auth,
       voice: body.voice !== undefined ? { ...currentSettings.voice, ...body.voice } : currentSettings.voice,
       shareAnalytics: body.shareAnalytics !== undefined ? body.shareAnalytics : currentSettings.shareAnalytics,

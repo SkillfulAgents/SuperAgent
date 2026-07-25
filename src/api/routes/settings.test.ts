@@ -228,6 +228,14 @@ function defaultSettings() {
       createdAt: '2026-03-24T00:00:00.000Z',
       updatedAt: '2026-03-24T00:00:00.000Z',
     },
+    cloudWorkspace: {
+      deploymentUrl: 'https://ws.example.com',
+      orgId: 'org_test_123',
+      token: 'deploy_session_token',
+      tokenPreview: 'deploy...oken',
+      expiresAt: '2026-03-25T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    },
   }
 }
 
@@ -416,6 +424,16 @@ describe('settings route', () => {
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.platformAuth).toEqual(defaultSettings().platformAuth)
       expect(saved.llmProvider).toBe('platform')
+    })
+
+    it('preserves the maintained cloudWorkspace token when updating unrelated settings', async () => {
+      const res = await putSettings({ llmProvider: 'platform' })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      // Regression: a global settings PUT must not silently drop the deployment
+      // token maintained by the platform-auth flow.
+      expect(saved.cloudWorkspace).toEqual(defaultSettings().cloudWorkspace)
     })
   })
 
