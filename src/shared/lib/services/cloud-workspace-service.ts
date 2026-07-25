@@ -15,6 +15,7 @@ import {
   DEPLOYED_STATUS,
   type DeploymentDiscoveryEntry,
 } from '@shared/lib/platform-auth/cloud-workspace-schema'
+import { isLocalhostHost, validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 
 // Re-mint the deployment token once it's within this window of expiry, so we
 // keep a valid token in hand rather than waiting to be caught expired.
@@ -51,6 +52,30 @@ const NOT_AVAILABLE: CloudWorkspaceStatus = {
 // (`process.type === 'browser'` is the codebase's Electron-main signal.)
 function isElectronMain(): boolean {
   return process.type === 'browser'
+}
+
+/**
+ * Defense-in-depth before the app POSTs a single-use grant to a platform-
+ * supplied URL. The grant's `aud` is bound to `authorization_server`, so:
+ *  - `deployment_url` must equal `authorization_server` (else we'd leak a grant
+ *    to a host it wasn't minted for), and
+ *  - the host must not be a private/loopback SSRF target — resolved via DNS to
+ *    also close the rebind axis — and the grant must travel over TLS.
+ * Localhost is permitted only under the Electron/E2E exception baked into
+ * `validateMcpDiscoveryUrl` (this feature is Electron-only, and local/dev
+ * deployments are loopback). Returns false — never throws — so an unsafe or
+ * poisoned record simply fails closed to "no workspace".
+ */
+async function isDeploymentTargetSafe(entry: DeploymentDiscoveryEntry): Promise<boolean> {
+  if (entry.deployment_url !== entry.authorization_server) return false
+  try {
+    const parsed = await validateMcpDiscoveryUrl(entry.deployment_url)
+    // Require TLS off-loopback so the grant is never sent in cleartext.
+    if (parsed.protocol !== 'https:' && !isLocalhostHost(parsed.hostname)) return false
+    return true
+  } catch {
+    return false
+  }
 }
 
 function isRecordValidFor(
@@ -131,6 +156,20 @@ export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
     (d) => d.status === DEPLOYED_STATUS && d.deployment_url.length > 0,
   )
   if (!deployed) {
+    clearCloudWorkspaceRecord()
+    return { available: true, found: false, deploymentUrl: null, orgId: null, hasValidToken: false }
+  }
+
+  if (!(await isDeploymentTargetSafe(deployed))) {
+    // A mismatched/unsafe deployment URL is a signal, not normal control flow:
+    // fail closed (no grant is minted or sent, no workspace surfaced) and flag it.
+    captureException(new Error('cloud-workspace: unsafe deployment target'), {
+      tags: { area: 'cloud-workspace', op: 'validate-target' },
+      extra: {
+        deploymentUrl: deployed.deployment_url,
+        authorizationServer: deployed.authorization_server,
+      },
+    })
     clearCloudWorkspaceRecord()
     return { available: true, found: false, deploymentUrl: null, orgId: null, hasValidToken: false }
   }

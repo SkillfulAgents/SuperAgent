@@ -12,8 +12,15 @@ import {
   writeCloudWorkspaceRecord,
 } from '@shared/lib/platform-auth/cloud-workspace-record'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
+// SSRF/URL safety: default to "safe" (parse + https). Individual tests override
+// to exercise rejection. isLocalhostHost stays real-ish for the loopback path.
+vi.mock('@shared/lib/utils/url-safety', () => ({
+  validateMcpDiscoveryUrl: vi.fn(async (u: string) => new URL(u)),
+  isLocalhostHost: (h: string) => ['127.0.0.1', 'localhost', '::1'].includes(h),
+}))
 vi.mock('@shared/lib/platform-auth/cloud-workspace-client', () => ({
   fetchDeployments: vi.fn(),
   requestDeploymentGrant: vi.fn(),
@@ -36,6 +43,7 @@ const mockReadRecord = vi.mocked(readCloudWorkspaceRecord)
 const mockWriteRecord = vi.mocked(writeCloudWorkspaceRecord)
 const mockClearRecord = vi.mocked(clearCloudWorkspaceRecord)
 const mockGetToken = vi.mocked(getPlatformAccessToken)
+const mockValidateUrl = vi.mocked(validateMcpDiscoveryUrl)
 
 const DEPLOYED = {
   org_id: 'org_1',
@@ -106,6 +114,51 @@ describe('getCloudWorkspace', () => {
     expect(status).toMatchObject({ found: false, deploymentUrl: null })
     expect(mockClearRecord).toHaveBeenCalledOnce()
     expect(mockRequestGrant).not.toHaveBeenCalled()
+  })
+
+  it('drops the entry (never mints) when deployment_url != authorization_server', async () => {
+    mockFetchDeployments.mockResolvedValue([
+      { ...DEPLOYED, authorization_server: 'https://other.example.com' },
+    ])
+    const status = await getCloudWorkspace()
+    expect(status).toMatchObject({ available: true, found: false, deploymentUrl: null })
+    expect(mockValidateUrl).not.toHaveBeenCalled() // string mismatch short-circuits
+    expect(mockRequestGrant).not.toHaveBeenCalled()
+    expect(mockClearRecord).toHaveBeenCalled()
+  })
+
+  it('drops the entry (never mints) when the URL fails the SSRF/DNS check', async () => {
+    mockFetchDeployments.mockResolvedValue([DEPLOYED])
+    mockValidateUrl.mockRejectedValueOnce(new Error('private address'))
+    const status = await getCloudWorkspace()
+    expect(status).toMatchObject({ available: true, found: false, deploymentUrl: null })
+    expect(mockRequestGrant).not.toHaveBeenCalled()
+    expect(mockClearRecord).toHaveBeenCalled()
+  })
+
+  it('drops the entry when the URL is non-HTTPS and non-loopback', async () => {
+    mockFetchDeployments.mockResolvedValue([
+      { ...DEPLOYED, deployment_url: 'http://ws.example.com', authorization_server: 'http://ws.example.com' },
+    ])
+    mockValidateUrl.mockResolvedValueOnce(new URL('http://ws.example.com'))
+    const status = await getCloudWorkspace()
+    expect(status).toMatchObject({ available: true, found: false })
+    expect(mockRequestGrant).not.toHaveBeenCalled()
+  })
+
+  it('allows a loopback http deployment (Electron/dev exception)', async () => {
+    const loopback = {
+      org_id: 'org_1',
+      deployment_url: 'http://127.0.0.1:8899',
+      authorization_server: 'http://127.0.0.1:8899',
+      status: 'deployed',
+    }
+    mockFetchDeployments.mockResolvedValue([loopback])
+    mockValidateUrl.mockResolvedValueOnce(new URL('http://127.0.0.1:8899'))
+    mockRequestGrant.mockResolvedValue('grant.jwt')
+    mockExchange.mockResolvedValue({ token: 'tok', expiresInSec: 3600 })
+    const status = await getCloudWorkspace()
+    expect(status).toMatchObject({ found: true, hasValidToken: true })
   })
 
   it('mints a grant and exchanges it when no token is stored, then persists it', async () => {

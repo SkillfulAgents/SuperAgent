@@ -446,7 +446,14 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
 
   const existing = readRecord()
   const newOrgId = enriched.orgId?.trim() || null
+  const newUserId = enriched.userId?.trim() || null
+  const newMemberId = enriched.memberId?.trim() || null
   const orgChanged = existing?.orgId !== newOrgId
+  // The acting principal changed if the global user or the per-org membership
+  // differs — even within the same org. A same-user metadata refresh (email,
+  // role) leaves both untouched.
+  const identityChanged =
+    existing?.userId !== newUserId || existing?.memberId !== newMemberId
 
   const now = new Date().toISOString()
   const record: PlatformAuthRecord = PlatformAuthSettingsSchema.parse({
@@ -469,8 +476,13 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
     // previous org. Runs *after* writing the new record so the polymorphic
     // reconcile sees the current auth.
     await reconcileAfterAuthChange()
-    // A deployment token minted for the previous org is no longer valid; drop
-    // it so the next refresh re-mints against the new org's workspace.
+  }
+
+  if (orgChanged || identityChanged) {
+    // The cloud-workspace deployment token is principal-scoped (a session for a
+    // specific user on the deployment). Drop it whenever the acting org OR the
+    // acting user/member changes, so a different principal never reuses it; the
+    // next refresh re-mints for the new principal.
     clearCloudWorkspaceRecord()
   }
 

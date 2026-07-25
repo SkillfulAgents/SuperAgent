@@ -12,10 +12,12 @@ import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schem
 
 /**
  * Boot-time service that keeps the connected platform account's info + billing
- * fresh. No-op when the platform isn't connected. Event-driven (no background
- * poll): it refreshes on boot and on connect; the Account tab refreshes billing
- * on view and via a manual button (through the GET /api/platform-billing route,
- * which calls `refreshBilling()`).
+ * fresh. No-op when the platform isn't connected. Account/billing are
+ * event-driven — refreshed on boot and on connect; the Account tab refreshes
+ * billing on view and via a manual button (through the GET /api/platform-billing
+ * route, which calls `refreshBilling()`). The cloud-workspace deployment token
+ * additionally runs on a low-frequency background poll so it stays valid on a
+ * long-lived app even without an Account-tab visit.
  *
  * The billing cache is **non-auth only** (single user). In auth_mode billing is
  * per-user and served live per request; caching it in this shared singleton
@@ -23,9 +25,14 @@ import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schem
  */
 class PlatformService {
   private startupTimeoutId: ReturnType<typeof setTimeout> | null = null
+  private cloudWorkspaceTimer: ReturnType<typeof setInterval> | null = null
   private isRunning = false
   private isProcessing = false
   private startupDelayMs = 10_000
+  // Cloud-workspace token upkeep runs on a low-frequency poll (well under the
+  // token's lifetime + 1h re-mint buffer) so an app left open past expiry still
+  // holds a valid deployment token without needing an Account-tab visit.
+  private cloudWorkspaceIntervalMs = 30 * 60_000
   private cachedBilling: ParsedPlatformBillingInfo | null = null
   private lastRefreshedAt: string | null = null
 
@@ -38,6 +45,12 @@ class PlatformService {
       this.startupTimeoutId = null
       void this.refresh()
     }, this.startupDelayMs)
+    // Keep the cloud-workspace deployment token fresh even when the app is left
+    // running and the Account tab is never opened. Self-gates (Electron +
+    // connected) and never throws.
+    this.cloudWorkspaceTimer = setInterval(() => {
+      void refreshCloudWorkspace()
+    }, this.cloudWorkspaceIntervalMs)
     // Positive start signal — every service launched by startup.ts logs one
     // so a silent-dead service is distinguishable from a healthy idle one.
     console.log(`[PlatformService] Started (first refresh in ${Math.round(this.startupDelayMs / 1000)}s)`)
@@ -47,6 +60,10 @@ class PlatformService {
     if (this.startupTimeoutId) {
       clearTimeout(this.startupTimeoutId)
       this.startupTimeoutId = null
+    }
+    if (this.cloudWorkspaceTimer) {
+      clearInterval(this.cloudWorkspaceTimer)
+      this.cloudWorkspaceTimer = null
     }
     this.isRunning = false
   }
