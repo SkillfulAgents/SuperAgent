@@ -255,6 +255,14 @@
       "gatekeeperAssess": false,
       "notarize": true,
       "extendInfo": {
+        "CFBundleAlternateNames": [
+          "Gamut",
+          "Superagent",
+          "SuperAgent",
+          "Claude",
+          "Codex",
+          "ChatGPT"
+        ],
         "CFBundleDocumentTypes": [
           {
             "CFBundleTypeName": "Any File",
