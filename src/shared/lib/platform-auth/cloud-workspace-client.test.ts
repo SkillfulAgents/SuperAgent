@@ -7,15 +7,18 @@ import {
   requestDeploymentGrant,
 } from './cloud-workspace-client'
 import { getPlatformAuthIssuerUrl, getPlatformProxyBaseUrl } from './config'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 vi.mock('./config', () => ({
   getPlatformProxyBaseUrl: vi.fn(),
   getPlatformAuthIssuerUrl: vi.fn(),
 }))
+vi.mock('@shared/lib/mcp/mcp-safe-fetch', () => ({ mcpSafeFetch: vi.fn() }))
 
 const mockProxyBase = vi.mocked(getPlatformProxyBaseUrl)
 const mockIssuer = vi.mocked(getPlatformAuthIssuerUrl)
+const mockSafeFetch = vi.mocked(mcpSafeFetch)
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -108,24 +111,49 @@ describe('requestDeploymentGrant', () => {
 
 describe('exchangeGrantAtDeployment', () => {
   it('POSTs the RFC 7523 jwt-bearer form to the deployment (trailing slash stripped)', async () => {
-    fetchMock.mockResolvedValue(
+    mockSafeFetch.mockResolvedValue(
       jsonResponse({ access_token: 'deploy_tok', token_type: 'Bearer', expires_in: 604800 }),
     )
 
-    const result = await exchangeGrantAtDeployment('https://ws.example.com/', 'grant.jwt')
+    const result = await exchangeGrantAtDeployment('https://ws.example.com/', 'grant.jwt', {
+      allowLocalhost: false,
+    })
 
     expect(result).toEqual({ token: 'deploy_tok', expiresInSec: 604800 })
-    const [url, init] = fetchMock.mock.calls[0]
+    const [url, init, policy] = mockSafeFetch.mock.calls[0]
     expect(url).toBe('https://ws.example.com/api/auth/token/exchange')
-    const form = new URLSearchParams(init.body as string)
+    const form = new URLSearchParams(init?.body as string)
     expect(form.get('grant_type')).toBe('urn:ietf:params:oauth:grant-type:jwt-bearer')
     expect(form.get('assertion')).toBe('grant.jwt')
+    expect(policy).toEqual({ allowLocalhost: false })
+  })
+
+  it('sends the grant through the pinned, manual-redirect fetch — never bare fetch', async () => {
+    // The assertion goes to a remotely supplied host: bare `fetch` would
+    // re-resolve (DNS rebind) and auto-follow a 307/308 onto another origin.
+    mockSafeFetch.mockResolvedValue(
+      jsonResponse({ access_token: 'deploy_tok', token_type: 'Bearer', expires_in: 60 }),
+    )
+
+    await exchangeGrantAtDeployment('https://ws.example.com', 'grant.jwt', {
+      allowLocalhost: false,
+    })
+
+    expect(mockSafeFetch).toHaveBeenCalledOnce()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('throws on an exchange failure (e.g. a deployment without the endpoint)', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ error: 'not_found' }, 404))
-    await expect(exchangeGrantAtDeployment('https://ws.example.com', 'g')).rejects.toMatchObject({
-      status: 404,
-    })
+    mockSafeFetch.mockResolvedValue(jsonResponse({ error: 'not_found' }, 404))
+    await expect(
+      exchangeGrantAtDeployment('https://ws.example.com', 'g', { allowLocalhost: false }),
+    ).rejects.toMatchObject({ status: 404 })
+  })
+
+  it('throws when the safe fetch refuses the target (SSRF policy)', async () => {
+    mockSafeFetch.mockRejectedValue(new Error('URL must not point to a private or loopback address'))
+    await expect(
+      exchangeGrantAtDeployment('http://127.0.0.1:8899', 'g', { allowLocalhost: false }),
+    ).rejects.toBeInstanceOf(CloudWorkspaceError)
   })
 })

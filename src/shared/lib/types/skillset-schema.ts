@@ -84,6 +84,13 @@ export const CloudWorkspaceSettingsSchema = z.object({
   // `expires_in`); we re-mint before this within a refresh buffer.
   expiresAt: z.string(),
   updatedAt: z.string(),
+  // Principal the deployment session belongs to. The token is a session for one
+  // user on one deployment, so it stays reusable only while the acting
+  // user/member still matches. Nullish so records written before this field
+  // existed still parse — they then read as "not our principal" and force a
+  // re-mint instead of reusing another account's session.
+  userId: z.string().nullish().transform((v) => v ?? null),
+  memberId: z.string().nullish().transform((v) => v ?? null),
 })
 export type CloudWorkspaceSettings = z.infer<typeof CloudWorkspaceSettingsSchema>
 

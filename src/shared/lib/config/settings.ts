@@ -225,6 +225,10 @@ export interface CloudWorkspaceSettings {
   /** ISO expiry of the deployment token; re-minted within a refresh buffer. */
   expiresAt: string
   updatedAt: string
+  /** Platform user the deployment session belongs to (null on legacy records). */
+  userId: string | null
+  /** Per-org membership the deployment session belongs to. */
+  memberId: string | null
 }
 
 export interface AppSettings {

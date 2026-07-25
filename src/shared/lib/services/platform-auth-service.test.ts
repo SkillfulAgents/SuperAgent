@@ -816,6 +816,8 @@ describe('platform-auth-service', () => {
         tokenPreview: 'deploy...oken',
         expiresAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
         updatedAt: new Date().toISOString(),
+        userId: 'user_a',
+        memberId: 'sub_a',
       })
     }
 

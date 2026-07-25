@@ -3,6 +3,8 @@ import {
   getPlatformProxyBaseUrl,
 } from '@shared/lib/platform-auth/config'
 import { captureException } from '@shared/lib/error-reporting'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
+import type { DiscoveryHostPolicy } from '@shared/lib/utils/url-safety'
 import {
   DEPLOYMENT_ASSERTION_PATH,
   DEPLOYMENT_TOKEN_EXCHANGE_PATH,
@@ -18,12 +20,17 @@ import {
 } from '@shared/lib/platform-auth/cloud-workspace-schema'
 
 /**
- * Client for the cloud-workspace discovery + grant chain. All three calls use a
- * direct, controlled `fetch` (not the shared attribution-aware `fetchPlatformJson`):
+ * Client for the cloud-workspace discovery + grant chain.
+ *
+ * The two calls to *configured* platform hosts (discovery, grant) use a direct,
+ * controlled `fetch` — not the shared attribution-aware `fetchPlatformJson`:
  * the discovery endpoint rejects org-runtime JWTs and any `token::memberId`
  * attribution suffix, so we must present the raw member-bound token verbatim.
  * The caller (service / launch hook) runs outside any attribution scope, and in
  * the Electron desktop context the platform fetch interceptor isn't installed.
+ *
+ * The third call targets a *remotely supplied* URL and carries the grant, so it
+ * uses the pinned, manual-redirect `mcpSafeFetch` — see below.
  */
 
 export class CloudWorkspaceError extends Error {
@@ -36,12 +43,17 @@ export class CloudWorkspaceError extends Error {
   }
 }
 
-async function postForm(url: string, form: URLSearchParams): Promise<Response> {
-  return fetch(url, {
+function formInit(form: URLSearchParams): RequestInit {
+  return {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: form.toString(),
-  })
+  }
+}
+
+/** POST to a *configured* (trusted) platform host. */
+async function postForm(url: string, form: URLSearchParams): Promise<Response> {
+  return fetch(url, formInit(form))
 }
 
 /**
@@ -111,10 +123,18 @@ export async function requestDeploymentGrant(token: string, resourceUrl: string)
 /**
  * Exchange the platform grant at the target deployment's own RFC 7523 endpoint
  * for a deployment session token. Returns the token and its lifetime (seconds).
+ *
+ * This is the one call in the chain that carries a credential to a *remotely
+ * supplied* host, so it goes through `mcpSafeFetch` rather than bare `fetch`:
+ * the socket is pinned to the vetted, freshly resolved address (closing the
+ * DNS-rebind window between validation and connect) and redirects are followed
+ * manually, so a 307/308 can't replay the assertion body onto another origin.
+ * `policy` must carry the caller's explicit loopback decision.
  */
 export async function exchangeGrantAtDeployment(
   deploymentUrl: string,
   grant: string,
+  policy: DiscoveryHostPolicy,
 ): Promise<{ token: string; expiresInSec: number }> {
   const base = deploymentUrl.replace(/\/+$/, '')
   const form = new URLSearchParams({
@@ -124,7 +144,7 @@ export async function exchangeGrantAtDeployment(
 
   let res: Response
   try {
-    res = await postForm(`${base}${DEPLOYMENT_TOKEN_EXCHANGE_PATH}`, form)
+    res = await mcpSafeFetch(`${base}${DEPLOYMENT_TOKEN_EXCHANGE_PATH}`, formInit(form), policy)
   } catch (error) {
     captureException(error, { tags: { area: 'cloud-workspace', op: 'exchange-fetch' } })
     throw new CloudWorkspaceError('Could not reach the cloud deployment.', 502)

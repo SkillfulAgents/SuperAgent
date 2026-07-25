@@ -77,8 +77,11 @@ is deliberately **fully defensive — it never throws**; any failure degrades to
 - **found / not-found is driven by discovery**, decoupled from token success — an
   older deployment without the exchange endpoint still shows as found; the token
   just isn't minted (`hasValidToken: false`).
-- The record is **principal-scoped**: it is cleared whenever the acting
-  **org OR user/member** changes (`savePlatformAuth`) and on disconnect. A
+- The record is **principal-scoped**: it stores the `userId`/`memberId` it was
+  minted for, is only reused while those still match, is cleared whenever the
+  acting **org OR user/member** changes (`savePlatformAuth`) or on disconnect,
+  and the principal is re-checked immediately before the write so a refresh
+  still in flight across an account change can't resurrect the old token. A
   same-user metadata refresh does not churn it.
 - Maintenance runs on boot, on connect, on Account-tab view, **and** on a
   low-frequency background poll in `PlatformService`, so a long-lived app stays
@@ -97,13 +100,26 @@ so it must never run inside an auth-mode web deployment.
   org-runtime JWTs and any `token::memberId` attribution suffix. The client uses
   a controlled `fetch` with the raw token — **not** `fetchPlatformJson`, whose
   global-fetch interceptor would append `::memberId` and get rejected.
-- **SSRF / grant-leak guard.** Before minting or exchanging, the service requires
+- **SSRF / grant-leak guard.** The deployment URL comes off the wire, so it is
+  treated as hostile input. Before minting or exchanging, the service requires
   `deployment_url === authorization_server` (the grant's `aud` is bound to
   `authorization_server`; sending it elsewhere would leak it) and runs the URL
-  through the existing DNS-resolved private-host policy
-  (`validateMcpDiscoveryUrl` in `utils/url-safety.ts`), requiring TLS except for
-  the Electron/E2E loopback exception. Anything unsafe **fails closed** to
-  not-found — no grant is ever sent.
+  through the DNS-resolved private-host policy (`validateMcpDiscoveryUrl` in
+  `utils/url-safety.ts`), requiring TLS off-loopback. Anything unsafe **fails
+  closed** to not-found — no grant is ever sent.
+- **No loopback in shipped builds.** `url-safety`'s *default* localhost
+  exception opens up for any Electron main — correct for a user-configured local
+  MCP server, wrong for a remotely supplied URL, which could otherwise be aimed
+  at the user's own machine. This flow therefore passes an **explicit**
+  `allowLocalhost`, true only when `SUPERAGENT_IS_PACKAGED === '0'` (published
+  from `app.isPackaged` by the Electron main entry on every launch) or under
+  E2E. Unset counts as packaged.
+- **The exchange is a pinned fetch.** The one call carrying a credential to a
+  remote host goes through `mcpSafeFetch`, not bare `fetch`: the socket is
+  pinned to the vetted resolved address (so a DNS rebind between validation and
+  connect can't redirect it) and redirects are followed manually (so a 307/308
+  can't replay the assertion body onto another origin). Discovery and the grant
+  mint target *configured* platform hosts and use plain `fetch`.
 - **Fail closed, always.** A poisoned/mismatched/unreachable record must never
   crash the app or leak a credential.
 
@@ -149,3 +165,9 @@ Electron client) against local Supabase, plus seeding an `org_deployment` row.
 The reusable recipe (seed SQL, ops env-bundle, the `?raw`/`AUTH_MODE` build
 gotchas, the redirect-URI fix) is captured in the team's engineering notes rather
 than here, since it depends on local platform infrastructure.
+
+A local stack is all loopback, so the run must look unpackaged —
+`electron-vite dev` publishes `SUPERAGENT_IS_PACKAGED=0` for you; a harness
+driving the service outside Electron has to set it (and `process.type`) itself.
+Without it the loopback deployment is refused by design and the workspace shows
+as not-found.

@@ -1,5 +1,8 @@
 import { captureException } from '@shared/lib/error-reporting'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import {
+  getPlatformAccessToken,
+  getPlatformAuthStatus,
+} from '@shared/lib/services/platform-auth-service'
 import {
   exchangeGrantAtDeployment,
   fetchDeployments,
@@ -15,7 +18,11 @@ import {
   DEPLOYED_STATUS,
   type DeploymentDiscoveryEntry,
 } from '@shared/lib/platform-auth/cloud-workspace-schema'
-import { isLocalhostHost, validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
+import {
+  isLocalhostHost,
+  validateMcpDiscoveryUrl,
+  type DiscoveryHostPolicy,
+} from '@shared/lib/utils/url-safety'
 
 // Re-mint the deployment token once it's within this window of expiry, so we
 // keep a valid token in hand rather than waiting to be caught expired.
@@ -55,21 +62,41 @@ function isElectronMain(): boolean {
 }
 
 /**
+ * Whether a loopback deployment target may be trusted.
+ *
+ * The default localhost exception in `url-safety` opens up for *any* Electron
+ * main process — right for user-configured local MCP servers, wrong here: the
+ * deployment URL comes off the wire, so in a shipped build a hostile discovery
+ * response could aim the grant at the user's own loopback interface. Loopback
+ * is therefore accepted only when we're demonstrably running a local stack:
+ * an unpackaged (dev) Electron main, or an E2E run.
+ *
+ * `SUPERAGENT_IS_PACKAGED` is published from `app.isPackaged` by the Electron
+ * main entry on every launch (shared code can't import electron), so a shipped
+ * build always overwrites an inherited value. Anything other than an explicit
+ * '0' — including unset — counts as packaged, so this fails closed.
+ */
+function deploymentHostPolicy(): DiscoveryHostPolicy {
+  const unpackaged = process.env.SUPERAGENT_IS_PACKAGED === '0'
+  return { allowLocalhost: unpackaged || Boolean(process.env.E2E_MOCK) }
+}
+
+/**
  * Defense-in-depth before the app POSTs a single-use grant to a platform-
  * supplied URL. The grant's `aud` is bound to `authorization_server`, so:
  *  - `deployment_url` must equal `authorization_server` (else we'd leak a grant
  *    to a host it wasn't minted for), and
  *  - the host must not be a private/loopback SSRF target — resolved via DNS to
  *    also close the rebind axis — and the grant must travel over TLS.
- * Localhost is permitted only under the Electron/E2E exception baked into
- * `validateMcpDiscoveryUrl` (this feature is Electron-only, and local/dev
- * deployments are loopback). Returns false — never throws — so an unsafe or
- * poisoned record simply fails closed to "no workspace".
+ * Loopback is allowed only per `deploymentHostPolicy()` (never in a shipped
+ * build). Returns false — never throws — so an unsafe or poisoned record simply
+ * fails closed to "no workspace".
  */
 async function isDeploymentTargetSafe(entry: DeploymentDiscoveryEntry): Promise<boolean> {
   if (entry.deployment_url !== entry.authorization_server) return false
+  const policy = deploymentHostPolicy()
   try {
-    const parsed = await validateMcpDiscoveryUrl(entry.deployment_url)
+    const parsed = await validateMcpDiscoveryUrl(entry.deployment_url, policy)
     // Require TLS off-loopback so the grant is never sent in cleartext.
     if (parsed.protocol !== 'https:' && !isLocalhostHost(parsed.hostname)) return false
     return true
@@ -78,15 +105,40 @@ async function isDeploymentTargetSafe(entry: DeploymentDiscoveryEntry): Promise<
   }
 }
 
+/**
+ * The account the deployment token would belong to. Reads the live auth record
+ * rather than a cached value so it reflects a disconnect that happened while a
+ * refresh was in flight.
+ */
+interface CloudWorkspacePrincipal {
+  userId: string | null
+  memberId: string | null
+}
+
+function readPrincipal(): CloudWorkspacePrincipal {
+  const status = getPlatformAuthStatus()
+  if (!status.connected) return { userId: null, memberId: null }
+  return { userId: status.userId ?? null, memberId: status.memberId ?? null }
+}
+
+function samePrincipal(a: CloudWorkspacePrincipal, b: CloudWorkspacePrincipal): boolean {
+  return a.userId === b.userId && a.memberId === b.memberId
+}
+
 function isRecordValidFor(
   record: ReturnType<typeof readCloudWorkspaceRecord>,
   entry: DeploymentDiscoveryEntry,
+  principal: CloudWorkspacePrincipal,
 ): boolean {
   if (!record) return false
   // Bind to the exact deployment: a platform-side URL/org change invalidates a
   // token minted for the previous workspace.
   if (record.deploymentUrl !== entry.deployment_url) return false
   if (record.orgId !== entry.org_id) return false
+  // …and to the acting account: the token is a session for one specific user on
+  // that deployment, never reusable by another (a legacy record carries no
+  // principal, so it reads as a mismatch and gets re-minted).
+  if (!samePrincipal({ userId: record.userId, memberId: record.memberId }, principal)) return false
   const expiresAtMs = Date.parse(record.expiresAt)
   if (Number.isNaN(expiresAtMs)) return false
   return expiresAtMs - Date.now() > REFRESH_BUFFER_MS
@@ -102,11 +154,21 @@ async function ensureDeploymentToken(
   subjectToken: string,
   entry: DeploymentDiscoveryEntry,
 ): Promise<boolean> {
-  if (isRecordValidFor(readCloudWorkspaceRecord(), entry)) return true
+  const principal = readPrincipal()
+  if (isRecordValidFor(readCloudWorkspaceRecord(), entry, principal)) return true
 
   try {
     const grant = await requestDeploymentGrant(subjectToken, entry.authorization_server)
-    const { token, expiresInSec } = await exchangeGrantAtDeployment(entry.deployment_url, grant)
+    const { token, expiresInSec } = await exchangeGrantAtDeployment(
+      entry.deployment_url,
+      grant,
+      deploymentHostPolicy(),
+    )
+    // The account can be disconnected or switched while the grant round-trip is
+    // in flight, after the clear-on-identity-change has already run. Re-read the
+    // principal here — the check and the (synchronous) write can't be
+    // interleaved — so a stale refresh can never resurrect the old user's token.
+    if (!samePrincipal(principal, readPrincipal())) return false
     writeCloudWorkspaceRecord({
       deploymentUrl: entry.deployment_url,
       orgId: entry.org_id,
@@ -114,6 +176,8 @@ async function ensureDeploymentToken(
       tokenPreview: buildCloudWorkspaceTokenPreview(token),
       expiresAt: new Date(Date.now() + expiresInSec * 1000).toISOString(),
       updatedAt: new Date().toISOString(),
+      userId: principal.userId,
+      memberId: principal.memberId,
     })
     return true
   } catch (error) {
