@@ -155,14 +155,14 @@ html[data-keyboard-open] [data-composer-footer] {
   margin-top: .25rem;
 }
 
-.markdown-composer-editor h1 { font-size: 1.25rem; line-height: 1.6rem; font-weight: 700; }
-.markdown-composer-editor h2 { font-size: 1.125rem; line-height: 1.5rem; font-weight: 700; }
+.markdown-composer-editor h1 { font-size: 1.25rem; line-height: 1.6rem; font-weight: 500; }
+.markdown-composer-editor h2 { font-size: 1.125rem; line-height: 1.5rem; font-weight: 500; }
 .markdown-composer-editor h3,
 .markdown-composer-editor h4,
 .markdown-composer-editor h5,
-.markdown-composer-editor h6 { font-size: 1rem; line-height: 1.4rem; font-weight: 650; }
+.markdown-composer-editor h6 { font-size: 1rem; line-height: 1.4rem; font-weight: 500; }
 
-.markdown-composer-editor strong { font-weight: 700; }
+.markdown-composer-editor strong { font-weight: 500; }
 .markdown-composer-editor em { font-style: italic; }
 .markdown-composer-editor s { color: hsl(var(--muted-foreground)); }
 
