@@ -20,6 +20,9 @@ vi.mock('@renderer/hooks/use-messages', () => ({
 // now; the per-kind pending arrays moved to the unified store.
 const mockStreamState = {
   isActive: false,
+  // Kept as the cold-start fallback source for capability reviews (no
+  // message-history recovery exists for them) until the first snapshot lands.
+  pendingCapabilityReviewRequests: [] as Array<{ toolUseId: string; capability: 'subagents' | 'workflows'; toolName: string; input: Record<string, unknown> }>,
   streamingToolUses: [] as Array<{ id: string; name: string; partialInput: string; ready?: boolean }>,
   autoApprovedScriptRunIds: new Set<string>(),
   autoApprovedComputerUseIds: new Set<string>(),
@@ -54,6 +57,13 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
 const mockUnified: { data: PendingUserInputRequest[] | undefined } = { data: [] }
 vi.mock('@renderer/hooks/use-pending-user-requests', () => ({
   usePendingUserRequests: () => ({ data: mockUnified.data }),
+}))
+
+// Legacy review poll — consumed ONLY as the cold-start fallback while the
+// snapshot has never succeeded (data === undefined).
+const mockLegacyProxyReviews: { reviews: Array<Record<string, unknown>> } = { reviews: [] }
+vi.mock('@renderer/hooks/use-proxy-reviews', () => ({
+  usePendingProxyReviews: () => ({ data: mockLegacyProxyReviews }),
 }))
 
 // The hook uses the query client only to invalidate on review completion —
@@ -101,8 +111,10 @@ describe('usePendingRequests', () => {
     mockMessagesData.data = undefined
     mockMessagesData.isLoading = false
     mockUnified.data = []
+    mockLegacyProxyReviews.reviews = []
     Object.assign(mockStreamState, {
       isActive: false,
+      pendingCapabilityReviewRequests: [],
       streamingToolUses: [],
       autoApprovedScriptRunIds: new Set<string>(),
       autoApprovedComputerUseIds: new Set<string>(),
@@ -187,6 +199,78 @@ describe('usePendingRequests', () => {
     const matches = ofKind(result.current.items, 'remote_mcp')
     expect(matches).toHaveLength(1)
     expect(matches[0].url).toBe('https://mcp.test.com')
+  })
+
+  it('before the first snapshot, proxy reviews fall back to the legacy poll (blocked ≠ cardless)', () => {
+    // undefined = the snapshot has NEVER succeeded (cold fetch failure /
+    // still in flight) — distinct from a successful empty []. Reviews have
+    // no message-history or streaming recovery, so without this fallback a
+    // blocked agent has no card the user can approve until a retry lands.
+    mockUnified.data = undefined
+    mockLegacyProxyReviews.reviews = [
+      {
+        id: 'review-fb',
+        agentSlug: 'agent-1',
+        accountId: 'acct-1',
+        toolkit: 'github',
+        method: 'POST',
+        targetPath: '/repos/me/x',
+        matchedScopes: [],
+        scopeDescriptions: {},
+        displayText: 'Push to repo',
+      },
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'proxy_review')
+    expect(matches).toHaveLength(1)
+    expect(matches[0].reviewId).toBe('review-fb')
+  })
+
+  it('a successful snapshot is authoritative — the legacy poll no longer contributes reviews', () => {
+    mockUnified.data = []
+    mockLegacyProxyReviews.reviews = [
+      {
+        id: 'review-stale',
+        agentSlug: 'agent-1',
+        accountId: 'acct-1',
+        toolkit: 'github',
+        method: 'POST',
+        targetPath: '/x',
+        matchedScopes: [],
+        scopeDescriptions: {},
+      },
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(ofKind(result.current.items, 'proxy_review')).toHaveLength(0)
+  })
+
+  it('before the first snapshot, capability reviews fall back to the stream source', () => {
+    mockStreamState.isActive = true
+    mockUnified.data = undefined
+    mockStreamState.pendingCapabilityReviewRequests = [
+      { toolUseId: 'tu-cap-fb', capability: 'workflows', toolName: 'Workflow', input: { name: 'audit' } },
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'capability_review')
+    expect(matches).toHaveLength(1)
+    expect(matches[0].toolUseId).toBe('tu-cap-fb')
+  })
+
+  it('a recovered synthetic envelope renders no card — the transcript covers it', () => {
+    // Recovered entries are now IN the snapshot (they are blocking waits the
+    // activity indicator must count) but carry no renderable payload; the
+    // per-kind guards must drop them rather than draw a broken card.
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockUnified.data = [unified('secret', 'tu-recovered', { recovered: true })]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(result.current.count).toBe(0)
   })
 
   it('normalizes malformed questions on a unified envelope — a question without options still renders', () => {

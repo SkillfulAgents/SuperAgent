@@ -285,11 +285,16 @@ describe('UserInputRequestManager', () => {
       expect(ids).toEqual(['mine-1', 'review-1'])
     })
 
-    it('recovery synthetics are excluded — they carry no renderable payload', () => {
+    it('recovery synthetics ARE in the snapshot — a recovered wait is still a blocking wait', () => {
+      // They stay off the WIRE (no renderable payload to push), but the
+      // snapshot is the awaiting-status source for clients: excluding them
+      // made the activity indicator read "Working…" while the server and the
+      // transcript-rendered card both said awaiting input. The per-kind card
+      // guards drop the payload-less entries, so no broken card renders.
       manager.register(secretRequest({ id: 'live-1' }))
       manager.register(secretRequest({ id: 'recovered-1', payload: { recovered: true } }))
-      const ids = manager.getSnapshotForScope('agent-a', 'session-1').map((r) => r.id)
-      expect(ids).toEqual(['live-1'])
+      const ids = manager.getSnapshotForScope('agent-a', 'session-1').map((r) => r.id).sort()
+      expect(ids).toEqual(['live-1', 'recovered-1'])
     })
   })
 

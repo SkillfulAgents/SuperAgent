@@ -14,7 +14,7 @@ import {
 } from '@renderer/hooks/use-message-stream'
 import { useMessages } from '@renderer/hooks/use-messages'
 import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
-import { type PendingReview } from '@renderer/hooks/use-proxy-reviews'
+import { usePendingProxyReviews, type PendingReview } from '@renderer/hooks/use-proxy-reviews'
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { askUserQuestionDef } from '@shared/lib/tool-definitions/ask-user-question'
@@ -398,6 +398,7 @@ export function usePendingRequests({
   const { data: messages } = useMessages(sessionId, agentSlug)
   const {
     isActive,
+    pendingCapabilityReviewRequests: sseCapabilityReviewRequests,
     streamingToolUses,
     autoApprovedScriptRunIds,
     autoApprovedComputerUseIds,
@@ -406,9 +407,16 @@ export function usePendingRequests({
   // The unified store is the primary source for every kind — session-scoped
   // requests AND the agent-scoped reviews that used to arrive on a separate
   // poll. The streaming/message-history fallbacks below still cover the
-  // transcript-recovery path (the server deliberately keeps recovered entries
-  // off the wire — they carry no payload; the transcript renders them).
+  // transcript-recovery path (recovered entries are in the snapshot but carry
+  // no payload, so the per-kind guards drop them; the transcript renders them).
   const { data: unifiedRequestsData } = usePendingUserRequests(agentSlug, sessionId)
+  // undefined = the snapshot has NEVER succeeded (still in flight, or a cold
+  // fetch failure with nothing cached) — distinct from a successful empty [].
+  // Reviews have no message-history or streaming recovery, so until the first
+  // snapshot lands the legacy poll and stream arrays below keep those cards
+  // actionable; once a snapshot exists it is authoritative.
+  const hasSnapshot = unifiedRequestsData !== undefined
+  const { data: legacyProxyReviewsData } = usePendingProxyReviews(agentSlug)
   const unified = useMemo(() => {
     const requests = unifiedRequestsData ?? []
     // Session-scoped waits die with the turn for DISPLAY purposes — the legacy
@@ -421,7 +429,10 @@ export function usePendingRequests({
       isActive ? requests : requests.filter((r) => r.scope.sessionId === undefined),
     )
   }, [unifiedRequestsData, isActive])
-  const pendingProxyReviews = unified.reviews
+  const pendingProxyReviews = useMemo(
+    () => (hasSnapshot ? unified.reviews : legacyProxyReviewsData?.reviews ?? []),
+    [hasSnapshot, unified.reviews, legacyProxyReviewsData],
+  )
 
   // Derive pending requests from message history (for page refresh recovery).
   // Tool calls without a result are still pending, but only if there are no
@@ -610,14 +621,16 @@ export function usePendingRequests({
     return merged
   }, [unified.buckets.computerUseRequests, streamingBasedPendingRequests.computerUseRequests, messagesBasedPendingRequests.computerUseRequests, isActive, autoApprovedComputerUseIds, dismissedRequestIds])
 
-  // Capability reviews come from the unified store ONLY — no message-history
-  // or streaming recovery. A Task/Workflow call without a result usually means
-  // the launch is RUNNING (allow policy or an active session grant), not
-  // awaiting approval; only the host registry knows which.
+  // Capability reviews come from the unified store (with the stream source as
+  // the cold-start fallback) — no message-history or streaming recovery. A
+  // Task/Workflow call without a result usually means the launch is RUNNING
+  // (allow policy or an active session grant), not awaiting approval; only
+  // the host registry knows which.
   const pendingCapabilityReviewRequests = useMemo(() => {
     if (!isActive) return []
-    return unified.capabilityReviews.filter((r) => !dismissedRequestIds.has(r.toolUseId))
-  }, [unified.capabilityReviews, isActive, dismissedRequestIds])
+    const source = hasSnapshot ? unified.capabilityReviews : sseCapabilityReviewRequests
+    return source.filter((r) => !dismissedRequestIds.has(r.toolUseId))
+  }, [unified.capabilityReviews, sseCapabilityReviewRequests, hasSnapshot, isActive, dismissedRequestIds])
 
   // Track arrival order so the stack is chronological. Each id gets a
   // monotonically increasing sequence number the first time it appears.

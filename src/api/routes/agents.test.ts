@@ -3240,13 +3240,13 @@ describe('pending-requests snapshot — GET /:id/pending-requests', () => {
     expect(body.requests.map((r) => r.id).sort()).toEqual(['req-mine', 'req-review'])
   })
 
-  it('recovery synthetics are excluded from the snapshot', async () => {
+  it('recovery synthetics stay in the snapshot — payload-less, but still blocking waits', async () => {
     park('req-live', 'sess-1')
     park('req-recovered', 'sess-1', { recovered: true })
 
     const res = await getReq(app, '/api/agents/test-agent/pending-requests?sessionId=sess-1')
     const body = (await res.json()) as { requests: Array<{ id: string }> }
-    expect(body.requests.map((r) => r.id)).toEqual(['req-live'])
+    expect(body.requests.map((r) => r.id).sort()).toEqual(['req-live', 'req-recovered'])
   })
 
   it("a sessionId belonging to a DIFFERENT agent leaks nothing through this agent's gate", async () => {

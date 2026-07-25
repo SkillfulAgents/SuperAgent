@@ -295,7 +295,14 @@ class MessagePersister {
             outcome: transition.outcome,
             scope: request.scope,
           }
-    this.broadcastGlobal(event)
+    // Fail closed: the schema types scope.agentSlug as optional (and '' is
+    // possible), and the ACL filter forwards slug-less events to EVERY
+    // authenticated user — so a request without a verified slug must never
+    // reach the global stream. Its session stream still gets it: those
+    // subscribers are AgentRead-gated per session.
+    if (request.scope.agentSlug) {
+      this.broadcastGlobal(event)
+    }
     if (request.scope.sessionId) {
       this.broadcastToSSE(request.scope.sessionId, event)
     }

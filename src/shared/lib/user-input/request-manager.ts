@@ -1,5 +1,4 @@
 import {
-  isReplayableUserInputRequest,
   pendingUserInputRequestSchema,
   storeForKind,
   type PendingUserInputRequest,
@@ -154,11 +153,14 @@ export class UserInputRequestManager {
    * Wire snapshot for a scope. A session's view is its own requests plus the
    * agent-scoped requests of its agent (a parked review blocks — and renders
    * in — every session of the agent); an agent's view is everything in its
-   * scope. Recovery synthetics are excluded (no renderable payload).
+   * scope. Recovery synthetics are INCLUDED: they are real blocking waits and
+   * the snapshot is the clients' awaiting-status source — excluding them made
+   * the activity indicator read "Working…" against a visible recovered card.
+   * They carry no renderable payload, so the per-kind card guards drop them
+   * (the transcript renders the card); only the wire EVENTS filter them.
    */
   getSnapshotForScope(agentSlug: string, sessionId?: string): PendingUserInputRequest[] {
     return [...this.requests.values()].filter((r) => {
-      if (!isReplayableUserInputRequest(r)) return false
       // Agent check FIRST, unconditionally: sessionId arrives from an
       // unvalidated query param behind an AgentRead gate on the agent alone,
       // so matching on sessionId by itself would hand this agent's viewer

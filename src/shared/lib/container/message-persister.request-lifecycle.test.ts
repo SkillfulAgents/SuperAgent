@@ -1366,6 +1366,41 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(resolved[0].outcome).toBe('declined')
     })
 
+    it('a request without a verified agentSlug never reaches the global stream (fail closed)', () => {
+      // The global-stream ACL filter forwards events without a top-level
+      // agentSlug to EVERY authenticated user. The scope schema types the
+      // slug as optional, so the broadcast boundary must fail closed rather
+      // than trust that every registration path populated it. The session
+      // stream still gets the event — its subscribers are AgentRead-gated.
+      userInputRequestManager.register({
+        id: 'wire-noslug-1',
+        kind: 'secret',
+        scope: { sessionId: SESSION_ID },
+        blocking: true,
+        autoApproved: false,
+        payload: { secretName: 'K' },
+      })
+      // An empty-string slug is just as fail-open: the filter's truthiness
+      // check skips it exactly like a missing one.
+      userInputRequestManager.register({
+        id: 'wire-noslug-2',
+        kind: 'secret',
+        scope: { agentSlug: '', sessionId: SESSION_ID },
+        blocking: true,
+        autoApproved: false,
+        payload: { secretName: 'K2' },
+      })
+
+      expect(createdFor(globalEvents, 'wire-noslug-1')).toHaveLength(0)
+      expect(createdFor(globalEvents, 'wire-noslug-2')).toHaveLength(0)
+      expect(createdFor(sseEvents, 'wire-noslug-1')).toHaveLength(1)
+      expect(createdFor(sseEvents, 'wire-noslug-2')).toHaveLength(1)
+
+      userInputRequestManager.resolve('wire-noslug-1', 'answered')
+      expect(resolvedFor(globalEvents, 'wire-noslug-1')).toHaveLength(0)
+      expect(resolvedFor(sseEvents, 'wire-noslug-1')).toHaveLength(1)
+    })
+
     it('recovery synthetics never hit the wire — the transcript renders those cards', () => {
       messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG, [
         { toolUseId: 'wire-recovered-1', toolName: 'AskUserQuestion' },
