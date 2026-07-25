@@ -201,6 +201,50 @@ describe('getCloudWorkspace', () => {
     expect(mockClearRecord).not.toHaveBeenCalled()
   })
 
+  it('abandons the cycle when the account switches during discovery', async () => {
+    // The discovery answer belongs to the account we asked as. Acting on it now
+    // would mint from A's bearer and file the session under B's identity.
+    mockFetchDeployments.mockImplementation(async () => {
+      mockAuthStatus.mockReturnValue(connectedAs({ userId: 'usr_2', memberId: 'sub_2' }, 'org_2'))
+      mockGetToken.mockReturnValue('plat_sa_account_b')
+      return [DEPLOYED]
+    })
+
+    const status = await getCloudWorkspace()
+
+    expect(status).toMatchObject({ available: true, found: false, discoveryFailed: true })
+    expect(mockRequestGrant).not.toHaveBeenCalled()
+    expect(mockWriteRecord).not.toHaveBeenCalled()
+    // …and it must not clear the record either: it belongs to the new account.
+    expect(mockClearRecord).not.toHaveBeenCalled()
+  })
+
+  it('does not clear the new account’s record on a stale not-found answer', async () => {
+    mockFetchDeployments.mockImplementation(async () => {
+      mockAuthStatus.mockReturnValue(connectedAs({ userId: 'usr_2', memberId: 'sub_2' }, 'org_2'))
+      mockGetToken.mockReturnValue('plat_sa_account_b')
+      return [] // A has no workspace — B may well have one
+    })
+
+    await getCloudWorkspace()
+
+    expect(mockClearRecord).not.toHaveBeenCalled()
+  })
+
+  it('mints with the bearer of the account it recorded', async () => {
+    mockFetchDeployments.mockResolvedValue([DEPLOYED])
+    mockRequestGrant.mockResolvedValue('grant.jwt')
+    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
+
+    await getCloudWorkspace()
+
+    expect(mockRequestGrant).toHaveBeenCalledWith(TOKEN, DEPLOYED.authorization_server)
+    expect(mockWriteRecord.mock.calls[0][0]).toMatchObject({
+      tokenFingerprint: fingerprintOf(TOKEN),
+      userId: PRINCIPAL.userId,
+    })
+  })
+
   it('reports a persistent failure once per process, not on every poll', async () => {
     // Maintenance runs every 30 minutes and these conditions are usually
     // persistent — capturing each cycle would flood the error budget.

@@ -157,67 +157,79 @@ async function isDeploymentTargetSafe(entry: DeploymentDiscoveryEntry): Promise<
 }
 
 /**
- * The account a deployment token belongs to. Read live (not cached) so it
- * reflects a disconnect that happened while a refresh was in flight.
+ * The acting platform account, captured as one consistent snapshot: the bearer
+ * we present, the identity we'd attribute a session to, and the org we act as
+ * must all come from the same read. Reading them at different points across an
+ * await is how account A's token ends up minting a session recorded under
+ * account B.
  *
  * `userId`/`memberId` alone are not enough to identify an account: a connection
  * whose introspection never filled them in carries nulls, and so does a
  * *disconnected* app. Comparing those would make two different accounts — or an
- * account and no account at all — look identical. So the principal also carries
- * `connected` and a fingerprint of the platform credential itself, which is
- * always present on a live connection and always differs between accounts.
+ * account and no account at all — look identical. So the snapshot also carries
+ * `connected` and a fingerprint of the credential itself, which is always
+ * present on a live connection and always differs between accounts.
  */
-interface CloudWorkspacePrincipal {
+interface CloudWorkspaceAccount {
   connected: boolean
   userId: string | null
   memberId: string | null
+  /** Org we are acting as — discovery answers for the user, across all orgs. */
+  orgId: string | null
   /** Stable, non-reversible id for the platform credential in hand. */
   tokenFingerprint: string | null
+  /** The bearer to present. In-memory only; never persisted. */
+  token: string | null
 }
 
-const NO_PRINCIPAL: CloudWorkspacePrincipal = {
+const NO_ACCOUNT: CloudWorkspaceAccount = {
   connected: false,
   userId: null,
   memberId: null,
+  orgId: null,
   tokenFingerprint: null,
+  token: null,
 }
 
 function fingerprintToken(token: string): string {
   return createHash('sha256').update(token).digest('hex').slice(0, 32)
 }
 
-function readPrincipal(): CloudWorkspacePrincipal {
+function readAccount(): CloudWorkspaceAccount {
   const status = getPlatformAuthStatus()
   const token = getPlatformAccessToken()
-  if (!status.connected || !token) return NO_PRINCIPAL
+  if (!status.connected || !token) return NO_ACCOUNT
   return {
     connected: true,
     userId: status.userId ?? null,
     memberId: status.memberId ?? null,
+    orgId: status.orgId ?? null,
     tokenFingerprint: fingerprintToken(token),
+    token,
   }
 }
 
 /**
- * True only for two *known, live* principals that are the same account. An
- * unidentifiable principal (disconnected, or no credential to fingerprint) is
- * never equal to anything — including another unidentifiable one, which is what
- * would otherwise let a token leak across accounts or survive a disconnect.
+ * True only for two *known, live* snapshots of the same account. An
+ * unidentifiable one (disconnected, or no credential to fingerprint) is never
+ * equal to anything — including another unidentifiable one, which is what would
+ * otherwise let a token leak across accounts or survive a disconnect.
  */
-function samePrincipal(a: CloudWorkspacePrincipal, b: CloudWorkspacePrincipal): boolean {
+function sameAccount(a: CloudWorkspaceAccount, b: CloudWorkspaceAccount): boolean {
   if (!a.connected || !b.connected) return false
   if (!a.tokenFingerprint || !b.tokenFingerprint) return false
   return (
     a.tokenFingerprint === b.tokenFingerprint &&
     a.userId === b.userId &&
-    a.memberId === b.memberId
+    a.memberId === b.memberId &&
+    a.orgId === b.orgId
   )
 }
 
 function isRecordValidFor(
   record: ReturnType<typeof readCloudWorkspaceRecord>,
   entry: DeploymentDiscoveryEntry,
-  principal: CloudWorkspacePrincipal,
+  account: CloudWorkspaceAccount,
 ): boolean {
   if (!record) return false
   // Bind to the exact deployment: a platform-side URL/org change invalidates a
@@ -228,13 +240,15 @@ function isRecordValidFor(
   // that deployment, never reusable by another. A record with no fingerprint
   // (written before this binding existed) is not attributable to anyone, so it
   // is re-minted rather than trusted.
-  const recordPrincipal: CloudWorkspacePrincipal = {
+  const recordAccount: CloudWorkspaceAccount = {
     connected: Boolean(record.tokenFingerprint),
     userId: record.userId,
     memberId: record.memberId,
+    orgId: record.orgId,
     tokenFingerprint: record.tokenFingerprint,
+    token: null,
   }
-  if (!samePrincipal(recordPrincipal, principal)) return false
+  if (!sameAccount(recordAccount, account)) return false
   const expiresAtMs = Date.parse(record.expiresAt)
   if (Number.isNaN(expiresAtMs)) return false
   return expiresAtMs - Date.now() > REFRESH_BUFFER_MS
@@ -247,28 +261,27 @@ function isRecordValidFor(
  * token is held afterward. Never throws — failures are reported and swallowed.
  */
 async function ensureDeploymentToken(
-  subjectToken: string,
+  account: CloudWorkspaceAccount,
   entry: DeploymentDiscoveryEntry,
 ): Promise<boolean> {
-  const principal = readPrincipal()
-  if (isRecordValidFor(readCloudWorkspaceRecord(), entry, principal)) return true
+  if (isRecordValidFor(readCloudWorkspaceRecord(), entry, account)) return true
   // Nothing to attribute a new token to — don't mint one we couldn't safely
-  // reuse anyway. (Unreachable via getCloudWorkspace, which needs a token to get
-  // this far; belt-and-braces for any other caller.)
-  if (!principal.connected) return false
+  // reuse anyway. (Unreachable via getCloudWorkspace, which snapshots a
+  // connected account to get this far; belt-and-braces for any other caller.)
+  if (!account.connected || !account.token) return false
 
   try {
-    const grant = await requestDeploymentGrant(subjectToken, entry.authorization_server)
+    const grant = await requestDeploymentGrant(account.token, entry.authorization_server)
     const { token, expiresInSec } = await exchangeGrantAtDeployment(
       entry.deployment_url,
       grant,
       deploymentHostPolicy(),
     )
     // The account can be disconnected or switched while the grant round-trip is
-    // in flight, after the clear-on-identity-change has already run. Re-read the
-    // principal here — the check and the (synchronous) write can't be
-    // interleaved — so a stale refresh can never resurrect the old user's token.
-    if (!samePrincipal(principal, readPrincipal())) return false
+    // in flight, after the clear-on-identity-change has already run. Re-read it
+    // here — the check and the (synchronous) write can't be interleaved — so a
+    // stale refresh can never resurrect the old account's token.
+    if (!sameAccount(account, readAccount())) return false
     writeCloudWorkspaceRecord({
       deploymentUrl: entry.deployment_url,
       orgId: entry.org_id,
@@ -276,9 +289,9 @@ async function ensureDeploymentToken(
       tokenPreview: buildCloudWorkspaceTokenPreview(token),
       expiresAt: new Date(Date.now() + expiresInSec * 1000).toISOString(),
       updatedAt: new Date().toISOString(),
-      userId: principal.userId,
-      memberId: principal.memberId,
-      tokenFingerprint: principal.tokenFingerprint,
+      userId: account.userId,
+      memberId: account.memberId,
+      tokenFingerprint: account.tokenFingerprint,
     })
     return true
   } catch (error) {
@@ -305,15 +318,17 @@ async function ensureDeploymentToken(
 export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
   if (!isElectronMain()) return NOT_AVAILABLE
 
-  const token = getPlatformAccessToken()
-  if (!token) {
+  // One snapshot drives the whole cycle: the bearer we present, the org we
+  // filter by, and the identity we'd record must all be the same account.
+  const account = readAccount()
+  if (!account.connected || !account.token) {
     clearCloudWorkspaceRecord()
     return NOT_AVAILABLE
   }
 
   let deployments: DeploymentDiscoveryEntry[]
   try {
-    deployments = await fetchDeployments(token)
+    deployments = await fetchDeployments(account.token)
   } catch (error) {
     // Unreachable platform, 401, malformed body — we don't know whether a
     // workspace exists. Report it as such (the card offers a retry rather than
@@ -322,16 +337,23 @@ export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
     return DISCOVERY_FAILED
   }
 
+  // The account can be swapped while discovery is in flight, and this answer
+  // belongs to whoever we asked as — not to whoever is connected now. Acting on
+  // it would clear the new account's record, or mint from the old account's
+  // bearer and file the result under the new account's identity. Abandon the
+  // cycle instead: touch nothing, report "unknown", and let the refresh that the
+  // identity change itself triggers produce the real answer.
+  if (!sameAccount(account, readAccount())) return DISCOVERY_FAILED
+
   // `/v1/me/deployments` answers for the *user*, who may belong to several orgs.
-  // Only the org we're currently acting as is ours to show or mint against —
-  // another org's workspace would render an "Open" link the account can't use
-  // and a grant the platform would refuse. Unknown org ⇒ don't filter.
-  const actingOrgId = getPlatformAuthStatus().orgId
+  // Only the org we're acting as is ours to show or mint against — another org's
+  // workspace would render an "Open" link the account can't use and a grant the
+  // platform would refuse. Unknown org ⇒ don't filter.
   const deployed = deployments.find(
     (d) =>
       d.status === DEPLOYED_STATUS &&
       d.deployment_url.length > 0 &&
-      (!actingOrgId || d.org_id === actingOrgId),
+      (!account.orgId || d.org_id === account.orgId),
   )
   if (!deployed) {
     clearCloudWorkspaceRecord()
@@ -351,7 +373,7 @@ export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
     return DISCOVERY_FAILED
   }
 
-  const hasValidToken = await ensureDeploymentToken(token, deployed)
+  const hasValidToken = await ensureDeploymentToken(account, deployed)
   return {
     available: true,
     found: true,

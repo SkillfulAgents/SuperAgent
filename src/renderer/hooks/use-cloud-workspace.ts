@@ -23,10 +23,17 @@ export interface CloudWorkspaceResponse {
  * on view, since the settings tab is lazily mounted); the GET also runs the
  * backend discover → ensure-deployment-token cycle. `enabled` should track
  * platform connectivity (and Electron — the card is desktop-only).
+ *
+ * `orgId` is part of the cache key, not just a parameter: the response carries a
+ * deployment URL the user can click "Open" on, and a single global key would let
+ * one account's workspace render under another's while the refetch is still in
+ * flight (invalidation marks data stale but keeps serving it). Connect/reconnect
+ * additionally *resets* this key — see `use-platform-auth` — so nothing is left
+ * to serve at all.
  */
-export function useCloudWorkspace(enabled: boolean) {
+export function useCloudWorkspace(enabled: boolean, orgId?: string | null) {
   return useQuery<CloudWorkspaceResponse>({
-    queryKey: ['cloud-workspace'],
+    queryKey: ['cloud-workspace', orgId ?? null],
     enabled,
     queryFn: async () => {
       const res = await apiFetch('/api/platform-auth/deployments')

@@ -86,13 +86,21 @@ is deliberately **fully defensive — it never throws**; any failure degrades to
   the card offers a retry. Only a *successful* discovery listing none shows the
   create-a-workspace CTA — otherwise an outage would invite the user to create a
   second workspace they already have.
-- The record is **principal-scoped**: it stores the `userId`/`memberId` **and a
+- The record is **account-scoped**: it stores the `userId`/`memberId` **and a
   fingerprint of the platform credential** it was minted under, is only reused
   while all three still match, is cleared whenever the acting **org OR
-  user/member** changes (`savePlatformAuth`) or on disconnect, and the principal
-  is re-checked immediately before the write so a refresh still in flight across
-  an account change can't resurrect the old token. A same-user metadata refresh
-  does not churn it.
+  user/member** changes (`savePlatformAuth`) or on disconnect, and the account is
+  re-checked immediately before the write so a refresh still in flight across an
+  account change can't resurrect the old token. A same-user metadata refresh does
+  not churn it.
+- **One account snapshot per cycle.** `getCloudWorkspace` reads the bearer, the
+  acting org, and the identity **together, once** (`readAccount`), presents that
+  bearer, and re-checks the snapshot after every await — after discovery and
+  after the exchange — before it clears, mints, or writes anything. Reading the
+  token and the identity at different points across an await is exactly how
+  account A's bearer ends up minting a session filed under account B, or how A's
+  stale "no workspace" answer wipes B's valid record. If the account moved, the
+  cycle is abandoned untouched and reports "unknown".
   The fingerprint is load-bearing, not belt-and-braces: `userId`/`memberId` can
   both be null on a connection whose introspection never filled them in, and on
   a *disconnected* app — so comparing only those makes two different accounts,
@@ -145,6 +153,10 @@ so it must never run inside an auth-mode web deployment.
   connect can't redirect it) and redirects are followed manually (so a 307/308
   can't replay the assertion body onto another origin). Discovery and the grant
   mint target *configured* platform hosts and use plain `fetch`.
+- **Nothing cached across accounts.** The React Query key includes the org, and
+  connect/reconnect calls `resetQueries` (not `invalidateQueries` — that keeps
+  serving stale data while refetching) so one account's deployment URL can never
+  render behind a live "Open" button under another account.
 - **Fail closed, always.** A poisoned/mismatched/unreachable record must never
   crash the app or leak a credential.
 
@@ -171,7 +183,7 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |
 | `api/routes/platform-auth.ts` | `GET /api/platform-auth/deployments` route |
-| `renderer/hooks/use-cloud-workspace.ts` + `settings/platform-tab.tsx` | The Account-tab card (Electron-gated) |
+| `renderer/hooks/use-cloud-workspace.ts` + `settings/platform-tab.tsx` | The Account-tab card (Electron-gated); query key is org-scoped |
 
 ## Related
 

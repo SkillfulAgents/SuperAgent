@@ -203,7 +203,7 @@ function CloudWorkspaceCard({
   platformBaseUrl?: string | null
   orgId?: string | null
 }) {
-  const { data, isLoading, isFetching, error, refetch } = useCloudWorkspace(true)
+  const { data, isLoading, isFetching, error, refetch } = useCloudWorkspace(true, orgId)
 
   return (
     <div className="space-y-2">
