@@ -19,6 +19,11 @@ import {
   AgentContainerStopError,
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
+import {
+  syncAgentConnectionEnvironment,
+  updateConnectedAccountsEnvironment,
+  updateRemoteMcpEnvironment,
+} from '@shared/lib/container/connection-runtime-sync'
 import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
@@ -2482,40 +2487,11 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
       }
     }
 
-    // Build updated account metadata for the container (no tokens, just names + IDs)
-    const allMappings = await db
-      .select({ account: connectedAccounts })
-      .from(agentConnectedAccounts)
-      .innerJoin(
-        connectedAccounts,
-        eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id)
-      )
-      .where(eq(agentConnectedAccounts.agentSlug, agentSlug))
-
-    const metadata: Record<string, Array<{ name: string; id: string }>> = {}
-    for (const { account } of allMappings) {
-      if (account.status !== 'active') continue
-      if (!metadata[account.toolkitSlug]) {
-        metadata[account.toolkitSlug] = []
-      }
-      metadata[account.toolkitSlug].push({
-        name: account.displayName,
-        id: account.id,
-      })
-    }
-
     // Update CONNECTED_ACCOUNTS metadata in container (no raw tokens)
     console.log(
       `[provide-connected-account] Updating CONNECTED_ACCOUNTS metadata in container`
     )
-    const envResponse = await client.fetch('/env', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        key: 'CONNECTED_ACCOUNTS',
-        value: JSON.stringify(metadata),
-      }),
-    })
+    const envResponse = await updateConnectedAccountsEnvironment(agentSlug, client)
 
     if (!envResponse.ok) {
       let errorDetails = 'Unknown error'
@@ -3450,7 +3426,8 @@ agents.post('/:id/connected-accounts', AgentUser(), async (c) => {
       ))
 
     for (const accountId of insertedAccountIds) { logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'assigned', details: { agentSlug: slug } }) }
-    return c.json({ accounts })
+    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
+    return c.json({ accounts, liveRefresh })
   } catch (error) {
     console.error('Failed to map connected accounts to agent:', error)
     return c.json({ error: 'Failed to map connected accounts to agent' }, 500)
@@ -3486,7 +3463,8 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
       .where(eq(agentConnectedAccounts.id, found.id))
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'unassigned', details: { agentSlug: slug } })
-    return c.body(null, 204)
+    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
+    return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove account mapping:', error)
     return c.json({ error: 'Failed to remove account mapping' }, 500)
@@ -3567,7 +3545,8 @@ agents.post('/:id/remote-mcps', AgentUser(), async (c) => {
     await db.insert(agentRemoteMcps).values(values).onConflictDoNothing()
 
     for (const mcpId of newMcpIds) { logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'assigned', details: { agentSlug: slug } }) }
-    return c.json({ success: true, added: newMcpIds.length })
+    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
+    return c.json({ success: true, added: newMcpIds.length, liveRefresh })
   } catch (error) {
     console.error('Failed to assign remote MCPs to agent:', error)
     return c.json({ error: 'Failed to assign remote MCPs to agent' }, 500)
@@ -3601,7 +3580,8 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'unassigned', details: { agentSlug: slug } })
-    return c.body(null, 204)
+    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
+    return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove remote MCP from agent:', error)
     return c.json({ error: 'Failed to remove remote MCP from agent' }, 500)
@@ -3717,36 +3697,8 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       await db.insert(agentRemoteMcps).values(newMappings)
     }
 
-    // Same talk-back base as container start — not getContainerHostUrl().
-    const hostApiBaseUrl = await client.getHostApiBaseUrl()
-    const mcpMappings = await db
-      .select({ mcp: remoteMcpServers })
-      .from(agentRemoteMcps)
-      .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
-      .where(eq(agentRemoteMcps.agentSlug, slug))
-
-    const mcpConfigs = mcpMappings
-      .filter(({ mcp }) => mcp.status === 'active')
-      .map(({ mcp }) => {
-        // Only pass tool names (not full schemas) to keep env var size small
-        let toolNames: Array<{ name: string }> = []
-        if (mcp.toolsJson) {
-          try { toolNames = JSON.parse(mcp.toolsJson).map((t: any) => ({ name: t.name })) } catch { /* ignore */ }
-        }
-        return {
-          id: mcp.id,
-          name: mcp.name,
-          proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${slug}/${mcp.id}`,
-          tools: toolNames,
-        }
-      })
-
     // Update container env var
-    const envResponse = await client.fetch('/env', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: 'REMOTE_MCPS', value: JSON.stringify(mcpConfigs) }),
-    })
+    const envResponse = await updateRemoteMcpEnvironment(slug, client)
     if (!envResponse.ok) {
       console.error('Failed to update REMOTE_MCPS env var:', await envResponse.text())
       return c.json({ error: 'Failed to update container environment' }, 502)

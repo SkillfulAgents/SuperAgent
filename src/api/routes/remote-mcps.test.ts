@@ -44,6 +44,9 @@ const mockInitiateNewServerOAuth = vi.fn()
 const mockCompleteOAuthFlow = vi.fn()
 const mockDiscoverOAuthMetadata = vi.fn()
 const mockValidateAndConsumeOAuthErrorResponse = vi.fn()
+const mockFindAgentsAssignedRemoteMcp = vi.fn().mockResolvedValue(['agent-a'])
+const mockSyncAgentsAssignedRemoteMcp = vi.fn().mockResolvedValue(true)
+const mockSyncRemoteMcpAgents = vi.fn().mockResolvedValue(true)
 
 vi.mock('@shared/lib/mcp/oauth', () => ({
   McpOAuthSetupError: class McpOAuthSetupError extends Error {},
@@ -53,6 +56,15 @@ vi.mock('@shared/lib/mcp/oauth', () => ({
   validateAndConsumeOAuthErrorResponse: (...args: unknown[]) =>
     mockValidateAndConsumeOAuthErrorResponse(...args),
   discoverOAuthMetadata: (...args: unknown[]) => mockDiscoverOAuthMetadata(...args),
+}))
+
+vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
+  findAgentsAssignedRemoteMcp: (...args: unknown[]) =>
+    mockFindAgentsAssignedRemoteMcp(...args),
+  syncAgentsAssignedRemoteMcp: (...args: unknown[]) =>
+    mockSyncAgentsAssignedRemoteMcp(...args),
+  syncRemoteMcpAgents: (...args: unknown[]) =>
+    mockSyncRemoteMcpAgents(...args),
 }))
 
 // Mock DB with chainable query builder
@@ -1089,7 +1101,44 @@ describe('SSRF protection', () => {
       })
 
       expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ liveRefresh: true })
+      expect(mockSyncAgentsAssignedRemoteMcp).toHaveBeenCalledWith('mcp-1')
     })
+  })
+})
+
+describe('remote MCP runtime propagation', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockDeleteWhere.mockResolvedValue(undefined)
+  })
+
+  it('refreshes previously assigned agents after deleting the MCP row', async () => {
+    mockDbFrom.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      {
+        id: 'mcp-1',
+        name: 'Calendar',
+        url: 'https://mcp.example.com',
+      },
+    ])
+
+    const res = await app.request('http://localhost/api/remote-mcps/mcp-1', {
+      method: 'DELETE',
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, liveRefresh: true })
+    expect(mockFindAgentsAssignedRemoteMcp).toHaveBeenCalledWith('mcp-1')
+    expect(mockDeleteWhere).toHaveBeenCalled()
+    expect(mockSyncRemoteMcpAgents).toHaveBeenCalledWith(['agent-a'])
+    expect(
+      mockDeleteWhere.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockSyncRemoteMcpAgents.mock.invocationCallOrder[0])
   })
 })
 
@@ -1257,6 +1306,8 @@ describe('OAuth callback — postMessage origin', () => {
     const html = await res.text()
     expect(html).toContain('window.location.origin')
     expect(html).not.toContain("'*'")
+    expect(mockFindAgentsAssignedRemoteMcp).toHaveBeenCalledWith('mcp-new')
+    expect(mockSyncRemoteMcpAgents).toHaveBeenCalledWith(['agent-a'])
   })
 
   it('emits callback fallbacks for web popups whose opener was severed', async () => {
