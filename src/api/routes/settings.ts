@@ -74,6 +74,7 @@ import {
   messageAuthor,
   xAgentPolicies,
   apiScopePolicies,
+  tokenExchangeJti,
 } from '@shared/lib/db/schema'
 import fs from 'fs'
 
@@ -191,6 +192,8 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   userSettings,
   // global app audit log
   auditLog,
+  // transient single-use jti replay guard for the token-exchange endpoint
+  tokenExchangeJti,
 ]
 
 // Custom model icons are used in regular model pickers, so any authenticated

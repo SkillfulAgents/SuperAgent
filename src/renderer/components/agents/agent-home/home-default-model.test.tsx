@@ -100,29 +100,12 @@ describe('HomeDefaultModel overrides', () => {
     await waitFor(() => expect(mutateMock).toHaveBeenCalledWith({ defaultSpeed: null }))
   })
 
-  it('picking the exact global default clears the override instead of storing it', async () => {
-    // Global default is the concrete claude-opus-4-8 at medium effort; the
-    // stored overrides differ on both axes so both picks land as changes.
-    usePreferencesMock.mockReturnValue({ data: { defaultModel: 'claude-haiku-4-5', defaultEffort: 'high' } })
-    const user = userEvent.setup()
-    render(<HomeDefaultModel agentSlug="agent-one" />)
-
-    await user.click(screen.getByTestId('settings-model-trigger'))
-    await user.click(await screen.findByTestId('model-pinned-claude-opus-4-8'))
-    expect(mutateMock).toHaveBeenCalledWith({ defaultModel: null })
-
-    await user.click(screen.getByTestId('effort-option-medium'))
-    expect(mutateMock).toHaveBeenCalledWith({ defaultEffort: null })
-  })
-
-  it('picking an off-global model or effort stores it as the override', async () => {
+  it('stores a model or effort pick as the override', async () => {
     usePreferencesMock.mockReturnValue({ data: {} })
     const user = userEvent.setup()
     render(<HomeDefaultModel agentSlug="agent-one" />)
 
     await user.click(screen.getByTestId('settings-model-trigger'))
-    // The bare 'opus' alias differs from the concrete global id — it rides
-    // upgrades, so it IS an override.
     await user.click(await screen.findByTestId('model-latest-chip-opus'))
     expect(mutateMock).toHaveBeenCalledWith({ defaultModel: 'opus' })
 

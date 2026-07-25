@@ -170,6 +170,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   messageAuthor: {},
   xAgentPolicies: {},
   apiScopePolicies: {},
+  tokenExchangeJti: {},
 }))
 
 vi.mock('fs', () => ({
@@ -557,7 +558,7 @@ describe('settings route', () => {
       const call = mockLogAuditEvent.mock.calls[0][0]
       expect(call.object).toBe('settings')
       expect(call.action).toBe('updated')
-      expect(call.details.sections).toContain('LLM Provider')
+      expect(call.details.sections).toContain('Model Provider')
       expect(call.details.changes['llmProvider']).toEqual({ from: null, to: 'openrouter' })
       expect(call.details.changes['apiKeys.anthropicApiKey']).toBe('updated')
       expect(JSON.stringify(call.details)).not.toContain('sk-brand-new')

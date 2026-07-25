@@ -11,7 +11,7 @@ export interface StaleSessionNoticeProps {
 function TeachingPoint({ lead, children }: { lead: string; children: ReactNode }) {
   return (
     <div className="text-xs">
-      <p className="font-semibold text-foreground">{lead}</p>
+      <p className="font-medium text-foreground">{lead}</p>
       <p className="text-muted-foreground">{children}</p>
     </div>
   )

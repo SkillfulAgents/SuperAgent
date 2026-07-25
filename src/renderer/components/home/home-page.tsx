@@ -401,7 +401,7 @@ export function HomePage() {
           {/* Agents Section */}
           <section>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Your Agents</h2>
+              <h2 className="text-lg font-medium">Your Agents</h2>
               <Button
                 size="sm"
                 onClick={() => { void createUntitledAgent() }}

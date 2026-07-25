@@ -107,37 +107,13 @@ interface PendingReview {
 
 export class ReviewManager {
   private pending: Map<string, PendingReview> = new Map()
-  private awaitingBlockerRegistered = false
 
-  // Teach MessagePersister that a parked review counts as "still waiting on the
-  // human", so its tool-result clear won't drop the awaiting bit while a review is
-  // up. Registered lazily on first review (not at module load): review-manager and
-  // message-persister form an import cycle, so the persister singleton isn't ready
-  // at module-eval time — mirrors container-manager wiring its callback at startup.
-  private ensureAwaitingBlockerRegistered(): void {
-    if (this.awaitingBlockerRegistered) return
-    this.awaitingBlockerRegistered = true
-    messagePersister.registerAwaitingBlockerSource(
-      (agentSlug) => this.getPendingReviewsForAgent(agentSlug).length > 0,
-    )
-  }
-
-  private markAgentSessionsAwaiting(agentSlug: string): void {
-    for (const sessionId of messagePersister.getActiveSessionIdsForAgent(agentSlug)) {
-      messagePersister.markAwaitingInput(sessionId)
-    }
-  }
-
-  // Caller deletes the review from `pending` first. No-op while any review remains.
-  private clearAgentSessionsAwaitingIfIdle(agentSlug: string): void {
-    if (this.getPendingReviewsForAgent(agentSlug).length > 0) return
-    messagePersister.clearAwaitingInputForAgentIfUnblocked(agentSlug)
-  }
-
-  // Phase 2 shadow-registry parity (dev/test only): after every mutation of
+  // Shadow-registry parity (dev/test only): after every mutation of
   // `pending`, the registry's agent-scoped review view must mirror this store
   // exactly — a missed or malformed write-through fails tests / logs in dev
-  // instead of silently diverging.
+  // instead of silently diverging. This matters doubly now that the awaiting
+  // status is DERIVED from the registry: a review that misses its write-through
+  // would no longer light the waiting indicator at all.
   private shadowRegistryCheck(agentSlug: string, context: string): void {
     if (process.env.NODE_ENV === 'production') return
     const reviewStoreIds = [...this.pending.values()]
@@ -147,7 +123,6 @@ export class ReviewManager {
   }
 
   requestReview(details: ReviewDetails, signal?: AbortSignal): Promise<'allow' | 'deny'> {
-    this.ensureAwaitingBlockerRegistered()
     const id = crypto.randomUUID()
 
     return new Promise<'allow' | 'deny'>((resolve, reject) => {
@@ -161,7 +136,7 @@ export class ReviewManager {
           reviewId: id,
           decision: 'deny',
         })
-        this.clearAgentSessionsAwaitingIfIdle(details.agentSlug)
+        messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
         reject(new Error('Review timeout'))
       }
 
@@ -177,7 +152,7 @@ export class ReviewManager {
           reviewId: id,
           decision: 'deny',
         })
-        this.clearAgentSessionsAwaitingIfIdle(details.agentSlug)
+        messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
       }
 
       // If the request is aborted (e.g. task stopped), clean up the orphaned review
@@ -190,8 +165,9 @@ export class ReviewManager {
       }
 
       this.pending.set(id, { id, details, resolve, reject, timer })
-      // Shadow registry (Phase 2): reviews are agent-scoped — no sessionId in
-      // the proxied call, so the envelope carries agentSlug only.
+      // Reviews are agent-scoped — no sessionId in the proxied call, so the
+      // envelope carries agentSlug only. The registry entry is what makes the
+      // agent's sessions read as awaiting while the review is parked.
       userInputRequestManager.register({
         id,
         kind: details.xAgent ? 'x_agent_review' : 'proxy_review',
@@ -224,15 +200,16 @@ export class ReviewManager {
         ...(details.xAgent ? { xAgent: details.xAgent } : {}),
       })
 
-      // Mark active sessions awaiting so chat tick / activity strip stop lying
-      // "Working…" while the Allow/Deny card is up.
-      this.markAgentSessionsAwaiting(details.agentSlug)
+      // Recompute awaiting for the agent's sessions so chat tick / activity
+      // strip stop lying "Working…" while the Allow/Deny card is up — the
+      // registry entry registered above is what flips them.
+      messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
 
       // Fire ONE OS notification per review, attributed to the first active
       // session of this agent. The proxy call is agent-scoped (no sessionId
       // in the request), so we pick an active session — same attribution
-      // heuristic the sidebar uses for its orange dot (agents.ts:
-      // isActive && hasAgentLevelReviews). Whether the OS popup actually
+      // heuristic the awaiting projection applies (an agent-scoped review
+      // blocks the agent's active sessions). Whether the OS popup actually
       // shows is the renderer's call — it knows OS focus + per-user viewing
       // + `notifyWhenUnfocused`. An open SSE connection ≠ actively looking
       // at the screen.
@@ -278,7 +255,7 @@ export class ReviewManager {
       reviewId: id,
       decision,
     })
-    this.clearAgentSessionsAwaitingIfIdle(review.details.agentSlug)
+    messagePersister.syncAgentSessionsAwaiting(review.details.agentSlug)
 
     return true
   }
@@ -306,7 +283,7 @@ export class ReviewManager {
       }
     }
     this.shadowRegistryCheck(agentSlug, 'resolveMatchingPending')
-    this.clearAgentSessionsAwaitingIfIdle(agentSlug)
+    messagePersister.syncAgentSessionsAwaiting(agentSlug)
   }
 
   /**
@@ -338,7 +315,7 @@ export class ReviewManager {
       })
     }
     this.shadowRegistryCheck(agentSlug, 'resolveMatchingPendingByLabel')
-    this.clearAgentSessionsAwaitingIfIdle(agentSlug)
+    messagePersister.syncAgentSessionsAwaiting(agentSlug)
   }
 
   /**
@@ -370,7 +347,7 @@ export class ReviewManager {
       }
     }
     this.shadowRegistryCheck(agentSlug, 'resolveMatchingXAgentByOperation')
-    this.clearAgentSessionsAwaitingIfIdle(agentSlug)
+    messagePersister.syncAgentSessionsAwaiting(agentSlug)
   }
 
   getPendingReviewsForAgent(
@@ -455,7 +432,7 @@ export class ReviewManager {
       })
     }
     this.shadowRegistryCheck(agentSlug, 'denyAllForAgent')
-    this.clearAgentSessionsAwaitingIfIdle(agentSlug)
+    messagePersister.syncAgentSessionsAwaiting(agentSlug)
   }
 
   rejectAll(): void {
@@ -474,15 +451,16 @@ export class ReviewManager {
     }
     for (const agentSlug of agentSlugs) {
       this.shadowRegistryCheck(agentSlug, 'rejectAll')
-      this.clearAgentSessionsAwaitingIfIdle(agentSlug)
+      messagePersister.syncAgentSessionsAwaiting(agentSlug)
     }
   }
 }
 
 // Use globalThis to persist across Next.js hot reloads in development, matching
-// messagePersister. The two are coupled: reviewManager registers an awaiting-blocker
-// source on the persister, and the persister survives reloads — so reviewManager must
-// too, or each reload leaks a new stale predicate into the persister's blocker set.
+// messagePersister. The two are coupled: pending reviews write through to the
+// userInputRequestManager registry (which drives the persister's awaiting
+// projection), and both singletons survive reloads — so reviewManager must too,
+// or a reload would strand its pending reviews in a stale instance.
 const globalForReviewManager = globalThis as unknown as {
   reviewManager: ReviewManager | undefined
 }

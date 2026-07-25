@@ -547,9 +547,9 @@ export class ClaudeCodeProcess extends EventEmitter {
    * Builds HTTP MCP server configs from the REMOTE_MCPS env var.
    * Each remote MCP is configured as an HTTP transport pointing to the proxy URL.
    */
-  private buildRemoteMcpServers(): Record<string, { type: 'http'; url: string; headers?: Record<string, string> }> {
+  private buildRemoteMcpServers(): Record<string, { type: 'http'; url: string; headers?: Record<string, string>; timeout?: number }> {
     const remoteMcps = parseRemoteMcps();
-    const configs: Record<string, { type: 'http'; url: string; headers?: Record<string, string> }> = {};
+    const configs: Record<string, { type: 'http'; url: string; headers?: Record<string, string>; timeout?: number }> = {};
     const proxyToken = process.env.PROXY_TOKEN;
 
     for (const mcp of remoteMcps) {
@@ -558,6 +558,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         type: 'http',
         url: mcp.proxyUrl,
         headers: proxyToken ? { 'Authorization': `Bearer ${proxyToken}` } : undefined,
+        // The proxy parks tool calls while the user approves them, which can
+        // take arbitrarily long. CLI 2.1.219 aborts HTTP MCP requests after
+        // 60s by default (plus a 5-min idle watchdog); this per-server
+        // timeout raises the fetch, idle, and hard limits together.
+        timeout: 86_400_000,
       };
     }
 
@@ -643,6 +648,12 @@ export class ClaudeCodeProcess extends EventEmitter {
           // server.ts announces this capability on WebSocket connect — keep the two
           // in sync. See message-persister.ts.
           CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
+          // CLI 2.1.212+ moves MCP tool calls that run >2min to a background
+          // task. Our blocking user-input tools (request_user_input et al.)
+          // legitimately block far longer than that waiting on a human, and
+          // the pending-request lifecycle depends on the call staying
+          // foreground until resolved — so disable auto-backgrounding.
+          CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: '0',
           // Explicit maxOutputTokens setting takes precedence over custom env var
           ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
         }), this.speed),

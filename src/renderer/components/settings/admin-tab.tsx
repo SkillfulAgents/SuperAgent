@@ -11,10 +11,9 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@renderer/components/ui/alert-dialog'
-import { useSettings, useUpdateSettings, useFactoryReset } from '@renderer/hooks/use-settings'
+import { useFactoryReset } from '@renderer/hooks/use-settings'
 import { RotateCcw, Bug } from 'lucide-react'
 import { DebugTab } from './debug-tab'
-import { AutoDeleteSelect } from './auto-delete-select'
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
@@ -42,8 +41,6 @@ function SettingRow({ name, subtitle, right }: SettingRowProps) {
 }
 
 export function AdminTab() {
-  const { data: settings } = useSettings()
-  const updateSettings = useUpdateSettings()
   const factoryReset = useFactoryReset()
   const [isResetting, setIsResetting] = useState(false)
   const [showDebug, setShowDebug] = useState(false)
@@ -61,24 +58,6 @@ export function AdminTab() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <h3 className={SECTION_HEADING}>Sessions</h3>
-        <div className={CARD_CLASS}>
-          <SettingRow
-            name="Session Auto-Delete"
-            subtitle="Automatically delete sessions inactive for this duration. Starred sessions are preserved."
-            right={
-              <AutoDeleteSelect
-                value={settings?.app?.autoDeleteInactiveDays}
-                onChange={(days) => {
-                  updateSettings.mutate({ app: { autoDeleteInactiveDays: days } })
-                }}
-              />
-            }
-          />
-        </div>
-      </div>
-
       <div className="space-y-2">
         <h3 className={SECTION_HEADING}>Danger Zone</h3>
         <div className={CARD_CLASS}>

@@ -64,7 +64,7 @@ describe('webToolsWarning', () => {
   it('warns for both when supportsWebSearch is false and no vendor is set', () => {
     const w = webToolsWarning(CATALOG.find((m) => m.id === 'openai/gpt-5.5'), false)!
     expect(w).toMatch(/Web search and fetch aren.t available on this model/)
-    expect(w).toMatch(/Set a provider under Settings . Web to use them on any model/)
+    expect(w).toMatch(/Set a provider under Settings . Web Search to use them on any model/)
   })
 
   it('warns fetch-only when search works but native fetch does not', () => {
@@ -79,6 +79,7 @@ describe('webToolsWarning', () => {
       false,
     )!
     expect(w).toMatch(/Native web fetch isn.t available/)
+    expect(w).toMatch(/Set a provider under Settings . Web Search to use fetch/)
     expect(w).toMatch(/search still works/)
   })
 

@@ -118,10 +118,10 @@ export function webToolsWarning(
 ): string | null {
   if (!model || webVendorSet) return null
   if (model.supportsWebSearch === false) {
-    return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web to use them on any model.'
+    return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web Search to use them on any model.'
   }
   if (model.supportsWebFetch === false) {
-    return 'Native web fetch isn’t available on this model. Set a provider under Settings → Web to use fetch (search still works).'
+    return 'Native web fetch isn’t available on this model. Set a provider under Settings → Web Search to use fetch (search still works).'
   }
   return null
 }

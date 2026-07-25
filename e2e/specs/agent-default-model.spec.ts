@@ -113,12 +113,8 @@ test.describe('Per-agent default model', () => {
     await card.locator('[data-testid="settings-model-trigger"]').click()
     await page.locator('[data-testid="settings-model-app-default"]').click()
     await expect(page.locator('[data-testid="settings-model-app-default"]')).toBeDisabled()
-
-    // Re-pick the exact global default ('opus'): that's "follow global", not a
-    // new override — reset must stay disengaged, asserted after the send below
-    // round-trips (giving the preference write time to land and refetch).
-    await page.locator('[data-testid="model-latest-opus"]').click()
     await page.keyboard.press('Escape')
+
     await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Opus')
 
     await page.locator('[data-testid="home-message-input"]').fill(resetMessage)
@@ -127,13 +123,6 @@ test.describe('Per-agent default model', () => {
     const resetRecord = await waitForRecord(
       (r) => r.type === 'createSession' && r.initialMessage === resetMessage
     )
-    expect(resetRecord.model).toBe('claude-opus-4-8')
-
-    // The re-pick stored no override (its value equals the global default) —
-    // reset is still disengaged now that the write has long since landed.
-    await page.goBack()
-    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
-    await card.locator('[data-testid="settings-model-trigger"]').click()
-    await expect(page.locator('[data-testid="settings-model-app-default"]')).toBeDisabled()
+    expect(resetRecord.model).toBe('claude-opus-5')
   })
 })

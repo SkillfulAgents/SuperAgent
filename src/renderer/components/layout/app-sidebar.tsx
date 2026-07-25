@@ -823,7 +823,7 @@ export function AppSidebar() {
             */}
             <div
               className={cn(
-                'px-2 pb-2 text-base font-semibold select-none transition-[margin-top] duration-200 ease-out flex items-center gap-1',
+                'px-2 pb-2 text-base font-medium select-none transition-[margin-top] duration-200 ease-out flex items-center gap-1',
                 isWindowsElectron && 'app-drag-region'
               )}
               style={{ marginTop: showHeaderBar ? '-8px' : '8px' }}

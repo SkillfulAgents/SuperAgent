@@ -466,20 +466,26 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   )
 }
 
-function hasUnresolvedBlockingInputRequest(items: TransformedItem[]): boolean {
+// Unresolved blocking user-input tool calls in the current (trailing) turn —
+// the recovery input for messagePersister.recoverSessionAwaitingInput when the
+// one-shot request stream event was missed.
+function getUnresolvedBlockingInputRequests(
+  items: TransformedItem[],
+): Array<{ toolUseId: string; toolName: string }> {
+  const unresolved: Array<{ toolUseId: string; toolName: string }> = []
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
-    if (item.type === 'user' && !item.queued) return false
+    if (item.type === 'user' && !item.queued) break
     if (item.type !== 'assistant') continue
 
     for (const toolCall of item.toolCalls) {
       if (toolCall.result === undefined && isBlockingUserInputToolName(toolCall.name)) {
-        return true
+        unresolved.push({ toolUseId: toolCall.id, toolName: toolCall.name })
       }
     }
   }
 
-  return false
+  return unresolved
 }
 
 /**
@@ -1507,7 +1513,6 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.trunc(limitRaw), 100) : 25
       const unreadIds = await getSessionIdsWithUnreadNotifications(slug)
       const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
-      const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(slug).length > 0
       const infos = await listSessionsByIds(slug, [...new Set([...activeIds, ...unreadIds])], {
         excludeAutomated: true,
       })
@@ -1516,8 +1521,9 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         return {
           ...session,
           isActive,
-          isAwaitingInput:
-            messagePersister.isSessionAwaitingInput(session.id) || (isActive && hasAgentLevelReviews),
+          // The awaiting projection already counts agent-scoped reviews
+          // against every active session of the agent — no review special-case.
+          isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
           hasUnreadNotifications: unreadIds.has(session.id),
         }
       })
@@ -1533,7 +1539,6 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
 
     const sessionList = await listSessions(slug, { excludeAutomated: true })
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
-    const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(slug).length > 0
     const pendingWakes = await listPendingWakesByAgent(slug)
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const sessionsWithStatus = sessionList.map((session) => {
@@ -1542,7 +1547,9 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       return {
         ...session,
         isActive,
-        isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id) || (isActive && hasAgentLevelReviews),
+        // The awaiting projection already counts agent-scoped reviews against
+        // every active session of the agent — no review special-case.
+        isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
         hasUnreadNotifications: unreadSessionIds.has(session.id),
         ...(wake
           ? {
@@ -1705,14 +1712,14 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
 
-    if (
-      messagePersister.isSessionActive(sessionId) &&
-      hasUnresolvedBlockingInputRequest(transformed)
-    ) {
-      // If the request-specific stream event was missed, persisted messages are
-      // the fallback source of truth. A stale transcript can briefly re-assert
-      // awaiting input, but the next stream result/idle event clears it.
-      messagePersister.recoverSessionAwaitingInput(sessionId, agentSlug)
+    if (messagePersister.isSessionActive(sessionId)) {
+      const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
+      if (unresolvedRequests.length > 0) {
+        // If the request-specific stream event was missed, persisted messages are
+        // the fallback source of truth. A stale transcript can briefly re-assert
+        // awaiting input, but the next stream result/idle event clears it.
+        messagePersister.recoverSessionAwaitingInput(sessionId, agentSlug, unresolvedRequests)
+      }
     }
 
     // In auth mode, annotate user messages with sender info

@@ -72,8 +72,8 @@ test.describe('Model picker for non-admin users', () => {
     await card.locator('[data-testid="settings-model-trigger"]').click()
 
     // Same catalog, offerLatest surface: family rows carry model-latest-* ids.
-    // Haiku, NOT opus: 'opus' IS the seeded global default, and picking the
-    // exact global value stores null (follow global) rather than an override.
+    // Haiku, NOT opus: 'opus' is the seeded global default the trigger already
+    // shows, so picking it would prove nothing about the label updating.
     const haikuRow = user2Page.locator('[data-testid="model-latest-haiku"]')
     await expect(haikuRow).toBeVisible()
 

@@ -60,7 +60,7 @@ export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: Mark
                 </div>
               ),
               th: ({ children }) => (
-                <th className="border-b-2 border-border px-3 py-1.5 text-left font-semibold">{children}</th>
+                <th className="border-b-2 border-border px-3 py-1.5 text-left font-medium">{children}</th>
               ),
               td: ({ children }) => (
                 <td className="border-b border-border px-3 py-1.5">{children}</td>

@@ -305,7 +305,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
                   className={cn(
                     'flex items-center gap-2',
                     todo.status === 'completed' && 'text-muted-foreground line-through',
-                    todo.status === 'in_progress' && 'font-semibold'
+                    todo.status === 'in_progress' && 'font-medium'
                   )}
                 >
                   <span className="text-xs">
