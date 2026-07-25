@@ -8,7 +8,7 @@ import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
 import { getSettings, DEFAULT_AUTH_SETTINGS } from '@shared/lib/config/settings'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
-import { auditSessionCreated } from './session-audit'
+import { auditSessionCreated, resolveSessionCreationMethod } from './session-audit'
 import { getGenericOAuthProviderConfigs } from './provider-config'
 
 // Re-export isAuthMode from its own file (no better-auth imports)
@@ -79,6 +79,19 @@ function createAuthInstance() {
     session: {
       expiresIn: (authSettings.sessionMaxLifetimeHrs ?? 24) * 3600,
       updateAge: (authSettings.sessionIdleTimeoutMin ?? 60) * 60,
+      additionalFields: {
+        // Persisted so the answer survives the request that created the
+        // session: the concurrent-session cap has to recognize an installed
+        // client's session on a LATER login, when no endpoint context or
+        // async-local tag exists any more.
+        //
+        // `input: false` — server-derived, never settable by a client.
+        creationMethod: {
+          type: 'string',
+          required: false,
+          input: false,
+        },
+      },
     },
     user: {
       additionalFields: {
@@ -175,6 +188,29 @@ function createAuthInstance() {
       },
       session: {
         create: {
+          before: async (session, context) => {
+            // Stamp how this session came to exist onto the row itself. The
+            // signals it is derived from — the endpoint path on the context,
+            // the async-local tag set by the token exchange — exist only for
+            // the duration of this call, so anything that needs the answer
+            // later needs it written down now.
+            //
+            // Returning `{ data }` merges into the row about to be created.
+            // Never throw: refusing to label a session must not stop it being
+            // created, and an unlabelled session degrades to "capped", which
+            // is exactly the old behaviour.
+            try {
+              return {
+                data: {
+                  ...session,
+                  creationMethod: resolveSessionCreationMethod(session, context?.path),
+                },
+              }
+            } catch (err) {
+              console.error('Failed to resolve session creation method:', err)
+              return
+            }
+          },
           after: async (session, context) => {
             try {
               const sessSettings = getSettings()

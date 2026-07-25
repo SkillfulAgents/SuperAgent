@@ -88,6 +88,34 @@ export interface SessionForAudit {
 }
 
 /**
+ * The impersonating admin's id, or null for an ordinary session.
+ *
+ * Impersonation inverts the usual actor/subject relationship: Better Auth puts
+ * the impersonated user on `session.userId` and the admin who initiated it on
+ * `session.impersonatedBy`. The column is the ground truth here, not the
+ * endpoint path — it is what the plugin actually wrote, and it carries the
+ * actor the path cannot.
+ */
+export function readImpersonatedBy(session: SessionForAudit): string | null {
+  return typeof session.impersonatedBy === 'string' && session.impersonatedBy
+    ? session.impersonatedBy
+    : null
+}
+
+/**
+ * How this session came to exist. The single answer to that question: the
+ * audit row, the persisted `creationMethod` column, and the concurrent-session
+ * cap all resolve it here, so they cannot disagree about the same session.
+ */
+export function resolveSessionCreationMethod(
+  session: SessionForAudit,
+  endpointPath?: string | null,
+): SessionCreationMethod {
+  if (readImpersonatedBy(session)) return 'impersonation'
+  return resolveSessionAuditContext(endpointPath).method
+}
+
+/**
  * Record one `session:created` audit row.
  *
  * Details carry the attribution and nothing else — no token, assertion, jti,
@@ -100,19 +128,10 @@ export async function auditSessionCreated(
   session: SessionForAudit,
   endpointPath?: string | null,
 ): Promise<void> {
-  // Impersonation inverts the usual actor/subject relationship: Better Auth
-  // puts the impersonated user on `session.userId` and the admin who initiated
-  // it on `session.impersonatedBy`. Every other audit row treats `userId` as
-  // the actor, so recording this session as-is would blame the target for a
-  // privileged action taken against them — and revoking the session would take
-  // the only trace of who actually did it with it.
-  //
-  // The column is the ground truth here, not the endpoint path: it is what the
-  // plugin actually wrote, and it carries the actor the path cannot.
-  const impersonatedBy =
-    typeof session.impersonatedBy === 'string' && session.impersonatedBy
-      ? session.impersonatedBy
-      : null
+  // Recording an impersonation as-is would blame the target for a privileged
+  // action taken against them — and revoking the session would take the only
+  // trace of who actually did it with it.
+  const impersonatedBy = readImpersonatedBy(session)
   if (impersonatedBy) {
     await logAuditEvent({
       userId: impersonatedBy,

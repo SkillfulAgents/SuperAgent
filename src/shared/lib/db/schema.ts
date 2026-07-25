@@ -45,6 +45,13 @@ export const authSession = sqliteTable('session', {
     .notNull()
     .references(() => user.id, { onDelete: 'cascade' }),
   impersonatedBy: text('impersonated_by'),
+  /**
+   * How this session came to exist — one of `SESSION_CREATION_METHODS`
+   * (auth/session-audit.ts), written once at creation and never updated.
+   * Nullable: rows that predate the column carry no answer, and "unknown"
+   * would be a claim we cannot make about them.
+   */
+  creationMethod: text('creation_method'),
 }, (table) => ({
   userIdIdx: index('session_userId_idx').on(table.userId),
 }))
