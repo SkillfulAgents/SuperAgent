@@ -2174,7 +2174,7 @@ class MessagePersister {
               parentToolId,
             )
             if (block.name === 'mcp__user-input__request_script_run') {
-              this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug)
+              this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug, parentToolId)
             }
             if (block.name.startsWith('mcp__computer-use__')) {
               this.handleComputerUseRequestTool(
@@ -2479,7 +2479,8 @@ class MessagePersister {
               sessionId,
               sub.currentToolUse.id,
               sub.currentToolInput,
-              state.agentSlug
+              state.agentSlug,
+              parentToolId
             )
           }
 
@@ -4350,7 +4351,8 @@ ${continuation}`
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       let input: RequestScriptRunInput = {}
@@ -4400,6 +4402,7 @@ ${continuation}`
         scriptType: input.scriptType,
         agentSlug,
         autoApproved,
+        ...(parentToolUseId ? { parentToolUseId } : {}),
       })
 
       // Only flip the global "awaiting input" status (which drives the orange agent-status

@@ -1328,6 +1328,45 @@ describe('pending user-input request lifecycle (characterization)', () => {
       })
     })
 
+    it('a dead subagent also invalidates its parked script_run approval', () => {
+      // script_run is dispatched ADJACENT to the blocking-tool funnel (its own
+      // handler call at the sidechain sites), so its parent threading is a
+      // separate seam from the six funnel kinds — and unlike capability
+      // reviews it has no container-side cancelled-frame cleanup to fall
+      // back on.
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'parent-script-1',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'side-script-1',
+              name: 'mcp__user-input__request_script_run',
+              input: { script: 'sw_vers', explanation: 'Version', scriptType: 'shell' },
+            },
+          ],
+        },
+      })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(
+        userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id),
+      ).toEqual(['side-script-1'])
+
+      mockClient._sendMessage({
+        type: 'result',
+        parent_tool_use_id: 'parent-script-1',
+        subtype: 'success',
+      })
+
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(
+        userInputRequestManager.stats.recentResolutions.find((r) => r.id === 'side-script-1')
+          ?.outcome,
+      ).toBe('invalidated')
+    })
+
     it("a sibling subagent's death leaves another subagent's parked request open", () => {
       sendSidechainToolUse('parent-alive-1', 'side-kept-1')
       sendSidechainToolUse('parent-dying-1', 'side-dropped-1')
