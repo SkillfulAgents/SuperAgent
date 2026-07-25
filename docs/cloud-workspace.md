@@ -194,6 +194,17 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 - The platform endpoints (`/v1/me/deployments`, `/token/deployment-assertion`)
   live in the Gamut platform repo.
 
+## Validating it for real
+
+Unit tests here mock the network layer wholesale — `fetch`, `mcpSafeFetch`, and
+the SSRF validator are all stubbed — so a green run says nothing about the
+transport, the wire schemas, or whether the host policy rejects the right
+things. The **`electron-cloud-interface-validation` skill**
+([.claude/skills/electron-cloud-interface-validation/SKILL.md](../.claude/skills/electron-cloud-interface-validation/SKILL.md))
+stands up the real three-node stack and runs the 14-check gated live suite
+(`cloud-workspace-service.live.test.ts`, `LIVE_E2E=1`). Run it before merging
+anything that touches this chain.
+
 ## Running it locally
 
 Standing up an end-to-end stack means running **three** nodes (platform auth +
