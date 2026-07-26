@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import {
   _resetCloudWorkspaceFailureReportingForTest,
   getCloudWorkspace,
+  isDeploymentUrlAllowed,
 } from './cloud-workspace-service'
 import {
   exchangeGrantAtDeployment,
@@ -567,5 +568,83 @@ describe('getCloudWorkspace', () => {
       hasValidToken: false,
     })
     expect(mockWriteRecord).not.toHaveBeenCalled()
+  })
+
+  describe('forced token refresh', () => {
+    it('re-mints even though the stored token is nowhere near expiry', async () => {
+      mockFetchDeployments.mockResolvedValue([DEPLOYED])
+      mockReadRecord.mockReturnValue(storedRecord())
+      mockRequestGrant.mockResolvedValue('grant')
+      mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 86400 })
+
+      const status = await getCloudWorkspace({ forceTokenRefresh: true })
+
+      expect(mockExchange).toHaveBeenCalledOnce()
+      expect(mockWriteRecord).toHaveBeenCalledWith(expect.objectContaining({ token: 'fresh' }))
+      expect(status).toMatchObject({ hasValidToken: true })
+    })
+
+    it('leaves the stored token in place when the re-mint fails', async () => {
+      mockFetchDeployments.mockResolvedValue([DEPLOYED])
+      mockReadRecord.mockReturnValue(storedRecord())
+      mockRequestGrant.mockRejectedValue(new Error('platform down'))
+
+      const status = await getCloudWorkspace({ forceTokenRefresh: true })
+
+      expect(mockWriteRecord).not.toHaveBeenCalled()
+      expect(mockClearRecord).not.toHaveBeenCalled()
+      expect(status).toMatchObject({ found: true, hasValidToken: false })
+    })
+
+    it('still refuses an unsafe target — force only skips the expiry check', async () => {
+      mockFetchDeployments.mockResolvedValue([
+        { ...DEPLOYED, authorization_server: 'https://attacker.example' },
+      ])
+      mockReadRecord.mockReturnValue(storedRecord())
+
+      const status = await getCloudWorkspace({ forceTokenRefresh: true })
+
+      expect(mockRequestGrant).not.toHaveBeenCalled()
+      expect(status).toMatchObject({ discoveryFailed: true })
+    })
+  })
+})
+
+describe('isDeploymentUrlAllowed', () => {
+  const originalIsPackaged = process.env.SUPERAGENT_IS_PACKAGED
+  const originalE2eMock = process.env.E2E_MOCK
+
+  beforeEach(() => {
+    process.env.SUPERAGENT_IS_PACKAGED = '1'
+    delete process.env.E2E_MOCK
+  })
+
+  afterEach(() => {
+    if (originalIsPackaged === undefined) delete process.env.SUPERAGENT_IS_PACKAGED
+    else process.env.SUPERAGENT_IS_PACKAGED = originalIsPackaged
+    if (originalE2eMock === undefined) delete process.env.E2E_MOCK
+    else process.env.E2E_MOCK = originalE2eMock
+  })
+
+  it('allows an https deployment', () => {
+    expect(isDeploymentUrlAllowed('https://ws.example.com')).toBe(true)
+  })
+
+  it('refuses cleartext, so a bearer never crosses the network in the open', () => {
+    expect(isDeploymentUrlAllowed('http://ws.example.com')).toBe(false)
+  })
+
+  it('refuses loopback in a shipped build', () => {
+    expect(isDeploymentUrlAllowed('http://127.0.0.1:8899')).toBe(false)
+  })
+
+  it('allows loopback for an unpackaged build, where the local stack lives', () => {
+    process.env.SUPERAGENT_IS_PACKAGED = '0'
+    expect(isDeploymentUrlAllowed('http://127.0.0.1:8899')).toBe(true)
+  })
+
+  it('refuses a value that is not a URL at all', () => {
+    expect(isDeploymentUrlAllowed('not a url')).toBe(false)
+    expect(isDeploymentUrlAllowed('')).toBe(false)
   })
 })

@@ -61,8 +61,8 @@ Desktop host app (Electron, CLIENT)      Platform                    Remote clou
 
 The **grant** (step 2) is ephemeral plumbing. The **deployment session token**
 (step 3) is the thing worth keeping — it is a real session on the remote
-deployment. Today it is maintained but **not yet consumed by the UI** ("Open"
-just navigates to `deployment_url`); it is infrastructure for a future SSO hop.
+deployment. It is what [the cloud proxy](#the-cloud-proxy-desktop--deployment)
+presents on every forwarded call.
 
 ## Token maintenance
 
@@ -117,6 +117,55 @@ is deliberately **fully defensive — it never throws**; any failure degrades to
   it attaches the underlying error as `cause` on `CloudWorkspaceError` and
   throws; `reportFailureOnce` in the service dedupes by op + status. Don't add a
   `captureException` to the client.
+
+## The cloud proxy (desktop → deployment)
+
+`GET http://127.0.0.1:{port}/cloud/{key}/api/...` forwards to
+`{deployment_url}/api/...` with the maintained token attached
+(`api/routes/cloud-proxy.ts`). It is what lets the desktop UI drive the cloud
+workspace: the renderer keeps calling loopback and only the prefix
+`getApiBaseUrl()` returns changes.
+
+**Why a proxy rather than pointing the renderer at the deployment.** Three
+reasons, any one of which is fatal on its own:
+
+- The packaged renderer loads from `file://`, so its requests carry
+  `Origin: null` — a value an auth-mode deployment's origin allowlist cannot
+  admit.
+- Five renderer call sites cannot carry an `Authorization` header at all: two
+  `EventSource` streams, `<img src>` (model icons, dashboard screenshots),
+  `<iframe src>` (dashboards), and Electron's `downloadURL`. A token in the
+  renderer would not reach any of them.
+- It would need a deployment-side change, so a newer app could not drive an
+  older workspace.
+
+**Why the key is in the path, not a header.** Loopback is not a boundary a
+browser respects: CORS is `*` in local mode, so any page the user visits can
+already call the local API. That is survivable for a local install and is not
+survivable for a channel into the org's deployment. The gate is therefore a
+per-boot 256-bit secret — but it has to be reachable by the same five headerless
+call sites above, so it rides in the URL prefix, where every call site picks it
+up for free. It is regenerated each boot and never persisted, because a path
+lands in logs. Loopback peer and a non-website `Origin` are checked on top.
+
+Other properties worth not regressing:
+
+- **Inbound `Authorization` is dropped, never relayed.** A caller cannot present
+  its own credential to the deployment through us.
+- **`set-cookie` / `set-auth-token` are stripped from responses** — those are
+  credentials for the deployment's origin, and the whole point is that the token
+  stays in the main process.
+- **Redirects are followed here, not handed back.** A relative `Location`
+  returned to the renderer would resolve against loopback and silently re-issue
+  the call against the *local* API.
+- **A 401 re-mints once and replays**, so a 24-hour deployment session does not
+  surface as the app dying overnight. Bodies under 2 MiB are buffered to make
+  that replay possible; larger uploads stream and forgo the retry.
+- **Only `/api` paths are forwarded**; anything else 404s, as does a bad key
+  (a prober learns nothing either way).
+
+Not yet forwarded: **WebSocket upgrades** (`use-browser-stream.ts`), so the
+browser view does not work against a cloud workspace.
 
 ## Electron-only, by design
 
@@ -180,6 +229,9 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `platform-auth/cloud-workspace-client.ts` | The 3 calls (discovery, grant, exchange), raw-bearer fetch |
 | `platform-auth/cloud-workspace-record.ts` | Settings persistence (dep-free, breaks cycles) |
 | `services/cloud-workspace-service.ts` | `getCloudWorkspace()` — the discover→ensure-token algorithm + SSRF gate |
+| `services/cloud-proxy-key.ts` | The per-boot secret in the proxy URL prefix |
+| `services/cloud-proxy-target.ts` | What the proxy forwards to; single-flight, rate-limited re-mint |
+| `api/routes/cloud-proxy.ts` | `/cloud/{key}/api/*` → the deployment |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |
 | `api/routes/platform-auth.ts` | `GET /api/platform-auth/deployments` route |

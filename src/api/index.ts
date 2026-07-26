@@ -15,6 +15,7 @@ import notifications from './routes/notifications'
 import platformNotifications from './routes/platform-notifications'
 import proxy from './routes/proxy'
 import mcpProxy from './routes/mcp-proxy'
+import cloudProxy, { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from './routes/cloud-proxy'
 import browser from './routes/browser'
 import skillsets from './routes/skillsets'
 import usage from './routes/usage'
@@ -228,6 +229,15 @@ app.route('/api/stt', sttRouter)
 app.route('/api/llm', llmRouter)
 app.route('/api/favicon', faviconRouter)
 app.route('/api/debug', debugRouter)
+
+// Desktop → cloud-workspace forwarding. Mounted outside `/api` on purpose: it
+// is not an endpoint of this server but a different server's `/api` reached
+// through it, and the local-mode localhost middleware above is scoped to
+// `/api/*`. The route therefore runs its own (stricter) access checks — see
+// cloud-proxy.ts.
+if (isCloudProxyEnabled()) {
+  app.route(CLOUD_PROXY_PREFIX, cloudProxy)
+}
 
 // Global error handler
 app.onError((err, c) => {
