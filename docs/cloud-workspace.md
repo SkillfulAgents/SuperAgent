@@ -163,6 +163,14 @@ Other properties worth not regressing:
   that replay possible; larger uploads stream and forgo the retry.
 - **Only `/api` paths are forwarded**; anything else 404s, as does a bad key
   (a prober learns nothing either way).
+- **Documents served through the proxy don't inherit its prefix.** A dashboard
+  iframe is loaded from the keyed URL, but the HTML comes back unchanged, and a
+  root-relative `/api/...` inside it resolves against the *loopback* origin. The
+  LLM and speech shims injected into dashboards therefore derive their prefix
+  from `location` at runtime (`api/polyfill-api-prefix.ts`) instead of
+  hardcoding it — otherwise a cloud dashboard's LLM calls would silently run on
+  the laptop's credentials and settings. Anything else injected into a proxied
+  document has the same obligation.
 
 Not yet forwarded: **WebSocket upgrades** (`use-browser-stream.ts`), so the
 browser view does not work against a cloud workspace.
@@ -232,6 +240,7 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `services/cloud-proxy-key.ts` | The per-boot secret in the proxy URL prefix |
 | `services/cloud-proxy-target.ts` | What the proxy forwards to; single-flight, rate-limited re-mint |
 | `api/routes/cloud-proxy.ts` | `/cloud/{key}/api/*` → the deployment |
+| `api/polyfill-api-prefix.ts` | Keeps dashboard-shim API calls on whichever API served the document |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |
 | `api/routes/platform-auth.ts` | `GET /api/platform-auth/deployments` route |

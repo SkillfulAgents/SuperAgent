@@ -128,10 +128,50 @@ describe('refreshCloudProxyTarget', () => {
     await refreshCloudProxyTarget()
     // A deployment that rejects even a fresh token would otherwise turn every
     // request into another round-trip to the platform.
-    const second = await refreshCloudProxyTarget()
+    await refreshCloudProxyTarget()
 
     expect(mockGetCloudWorkspace).toHaveBeenCalledTimes(1)
-    expect(second).toBeNull()
+  })
+
+  it('hands the fresh token to a straggler that misses the single flight', async () => {
+    mockGetCloudWorkspace.mockImplementation(async () => {
+      mockReadRecord.mockReturnValue(record({ token: 'fresh-token' }))
+      return {} as Awaited<ReturnType<typeof getCloudWorkspace>>
+    })
+
+    await refreshCloudProxyTarget()
+    // The last 401s of the burst land just after the flight settles — too late
+    // to join it, and there is a working token sitting right there.
+    const straggler = await refreshCloudProxyTarget()
+
+    expect(straggler?.token).toBe('fresh-token')
+    expect(mockGetCloudWorkspace).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not resurrect a token cleared while the cooldown was running', async () => {
+    mockGetCloudWorkspace.mockImplementation(async () => {
+      mockReadRecord.mockReturnValue(record({ token: 'fresh-token' }))
+      return {} as Awaited<ReturnType<typeof getCloudWorkspace>>
+    })
+
+    await refreshCloudProxyTarget()
+    // Account switch / disconnect between the two calls.
+    mockReadRecord.mockReturnValue(null)
+
+    await expect(refreshCloudProxyTarget()).resolves.toBeNull()
+  })
+
+  it('declines during the cooldown when the refresh itself failed', async () => {
+    mockGetCloudWorkspace.mockImplementation(async () => {
+      mockReadRecord.mockReturnValue(null)
+      return {} as Awaited<ReturnType<typeof getCloudWorkspace>>
+    })
+
+    await refreshCloudProxyTarget()
+    // Replaying against a token we just watched be rejected only doubles the
+    // traffic to the deployment.
+    await expect(refreshCloudProxyTarget()).resolves.toBeNull()
+    expect(mockGetCloudWorkspace).toHaveBeenCalledTimes(1)
   })
 
   it('reports no target — rather than failing — when the mint throws', async () => {

@@ -56,6 +56,10 @@ beforeEach(() => {
   mockIsAuthMode.mockReturnValue(false)
   mockResolveTarget.mockReturnValue(TARGET)
   mockRefreshTarget.mockResolvedValue(null)
+  // Reset, not just clear: clearAllMocks leaves the mockResolvedValueOnce queue
+  // intact, so one test that stops short of its retry would hand its leftover
+  // response to the next one and misattribute the failure.
+  mockFetch.mockReset()
   // An implementation, not a resolved value: a Response body can only be read
   // once, so a shared instance would break any test whose request is retried.
   mockFetch.mockImplementation(async () => new Response('{}', { status: 200 }))
@@ -309,6 +313,24 @@ describe('cloud proxy token refresh', () => {
 
     const replayed = forwardedInit(1).body as ArrayBuffer
     expect(new TextDecoder().decode(replayed)).toBe('{"name":"a"}')
+  })
+
+  it.each([
+    ['POST', '/api/agents/x/interrupt'],
+    ['DELETE', '/api/agents/x'],
+    ['PATCH', '/api/notifications/1'],
+    ['PUT', '/api/user-settings'],
+  ])('retries a bodyless %s, which sends no content-length', async (method, path) => {
+    mockFetch
+      .mockResolvedValueOnce(new Response('expired', { status: 401 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+    mockRefreshTarget.mockResolvedValue({ ...TARGET, token: 'fresh-token' })
+
+    const res = await call(path, { method })
+
+    expect(res.status).toBe(200)
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    expect(forwardedInit(1).headers.get('authorization')).toBe('Bearer fresh-token')
   })
 
   it('gives up after one retry rather than looping', async () => {

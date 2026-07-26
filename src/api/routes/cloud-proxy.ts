@@ -129,15 +129,21 @@ interface ForwardableBody {
 /**
  * The body to forward, and whether sending it twice is possible.
  *
- * A declared length at or under the limit is read into memory so a 401 can be
- * retried transparently — that covers every JSON call the renderer makes. A
- * larger or undeclared length is streamed instead: buffering a file upload to
- * buy it one retry is the wrong trade, and an undeclared length is unbounded.
+ * No body at all is the trivially replayable case, and it is not only GET/HEAD:
+ * agent start/stop/delete, interrupt, mark-notification-read and friends are
+ * bodyless POSTs and DELETEs. Keying off the method — or off a `content-length`
+ * a bodyless request need not send — would have denied the retry to exactly the
+ * mutations a user is most likely to be making when the session expires.
+ *
+ * Otherwise, a declared length at or under the limit is read into memory so a
+ * 401 can be retried transparently — that covers every JSON call the renderer
+ * makes. A larger or undeclared length is streamed instead: buffering a file
+ * upload to buy it one retry is the wrong trade, and an undeclared length is
+ * unbounded.
  */
 async function readForwardableBody(request: Request): Promise<ForwardableBody> {
-  if (request.method === 'GET' || request.method === 'HEAD') {
-    return { body: null, replayable: true }
-  }
+  if (request.body === null) return { body: null, replayable: true }
+
   const declared = request.headers.get('content-length')
   const declaredLength = declared === null ? Number.NaN : Number(declared)
   if (Number.isFinite(declaredLength) && declaredLength <= REPLAYABLE_BODY_LIMIT) {
