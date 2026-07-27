@@ -285,6 +285,18 @@ Derived rather than stored, so the two can never disagree.
   `auth-client.ts` is imported (via `user-context`) while the module graph is
   still evaluating, *before* that runs, so an eagerly-built client would point at
   the local API forever.
+- **And it must be handed the *auth* base, not the API base.** better-auth
+  appends its default `/api/auth` only to a base URL that has no path of its own:
+  `withPath()` returns the URL untouched once `checkHasPath()` is true. A local
+  base is a bare origin and gets the default for free; a cloud base is
+  `http://localhost:{port}/cloud/{key}`, which already has a path, and does not.
+  Passing the raw base therefore sent every session lookup to
+  `/cloud/{key}/get-session` — a 404, which is indistinguishable from a dead
+  session, so the app showed `<WorkspaceReconnect/>` against a workspace that was
+  answering perfectly well. **Cloud mode was unusable and every unit test was
+  green**, because the test asserted the value we pass rather than the URL
+  better-auth builds from it. `resolveBaseUrl()` appends `/api/auth` itself,
+  which is a no-op for local and web and the whole fix for cloud.
 
 ### Choosing the target
 
@@ -582,11 +594,27 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 Unit tests here mock the network layer wholesale — `fetch`, `mcpSafeFetch`, and
 the SSRF validator are all stubbed — so a green run says nothing about the
 transport, the wire schemas, or whether the host policy rejects the right
-things. The **`electron-cloud-interface-validation` skill**
+things. There are two live suites, and they cover different halves.
+
+**The chain** — discovery → grant → exchange → persisted token. The
+**`electron-cloud-interface-validation` skill**
 ([.claude/skills/electron-cloud-interface-validation/SKILL.md](../.claude/skills/electron-cloud-interface-validation/SKILL.md))
-stands up the real three-node stack and runs the 14-check gated live suite
-(`cloud-workspace-service.live.test.ts`, `LIVE_E2E=1`). Run it before merging
-anything that touches this chain.
+stands up the three-node stack and runs the 14-check gated suite
+(`cloud-workspace-service.live.test.ts`, `LIVE_E2E=1`). It drives the service
+in-process; no app, no windows.
+
+**The app** — [`e2e/live/cloud-electron/`](../e2e/live/cloud-electron/README.md)
+launches the real desktop app with a remote debugging port and drives it over
+CDP against the same stack: 28 checks across target resolution, onboarding on
+the remote workspace, whether cloud mode reaches a *different machine's* data,
+capability gating, restart persistence, and the way back to local. Run it before
+merging anything that touches the proxy, the target, auth mode or the gating
+predicates.
+
+That second suite exists because the first one cannot fail on the app's
+behaviour. The better-auth base-URL bug above made cloud mode entirely unusable
+while 8,255 unit tests, the whole Playwright suite and all 14 live chain checks
+stayed green — nothing in any of them ever asked a real renderer to render.
 
 ## Running it locally
 

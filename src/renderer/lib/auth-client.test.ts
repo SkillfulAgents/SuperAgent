@@ -64,7 +64,7 @@ describe('construction timing', () => {
 
     expect(createAuthClient).toHaveBeenCalledOnce()
     expect(createAuthClient.mock.calls[0][0]).toMatchObject({
-      baseURL: 'http://localhost:3000/cloud/KEY123',
+      baseURL: 'http://localhost:3000/cloud/KEY123/api/auth',
     })
   })
 
@@ -79,23 +79,55 @@ describe('construction timing', () => {
   })
 })
 
+/**
+ * better-auth appends its default `/api/auth` only to a base URL that has no
+ * path of its own — `withPath()` returns the URL untouched once `checkHasPath()`
+ * is true. A local base is a bare origin and so gets the default for free; a
+ * cloud base is `http://host:port/cloud/{key}`, which already has a path, so it
+ * does not. Passing the raw base therefore sent every call to
+ * `/cloud/{key}/get-session`, which 404s — and a 404 there is indistinguishable
+ * from a dead session, so the app showed "can't reach your cloud workspace"
+ * against a workspace that was answering fine.
+ *
+ * The invariant, then, is not "pass the base URL" but "pass the *auth* base",
+ * and it has to hold for every mode rather than only the one that used to work
+ * by accident.
+ */
 describe('base URL resolution', () => {
-  it('points at the cloud proxy prefix in cloud mode', () => {
+  it('appends the auth path to the cloud proxy prefix', () => {
     baseUrl.value = 'http://localhost:3000/cloud/KEY123'
     useSession()
-    expect(createAuthClient.mock.calls[0][0].baseURL).toBe('http://localhost:3000/cloud/KEY123')
+    expect(createAuthClient.mock.calls[0][0].baseURL).toBe(
+      'http://localhost:3000/cloud/KEY123/api/auth',
+    )
   })
 
-  it('points at the local API port in local Electron mode', () => {
+  it('appends the auth path to the local API port too', () => {
     baseUrl.value = 'http://localhost:31337'
     useSession()
-    expect(createAuthClient.mock.calls[0][0].baseURL).toBe('http://localhost:31337')
+    expect(createAuthClient.mock.calls[0][0].baseURL).toBe('http://localhost:31337/api/auth')
   })
 
   it('stays same-origin on the web, which better-auth expresses as no baseURL', () => {
     baseUrl.value = ''
     useSession()
     expect(createAuthClient.mock.calls[0][0].baseURL).toBeUndefined()
+  })
+
+  it.each([
+    ['local Electron', 'http://localhost:31337'],
+    ['a cloud workspace', 'http://localhost:31337/cloud/KEY123'],
+    ['a deep proxy prefix', 'http://localhost:31337/cloud/KEY123/nested'],
+  ])('hands better-auth a URL it will not rewrite, for %s', (_label, base) => {
+    baseUrl.value = base
+    useSession()
+    const passed = createAuthClient.mock.calls[0][0].baseURL ?? ''
+
+    // Both halves matter. Ending in the auth path is what makes the request
+    // land; keeping the whole original base is what keeps a cloud session on the
+    // proxy instead of the local API.
+    expect(passed.endsWith('/api/auth')).toBe(true)
+    expect(passed.startsWith(base)).toBe(true)
   })
 })
 

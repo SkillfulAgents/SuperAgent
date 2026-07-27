@@ -19,7 +19,21 @@ import { getApiBaseUrl } from './env'
 function resolveBaseUrl(): string | undefined {
   const base = getApiBaseUrl()
   // Electron: the local API's port, or the cloud proxy prefix.
-  if (base) return base
+  //
+  // `/api/auth` is appended HERE rather than left to better-auth, because
+  // better-auth only appends its default path to a base URL that has no path of
+  // its own (`withPath` returns the URL verbatim once `checkHasPath` is true).
+  // A local base is bare origin, so it used to get the default for free — but a
+  // cloud base is `http://localhost:{port}/cloud/{key}`, which *has* a path, so
+  // every call landed on `/cloud/{key}/get-session` and 404'd. That reads as a
+  // dead session rather than a broken URL: `useSession()` resolves to null,
+  // `isAuthenticated` goes false, and `AuthGate` shows "can't reach your cloud
+  // workspace" against a workspace that is answering perfectly well.
+  //
+  // Appending it ourselves is a no-op for the local and web cases (the result
+  // already has a path, so better-auth passes it through unchanged) and the
+  // whole fix for the cloud one.
+  if (base) return `${base}/api/auth`
   // Web: same-origin, which better-auth expresses as no baseURL at all. The
   // `file://` case cannot reach here (Electron always has a base URL by now),
   // but better-auth rejects that origin outright, so keep the dummy for a

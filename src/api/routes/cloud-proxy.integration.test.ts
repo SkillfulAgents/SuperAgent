@@ -75,6 +75,69 @@ function sendRaw(lines: string[], body = ''): Promise<string> {
   })
 }
 
+/**
+ * Open a request and keep the socket, for the responses that are not supposed to
+ * end: `sendRaw` resolves on `end`, which for a stream means never.
+ */
+function openRaw(lines: string[]) {
+  const head = [...lines, `Host: 127.0.0.1:${port}`, '', ''].join('\r\n')
+  const socket = net.connect(port, '127.0.0.1', () => socket.write(head))
+  let received = ''
+  const waiters = new Set<() => void>()
+  socket.on('data', (chunk) => {
+    received += chunk.toString()
+    for (const waiter of [...waiters]) waiter()
+  })
+  socket.on('error', () => {})
+  return {
+    get received() {
+      return received
+    },
+    waitFor(needle: string, timeoutMs = 5_000): Promise<void> {
+      return new Promise((resolve, reject) => {
+        const check = () => {
+          if (!received.includes(needle)) return
+          cleanup()
+          resolve()
+        }
+        const timer = setTimeout(() => {
+          cleanup()
+          reject(new Error(`timed out waiting for ${JSON.stringify(needle)}; got ${JSON.stringify(received.slice(0, 400))}`))
+        }, timeoutMs)
+        const cleanup = () => {
+          clearTimeout(timer)
+          waiters.delete(check)
+        }
+        waiters.add(check)
+        check()
+      })
+    },
+    disconnect: () => socket.destroy(),
+  }
+}
+
+/** An upstream response whose body this test pushes to by hand. */
+function streamingUpstream(init?: ResponseInit) {
+  let controller!: ReadableStreamDefaultController<Uint8Array>
+  let cancelled = false
+  const stream = new ReadableStream<Uint8Array>({
+    start: (c) => {
+      controller = c
+    },
+    cancel: () => {
+      cancelled = true
+    },
+  })
+  return {
+    response: new Response(stream, init),
+    push: (text: string) => controller.enqueue(new TextEncoder().encode(text)),
+    close: () => controller.close(),
+    get cancelled() {
+      return cancelled
+    },
+  }
+}
+
 function path(suffix: string): string {
   return `${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}${suffix}`
 }
@@ -161,5 +224,108 @@ describe('cloud proxy over a real listener', () => {
     const response = await sendRaw([`GET ${CLOUD_PROXY_PREFIX}/wrong-key/api/agents HTTP/1.1`])
     expect(response).toContain('HTTP/1.1 404')
     expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it('preserves percent-encoding and query across the wire', async () => {
+    await sendRaw([`GET ${path('/api/agents/a%2Fb/files?path=x%20y&n=1')} HTTP/1.1`])
+
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      'https://workspace.example.com/api/agents/a%2Fb/files?path=x%20y&n=1',
+    )
+  })
+
+  it('passes a range response through with its content-range intact', async () => {
+    // `<img src>` and the file preview seek; a 206 rewritten to 200, or stripped
+    // of content-range, restarts the transfer instead of continuing it.
+    mockFetch.mockResolvedValueOnce(
+      new Response('partial', {
+        status: 206,
+        headers: { 'content-range': 'bytes 0-6/100', 'content-type': 'application/octet-stream' },
+      }),
+    )
+
+    const response = await sendRaw([
+      `GET ${path('/api/agents/x/files/big.bin')} HTTP/1.1`,
+      'Range: bytes=0-6',
+    ])
+
+    expect(response).toContain('HTTP/1.1 206')
+    expect(response.toLowerCase()).toContain('content-range: bytes 0-6/100')
+    expect(mockFetch.mock.calls[0][1].headers.get('range')).toBe('bytes=0-6')
+  })
+})
+
+/**
+ * Streaming, over a socket that stays open.
+ *
+ * These are the cases `app.request()` cannot reach at all. An SSE response is
+ * only useful if each event leaves the proxy as it arrives, and the proxy only
+ * stops costing the deployment a connection if a renderer that navigated away
+ * propagates its cancellation upstream. Both are properties of the transport,
+ * and both look identical to a buffered, leaking implementation until something
+ * holds a real socket open and watches the timing.
+ */
+describe('cloud proxy streaming over a real socket', () => {
+  it('delivers each SSE event as it arrives, not at the end', async () => {
+    const upstream = streamingUpstream({
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })
+    mockFetch.mockResolvedValueOnce(upstream.response)
+
+    const client = openRaw([`GET ${path('/api/notifications/stream')} HTTP/1.1`, 'Accept: text/event-stream'])
+
+    upstream.push('data: one\n\n')
+    await client.waitFor('data: one')
+
+    // The decisive part: the upstream is still open. A proxy that buffered would
+    // have sent nothing yet.
+    upstream.push('data: two\n\n')
+    await client.waitFor('data: two')
+
+    upstream.close()
+    client.disconnect()
+  })
+
+  it('aborts the upstream request when the renderer disconnects', async () => {
+    const upstream = streamingUpstream({
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })
+    mockFetch.mockResolvedValueOnce(upstream.response)
+
+    const client = openRaw([`GET ${path('/api/notifications/stream')} HTTP/1.1`])
+    upstream.push('data: hello\n\n')
+    await client.waitFor('data: hello')
+
+    const signal = (mockFetch.mock.calls[0][1] as { signal: AbortSignal }).signal
+    expect(signal.aborted).toBe(false)
+
+    client.disconnect()
+
+    // Without this the deployment keeps generating events for a window that is
+    // gone, and the connection is held until it times out on their side.
+    await vi.waitFor(() => expect(signal.aborted).toBe(true), { timeout: 5_000 })
+  })
+
+  it('streams an over-limit upload instead of buffering it for a replay', async () => {
+    const size = 2.5 * 1024 * 1024
+    mockFetch.mockResolvedValueOnce(new Response('expired', { status: 401 }))
+    mockRefreshTarget.mockResolvedValue({ ...TARGET, token: 'fresh-token' })
+
+    const client = openRaw([
+      `POST ${path('/api/agents/x/files')} HTTP/1.1`,
+      'Content-Type: application/octet-stream',
+      `Content-Length: ${size}`,
+    ])
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1), { timeout: 5_000 })
+
+    // Handed upstream as a live stream: buffering 2.5MB to buy one retry is the
+    // wrong trade, so this request forgoes the replay the small ones get.
+    expect((mockFetch.mock.calls[0][1] as { body: unknown }).body).toBeInstanceOf(ReadableStream)
+    await vi.waitFor(() => expect(mockRefreshTarget).toHaveBeenCalledTimes(1), { timeout: 5_000 })
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+
+    client.disconnect()
   })
 })
