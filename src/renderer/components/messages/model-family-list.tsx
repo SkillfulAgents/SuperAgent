@@ -29,6 +29,7 @@ const VENDOR_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   zai: 'Z.AI',
   xai: 'xAI',
+  kimi: 'Moonshot AI',
 }
 
 const NO_VENDOR = 'other'

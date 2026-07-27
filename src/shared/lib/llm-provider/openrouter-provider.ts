@@ -85,6 +85,9 @@ function iconForModelId(modelId: string): string | undefined {
     case 'x-ai':
     case 'xai':
       return 'xai'
+    case 'moonshotai':
+    case 'moonshot':
+      return 'kimi'
     default:
       return undefined
   }

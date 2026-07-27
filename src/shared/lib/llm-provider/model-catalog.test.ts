@@ -141,6 +141,16 @@ describe('getProviderCatalog', () => {
       pricing: { inputPerMtok: 2, outputPerMtok: 6 },
       contextWindow: 500_000,
     })
+    // Kimi rides Fireworks' Anthropic-compatible wire, which strips server tools.
+    expect(catalog.find((m) => m.id === 'kimi-k3')).toMatchObject({
+      family: 'kimi',
+      isLatest: true,
+      icon: 'kimi',
+      supportsWebSearch: false,
+      supportsWebFetch: false,
+      supportedSpeeds: ['normal', 'fast'],
+      pricing: { inputPerMtok: 3, outputPerMtok: 15, speedMultipliers: { fast: 1.5 } },
+    })
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
     expect(catalog.some((m) => m.id === 'z-ai/glm-5.2')).toBe(false)

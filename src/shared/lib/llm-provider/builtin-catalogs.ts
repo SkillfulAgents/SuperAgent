@@ -35,6 +35,8 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
  *   - xAI grok-4.5: `service_tier` priority only (2x when granted) → normal/fast.
  *   - Anthropic: fast mode (research preview) on Opus 4.8 only → normal/fast.
  *   - Z.AI GLM: no request-level tier → normal only.
+ *   - Fireworks (kimi-k3): fast is a separate `-fast` router resource, not a
+ *     request param — the proxy swaps the outbound model id → normal/fast.
  */
 const FLEX_AND_PRIORITY_SPEEDS: SpeedLevel[] = ['slow', 'normal', 'fast']
 const PRIORITY_ONLY_SPEEDS: SpeedLevel[] = ['normal', 'fast']
@@ -48,6 +50,10 @@ const PRIORITY_ONLY_SPEEDS: SpeedLevel[] = ['normal', 'fast']
 const GPT_SPEED_MULTIPLIERS = { slow: 0.5, fast: 2 } as const
 const GPT_55_SPEED_MULTIPLIERS = { slow: 0.5, fast: 2.5 } as const
 const PRIORITY_2X_MULTIPLIERS = { fast: 2 } as const
+// Fireworks prices its fast routers as a separate SKU rather than a tier
+// surcharge; for kimi-k3 that SKU is a flat 1.5x on every rate ($4.50/$22.50
+// against $3/$15), so one multiplier covers it.
+const FIREWORKS_FAST_MULTIPLIERS = { fast: 1.5 } as const
 
 // Anthropic fast mode covers Opus 5 and 4.8 (4.7's was removed 2026-07-24).
 const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8', 'claude-opus-5'])
@@ -387,6 +393,32 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
     contextWindow: 500_000,
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
+  },
+  {
+    // Bare id matches the platform proxy's kimi-* → fireworks route.
+    id: 'kimi-k3',
+    label: 'Kimi K3',
+    blurb: 'Moonshot AI, served via Platform',
+    family: 'kimi',
+    isLatest: true,
+    icon: 'kimi',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    // Fireworks' fast path is a separate router resource the proxy swaps in;
+    // it has no flex/slow equivalent.
+    supportedSpeeds: PRIORITY_ONLY_SPEEDS,
+    // Fireworks' Anthropic-compatible endpoint takes function tools only — the
+    // proxy strips Anthropic's server tools, so neither search nor fetch runs.
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    // Fireworks serverless rates for kimi-k3, from its pricing table (2026-07-27).
+    pricing: {
+      inputPerMtok: 3,
+      outputPerMtok: 15,
+      speedMultipliers: FIREWORKS_FAST_MULTIPLIERS,
+    },
+    // Fireworks-reported `contextLength` for accounts/fireworks/models/kimi-k3.
+    contextWindow: 1_048_576,
+    supportsImageInput: true,
   },
 ]
 
