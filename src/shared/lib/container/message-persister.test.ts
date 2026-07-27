@@ -6100,6 +6100,76 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
     })
 
+    it('a capabilities handshake naming a new process instance drops the stale snapshot', () => {
+      // The cold-resume path: the CLI is replaced while nothing is attached
+      // (idle eviction + --resume, container restart), so the live
+      // process_restarted broadcast reaches nobody — it fires before the
+      // session is published and before the socket subscribes. The host state
+      // survives that reconnect, so the handshake has to carry the process
+      // identity and the host has to notice it changed.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-1',
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-orphan', task_type: 'local_bash', description: 'Sleep' }],
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      // Reconnect after the process was replaced behind our back.
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-2',
+      })
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('a reattach to the SAME process instance keeps running tasks tracked', () => {
+      // The other direction, and the reason this keys on identity rather than
+      // "saw a handshake": an SSE/WebSocket reattach mid-job is the same live
+      // CLI with the same tasks still running. Resetting there would drop the
+      // indicator and un-gate auto-sleep on real work.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-1',
+      })
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-live' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-live', task_type: 'local_bash', description: 'yt-dlp' }],
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+
+      sseEvents.length = 0
+      // Transport reattach: same process, same handshake identity.
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-1',
+      })
+
+      expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-live')
+
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+    })
+
     it('forwards command_lifecycle frames to SSE and drops malformed ones', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       sseEvents.length = 0

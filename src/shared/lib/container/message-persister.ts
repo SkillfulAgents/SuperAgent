@@ -164,6 +164,10 @@ interface StreamingState {
   // arrives with the following task_started/tool-result) — liveness gates use
   // the UNION of both.
   bgTasksSnapshot: Set<string> | null
+  // Identity of the CLI process the background-task bookkeeping above belongs
+  // to, from the container's handshake. Those tasks are process-local, so when
+  // this changes every id we hold is unretirable and must be dropped.
+  processInstanceId: string | null
   pendingDeliverFiles: Map<string, { filePath: string; description?: string }> // deliver_file tool calls awaiting their tool_result, keyed by tool_use ID
   // True when the runtime publishes session_state_changed events — then IT is
   // the idle authority: a 'result' alone does not end the session (queued
@@ -452,6 +456,9 @@ class MessagePersister {
       lastApiErrorCode: null,
       activeBackgroundTasks: priorBackgroundTasks,
       bgTasksSnapshot: prior?.bgTasksSnapshot ?? null,
+      // Carried with the snapshot it describes — the incoming handshake is what
+      // decides whether both are still valid.
+      processInstanceId: prior?.processInstanceId ?? null,
       pendingDeliverFiles: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
       lastResultSubtype: null,
@@ -1033,6 +1040,7 @@ class MessagePersister {
         lastApiErrorCode: null,
         activeBackgroundTasks: new Map(),
         bgTasksSnapshot: null,
+        processInstanceId: null,
         pendingDeliverFiles: new Map(),
         stateEventsAuthority: false,
         lastResultSubtype: null,
@@ -1787,18 +1795,12 @@ class MessagePersister {
             this.broadcastSubagentCompleted(sessionId, state, toolUseId!, summary)
           }
         } else if (content.subtype === 'process_restarted') {
-          // Container-synthesized: the session's CLI process was replaced (idle
-          // eviction + --resume, crash, MCP-injection restart). Background tasks
-          // are process-local and a fresh process emits NO initial
-          // background_tasks_changed, so every id we still hold is unretirable —
-          // no terminal signal or removal snapshot is ever coming. Reset to
-          // "nothing known", matching SessionSettlementTracker.resetBackgroundTasks.
-          // NOT the same as a transport reattach, which must keep the level set:
-          // that's the same live process still running the same tasks.
-          for (const taskId of [...state.activeBackgroundTasks.keys()]) {
-            this.clearBackgroundTask(sessionId, state, taskId)
-          }
-          state.bgTasksSnapshot = null
+          // Container-synthesized, live: the session's CLI process was replaced
+          // while we were attached (MCP-injection restart, crash, an
+          // interrupt-driven respawn). The handshake below covers the restarts
+          // that happen with nobody attached; this one settles the indicator
+          // immediately instead of at the next reconnect.
+          this.handleProcessRestarted(sessionId, state, content.process_instance)
         } else if (content.subtype === 'capabilities') {
           // The container announces its stream contract when the WebSocket
           // connects, before relaying any SDK message. `session_state_events`
@@ -1810,6 +1812,11 @@ class MessagePersister {
           if (content.session_state_events === true) {
             state.stateEventsAuthority = true
           }
+          // The handshake also names the CLI process we're now attached to.
+          // This is the path that catches a replacement we never saw: on a cold
+          // resume the container's live announcement fires before the session is
+          // published and before this socket subscribes, so it reaches nobody.
+          this.adoptHandshakeProcessInstance(sessionId, state, content.process_instance)
         } else if (content.subtype === 'session_state_changed') {
           // The runtime's own session state — `idle` is the SDK's authoritative
           // "fully settled" signal: it fires only after heldBackResult flushes
@@ -2373,6 +2380,39 @@ class MessagePersister {
     const union = new Set(state.activeBackgroundTasks.keys())
     for (const id of state.bgTasksSnapshot) union.add(id)
     return union.size
+  }
+
+  // The live `process_restarted` frame: the container is telling us outright
+  // that the CLI was replaced, so reset regardless of whether we had recorded
+  // the outgoing process's identity.
+  private handleProcessRestarted(sessionId: string, state: StreamingState, instance: unknown): void {
+    this.dropProcessLocalBackgroundState(sessionId, state)
+    if (typeof instance === 'string' && instance !== '') state.processInstanceId = instance
+  }
+
+  // The handshake's process identity. A first sighting is NOT a restart — it's
+  // just the first time we've been told — so reset only when the name actually
+  // changes. That distinction is the point of keying on identity: a plain
+  // transport reattach re-announces the SAME process with the same tasks still
+  // running, and resetting there would drop a live indicator and un-gate
+  // auto-sleep mid-job. A container too old to send the field is a no-op.
+  private adoptHandshakeProcessInstance(sessionId: string, state: StreamingState, instance: unknown): void {
+    if (typeof instance !== 'string' || instance === '') return
+    if (state.processInstanceId === instance) return
+    const isReplacement = state.processInstanceId !== null
+    state.processInstanceId = instance
+    if (isReplacement) this.dropProcessLocalBackgroundState(sessionId, state)
+  }
+
+  // Background tasks die with their CLI process, and a fresh process emits NO
+  // initial background_tasks_changed — so once the process is gone, nothing will
+  // ever retire the ids we hold and they would pin the session "working" for the
+  // rest of its life. Mirrors SessionSettlementTracker.resetBackgroundTasks.
+  private dropProcessLocalBackgroundState(sessionId: string, state: StreamingState): void {
+    for (const taskId of [...state.activeBackgroundTasks.keys()]) {
+      this.clearBackgroundTask(sessionId, state, taskId)
+    }
+    state.bgTasksSnapshot = null
   }
 
   private clearBackgroundTask(sessionId: string, state: StreamingState, taskId: string): boolean {

@@ -54,6 +54,9 @@ class MockClaudeProcess extends EventEmitter {
       throw err
     }
     this.running = true
+    // Faithful to ClaudeCodeProcess: initializeQuery() emits this from start(),
+    // i.e. before the caller can publish the session or attach a subscriber.
+    this.emit('query-start')
   }
 
   async sendMessage(content?: string): Promise<void> {
@@ -704,6 +707,37 @@ describe('SessionManager idle eviction', () => {
     expect(received).toContainEqual(
       expect.objectContaining({ type: 'system', subtype: 'process_restarted' })
     )
+  })
+
+  it('records a fresh process instance id on a cold resume, before any subscriber exists', async () => {
+    // Regression: process.start() emits query-start synchronously, BEFORE
+    // doResumeSession publishes the SessionData and long before the WebSocket
+    // subscriber attaches — so the live announcement reaches nobody. The host
+    // then reconnects still holding a bgTasksSnapshot from the dead process,
+    // the fresh CLI emits no initial snapshot, and the session is pinned
+    // "working" forever. The restart has to be readable at subscribe time, not
+    // only broadcast at restart time.
+    persistedSessions.set('cold-restart', {
+      sessionId: 'cold-restart',
+      claudeSessionId: 'cold-restart',
+      workingDirectory: workDir,
+      createdAt: new Date().toISOString(),
+      lastActivity: new Date().toISOString(),
+    })
+
+    await manager.getSession('cold-restart')
+
+    const afterResume = manager.getProcessInstanceId('cold-restart')
+    expect(afterResume).toBeTruthy()
+
+    // Same live process → the same id, so a plain reattach must not be
+    // mistaken for a restart (that would drop a genuinely running task).
+    expect(manager.getProcessInstanceId('cold-restart')).toBe(afterResume)
+
+    // A later replacement mints a new one.
+    const proc = spawnedProcesses[spawnedProcesses.length - 1]
+    proc.emit('query-start')
+    expect(manager.getProcessInstanceId('cold-restart')).not.toBe(afterResume)
   })
 
   it('a shouldQuery:false append does NOT promote an automated session', async () => {
