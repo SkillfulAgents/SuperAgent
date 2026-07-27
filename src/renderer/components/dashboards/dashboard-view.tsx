@@ -31,6 +31,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const [restartError, setRestartError] = useState<string | null>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const waitStartedAtRef = useRef<number | null>(null)
+  const autoStartedRef = useRef<string | null>(null)
   const { data: agent } = useAgent(agentSlug)
   const { data: artifacts } = useArtifacts(agentSlug, { pollFast })
   const startAgent = useStartAgent()
@@ -106,6 +107,8 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   }, [startAgent, agentSlug])
 
   const handleRestartAgent = useCallback(async () => {
+    // The deliberate stop must not re-trigger this view's auto-start effect.
+    autoStartedRef.current = agentSlug
     setRestarting(true)
     setRestartError(null)
     setIframeLoaded(false)
@@ -123,7 +126,6 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     }
   }, [isAgentRunning, stopAgent, startAgent, agentSlug])
 
-  const autoStartedRef = useRef<string | null>(null)
   useEffect(() => {
     if (autoStartedRef.current === agentSlug) return
     if (!agent || isAgentRunning || isAgentStarting || !canStart) return
