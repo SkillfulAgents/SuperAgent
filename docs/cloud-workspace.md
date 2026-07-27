@@ -196,6 +196,30 @@ Two things it does differently from the sibling `browser-stream-proxy.ts`:
 It also declines any upgrade outside its prefix, so the local browser stream
 keeps working exactly as before.
 
+### How the renderer opts in
+
+`renderer/lib/api-target.ts` owns one question — local or cloud — answered once,
+at boot, from a `localStorage` preference. `initApiBaseUrl()` asks the main
+process for the keyed prefix (`get-cloud-api-url`) and sets it as the base URL
+every call site prefixes; that single value is what moves the whole UI.
+
+- **The stored preference is an intent, not a promise.** It lives on a machine
+  whose workspace may since have been disconnected, so it is only honoured if
+  main answers with a URL. Otherwise the app boots local with a recorded reason
+  (`getTargetFallbackReason()`), rather than into a wall of failed requests
+  against a workspace that is no longer the user's.
+- **Main answers `null` rather than the renderer validating.** That check is
+  `resolveCloudProxyTarget()` — settings only, no network — so boot does not
+  wait on a discovery round-trip that `PlatformService` already runs.
+- **The renderer is told the prefix, never the key.** Assembling it renderer-side
+  would mean handing a secret to the layer the key exists to distrust.
+- **The target is frozen for the renderer's lifetime**, and `getActiveTarget()`
+  throws if read before boot settles it — `'local'` would be a plausible wrong
+  answer whose failure mode is cloud traffic quietly hitting the laptop.
+  Switching reloads the window; see the toggle for why that is not a shortcut.
+- Quick-dispatch is a **separate renderer** with its own `initApiBaseUrl()`, so
+  it resolves the same preference independently at its own boot.
+
 ## Electron-only, by design
 
 The whole feature no-ops off the Electron main process (`process.type === 'browser'`
@@ -262,6 +286,7 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `services/cloud-proxy-target.ts` | What the proxy forwards to; single-flight, rate-limited re-mint |
 | `api/routes/cloud-proxy.ts` | `/cloud/{key}/api/*` → the deployment (HTTP + SSE) |
 | `main/cloud-stream-proxy.ts` | The same, for WebSocket upgrades |
+| `renderer/lib/api-target.ts` | Local or cloud, chosen once at boot; fails closed to local |
 | `api/polyfill-api-prefix.ts` | Keeps dashboard-shim API calls on whichever API served the document |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |

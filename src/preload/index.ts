@@ -9,6 +9,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getApiUrl: (): Promise<string> => {
     return ipcRenderer.invoke('get-api-url')
   },
+  // Base URL for driving the org's cloud workspace, or null when there is none
+  // to drive. Carries the per-boot proxy key, so it is fetched rather than
+  // assembled here.
+  getCloudApiUrl: (): Promise<string | null> => {
+    return ipcRenderer.invoke('get-cloud-api-url')
+  },
   platform: process.platform,
   osVersion: process.getSystemVersion(),
 
@@ -446,6 +452,7 @@ declare global {
   interface Window {
     electronAPI?: {
       getApiUrl: () => Promise<string>
+      getCloudApiUrl?: () => Promise<string | null>
       platform: string
       osVersion: string
       onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => () => void

@@ -119,6 +119,9 @@ import { initializeServices, shutdownServices } from '@shared/lib/startup'
 import { setupServerHandlers } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
+import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
+import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
+import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
@@ -470,6 +473,18 @@ ipcMain.on('set-sidebar-collapsed', (_event, collapsed: boolean) => {
 // IPC handler for getting the API URL (port may vary)
 ipcMain.handle('get-api-url', () => {
   return `http://localhost:${actualApiPort}`
+})
+
+// The cloud proxy's base URL, or null when there is no workspace to drive.
+//
+// The renderer is told the prefix rather than assembling it, because half of it
+// is the per-boot proxy key — a secret the main process owns (see
+// cloud-proxy-key.ts). Answering null is also the validation step for a stored
+// "cloud" preference: it means no workspace, or no live token for one, and the
+// renderer falls back to local rather than booting into a wall of failures.
+ipcMain.handle('get-cloud-api-url', () => {
+  if (!isCloudProxyEnabled() || !resolveCloudProxyTarget()) return null
+  return `http://localhost:${actualApiPort}${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}`
 })
 
 // IPC handler for opening URLs in system browser. Renderer-supplied strings are
