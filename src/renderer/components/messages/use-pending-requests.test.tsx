@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
-import { usePendingRequests, type PendingRequestDescriptor } from './use-pending-requests'
+import {
+  usePendingRequests,
+  usePendingBrowserInputRequests,
+  type PendingRequestDescriptor,
+} from './use-pending-requests'
 import { createAssistantMessage, createUserMessage, createToolCall } from '@renderer/test/factories'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
@@ -1044,5 +1048,76 @@ describe('usePendingRequests', () => {
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
 
     expect(ofKind(result.current.items, 'capability_review')).toHaveLength(0)
+  })
+})
+
+describe('usePendingBrowserInputRequests', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockUnified.data = []
+  })
+
+  const browserInput = (id: string, message: string) =>
+    unified('browser_input', id, { message, requirements: ['a password'] })
+
+  it('projects browser_input requests out of the snapshot', () => {
+    mockUnified.data = [
+      browserInput('tu-bi-1', 'Log in to the dashboard'),
+      unified('secret', 'tu-secret', { secretName: 'API_KEY' }),
+    ]
+
+    const { result } = renderHook(() =>
+      usePendingBrowserInputRequests('s-1', 'agent-1', true),
+    )
+
+    expect(result.current.requests).toHaveLength(1)
+    expect(result.current.requests[0]).toMatchObject({
+      toolUseId: 'tu-bi-1',
+      message: 'Log in to the dashboard',
+      requirements: ['a password'],
+    })
+  })
+
+  it('shows nothing while the session is inactive', () => {
+    mockUnified.data = [browserInput('tu-bi-idle', 'Log in')]
+
+    const { result } = renderHook(() =>
+      usePendingBrowserInputRequests('s-1', 'agent-1', false),
+    )
+
+    expect(result.current.requests).toHaveLength(0)
+  })
+
+  it('drops an overlay synchronously on dismiss, without waiting for a refetch', () => {
+    mockUnified.data = [browserInput('tu-bi-2', 'Log in')]
+
+    const { result } = renderHook(() =>
+      usePendingBrowserInputRequests('s-1', 'agent-1', true),
+    )
+    expect(result.current.requests).toHaveLength(1)
+
+    // The snapshot still lists the request — answering in the tray has to hide
+    // the overlay before the server round-trip settles it.
+    act(() => result.current.dismiss('tu-bi-2'))
+
+    expect(result.current.requests).toHaveLength(0)
+  })
+
+  it('forgets dismissals when the session goes idle, so the next turn can ask again', () => {
+    mockUnified.data = [browserInput('tu-bi-3', 'Log in')]
+
+    const { result, rerender } = renderHook(
+      ({ isActive }: { isActive: boolean }) =>
+        usePendingBrowserInputRequests('s-1', 'agent-1', isActive),
+      { initialProps: { isActive: true } },
+    )
+
+    act(() => result.current.dismiss('tu-bi-3'))
+    expect(result.current.requests).toHaveLength(0)
+
+    rerender({ isActive: false })
+    rerender({ isActive: true })
+
+    expect(result.current.requests).toHaveLength(1)
   })
 })

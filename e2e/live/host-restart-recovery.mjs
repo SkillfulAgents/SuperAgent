@@ -286,15 +286,29 @@ async function startApp(label, port) {
   })
 
   const base = `http://127.0.0.1:${port}`
-  await waitFor(
-    `${label} API to answer`,
-    async () => {
-      if (exited) throw new Error(`${label} ${exited} — see ${logFile}`)
-      const res = await fetch(`${base}/api/agents`)
-      return res.ok
-    },
-    180_000,
-  )
+  try {
+    await waitFor(
+      `${label} API to answer`,
+      async () => {
+        if (exited) throw new Error(`${label} ${exited} — see ${logFile}`)
+        const res = await fetch(`${base}/api/agents`)
+        return res.ok
+      },
+      180_000,
+    )
+  } catch (err) {
+    // A boot that never answered still forked vite; leaving that process group
+    // alive would hold the port and keep reading the seeded credentials the
+    // caller is about to delete.
+    if (!exited) {
+      try {
+        process.kill(-child.pid, 'SIGKILL')
+      } catch {
+        child.kill('SIGKILL')
+      }
+    }
+    throw err
+  }
   log(`${label} up on ${base} (pid ${child.pid}, logs → ${logFile})`)
   return { child, base }
 }
@@ -338,16 +352,22 @@ function check(name, ok, detail = '') {
 async function main() {
   mkdirSync(RUN_DIR, { recursive: true })
   log(`run dir ${RUN_DIR}`)
-  seed()
-  removeProbeContainer()
 
-  const port = await freePort()
-
-  // ── Phase 1: park a question on a live host ────────────────────────
-  let app = await startApp('app-1', port)
+  // Setup runs INSIDE the cleanup scope: seed() writes settings.json (API keys)
+  // and the host container tokens into TARGET before anything can fail, so a
+  // throw from the seed, the port scan, or the first boot must still reach the
+  // finally that deletes them.
+  let app = null
   let sessionId
 
   try {
+    seed()
+    removeProbeContainer()
+    const port = await freePort()
+
+    // ── Phase 1: park a question on a live host ──────────────────────
+    app = await startApp('app-1', port)
+
     const created = await api(app.base, `/api/agents/${AGENT_SLUG}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -437,10 +457,12 @@ async function main() {
       check('answering the recovered request settles it', settled === true)
     }
   } finally {
-    if (args['keep-app']) {
+    if (app && args['keep-app']) {
       log(`--keep-app: ${app.base} left running against ${TARGET} (holds credentials)`)
     } else {
-      await stopApp(app, 'app').catch(() => {})
+      // No app means setup failed before or during the first boot — there is
+      // nothing to stop, but the seeded credentials still have to go.
+      if (app) await stopApp(app, 'app').catch(() => {})
       removeProbeContainer()
       if (args['keep-data']) log(`--keep-data: ${TARGET} kept (holds credentials)`)
       else removeSeededDataDir()
