@@ -268,5 +268,14 @@
       "cacheCreation": 10,
       "cacheRead": 1
     }
+  },
+  "kimi-k3": {
+    "input": 3,
+    "output": 15,
+    "cacheCreation": 3,
+    "cacheRead": 0.3,
+    "speedMultipliers": {
+      "fast": 1.5
+    }
   }
 }
