@@ -1,9 +1,8 @@
 import { useMemo } from 'react'
 import { ProxyReviewRequestItem } from '@renderer/components/messages/proxy-review-request-item'
 import { XAgentReviewRequestItem } from '@renderer/components/messages/x-agent-review-request-item'
-import { reviewFromEnvelope } from '@renderer/components/messages/use-pending-requests'
+import { reviewFromEnvelope, type PendingReview } from '@renderer/components/messages/use-pending-requests'
 import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
-import type { PendingReview } from '@renderer/hooks/use-proxy-reviews'
 
 interface PendingAgentReviewsProps {
   agentSlug: string

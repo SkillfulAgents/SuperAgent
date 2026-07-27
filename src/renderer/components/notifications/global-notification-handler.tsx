@@ -148,7 +148,7 @@ export function GlobalNotificationHandler() {
         if (!res.ok && res.status !== 404) {
           console.error('[notification-action] Failed to submit proxy review decision:', res.status)
         }
-        queryClient.invalidateQueries({ queryKey: ['proxy-reviews', ctx.agentSlug] })
+        queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
       })
       .catch((err) => {
         console.error('[notification-action] Error submitting proxy review decision:', err)
@@ -347,10 +347,6 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['webhook-trigger-sessions'] })
             queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions'] })
 
-            // Proxy review created or resolved — refetch review list
-            if (eventAgentSlug && data.review) {
-              queryClient.invalidateQueries({ queryKey: ['proxy-reviews', eventAgentSlug] })
-            }
             break
           }
 

@@ -89,7 +89,7 @@ function simulateSSEMessage(es: MockEventSource, data: unknown) {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
+describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
   let queryClient: QueryClient
 
   beforeEach(async () => {
@@ -127,93 +127,6 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     // back to the prototype getter.
     vi.restoreAllMocks()
     Reflect.deleteProperty(document, 'visibilityState')
-  })
-
-  it('session_awaiting_input with review data invalidates proxy-reviews query', async () => {
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <GlobalNotificationHandler />
-      </QueryClientProvider>
-    )
-
-    const es = getLatestEventSource()
-
-    simulateSSEMessage(es, {
-      type: 'session_awaiting_input',
-      agentSlug: 'my-agent',
-      review: {
-        type: 'proxy_review_request',
-        reviewId: 'r-123',
-      },
-    })
-
-    // Should have invalidated proxy-reviews for this agent
-    const proxyReviewCalls = invalidateSpy.mock.calls.filter(
-      (call) => {
-        const opts = call[0] as { queryKey?: unknown[] }
-        return opts.queryKey?.[0] === 'proxy-reviews'
-      }
-    )
-    expect(proxyReviewCalls.length).toBe(1)
-    expect((proxyReviewCalls[0][0] as { queryKey: unknown[] }).queryKey).toEqual(['proxy-reviews', 'my-agent'])
-  })
-
-  it('session_awaiting_input WITHOUT review data does NOT invalidate proxy-reviews', () => {
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <GlobalNotificationHandler />
-      </QueryClientProvider>
-    )
-
-    const es = getLatestEventSource()
-
-    // Normal session awaiting input (not a proxy review — e.g., user input request)
-    simulateSSEMessage(es, {
-      type: 'session_awaiting_input',
-      agentSlug: 'my-agent',
-    })
-
-    const proxyReviewCalls = invalidateSpy.mock.calls.filter(
-      (call) => {
-        const opts = call[0] as { queryKey?: unknown[] }
-        return opts.queryKey?.[0] === 'proxy-reviews'
-      }
-    )
-    expect(proxyReviewCalls.length).toBe(0)
-  })
-
-  it('proxy_review_resolved event also invalidates proxy-reviews', () => {
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <GlobalNotificationHandler />
-      </QueryClientProvider>
-    )
-
-    const es = getLatestEventSource()
-
-    simulateSSEMessage(es, {
-      type: 'session_awaiting_input',
-      agentSlug: 'my-agent',
-      review: {
-        type: 'proxy_review_resolved',
-        reviewId: 'r-123',
-        decision: 'allow',
-      },
-    })
-
-    const proxyReviewCalls = invalidateSpy.mock.calls.filter(
-      (call) => {
-        const opts = call[0] as { queryKey?: unknown[] }
-        return opts.queryKey?.[0] === 'proxy-reviews'
-      }
-    )
-    expect(proxyReviewCalls.length).toBe(1)
   })
 
   it('user_request_created/resolved invalidate the unified store', () => {

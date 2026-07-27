@@ -2220,28 +2220,10 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         event: 'message',
       })
 
-      // Replay any pending computer use requests (survives SSE reconnection)
-      const pendingCU = messagePersister.getPendingComputerUseRequests(sessionId)
-      for (const req of pendingCU) {
-        await stream.writeSSE({
-          data: JSON.stringify({ type: 'computer_use_request', ...req }),
-          event: 'message',
-        })
-      }
-
-      // Replay any pending user-input requests (secret/connected_account/question/file/
-      // remote_mcp/script_run/browser_input). These are one-shot broadcasts, so a client
-      // that opened the stream after they fired — a freshly-created session, a reconnect,
-      // or a page refresh while the agent is awaiting input — would otherwise never see
-      // them and would hang until the safety-net messages poll. The stored payloads are
-      // re-sent verbatim; the renderer dedupes by toolUseId.
-      const pendingInputs = messagePersister.getPendingInputRequests(sessionId)
-      for (const req of pendingInputs) {
-        await stream.writeSSE({
-          data: JSON.stringify(req),
-          event: 'message',
-        })
-      }
+      // No per-request replay here any more. Open requests are read from the
+      // pending-requests snapshot, which the 'connected' event above tells the
+      // client to refetch — one consistent read instead of a stream of
+      // one-shot events a late joiner could half-miss.
 
       // Replay current computer use grab state (with icon if cached)
       const agentSlugForStream = getAgentId(c)
@@ -5538,12 +5520,9 @@ agents.get('/:id/pending-requests', AgentRead(), (c) => {
 // Proxy review endpoints
 // =============================================================================
 
-// GET /api/agents/:id/proxy-reviews - List pending reviews for this agent
-agents.get('/:id/proxy-reviews', AgentRead(), async (c) => {
-  const slug = getAgentId(c)
-  const reviews = reviewManager.getPendingReviewsForAgent(slug)
-  return c.json({ reviews })
-})
+// Listing pending reviews is the pending-requests snapshot's job — reviews are
+// registry entries like every other request kind, and the dedicated poll this
+// route served is gone.
 
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {

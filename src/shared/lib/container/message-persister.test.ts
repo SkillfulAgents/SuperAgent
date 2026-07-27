@@ -271,6 +271,13 @@ describe('MessagePersister', () => {
   let sseEvents: any[]
   let sseCleanup: () => void
 
+  // One `user_request_created` per open request, carrying the registry
+  // envelope — the only request wire there is.
+  const requestCards = (kind: string) =>
+    sseEvents.filter((e) => e.type === 'user_request_created' && e.request?.kind === kind)
+  const openStreamRequestIds = () =>
+    userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'stream')
+
   beforeEach(async () => {
     mockClient = createMockClient()
     await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
@@ -1717,7 +1724,7 @@ describe('MessagePersister', () => {
       })
     }
 
-    it('broadcasts remote_mcp_request event on tool_use completion', () => {
+    it('registers a remote_mcp request on tool_use completion', () => {
       sseEvents.length = 0
 
       simulateRemoteMcpToolUse('mcp-tool-1', {
@@ -1726,30 +1733,32 @@ describe('MessagePersister', () => {
         reason: 'Need weather data',
       })
 
-      const mcpRequests = sseEvents.filter(e => e.type === 'remote_mcp_request')
+      const mcpRequests = requestCards('remote_mcp')
       expect(mcpRequests).toHaveLength(1)
-      expect(mcpRequests[0].toolUseId).toBe('mcp-tool-1')
-      expect(mcpRequests[0].url).toBe('https://mcp.example.com/mcp')
-      expect(mcpRequests[0].name).toBe('Example MCP')
-      expect(mcpRequests[0].reason).toBe('Need weather data')
-      expect(mcpRequests[0].agentSlug).toBe(AGENT_SLUG)
+      expect(mcpRequests[0].request.id).toBe('mcp-tool-1')
+      expect(mcpRequests[0].request.scope.agentSlug).toBe(AGENT_SLUG)
+      expect(mcpRequests[0].request.payload).toMatchObject({
+        url: 'https://mcp.example.com/mcp',
+        name: 'Example MCP',
+        reason: 'Need weather data',
+      })
     })
 
-    it('broadcasts remote_mcp_request with only url (name and reason optional)', () => {
+    it('registers a remote_mcp request with only url (name and reason optional)', () => {
       sseEvents.length = 0
 
       simulateRemoteMcpToolUse('mcp-tool-2', {
         url: 'https://other.mcp.io/api',
       })
 
-      const mcpRequests = sseEvents.filter(e => e.type === 'remote_mcp_request')
+      const mcpRequests = requestCards('remote_mcp')
       expect(mcpRequests).toHaveLength(1)
-      expect(mcpRequests[0].url).toBe('https://other.mcp.io/api')
-      expect(mcpRequests[0].name).toBeUndefined()
-      expect(mcpRequests[0].reason).toBeUndefined()
+      expect(mcpRequests[0].request.payload.url).toBe('https://other.mcp.io/api')
+      expect(mcpRequests[0].request.payload.name).toBeUndefined()
+      expect(mcpRequests[0].request.payload.reason).toBeUndefined()
     })
 
-    it('does not broadcast remote_mcp_request for invalid JSON input', () => {
+    it('registers nothing for invalid JSON input', () => {
       sseEvents.length = 0
 
       mockClient._sendMessage({
@@ -1771,16 +1780,16 @@ describe('MessagePersister', () => {
         event: { type: 'content_block_stop' },
       })
 
-      const mcpRequests = sseEvents.filter(e => e.type === 'remote_mcp_request')
+      const mcpRequests = requestCards('remote_mcp')
       expect(mcpRequests).toHaveLength(0)
     })
 
-    it('does not broadcast remote_mcp_request when url is missing', () => {
+    it('registers nothing when url is missing', () => {
       sseEvents.length = 0
 
       simulateRemoteMcpToolUse('mcp-no-url', { name: 'No URL MCP' })
 
-      const mcpRequests = sseEvents.filter(e => e.type === 'remote_mcp_request')
+      const mcpRequests = requestCards('remote_mcp')
       expect(mcpRequests).toHaveLength(0)
     })
 
@@ -1806,7 +1815,7 @@ describe('MessagePersister', () => {
       )
     })
 
-    it('still broadcasts tool_use_ready alongside remote_mcp_request', () => {
+    it('still broadcasts tool_use_ready alongside the registration', () => {
       sseEvents.length = 0
 
       simulateRemoteMcpToolUse('mcp-tool-ready', {
@@ -2641,9 +2650,9 @@ describe('MessagePersister', () => {
       expect(awaitingEvents[0].sessionId).toBe(SESSION_ID)
       expect(awaitingEvents[0].agentSlug).toBe(AGENT_SLUG)
 
-      // Recovered entries are synthesized (never broadcast, no payload) — the
-      // SSE replay must skip them; clients render the card from the transcript.
-      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      // Recovered entries carry no payload, so no card event goes out for
+      // them; clients render the card from the transcript instead.
+      expect(requestCards('question')).toHaveLength(0)
 
       // Its tool_result settles the recovered wait like any other request.
       mockClient._sendMessage({
@@ -2746,10 +2755,10 @@ describe('MessagePersister', () => {
         })
         sendSidechainStreamEvent({ type: 'content_block_stop' })
 
-        // The card broadcast fires either way — the status flag is the fix target.
-        const cards = sseEvents.filter(e => e.type === 'browser_input_request')
+        // The card fires either way — the status flag is the fix target.
+        const cards = requestCards('browser_input')
         expect(cards).toHaveLength(1)
-        expect(cards[0].toolUseId).toBe('sub-tool-1')
+        expect(cards[0].request.id).toBe('sub-tool-1')
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       })
 
@@ -2801,12 +2810,12 @@ describe('MessagePersister', () => {
         })
       }
 
-      it('clears awaiting state and the replayable card when the sidechain tool_result arrives', () => {
+      it('clears awaiting state and settles the request when the sidechain tool_result arrives', () => {
         const { events: globalEvents, cleanup } = collectGlobalEvents()
 
         sendSidechainBrowserInputRequest('agent-tool-3', 'sub-tool-3')
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+        expect(openStreamRequestIds()).toHaveLength(1)
 
         sseEvents.length = 0
 
@@ -2825,7 +2834,7 @@ describe('MessagePersister', () => {
         })
 
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+        expect(openStreamRequestIds()).toHaveLength(0)
         // Same broadcast the main path uses — other windows drop their card copy off it
         const results = sseEvents.filter(e => e.type === 'tool_result')
         expect(results).toHaveLength(1)
@@ -2850,7 +2859,7 @@ describe('MessagePersister', () => {
         })
 
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+        expect(openStreamRequestIds()).toHaveLength(1)
       })
 
       it('keeps awaiting when another input request is still open after the sidechain result', () => {
@@ -2859,7 +2868,7 @@ describe('MessagePersister', () => {
           questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
         })
         sendSidechainBrowserInputRequest('agent-tool-5', 'sub-tool-5')
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(2)
+        expect(openStreamRequestIds()).toHaveLength(2)
 
         // Only the subagent's request resolves
         mockClient._sendMessage({
@@ -2873,8 +2882,7 @@ describe('MessagePersister', () => {
         })
 
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)[0].toolUseId).toBe('main-q-1')
+        expect(openStreamRequestIds()).toEqual(['main-q-1'])
       })
     })
 
@@ -3276,34 +3284,34 @@ describe('MessagePersister', () => {
 
     const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
-    it('broadcasts a review card and stores it for reconnect replay', async () => {
+    it('registers a review card clients can render', async () => {
       simulateToolUse('Workflow', 'wf-1', { script: 'export const meta = {}' })
 
       await vi.waitFor(() => {
-        expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(1)
+        expect(requestCards('capability_review')).toHaveLength(1)
       })
-      expect(sseEvents.filter(e => e.type === 'capability_review_request')[0]).toMatchObject({
-        toolUseId: 'wf-1',
-        capability: 'workflows',
+      expect(requestCards('capability_review')[0].request).toMatchObject({
+        id: 'wf-1',
+        payload: { capability: 'workflows' },
       })
-      expect(messagePersister.getPendingInputRequests(SESSION_ID).map(r => r.toolUseId)).toContain('wf-1')
+      expect(openStreamRequestIds()).toContain('wf-1')
     })
 
-    it('completeCapabilityReview clears the replay store immediately and notifies live clients', async () => {
+    it('completeCapabilityReview settles the entry immediately and notifies live clients', async () => {
       simulateToolUse('Workflow', 'wf-1', { script: 'export const meta = {}' })
       await vi.waitFor(() => {
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+        expect(openStreamRequestIds()).toHaveLength(1)
       })
 
       // The decision route calls this on approve AND reject. Waiting for the
-      // launched Workflow's tool_result would leave the card replaying to any
-      // reconnecting client for the whole (possibly minutes-long) run.
+      // launched Workflow's tool_result would leave the card up for the whole
+      // (possibly minutes-long) run.
       messagePersister.completeCapabilityReview(SESSION_ID, 'wf-1')
 
-      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
-      const resolved = sseEvents.filter(e => e.type === 'capability_review_resolved')
+      expect(openStreamRequestIds()).toHaveLength(0)
+      const resolved = sseEvents.filter(e => e.type === 'user_request_resolved')
       expect(resolved).toHaveLength(1)
-      expect(resolved[0]).toMatchObject({ toolUseId: 'wf-1' })
+      expect(resolved[0]).toMatchObject({ requestId: 'wf-1' })
     })
 
     it('a session-scope grant in the host mirror suppresses review cards without a container query', async () => {
@@ -3311,7 +3319,7 @@ describe('MessagePersister', () => {
       simulateToolUse('Workflow', 'wf-2', { script: 'export const meta = {}' })
 
       await flush()
-      expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
+      expect(requestCards('capability_review')).toHaveLength(0)
       expect(mockClient.fetch).not.toHaveBeenCalled()
     })
 
@@ -3328,7 +3336,7 @@ describe('MessagePersister', () => {
       await vi.waitFor(() => {
         expect(messagePersister.hasSessionCapabilityGrant(SESSION_ID, 'workflows')).toBe(true)
       })
-      expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
+      expect(requestCards('capability_review')).toHaveLength(0)
     })
 
     it('still shows the card when the grant lookup fails', async () => {
@@ -3337,7 +3345,7 @@ describe('MessagePersister', () => {
       simulateToolUse('Workflow', 'wf-4', { script: 'export const meta = {}' })
 
       await vi.waitFor(() => {
-        expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(1)
+        expect(requestCards('capability_review')).toHaveLength(1)
       })
     })
 
@@ -3345,7 +3353,7 @@ describe('MessagePersister', () => {
       simulateToolUse('Task', 'task-1', { prompt: 'go', subagent_type: 'Explore' })
 
       await flush()
-      expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
+      expect(requestCards('capability_review')).toHaveLength(0)
       expect(mockClient.fetch).not.toHaveBeenCalled()
     })
 
@@ -3373,8 +3381,8 @@ describe('MessagePersister', () => {
       await flush()
       await flush()
 
-      expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
-      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      expect(requestCards('capability_review')).toHaveLength(0)
+      expect(openStreamRequestIds()).toHaveLength(0)
 
       // The tombstone is consumed — a later review with a fresh id is unaffected.
       vi.mocked(mockClient.fetch).mockResolvedValue({
@@ -3383,10 +3391,10 @@ describe('MessagePersister', () => {
       } as unknown as Response)
       simulateToolUse('Workflow', 'wf-after-race', { script: 'export const meta = {}' })
       await vi.waitFor(() => {
-        expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(1)
+        expect(requestCards('capability_review')).toHaveLength(1)
       })
-      expect(sseEvents.filter(e => e.type === 'capability_review_request')[0]).toMatchObject({
-        toolUseId: 'wf-after-race',
+      expect(requestCards('capability_review')[0].request).toMatchObject({
+        id: 'wf-after-race',
       })
     })
 
@@ -3396,7 +3404,7 @@ describe('MessagePersister', () => {
       // the card must not linger for live clients or reconnect replay.
       simulateToolUse('Workflow', 'wf-5', { script: 'export const meta = {}' })
       await vi.waitFor(() => {
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+        expect(openStreamRequestIds()).toHaveLength(1)
       })
 
       mockClient._sendMessage({
@@ -3406,11 +3414,11 @@ describe('MessagePersister', () => {
       })
 
       await vi.waitFor(() => {
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+        expect(openStreamRequestIds()).toHaveLength(0)
       })
-      const resolved = sseEvents.filter(e => e.type === 'capability_review_resolved')
+      const resolved = sseEvents.filter(e => e.type === 'user_request_resolved')
       expect(resolved).toHaveLength(1)
-      expect(resolved[0]).toMatchObject({ toolUseId: 'wf-5' })
+      expect(resolved[0]).toMatchObject({ requestId: 'wf-5' })
     })
   })
 
@@ -3766,7 +3774,7 @@ describe('MessagePersister', () => {
       })
     }
 
-    it('broadcasts script_run_request with autoApproved:false when permission needed', () => {
+    it('registers a script_run with autoApproved:false when permission needed', () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
@@ -3776,20 +3784,21 @@ describe('MessagePersister', () => {
         scriptType: 'shell',
       })
 
-      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      const scriptEvents = requestCards('script_run')
       expect(scriptEvents).toHaveLength(1)
-      expect(scriptEvents[0]).toMatchObject({
-        type: 'script_run_request',
-        toolUseId: 'tool-sr-1',
-        script: 'sw_vers',
-        explanation: 'Check macOS version',
-        scriptType: 'shell',
-        agentSlug: AGENT_SLUG,
+      expect(scriptEvents[0].request).toMatchObject({
+        id: 'tool-sr-1',
         autoApproved: false,
+        scope: { agentSlug: AGENT_SLUG, sessionId: SESSION_ID },
+        payload: {
+          script: 'sw_vers',
+          explanation: 'Check macOS version',
+          scriptType: 'shell',
+        },
       })
     })
 
-    it('auto-executes AND broadcasts with autoApproved:true when use_host_shell granted', async () => {
+    it('auto-executes AND registers with autoApproved:true when use_host_shell granted', async () => {
       const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
       mockCheckPermission.mockReturnValue('granted')
       sseEvents.length = 0
@@ -3804,12 +3813,11 @@ describe('MessagePersister', () => {
         scriptType: 'shell',
       })
 
-      // Broadcast still happens, but flagged as auto-approved so the UI can suppress its prompt.
-      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      // Still registered, flagged auto-approved so the UI suppresses its prompt.
+      const scriptEvents = requestCards('script_run')
       expect(scriptEvents).toHaveLength(1)
-      expect(scriptEvents[0]).toMatchObject({
-        type: 'script_run_request',
-        toolUseId: 'tool-sr-granted',
+      expect(scriptEvents[0].request).toMatchObject({
+        id: 'tool-sr-granted',
         autoApproved: true,
       })
 
@@ -3831,7 +3839,7 @@ describe('MessagePersister', () => {
       vi.unstubAllGlobals()
     })
 
-    it('broadcasts script_run_request even without prior permission (prompts user)', () => {
+    it('registers a script_run even without prior permission (prompts user)', () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
@@ -3841,12 +3849,12 @@ describe('MessagePersister', () => {
         scriptType: 'shell',
       })
 
-      // Should broadcast to SSE for user approval (no cached permission → prompt user)
-      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      // Should reach the client for approval (no cached permission → prompt user)
+      const scriptEvents = requestCards('script_run')
       expect(scriptEvents).toHaveLength(1)
     })
 
-    it('does not broadcast when script is missing from input', () => {
+    it('registers nothing when script is missing from input', () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
@@ -3855,11 +3863,11 @@ describe('MessagePersister', () => {
         scriptType: 'shell',
       })
 
-      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      const scriptEvents = requestCards('script_run')
       expect(scriptEvents).toHaveLength(0)
     })
 
-    it('does not broadcast when scriptType is missing', () => {
+    it('registers nothing when scriptType is missing', () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
@@ -3868,7 +3876,7 @@ describe('MessagePersister', () => {
         explanation: 'Check version',
       })
 
-      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      const scriptEvents = requestCards('script_run')
       expect(scriptEvents).toHaveLength(0)
     })
 
@@ -3927,7 +3935,7 @@ describe('MessagePersister', () => {
       })
     }
 
-    it('auto-executes AND broadcasts with autoApproved:true when computer-use permission is granted', async () => {
+    it('auto-executes AND registers with autoApproved:true when computer-use permission is granted', async () => {
       const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
       const originalE2eMock = process.env.E2E_MOCK
       process.env.E2E_MOCK = 'true'
@@ -3947,16 +3955,17 @@ describe('MessagePersister', () => {
           expect(fetchMock).toHaveBeenCalledTimes(1)
         })
 
-        const computerUseEvents = sseEvents.filter(e => e.type === 'computer_use_request')
+        const computerUseEvents = requestCards('computer_use')
         expect(computerUseEvents).toHaveLength(1)
-        expect(computerUseEvents[0]).toMatchObject({
-          type: 'computer_use_request',
-          toolUseId: 'tool-cu-granted',
-          method: 'apps',
-          params: { includeHidden: false },
-          permissionLevel: 'list_apps_windows',
-          agentSlug: AGENT_SLUG,
+        expect(computerUseEvents[0].request).toMatchObject({
+          id: 'tool-cu-granted',
           autoApproved: true,
+          scope: { agentSlug: AGENT_SLUG, sessionId: SESSION_ID },
+          payload: {
+            method: 'apps',
+            params: { includeHidden: false },
+            permissionLevel: 'list_apps_windows',
+          },
         })
 
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)

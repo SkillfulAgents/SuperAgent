@@ -152,6 +152,45 @@ export async function expectAgentNamed(
   return found!
 }
 
+/**
+ * Open proxy / x-agent reviews for an agent, read from the unified
+ * pending-requests snapshot — the only place reviews are listed. Returns
+ * undefined when the snapshot itself failed, so a poll can retry instead of
+ * reading a transport error as "no reviews".
+ */
+async function fetchPendingReviews(
+  request: APIRequestContext,
+  agentSlug: string,
+): Promise<TestPendingProxyReview[] | undefined> {
+  const response = await request.get(`/api/agents/${agentSlug}/pending-requests`)
+  if (!response.ok()) return undefined
+
+  const body = await response.json() as {
+    requests?: Array<{
+      id: string
+      kind: string
+      scope: { agentSlug?: string }
+      payload: Record<string, unknown>
+    }>
+  }
+  return (body.requests ?? [])
+    .filter((r) => r.kind === 'proxy_review' || r.kind === 'x_agent_review')
+    .map((r) => ({
+      id: r.id,
+      agentSlug: r.scope.agentSlug ?? '',
+      accountId: String(r.payload.accountId ?? ''),
+      toolkit: String(r.payload.toolkit ?? ''),
+      method: String(r.payload.method ?? ''),
+      targetPath: String(r.payload.targetPath ?? ''),
+      matchedScopes: Array.isArray(r.payload.matchedScopes)
+        ? (r.payload.matchedScopes as string[])
+        : [],
+      scopeDescriptions: (r.payload.scopeDescriptions ?? {}) as Record<string, string>,
+      displayText: typeof r.payload.displayText === 'string' ? r.payload.displayText : undefined,
+      xAgent: r.payload.xAgent as TestPendingProxyReview['xAgent'],
+    }))
+}
+
 export async function waitForPendingProxyReview(
   request: APIRequestContext,
   agent: Pick<TestAgent, 'slug'>,
@@ -165,11 +204,10 @@ export async function waitForPendingProxyReview(
   let found: TestPendingProxyReview | undefined
 
   await expect.poll(() => retryablePollRead(async () => {
-    const response = await request.get(`/api/agents/${agent.slug}/proxy-reviews`)
-    if (!response.ok()) return false
+    const reviews = await fetchPendingReviews(request, agent.slug)
+    if (!reviews) return false
 
-    const body = await response.json() as { reviews?: TestPendingProxyReview[] }
-    found = (body.reviews ?? []).find((review) => {
+    found = reviews.find((review) => {
       if (options.xAgent !== undefined && Boolean(review.xAgent) !== options.xAgent) return false
       if (options.toolkit && review.toolkit !== options.toolkit) return false
       if (options.targetPath && review.targetPath !== options.targetPath) return false
@@ -189,11 +227,10 @@ export async function expectPendingProxyReviewResolved(
   review: Pick<TestPendingProxyReview, 'id'>,
 ) {
   await expect.poll(() => retryablePollRead(async () => {
-    const response = await request.get(`/api/agents/${agent.slug}/proxy-reviews`)
-    if (!response.ok()) return false
+    const reviews = await fetchPendingReviews(request, agent.slug)
+    if (!reviews) return false
 
-    const body = await response.json() as { reviews?: TestPendingProxyReview[] }
-    return !(body.reviews ?? []).some((candidate) => candidate.id === review.id)
+    return !reviews.some((candidate) => candidate.id === review.id)
   }, false), { timeout: 15000 }).toBe(true)
 }
 

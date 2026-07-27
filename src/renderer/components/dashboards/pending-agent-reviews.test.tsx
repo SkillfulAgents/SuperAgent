@@ -12,11 +12,6 @@ vi.mock('@renderer/hooks/use-pending-user-requests', () => ({
     mockUsePendingUserRequests(agentSlug, sessionId),
 }))
 
-const mockUsePendingProxyReviews = vi.fn(() => ({ data: { reviews: [] }, refetch: vi.fn() }))
-vi.mock('@renderer/hooks/use-proxy-reviews', () => ({
-  usePendingProxyReviews: () => mockUsePendingProxyReviews(),
-}))
-
 vi.mock('@renderer/components/messages/proxy-review-request-item', () => ({
   ProxyReviewRequestItem: ({ reviewId }: { reviewId: string }) => (
     <div data-testid={`proxy-review-${reviewId}`} />

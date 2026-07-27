@@ -11,8 +11,8 @@ import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-i
 import { userInputRequestManager, type UserInputRequestTransition } from '@shared/lib/user-input/request-manager'
 import {
   isReplayableUserInputRequest,
-  streamEventToPendingRequest,
   type PendingUserInputRequest,
+  type UserInputRequestKind,
   type UserInputRequestOutcome,
 } from '@shared/lib/user-input/request-schema'
 import { classifyResult } from './result-classification'
@@ -89,6 +89,16 @@ interface SubagentStreamingState {
   isBackground: boolean // True for run_in_background agents — completion comes via sidechain 'result', not tool_result
 }
 
+/**
+ * The kinds whose lifecycle is the turn (`storeForKind` → 'stream'). Computer
+ * use and reviews register through their own paths with their own clearing
+ * rules, so the persister's stream-request helper excludes them by type.
+ */
+type StreamRequestKind = Exclude<
+  UserInputRequestKind,
+  'computer_use' | 'proxy_review' | 'x_agent_review'
+>
+
 // Tracks streaming state for SSE broadcasts
 // In the file-based model, messages are stored in JSONL files by the Claude SDK.
 // This class only handles SSE streaming updates to the frontend, not persistence.
@@ -120,16 +130,6 @@ interface StreamingState {
   // set imperatively — turn-boundary teardown paths reset it to false alongside isActive; every
   // other transition must go through syncSessionAwaiting.
   isAwaitingInput: boolean
-  // Computer-use requests live ONLY in userInputRequestManager (kind
-  // 'computer_use'), not here: their clearing rules diverge from the stream
-  // store (they survive an idle boundary for SSE replay; cleared on
-  // session_active / decision routes / cancelAwaitingInput), which the
-  // registry expresses via storeForKind — see getPendingComputerUseRequests.
-  // Pending user-input request broadcasts (secret/connected_account/question/file/remote_mcp/
-  // script_run/browser_input), keyed by toolUseId. These are one-shot SSE events, so a client
-  // that connects AFTER they fire would never see them; we store the exact payloads here and the
-  // /stream route replays them on (re)connect. Cleared at turn boundaries (session_active/idle).
-  pendingInputRequests: Map<string, { type: string; toolUseId: string; [k: string]: unknown }>
   // Requests settled by a decision route while their transcript tool_result is
   // still HELD BACK (parallel tool calls release every sibling's result only
   // when the last one settles). The messages route stamps these outcomes onto
@@ -278,11 +278,9 @@ class MessagePersister {
     // mutation paths drove it — broadcasts ONE typed event, to the global
     // stream always and to the session stream when session-scoped. Emitting
     // from the registry's single funnel (instead of per-callsite) is what
-    // makes a silent settle impossible on this wire. The legacy per-type
-    // events still fire for the chat-integration connectors (in-process
-    // consumers of the same broadcast pipe) and the renderer's browser-tray /
-    // auto-approved-suppression holdouts — see the pending-requests route
-    // comment in agents.ts.
+    // makes a silent settle impossible on this wire. It is now the ONLY
+    // request wire: every consumer — renderer, chat connectors, Electron
+    // main, notifications — reads these events and the snapshot they point at.
     userInputRequestManager.onTransition((transition) => {
       this.broadcastRequestTransition(transition)
       // Notifications ride the same funnel: exactly one 'created' per request
@@ -412,13 +410,12 @@ class MessagePersister {
     // SSE reconnects of in-flight sessions don't lose their "currently busy"
     // state when the listener reattaches. The pending-request stores carry
     // over too: the awaiting cache is only meaningful while its source of
-    // truth survives — recreating the stores empty would let the next sync
-    // clear a genuinely parked wait, and would lose the reconnect replay data.
+    // truth survives — recreating them empty would let the next sync clear a
+    // genuinely parked wait.
     const prior = this.streamingStates.get(sessionId)
     const priorIsActive = prior?.isActive ?? false
     const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
     const priorBackgroundTasks = prior?.activeBackgroundTasks ?? new Map()
-    const priorPendingInputRequests = prior?.pendingInputRequests ?? new Map()
     const priorSettledInputRequests = prior?.settledInputRequests ?? new Map()
 
     // Detach only the transport if already subscribed. NOT unsubscribeFromSession:
@@ -446,7 +443,6 @@ class MessagePersister {
       activeSubagents: new Map(),
       slashCommands: [],
       isAwaitingInput: priorIsAwaitingInput,
-      pendingInputRequests: priorPendingInputRequests,
       settledInputRequests: priorSettledInputRequests,
       cancelledCapabilityReviews: new Set(),
       lastApiErrorCode: null,
@@ -650,16 +646,14 @@ class MessagePersister {
     return state ? this.computeActivity(state) : 'idle'
   }
 
-  // Get pending computer use requests for a session (for SSE replay on reconnect).
-  // Sourced from the registry — the persister no longer keeps its own
-  // computer-use map. The legacy event shape is rebuilt from the envelope for
-  // the replay route and the decision endpoints.
+  // Open computer-use approvals for a session, projected out of the registry.
+  // Drives the turn-cancel sweep (which must reject each one on the container)
+  // and the lifecycle tests' view of what is still parked.
   getPendingComputerUseRequests(sessionId: string): Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> {
     return userInputRequestManager
       .getOpenRequestsForSession(sessionId)
-      // Auto-approved requests are registered only for the decision gate — a
-      // reconnecting client must never be replayed an approval card for a
-      // command that is already executing.
+      // Auto-approved requests are registered only for the decision gate —
+      // nothing may treat a command that is already executing as parked.
       .filter((r) => r.kind === 'computer_use' && !r.autoApproved)
       .map((r) => {
         const payload = r.payload as {
@@ -684,17 +678,6 @@ class MessagePersister {
   // outcomes onto the transcript.
   getSettledInputRequests(sessionId: string): Map<string, UserInputRequestOutcome> {
     return this.streamingStates.get(sessionId)?.settledInputRequests ?? new Map()
-  }
-
-  // Get pending user-input request broadcasts for a session (for SSE replay on (re)connect).
-  // Returns the exact event payloads that were broadcast, so the route can re-send them verbatim.
-  // Entries synthesized by recoverSessionAwaitingInput are excluded: they were never broadcast
-  // and carry no payload — replaying one would render a broken card. Clients get those from
-  // the transcript instead.
-  getPendingInputRequests(sessionId: string): Array<{ type: string; toolUseId: string; [k: string]: unknown }> {
-    const state = this.streamingStates.get(sessionId)
-    if (!state) return []
-    return Array.from(state.pendingInputRequests.values()).filter((r) => r.recovered !== true)
   }
 
   // Record an "Allow for this session" capability grant (decision route calls
@@ -722,10 +705,7 @@ class MessagePersister {
   ): void {
     const state = this.streamingStates.get(sessionId)
     if (!state) return
-    state.pendingInputRequests.delete(toolUseId)
     userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
-    this.shadowRegistryCheck(sessionId, 'completeCapabilityReview')
-    this.broadcastToSSE(sessionId, { type: 'capability_review_resolved', toolUseId })
     this.syncSessionAwaiting(sessionId)
   }
 
@@ -747,13 +727,11 @@ class MessagePersister {
       sessionId ?? userInputRequestManager.getOpenRequest(toolUseId)?.scope.sessionId
     if (!scopeSessionId) return
     const state = this.streamingStates.get(scopeSessionId)
-    const hadStoreEntry = state?.pendingInputRequests.delete(toolUseId) ?? false
     const settled = userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
-    if (state && (hadStoreEntry || settled)) {
+    if (state && settled) {
       state.settledInputRequests.set(toolUseId, outcome)
     }
-    if (state) this.shadowRegistryCheck(scopeSessionId, 'completeInputRequest')
-    if (hadStoreEntry || settled) {
+    if (settled) {
       // Same broadcast the tool_result path emits — the resolving tab already
       // removed its card optimistically; every other tab drops it off this
       // event. Card removal is idempotent, so the later real tool_result
@@ -799,15 +777,13 @@ class MessagePersister {
   async cancelAwaitingInput(sessionId: string, agentSlug: string): Promise<void> {
     if (!this.isSessionAwaitingInput(sessionId)) return
 
-    const state = this.streamingStates.get(sessionId)
-
-    // Snapshot the pending tool ids from BOTH stores before interrupting. pendingInputRequests
-    // holds the broadcast types (cleared by markSessionInterrupted's session_idle); computer_use
-    // lives only in the registry, which that broadcast does NOT clear. Read the stream store
-    // RAW — not getPendingInputRequests, whose replay filter hides recovered entries. Those are
-    // exactly the ones whose container-side pending may still be live (the host missed the original
-    // events), so skipping them would leave an abandoned request for a late click to land on.
-    const inputRequestIds = Array.from(state?.pendingInputRequests.values() ?? []).map((r) => r.toolUseId)
+    // Snapshot the pending ids of both stores before interrupting: the stream
+    // store is cleared by markSessionInterrupted's session_idle, and computer
+    // use survives that boundary deliberately. Recovered synthetics are
+    // INCLUDED — they are exactly the ones whose container-side pending may
+    // still be live (the host missed the original delivery), so skipping them
+    // would leave an abandoned request for a late click to land on.
+    const inputRequestIds = userInputRequestManager.getStoreIdsForSession(sessionId, 'stream')
     const computerUseIds = this.getPendingComputerUseRequests(sessionId).map((r) => r.toolUseId)
 
     // Interrupt FIRST: abort the parked query so it can never resume into a filler reply.
@@ -821,7 +797,6 @@ class MessagePersister {
     for (const id of computerUseIds) {
       userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
     }
-    this.shadowRegistryCheck(sessionId, 'cancelAwaitingInput')
 
     // Cleanup-reject each pending request on the CONTAINER: the query is already aborted, so the
     // reason is never read by the model — this just clears the container-side pending entry so a
@@ -1022,7 +997,6 @@ class MessagePersister {
         activeSubagents: new Map(),
         slashCommands: [],
         isAwaitingInput: false,
-        pendingInputRequests: new Map(),
         settledInputRequests: new Map(),
         cancelledCapabilityReviews: new Set(),
         lastApiErrorCode: null,
@@ -1123,17 +1097,29 @@ class MessagePersister {
     }
   }
 
-  // Shadow-registry parity (dev/test only, skipped in production). Every store
-  // mutation site writes through to the registry adjacent to the store
-  // mutation, so the two must agree here.
-  private shadowRegistryCheck(sessionId: string, context: string): void {
-    if (process.env.NODE_ENV === 'production') return
-    const state = this.streamingStates.get(sessionId)
-    if (!state) return
-    userInputRequestManager.verifyStoreParity({
-      sessionId,
-      context,
-      streamStoreIds: [...state.pendingInputRequests.keys()],
+  /**
+   * Register a stream-store request. Every per-kind handler ends here — the
+   * registry entry IS the request, and its 'created' transition is what puts
+   * the ask on the wire, in the snapshot, and in front of a notification.
+   *
+   * `register` is first-delivery-wins (and upgrades a recovered synthetic), so
+   * a tool_use that arrives on two delivery paths still yields one request.
+   */
+  private registerStreamRequest(
+    sessionId: string,
+    kind: StreamRequestKind,
+    toolUseId: string,
+    payload: Record<string, unknown>,
+    opts: { agentSlug?: string; parentToolUseId?: string; autoApproved?: boolean } = {},
+  ): void {
+    userInputRequestManager.register({
+      id: toolUseId,
+      kind,
+      scope: { agentSlug: opts.agentSlug, sessionId },
+      blocking: true,
+      autoApproved: opts.autoApproved === true,
+      parentToolUseId: opts.parentToolUseId,
+      payload,
     })
   }
 
@@ -1148,16 +1134,12 @@ class MessagePersister {
     agentSlug?: string,
     parentToolUseId?: string,
   ): void {
-    const state = this.streamingStates.get(sessionId)
     // A recovered stub does NOT dedupe: transcript recovery can synthesize a
-    // payload-less entry before the stream event lands, and the real dispatch
-    // must go through to re-broadcast the event and upgrade the registry entry
-    // (register() replaces recovered synthetics; clients never got a
-    // renderable event for the stub).
-    const existing = state?.pendingInputRequests.get(toolUseId) as
-      | { recovered?: boolean }
-      | undefined
-    if (existing && existing.recovered !== true) return
+    // payload-less entry before the real delivery lands, and that delivery must
+    // go through to upgrade the registry entry (register() replaces recovered
+    // synthetics; clients never got a renderable event for the stub).
+    const existing = userInputRequestManager.getOpenRequest(toolUseId)
+    if (existing && isReplayableUserInputRequest(existing)) return
 
     if (toolName === 'AskUserQuestion') {
       this.handleAskUserQuestionTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
@@ -1183,17 +1165,16 @@ class MessagePersister {
     }
   }
 
-  // Blocking user-input tool name → the request event type its handler
-  // broadcasts. Recovery synthesizes store entries in this shape when the
-  // original one-shot event was missed. Keep in sync with the handlers'
-  // broadcast types (INPUT_REQUEST_TYPES).
-  private static readonly REQUEST_EVENT_TYPE_BY_TOOL_NAME: Record<string, string> = {
-    AskUserQuestion: 'question_request',
-    'mcp__user-input__request_secret': 'secret_request',
-    'mcp__user-input__request_connected_account': 'connected_account_request',
-    'mcp__user-input__request_file': 'file_request',
-    'mcp__user-input__request_remote_mcp': 'remote_mcp_request',
-    'mcp__user-input__request_browser_input': 'browser_input_request',
+  // Blocking user-input tool name → the request kind its handler registers.
+  // Recovery synthesizes registry envelopes of that kind when the original
+  // delivery was missed. Keep in sync with dispatchBlockingUserInputTool.
+  private static readonly REQUEST_KIND_BY_TOOL_NAME: Record<string, StreamRequestKind> = {
+    AskUserQuestion: 'question',
+    'mcp__user-input__request_secret': 'secret',
+    'mcp__user-input__request_connected_account': 'connected_account',
+    'mcp__user-input__request_file': 'file',
+    'mcp__user-input__request_remote_mcp': 'remote_mcp',
+    'mcp__user-input__request_browser_input': 'browser_input',
   }
 
   // Recover awaiting-input state from persisted messages when the one-shot
@@ -1216,13 +1197,15 @@ class MessagePersister {
       state.agentSlug = agentSlug
     }
     for (const { toolUseId, toolName } of unresolved) {
-      const type = MessagePersister.REQUEST_EVENT_TYPE_BY_TOOL_NAME[toolName]
-      if (!type || state.pendingInputRequests.has(toolUseId)) continue
-      const evt = { type, toolUseId, agentSlug: state.agentSlug, recovered: true }
-      state.pendingInputRequests.set(toolUseId, evt)
-      const shadow = streamEventToPendingRequest(sessionId, evt)
-      if (shadow) userInputRequestManager.register(shadow)
-      this.shadowRegistryCheck(sessionId, 'recoverSessionAwaitingInput')
+      const kind = MessagePersister.REQUEST_KIND_BY_TOOL_NAME[toolName]
+      if (!kind || userInputRequestManager.getOpenRequest(toolUseId)) continue
+      this.registerStreamRequest(
+        sessionId,
+        kind,
+        toolUseId,
+        { recovered: true },
+        { agentSlug: state.agentSlug },
+      )
     }
     this.syncSessionAwaiting(sessionId)
   }
@@ -1311,58 +1294,35 @@ class MessagePersister {
     this.broadcastToSSE(sessionId, data)
   }
 
-  // One-shot user-input request events that a late-joining client must be able to
-  // recover on (re)connect. Keep in sync with the /stream route's replay loop.
-  private static readonly INPUT_REQUEST_TYPES = new Set([
-    'secret_request',
-    'connected_account_request',
-    'question_request',
-    'file_request',
-    'remote_mcp_request',
-    'script_run_request',
-    'browser_input_request',
-    'capability_review_request',
-  ])
-
   // Broadcast to SSE clients
   private broadcastToSSE(sessionId: string, data: unknown): void {
     this.capture?.recordOutput(sessionId, data)
-    // Track/clear pending user-input requests so the /stream route can replay them to
-    // clients that connect after the one-shot broadcast (the e2e late-join flake, and a
-    // real reconnect/refresh while the agent is awaiting input). Turn boundaries clear them.
-    const evt = data as { type?: string; toolUseId?: string } | null
-    if (evt && typeof evt.type === 'string') {
+    // Turn boundaries settle whatever the last turn left parked. This is the
+    // only request bookkeeping left on the broadcast path: registration itself
+    // lives in the per-kind handlers now.
+    const evt = data as { type?: string } | null
+    if (evt && (evt.type === 'session_active' || evt.type === 'session_idle')) {
       const state = this.streamingStates.get(sessionId)
       if (state) {
-        if (evt.type === 'session_active' || evt.type === 'session_idle') {
-          state.pendingInputRequests.clear()
-          // The turn boundary lands the held-back sibling results in the
-          // transcript — the settled-outcome stamps are no longer needed.
-          state.settledInputRequests.clear()
-          // Mirror the turn-boundary wipe in the registry. A new turn
-          // supersedes parked asks; an idle boundary cancels them.
-          userInputRequestManager.clearSessionStreamRequests(
-            sessionId,
-            evt.type === 'session_active' ? 'superseded' : 'cancelled',
-          )
-          if (evt.type === 'session_active') {
-            // A new turn also supersedes computer-use approvals left over from
-            // a previous one. Historically these were never cleared at turn
-            // boundaries (only by a decision or cancelAwaitingInput), so
-            // stale entries could survive an idle/interrupt — harmless when
-            // awaiting was an imperative bit, but the derived projection would
-            // read them as a live wait and flag the fresh turn as awaiting.
-            // (Idle keeps them for SSE replay of a still-parked approval.)
-            for (const id of userInputRequestManager.getStoreIdsForSession(sessionId, 'computer_use')) {
-              userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
-            }
+        // The turn boundary lands the held-back sibling results in the
+        // transcript — the settled-outcome stamps are no longer needed.
+        state.settledInputRequests.clear()
+        // A new turn supersedes parked asks; an idle boundary cancels them.
+        userInputRequestManager.clearSessionStreamRequests(
+          sessionId,
+          evt.type === 'session_active' ? 'superseded' : 'cancelled',
+        )
+        if (evt.type === 'session_active') {
+          // A new turn also supersedes computer-use approvals left over from
+          // a previous one. Historically these were never cleared at turn
+          // boundaries (only by a decision or cancelAwaitingInput), so
+          // stale entries could survive an idle/interrupt — harmless when
+          // awaiting was an imperative bit, but the derived projection would
+          // read them as a live wait and flag the fresh turn as awaiting.
+          // (Idle keeps them so a still-parked approval survives a reconnect.)
+          for (const id of userInputRequestManager.getStoreIdsForSession(sessionId, 'computer_use')) {
+            userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
           }
-          this.shadowRegistryCheck(sessionId, `broadcast:${evt.type}`)
-        } else if (MessagePersister.INPUT_REQUEST_TYPES.has(evt.type) && typeof evt.toolUseId === 'string') {
-          state.pendingInputRequests.set(evt.toolUseId, evt as { type: string; toolUseId: string })
-          const shadow = streamEventToPendingRequest(sessionId, evt as { type: string; toolUseId: string })
-          if (shadow) userInputRequestManager.register(shadow)
-          this.shadowRegistryCheck(sessionId, `broadcast:${evt.type}`)
         }
       }
     }
@@ -2070,7 +2030,7 @@ class MessagePersister {
         // aborted). No decision can land anymore: close the approval card
         // everywhere instead of leaving it dangling until reconnect cleanup.
         if (typeof content.toolUseId === 'string') {
-          if (state.pendingInputRequests.has(content.toolUseId)) {
+          if (userInputRequestManager.getOpenRequest(content.toolUseId)) {
             this.completeCapabilityReview(sessionId, content.toolUseId, 'cancelled')
           } else {
             // No card yet — handleCapabilityReviewTool is still awaiting its
@@ -2507,7 +2467,6 @@ class MessagePersister {
     const orphaned = userInputRequestManager.resolveRequestsByParent(parentToolId, 'invalidated')
     if (orphaned.length === 0) return
     for (const request of orphaned) {
-      state.pendingInputRequests.delete(request.id)
       if (state.agentSlug) {
         this.rejectContainerInput(
           state.agentSlug,
@@ -2521,7 +2480,6 @@ class MessagePersister {
         )
       }
     }
-    this.shadowRegistryCheck(sessionId, 'invalidateSubagentRequests')
     this.syncSessionAwaiting(sessionId)
   }
 
@@ -2973,15 +2931,13 @@ class MessagePersister {
         return
       }
 
-      // Broadcast the secret request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'secret_request',
+      this.registerStreamRequest(
+        sessionId,
+        'secret',
         toolUseId,
-        secretName: input.secretName,
-        reason: input.reason,
-        agentSlug,
-        ...(parentToolUseId ? { parentToolUseId } : {}),
-      })
+        { secretName: input.secretName, reason: input.reason },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling secret request:', error)
     }
@@ -3010,15 +2966,13 @@ class MessagePersister {
         return
       }
 
-      // Broadcast the connected account request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'connected_account_request',
+      this.registerStreamRequest(
+        sessionId,
+        'connected_account',
         toolUseId,
-        toolkit: input.toolkit.toLowerCase(),
-        reason: input.reason,
-        agentSlug,
-        ...(parentToolUseId ? { parentToolUseId } : {}),
-      })
+        { toolkit: input.toolkit.toLowerCase(), reason: input.reason },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling connected account request:', error)
     }
@@ -4202,14 +4156,13 @@ ${continuation}`
         return
       }
 
-      // Broadcast the question request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'question_request',
+      this.registerStreamRequest(
+        sessionId,
+        'question',
         toolUseId,
-        questions: input.questions,
-        agentSlug,
-        ...(parentToolUseId ? { parentToolUseId } : {}),
-      })
+        { questions: input.questions },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling AskUserQuestion:', error)
     }
@@ -4274,14 +4227,13 @@ ${continuation}`
         // Launches with unparseable input still need a decision — show the card with what we have.
       }
 
-      this.broadcastToSSE(sessionId, {
-        type: 'capability_review_request',
+      this.registerStreamRequest(
+        sessionId,
+        'capability_review',
         toolUseId,
-        capability,
-        toolName,
-        input,
-        agentSlug,
-      })
+        { capability, toolName, input },
+        { agentSlug },
+      )
       this.syncSessionAwaiting(sessionId)
     } catch (error) {
       console.error('[MessagePersister] Error handling capability review:', error)
@@ -4310,15 +4262,13 @@ ${continuation}`
         return
       }
 
-      // Broadcast the file request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'file_request',
+      this.registerStreamRequest(
+        sessionId,
+        'file',
         toolUseId,
-        description: input.description,
-        fileTypes: input.fileTypes,
-        agentSlug,
-        ...(parentToolUseId ? { parentToolUseId } : {}),
-      })
+        { description: input.description, fileTypes: input.fileTypes },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling file request:', error)
     }
@@ -4346,17 +4296,13 @@ ${continuation}`
         return
       }
 
-      // Broadcast the remote MCP request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'remote_mcp_request',
+      this.registerStreamRequest(
+        sessionId,
+        'remote_mcp',
         toolUseId,
-        url: input.url,
-        name: input.name,
-        reason: input.reason,
-        authHint: input.authHint,
-        agentSlug,
-        ...(parentToolUseId ? { parentToolUseId } : {}),
-      })
+        { url: input.url, name: input.name, reason: input.reason, authHint: input.authHint },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling remote MCP request:', error)
     }
@@ -4384,16 +4330,18 @@ ${continuation}`
         return
       }
 
-      this.broadcastToSSE(sessionId, {
-        type: 'browser_input_request',
+      this.registerStreamRequest(
+        sessionId,
+        'browser_input',
         toolUseId,
-        message: input.message,
-        // The model controls this field — coerce a non-array (e.g. a bare
-        // string) to [] so the renderer never calls `.map()` on a non-array.
-        requirements: Array.isArray(input.requirements) ? input.requirements : [],
-        agentSlug,
-        ...(parentToolUseId ? { parentToolUseId } : {}),
-      })
+        {
+          message: input.message,
+          // The model controls this field — coerce a non-array (e.g. a bare
+          // string) to [] so no renderer calls `.map()` on a non-array.
+          requirements: Array.isArray(input.requirements) ? input.requirements : [],
+        },
+        { agentSlug, parentToolUseId },
+      )
 
       // The request always blocks on the user, no matter which stream it came
       // from. Marking here (not only in the main-stream content_block_stop
@@ -4469,16 +4417,13 @@ ${continuation}`
         }
       }
 
-      this.broadcastToSSE(sessionId, {
-        type: 'script_run_request',
+      this.registerStreamRequest(
+        sessionId,
+        'script_run',
         toolUseId,
-        script: input.script,
-        explanation: input.explanation,
-        scriptType: input.scriptType,
-        agentSlug,
-        autoApproved,
-        ...(parentToolUseId ? { parentToolUseId } : {}),
-      })
+        { script: input.script, explanation: input.explanation, scriptType: input.scriptType },
+        { agentSlug, parentToolUseId, autoApproved },
+      )
 
       // Only flip the global "awaiting input" status (which drives the orange agent-status
       // pill in the sidebar / tray) when the user actually has to respond.
@@ -4556,19 +4501,6 @@ ${continuation}`
             parentToolUseId,
             payload: { method, params, permissionLevel, appName },
           })
-          // Broadcast with autoApproved so clients can suppress streaming/
-          // message-history fallback prompts during the window before the
-          // tool result is persisted.
-          this.broadcastToSSE(sessionId, {
-            type: 'computer_use_request',
-            toolUseId,
-            method,
-            params,
-            permissionLevel,
-            appName,
-            agentSlug,
-            autoApproved: true,
-          })
           this.autoExecuteComputerUseCommand(sessionId, agentSlug, toolUseId, method, params, permissionLevel, appName)
           return
         }
@@ -4587,17 +4519,6 @@ ${continuation}`
         payload: { method, params, permissionLevel, appName },
       })
       this.syncSessionAwaiting(sessionId)
-
-      this.broadcastToSSE(sessionId, {
-        type: 'computer_use_request',
-        toolUseId,
-        method,
-        params,
-        permissionLevel,
-        appName,
-        agentSlug,
-        autoApproved: false,
-      })
     } catch (error) {
       console.error('[MessagePersister] Error handling computer use request:', error)
     }
@@ -4790,14 +4711,12 @@ ${continuation}`
     if (!Array.isArray(blocks)) return
     for (const block of blocks) {
       if (block.type !== 'tool_result' || !block.tool_use_id) continue
-      if (!state.pendingInputRequests.has(block.tool_use_id)) continue
-      state.pendingInputRequests.delete(block.tool_use_id)
-      userInputRequestManager.resolveIfInStore(
+      const settled = userInputRequestManager.resolveIfInStore(
         block.tool_use_id,
         'stream',
         block.is_error ? 'declined' : 'answered',
       )
-      this.shadowRegistryCheck(sessionId, 'resolveSidechainInputRequests')
+      if (!settled) continue
       // Same broadcast the main path emits — the resolving tab already removed
       // its card optimistically; every other tab drops it off this event.
       this.broadcastToSSE(sessionId, {
@@ -4823,14 +4742,12 @@ ${continuation}`
           // A resolved user-input request must not be replayed to a client that
           // reconnects later (e.g. answer one of several parallel requests, then
           // refresh) — its tool_result is in, so drop it from the replay store.
-          state?.pendingInputRequests.delete(block.tool_use_id)
           if (state) {
             userInputRequestManager.resolveIfInStore(
               block.tool_use_id,
               'stream',
               block.is_error ? 'declined' : 'answered',
             )
-            this.shadowRegistryCheck(sessionId, 'handleToolResults')
           }
 
           // Broadcast update to SSE clients

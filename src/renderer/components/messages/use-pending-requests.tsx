@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useMessageStream, removePendingRequestsByToolUseId } from '@renderer/hooks/use-message-stream'
+import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useMessages } from '@renderer/hooks/use-messages'
 import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
-import { usePendingProxyReviews, type PendingReview } from '@renderer/hooks/use-proxy-reviews'
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { askUserQuestionDef } from '@shared/lib/tool-definitions/ask-user-question'
@@ -200,11 +199,34 @@ function isXAgentOperation(value: unknown): value is 'list' | 'read' | 'invoke' 
   return value === 'list' || value === 'read' || value === 'invoke' || value === 'create'
 }
 
-// Rebuild the legacy poll's PendingReview shape from a review envelope. The
-// payload carries the full ReviewDetails (plus the derived displayText), but
-// envelope payloads are lenient by design, so the card-critical fields are
-// re-validated here instead of trusted. Exported for the dashboard's
-// pending-reviews panel, which reads the same snapshot.
+/**
+ * A proxy / x-agent review as the cards render it. Formerly the response shape
+ * of the `proxy-reviews` poll; now purely the projection of a review envelope,
+ * which is the only source left.
+ */
+export interface PendingReview {
+  id: string
+  agentSlug: string
+  accountId: string
+  toolkit: string
+  method: string
+  targetPath: string
+  matchedScopes: string[]
+  scopeDescriptions: Record<string, string>
+  displayText?: string
+  xAgent?: {
+    targetAgentSlug: string
+    targetAgentName: string
+    operation: 'list' | 'read' | 'invoke' | 'create'
+    preview?: string
+  }
+}
+
+// Rebuild the PendingReview shape from a review envelope. The payload carries
+// the full ReviewDetails (plus the derived displayText), but envelope payloads
+// are lenient by design, so the card-critical fields are re-validated here
+// instead of trusted. Exported for the dashboard's pending-reviews panel,
+// which reads the same snapshot.
 export function reviewFromEnvelope(
   request: PendingUserInputRequest,
   payload: Record<string, unknown>,
@@ -380,6 +402,50 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
   return { buckets, capabilityReviews, reviews }
 }
 
+/**
+ * The browser tray's view of open browser_input requests.
+ *
+ * The tray used to read a per-session array fed by the legacy
+ * `browser_input_request` SSE event; this reads the same unified snapshot the
+ * in-chat cards do, so a request the registry recovered — or one settled on
+ * another surface — reaches the tray as well. The cost is timing: the overlay
+ * now appears after the created event's refetch rather than synchronously with
+ * the event.
+ */
+export function usePendingBrowserInputRequests(
+  sessionId: string,
+  agentSlug: string,
+  isActive: boolean,
+): {
+  requests: PendingRequestBuckets['browserInputRequests']
+  dismiss: (toolUseId: string) => void
+} {
+  const { data } = usePendingUserRequests(agentSlug, sessionId)
+  // Local dismissal, same reason as the request stack's: answering in the tray
+  // must drop the overlay now, not one server round trip later.
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set())
+  const dismiss = useCallback((toolUseId: string) => {
+    setDismissed((prev) => new Set(prev).add(toolUseId))
+  }, [])
+
+  const prevIsActive = useRef(isActive)
+  useEffect(() => {
+    if (prevIsActive.current && !isActive) setDismissed(new Set())
+    prevIsActive.current = isActive
+  }, [isActive])
+
+  const requests = useMemo(() => {
+    // Session-scoped waits die with the turn, matching the array this replaced
+    // (session_idle and session_error both emptied it).
+    if (!isActive) return []
+    return projectUnifiedRequests(data ?? []).buckets.browserInputRequests.filter(
+      (r) => !dismissed.has(r.toolUseId),
+    )
+  }, [data, isActive, dismissed])
+
+  return { requests, dismiss }
+}
+
 export type PendingRequestDescriptor =
   | { kind: 'secret'; key: string; toolUseId: string; secretName: string; reason?: string; onComplete: () => void }
   | { kind: 'connected_account'; key: string; toolUseId: string; toolkit: string; reason?: string; onComplete: () => void }
@@ -410,25 +476,17 @@ export function usePendingRequests({
   const { data: messages } = useMessages(sessionId, agentSlug)
   const {
     isActive,
-    pendingCapabilityReviewRequests: sseCapabilityReviewRequests,
     streamingToolUses,
     autoApprovedScriptRunIds,
     autoApprovedComputerUseIds,
   } = useMessageStream(sessionId, agentSlug)
 
-  // The unified store is the primary source for every kind — session-scoped
-  // requests AND the agent-scoped reviews that used to arrive on a separate
-  // poll. The streaming/message-history fallbacks below still cover the
-  // transcript-recovery path (recovered entries are in the snapshot but carry
-  // no payload, so the per-kind guards drop them; the transcript renders them).
+  // The unified store is the ONLY source for reviews and capability reviews,
+  // and the primary one for every other kind. The streaming/message-history
+  // fallbacks below still cover the transcript-recovery path (recovered
+  // entries are in the snapshot but carry no payload, so the per-kind guards
+  // drop them; the transcript renders them).
   const { data: unifiedRequestsData } = usePendingUserRequests(agentSlug, sessionId)
-  // undefined = the snapshot has NEVER succeeded (still in flight, or a cold
-  // fetch failure with nothing cached) — distinct from a successful empty [].
-  // Reviews have no message-history or streaming recovery, so until the first
-  // snapshot lands the legacy poll and stream arrays below keep those cards
-  // actionable; once a snapshot exists it is authoritative.
-  const hasSnapshot = unifiedRequestsData !== undefined
-  const { data: legacyProxyReviewsData } = usePendingProxyReviews(agentSlug)
   const unified = useMemo(() => {
     const requests = unifiedRequestsData ?? []
     // Session-scoped waits die with the turn for DISPLAY purposes — the legacy
@@ -441,10 +499,7 @@ export function usePendingRequests({
       isActive ? requests : requests.filter((r) => r.scope.sessionId === undefined),
     )
   }, [unifiedRequestsData, isActive])
-  const pendingProxyReviews = useMemo(
-    () => (hasSnapshot ? unified.reviews : legacyProxyReviewsData?.reviews ?? []),
-    [hasSnapshot, unified.reviews, legacyProxyReviewsData],
-  )
+  const pendingProxyReviews = unified.reviews
 
   // Derive pending requests from message history (for page refresh recovery).
   // Tool calls without a result are still pending, but only if there are no
@@ -547,16 +602,15 @@ export function usePendingRequests({
     isActive, autoApprovedScriptRunIds, autoApprovedComputerUseIds, dismissedRequestIds,
   ])
 
-  // Capability reviews come from the unified store (with the stream source as
-  // the cold-start fallback) — no message-history or streaming recovery. A
-  // Task/Workflow call without a result usually means the launch is RUNNING
-  // (allow policy or an active session grant), not awaiting approval; only
-  // the host registry knows which.
+  // Capability reviews come from the unified store only — no message-history
+  // or streaming recovery. A Task/Workflow call without a result usually means
+  // the launch is RUNNING (allow policy or an active session grant), not
+  // awaiting approval; only the host registry knows which. A cold mount
+  // therefore shows the card one snapshot fetch late.
   const pendingCapabilityReviewRequests = useMemo(() => {
     if (!isActive) return []
-    const source = hasSnapshot ? unified.capabilityReviews : sseCapabilityReviewRequests
-    return source.filter((r) => !dismissedRequestIds.has(r.toolUseId))
-  }, [unified.capabilityReviews, sseCapabilityReviewRequests, hasSnapshot, isActive, dismissedRequestIds])
+    return unified.capabilityReviews.filter((r) => !dismissedRequestIds.has(r.toolUseId))
+  }, [unified.capabilityReviews, isActive, dismissedRequestIds])
 
   // Track arrival order so the stack is chronological. Each id gets a
   // monotonically increasing sequence number the first time it appears.
@@ -607,17 +661,12 @@ export function usePendingRequests({
 
   const handleRequestComplete = useCallback((toolUseId: string) => {
     dismissRequest(toolUseId)
-    // The stream store still holds the browser tray's entries and the
-    // capability cold-start fallback — drop the settled id from those too.
-    removePendingRequestsByToolUseId(sessionId, toolUseId)
-  }, [sessionId, dismissRequest])
+  }, [dismissRequest])
 
   const handleProxyReviewComplete = useCallback(() => {
     // The decision routes settle the registry entry, which broadcasts
-    // user_request_resolved → this invalidation is the immediate local echo
-    // (and keeps the dashboard's legacy review poll coherent).
+    // user_request_resolved → this invalidation is the immediate local echo.
     queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
-    queryClient.invalidateQueries({ queryKey: ['proxy-reviews'] })
   }, [queryClient])
 
   const items = useMemo<PendingRequestDescriptor[]>(() => {
