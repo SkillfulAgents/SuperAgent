@@ -232,6 +232,47 @@ prefixes; that single value is what moves the whole UI.
   the stale value is module state in a live renderer. `applyPreferredApiTarget()`
   destroys it; it is recreated, with the new target, on next use.
 
+### Auth mode is resolved at boot, not at build
+
+A cloud workspace *is* an auth-mode deployment, but every Electron build compiles
+`__AUTH_MODE__` to `false`. With it false the UI reports `user: null`,
+`isAdmin: false`, and grants every per-agent capability unconditionally. The
+server still enforces (`AgentRead` / `IsAdmin`), so that is not a security hole —
+but the UI offers every action on every agent and the user meets their real
+permissions as a stream of 403s.
+
+`lib/auth-mode.ts` therefore derives it: `__AUTH_MODE__ || targetIsRemote()`.
+Derived rather than stored, so the two can never disagree.
+
+- **It is frozen before first render, and that is load-bearing.**
+  `useAuthSession()` and `useResolverAgents()` call hooks *conditionally* on this
+  value behind a `rules-of-hooks` disable. That was sound when the value was a
+  compile-time constant (one branch survived dead-code elimination) and is sound
+  now only because the answer cannot change mid-lifetime: `setActiveTarget()`
+  throws on a second assignment, and switching targets reloads. Reading it before
+  boot settles the target throws too — a module that read it early would take a
+  branch later renders contradict, which surfaces as a hooks-order crash that
+  reproduces only in cloud mode.
+- **Two questions, not one.** `isAuthMode()` means "the API enforces identity".
+  `hasInteractiveLogin()` means "there is a login form to offer" — true only for
+  a web deployment. A cloud workspace's credential is the proxy's bearer, held by
+  main; there is nothing to type.
+- **The 401 handler is three-way** (`lib/api.ts`): local does nothing; web auth
+  stashes the route and signs out; cloud does **neither**. `signOut()` there would
+  try to revoke the deployment session the desktop's grant is bound to, and by
+  the time a 401 surfaces the proxy has already re-minted and retried once (see
+  above) — so it means the mint failed, not that a user needs to log in again.
+- **`AuthGate` offers reconnection, not a password.** `<WorkspaceReconnect/>`
+  replaces `<AuthPage/>` when a cloud session reads null, and its primary action
+  is returning to local — otherwise a user whose token died is stuck in a mode
+  with no UI to leave it.
+- **The auth client is built on first use, not at import.** Its `baseURL` must be
+  the same base every other call site prefixes, and in cloud mode that is the
+  keyed proxy prefix — which main only reveals during `initApiBaseUrl()`.
+  `auth-client.ts` is imported (via `user-context`) while the module graph is
+  still evaluating, *before* that runs, so an eagerly-built client would point at
+  the local API forever.
+
 ## Electron-only, by design
 
 The whole feature no-ops off the Electron main process (`process.type === 'browser'`
@@ -302,6 +343,9 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `services/api-target-preference.ts` | The stored preference (main-owned, so all renderers agree) |
 | `main/api-target.ts` | Settles the target per renderer; tears down the launcher on a switch |
 | `renderer/lib/api-target.ts` | The settled target, frozen for the renderer's lifetime |
+| `renderer/lib/auth-mode.ts` | Auth mode + whether a login form exists, both derived from the target |
+| `renderer/lib/auth-client.ts` | Better Auth client, built on first use so it can see the cloud prefix |
+| `renderer/components/auth/workspace-reconnect.tsx` | The no-session screen for cloud mode, and the way back to local |
 | `api/polyfill-api-prefix.ts` | Keeps dashboard-shim API calls on whichever API served the document |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |

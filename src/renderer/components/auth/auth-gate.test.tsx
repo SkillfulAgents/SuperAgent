@@ -31,7 +31,11 @@ vi.mock('./auth-page', () => ({
 vi.mock('./force-password-change', () => ({
   ForcePasswordChange: () => <div data-testid="force-password-change" />,
 }))
+vi.mock('./workspace-reconnect', () => ({
+  WorkspaceReconnect: () => <div data-testid="workspace-reconnect" />,
+}))
 
+import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 import { AuthGate } from './auth-gate'
 
 type UserState = {
@@ -128,5 +132,88 @@ describe('AuthGate cold-stash vs sign-out (wasAuthenticatedRef guard)', () => {
     )
 
     expect(stashRedirectTarget).not.toHaveBeenCalled()
+  })
+})
+
+describe('which recovery AuthGate offers when there is no session', () => {
+  // A cloud workspace authenticates with a deployment token held by the main
+  // process. Showing a password form there asks the user for a credential that
+  // cannot work, and hides the one thing that does — getting back to local.
+  beforeEach(() => {
+    vi.clearAllMocks()
+    _resetApiTargetForTest()
+    window.history.replaceState({}, '', '/')
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    _resetApiTargetForTest()
+  })
+
+  const unauthenticated = {
+    isAuthMode: true,
+    isAuthenticated: false,
+    isPending: false,
+    mustChangePassword: false,
+  }
+
+  it('offers the login form for a web deployment', () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+    setUser(unauthenticated)
+
+    const { queryByTestId } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(queryByTestId('auth-page')).toBeInTheDocument()
+    expect(queryByTestId('workspace-reconnect')).not.toBeInTheDocument()
+  })
+
+  it('offers workspace reconnection for a cloud target, not a password form', () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    setActiveTarget('cloud', null)
+    setUser(unauthenticated)
+
+    const { queryByTestId } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(queryByTestId('workspace-reconnect')).toBeInTheDocument()
+    expect(queryByTestId('auth-page')).not.toBeInTheDocument()
+  })
+
+  it('still shows the app once the cloud session resolves', () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    setActiveTarget('cloud', null)
+    setUser({ ...unauthenticated, isAuthenticated: true })
+
+    const { queryByTestId, getByText } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(getByText('app')).toBeInTheDocument()
+    expect(queryByTestId('workspace-reconnect')).not.toBeInTheDocument()
+  })
+
+  it('still waits on a pending session rather than flashing reconnect', () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    setActiveTarget('cloud', null)
+    setUser({ ...unauthenticated, isPending: true })
+
+    const { queryByTestId, getByText } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(getByText('Loading...')).toBeInTheDocument()
+    expect(queryByTestId('workspace-reconnect')).not.toBeInTheDocument()
   })
 })

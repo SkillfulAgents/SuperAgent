@@ -1,8 +1,10 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useUser } from '@renderer/context/user-context'
 import { stashRedirectTarget } from '@renderer/lib/api'
+import { targetIsRemote } from '@renderer/lib/api-target'
 import { AuthPage } from './auth-page'
 import { ForcePasswordChange } from './force-password-change'
+import { WorkspaceReconnect } from './workspace-reconnect'
 
 function LoadingScreen() {
   return (
@@ -40,6 +42,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   if (!isAuthMode) return <>{children}</>
   if (isPending && !pendingApproval) return <LoadingScreen />
+  // A cloud workspace authenticates with a token held by the main process, so
+  // there is no password to ask for — offer reconnection instead of a login form.
+  if (!isAuthenticated && targetIsRemote()) return <WorkspaceReconnect />
   if (!isAuthenticated || pendingApproval) return <AuthPage onPendingApproval={onPendingApproval} />
   if (mustChangePassword) return <ForcePasswordChange />
   return <>{children}</>

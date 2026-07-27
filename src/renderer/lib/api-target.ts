@@ -23,8 +23,19 @@ export type { ApiTarget, TargetFallbackReason }
 let activeTarget: ApiTarget | null = null
 let fallbackReason: TargetFallbackReason = null
 
-/** Called once by `initApiBaseUrl()`, before the first render. */
+/**
+ * Called once by `initApiBaseUrl()`, before the first render.
+ *
+ * Throws on a second call. The target is not merely conventionally stable — code
+ * branches on it *between hook calls* (`useAuthSession`, `useResolverAgents`),
+ * so a value that changed mid-lifetime would reorder hooks and crash the tree.
+ * Enforcing single-assignment here makes that structurally impossible rather
+ * than a rule someone has to remember; switching targets goes through a reload.
+ */
 export function setActiveTarget(target: ApiTarget, fallback: TargetFallbackReason): void {
+  if (activeTarget !== null) {
+    throw new Error('API target is already settled and cannot change without a reload')
+  }
   activeTarget = target
   fallbackReason = fallback
 }

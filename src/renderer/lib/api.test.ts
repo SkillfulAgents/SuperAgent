@@ -10,6 +10,7 @@ vi.mock('./env', () => ({ getApiBaseUrl: () => '' }))
 const signOutMock = vi.fn().mockResolvedValue(undefined)
 vi.mock('./auth-client', () => ({ signOut: signOutMock }))
 
+import { _resetApiTargetForTest, setActiveTarget } from './api-target'
 import {
   apiFetch,
   apiJson,
@@ -193,5 +194,51 @@ describe('apiFetch 401 auto-stash (warm, router-mounted)', () => {
     await apiFetch('/api/agents/foo')
     expect(sessionStorage.getItem(KEY)).toBe('/agents/foo')
     expect(signOutMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('apiFetch 401 against a cloud workspace', () => {
+  // Third case of the three-way handler: local does nothing, web auth signs out,
+  // and cloud must do NEITHER — there is no password to re-enter, and
+  // better-auth's signOut() would try to revoke the deployment session the
+  // desktop's grant is bound to. By the time a 401 reaches here the proxy has
+  // already re-minted and retried once, so this means the mint failed.
+  beforeEach(() => {
+    sessionStorage.clear()
+    signOutMock.mockClear()
+    vi.stubGlobal('__AUTH_MODE__', false)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401 }))
+    window.history.replaceState(null, '', '/agents/foo')
+    _resetApiTargetForTest()
+    setActiveTarget('cloud', null)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    sessionStorage.clear()
+    window.history.replaceState(null, '', '/')
+    _resetApiTargetForTest()
+  })
+
+  it('never signs out', async () => {
+    await apiFetch('/api/agents/foo')
+    expect(signOutMock).not.toHaveBeenCalled()
+  })
+
+  it('does not stash a redirect there is no login to return from', async () => {
+    await apiFetch('/api/agents/foo')
+    expect(sessionStorage.getItem(KEY)).toBeNull()
+  })
+
+  it('still returns the 401 to the caller', async () => {
+    // Not swallowed: AuthGate reacts to the resulting null session by offering
+    // to reconnect the workspace.
+    const res = await apiFetch('/api/agents/foo')
+    expect(res.status).toBe(401)
+  })
+
+  it('leaves stashRedirectTarget inert', async () => {
+    stashRedirectTarget('/agents/foo')
+    expect(sessionStorage.getItem(KEY)).toBeNull()
   })
 })
