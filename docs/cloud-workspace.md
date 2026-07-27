@@ -262,6 +262,19 @@ Derived rather than stored, so the two can never disagree.
   try to revoke the deployment session the desktop's grant is bound to, and by
   the time a 401 surfaces the proxy has already re-minted and retried once (see
   above) — so it means the mint failed, not that a user needs to log in again.
+- **But returning the 401 is not enough on its own.** A rejected request and the
+  session are separate state; in web auth mode the sign-out collapses them, and
+  in cloud mode nothing does. Left alone, the session store keeps its last good
+  value and the UI goes on claiming to be signed in while every query fails
+  behind it. `lib/cloud-session.ts` carries the signal: `apiFetch` reports, and
+  `UserProvider` re-fetches the session. That resolves it honestly — if the token
+  really is dead, `get-session` 401s too and Better Auth nulls the session, which
+  is what surfaces `<WorkspaceReconnect/>`. A burst of simultaneous 401s is
+  collapsed into one re-check.
+- **"Sign out" is not offered in cloud mode.** Auth mode being on is what makes
+  that menu appear at all, but revoking the deployment session is both disruptive
+  and pointless — main still holds the platform connection and would mint another.
+  The menu offers a return to local instead (`switchToLocalTarget()`).
 - **`AuthGate` offers reconnection, not a password.** `<WorkspaceReconnect/>`
   replaces `<AuthPage/>` when a cloud session reads null, and its primary action
   is returning to local — otherwise a user whose token died is stuck in a mode
@@ -346,6 +359,7 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `renderer/lib/auth-mode.ts` | Auth mode + whether a login form exists, both derived from the target |
 | `renderer/lib/auth-client.ts` | Better Auth client, built on first use so it can see the cloud prefix |
 | `renderer/components/auth/workspace-reconnect.tsx` | The no-session screen for cloud mode, and the way back to local |
+| `renderer/lib/cloud-session.ts` | Carries a cloud 401 into the session store, since signing out is not an option |
 | `api/polyfill-api-prefix.ts` | Keeps dashboard-shim API calls on whichever API served the document |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |

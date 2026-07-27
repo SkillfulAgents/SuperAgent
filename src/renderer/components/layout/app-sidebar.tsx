@@ -7,6 +7,8 @@ import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { switchToLocalTarget } from '@renderer/lib/api-target'
+import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import {
@@ -606,14 +608,29 @@ function UserMenu() {
           </button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-48 p-1">
-          <button
-            onClick={signOut}
-            className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
-            data-testid="sign-out-button"
-          >
-            <LogOut className="h-4 w-4" />
-            Sign out
-          </button>
+          {hasInteractiveLogin() ? (
+            <button
+              onClick={signOut}
+              className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
+              data-testid="sign-out-button"
+            >
+              <LogOut className="h-4 w-4" />
+              Sign out
+            </button>
+          ) : (
+            // Cloud workspace: signing out would revoke the deployment session
+            // the desktop's grant is bound to — disruptive, and pointless since
+            // main still holds the platform connection and would just mint
+            // another. Offer the action that actually means something here.
+            <button
+              onClick={switchToLocalTarget}
+              className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
+              data-testid="switch-to-local-button"
+            >
+              <LogOut className="h-4 w-4" />
+              Use this computer
+            </button>
+          )}
         </PopoverContent>
       </Popover>
     </div>

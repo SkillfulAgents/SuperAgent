@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { writePreferredTarget } from '@renderer/lib/api-target'
+import { switchToLocalTarget } from '@renderer/lib/api-target'
 
 /**
  * Shown instead of the login form when the app is driving a cloud workspace but
@@ -18,10 +18,7 @@ export function WorkspaceReconnect() {
 
   const switchToLocal = async () => {
     setSwitching(true)
-    await writePreferredTarget('local')
-    // Full reload rather than a re-render: the target is frozen for the
-    // renderer's lifetime by design (see api-target.ts).
-    window.location.reload()
+    await switchToLocalTarget()
   }
 
   return (

@@ -76,6 +76,16 @@ export async function writePreferredTarget(target: ApiTarget): Promise<void> {
   await window.electronAPI?.setPreferredApiTarget?.(target)
 }
 
+/**
+ * Return this app to the local Superagent. The only way to change target: the
+ * live one is frozen, so the preference is recorded and the window reloaded.
+ * Main tears down the other renderers as part of recording it.
+ */
+export async function switchToLocalTarget(): Promise<void> {
+  await writePreferredTarget('local')
+  window.location.reload()
+}
+
 /** Test seam: returns the module to its pre-boot state. */
 export function _resetApiTargetForTest(): void {
   activeTarget = null

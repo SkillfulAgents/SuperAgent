@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSession, signOut as authSignOut } from '@renderer/lib/auth-client'
 import { apiFetch, clearRedirectStash, markDeliberateSignOut, clearDeliberateSignOut } from '@renderer/lib/api'
 import { isAuthMode } from '@renderer/lib/auth-mode'
+import { onCloudSessionRejected } from '@renderer/lib/cloud-session'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import type { AgentRole } from '@shared/lib/types/agent'
 
@@ -132,6 +133,20 @@ export function UserProvider({ children }: { children: ReactNode }) {
       queryClient.clear()
     }
   }, [isAuthenticated, queryClient])
+
+  // A cloud 401 must reach the session, or the UI keeps claiming to be signed in
+  // while every query fails behind it (signing out is not an option there — see
+  // lib/cloud-session.ts). Held in a ref because `session` is a fresh object each
+  // render; subscribing to it directly would tear down and re-add the listener
+  // on every render.
+  const refetchSessionRef = useRef(session.refetch)
+  refetchSessionRef.current = session.refetch
+  useEffect(() => {
+    if (!authMode) return
+    return onCloudSessionRejected(() => {
+      void refetchSessionRef.current?.()
+    })
+  }, [authMode])
 
   // Fetch agent roles when authenticated
   const { data: agentRoles, isFetched: rolesFetched } = useAgentRoles(isAuthenticated)

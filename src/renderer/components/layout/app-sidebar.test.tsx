@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { cloneElement, isValidElement, type ReactElement } from 'react'
 import { act, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppSidebar } from './app-sidebar'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 
 // AppLink (the sidebar item links) is stubbed globally in test/setup.ts — no
 // file-level mock needed. DialogContext is mocked below to control settings.
@@ -646,5 +647,59 @@ describe('AppSidebar — agent row indicator', () => {
     const status = screen.getByTestId('agent-status-running')
     expect(status).toHaveAttribute('data-awaiting', 'true')
     expect(screen.queryByLabelText('unread notifications')).not.toBeInTheDocument()
+  })
+})
+
+describe('UserMenu action for the current target', () => {
+  // Cloud mode reports isAuthMode=true, which is what makes this menu appear at
+  // all. "Sign out" there would revoke the deployment session the desktop's
+  // grant is bound to — disruptive, and pointless since main still holds the
+  // platform connection and would mint another.
+  beforeEach(() => {
+    mockUserContext.isAuthMode = true
+    mockUserContext.user = { name: 'Ada' } as never
+    _resetApiTargetForTest()
+  })
+
+  afterEach(() => {
+    mockUserContext.isAuthMode = false
+    mockUserContext.user = null
+    vi.unstubAllGlobals()
+    _resetApiTargetForTest()
+  })
+
+  async function openUserMenu() {
+    renderWithProviders(<AppSidebar />)
+    await userEvent.click(screen.getByTestId('user-menu-trigger'))
+  }
+
+  it('offers sign out for a web deployment', async () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+
+    await openUserMenu()
+
+    expect(screen.getByTestId('sign-out-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('switch-to-local-button')).not.toBeInTheDocument()
+  })
+
+  it('offers a return to local for a cloud workspace, never sign out', async () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    setActiveTarget('cloud', null)
+
+    await openUserMenu()
+
+    expect(screen.getByTestId('switch-to-local-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('sign-out-button')).not.toBeInTheDocument()
+  })
+
+  it('does not revoke the deployment session when that action is used', async () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    setActiveTarget('cloud', null)
+
+    await openUserMenu()
+    await userEvent.click(screen.getByTestId('switch-to-local-button'))
+
+    expect(mockUserContext.signOut).not.toHaveBeenCalled()
   })
 })

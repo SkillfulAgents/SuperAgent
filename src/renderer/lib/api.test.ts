@@ -11,6 +11,7 @@ const signOutMock = vi.fn().mockResolvedValue(undefined)
 vi.mock('./auth-client', () => ({ signOut: signOutMock }))
 
 import { _resetApiTargetForTest, setActiveTarget } from './api-target'
+import { _resetCloudSessionForTest, onCloudSessionRejected } from './cloud-session'
 import {
   apiFetch,
   apiJson,
@@ -211,6 +212,7 @@ describe('apiFetch 401 against a cloud workspace', () => {
     window.history.replaceState(null, '', '/agents/foo')
     _resetApiTargetForTest()
     setActiveTarget('cloud', null)
+    _resetCloudSessionForTest()
   })
 
   afterEach(() => {
@@ -240,5 +242,27 @@ describe('apiFetch 401 against a cloud workspace', () => {
   it('leaves stashRedirectTarget inert', async () => {
     stashRedirectTarget('/agents/foo')
     expect(sessionStorage.getItem(KEY)).toBeNull()
+  })
+
+  it('asks for a session re-check, since returning the 401 changes nothing', async () => {
+    // Without this the session store keeps its last good value and the UI goes
+    // on claiming to be signed in while every query fails behind it.
+    const listener = vi.fn()
+    const unsubscribe = onCloudSessionRejected(listener)
+
+    await apiFetch('/api/agents/foo')
+
+    expect(listener).toHaveBeenCalledOnce()
+    unsubscribe()
+  })
+
+  it('does not ask for one on an auth endpoint (loop guard)', async () => {
+    const listener = vi.fn()
+    const unsubscribe = onCloudSessionRejected(listener)
+
+    await apiFetch('/api/auth/get-session')
+
+    expect(listener).not.toHaveBeenCalled()
+    unsubscribe()
   })
 })

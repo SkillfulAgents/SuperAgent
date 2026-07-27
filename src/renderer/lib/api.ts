@@ -1,5 +1,6 @@
 import { getApiBaseUrl } from './env'
-import { hasInteractiveLogin } from './auth-mode'
+import { hasInteractiveLogin, isAuthMode } from './auth-mode'
+import { reportCloudSessionRejected } from './cloud-session'
 
 /**
  * Fetch wrapper that prepends the API base URL.
@@ -32,18 +33,22 @@ export async function apiFetch(
   // sign-out is in effect: revoking the session 401s every trailing background
   // request, and without the gate those would re-stash the signed-out user's
   // URL right after clearRedirectStash() dropped it (shared-tab leak).
-  if (
-    hasInteractiveLogin() &&
-    response.status === 401 &&
-    !deliberateSignOut &&
-    !path.startsWith('/api/auth/')
-  ) {
-    // Interactive login is web-only, so pathname+search is the route; the hash
-    // is included for completeness.
-    const here = window.location.pathname + window.location.search + window.location.hash
-    if (here !== '/') sessionStorage.setItem(REDIRECT_KEY, here)
-    const { signOut } = await import('./auth-client')
-    await signOut().catch(() => {}) // session may already be gone
+  if (response.status === 401 && !path.startsWith('/api/auth/') && isAuthMode()) {
+    if (hasInteractiveLogin()) {
+      if (!deliberateSignOut) {
+        // Interactive login is web-only, so pathname+search is the route; the
+        // hash is included for completeness.
+        const here = window.location.pathname + window.location.search + window.location.hash
+        if (here !== '/') sessionStorage.setItem(REDIRECT_KEY, here)
+        const { signOut } = await import('./auth-client')
+        await signOut().catch(() => {}) // session may already be gone
+      }
+    } else {
+      // Cloud. Returning the 401 is not enough on its own: the session store
+      // holds its last good value, so the UI would keep claiming to be signed in
+      // while every query failed behind it. Ask for a session re-check instead.
+      reportCloudSessionRejected()
+    }
   }
 
   return response
