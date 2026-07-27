@@ -7,8 +7,8 @@ import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
-import { switchToLocalTarget } from '@renderer/lib/api-target'
 import { TargetSwitcher } from '@renderer/components/layout/target-switcher'
+import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
 import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
@@ -598,6 +598,10 @@ function NotificationsMenuButton() {
 
 function UserMenu() {
   const { isAuthMode, user, signOut } = useUser()
+  // Go through the same switch path as the sidebar's control rather than
+  // calling switchTarget directly: it owns the failure handling, so a switch
+  // that cannot be recorded reports itself instead of rejecting into nothing.
+  const { switching, switchTo } = useTargetSwitch()
   if (!isAuthMode || !user) return null
   return (
     <div className="px-2">
@@ -624,8 +628,9 @@ function UserMenu() {
             // main still holds the platform connection and would just mint
             // another. Offer the action that actually means something here.
             <button
-              onClick={switchToLocalTarget}
-              className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
+              onClick={() => void switchTo('local')}
+              disabled={switching}
+              className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors disabled:opacity-60"
               data-testid="switch-to-local-button"
             >
               <LogOut className="h-4 w-4" />

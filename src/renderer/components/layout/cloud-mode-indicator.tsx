@@ -14,6 +14,11 @@ import { targetIsRemote } from '@renderer/lib/api-target'
  * `pointer-events-none` throughout: it is a marker, never a target. That also
  * keeps it clear of the window's drag region and the native traffic lights,
  * which it visually overlaps.
+ *
+ * This covers the MAIN window only — it is mounted by the router's layout, and
+ * the quick-dispatch launcher is a separate renderer with no router. That window
+ * carries its own marker (see `quick-dispatch.tsx`); anything else that grows
+ * into a window of its own needs one too.
  */
 export function CloudModeIndicator() {
   if (!targetIsRemote()) return null

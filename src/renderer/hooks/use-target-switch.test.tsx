@@ -20,6 +20,9 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
 const { mockClear } = vi.hoisted(() => ({ mockClear: vi.fn() }))
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ clear: mockClear }) }))
 
+const { mockToastError } = vi.hoisted(() => ({ mockToastError: vi.fn() }))
+vi.mock('sonner', () => ({ toast: { error: mockToastError } }))
+
 vi.mock('@renderer/lib/api-target', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@renderer/lib/api-target')>()
   return { ...actual, switchTarget: mockSwitchTarget }
@@ -151,5 +154,70 @@ describe('switching', () => {
     })
 
     expect(mockSwitchTarget).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('when the switch fails', () => {
+  // The preference write is an IPC round-trip to main and can reject. Nothing
+  // has changed when it does, so the window must stay usable — the old shape
+  // cleared the cache up front and latched `switching`, which turned one failed
+  // IPC call into an empty UI behind a dead control until a manual reload.
+  beforeEach(() => {
+    setActiveTarget('local', null)
+    mockSwitchTarget.mockRejectedValue(new Error('settings are read-only'))
+  })
+
+  // clearAllMocks does not drop implementations, so put the happy path back.
+  afterEach(() => {
+    mockSwitchTarget.mockResolvedValue(undefined)
+  })
+
+  it('keeps the current workspace’s data on screen', async () => {
+    const { result } = renderHook(() => useTargetSwitch())
+
+    await act(async () => {
+      await result.current.switchTo('cloud')
+    })
+
+    expect(mockClear).not.toHaveBeenCalled()
+  })
+
+  it('does not reject into nothing', async () => {
+    const { result } = renderHook(() => useTargetSwitch())
+
+    await expect(
+      act(async () => {
+        await result.current.switchTo('cloud')
+      }),
+    ).resolves.toBeUndefined()
+  })
+
+  it('says so', async () => {
+    const { result } = renderHook(() => useTargetSwitch())
+
+    await act(async () => {
+      await result.current.switchTo('cloud')
+    })
+
+    expect(mockToastError).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ description: 'settings are read-only' }),
+    )
+  })
+
+  it('leaves the control usable so the switch can be retried', async () => {
+    const { result } = renderHook(() => useTargetSwitch())
+
+    await act(async () => {
+      await result.current.switchTo('cloud')
+    })
+    expect(result.current.switching).toBe(false)
+
+    mockSwitchTarget.mockResolvedValue(undefined)
+    await act(async () => {
+      await result.current.switchTo('cloud')
+    })
+
+    expect(mockSwitchTarget).toHaveBeenCalledTimes(2)
   })
 })

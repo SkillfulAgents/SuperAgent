@@ -15,10 +15,21 @@ import { switchToLocalTarget } from '@renderer/lib/api-target'
  */
 export function WorkspaceReconnect() {
   const [switching, setSwitching] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const switchToLocal = async () => {
     setSwitching(true)
-    await switchToLocalTarget()
+    setError(null)
+    try {
+      await switchToLocalTarget()
+    } catch (e) {
+      // This is the escape hatch from a workspace the app cannot reach. If
+      // recording the preference fails, the button has to come back — a spinner
+      // that never resolves would leave the only way out disabled. Reported
+      // inline rather than as a toast: nothing else is mounted on this screen.
+      setSwitching(false)
+      setError(e instanceof Error ? e.message : 'Could not switch. Please try again.')
+    }
   }
 
   return (
@@ -33,6 +44,11 @@ export function WorkspaceReconnect() {
         <Button onClick={switchToLocal} disabled={switching}>
           {switching ? 'Switching…' : 'Use this computer instead'}
         </Button>
+        {error && (
+          <p className="text-sm text-destructive" data-testid="workspace-reconnect-error">
+            {error}
+          </p>
+        )}
       </div>
     </div>
   )

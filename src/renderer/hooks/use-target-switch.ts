@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 
 import { switchTarget, targetIsRemote, type ApiTarget } from '@renderer/lib/api-target'
 import { isElectron } from '@renderer/lib/env'
@@ -32,10 +33,24 @@ export function useTargetSwitch() {
     async (target: ApiTarget) => {
       if (target === current || switching) return
       setSwitching(true)
-      // The reload drops this in-memory cache anyway; clearing first keeps the
-      // previous Superagent's data off screen during the await.
+      try {
+        await switchTarget(target)
+      } catch (error) {
+        // The preference write goes over IPC and can fail (settings unwritable,
+        // main gone). Nothing changed when it does — this window is still
+        // driving `current` — so the control has to come back rather than sit
+        // disabled over a UI that only a manual reload can repair. This is also
+        // why the cache is not dropped until the write has succeeded.
+        setSwitching(false)
+        toast.error('Could not switch workspace', {
+          description: error instanceof Error ? error.message : 'Please try again.',
+        })
+        return
+      }
+      // The reload has been requested but has not committed yet; clearing keeps
+      // the previous Superagent's data off screen for that moment. `switching`
+      // deliberately stays true — this window is on its way out.
       queryClient.clear()
-      await switchTarget(target)
     },
     [current, switching, queryClient],
   )

@@ -309,9 +309,18 @@ local-only sidebar.
   side; reloading in place lands on a 404 of someone else's agent. Electron uses
   hash history, so that means setting the fragment and reloading (the document
   URL must stay pinned to the real `index.html`); the web build assigns `/`.
-- **The React Query cache is cleared before the reload.** The reload drops it
-  anyway — this just keeps the previous Superagent's data off screen during the
-  await.
+- **The React Query cache is cleared once the write has succeeded**, not before.
+  The reload drops it anyway; clearing only keeps the previous Superagent's data
+  off screen for the moment it takes the navigation to commit. Doing it up front
+  used to mean a failed IPC write left an *empty* UI behind a permanently
+  disabled control.
+- **A failed switch is recoverable.** The preference write is IPC and can reject
+  (settings unwritable, main gone). Nothing has changed when it does, so
+  `switching` is released and the failure is reported, rather than latching the
+  control on a window that is not going anywhere. Everything that switches goes
+  through this one path — the user menu's "Use this computer" included — except
+  `WorkspaceReconnect`, which reports inline because no toaster is mounted on
+  that screen.
 - Recording the preference also tears down the quick-dispatch launcher (main does
   that), so the control only owns *this* window.
 
@@ -324,6 +333,15 @@ something you go and check. It is `pointer-events-none` throughout and
 `aria-hidden` — it visually overlaps the window drag region and the native
 traffic lights, and a marker that swallowed clicks there would be worse than no
 marker.
+
+**Every window that resolves the target needs its own marker.** `CloudModeIndicator`
+is mounted by the router's layout, so it covers the main window only. The
+quick-dispatch launcher is a separate renderer with no router, and it can create
+a session on the organization's Superagent straight from a global shortcut — so
+it carries its own: a sky ring on the panel and a full-width "Cloud workspace"
+strip above the input (`quick-dispatch.tsx`). A screen-sized portal would be
+wrong there anyway, where the window *is* the panel. Anything that grows into a
+window of its own needs the same treatment.
 
 ## Electron-only, by design
 

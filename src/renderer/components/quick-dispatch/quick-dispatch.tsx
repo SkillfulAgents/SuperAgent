@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowUp, AtSign, ChevronDown, Loader2, Paperclip } from 'lucide-react'
+import { ArrowUp, AtSign, ChevronDown, Cloud, Loader2, Paperclip } from 'lucide-react'
 import { cn } from '@shared/lib/utils'
+import { targetIsRemote } from '@renderer/lib/api-target'
 import { Button } from '@renderer/components/ui/button'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { apiFetch } from '@renderer/lib/api'
@@ -334,6 +335,14 @@ export function QuickDispatch() {
 
   const isDisabled = createSession.isPending || composer.isUploading || !selectedSlug
 
+  // The launcher resolves the same target as the main window, so a global-
+  // shortcut dispatch can create a session on the organization's Superagent from
+  // a panel that otherwise looks exactly like the local one. It needs its own
+  // marker: the main window's CloudModeIndicator is a full-screen portal mounted
+  // by the router, and this renderer has no router — and a screen-sized overlay
+  // would be wrong here anyway, where the window *is* the panel.
+  const cloudMode = targetIsRemote()
+
   return (
     // The window IS the panel (Raycast-style): one frosted, edge-to-edge rounded
     // surface. bg-transparent lets the native window vibrancy show through. The
@@ -342,12 +351,27 @@ export function QuickDispatch() {
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- onMouseDown here is a pointer-only window-drag gesture (frameless move); it has no meaningful keyboard equivalent and exposes no interactive control.
     <div
       data-testid="quick-dispatch"
-      className="relative flex flex-col overflow-hidden rounded-[12px] bg-transparent ring-1 ring-foreground/10"
+      className={cn(
+        'relative flex flex-col overflow-hidden rounded-[12px] bg-transparent ring-1 ring-foreground/10',
+        cloudMode && 'ring-2 ring-sky-500/70',
+      )}
       onMouseDown={handleWindowDragStart}
       onDragOver={handlePanelDragOver}
       onDragLeave={handlePanelDragLeave}
       onDrop={handlePanelDrop}
     >
+      {/* Cloud marker: the panel's whole width, above the input, so it is read
+          before anything is typed. Carries no handlers, which also leaves it a
+          drag surface for the frameless window. */}
+      {cloudMode && (
+        <div
+          className="flex items-center justify-center gap-1 bg-sky-500 py-0.5 text-[10px] font-medium leading-none text-white"
+          data-testid="quick-dispatch-cloud-mode"
+        >
+          <Cloud className="size-2.5" />
+          Cloud workspace
+        </div>
+      )}
       <MountChoiceDialog
         open={composer.mountDialog.open}
         onChoice={composer.mountDialog.onChoice}
