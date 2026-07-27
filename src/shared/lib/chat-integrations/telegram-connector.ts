@@ -510,7 +510,7 @@ export class TelegramConnector extends ChatClientConnector {
     }
 
     switch (event.type) {
-      case 'user_question_request': {
+      case 'question_request': {
         let lastMessageId = ''
 
         // Track multi-question requests so we wait for all answers

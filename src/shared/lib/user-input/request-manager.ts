@@ -8,16 +8,17 @@ import {
 } from './request-schema'
 
 /**
- * Host-side registry of every pending user-input request, regardless of which
- * legacy store owns it (persister stream store, computer-use map, ReviewManager).
+ * Host-side registry of every pending user-input request — THE single pending
+ * store. Computer-use and review requests live only here; stream kinds keep a
+ * write-through mirror in the persister's per-session replay store
+ * (`pendingInputRequests`, verified by `verifyStoreParity`) because the
+ * legacy chat-integration events replay from it verbatim.
  *
- * Phase 3: the legacy stores stay authoritative for request CONTENTS (and
- * every mutation still writes through, with `verifyStoreParity` asserting the
- * mirror is exact), but the session "awaiting input" status is now DERIVED
- * from this registry via `isSessionAwaiting` — the persister's bit is just an
- * edge-detection cache of that projection. The imperative per-path mark/clear
- * calls (and their split-brains: parallel requests, direct-clear doors,
- * review blockers) are gone.
+ * Everything downstream derives from this registry: the session "awaiting
+ * input" status (`isSessionAwaiting` — the persister's bit is an
+ * edge-detection cache of that projection), the unified wire events, the
+ * snapshot endpoint, OS notifications, and the decision routes' already-
+ * settled gate.
  */
 /**
  * A registry transition: exactly one 'created' per accepted registration and
@@ -166,6 +167,18 @@ export class UserInputRequestManager {
   /** Look up a single open request by id. */
   getOpenRequest(id: string): PendingUserInputRequest | null {
     return this.requests.get(id) ?? null
+  }
+
+  /**
+   * The outcome a request settled with, while it is still on the bounded
+   * resolution trail. Lets an already-settled decision answer with what
+   * actually happened instead of a bare "already settled".
+   */
+  getRecentResolutionOutcome(id: string): UserInputRequestOutcome | undefined {
+    for (let i = this.recentResolutions.length - 1; i >= 0; i--) {
+      if (this.recentResolutions[i].id === id) return this.recentResolutions[i].outcome
+    }
+    return undefined
   }
 
   getOpenRequestsForSession(sessionId: string): PendingUserInputRequest[] {

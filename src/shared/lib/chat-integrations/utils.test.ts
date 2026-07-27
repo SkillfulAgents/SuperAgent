@@ -135,8 +135,8 @@ describe('isUnsupportedInChat / describeUnsupportedRequest', () => {
     expect(describeUnsupportedRequest(event, desktopContext)).toContain('desktop')
   })
 
-  it('does not flag user_question_request as unsupported', () => {
-    const event: UserRequestEvent = { type: 'user_question_request', toolUseId: 't2', questions: [] }
+  it('does not flag question_request as unsupported', () => {
+    const event: UserRequestEvent = { type: 'question_request', toolUseId: 't2', questions: [] }
     expect(isUnsupportedInChat(event)).toBe(false)
   })
 

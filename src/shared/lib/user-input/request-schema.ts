@@ -2,13 +2,10 @@ import { z } from 'zod'
 
 /**
  * Typed model for "the agent is blocked on a human" — one envelope for every
- * pending user-input request regardless of which store currently owns it.
- *
- * Phase 2 (shadow registry): this model mirrors the existing stores via
- * write-through and is compared against them; nothing reads it for behavior
- * yet. The envelope is strict (we construct it), the per-kind payloads are
- * deliberately lenient (`looseObject` + `.catch`) so a malformed tool input
- * can never make the shadow diverge from the store it mirrors.
+ * pending user-input request. The envelope is strict (we construct it), the
+ * per-kind payloads are deliberately lenient (`looseObject` + `.catch`) so a
+ * malformed tool input can never break the delivery path that carries it —
+ * the server keeps the wait alive even when the payload is unrenderable.
  */
 
 export const USER_INPUT_REQUEST_KINDS = [
@@ -156,10 +153,12 @@ export type PendingUserInputRequest = z.infer<typeof pendingUserInputRequestSche
 export type PendingUserInputRequestInput = z.input<typeof pendingUserInputRequestSchema>
 
 /**
- * Which legacy store a kind lives on today. The shadow registry uses this to
- * mirror store-scoped operations exactly (e.g. the turn-boundary clear wipes
- * only the stream store; a stray tool_result must never evict a computer-use
- * entry the store still holds).
+ * The lifecycle class of a kind. The names come from the pre-registry stores,
+ * but what they express is per-class clearing rules: the turn-boundary clear
+ * wipes only 'stream' entries, 'computer_use' entries survive idle for replay
+ * and are superseded on the next active turn, and 'review' entries are
+ * agent-scoped and outlive any one session. A stray tool_result must never
+ * evict an entry of another class.
  */
 export type UserInputRequestStore = 'stream' | 'computer_use' | 'review'
 
@@ -180,7 +179,7 @@ export function storeForKind(kind: UserInputRequestKind): UserInputRequestStore 
 
 /** Broadcast event type → request kind, for the persister's SSE-intercept feeder. */
 const STREAM_EVENT_TYPE_TO_KIND: Record<string, UserInputRequestKind> = {
-  user_question_request: 'question',
+  question_request: 'question',
   secret_request: 'secret',
   connected_account_request: 'connected_account',
   file_request: 'file',

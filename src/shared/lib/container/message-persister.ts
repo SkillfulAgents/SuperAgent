@@ -12,6 +12,7 @@ import { userInputRequestManager, type UserInputRequestTransition } from '@share
 import {
   isReplayableUserInputRequest,
   streamEventToPendingRequest,
+  type PendingUserInputRequest,
   type UserInputRequestOutcome,
 } from '@shared/lib/user-input/request-schema'
 import { classifyResult } from './result-classification'
@@ -274,13 +275,77 @@ class MessagePersister {
 
   constructor() {
     // Unified wire: every registry transition — no matter which of the many
-    // mutation paths drove it — broadcasts ONE typed event, alongside the
-    // legacy per-type events, to the global stream always and to the session
-    // stream when session-scoped. Emitting from the registry's single funnel
-    // (instead of per-callsite) is what makes a silent settle impossible on
-    // this wire. Legacy events keep firing during the client migration.
+    // mutation paths drove it — broadcasts ONE typed event, to the global
+    // stream always and to the session stream when session-scoped. Emitting
+    // from the registry's single funnel (instead of per-callsite) is what
+    // makes a silent settle impossible on this wire. The legacy per-type
+    // events still fire for the chat-integration connectors (in-process
+    // consumers of the same broadcast pipe) and the renderer's browser-tray /
+    // auto-approved-suppression holdouts — see the pending-requests route
+    // comment in agents.ts.
     userInputRequestManager.onTransition((transition) => {
       this.broadcastRequestTransition(transition)
+      // Notifications ride the same funnel: exactly one 'created' per request
+      // id — no matter how many delivery paths carried the tool_use — means
+      // exactly one OS notification. Per-handler triggering used to double-
+      // notify when the subagent stream and the complete-assistant message
+      // both delivered the same request.
+      if (transition.type === 'created') {
+        this.dispatchRequestNotification(transition.request)
+      }
+    })
+  }
+
+  /**
+   * One notification per registered request, driven by the registry 'created'
+   * transition. Replaces the per-handler trigger callsites (nine in this file
+   * plus ReviewManager's).
+   */
+  private dispatchRequestNotification(request: PendingUserInputRequest): void {
+    // Recovered synthetics were notified by the original process before it
+    // died; the recovery stub must not notify again. (Its later upgrade to a
+    // real registration re-emits 'created' — that matches the old behavior,
+    // where the re-streamed tool_use re-ran the handler.)
+    if (!isReplayableUserInputRequest(request)) return
+    // Auto-approved requests are already executing; non-blocking ones are
+    // automation-facing. Neither needs the user's attention.
+    if (!request.blocking || request.autoApproved) return
+    const agentSlug = request.scope.agentSlug
+    if (!agentSlug) return
+
+    if (request.kind === 'proxy_review' || request.kind === 'x_agent_review') {
+      // Reviews are agent-scoped — attribute the notification to the first
+      // active session, the same heuristic the awaiting projection applies.
+      // No active session (a dashboard-triggered review) → no notification;
+      // the dashboard panel is the surface for those.
+      const sessionId = request.scope.sessionId ?? this.getActiveSessionIdsForAgent(agentSlug)[0]
+      if (!sessionId) return
+      const payload = request.payload as { displayText?: unknown }
+      notificationManager
+        .triggerSessionApiReviewWaiting(
+          sessionId,
+          agentSlug,
+          request.id,
+          typeof payload.displayText === 'string' ? payload.displayText : 'API request review',
+          undefined,
+          request.kind === 'x_agent_review' ? 'agent_action' : 'api_request',
+        )
+        .catch((err) => {
+          console.error('[MessagePersister] Failed to trigger API review notification:', err)
+        })
+      return
+    }
+
+    const sessionId = request.scope.sessionId
+    if (!sessionId) return
+    const waitingFor =
+      request.kind === 'capability_review'
+        ? (request.payload as { capability?: unknown }).capability === 'workflows'
+          ? 'capability_review_workflows'
+          : 'capability_review_subagents'
+        : request.kind
+    notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, waitingFor).catch((err) => {
+      console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
     })
   }
 
@@ -592,7 +657,10 @@ class MessagePersister {
   getPendingComputerUseRequests(sessionId: string): Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> {
     return userInputRequestManager
       .getOpenRequestsForSession(sessionId)
-      .filter((r) => r.kind === 'computer_use')
+      // Auto-approved requests are registered only for the decision gate — a
+      // reconnecting client must never be replayed an approval card for a
+      // command that is already executing.
+      .filter((r) => r.kind === 'computer_use' && !r.autoApproved)
       .map((r) => {
         const payload = r.payload as {
           method?: string
@@ -1120,7 +1188,7 @@ class MessagePersister {
   // original one-shot event was missed. Keep in sync with the handlers'
   // broadcast types (INPUT_REQUEST_TYPES).
   private static readonly REQUEST_EVENT_TYPE_BY_TOOL_NAME: Record<string, string> = {
-    AskUserQuestion: 'user_question_request',
+    AskUserQuestion: 'question_request',
     'mcp__user-input__request_secret': 'secret_request',
     'mcp__user-input__request_connected_account': 'connected_account_request',
     'mcp__user-input__request_file': 'file_request',
@@ -1248,7 +1316,7 @@ class MessagePersister {
   private static readonly INPUT_REQUEST_TYPES = new Set([
     'secret_request',
     'connected_account_request',
-    'user_question_request',
+    'question_request',
     'file_request',
     'remote_mcp_request',
     'script_run_request',
@@ -2914,14 +2982,6 @@ class MessagePersister {
         agentSlug,
         ...(parentToolUseId ? { parentToolUseId } : {}),
       })
-
-      // Renderer's notification gate decides whether to show the OS popup
-      // based on focus / per-user viewing / `notifyWhenUnfocused` toggle.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'secret').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
     } catch (error) {
       console.error('[MessagePersister] Error handling secret request:', error)
     }
@@ -2959,13 +3019,6 @@ class MessagePersister {
         agentSlug,
         ...(parentToolUseId ? { parentToolUseId } : {}),
       })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'connected_account').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
     } catch (error) {
       console.error('[MessagePersister] Error handling connected account request:', error)
     }
@@ -4151,19 +4204,12 @@ ${continuation}`
 
       // Broadcast the question request event to SSE clients
       this.broadcastToSSE(sessionId, {
-        type: 'user_question_request',
+        type: 'question_request',
         toolUseId,
         questions: input.questions,
         agentSlug,
         ...(parentToolUseId ? { parentToolUseId } : {}),
       })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'question').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
     } catch (error) {
       console.error('[MessagePersister] Error handling AskUserQuestion:', error)
     }
@@ -4237,16 +4283,6 @@ ${continuation}`
         agentSlug,
       })
       this.syncSessionAwaiting(sessionId)
-
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(
-          sessionId,
-          agentSlug,
-          capability === 'workflows' ? 'capability_review_workflows' : 'capability_review_subagents'
-        ).catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
     } catch (error) {
       console.error('[MessagePersister] Error handling capability review:', error)
     }
@@ -4283,13 +4319,6 @@ ${continuation}`
         agentSlug,
         ...(parentToolUseId ? { parentToolUseId } : {}),
       })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'file').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
     } catch (error) {
       console.error('[MessagePersister] Error handling file request:', error)
     }
@@ -4328,13 +4357,6 @@ ${continuation}`
         agentSlug,
         ...(parentToolUseId ? { parentToolUseId } : {}),
       })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'remote_mcp').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
     } catch (error) {
       console.error('[MessagePersister] Error handling remote MCP request:', error)
     }
@@ -4379,13 +4401,6 @@ ${continuation}`
       // bypass that handler — without this the orange awaiting-input status
       // never flips and the agent shows "working" while parked on the user.
       this.syncSessionAwaiting(sessionId)
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'browser_input').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
     } catch (error) {
       console.error('[MessagePersister] Error handling browser input request:', error)
     }
@@ -4469,12 +4484,6 @@ ${continuation}`
       // pill in the sidebar / tray) when the user actually has to respond.
       if (!autoApproved) {
         this.syncSessionAwaiting(sessionId)
-        // Renderer-side gate handles suppression; see session_complete trigger.
-        if (agentSlug) {
-          notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'script_run').catch((err) => {
-            console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-          })
-        }
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling script run request:', error)
@@ -4533,9 +4542,23 @@ ${continuation}`
         const permissionResult = computerUsePermissionManager.checkPermission(agentSlug, permissionLevel, appName)
 
         if (permissionResult === 'granted') {
-          // Auto-execute: permission already granted. Broadcast with autoApproved
-          // so clients can suppress streaming/message-history fallback prompts
-          // during the window before the tool result is persisted.
+          // Auto-execute: permission already granted. Registered anyway —
+          // flagged autoApproved so no projection treats it as a user-facing
+          // wait — because the /computer-use route's already-settled gate only
+          // acts on requests the registry holds open, and auto-execution goes
+          // through that same route.
+          userInputRequestManager.register({
+            id: toolUseId,
+            kind: 'computer_use',
+            scope: { agentSlug, sessionId },
+            blocking: true,
+            autoApproved: true,
+            parentToolUseId,
+            payload: { method, params, permissionLevel, appName },
+          })
+          // Broadcast with autoApproved so clients can suppress streaming/
+          // message-history fallback prompts during the window before the
+          // tool result is persisted.
           this.broadcastToSSE(sessionId, {
             type: 'computer_use_request',
             toolUseId,
@@ -4575,13 +4598,6 @@ ${continuation}`
         agentSlug,
         autoApproved: false,
       })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'computer_use').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
     } catch (error) {
       console.error('[MessagePersister] Error handling computer use request:', error)
     }

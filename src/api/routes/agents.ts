@@ -34,6 +34,7 @@ import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import type { UserInputRequestKind } from '@shared/lib/user-input/request-schema'
 import {
   listSessions,
   listSessionsByIds,
@@ -2325,6 +2326,44 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   }
 })
 
+/**
+ * The already-settled gate for request-decision routes. A decision proceeds
+ * only while the registry holds the request OPEN, with the kind this route
+ * handles, in the session the route addresses. Anything else gets a stable,
+ * side-effect-free answer — this is what makes decisions idempotent. Without
+ * it a duplicate POST (second tab, double-click, card revived from a stale
+ * snapshot) re-runs host side effects: run-script re-executes the script,
+ * computer-use re-drives the machine, a browser-input decline re-interrupts
+ * the session.
+ *
+ * Returns a Response to send instead of proceeding, or null to proceed.
+ */
+function gateRequestDecision(
+  c: Context,
+  toolUseId: string,
+  kind: UserInputRequestKind,
+): Response | null {
+  const open = userInputRequestManager.getOpenRequest(toolUseId)
+  if (!open) {
+    // Settled, or never existed — indistinguishable once the resolution trail
+    // rotates, so both get the stable already-settled shape. 200 (not an
+    // error): the caller's intent is satisfied or moot, and a stale card
+    // should dismiss itself exactly like a successful decision.
+    const outcome = userInputRequestManager.getRecentResolutionOutcome(toolUseId)
+    return c.json({ success: true, alreadySettled: true, ...(outcome ? { outcome } : {}) })
+  }
+  if (open.kind !== kind) {
+    // A caller-supplied id must not settle someone else's parked wait — the
+    // same guard submitDecision has for review kinds.
+    return c.json({ error: 'Request not found' }, 404)
+  }
+  const sessionId = c.req.param('sessionId')
+  if (sessionId !== '_auto' && open.scope.sessionId && open.scope.sessionId !== sessionId) {
+    return c.json({ error: 'Request not found' }, 404)
+  }
+  return null
+}
+
 // POST /api/agents/:id/sessions/:sessionId/provide-secret - Provide or decline a secret request
 agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) => {
   try {
@@ -2335,6 +2374,9 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'secret')
+    if (gated) return gated
 
     if (!secretName) {
       return c.json({ error: 'secretName is required' }, 400)
@@ -2445,6 +2487,9 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'connected_account')
+    if (gated) return gated
 
     if (!toolkit) {
       return c.json({ error: 'toolkit is required' }, 400)
@@ -2605,6 +2650,9 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'question')
+    if (gated) return gated
+
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2686,6 +2734,9 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
       return c.json({ error: 'capability must be subagents or workflows' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'capability_review')
+    if (gated) return gated
+
     const client = containerManager.getClient(agentSlug)
 
     if (decline) {
@@ -2757,6 +2808,9 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'browser_input')
+    if (gated) return gated
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2839,6 +2893,9 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'script_run')
+    if (gated) return gated
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2973,6 +3030,9 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'computer_use')
+    if (gated) return gated
 
     // Validate session belongs to this agent (skip for _auto internal calls from auto-execute)
     if (sessionId !== '_auto') {
@@ -3650,6 +3710,9 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
     if (!body.decline && requestedMcpIds.length === 0) {
       return c.json({ error: 'remoteMcpId or remoteMcpIds is required when not declining' }, 400)
     }
+
+    const gated = gateRequestDecision(c, body.toolUseId, 'remote_mcp')
+    if (gated) return gated
 
     // In auth mode, only allow providing remote MCPs the caller owns before
     // mapping them to the agent. Otherwise a user could approve another user's
@@ -4921,6 +4984,9 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'file')
+    if (gated) return gated
+
 
     const client = containerManager.getClient(agentSlug)
 
@@ -5408,8 +5474,11 @@ setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 // session of the agent). This is the recovery source for the unified client
 // store: mount, reconnect, and invalidation refetch from here; live updates
 // arrive as user_request_created / user_request_resolved on the session and
-// global SSE streams. Legacy per-type events keep firing during the client
-// migration.
+// global SSE streams. The legacy per-type events still fire server-side for
+// the chat-integration connectors (their in-process consumer has not migrated)
+// and for the renderer's two narrow holdouts: the browser tray's
+// browser_input_request feed and the script/computer-use auto-approved
+// suppress-sets.
 agents.get('/:id/pending-requests', AgentRead(), (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.query('sessionId') || undefined

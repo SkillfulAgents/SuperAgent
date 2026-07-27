@@ -48,6 +48,7 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
   notificationManager: {
     triggerSessionComplete: vi.fn(() => Promise.resolve()),
     triggerSessionWaitingInput: vi.fn(() => Promise.resolve()),
+    triggerSessionApiReviewWaiting: vi.fn(() => Promise.resolve()),
   },
 }))
 
@@ -235,7 +236,7 @@ const STANDARD_KINDS: RequestKindCase[] = [
     input: {
       questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
     },
-    sseType: 'user_question_request',
+    sseType: 'question_request',
     waitingFor: 'question',
   },
   {
@@ -685,7 +686,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       input: {
         questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
       },
-      sseType: 'user_question_request',
+      sseType: 'question_request',
       surfacesToday: true,
     },
     {
@@ -934,7 +935,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
   describe('shadow registry equivalence', () => {
     const KIND_BY_SSE_TYPE: Record<string, string> = {
       secret_request: 'secret',
-      user_question_request: 'question',
+      question_request: 'question',
       connected_account_request: 'connected_account',
       file_request: 'file',
       remote_mcp_request: 'remote_mcp',
@@ -1686,6 +1687,99 @@ describe('pending user-input request lifecycle (characterization)', () => {
       userInputRequestManager.resolve('wire-snap-review', 'answered')
       sendToolResult('wire-snap-1')
       expect(userInputRequestManager.getSnapshotForScope(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
+    })
+  })
+
+  // ==========================================================================
+  // Notification dispatch is driven by registry transitions
+  // ==========================================================================
+
+  describe('notification dispatch (registry-transition-driven)', () => {
+    it('duplicate deliveries of the same request notify exactly ONCE', () => {
+      // The subagent stream and the complete-assistant message can both carry
+      // the same tool_use. The registry dedupes the ENTRY (first delivery
+      // wins), and the notification must ride that dedupe — per-handler
+      // triggering used to pop two OS notifications for one script approval.
+      const input = { script: 'sw_vers', explanation: 'Version check', scriptType: 'shell' }
+      const send = (via: 'stream' | 'complete') => {
+        if (via === 'complete') {
+          mockClient._sendMessage({
+            type: 'assistant',
+            parent_tool_use_id: 'parent-notif-1',
+            message: {
+              content: [
+                { type: 'tool_use', id: 'notif-dup-1', name: 'mcp__user-input__request_script_run', input },
+              ],
+            },
+          })
+          return
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const sendEvent = (event: any) =>
+          mockClient._sendMessage({ type: 'stream_event', parent_tool_use_id: 'parent-notif-1', event })
+        sendEvent({
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'notif-dup-1', name: 'mcp__user-input__request_script_run' },
+        })
+        sendEvent({
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        })
+        sendEvent({ type: 'content_block_stop' })
+      }
+
+      send('stream')
+      send('complete')
+
+      const triggerSpy = vi.mocked(notificationManager.triggerSessionWaitingInput)
+      const forThisRequest = triggerSpy.mock.calls.filter(
+        ([, , waitingFor]) => waitingFor === 'script_run',
+      )
+      expect(forThisRequest).toHaveLength(1)
+      expect(forThisRequest[0]).toEqual([SESSION_ID, AGENT_SLUG, 'script_run'])
+    })
+
+    it('a review registered directly with the registry notifies like any other review', () => {
+      // Since the registry became the pending-review store, registry-only
+      // entries are decidable and sweepable — they must be noticeable too.
+      userInputRequestManager.register({
+        id: 'notif-review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: AGENT_SLUG },
+        blocking: true,
+        autoApproved: false,
+        payload: { displayText: 'GET api.github.com /user' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any)
+
+      expect(notificationManager.triggerSessionApiReviewWaiting).toHaveBeenCalledExactlyOnceWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        'notif-review-1',
+        'GET api.github.com /user',
+        undefined,
+        'api_request',
+      )
+    })
+
+    it('a recovered synthetic does not notify; its real upgrade notifies once', () => {
+      userInputRequestManager.register({
+        id: 'notif-rec-1',
+        kind: 'secret',
+        scope: { agentSlug: AGENT_SLUG, sessionId: SESSION_ID },
+        blocking: true,
+        autoApproved: false,
+        payload: { recovered: true },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any)
+      const triggerSpy = vi.mocked(notificationManager.triggerSessionWaitingInput)
+      expect(triggerSpy).not.toHaveBeenCalled()
+
+      simulateToolUse('mcp__user-input__request_secret', 'notif-rec-1', {
+        secretName: 'API_KEY',
+        reason: 'Recovered then streamed',
+      })
+      expect(triggerSpy.mock.calls.filter(([, , w]) => w === 'secret')).toHaveLength(1)
     })
   })
 })

@@ -48,7 +48,7 @@ export async function consumeOrCancelAwaitingInput(opts: {
   if (isPlainText && persister.isSessionAwaitingInput(sessionId)) {
     const pendingQuestion = persister
       .getPendingInputRequests(sessionId)
-      .find((r) => r.type === 'user_question_request')
+      .find((r) => r.type === 'question_request')
     if (pendingQuestion) {
       const answered = await connector.answerOpenQuestionWithText(chatId, pendingQuestion.toolUseId, answerText ?? messageText)
       if (answered) return true

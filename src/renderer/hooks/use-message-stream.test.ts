@@ -93,7 +93,7 @@ describe('useMessageStream', () => {
     expect(result.current.streamingMessage).toBeNull()
     expect(result.current.streamingToolUses).toEqual([])
     expect(result.current.error).toBeNull()
-    expect(result.current.pendingSecretRequests).toEqual([])
+    expect(result.current.pendingBrowserInputRequests).toEqual([])
   })
 
   it('creates EventSource for session', async () => {
@@ -340,34 +340,6 @@ describe('useMessageStream', () => {
     expect(result.current.apiErrorCode).toBe('authentication_failed')
   })
 
-  it('handles secret_request event', async () => {
-    const { useMessageStream } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'secret_request',
-        toolUseId: 'tu-1',
-        secretName: 'API_KEY',
-        reason: 'Need it',
-      })
-    })
-
-    expect(result.current.pendingSecretRequests).toHaveLength(1)
-    expect(result.current.pendingSecretRequests[0]).toEqual({
-      toolUseId: 'tu-1',
-      secretName: 'API_KEY',
-      reason: 'Need it',
-    })
-  })
-
   it('handles tool_use_start and tool_use_streaming events', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -460,43 +432,6 @@ describe('useMessageStream', () => {
     expect(result.current.isActive).toBe(true)
     expect(result.current.isStreaming).toBe(false)
     expect(result.current.streamingMessage).toBeNull()
-  })
-
-  it('handles removeSecretRequest helper', async () => {
-    const { useMessageStream, removeSecretRequest } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'secret_request',
-        toolUseId: 'tu-1',
-        secretName: 'KEY1',
-      })
-    })
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'secret_request',
-        toolUseId: 'tu-2',
-        secretName: 'KEY2',
-      })
-    })
-
-    expect(result.current.pendingSecretRequests).toHaveLength(2)
-
-    act(() => {
-      removeSecretRequest('session-1', 'tu-1')
-    })
-
-    expect(result.current.pendingSecretRequests).toHaveLength(1)
-    expect(result.current.pendingSecretRequests[0].toolUseId).toBe('tu-2')
   })
 
   it('handles subagent streaming events', async () => {
@@ -628,116 +563,6 @@ describe('useMessageStream', () => {
   })
 
   // ---- Additional request event types ----
-
-  it('handles connected_account_request event', async () => {
-    const { useMessageStream } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'connected_account_request',
-        toolUseId: 'tu-ca-1',
-        toolkit: 'github',
-        reason: 'Need repo access',
-      })
-    })
-
-    expect(result.current.pendingConnectedAccountRequests).toHaveLength(1)
-    expect(result.current.pendingConnectedAccountRequests[0]).toEqual({
-      toolUseId: 'tu-ca-1',
-      toolkit: 'github',
-      reason: 'Need repo access',
-    })
-  })
-
-  it('handles user_question_request event', async () => {
-    const { useMessageStream } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'user_question_request',
-        toolUseId: 'tu-q-1',
-        questions: [{ question: 'Which DB?', header: 'DB', options: [{ label: 'PG', description: 'PostgreSQL' }], multiSelect: false }],
-      })
-    })
-
-    expect(result.current.pendingQuestionRequests).toHaveLength(1)
-    expect(result.current.pendingQuestionRequests[0].toolUseId).toBe('tu-q-1')
-    expect(result.current.pendingQuestionRequests[0].questions[0].question).toBe('Which DB?')
-  })
-
-  it('handles file_request event', async () => {
-    const { useMessageStream } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'file_request',
-        toolUseId: 'tu-f-1',
-        description: 'Upload your config',
-        fileTypes: '.json,.yaml',
-      })
-    })
-
-    expect(result.current.pendingFileRequests).toHaveLength(1)
-    expect(result.current.pendingFileRequests[0]).toEqual({
-      toolUseId: 'tu-f-1',
-      description: 'Upload your config',
-      fileTypes: '.json,.yaml',
-    })
-  })
-
-  it('handles remote_mcp_request event', async () => {
-    const { useMessageStream } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'remote_mcp_request',
-        toolUseId: 'tu-mcp-1',
-        url: 'https://mcp.example.com',
-        name: 'Example MCP',
-        reason: 'Need tools',
-      })
-    })
-
-    expect(result.current.pendingRemoteMcpRequests).toHaveLength(1)
-    expect(result.current.pendingRemoteMcpRequests[0]).toEqual({
-      toolUseId: 'tu-mcp-1',
-      url: 'https://mcp.example.com',
-      name: 'Example MCP',
-      reason: 'Need tools',
-    })
-  })
 
   // ---- Query invalidation ----
 
@@ -1331,118 +1156,6 @@ describe('useMessageStream', () => {
 
   // ---- Remove helpers ----
 
-  it('handles removeConnectedAccountRequest helper', async () => {
-    const { useMessageStream, removeConnectedAccountRequest } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'connected_account_request',
-        toolUseId: 'tu-ca-1',
-        toolkit: 'github',
-      })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'connected_account_request',
-        toolUseId: 'tu-ca-2',
-        toolkit: 'slack',
-      })
-    })
-    expect(result.current.pendingConnectedAccountRequests).toHaveLength(2)
-
-    act(() => {
-      removeConnectedAccountRequest('session-1', 'tu-ca-1')
-    })
-
-    expect(result.current.pendingConnectedAccountRequests).toHaveLength(1)
-    expect(result.current.pendingConnectedAccountRequests[0].toolkit).toBe('slack')
-  })
-
-  it('handles removeQuestionRequest helper', async () => {
-    const { useMessageStream, removeQuestionRequest } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'user_question_request',
-        toolUseId: 'tu-q-1',
-        questions: [{ question: 'Q1?', header: 'H', options: [], multiSelect: false }],
-      })
-    })
-    expect(result.current.pendingQuestionRequests).toHaveLength(1)
-
-    act(() => {
-      removeQuestionRequest('session-1', 'tu-q-1')
-    })
-
-    expect(result.current.pendingQuestionRequests).toHaveLength(0)
-  })
-
-  it('handles removeFileRequest helper', async () => {
-    const { useMessageStream, removeFileRequest } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'file_request',
-        toolUseId: 'tu-f-1',
-        description: 'Upload config',
-      })
-    })
-    expect(result.current.pendingFileRequests).toHaveLength(1)
-
-    act(() => {
-      removeFileRequest('session-1', 'tu-f-1')
-    })
-
-    expect(result.current.pendingFileRequests).toHaveLength(0)
-  })
-
-  it('handles removeRemoteMcpRequest helper', async () => {
-    const { useMessageStream, removeRemoteMcpRequest } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'remote_mcp_request',
-        toolUseId: 'tu-mcp-1',
-        url: 'https://mcp.example.com',
-      })
-    })
-    expect(result.current.pendingRemoteMcpRequests).toHaveLength(1)
-
-    act(() => {
-      removeRemoteMcpRequest('session-1', 'tu-mcp-1')
-    })
-
-    expect(result.current.pendingRemoteMcpRequests).toHaveLength(0)
-  })
-
   it('handles clearCompacting helper', async () => {
     const { useMessageStream, clearCompacting } = await getHookModule()
     const { result } = renderHook(
@@ -1489,7 +1202,7 @@ describe('useMessageStream', () => {
 
   // ---- State transition edge cases ----
 
-  it('session_idle clears all pending requests', async () => {
+  it('session_idle clears the surviving pending-request arrays', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
       () => useMessageStream('session-1', 'agent-1'),
@@ -1500,39 +1213,25 @@ describe('useMessageStream', () => {
       MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
     })
 
-    // Accumulate pending requests of all types
+    // The two arrays that outlived the unified-store migration: the browser
+    // tray's feed and the capability-review cold-start fallback.
     act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'secret_request', toolUseId: 'tu-1', secretName: 'KEY' })
+      MockEventSource.instances[0].simulateMessage({ type: 'browser_input_request', toolUseId: 'tu-1', message: 'Log in', requirements: [] })
     })
     act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected_account_request', toolUseId: 'tu-2', toolkit: 'gh' })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'user_question_request', toolUseId: 'tu-3', questions: [] })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'file_request', toolUseId: 'tu-4', description: 'file' })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'remote_mcp_request', toolUseId: 'tu-5', url: 'http://x' })
+      MockEventSource.instances[0].simulateMessage({ type: 'capability_review_request', toolUseId: 'tu-2', capability: 'workflows', toolName: 'Workflow', input: {} })
     })
 
-    expect(result.current.pendingSecretRequests).toHaveLength(1)
-    expect(result.current.pendingConnectedAccountRequests).toHaveLength(1)
-    expect(result.current.pendingQuestionRequests).toHaveLength(1)
-    expect(result.current.pendingFileRequests).toHaveLength(1)
-    expect(result.current.pendingRemoteMcpRequests).toHaveLength(1)
+    expect(result.current.pendingBrowserInputRequests).toHaveLength(1)
+    expect(result.current.pendingCapabilityReviewRequests).toHaveLength(1)
 
-    // session_idle should clear all
+    // session_idle should clear both
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
     })
 
-    expect(result.current.pendingSecretRequests).toHaveLength(0)
-    expect(result.current.pendingConnectedAccountRequests).toHaveLength(0)
-    expect(result.current.pendingQuestionRequests).toHaveLength(0)
-    expect(result.current.pendingFileRequests).toHaveLength(0)
-    expect(result.current.pendingRemoteMcpRequests).toHaveLength(0)
+    expect(result.current.pendingBrowserInputRequests).toHaveLength(0)
+    expect(result.current.pendingCapabilityReviewRequests).toHaveLength(0)
   })
 
   it('session_active clears previous error', async () => {
@@ -1811,179 +1510,6 @@ describe('useMessageStream', () => {
   })
 
   describe('script_run_request event', () => {
-    it('adds script run request to pending list', async () => {
-      const mod = await getHookModule()
-      const wrapper = createWrapper()
-
-      const { result } = renderHook(
-        () => mod.useMessageStream('session-1', 'agent-1'),
-        { wrapper }
-      )
-
-      // Wait for EventSource to be created
-      await vi.waitFor(() => {
-        expect(MockEventSource.instances.length).toBeGreaterThan(0)
-      })
-
-      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
-
-      // Send connected event first
-      act(() => {
-        es.simulateMessage({ type: 'connected', isActive: true })
-      })
-
-      // Send script_run_request event
-      act(() => {
-        es.simulateMessage({
-          type: 'script_run_request',
-          toolUseId: 'tool-1',
-          script: 'sw_vers',
-          explanation: 'Check macOS version',
-          scriptType: 'shell',
-        })
-      })
-
-      await vi.waitFor(() => {
-        expect(result.current.pendingScriptRunRequests).toHaveLength(1)
-      })
-
-      expect(result.current.pendingScriptRunRequests[0]).toEqual({
-        toolUseId: 'tool-1',
-        script: 'sw_vers',
-        explanation: 'Check macOS version',
-        scriptType: 'shell',
-      })
-    })
-
-    it('deduplicates script run requests by toolUseId', async () => {
-      const mod = await getHookModule()
-      const wrapper = createWrapper()
-
-      const { result } = renderHook(
-        () => mod.useMessageStream('session-2', 'agent-1'),
-        { wrapper }
-      )
-
-      await vi.waitFor(() => {
-        expect(MockEventSource.instances.length).toBeGreaterThan(0)
-      })
-
-      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
-
-      act(() => {
-        es.simulateMessage({ type: 'connected', isActive: true })
-      })
-
-      // Send same toolUseId twice
-      act(() => {
-        es.simulateMessage({
-          type: 'script_run_request',
-          toolUseId: 'tool-dup',
-          script: 'sw_vers',
-          explanation: 'Check version',
-          scriptType: 'shell',
-        })
-      })
-
-      act(() => {
-        es.simulateMessage({
-          type: 'script_run_request',
-          toolUseId: 'tool-dup',
-          script: 'sw_vers',
-          explanation: 'Check version',
-          scriptType: 'shell',
-        })
-      })
-
-      await vi.waitFor(() => {
-        expect(result.current.pendingScriptRunRequests).toHaveLength(1)
-      })
-    })
-
-    it('clears script run requests on session_idle', async () => {
-      const mod = await getHookModule()
-      const wrapper = createWrapper()
-
-      const { result } = renderHook(
-        () => mod.useMessageStream('session-3', 'agent-1'),
-        { wrapper }
-      )
-
-      await vi.waitFor(() => {
-        expect(MockEventSource.instances.length).toBeGreaterThan(0)
-      })
-
-      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
-
-      act(() => {
-        es.simulateMessage({ type: 'connected', isActive: true })
-      })
-
-      act(() => {
-        es.simulateMessage({
-          type: 'script_run_request',
-          toolUseId: 'tool-clear',
-          script: 'test',
-          explanation: 'Test',
-          scriptType: 'shell',
-        })
-      })
-
-      await vi.waitFor(() => {
-        expect(result.current.pendingScriptRunRequests).toHaveLength(1)
-      })
-
-      act(() => {
-        es.simulateMessage({ type: 'session_idle' })
-      })
-
-      await vi.waitFor(() => {
-        expect(result.current.pendingScriptRunRequests).toHaveLength(0)
-      })
-    })
-
-    it('removeScriptRunRequest removes by toolUseId', async () => {
-      const mod = await getHookModule()
-      const wrapper = createWrapper()
-
-      const { result } = renderHook(
-        () => mod.useMessageStream('session-4', 'agent-1'),
-        { wrapper }
-      )
-
-      await vi.waitFor(() => {
-        expect(MockEventSource.instances.length).toBeGreaterThan(0)
-      })
-
-      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
-
-      act(() => {
-        es.simulateMessage({ type: 'connected', isActive: true })
-      })
-
-      act(() => {
-        es.simulateMessage({
-          type: 'script_run_request',
-          toolUseId: 'tool-remove',
-          script: 'test',
-          explanation: 'Test',
-          scriptType: 'shell',
-        })
-      })
-
-      await vi.waitFor(() => {
-        expect(result.current.pendingScriptRunRequests).toHaveLength(1)
-      })
-
-      act(() => {
-        mod.removeScriptRunRequest('session-4', 'tool-remove')
-      })
-
-      await vi.waitFor(() => {
-        expect(result.current.pendingScriptRunRequests).toHaveLength(0)
-      })
-    })
-
     it('autoApproved:true populates suppress-set and skips pendingScriptRunRequests', async () => {
       const mod = await getHookModule()
       const wrapper = createWrapper()
@@ -2017,8 +1543,6 @@ describe('useMessageStream', () => {
         expect(result.current.autoApprovedScriptRunIds.has('tool-auto')).toBe(true)
       })
 
-      // Auto-approved requests must NOT appear in the pending prompt list.
-      expect(result.current.pendingScriptRunRequests).toHaveLength(0)
     })
 
     it('default autoApprovedScriptRunIds is empty for a fresh session', async () => {
@@ -2066,7 +1590,6 @@ describe('useMessageStream', () => {
         expect(result.current.autoApprovedComputerUseIds.has('tool-cu-auto')).toBe(true)
       })
 
-      expect(result.current.pendingComputerUseRequests).toHaveLength(0)
     })
 
     it('default autoApprovedComputerUseIds is empty for a fresh session', async () => {
@@ -2081,7 +1604,7 @@ describe('useMessageStream', () => {
       expect(result.current.autoApprovedComputerUseIds.size).toBe(0)
     })
 
-    it('mixes autoApproved and prompt requests independently', async () => {
+    it('only autoApproved requests enter the suppress-set; prompt-form events feed nothing', async () => {
       const mod = await getHookModule()
       const wrapper = createWrapper()
 
@@ -2099,7 +1622,8 @@ describe('useMessageStream', () => {
         es.simulateMessage({ type: 'connected', isActive: true })
       })
 
-      // First request: needs prompt.
+      // First request: needs prompt — the approval card comes from the
+      // unified store, so the legacy event must NOT suppress it.
       act(() => {
         es.simulateMessage({
           type: 'script_run_request',
@@ -2124,11 +1648,9 @@ describe('useMessageStream', () => {
       })
 
       await vi.waitFor(() => {
-        expect(result.current.pendingScriptRunRequests).toHaveLength(1)
         expect(result.current.autoApprovedScriptRunIds.has('tool-auto')).toBe(true)
       })
 
-      expect(result.current.pendingScriptRunRequests[0].toolUseId).toBe('tool-prompt')
       expect(result.current.autoApprovedScriptRunIds.has('tool-prompt')).toBe(false)
     })
   })

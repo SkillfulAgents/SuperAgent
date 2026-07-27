@@ -362,12 +362,6 @@ export function GlobalNotificationHandler() {
             // the cross-tab/cross-session sync for everything else; the
             // store's interval refetch is the safety net for a missed event.
             queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
-            // The dashboard's pending-reviews panel still reads the legacy
-            // poll (its store migration is a later phase). Nudging it here
-            // makes dashboard-triggered reviews — which may have NO session
-            // anywhere — appear/settle on creation, decision, timeout, and
-            // auto-deny instead of on the next 30s poll tick.
-            queryClient.invalidateQueries({ queryKey: ['proxy-reviews'] })
             break
 
           case 'agent_status_changed':

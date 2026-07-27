@@ -190,7 +190,7 @@ describe('tool_use_start error resilience', () => {
 
 describe('user request card error resilience', () => {
   const requestTypes = [
-    'user_question_request',
+    'question_request',
     'secret_request',
     'file_request',
     'connected_account_request',
@@ -218,7 +218,7 @@ describe('user request card error resilience', () => {
     mock.sendUserRequestCard = async () => { throw new Error('card send failed') }
 
     // Card fails
-    await processSSEEvent(managed, { type: 'user_question_request', toolUseId: 'tu-1' })
+    await processSSEEvent(managed, { type: 'question_request', toolUseId: 'tu-1' })
     // Streaming still works
     await processSSEEvent(managed, { type: 'stream_delta', text: 'After card failure' })
 
@@ -337,7 +337,7 @@ describe('pipeline isolation', () => {
     }
 
     // Process a card event (fails), then a streaming event (should succeed)
-    await processSSEEvent(managed, { type: 'user_question_request', toolUseId: 'tu-1' })
+    await processSSEEvent(managed, { type: 'question_request', toolUseId: 'tu-1' })
     await processSSEEvent(managed, { type: 'stream_delta', text: 'Still works' })
 
     expect(managed.streamingState.accumulatedText).toBe('Still works')

@@ -45,7 +45,7 @@ export interface Question {
 
 export type UserRequestEvent =
   | {
-      type: 'user_question_request'
+      type: 'question_request'
       toolUseId: string
       questions: Question[]
       agentSlug?: string
