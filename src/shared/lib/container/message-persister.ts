@@ -1401,8 +1401,17 @@ class MessagePersister {
     if (!state) return
 
     // Skip processing if session was interrupted (prevents race conditions)
-    // Allow 'result' through as it indicates the container actually stopped
-    if (state.isInterrupted && message.content?.type !== 'result') {
+    // Allow 'result' through as it indicates the container actually stopped.
+    // `process_restarted` is allowed for the same reason: the interrupt path itself
+    // restarts the query, so this is a fact about which runtime we are now
+    // talking to, not turn content. Swallowing it leaves the recorded process
+    // identity a generation behind, and the next reattach then reads a changed
+    // name as a restart and drops background tasks that are actually running.
+    if (
+      state.isInterrupted &&
+      message.content?.type !== 'result' &&
+      message.content?.subtype !== 'process_restarted'
+    ) {
       return
     }
 

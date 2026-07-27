@@ -321,6 +321,10 @@ export class SessionManager extends EventEmitter {
         stateEventsAuthority: true,
       }),
       eviction: null,
+      // Seeded, not derived from query-start: this path starts the process
+      // before SessionData exists (see the await process.start() above), so the
+      // first query-start predates the listener registered below. Every later
+      // replacement re-mints, which is all the host needs to spot a change.
       processInstanceId: uuidv4(),
     };
 

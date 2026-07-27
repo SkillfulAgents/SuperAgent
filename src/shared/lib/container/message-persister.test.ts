@@ -6170,6 +6170,57 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
     })
 
+    it('keeps process identity in sync across an interrupt-driven restart', () => {
+      // The interrupt path restarts the query (claude-code.ts "Restarting query
+      // after interrupt"), which mints a new process instance. But the host
+      // drops every non-result frame while isInterrupted is set, so that
+      // announcement was being swallowed — leaving the recorded identity one
+      // process behind the container. The NEXT reattach then reads a changed
+      // name and mistakes it for a restart, dropping background tasks that are
+      // genuinely running: a live indicator lost and auto-sleep un-gated
+      // mid-job, the exact failure the union gate exists to prevent.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-A',
+      })
+
+      return messagePersister.markSessionInterrupted(SESSION_ID).then(() => {
+        // The container restarts the CLI in response, while we're still flagged
+        // interrupted.
+        mockClient._sendMessage({
+          type: 'system', subtype: 'process_restarted', process_instance: 'proc-B',
+        })
+
+        // New turn on the new process, with real background work.
+        messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+        mockClient._sendMessage({
+          type: 'user',
+          tool_use_result: { backgroundTaskId: 'bg-live' },
+          message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+        })
+        mockClient._sendMessage({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'bg-live', task_type: 'local_bash', description: 'yt-dlp' }],
+        })
+        mockClient._sendMessage({ type: 'result', subtype: 'success' })
+
+        sseEvents.length = 0
+        // A transport reattach. Same process as the one running bg-live, so
+        // nothing may be dropped.
+        mockClient._sendMessage({
+          type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-B',
+        })
+
+        expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+        expect(messagePersister.getActiveBackgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-live')
+
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+        expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
+        expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+      })
+    })
+
     it('forwards command_lifecycle frames to SSE and drops malformed ones', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       sseEvents.length = 0

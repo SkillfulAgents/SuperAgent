@@ -707,6 +707,10 @@ describe('SessionManager idle eviction', () => {
     expect(received).toContainEqual(
       expect.objectContaining({ type: 'system', subtype: 'process_restarted' })
     )
+    // The live frame and the handshake must name the SAME process, or a client
+    // that sees both would read the second one as another restart.
+    const announced = received.find((m) => m.subtype === 'process_restarted')
+    expect(announced?.process_instance).toBe(manager.getProcessInstanceId(id))
   })
 
   it('records a fresh process instance id on a cold resume, before any subscriber exists', async () => {
