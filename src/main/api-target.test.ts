@@ -1,19 +1,22 @@
 /**
- * Main settles the target for every renderer. The quick-dispatch launcher is a
- * second BrowserWindow that is pre-created at startup and destroyed only at
- * quit — so it caches its base URL for the whole session, and switching targets
- * has to tear it down or it keeps dispatching work to the previous Superagent.
+ * Main settles the target for every renderer, and the other windows each
+ * resolved theirs once and hold it for their own lifetime — the launcher is
+ * pre-created at startup and destroyed only at quit, dashboard popouts have
+ * already loaded a URL built from the old base. Switching has to tear them down
+ * or they keep driving the previous Superagent under identical chrome.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { applyPreferredApiTarget, resolveApiTargetForRenderer } from './api-target'
 
-const { closeQuickDispatchWindow, settings } = vi.hoisted(() => ({
+const { closeQuickDispatchWindow, closeAllDashboardWindows, settings } = vi.hoisted(() => ({
   closeQuickDispatchWindow: vi.fn(),
+  closeAllDashboardWindows: vi.fn(),
   settings: { value: {} as Record<string, unknown> },
 }))
 
 vi.mock('./quick-dispatch-window', () => ({ closeQuickDispatchWindow }))
+vi.mock('./dashboard-window', () => ({ closeAllDashboardWindows }))
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => settings.value,
@@ -29,6 +32,7 @@ const CLOUD = 'http://localhost:3000/cloud/KEY123'
 beforeEach(() => {
   settings.value = {}
   closeQuickDispatchWindow.mockClear()
+  closeAllDashboardWindows.mockClear()
 })
 
 describe('resolveApiTargetForRenderer', () => {
@@ -84,6 +88,20 @@ describe('applyPreferredApiTarget', () => {
 
     expect(resolveApiTargetForRenderer(LOCAL, CLOUD).target).toBe('local')
     expect(closeQuickDispatchWindow).toHaveBeenCalled()
+  })
+
+  it('closes dashboard popouts, which already loaded the old target’s URL', () => {
+    // They would otherwise sit there showing the previous deployment's
+    // dashboard, and a later request for the same agent/dashboard would focus
+    // that stale window instead of opening one on the new target.
+    applyPreferredApiTarget('cloud')
+    expect(closeAllDashboardWindows).toHaveBeenCalled()
+  })
+
+  it('closes them switching back to local too', () => {
+    settings.value.apiTarget = 'cloud'
+    applyPreferredApiTarget('local')
+    expect(closeAllDashboardWindows).toHaveBeenCalled()
   })
 
   it('refuses to store an unrecognized target', () => {

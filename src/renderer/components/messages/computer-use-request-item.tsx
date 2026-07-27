@@ -12,6 +12,7 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { DeclineButton } from './decline-button'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
@@ -99,6 +100,15 @@ export function ComputerUseRequestItem({
     }
   }
 
+  // The permission is needed on the machine that runs the agent, and the deep
+  // link opens System Settings on THIS one. Same machine locally; against a
+  // cloud workspace it sends you to grant Accessibility on a laptop that is not
+  // being automated. The permission list still shows — it is true, and it is
+  // what the operator needs to relay — only the button that fixes the wrong
+  // computer is withdrawn.
+  const canOpenSystemSettings =
+    canUseHostFeatures() &&
+    (navigator.platform?.startsWith('Mac') || navigator.userAgent?.includes('Mac'))
   const isMac = navigator.platform?.startsWith('Mac') || navigator.userAgent?.includes('Mac')
 
   const openSystemSettings = (pane: 'accessibility' | 'screen_recording') => {
@@ -286,7 +296,7 @@ export function ComputerUseRequestItem({
                   <p className="font-medium text-sm">Accessibility</p>
                   <p className="text-xs text-muted-foreground">Required to interact with UI elements</p>
                 </div>
-                {isMac && (
+                {canOpenSystemSettings && (
                   <Button size="xs" variant="outline" onClick={() => openSystemSettings('accessibility')}>
                     <ExternalLink className="h-3.5 w-3.5 mr-1" />
                     Open Settings
@@ -300,7 +310,7 @@ export function ComputerUseRequestItem({
                   <p className="font-medium text-sm">Screen Recording</p>
                   <p className="text-xs text-muted-foreground">Required to capture screen content</p>
                 </div>
-                {isMac && (
+                {canOpenSystemSettings && (
                   <Button size="xs" variant="outline" onClick={() => openSystemSettings('screen_recording')}>
                     <ExternalLink className="h-3.5 w-3.5 mr-1" />
                     Open Settings

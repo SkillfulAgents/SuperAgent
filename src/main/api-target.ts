@@ -4,6 +4,7 @@ import {
   writePreferredApiTarget,
 } from '@shared/lib/services/api-target-preference'
 import { closeQuickDispatchWindow } from './quick-dispatch-window'
+import { closeAllDashboardWindows } from './dashboard-window'
 
 /**
  * Main-process side of "which Superagent is this app driving?".
@@ -37,12 +38,19 @@ export function resolveApiTargetForRenderer(
  * target that changed under a mounted tree is a hooks-order crash). The caller
  * reloads the window it is switching.
  *
- * Tearing down the launcher is the load-bearing part: it is pre-created at
- * startup and destroyed only at quit, so it caches its target — and its base
- * URL — for the whole session. Left alone it would keep dispatching to the old
- * Superagent after the main window switched. It is recreated on next use.
+ * Tearing down the other windows is the load-bearing part. Each resolved its
+ * target once and holds it for its own lifetime:
+ *
+ * - The launcher is pre-created at startup and destroyed only at quit, so it
+ *   caches its base URL for the whole session. Left alone it would keep
+ *   dispatching to the old Superagent after the main window switched. It is
+ *   recreated on next use.
+ * - Dashboard popouts have already loaded a URL built from the old base. They
+ *   would sit there showing the previous deployment's dashboard, under chrome
+ *   identical to the new one's.
  */
 export function applyPreferredApiTarget(target: unknown): void {
   writePreferredApiTarget(coerceApiTarget(target))
   closeQuickDispatchWindow()
+  closeAllDashboardWindows()
 }

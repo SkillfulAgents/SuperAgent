@@ -7,7 +7,7 @@ import {
   ChevronLeft,
 } from 'lucide-react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { targetIsRemote } from '@renderer/lib/api-target'
 import { WelcomeStep } from './welcome-step'
 import { ConfigureLLMStep } from './configure-llm-step'
 import { ConfigureModelStep } from './configure-model-step'
@@ -41,10 +41,16 @@ const PLATFORM_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] 
 /**
  * The steps of a path, as this window can actually run them.
  *
- * The runtime step installs and starts a container runtime on the computer
- * running this app — down to opening the Docker Desktop download and telling
- * you to run `wsl --install` as Administrator. A cloud workspace brings its own
- * runtime, and it is not this machine's to set up.
+ * The runtime step sets up the container runtime of the Superagent being
+ * configured — starting a runner, and on the desktop opening the Docker Desktop
+ * download or telling you to run `wsl --install` as Administrator. That is
+ * exactly what onboarding is for, on the desktop app and on a self-hosted web
+ * deployment alike. A cloud workspace is the one case where it is not: the
+ * runtime is already provisioned and the machine is out of reach.
+ *
+ * So the test is `targetIsRemote()`, NOT `canUseHostFeatures()` — the latter is
+ * false in every browser and would drop this step from ordinary web onboarding
+ * as well.
  *
  * Everything that turns a step id into a position must go through here. Two
  * places do — rendering and restoring saved progress — and indexing one into
@@ -53,7 +59,7 @@ const PLATFORM_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] 
  */
 export function stepsForPath(path: 'platform' | 'manual' | null) {
   const all = path === 'platform' ? PLATFORM_STEPS : path === 'manual' ? MANUAL_STEPS : []
-  return canUseHostFeatures() ? all : all.filter((step) => step.id !== 'runtime')
+  return targetIsRemote() ? all.filter((step) => step.id !== 'runtime') : all
 }
 
 interface GettingStartedWizardProps {

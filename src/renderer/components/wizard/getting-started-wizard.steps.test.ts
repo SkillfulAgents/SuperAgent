@@ -1,10 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-const { mockCanUseHostFeatures } = vi.hoisted(() => ({
-  mockCanUseHostFeatures: vi.fn(() => true),
-}))
-vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: mockCanUseHostFeatures }))
-
+import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 import { stepsForPath } from './getting-started-wizard'
 
 /**
@@ -16,26 +12,43 @@ import { stepsForPath } from './getting-started-wizard'
 
 const ids = (path: 'platform' | 'manual' | null) => stepsForPath(path).map((s) => s.id)
 
+function drive(target: 'local' | 'cloud') {
+  _resetApiTargetForTest() // the global setup already settled it to 'local'
+  setActiveTarget(target, null)
+}
+
 beforeEach(() => {
-  mockCanUseHostFeatures.mockReturnValue(true)
+  drive('local')
+})
+
+afterEach(() => {
+  _resetApiTargetForTest()
 })
 
 describe('stepsForPath', () => {
-  it('includes the runtime step when this computer runs the agents', () => {
+  it('includes the runtime step when setting up the Superagent being driven', () => {
     expect(ids('manual')).toContain('runtime')
     expect(ids('platform')).toContain('runtime')
   })
 
   it('drops it for a cloud workspace, on both paths', () => {
-    mockCanUseHostFeatures.mockReturnValue(false)
+    drive('cloud')
     expect(ids('manual')).not.toContain('runtime')
     expect(ids('platform')).not.toContain('runtime')
   })
 
   it('leaves every other step in place and in order', () => {
-    mockCanUseHostFeatures.mockReturnValue(false)
+    drive('cloud')
     expect(ids('manual')).toEqual(['llm', 'model', 'browser', 'composio', 'privacy', 'agent'])
     expect(ids('platform')).toEqual(['model', 'browser', 'privacy', 'agent'])
+  })
+
+  it('keeps the runtime step for a web deployment, whose server IS the machine', () => {
+    // The trap this replaced: a predicate that also required Electron dropped
+    // the step from ordinary web onboarding, shifting every later step.
+    drive('local')
+    expect(ids('manual')).toContain('runtime')
+    expect(ids('manual')).toHaveLength(7)
   })
 
   it('has no steps before a path is chosen', () => {
@@ -46,7 +59,7 @@ describe('stepsForPath', () => {
     // Both the renderer and the saved-progress restore turn a step id into a
     // position. Reading one from the filtered list and the other from the
     // constant puts a cloud user on a different step than the one they left.
-    mockCanUseHostFeatures.mockReturnValue(false)
+    drive('cloud')
     const rendered = stepsForPath('manual')
     const restored = stepsForPath('manual')
     expect(restored.findIndex((s) => s.id === 'privacy')).toBe(

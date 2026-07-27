@@ -22,8 +22,15 @@ import { isElectron } from './env'
  * *server*, it already comes from the machine that owns it and needs no gate:
  * the host-browser providers and their Chrome profiles (`detectAllProviders()`),
  * STT availability (`/api/stt/configured`), and runtime readiness all describe
- * whichever Superagent is being driven. Only local IPC and the
- * install-it-yourself affordances have to be told.
+ * whichever Superagent is being driven.
+ *
+ * And do NOT reach for this where the feature acts on the *server* and the web
+ * build legitimately offers it — the runtime wizard step, the container-setup
+ * dialog, firewall detection. This predicate is false for every browser, so
+ * using it there withdraws the feature from ordinary web deployments too, where
+ * the API being configured is exactly the machine the user means. Those want a
+ * bare `!targetIsRemote()`: what disqualifies them is that the machine is out of
+ * reach, not that there is no IPC bridge.
  */
 export function canUseHostFeatures(): boolean {
   return isElectron() && !targetIsRemote()
