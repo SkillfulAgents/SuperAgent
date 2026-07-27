@@ -34,7 +34,10 @@ import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
-import type { UserInputRequestKind } from '@shared/lib/user-input/request-schema'
+import type {
+  UserInputRequestKind,
+  UserInputRequestScope,
+} from '@shared/lib/user-input/request-schema'
 import {
   listSessions,
   listSessionsByIds,
@@ -2327,14 +2330,42 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
 })
 
 /**
+ * Whether a request — open or recently settled — belongs to the route the
+ * decision arrived on. A caller-supplied toolUseId is an unauthenticated
+ * pointer into a global, cross-agent registry, so every dimension of the
+ * request's identity has to be re-checked against the URL before the route
+ * acts on it (or reports on it): its kind, its agent, and its session.
+ *
+ * agentSlug is matched unconditionally and exactly — including for `_auto`,
+ * which is an internal auto-execute caller that names the real agent in its
+ * URL. A request whose scope carries no agent is unattributable and matches
+ * nothing; every registration path (stream handlers, computer-use, recovery)
+ * supplies one.
+ */
+function requestMatchesRoute(
+  request: { kind: UserInputRequestKind; scope: UserInputRequestScope },
+  kind: UserInputRequestKind,
+  agentSlug: string,
+  sessionId: string,
+): boolean {
+  if (request.kind !== kind) return false
+  if (!request.scope.agentSlug || request.scope.agentSlug !== agentSlug) return false
+  // Auto-execute paths post to /sessions/_auto/… while the request stays
+  // scoped to the real session that streamed it — the ONLY dimension `_auto`
+  // waives.
+  if (sessionId === '_auto') return true
+  return request.scope.sessionId === sessionId
+}
+
+/**
  * The already-settled gate for request-decision routes. A decision proceeds
  * only while the registry holds the request OPEN, with the kind this route
- * handles, in the session the route addresses. Anything else gets a stable,
- * side-effect-free answer — this is what makes decisions idempotent. Without
- * it a duplicate POST (second tab, double-click, card revived from a stale
- * snapshot) re-runs host side effects: run-script re-executes the script,
- * computer-use re-drives the machine, a browser-input decline re-interrupts
- * the session.
+ * handles, for the agent and session the route addresses. Anything else gets a
+ * stable, side-effect-free answer — this is what makes decisions idempotent.
+ * Without it a duplicate POST (second tab, double-click, card revived from a
+ * stale snapshot) re-runs host side effects: run-script re-executes the
+ * script, computer-use re-drives the machine, a browser-input decline
+ * re-interrupts the session.
  *
  * Returns a Response to send instead of proceeding, or null to proceed.
  */
@@ -2343,25 +2374,44 @@ function gateRequestDecision(
   toolUseId: string,
   kind: UserInputRequestKind,
 ): Response | null {
+  const agentSlug = getAgentId(c)
+  // Every gated route is mounted under /sessions/:sessionId, so the param is
+  // always present; '' is an unmatchable placeholder, not a wildcard.
+  const sessionId = c.req.param('sessionId') ?? ''
   const open = userInputRequestManager.getOpenRequest(toolUseId)
-  if (!open) {
-    // Settled, or never existed — indistinguishable once the resolution trail
-    // rotates, so both get the stable already-settled shape. 200 (not an
-    // error): the caller's intent is satisfied or moot, and a stale card
-    // should dismiss itself exactly like a successful decision.
-    const outcome = userInputRequestManager.getRecentResolutionOutcome(toolUseId)
-    return c.json({ success: true, alreadySettled: true, ...(outcome ? { outcome } : {}) })
+  if (open) {
+    if (!open.scope.agentSlug) {
+      // Fail closed, loudly: an unattributable request cannot be proven to
+      // belong to this agent, and a silent 404 on a card the user just clicked
+      // would be near-undiagnosable.
+      console.error(
+        `[agents] Refusing decision for request ${toolUseId} (kind=${kind}): scope carries no agentSlug`,
+      )
+    }
+    if (!requestMatchesRoute(open, kind, agentSlug, sessionId)) {
+      // A caller-supplied id must not settle someone else's parked wait — the
+      // same guard submitDecision has for review kinds.
+      return c.json({ error: 'Request not found' }, 404)
+    }
+    return null
   }
-  if (open.kind !== kind) {
-    // A caller-supplied id must not settle someone else's parked wait — the
-    // same guard submitDecision has for review kinds.
+  // Settled, or never existed. A settled record is still route-bound: report
+  // its outcome only to the route that could have decided it, so settling a
+  // request can never widen who may read it. A record that fails the match is
+  // as good as absent — same 404 an open mismatch gets.
+  const settled = userInputRequestManager.getRecentResolution(toolUseId)
+  if (settled && !requestMatchesRoute(settled, kind, agentSlug, sessionId)) {
     return c.json({ error: 'Request not found' }, 404)
   }
-  const sessionId = c.req.param('sessionId')
-  if (sessionId !== '_auto' && open.scope.sessionId && open.scope.sessionId !== sessionId) {
-    return c.json({ error: 'Request not found' }, 404)
-  }
-  return null
+  // 200 (not an error): the caller's intent is satisfied or moot, and a stale
+  // card should dismiss itself exactly like a successful decision. Unknown and
+  // rotated-off-the-trail ids are indistinguishable and share this shape,
+  // outcome-less.
+  return c.json({
+    success: true,
+    alreadySettled: true,
+    ...(settled ? { outcome: settled.outcome } : {}),
+  })
 }
 
 // POST /api/agents/:id/sessions/:sessionId/provide-secret - Provide or decline a secret request

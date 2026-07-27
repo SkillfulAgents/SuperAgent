@@ -109,9 +109,35 @@ describe('UserInputRequestManager', () => {
       const resolved = manager.resolve('tool-1', 'answered')
       expect(resolved?.kind).toBe('secret')
       expect(manager.stats.open).toBe(0)
+      // Kind AND scope survive on the trail: a settled request stays as
+      // route-bound as it was open, so the decision gate can validate it.
       expect(manager.stats.recentResolutions).toEqual([
-        { id: 'tool-1', kind: 'secret', outcome: 'answered' },
+        {
+          id: 'tool-1',
+          kind: 'secret',
+          scope: { agentSlug: 'agent-a', sessionId: 'session-1' },
+          outcome: 'answered',
+        },
       ])
+    })
+
+    it('getRecentResolution returns the settled record, newest first, then nothing', () => {
+      expect(manager.getRecentResolution('tool-1')).toBeUndefined()
+      manager.register(secretRequest())
+      manager.resolve('tool-1', 'declined')
+      expect(manager.getRecentResolution('tool-1')).toEqual({
+        id: 'tool-1',
+        kind: 'secret',
+        scope: { agentSlug: 'agent-a', sessionId: 'session-1' },
+        outcome: 'declined',
+      })
+      // Re-registration under a different scope wins the trail on settlement.
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-b', sessionId: 'session-2' } }))
+      manager.resolve('tool-1', 'answered')
+      expect(manager.getRecentResolution('tool-1')).toMatchObject({
+        scope: { agentSlug: 'agent-b', sessionId: 'session-2' },
+        outcome: 'answered',
+      })
     })
 
     it('is idempotent: unknown ids are a no-op returning null', () => {

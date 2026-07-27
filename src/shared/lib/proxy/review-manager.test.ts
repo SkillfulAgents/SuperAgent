@@ -740,7 +740,7 @@ describe('ReviewManager shadow registry write-through (Phase 2)', () => {
     manager.submitDecision(reviewId, 'allow')
     await promise
     expect(userInputRequestManager.getAgentScopedRequests('shadow-agent')).toHaveLength(0)
-    expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
       id: reviewId,
       kind: 'proxy_review',
       outcome: 'answered',
@@ -754,7 +754,7 @@ describe('ReviewManager shadow registry write-through (Phase 2)', () => {
 
     vi.advanceTimersByTime(5 * 60 * 1000)
     await expect(promise).rejects.toThrow('Review timeout')
-    expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
       id: reviewId,
       kind: 'proxy_review',
       outcome: 'timeout',
@@ -769,7 +769,7 @@ describe('ReviewManager shadow registry write-through (Phase 2)', () => {
 
     controller.abort()
     await expect(promise).rejects.toThrow('Request aborted')
-    expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
       id: reviewId,
       kind: 'proxy_review',
       outcome: 'cancelled',
@@ -860,7 +860,7 @@ describe('ReviewManager as registry adapter (Phase 5)', () => {
     registerRegistryOnlyReview('registry-review-2')
     expect(manager.submitDecision('registry-review-2', 'allow')).toBe(true)
     expect(userInputRequestManager.getAgentScopedRequests('adapter-agent')).toHaveLength(0)
-    expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
       id: 'registry-review-2',
       kind: 'proxy_review',
       outcome: 'answered',

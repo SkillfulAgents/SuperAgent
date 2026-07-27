@@ -973,7 +973,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(
           userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
         ).not.toContain(toolId)
-        expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+        expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
           id: toolId,
           kind: KIND_BY_SSE_TYPE[kindCase.sseType],
           outcome: 'answered',
@@ -998,7 +998,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
       messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-cu-1')
       expect(userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'computer_use')).toEqual([])
-      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-cu-1',
         kind: 'computer_use',
         outcome: 'answered',
@@ -1070,7 +1070,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         ).toContain('shadow-out-1')
       })
       messagePersister.completeCapabilityReview(SESSION_ID, 'shadow-out-1', 'declined')
-      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-out-1',
         kind: 'capability_review',
         outcome: 'declined',
@@ -1079,7 +1079,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       // Computer use denied, then a second one consumed by an execution failure.
       simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-2', { x: 1, y: 2 })
       messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-out-2', 'declined')
-      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-out-2',
         kind: 'computer_use',
         outcome: 'declined',
@@ -1087,7 +1087,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
       simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-3', { x: 3, y: 4 })
       messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-out-3', 'invalidated')
-      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-out-3',
         kind: 'computer_use',
         outcome: 'invalidated',

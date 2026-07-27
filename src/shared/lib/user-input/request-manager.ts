@@ -4,6 +4,7 @@ import {
   type PendingUserInputRequest,
   type PendingUserInputRequestInput,
   type UserInputRequestOutcome,
+  type UserInputRequestScope,
   type UserInputRequestStore,
 } from './request-schema'
 
@@ -33,17 +34,32 @@ export interface UserInputRequestTransition {
   outcome?: UserInputRequestOutcome
 }
 
+/**
+ * A settled request as the bounded resolution trail remembers it: enough
+ * identity (kind + scope) to re-run the same authorization checks an open
+ * request gets, plus how it settled.
+ */
+export interface SettledUserInputRequest {
+  id: string
+  kind: PendingUserInputRequest['kind']
+  scope: UserInputRequestScope
+  outcome: UserInputRequestOutcome
+}
+
 export class UserInputRequestManager {
   private requests = new Map<string, PendingUserInputRequest>()
 
   private transitionListeners = new Set<(transition: UserInputRequestTransition) => void>()
 
-  /** Bounded trail of recent settlements, for shadow-mode debugging and tests. */
-  private recentResolutions: Array<{
-    id: string
-    kind: PendingUserInputRequest['kind']
-    outcome: UserInputRequestOutcome
-  }> = []
+  /**
+   * Bounded trail of recent settlements, for shadow-mode debugging and tests.
+   * Carries kind AND scope, not just the outcome: the decision routes' gate
+   * validates a settled request exactly like an open one, so a settled id must
+   * stay as tightly bound to its route as it was while open — otherwise the
+   * moment a request settles, its outcome becomes readable through any agent's
+   * route of any kind.
+   */
+  private recentResolutions: SettledUserInputRequest[] = []
 
   private storeMismatchCount = 0
 
@@ -88,7 +104,7 @@ export class UserInputRequestManager {
     const request = this.requests.get(id)
     if (!request) return null
     this.requests.delete(id)
-    this.recentResolutions.push({ id, kind: request.kind, outcome })
+    this.recentResolutions.push({ id, kind: request.kind, scope: request.scope, outcome })
     if (this.recentResolutions.length > 100) this.recentResolutions.shift()
     this.emitTransition({ type: 'resolved', request, outcome })
     return request
@@ -170,13 +186,16 @@ export class UserInputRequestManager {
   }
 
   /**
-   * The outcome a request settled with, while it is still on the bounded
-   * resolution trail. Lets an already-settled decision answer with what
-   * actually happened instead of a bare "already settled".
+   * How a request settled, while it is still on the bounded resolution trail.
+   * Lets an already-settled decision answer with what actually happened
+   * instead of a bare "already settled" — but the caller must first check the
+   * returned kind and scope against the route it arrived on, exactly as it
+   * would for an open request. Once the trail rotates the record out, the id
+   * is indistinguishable from one that never existed.
    */
-  getRecentResolutionOutcome(id: string): UserInputRequestOutcome | undefined {
+  getRecentResolution(id: string): SettledUserInputRequest | undefined {
     for (let i = this.recentResolutions.length - 1; i >= 0; i--) {
-      if (this.recentResolutions[i].id === id) return this.recentResolutions[i].outcome
+      if (this.recentResolutions[i].id === id) return this.recentResolutions[i]
     }
     return undefined
   }
@@ -326,11 +345,7 @@ export class UserInputRequestManager {
   get stats(): {
     open: number
     storeMismatches: number
-    recentResolutions: Array<{
-      id: string
-      kind: PendingUserInputRequest['kind']
-      outcome: UserInputRequestOutcome
-    }>
+    recentResolutions: SettledUserInputRequest[]
   } {
     return {
       open: this.requests.size,

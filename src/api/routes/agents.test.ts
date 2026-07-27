@@ -3393,11 +3393,13 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     kind: string,
     sessionId: string | undefined = 'sess-1',
     payload: Record<string, unknown> = {},
+    // null (not undefined — that would take the default) omits the agent.
+    agentSlug: string | null = 'test-agent',
   ) {
     userInputRequestManager.register({
       id,
       kind,
-      scope: { agentSlug: 'test-agent', ...(sessionId ? { sessionId } : {}) },
+      scope: { ...(agentSlug ? { agentSlug } : {}), ...(sessionId ? { sessionId } : {}) },
       blocking: true,
       autoApproved: false,
       payload,
@@ -3543,6 +3545,99 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     const json = (await res.json()) as Record<string, unknown>
     expect(json.alreadySettled).toBeUndefined()
     expect(mockContainerFetch).toHaveBeenCalled()
+  })
+
+  it.each(GATE_CASES)(
+    "$label cannot decide a request parked for a DIFFERENT agent",
+    async ({ url, kind, body }) => {
+      // toolUseId is a caller-supplied pointer into one global, cross-agent
+      // registry. Without an agent-bound check, another agent's parked ask is
+      // decidable here — and these routes reach host side effects (run-script
+      // executes on the host, computer-use drives the machine).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.mocked(getSession).mockResolvedValue({ id: 'sess-1' } as any)
+      parkOpen(body.toolUseId as string, kind, 'sess-1', {}, 'victim-agent')
+      const res = await postJson(app, url, body)
+      expect(res.status).toBe(404)
+      expect(mockContainerFetch).not.toHaveBeenCalled()
+      expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+      // Still open — a rejected probe must not settle what it could not decide.
+      expect(userInputRequestManager.getOpenRequest(body.toolUseId as string)).not.toBeNull()
+    },
+  )
+
+  it('the internal _auto session waives the session check ONLY, never the agent check', async () => {
+    parkOpen('tool-gate-auto-x', 'computer_use', 'sess-real', {}, 'victim-agent')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/_auto/computer-use', {
+      toolUseId: 'tool-gate-auto-x',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('a request with no agent in scope is unattributable and decidable by nobody', async () => {
+    parkOpen('tool-gate-noagent', 'secret', 'sess-1', {}, null)
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-noagent',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it("does not disclose a settled outcome to another agent's route", async () => {
+    // Settling must not widen who may read the record: the same 404 an open
+    // cross-agent probe gets, not the outcome.
+    parkOpen('tool-gate-settled-agent', 'secret', 'sess-1', {}, 'victim-agent')
+    userInputRequestManager.resolve('tool-gate-settled-agent', 'answered')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-settled-agent',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Request not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('does not disclose a settled outcome through a route of another kind', async () => {
+    parkOpen('tool-gate-settled-kind', 'secret')
+    userInputRequestManager.resolve('tool-gate-settled-kind', 'answered')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/answer-question', {
+      toolUseId: 'tool-gate-settled-kind',
+      answers: { Q: 'A' },
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Request not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it("does not disclose a settled outcome through another session's route", async () => {
+    parkOpen('tool-gate-settled-sess', 'secret', 'sess-2')
+    userInputRequestManager.resolve('tool-gate-settled-sess', 'declined')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-settled-sess',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Request not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('an id that never existed still gets the outcome-less settled shape', async () => {
+    // Unknown and rotated-off-the-trail ids are indistinguishable, and a stale
+    // card must still be able to dismiss itself.
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-never',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, alreadySettled: true })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 })
 
