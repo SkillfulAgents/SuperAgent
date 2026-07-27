@@ -10,8 +10,7 @@ import {
 
 /**
  * Host-side registry of every pending user-input request — THE pending store.
- * There is no second one: the per-session replay mirror the persister used to
- * keep, and the legacy per-type SSE events it fed, are gone.
+ * There is no second one.
  *
  * Everything downstream derives from this registry: the session "awaiting
  * input" status (`isSessionAwaiting` — the persister's bit is an

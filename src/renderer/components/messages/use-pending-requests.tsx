@@ -433,12 +433,10 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
 /**
  * The browser tray's view of open browser_input requests.
  *
- * The tray used to read a per-session array fed by the legacy
- * `browser_input_request` SSE event; this reads the same unified snapshot the
- * in-chat cards do, so a request the registry recovered — or one settled on
- * another surface — reaches the tray as well. The cost is timing: the overlay
- * now appears after the created event's refetch rather than synchronously with
- * the event.
+ * Reads the same unified snapshot the in-chat cards project from, so a request
+ * the registry recovered — or one settled on another surface — reaches the tray
+ * too. The tradeoff is timing: the overlay appears one snapshot refetch after
+ * the created event rather than synchronously with it.
  */
 export function usePendingBrowserInputRequests(
   sessionId: string,
@@ -509,11 +507,11 @@ export function usePendingRequests({
     autoApprovedComputerUseIds,
   } = useMessageStream(sessionId, agentSlug)
 
-  // The unified store is the ONLY source for reviews and capability reviews,
-  // and the primary one for every other kind. The streaming/message-history
-  // fallbacks below still cover the transcript-recovery path (recovered
-  // entries are in the snapshot but carry no payload, so the per-kind guards
-  // drop them; the transcript renders them).
+  // The snapshot is the only source for reviews and capability reviews, and
+  // the primary one for every other kind. The streaming/message-history
+  // fallbacks below cover the transcript-recovery path: recovered entries are
+  // in the snapshot but carry no payload, so the per-kind guards drop them and
+  // the transcript is what renders them.
   const { data: unifiedRequestsData } = usePendingUserRequests(agentSlug, sessionId)
   const unified = useMemo(() => {
     const requests = unifiedRequestsData ?? []

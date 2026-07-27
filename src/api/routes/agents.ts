@@ -2220,11 +2220,6 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         event: 'message',
       })
 
-      // No per-request replay here any more. Open requests are read from the
-      // pending-requests snapshot, which the 'connected' event above tells the
-      // client to refetch — one consistent read instead of a stream of
-      // one-shot events a late joiner could half-miss.
-
       // Replay current computer use grab state (with icon if cached)
       const agentSlugForStream = getAgentId(c)
       const grabbedApp = computerUsePermissionManager.getGrabbedApp(agentSlugForStream)
@@ -5506,10 +5501,8 @@ setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 // session of the agent). This is the recovery source for the unified client
 // store: mount, reconnect, and invalidation refetch from here; live updates
 // arrive as user_request_created / user_request_resolved on the session and
-// global SSE streams. The legacy per-type events still fire server-side for
-// the renderer's two narrow holdouts: the browser tray's browser_input_request
-// feed and the script/computer-use auto-approved suppress-sets. (The chat
-// integrations moved onto this wire in Phase 7 and ignore the legacy events.)
+// global SSE streams; clients treat those as invalidation triggers and read
+// the resulting state from here.
 agents.get('/:id/pending-requests', AgentRead(), (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.query('sessionId') || undefined
@@ -5519,10 +5512,6 @@ agents.get('/:id/pending-requests', AgentRead(), (c) => {
 // =============================================================================
 // Proxy review endpoints
 // =============================================================================
-
-// Listing pending reviews is the pending-requests snapshot's job — reviews are
-// registry entries like every other request kind, and the dedicated poll this
-// route served is gone.
 
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {

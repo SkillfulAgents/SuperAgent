@@ -278,8 +278,8 @@ class MessagePersister {
     // mutation paths drove it — broadcasts ONE typed event, to the global
     // stream always and to the session stream when session-scoped. Emitting
     // from the registry's single funnel (instead of per-callsite) is what
-    // makes a silent settle impossible on this wire. It is now the ONLY
-    // request wire: every consumer — renderer, chat connectors, Electron
+    // makes a silent settle impossible on this wire. It is the only request
+    // wire there is: every consumer — renderer, chat connectors, Electron
     // main, notifications — reads these events and the snapshot they point at.
     userInputRequestManager.onTransition((transition) => {
       this.broadcastRequestTransition(transition)
@@ -296,8 +296,7 @@ class MessagePersister {
 
   /**
    * One notification per registered request, driven by the registry 'created'
-   * transition. Replaces the per-handler trigger callsites (nine in this file
-   * plus ReviewManager's).
+   * transition.
    */
   private dispatchRequestNotification(request: PendingUserInputRequest): void {
     // Recovered synthetics were notified by the original process before it
@@ -1297,9 +1296,9 @@ class MessagePersister {
   // Broadcast to SSE clients
   private broadcastToSSE(sessionId: string, data: unknown): void {
     this.capture?.recordOutput(sessionId, data)
-    // Turn boundaries settle whatever the last turn left parked. This is the
-    // only request bookkeeping left on the broadcast path: registration itself
-    // lives in the per-kind handlers now.
+    // Turn boundaries settle whatever the last turn left parked. That is the
+    // only request bookkeeping on the broadcast path — registration itself
+    // lives in the per-kind handlers.
     const evt = data as { type?: string } | null
     if (evt && (evt.type === 'session_active' || evt.type === 'session_idle')) {
       const state = this.streamingStates.get(sessionId)
