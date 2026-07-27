@@ -535,6 +535,72 @@ describe('usePendingRequests', () => {
     expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
   })
 
+  // A client that mounts (or reconnects) after the auto-approved
+  // user_request_created has fired never sees that event, so its live
+  // suppression set is empty. The snapshot is the only thing that still knows
+  // the request was auto-approved — if suppression does not read it, the
+  // transcript fallback draws an approval card for something the server is
+  // already executing, and pressing it can run the side effect twice.
+  it('suppresses an auto-approved computer_use from the snapshot alone (no live event seen)', () => {
+    mockStreamState.isActive = true
+    mockStreamState.autoApprovedComputerUseIds = new Set()
+    mockUnified.data = [
+      unified(
+        'computer_use',
+        'tc-cu-late',
+        { method: 'apps', params: {}, permissionLevel: 'list_apps_windows' },
+        { autoApproved: true },
+      ),
+    ]
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-cu-late',
+            name: 'mcp__computer-use__computer_apps',
+            input: { includeHidden: false },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
+  })
+
+  it('suppresses an auto-approved script_run from the snapshot alone (no live event seen)', () => {
+    mockStreamState.isActive = true
+    mockStreamState.autoApprovedScriptRunIds = new Set()
+    mockUnified.data = [
+      unified(
+        'script_run',
+        'tc-sr-late',
+        { script: 'sw_vers', explanation: 'Check version', scriptType: 'shell' },
+        { autoApproved: true },
+      ),
+    ]
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-sr-late',
+            name: 'mcp__user-input__request_script_run',
+            input: { script: 'sw_vers', explanation: 'Check version', scriptType: 'shell' },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'script_run')).toHaveLength(0)
+  })
+
   it('derives computer-use pending request from ready streaming tool use', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = []

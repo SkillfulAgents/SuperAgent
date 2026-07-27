@@ -20,7 +20,12 @@
  *
  * Run:
  *   node e2e/live/host-restart-recovery.mjs
- *   node e2e/live/host-restart-recovery.mjs --keep-app   # leave app #2 running
+ *   node e2e/live/host-restart-recovery.mjs --keep-app    # leave app #2 running
+ *   node e2e/live/host-restart-recovery.mjs --keep-data   # keep the seeded dir
+ *
+ * The seeded data dir defaults to a private mkdtemp directory and is deleted
+ * on the way out — it carries a copy of settings.json, which holds real API
+ * keys. `--target` is accepted but validated (see assertSafeTarget).
  *
  * Prerequisites: a source data dir with a working LLM key and container
  * runner (the same one the Slack validation suite boots from), Docker running,
@@ -36,7 +41,17 @@
  */
 
 import { spawn, execFileSync } from 'node:child_process'
-import { createWriteStream, mkdirSync, rmSync, copyFileSync, writeFileSync, existsSync } from 'node:fs'
+import {
+  createWriteStream,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  copyFileSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import net from 'node:net'
@@ -54,8 +69,51 @@ const args = Object.fromEntries(
 )
 
 const SOURCE = args.source || process.env.RECOVERY_VALIDATION_SOURCE_DIR || DEFAULT_SOURCE_DATA_DIR
-const TARGET = args.target || path.join(os.homedir(), 'Downloads', 'host-restart-recovery')
 const RUN_DIR = path.join(os.tmpdir(), `host-restart-recovery-${Date.now()}`)
+
+/**
+ * Marker written into the seeded dir. Nothing here recursively deletes a
+ * directory that does not carry it — the seed copies `settings.json` (LLM and
+ * provider API keys) and the host container tokens into this dir, so it is
+ * both a thing worth deleting afterwards and a thing that must never be
+ * pointed at somebody's real data.
+ */
+const MARKER = '.host-restart-recovery-probe'
+
+/**
+ * Refuse a target that could destroy real data if `--target` is wrong: the
+ * source install itself, any ancestor of it, the home directory, or any
+ * ancestor of the repo. An existing directory is only reusable when it carries
+ * the marker from a previous run.
+ */
+function assertSafeTarget(target, source) {
+  const abs = path.resolve(target)
+  const home = realpathSync(os.homedir())
+  const isAncestorOf = (parent, child) => {
+    const p = path.resolve(parent)
+    const c = path.resolve(child)
+    return c === p || c.startsWith(p + path.sep)
+  }
+  const srcAbs = existsSync(source) ? realpathSync(source) : path.resolve(source)
+
+  if (abs === path.parse(abs).root) throw new Error(`refusing to use the filesystem root as target`)
+  if (isAncestorOf(abs, srcAbs)) throw new Error(`target ${abs} is the source data dir or an ancestor of it`)
+  if (abs === home) throw new Error(`refusing to use the home directory as target`)
+  if (isAncestorOf(abs, process.cwd())) throw new Error(`target ${abs} contains the repo`)
+  if (existsSync(abs) && readdirSync(abs).length > 0 && !existsSync(path.join(abs, MARKER))) {
+    throw new Error(
+      `${abs} is not empty and carries no ${MARKER} marker — refusing to delete it. ` +
+        `Pass a fresh --target, or delete it yourself if it really is a leftover run.`,
+    )
+  }
+  return abs
+}
+
+// Default to a private temp dir: the seeded copy holds real credentials, so it
+// has no business living somewhere durable like Downloads.
+const TARGET = args.target
+  ? assertSafeTarget(args.target, SOURCE)
+  : mkdtempSync(path.join(os.tmpdir(), 'host-restart-recovery-'))
 
 /** A slug no real install uses, so `superagent-<slug>` is never someone's agent. */
 const AGENT_SLUG = 'restart-recovery-agent'
@@ -112,8 +170,13 @@ const TABLES_TO_EMPTY = [
 ]
 
 function seed() {
-  rmSync(TARGET, { recursive: true, force: true })
+  // Only ever deletes a dir this probe marked (assertSafeTarget guarantees it,
+  // and mkdtemp targets are ours by construction).
+  if (existsSync(path.join(TARGET, MARKER))) {
+    rmSync(TARGET, { recursive: true, force: true })
+  }
   mkdirSync(path.join(TARGET, 'agents', AGENT_SLUG, 'workspace'), { recursive: true })
+  writeFileSync(path.join(TARGET, MARKER), 'host-restart-recovery probe scratch dir\n')
 
   // settings.json verbatim: the LLM key and container runner have to match the
   // install this is derived from, or nothing runs.
@@ -134,6 +197,21 @@ function seed() {
   }
   exec(TARGET, TABLES_TO_EMPTY.map((t) => `delete from ${t};`).join('\n'))
   log(`seeded data dir: ${TARGET}`)
+}
+
+/**
+ * Remove the seeded copy. It holds `settings.json` (API keys) and the host
+ * container tokens, so leaving it behind is a credential spill, not just
+ * clutter.
+ */
+function removeSeededDataDir() {
+  if (!existsSync(path.join(TARGET, MARKER))) return
+  try {
+    rmSync(TARGET, { recursive: true, force: true })
+    log(`removed seeded data dir ${TARGET}`)
+  } catch (err) {
+    log(`could not remove ${TARGET}: ${err.message} — it holds credentials, delete it by hand`)
+  }
 }
 
 function removeProbeContainer() {
@@ -359,11 +437,13 @@ async function main() {
       check('answering the recovered request settles it', settled === true)
     }
   } finally {
-    if (!args['keep-app']) {
+    if (args['keep-app']) {
+      log(`--keep-app: ${app.base} left running against ${TARGET} (holds credentials)`)
+    } else {
       await stopApp(app, 'app').catch(() => {})
       removeProbeContainer()
-    } else {
-      log(`--keep-app: ${app.base} left running against ${TARGET}`)
+      if (args['keep-data']) log(`--keep-data: ${TARGET} kept (holds credentials)`)
+      else removeSeededDataDir()
     }
   }
 

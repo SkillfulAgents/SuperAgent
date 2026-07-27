@@ -193,6 +193,20 @@ interface UnifiedProjection {
   buckets: PendingRequestBuckets
   capabilityReviews: UnifiedCapabilityReview[]
   reviews: PendingReview[]
+  /**
+   * Ids the server auto-approved and is ALREADY executing, per suppressible
+   * kind. They are deliberately absent from the buckets — no card is owed for
+   * them — but they must still be suppressed, because the streaming and
+   * message-history fallbacks recover the same tool call from the transcript
+   * and would draw an approval card for work already in flight. Pressing it
+   * races the internal `_auto` call and can run the side effect twice.
+   *
+   * This is the reconnect-safe half of the suppression: the live
+   * `user_request_created` event is one-shot, so a client that mounts after it
+   * fired has nothing in its live set and only the snapshot still knows.
+   */
+  autoApprovedScriptRunIds: Set<string>
+  autoApprovedComputerUseIds: Set<string>
 }
 
 function isXAgentOperation(value: unknown): value is 'list' | 'read' | 'invoke' | 'create' {
@@ -285,6 +299,8 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
   const buckets = createPendingRequestBuckets()
   const capabilityReviews: UnifiedCapabilityReview[] = []
   const reviews: PendingReview[] = []
+  const autoApprovedScriptRunIds = new Set<string>()
+  const autoApprovedComputerUseIds = new Set<string>()
 
   for (const request of requests) {
     const payload = request.payload as Record<string, unknown>
@@ -352,7 +368,10 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
       case 'script_run':
         // Auto-approved scripts are already executing server-side; the entry
         // exists so recovery paths can tell "granted" from "waiting".
-        if (request.autoApproved) break
+        if (request.autoApproved) {
+          autoApprovedScriptRunIds.add(request.id)
+          break
+        }
         if (typeof payload.script === 'string' && isScriptType(payload.scriptType)) {
           buckets.scriptRunRequests.push({
             toolUseId: request.id,
@@ -363,7 +382,10 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
         }
         break
       case 'computer_use':
-        if (request.autoApproved) break
+        if (request.autoApproved) {
+          autoApprovedComputerUseIds.add(request.id)
+          break
+        }
         if (typeof payload.method === 'string' && typeof payload.permissionLevel === 'string') {
           buckets.computerUseRequests.push({
             toolUseId: request.id,
@@ -399,7 +421,13 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
     }
   }
 
-  return { buckets, capabilityReviews, reviews }
+  return {
+    buckets,
+    capabilityReviews,
+    reviews,
+    autoApprovedScriptRunIds,
+    autoApprovedComputerUseIds,
+  }
 }
 
 /**
@@ -575,14 +603,28 @@ export function usePendingRequests({
   // fallback ∪ message-history fallback, first occurrence of a toolUseId
   // wins, dismissed ids drop, and the auto-approved suppress-set (script_run
   // and computer_use only) hides requests the server is already executing.
+  // Live event ∪ snapshot. The live sets are written synchronously by
+  // user_request_created (they have to be, to beat the fallback-card flash),
+  // but that event is one-shot: a client that mounts or reconnects after it
+  // fired only learns from the snapshot. Without the union, the transcript
+  // fallback revives an approval card for a request already executing.
+  const suppressedScriptRunIds = useMemo(
+    () => new Set([...autoApprovedScriptRunIds, ...unified.autoApprovedScriptRunIds]),
+    [autoApprovedScriptRunIds, unified.autoApprovedScriptRunIds],
+  )
+  const suppressedComputerUseIds = useMemo(
+    () => new Set([...autoApprovedComputerUseIds, ...unified.autoApprovedComputerUseIds]),
+    [autoApprovedComputerUseIds, unified.autoApprovedComputerUseIds],
+  )
+
   const merged = useMemo(() => {
     const target = createPendingRequestBuckets()
     for (const kind of Object.keys(target) as Array<keyof PendingRequestBuckets>) {
       const suppressed =
         kind === 'scriptRunRequests'
-          ? autoApprovedScriptRunIds
+          ? suppressedScriptRunIds
           : kind === 'computerUseRequests'
-            ? autoApprovedComputerUseIds
+            ? suppressedComputerUseIds
             : undefined
       mergeBucket(
         target,
@@ -599,7 +641,7 @@ export function usePendingRequests({
     return target
   }, [
     unified.buckets, streamingBasedPendingRequests, messagesBasedPendingRequests,
-    isActive, autoApprovedScriptRunIds, autoApprovedComputerUseIds, dismissedRequestIds,
+    isActive, suppressedScriptRunIds, suppressedComputerUseIds, dismissedRequestIds,
   ])
 
   // Capability reviews come from the unified store only — no message-history
