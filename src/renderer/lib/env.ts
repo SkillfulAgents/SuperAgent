@@ -1,5 +1,5 @@
 import { buildDashboardViewPath } from '@shared/lib/dashboard-url'
-import { readPreferredTarget, resolveApiTarget, setActiveTarget } from './api-target'
+import { setActiveTarget } from './api-target'
 
 // Cache for the API base URL (fetched once from Electron main process)
 let cachedApiBaseUrl: string | null = null
@@ -11,6 +11,9 @@ let cachedApiBaseUrl: string | null = null
  * In cloud mode the base URL is the local server's keyed proxy prefix, so every
  * call site keeps targeting loopback and simply arrives at the deployment.
  * Nothing may read the target before this resolves.
+ *
+ * Every renderer calls this, including the quick-dispatch launcher, and they all
+ * get the same answer from main.
  */
 export async function initApiBaseUrl(): Promise<void> {
   try {
@@ -20,14 +23,19 @@ export async function initApiBaseUrl(): Promise<void> {
       return
     }
 
-    const localBaseUrl = await window.electronAPI.getApiUrl()
-    // A missing handler is an older main process, not a failure — treat it as
-    // "no cloud workspace" and carry on locally.
-    const cloudBaseUrl = (await window.electronAPI.getCloudApiUrl?.().catch(() => null)) ?? null
+    // Main settles this: it owns the stored preference, the deployment token
+    // and the proxy key, and it must give every window the same answer. A
+    // missing handler is an older main process, not a failure — carry on
+    // locally.
+    const resolved = await window.electronAPI.getApiTarget?.().catch(() => null)
+    if (resolved) {
+      cachedApiBaseUrl = resolved.baseUrl
+      setActiveTarget(resolved.target, resolved.fallback)
+      return
+    }
 
-    const { target, fallback } = resolveApiTarget(readPreferredTarget(), cloudBaseUrl)
-    cachedApiBaseUrl = target === 'cloud' && cloudBaseUrl ? cloudBaseUrl : localBaseUrl
-    setActiveTarget(target, fallback)
+    cachedApiBaseUrl = await window.electronAPI.getApiUrl()
+    setActiveTarget('local', null)
   } catch (error) {
     // The target must end up settled whatever happens. The getters throw rather
     // than guess, so leaving it unset would turn one failed IPC call into a

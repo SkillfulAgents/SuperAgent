@@ -198,27 +198,39 @@ keeps working exactly as before.
 
 ### How the renderer opts in
 
-`renderer/lib/api-target.ts` owns one question — local or cloud — answered once,
-at boot, from a `localStorage` preference. `initApiBaseUrl()` asks the main
-process for the keyed prefix (`get-cloud-api-url`) and sets it as the base URL
-every call site prefixes; that single value is what moves the whole UI.
+One question — local or cloud — is answered once, at boot, by the **main
+process** (`main/api-target.ts`). `initApiBaseUrl()` asks for the answer
+(`get-api-target`) and sets the returned URL as the base URL every call site
+prefixes; that single value is what moves the whole UI.
 
+- **The preference is main-owned, not renderer-owned**
+  (`services/api-target-preference.ts`, stored in `settings.json`). The app has
+  more than one renderer — the main window and the quick-dispatch launcher are
+  separate `BrowserWindow`s — and they must never disagree about which machine
+  executes work. Everything the decision rests on (the deployment token, the
+  proxy key, the target itself) is already main-owned; the routing decision
+  belongs with them.
 - **The stored preference is an intent, not a promise.** It lives on a machine
   whose workspace may since have been disconnected, so it is only honoured if
-  main answers with a URL. Otherwise the app boots local with a recorded reason
-  (`getTargetFallbackReason()`), rather than into a wall of failed requests
-  against a workspace that is no longer the user's.
-- **Main answers `null` rather than the renderer validating.** That check is
-  `resolveCloudProxyTarget()` — settings only, no network — so boot does not
-  wait on a discovery round-trip that `PlatformService` already runs.
-- **The renderer is told the prefix, never the key.** Assembling it renderer-side
-  would mean handing a secret to the layer the key exists to distrust.
+  a cloud URL is actually available. Otherwise the app boots local with a
+  recorded reason (`getTargetFallbackReason()`), rather than into a wall of
+  failed requests against a workspace that is no longer the user's.
+- **Availability is checked without a network round-trip** —
+  `resolveCloudProxyTarget()` reads settings only, so boot does not wait on a
+  discovery cycle that `PlatformService` already runs.
+- **The renderer is told the finished URL, never the key.** Assembling the
+  prefix renderer-side would mean handing a secret to the layer the key exists
+  to distrust.
 - **The target is frozen for the renderer's lifetime**, and `getActiveTarget()`
   throws if read before boot settles it — `'local'` would be a plausible wrong
   answer whose failure mode is cloud traffic quietly hitting the laptop.
   Switching reloads the window; see the toggle for why that is not a shortcut.
-- Quick-dispatch is a **separate renderer** with its own `initApiBaseUrl()`, so
-  it resolves the same preference independently at its own boot.
+- **Switching tears down the quick-dispatch launcher.** It is pre-created at
+  startup and destroyed only at quit, so it caches its base URL for the entire
+  session. Left alone it would keep dispatching work to the previous Superagent
+  after the main window switched — a divergence no storage change can fix, since
+  the stale value is module state in a live renderer. `applyPreferredApiTarget()`
+  destroys it; it is recreated, with the new target, on next use.
 
 ## Electron-only, by design
 
@@ -286,7 +298,10 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `services/cloud-proxy-target.ts` | What the proxy forwards to; single-flight, rate-limited re-mint |
 | `api/routes/cloud-proxy.ts` | `/cloud/{key}/api/*` → the deployment (HTTP + SSE) |
 | `main/cloud-stream-proxy.ts` | The same, for WebSocket upgrades |
-| `renderer/lib/api-target.ts` | Local or cloud, chosen once at boot; fails closed to local |
+| `shared/lib/api-target.ts` | The target types + pure resolution; fails closed to local |
+| `services/api-target-preference.ts` | The stored preference (main-owned, so all renderers agree) |
+| `main/api-target.ts` | Settles the target per renderer; tears down the launcher on a switch |
+| `renderer/lib/api-target.ts` | The settled target, frozen for the renderer's lifetime |
 | `api/polyfill-api-prefix.ts` | Keeps dashboard-shim API calls on whichever API served the document |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |
