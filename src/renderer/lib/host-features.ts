@@ -31,6 +31,10 @@ import { isElectron } from './env'
  * the API being configured is exactly the machine the user means. Those want a
  * bare `!targetIsRemote()`: what disqualifies them is that the machine is out of
  * reach, not that there is no IPC bridge.
+ *
+ * Truth table across the three reachable configurations, the decision rule, and
+ * the full inventory of gated sites: `docs/cloud-workspace.md` § Capability
+ * gating.
  */
 export function canUseHostFeatures(): boolean {
   return isElectron() && !targetIsRemote()

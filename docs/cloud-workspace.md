@@ -343,20 +343,50 @@ strip above the input (`quick-dispatch.tsx`). A screen-sized portal would be
 wrong there anyway, where the window *is* the panel. Anything that grows into a
 window of its own needs the same treatment.
 
-### What this window cannot do for a workspace it does not run
+### Capability gating: three questions, not one axis
 
-`canUseHostFeatures()` (`renderer/lib/host-features.ts`) is `isElectron() &&
-!targetIsRemote()`, and it is the *only* place that distinction is made.
+Three predicates decide what a window offers. They look like one scale of
+strictness, they are not, and mistaking them for one has already shipped a
+regression — so the distinction is worth holding precisely.
 
-The two questions used to be one. Every host-touching feature asked
+| Predicate | Definition | Asks |
+| --- | --- | --- |
+| `isElectron()` (`renderer/lib/env.ts`) | native window + preload bridge present | Is there a *window* of ours here? |
+| `targetIsRemote()` (`renderer/lib/api-target.ts`) | the settled target is `cloud` | Is the API a machine other than this one? |
+| `canUseHostFeatures()` (`renderer/lib/host-features.ts`) | `isElectron() && !targetIsRemote()` | May this window act on *this* computer on the agents' behalf? |
+
+Only three configurations are reachable. A browser never has a cloud target:
+`initApiBaseUrl()` settles every web renderer to `local`, because there is no
+stored preference and no proxy prefix to read.
+
+| Configuration | `isElectron()` | `targetIsRemote()` | `canUseHostFeatures()` | `!targetIsRemote()` |
+| --- | --- | --- | --- | --- |
+| Electron → local API | yes | no | **yes** | **yes** |
+| Electron → cloud workspace | yes | yes | **no** | **no** |
+| Web build (any deployment) | no | no | **no** | **yes** |
+
+So `canUseHostFeatures()` does narrow `isElectron()` — by exactly one row. But
+read the last column. `!targetIsRemote()` is *true* where `isElectron()` is
+false: it is **broader** than `isElectron()`, not narrower. The two predicates
+are conjunctions of two independent questions, not points on a scale, and they
+disagree in a configuration we ship to every browser.
+
+**The rule that holds up: ask what the feature touches, not what the window is.**
+
+| The feature acts on… | Use | Because |
+| --- | --- | --- |
+| this computer, for the agents | `canUseHostFeatures()` | it needs the bridge *and* needs both machines to be the same one |
+| the machine running the API | `!targetIsRemote()` | a web deployment legitimately offers it — the API *is* the machine the user means |
+| the window itself | `isElectron()` | traffic lights, drag regions, tray, updates, the global shortcut: the target is irrelevant |
+
+The first two questions used to be one. Every host-touching feature asked
 `isElectron()`, which was correct for as long as the desktop app could only
 drive the Superagent on its own machine. In cloud mode it is still Electron —
 the bridge answers, the directory picker opens, `showInFolder` works — but they
 now reach *this* laptop while the agents, their files and their runtime are
-somewhere else. `isElectron()` remains the right question for the window itself:
-traffic lights, drag regions, the tray, app updates, the global shortcut.
+somewhere else.
 
-Gated on it today:
+#### Acts on this computer → `canUseHostFeatures()`
 
 | Site | Why |
 | --- | --- |
@@ -367,21 +397,37 @@ Gated on it today:
 | Computer Use — the settings tab and the System Settings recovery link (`global-settings-page.tsx`, `computer-use-request-item.tsx`) | It drives the machine the agent runs on, and its whole UI is written for that being yours. The missing-permission *list* still shows remotely; only the button that would fix the wrong computer is withdrawn |
 | Dropped/picked folder paths (`file-utils.ts`, `use-message-composer.ts`) | A `folderPath` exists only to be mounted or read by the agent's machine. Remotely, the web route — enumerate and upload the bytes — is the only one that works, and the mount/upload choice is not offered |
 
-### `canUseHostFeatures()` is not the same as "not remote"
+#### Acts on the API's machine → `!targetIsRemote()`
 
-Some features act on the **server**, and a web deployment legitimately offers
-them — the API being configured is exactly the machine the user means. Gating
-those on `canUseHostFeatures()` withdraws them from every browser, not just from
-cloud mode. They take a bare `!targetIsRemote()`:
+These act on the **server**, and a web deployment legitimately offers them — the
+API being configured is exactly the machine the user means. Gating them on
+`canUseHostFeatures()` withdraws them from every browser, not just from cloud
+mode, because that predicate is false in the whole bottom row of the table
+above.
 
-- the wizard's runtime step (`stepsForPath` in `getting-started-wizard.tsx`)
-- the container-setup modal (`container-setup-handler.tsx`)
-- firewall detection (`use-firewall-status.ts`)
+| Site | Why not `canUseHostFeatures()` |
+| --- | --- |
+| The wizard's runtime step (`stepsForPath` in `getting-started-wizard.tsx`) | Self-hosted web onboarding has to set up its own runtime |
+| The container-setup modal (`container-setup-handler.tsx`) | Same, outside the wizard |
+| Firewall detection (`use-firewall-status.ts`) | A web deployment can be behind its own firewall |
+| The login form (`hasInteractiveLogin()` in `auth-mode.ts`) | A web auth-mode deployment has a password to type; a cloud workspace's credential is the proxy's bearer, held by main |
 
 What disqualifies these in cloud mode is that the machine is out of reach — its
 runtime is already provisioned, and its UAC prompt is somewhere nobody here can
 answer — not that there is no IPC bridge. Getting this wrong shifted every
-wizard step for web users and was caught by the wizard E2E.
+wizard step for web users, and the wizard E2E was the *only* thing that caught
+it.
+
+#### Shown *because* the target is remote → `targetIsRemote()`
+
+| Site | Purpose |
+| --- | --- |
+| `cloud-mode-indicator.tsx` | The persistent frame on the main window |
+| `quick-dispatch.tsx` | The launcher's own ring + strip — every window that resolves a target needs its own marker |
+| `auth-gate.tsx` | `WorkspaceReconnect` instead of a login form |
+| `auth-mode.ts` | `isAuthMode()` is `__AUTH_MODE__ \|\| targetIsRemote()` — a cloud workspace *is* an auth-mode deployment |
+| `main/dashboard-window.ts` | Proxy confinement, base-URL-scoped identity, and the "Cloud workspace — " title prefix |
+| `main/api-target.ts` | Tears down the launcher and all popouts on a switch |
 
 **Not gated at all, deliberately.** Where the answer comes from the *server* it
 already comes from the machine that owns it: the host-browser providers and their
@@ -390,6 +436,25 @@ Chrome profiles (`detectAllProviders()`), STT availability
 is being driven. The runtime banner in the sidebar keeps reporting an unavailable
 cloud runtime — that is true wherever it comes from; only the offer to fix it
 here is not.
+
+#### Known soft spots
+
+None of this is enforced. There is no lint rule, roughly a hundred raw
+`window.electronAPI` reads and ~47 `isElectron()` sites, and nothing stops the
+next feature from asking the old question. Specifically, and unfixed:
+
+- **`handleAddMount` (`use-mounts.ts`) is itself ungated** — only the button that
+  calls it consults `canAddMount`. A second caller reintroduces the host-path
+  leak.
+- **Dock shortcuts carry no target.** `create-dock-shortcut` stores
+  `agentSlug`/`dashboardSlug` only, and the deep-link handler opens them against
+  whatever target is active at click time. A shortcut made for a cloud dashboard
+  silently opens the local agent of the same slug, or 404s.
+- **Recent-files attach is on a raw `!!window.electronAPI?.getRecentFiles`**
+  (`attachment-picker.tsx`, `quick-dispatch-menus.tsx`). This one is *correct* —
+  it uploads bytes, not paths, so it works against a workspace exactly as a
+  browser file picker does — but it reads like the oversights above, so leave the
+  reasoning attached to it.
 
 ### Dashboard popouts
 
