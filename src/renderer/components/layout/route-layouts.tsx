@@ -5,6 +5,7 @@ import { UpdateStatusProvider } from '@renderer/context/update-status-context'
 import { UpdateToastNotifier } from '@renderer/components/update-toast-notifier'
 import { AppSidebar } from '@renderer/components/layout/app-sidebar'
 import { WindowControls } from '@renderer/components/layout/window-controls'
+import { CloudModeIndicator } from '@renderer/components/layout/cloud-mode-indicator'
 import { ContainerSetupHandler } from '@renderer/components/settings/container-setup-handler'
 import { SidebarProvider, SidebarInset, useSidebar } from '@renderer/components/ui/sidebar'
 import { CmdHintProvider } from '@renderer/context/cmd-hint-context'
@@ -105,6 +106,7 @@ export function RootLayout() {
           <GlobalNotificationHandler />
           <ContainerSetupHandler />
           <WindowControls />
+          <CloudModeIndicator />
           <UpdateToastNotifier />
           {/* Rendered here (inside the router) so it can use useNavigate. */}
           <SearchDialog />

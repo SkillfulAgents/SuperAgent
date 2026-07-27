@@ -286,6 +286,41 @@ Derived rather than stored, so the two can never disagree.
   still evaluating, *before* that runs, so an eagerly-built client would point at
   the local API forever.
 
+### Choosing the target
+
+`TargetSwitcher` (sidebar footer) is the segmented Local/Cloud control, and
+`useTargetSwitch` holds the logic.
+
+- **Hidden unless there is somewhere to go.** A single-machine user never sees a
+  control with one real option.
+- **Availability is asked only from the local side.** This is the trap:
+  `GET /api/platform-auth/deployments` goes through `apiFetch`, so *in cloud mode
+  it travels through the proxy to the deployment* — and `getCloudWorkspace`
+  self-gates off the Electron main process, so the deployment answers
+  "no workspace" about itself. Believing that would hide the control exactly when
+  the user needs it to get back. Being in cloud mode is its own proof of
+  reachability, so the query is disabled there.
+- **Switching reloads onto `/`, never in place.** Agent ids are per-deployment,
+  so the route you are standing on almost certainly does not exist on the other
+  side; reloading in place lands on a 404 of someone else's agent. Electron uses
+  hash history, so that means setting the fragment and reloading (the document
+  URL must stay pinned to the real `index.html`); the web build assigns `/`.
+- **The React Query cache is cleared before the reload.** The reload drops it
+  anyway — this just keeps the previous Superagent's data off screen during the
+  await.
+- Recording the preference also tears down the quick-dispatch launcher (main does
+  that), so the control only owns *this* window.
+
+### The cloud-mode marker
+
+`CloudModeIndicator` frames the whole window while cloud mode is on. Two windows
+of this app look identical and one of them may be the organization's production
+Superagent, so the state has to be visible before the hand moves rather than
+something you go and check. It is `pointer-events-none` throughout and
+`aria-hidden` — it visually overlaps the window drag region and the native
+traffic lights, and a marker that swallowed clicks there would be worse than no
+marker.
+
 ## Electron-only, by design
 
 The whole feature no-ops off the Electron main process (`process.type === 'browser'`
@@ -360,6 +395,9 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `renderer/lib/auth-client.ts` | Better Auth client, built on first use so it can see the cloud prefix |
 | `renderer/components/auth/workspace-reconnect.tsx` | The no-session screen for cloud mode, and the way back to local |
 | `renderer/lib/cloud-session.ts` | Carries a cloud 401 into the session store, since signing out is not an option |
+| `renderer/hooks/use-target-switch.ts` | Which target, whether the other is reachable, and how to move |
+| `renderer/components/layout/target-switcher.tsx` | The segmented Local/Cloud control |
+| `renderer/components/layout/cloud-mode-indicator.tsx` | The persistent cloud-mode frame |
 | `api/polyfill-api-prefix.ts` | Keeps dashboard-shim API calls on whichever API served the document |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |

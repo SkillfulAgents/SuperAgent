@@ -77,13 +77,38 @@ export async function writePreferredTarget(target: ApiTarget): Promise<void> {
 }
 
 /**
- * Return this app to the local Superagent. The only way to change target: the
- * live one is frozen, so the preference is recorded and the window reloaded.
- * Main tears down the other renderers as part of recording it.
+ * Reload onto the root route.
+ *
+ * Not a plain `reload()`: agent ids are per-deployment, so the route you are
+ * standing on almost certainly does not exist on the other side of a switch —
+ * reloading in place lands on a 404 of someone else's agent. Electron uses hash
+ * history (see `router/history.ts`), where the route lives in the fragment and
+ * the document URL must stay pinned to the real `index.html`; the web build uses
+ * path history, where `/` is the document.
  */
-export async function switchToLocalTarget(): Promise<void> {
-  await writePreferredTarget('local')
+function reloadAtRoot(): void {
+  if (__WEB__) {
+    window.location.assign('/')
+    return
+  }
+  window.location.hash = '#/'
   window.location.reload()
+}
+
+/**
+ * Point this app at a different Superagent. The only way to change target: the
+ * live one is frozen, so the preference is recorded and the window reloaded.
+ * Recording it also tears down the other renderers (main does that), so the
+ * caller only owns this window.
+ */
+export async function switchTarget(target: ApiTarget): Promise<void> {
+  await writePreferredTarget(target)
+  reloadAtRoot()
+}
+
+/** Return this app to the local Superagent. */
+export function switchToLocalTarget(): Promise<void> {
+  return switchTarget('local')
 }
 
 /** Test seam: returns the module to its pre-boot state. */

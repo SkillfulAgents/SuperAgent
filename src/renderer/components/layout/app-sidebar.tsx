@@ -8,6 +8,7 @@ import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { switchToLocalTarget } from '@renderer/lib/api-target'
+import { TargetSwitcher } from '@renderer/components/layout/target-switcher'
 import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
@@ -1003,6 +1004,7 @@ export function AppSidebar() {
       </ErrorBoundary>
 
       <SidebarFooter className="border-t p-0 px-2 pt-1 pb-[env(safe-area-inset-bottom)]">
+        <TargetSwitcher />
         <UserMenu />
         <div className="flex items-center justify-between gap-2">
           <SidebarMenuButton
