@@ -867,6 +867,85 @@ export class SubagentBrowserInputScenario implements MockScenario {
 }
 
 /**
+ * Many subagents across one turn. The activity card renders one row per
+ * subagent and never drops a finished one (subagent_completed upserts), so the
+ * card grows for the whole turn — a run of sequential waves reaches the same
+ * height as one wide fan-out. Most rows arrive already finished, matching the
+ * reported screenshot (20 ✓, 4 running). The turn is held open so the card
+ * stays on screen while the test measures the layout it squeezes.
+ */
+export class SubagentFanoutScenario implements MockScenario {
+  constructor(private count = 24, private runningTail = 4) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const toolIds = Array.from({ length: this.count }, (_, i) => `agent_fanout_${i}`)
+    const describe = (i: number) => `Verify chunk ${i}`
+
+    client.writeJsonlEntry(sessionId, {
+      type: 'user',
+      message: { content: userMessage },
+      timestamp: new Date().toISOString(),
+    })
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, 10)
+
+    setTimeout(() => {
+      // One assistant turn that launched every subagent.
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: {
+          content: toolIds.map((id, i) => ({
+            type: 'tool_use',
+            id,
+            name: 'Task',
+            input: { subagent_type: 'general-purpose', description: describe(i) },
+          })),
+        },
+        timestamp: new Date().toISOString(),
+      })
+
+      // task_started is what puts a row in the card (persister → subagent_started).
+      toolIds.forEach((id, i) => {
+        client.emitStreamMessage(sessionId, {
+          type: 'system',
+          content: {
+            type: 'system',
+            subtype: 'task_started',
+            tool_use_id: id,
+            task_id: `task_fanout_${i}`,
+            subagent_type: 'general-purpose',
+            description: describe(i),
+          },
+        })
+      })
+
+      // Finished subagents keep their row as a ✓ for the rest of the turn.
+      const results = toolIds
+        .slice(0, Math.max(0, this.count - this.runningTail))
+        .map((id) => ({ type: 'tool_result', tool_use_id: id, content: 'done' }))
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: results },
+        timestamp: new Date().toISOString(),
+      })
+      // A 'user' stream message is what makes the client refetch persisted
+      // messages; without it the card has SSE rows but no tool calls to match.
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: { type: 'user', message: { content: results } },
+      })
+    }, 60)
+
+    // No 'result': the turn stays open, like a run still fanning out.
+  }
+}
+
+/**
  * A background subagent parks on request_browser_input and then DIES — its
  * sidechain 'result' arrives with no tool_result for the parked ask — while
  * the main turn keeps running. The host must invalidate the orphaned request
@@ -1701,6 +1780,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       },
     ])],
     ['subagent browser input', new SubagentBrowserInputScenario()],
+    ['subagent fanout', new SubagentFanoutScenario()],
     ['dead subagent input', new DeadSubagentInputScenario()],
     // Proxy review scenario for E2E tests
     // Cross-store mix: container input asks + a parked ReviewManager review

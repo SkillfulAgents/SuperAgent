@@ -102,7 +102,10 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         }
       }
     }
-    return items
+    // Running first, then newest-finished - mirrors the todo list in this card.
+    const running = items.filter((i) => i.status === 'running')
+    const completed = items.filter((i) => i.status === 'completed').reverse()
+    return [...running, ...completed]
   }, [messages, activeSubagents, completedSubagents])
 
   // Derive the todo/task list from TaskCreate/TaskUpdate (newer SDK) or fall back

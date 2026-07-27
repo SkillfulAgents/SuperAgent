@@ -64,7 +64,10 @@ export function SessionThread({
           suppressScrollToBottom={suppressScrollToBottom}
         />
         <div className={`${footerClassName} pb-[env(safe-area-inset-bottom)]`} data-composer-footer>
-          <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
+          {/* vh: % max-height won't resolve against an auto grid row */}
+          <div className="max-h-[40vh] min-h-0 overflow-y-auto">
+            <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
+          </div>
           {footer}
         </div>
       </div>
