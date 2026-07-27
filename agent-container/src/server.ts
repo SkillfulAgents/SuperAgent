@@ -1904,10 +1904,17 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
   // session_state_changed:'idle' as the idle authority from the first turn —
   // a 'result' alone must not end the session while queued messages keep the
   // runtime going.
+  // process_instance: identity of the CLI process backing the session right
+  // now. Background tasks are process-local and a fresh process emits no
+  // initial background_tasks_changed, so a client reconnecting after a restart
+  // it never observed (idle eviction + --resume, container restart — the live
+  // process_restarted broadcast fires before any subscriber exists) would
+  // otherwise keep bookkeeping for tasks that died with the old process.
   ws.send(JSON.stringify({
     type: 'system',
     subtype: 'capabilities',
     session_state_events: true,
+    process_instance: sessionManager.getProcessInstanceId(sessionId),
     timestamp: new Date(),
   }));
 

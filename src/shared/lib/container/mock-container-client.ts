@@ -2727,9 +2727,18 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // before any relayed message so the persister treats state events as the
     // idle authority from the first turn (the mock emits them — see
     // emitSessionState).
+    // process_instance is STABLE per session here: the mock never replaces a
+    // CLI process, so every reattach must name the same one. A fresh id per
+    // subscribe would make each reconnect look like a restart and drop
+    // background tasks that are still running.
     callback({
       type: 'system',
-      content: { type: 'system', subtype: 'capabilities', session_state_events: true },
+      content: {
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+        process_instance: `mock-process-${sessionId}`,
+      },
       timestamp: new Date(),
       sessionId,
     })
