@@ -52,7 +52,7 @@ export function vendorDisplayName(key: string): string {
  * Families outside this set (e.g. 'gpt', where each entry is a distinct tier)
  * keep one row per concrete model.
  */
-const LINEAGE_FAMILIES = new Set(['fable', 'opus', 'sonnet', 'haiku'])
+const LINEAGE_FAMILIES = new Set(['fable', 'opus', 'sonnet', 'haiku', 'kimi'])
 
 /** Chip label for a version: its label minus the family prefix ("Opus 4.8" → "4.8"). */
 function versionChipLabel(label: string, familyName: string): string {

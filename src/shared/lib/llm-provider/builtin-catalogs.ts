@@ -284,6 +284,49 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     contextWindow: 500_000,
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
+  // Kimi, newest first. The K2 line stays listed because it is an order of
+  // magnitude cheaper than K3 and still current on OpenRouter — these are the
+  // same two the Platform proxy serves, so a model pick can move between
+  // providers. No `supportedSpeeds`: OpenRouter ignores our speed header.
+  // All three: pricing and context from OpenRouter's live model list,
+  // vision from its advertised input modalities, fetched 2026-07-27.
+  {
+    id: 'moonshotai/kimi-k3',
+    label: 'Kimi K3',
+    blurb: 'Moonshot AI, routed via OpenRouter',
+    family: 'kimi',
+    isLatest: true,
+    icon: 'kimi',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
+    pricing: { inputPerMtok: 3, outputPerMtok: 15 },
+    contextWindow: 1_048_576,
+    supportsImageInput: true,
+  },
+  {
+    id: 'moonshotai/kimi-k2.7-code',
+    label: 'Kimi K2.7 Code',
+    blurb: 'Moonshot AI coding model, routed via OpenRouter',
+    family: 'kimi',
+    icon: 'kimi',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
+    pricing: { inputPerMtok: 0.73, outputPerMtok: 3.5 },
+    contextWindow: 262_144,
+    supportsImageInput: true,
+  },
+  {
+    id: 'moonshotai/kimi-k2.6',
+    label: 'Kimi K2.6',
+    blurb: 'Moonshot AI, routed via OpenRouter',
+    family: 'kimi',
+    icon: 'kimi',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
+    pricing: { inputPerMtok: 0.646, outputPerMtok: 2.72 },
+    contextWindow: 262_144,
+    supportsImageInput: true,
+  },
 ]
 
 /** OpenRouter — the bare Claude models plus curated non-Claude built-ins. */
