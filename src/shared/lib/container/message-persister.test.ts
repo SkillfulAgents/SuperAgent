@@ -5974,6 +5974,132 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
     })
 
+    // ------------------------------------------------------------------
+    // The level set must drain from BOTH directions. `background_tasks_changed`
+    // is a level signal the SDK only re-emits on a membership CHANGE, and it
+    // emits nothing at all when a fresh CLI process starts. So any id that
+    // enters the snapshot and never leaves it pins the session in
+    // waiting-background forever: every later session_state_changed:'idle'
+    // takes the waiting branch instead of finalizing, and nothing — not a
+    // terminal per-task signal, not Stop, not a re-subscribe — ever clears it.
+    // These cover the three ways prod sessions got stuck that way.
+    // ------------------------------------------------------------------
+
+    it('terminal task signal drains the snapshot when the removal frame never arrives', () => {
+      // Mirror image of the self-heal test above: there the per-task terminal
+      // signal was lost and the snapshot rescued the session; here the snapshot's
+      // removal frame is the one that never comes. A background subagent settles
+      // via task_notification carrying its agentId as task_id — the incremental
+      // map clears, but the stale snapshot id keeps the union non-zero.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      // Background subagent launch: the ack registers it in the incremental map.
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { status: 'async_launched', isAsync: true, agentId: 'agent-bg-1' },
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tool-agent-1',
+            content: 'Async agent launched successfully.',
+          }],
+        },
+      })
+      // The SDK announces the same task in its level set.
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'agent-bg-1', task_type: 'local_agent', description: 'Verify policies' }],
+      })
+
+      // Turn ends while it runs → waiting, as designed.
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      sseEvents.length = 0
+
+      // The subagent finishes. Its terminal signal arrives; the removal snapshot does not.
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'agent-bg-1',
+        tool_use_id: 'tool-agent-1',
+        status: 'completed',
+        summary: 'Agent finished',
+      })
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(0)
+
+      // The wake turn's result + idle must now finalize the session.
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('Stop drains the snapshot so later turns still settle', () => {
+      // The user hits Stop while a background task is live. The process is
+      // replaced, so no terminal signal or removal snapshot will EVER arrive for
+      // that id. If Stop clears only the incremental map, every subsequent turn
+      // in the session ends in waiting-background instead of idle — the session
+      // reads "Working…" at the end of every turn, permanently.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-download' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-download', task_type: 'local_bash', description: 'yt-dlp' }],
+      })
+
+      return messagePersister.markSessionInterrupted(SESSION_ID).then(() => {
+        expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(0)
+
+        // A brand-new turn, with no background work at all.
+        messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+        sseEvents.length = 0
+        mockClient._sendMessage({ type: 'result', subtype: 'success' })
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+        expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
+        expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+        expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      })
+    })
+
+    it('process_restarted drops the snapshot from the dead process', () => {
+      // The level set is per-process and a fresh CLI emits nothing at startup,
+      // so ids from the previous process can never be retired by the SDK. The
+      // container announces the replacement (idle eviction + --resume, crash,
+      // MCP-injection restart) and the host must reset to the empty set.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-doomed', task_type: 'local_bash', description: 'Sleep' }],
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      // The CLI process is replaced; its background tasks died with it.
+      mockClient._sendMessage({ type: 'system', subtype: 'process_restarted' })
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
     it('forwards command_lifecycle frames to SSE and drops malformed ones', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       sseEvents.length = 0

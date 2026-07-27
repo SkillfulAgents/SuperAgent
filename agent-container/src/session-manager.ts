@@ -331,6 +331,7 @@ export class SessionManager extends EventEmitter {
     // initial snapshot — carried-over ids would pin the session forever.
     process.on('query-start', () => {
       sessionData.settlement.resetBackgroundTasks();
+      this.announceProcessRestart(sessionId);
     });
 
     process.on('stderr', (error: string) => {
@@ -618,6 +619,7 @@ export class SessionManager extends EventEmitter {
 
       process.on('query-start', () => {
         data.settlement.resetBackgroundTasks();
+        this.announceProcessRestart(sessionId);
       });
 
       process.on('stderr', (error: string) => {
@@ -796,6 +798,20 @@ export class SessionManager extends EventEmitter {
       } catch (error) {
         console.error(`Error in subscriber callback:`, error);
       }
+    });
+  }
+
+  // The host keeps its own copy of the background-task level set and has no
+  // other way to learn the CLI was replaced: `query-start` is in-process, and
+  // the SDK deliberately emits no background_tasks_changed at startup. Relay it
+  // so the host can reset the same bookkeeping resetBackgroundTasks() just did
+  // — otherwise ids from the dead process pin its session "working" forever.
+  private announceProcessRestart(sessionId: string): void {
+    this.broadcast(sessionId, {
+      type: 'system',
+      subtype: 'process_restarted',
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
     });
   }
 

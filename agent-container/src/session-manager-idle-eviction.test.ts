@@ -689,6 +689,23 @@ describe('SessionManager idle eviction', () => {
     expect(proc.stopCalls).toBe(1)
   })
 
+  it('announces process replacement to subscribers so the host can reset too', async () => {
+    // The host keeps its own copy of the background-task level set and has no
+    // other way to learn the CLI was replaced — `query-start` is an in-process
+    // event. Without this frame the host's snapshot keeps ids from the dead
+    // process forever and pins the session "working" at the end of every turn.
+    const { id, proc } = await createIdleSession()
+    const received: Array<Record<string, unknown>> = []
+    const unsubscribe = manager.subscribe(id, (msg) => received.push(msg as Record<string, unknown>))
+
+    proc.emit('query-start')
+    unsubscribe()
+
+    expect(received).toContainEqual(
+      expect.objectContaining({ type: 'system', subtype: 'process_restarted' })
+    )
+  })
+
   it('a shouldQuery:false append does NOT promote an automated session', async () => {
     const promoManager = new SessionManager(workDir, {
       prewarmEnabled: false,

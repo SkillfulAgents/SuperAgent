@@ -963,6 +963,11 @@ class MessagePersister {
       state.currentToolInput = ''
       state.activeSubagents.clear()
       state.activeBackgroundTasks.clear()
+      // Stop replaces the CLI process, so its background tasks are gone and no
+      // terminal signal or removal snapshot will ever arrive for them. Dropping
+      // only the incremental map would leave the level set stale for the life of
+      // the session — every later turn would end waiting-background, never idle.
+      state.bgTasksSnapshot = null
       this.stopAllWorkflowTailers(sessionId)
     }
 
@@ -1401,9 +1406,14 @@ class MessagePersister {
     // carrying this task's id + status. The busy path (task settles while a foreground
     // tool is in flight) is handled separately via `task_updated` in the system switch
     // below — that path does NOT emit a matching `task_notification`.
-    if (content.type === 'system' && state.activeBackgroundTasks.size > 0) {
+    // Runs whether or not the id is in the incremental map: the snapshot can
+    // carry ids the map never had (a subagent's own nested background agents
+    // notify onto the lead session), and those must retire here or they pin
+    // the union forever. clearBackgroundTask no-ops the broadcast side for
+    // anything untracked.
+    if (content.type === 'system') {
       const taskId = content.task_id as string | undefined
-      if (taskId && content.status && state.activeBackgroundTasks.has(taskId)) {
+      if (taskId && content.status) {
         this.clearBackgroundTask(sessionId, state, taskId)
       }
     }
@@ -1735,7 +1745,9 @@ class MessagePersister {
           const taskId = content.task_id as string | undefined
           const status = (content.patch as { status?: string } | undefined)?.status
           const isTerminal = status === 'completed' || status === 'failed' || status === 'killed'
-          if (taskId && isTerminal && state.activeBackgroundTasks.has(taskId)) {
+          // Unconditional on map membership, same reason as the task_notification
+          // path above: the id may only exist in the snapshot.
+          if (taskId && isTerminal) {
             this.clearBackgroundTask(sessionId, state, taskId)
           }
           // A background *subagent* (task_type 'local_agent') settles via a
@@ -1774,6 +1786,19 @@ class MessagePersister {
             const summary = typeof content.summary === 'string' ? content.summary : undefined
             this.broadcastSubagentCompleted(sessionId, state, toolUseId!, summary)
           }
+        } else if (content.subtype === 'process_restarted') {
+          // Container-synthesized: the session's CLI process was replaced (idle
+          // eviction + --resume, crash, MCP-injection restart). Background tasks
+          // are process-local and a fresh process emits NO initial
+          // background_tasks_changed, so every id we still hold is unretirable —
+          // no terminal signal or removal snapshot is ever coming. Reset to
+          // "nothing known", matching SessionSettlementTracker.resetBackgroundTasks.
+          // NOT the same as a transport reattach, which must keep the level set:
+          // that's the same live process still running the same tasks.
+          for (const taskId of [...state.activeBackgroundTasks.keys()]) {
+            this.clearBackgroundTask(sessionId, state, taskId)
+          }
+          state.bgTasksSnapshot = null
         } else if (content.subtype === 'capabilities') {
           // The container announces its stream contract when the WebSocket
           // connects, before relaying any SDK message. `session_state_events`
@@ -2168,6 +2193,9 @@ class MessagePersister {
     state.currentToolInput = ''
     state.activeSubagents.clear()
     state.activeBackgroundTasks.clear()
+    // The runtime is gone; its background tasks went with it (same reasoning as
+    // markSessionInterrupted).
+    state.bgTasksSnapshot = null
     this.stopAllWorkflowTailers(sessionId)
     if (diedMidTurn) {
       // Mirror the result-error path: settle isActive BEFORE broadcasting so
@@ -2336,6 +2364,10 @@ class MessagePersister {
   // briefly know a task the other doesn't. Counting the union means a missed
   // registration can't cause a premature idle and a missed terminal signal
   // can't pin the session forever (the snapshot self-heal below clears it).
+  // Both directions must drain, or the union stops being a safety net and
+  // becomes a permanent pin: the SDK re-emits the level only on a membership
+  // CHANGE and emits nothing at all for a fresh process, so an id that enters
+  // bgTasksSnapshot and never leaves it can never be retired by the SDK.
   private openBackgroundWorkCount(state: StreamingState): number {
     if (!state.bgTasksSnapshot) return state.activeBackgroundTasks.size
     const union = new Set(state.activeBackgroundTasks.keys())
@@ -2344,6 +2376,11 @@ class MessagePersister {
   }
 
   private clearBackgroundTask(sessionId: string, state: StreamingState, taskId: string): boolean {
+    // Retire the id from the level set too. A terminal per-task signal normally
+    // trails the snapshot that already dropped the task and this is a no-op; if
+    // that removal frame never arrives, the freshest information has to win or
+    // the union pins the session. Mirrors SessionSettlementTracker.removeTask.
+    state.bgTasksSnapshot?.delete(taskId)
     const info = state.activeBackgroundTasks.get(taskId)
     if (!info) return false
     state.activeBackgroundTasks.delete(taskId)
