@@ -9,12 +9,8 @@ import {
 } from './request-schema'
 
 /**
- * Host-side registry of every pending user-input request — THE single pending
- * store. Computer-use and review requests live only here; stream kinds keep a
- * write-through mirror in the persister's per-session replay store
- * (`pendingInputRequests`, verified by `verifyStoreParity`) because the
- * /stream route replays the legacy per-type events from it verbatim for the
- * renderer's remaining holdouts. Phase 8 collapses that mirror.
+ * Host-side registry of every pending user-input request — THE pending store.
+ * There is no second one.
  *
  * Everything downstream derives from this registry: the session "awaiting
  * input" status (`isSessionAwaiting` — the persister's bit is an
@@ -72,7 +68,7 @@ export class UserInputRequestManager {
    */
   private claimed = new Set<string>()
 
-  private storeMismatchCount = 0
+  private mismatchCount = 0
 
   /**
    * Register a pending request. First delivery wins: re-registering an id that
@@ -324,46 +320,13 @@ export class UserInputRequestManager {
     return false
   }
 
-  private static describeIdMismatch(
-    label: string,
-    storeIds: string[],
-    registryIds: string[],
-  ): string | null {
-    const expected = [...storeIds].sort()
-    const actual = [...registryIds].sort()
-    if (expected.length === actual.length && expected.every((id, i) => id === actual[i])) {
-      return null
-    }
-    return `${label}: store=[${expected.join(',')}] registry=[${actual.join(',')}]`
-  }
-
-  private reportStoreMismatch(scope: string, context: string, mismatches: string[]): void {
-    this.storeMismatchCount++
+  private reportMismatch(scope: string, context: string, mismatches: string[]): void {
+    this.mismatchCount++
     const message =
-      `[UserInputRequestManager] shadow store mismatch (${scope}, ` +
+      `[UserInputRequestManager] shadow mismatch (${scope}, ` +
       `context=${context}): ${mismatches.join('; ')}`
     if (process.env.VITEST) throw new Error(message)
     console.error(message)
-  }
-
-  /**
-   * Shadow invariant: the registry's per-store view of a session must equal the
-   * legacy store exactly, at every store mutation point. Under vitest a
-   * mismatch throws (mutation paths swallow errors in places, so tests should
-   * ALSO assert `stats.storeMismatches === 0`); in dev it logs.
-   */
-  verifyStoreParity(check: {
-    sessionId: string
-    context: string
-    streamStoreIds: string[]
-  }): void {
-    const mismatch = UserInputRequestManager.describeIdMismatch(
-      'stream',
-      check.streamStoreIds,
-      this.getStoreIdsForSession(check.sessionId, 'stream'),
-    )
-    if (mismatch === null) return
-    this.reportStoreMismatch(`session=${check.sessionId}`, check.context, [mismatch])
   }
 
   /**
@@ -377,7 +340,7 @@ export class UserInputRequestManager {
     const registryIds = new Set(this.getOpenRequestsForStore('review').map((r) => r.id))
     const orphans = check.settlerIds.filter((id) => !registryIds.has(id))
     if (orphans.length === 0) return
-    this.reportStoreMismatch('review-settlers', check.context, [
+    this.reportMismatch('review-settlers', check.context, [
       `orphaned settlers=[${[...orphans].sort().join(',')}]`,
     ])
   }
@@ -386,13 +349,13 @@ export class UserInputRequestManager {
     open: number
     /** In-flight decision reservations. A non-zero idle value is a leaked claim. */
     claimed: number
-    storeMismatches: number
+    mismatches: number
     recentResolutions: SettledUserInputRequest[]
   } {
     return {
       open: this.requests.size,
       claimed: this.claimed.size,
-      storeMismatches: this.storeMismatchCount,
+      mismatches: this.mismatchCount,
       recentResolutions: [...this.recentResolutions],
     }
   }
@@ -402,7 +365,7 @@ export class UserInputRequestManager {
     this.requests.clear()
     this.claimed.clear()
     this.recentResolutions = []
-    this.storeMismatchCount = 0
+    this.mismatchCount = 0
   }
 }
 

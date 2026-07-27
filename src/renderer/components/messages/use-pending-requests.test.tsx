@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
-import { usePendingRequests, type PendingRequestDescriptor } from './use-pending-requests'
+import {
+  usePendingRequests,
+  usePendingBrowserInputRequests,
+  type PendingRequestDescriptor,
+} from './use-pending-requests'
 import { createAssistantMessage, createUserMessage, createToolCall } from '@renderer/test/factories'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
@@ -20,33 +24,19 @@ vi.mock('@renderer/hooks/use-messages', () => ({
 // now; the per-kind pending arrays moved to the unified store.
 const mockStreamState = {
   isActive: false,
-  // Kept as the cold-start fallback source for capability reviews (no
-  // message-history recovery exists for them) until the first snapshot lands.
-  pendingCapabilityReviewRequests: [] as Array<{ toolUseId: string; capability: 'subagents' | 'workflows'; toolName: string; input: Record<string, unknown> }>,
   streamingToolUses: [] as Array<{ id: string; name: string; partialInput: string; ready?: boolean }>,
   autoApprovedScriptRunIds: new Set<string>(),
   autoApprovedComputerUseIds: new Set<string>(),
 }
 
-const mockRemovePendingRequestsByToolUseId = vi.fn()
-
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
-  removePendingRequestsByToolUseId: (...args: unknown[]) =>
-    mockRemovePendingRequestsByToolUseId(...args),
 }))
 
 // Mock the unified pending-request store — mutable per test.
 const mockUnified: { data: PendingUserInputRequest[] | undefined } = { data: [] }
 vi.mock('@renderer/hooks/use-pending-user-requests', () => ({
   usePendingUserRequests: () => ({ data: mockUnified.data }),
-}))
-
-// Legacy review poll — consumed ONLY as the cold-start fallback while the
-// snapshot has never succeeded (data === undefined).
-const mockLegacyProxyReviews: { reviews: Array<Record<string, unknown>> } = { reviews: [] }
-vi.mock('@renderer/hooks/use-proxy-reviews', () => ({
-  usePendingProxyReviews: () => ({ data: mockLegacyProxyReviews }),
 }))
 
 // The hook uses the query client only to invalidate on review completion —
@@ -94,10 +84,8 @@ describe('usePendingRequests', () => {
     mockMessagesData.data = undefined
     mockMessagesData.isLoading = false
     mockUnified.data = []
-    mockLegacyProxyReviews.reviews = []
     Object.assign(mockStreamState, {
       isActive: false,
-      pendingCapabilityReviewRequests: [],
       streamingToolUses: [],
       autoApprovedScriptRunIds: new Set<string>(),
       autoApprovedComputerUseIds: new Set<string>(),
@@ -182,66 +170,6 @@ describe('usePendingRequests', () => {
     const matches = ofKind(result.current.items, 'remote_mcp')
     expect(matches).toHaveLength(1)
     expect(matches[0].url).toBe('https://mcp.test.com')
-  })
-
-  it('before the first snapshot, proxy reviews fall back to the legacy poll (blocked ≠ cardless)', () => {
-    // undefined = the snapshot has NEVER succeeded (cold fetch failure /
-    // still in flight) — distinct from a successful empty []. Reviews have
-    // no message-history or streaming recovery, so without this fallback a
-    // blocked agent has no card the user can approve until a retry lands.
-    mockUnified.data = undefined
-    mockLegacyProxyReviews.reviews = [
-      {
-        id: 'review-fb',
-        agentSlug: 'agent-1',
-        accountId: 'acct-1',
-        toolkit: 'github',
-        method: 'POST',
-        targetPath: '/repos/me/x',
-        matchedScopes: [],
-        scopeDescriptions: {},
-        displayText: 'Push to repo',
-      },
-    ]
-
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-
-    const matches = ofKind(result.current.items, 'proxy_review')
-    expect(matches).toHaveLength(1)
-    expect(matches[0].reviewId).toBe('review-fb')
-  })
-
-  it('a successful snapshot is authoritative — the legacy poll no longer contributes reviews', () => {
-    mockUnified.data = []
-    mockLegacyProxyReviews.reviews = [
-      {
-        id: 'review-stale',
-        agentSlug: 'agent-1',
-        accountId: 'acct-1',
-        toolkit: 'github',
-        method: 'POST',
-        targetPath: '/x',
-        matchedScopes: [],
-        scopeDescriptions: {},
-      },
-    ]
-
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    expect(ofKind(result.current.items, 'proxy_review')).toHaveLength(0)
-  })
-
-  it('before the first snapshot, capability reviews fall back to the stream source', () => {
-    mockStreamState.isActive = true
-    mockUnified.data = undefined
-    mockStreamState.pendingCapabilityReviewRequests = [
-      { toolUseId: 'tu-cap-fb', capability: 'workflows', toolName: 'Workflow', input: { name: 'audit' } },
-    ]
-
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-
-    const matches = ofKind(result.current.items, 'capability_review')
-    expect(matches).toHaveLength(1)
-    expect(matches[0].toolUseId).toBe('tu-cap-fb')
   })
 
   it('a recovered synthetic envelope renders no card — the transcript covers it', () => {
@@ -611,6 +539,72 @@ describe('usePendingRequests', () => {
     expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
   })
 
+  // A client that mounts (or reconnects) after the auto-approved
+  // user_request_created has fired never sees that event, so its live
+  // suppression set is empty. The snapshot is the only thing that still knows
+  // the request was auto-approved — if suppression does not read it, the
+  // transcript fallback draws an approval card for something the server is
+  // already executing, and pressing it can run the side effect twice.
+  it('suppresses an auto-approved computer_use from the snapshot alone (no live event seen)', () => {
+    mockStreamState.isActive = true
+    mockStreamState.autoApprovedComputerUseIds = new Set()
+    mockUnified.data = [
+      unified(
+        'computer_use',
+        'tc-cu-late',
+        { method: 'apps', params: {}, permissionLevel: 'list_apps_windows' },
+        { autoApproved: true },
+      ),
+    ]
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-cu-late',
+            name: 'mcp__computer-use__computer_apps',
+            input: { includeHidden: false },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
+  })
+
+  it('suppresses an auto-approved script_run from the snapshot alone (no live event seen)', () => {
+    mockStreamState.isActive = true
+    mockStreamState.autoApprovedScriptRunIds = new Set()
+    mockUnified.data = [
+      unified(
+        'script_run',
+        'tc-sr-late',
+        { script: 'sw_vers', explanation: 'Check version', scriptType: 'shell' },
+        { autoApproved: true },
+      ),
+    ]
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-sr-late',
+            name: 'mcp__user-input__request_script_run',
+            input: { script: 'sw_vers', explanation: 'Check version', scriptType: 'shell' },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'script_run')).toHaveLength(0)
+  })
+
   it('derives computer-use pending request from ready streaming tool use', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = []
@@ -925,7 +919,7 @@ describe('usePendingRequests', () => {
     expect(result.current.count).toBe(0)
   })
 
-  it('proxy review onComplete invalidates the unified store (and the legacy review poll)', () => {
+  it('proxy review onComplete invalidates the unified store', () => {
     mockUnified.data = [
       unified(
         'proxy_review',
@@ -938,10 +932,9 @@ describe('usePendingRequests', () => {
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
     ofKind(result.current.items, 'proxy_review')[0].onComplete()
     expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['pending-user-requests'] })
-    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['proxy-reviews'] })
   })
 
-  // ---- onComplete wiring: every kind routes through the shared strip helper ----
+  // ---- onComplete wiring: every kind drops its card synchronously ----
 
   it.each([
     ['secret', 'tu-s', { secretName: 'A' }],
@@ -952,12 +945,19 @@ describe('usePendingRequests', () => {
     ['browser_input', 'tu-b', { message: 'm', requirements: [] }],
     ['script_run', 'tu-r', { script: 'echo', explanation: '', scriptType: 'shell' }],
     ['computer_use', 'tu-cu', { method: 'click', params: {}, permissionLevel: 'high' }],
-  ] as const)('%s onComplete strips the settled id from the stream store', (kind, toolUseId, payload) => {
+  ] as const)('%s onComplete drops the card without waiting for the snapshot', (kind, toolUseId, payload) => {
     mockStreamState.isActive = true
     mockUnified.data = [unified(kind, toolUseId, payload as Record<string, unknown>)]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, kind)[0].onComplete()
-    expect(mockRemovePendingRequestsByToolUseId).toHaveBeenCalledWith('s-1', toolUseId)
+    const { result, rerender } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(ofKind(result.current.items, kind)).toHaveLength(1)
+
+    act(() => {
+      ofKind(result.current.items, kind)[0].onComplete()
+    })
+    // The snapshot still lists it — answering must not leave the card up
+    // until the refetch lands.
+    rerender()
+    expect(ofKind(result.current.items, kind)).toHaveLength(0)
   })
 
   // ---- Arrival-order sort across mixed types ----
@@ -1048,5 +1048,76 @@ describe('usePendingRequests', () => {
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
 
     expect(ofKind(result.current.items, 'capability_review')).toHaveLength(0)
+  })
+})
+
+describe('usePendingBrowserInputRequests', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockUnified.data = []
+  })
+
+  const browserInput = (id: string, message: string) =>
+    unified('browser_input', id, { message, requirements: ['a password'] })
+
+  it('projects browser_input requests out of the snapshot', () => {
+    mockUnified.data = [
+      browserInput('tu-bi-1', 'Log in to the dashboard'),
+      unified('secret', 'tu-secret', { secretName: 'API_KEY' }),
+    ]
+
+    const { result } = renderHook(() =>
+      usePendingBrowserInputRequests('s-1', 'agent-1', true),
+    )
+
+    expect(result.current.requests).toHaveLength(1)
+    expect(result.current.requests[0]).toMatchObject({
+      toolUseId: 'tu-bi-1',
+      message: 'Log in to the dashboard',
+      requirements: ['a password'],
+    })
+  })
+
+  it('shows nothing while the session is inactive', () => {
+    mockUnified.data = [browserInput('tu-bi-idle', 'Log in')]
+
+    const { result } = renderHook(() =>
+      usePendingBrowserInputRequests('s-1', 'agent-1', false),
+    )
+
+    expect(result.current.requests).toHaveLength(0)
+  })
+
+  it('drops an overlay synchronously on dismiss, without waiting for a refetch', () => {
+    mockUnified.data = [browserInput('tu-bi-2', 'Log in')]
+
+    const { result } = renderHook(() =>
+      usePendingBrowserInputRequests('s-1', 'agent-1', true),
+    )
+    expect(result.current.requests).toHaveLength(1)
+
+    // The snapshot still lists the request — answering in the tray has to hide
+    // the overlay before the server round-trip settles it.
+    act(() => result.current.dismiss('tu-bi-2'))
+
+    expect(result.current.requests).toHaveLength(0)
+  })
+
+  it('forgets dismissals when the session goes idle, so the next turn can ask again', () => {
+    mockUnified.data = [browserInput('tu-bi-3', 'Log in')]
+
+    const { result, rerender } = renderHook(
+      ({ isActive }: { isActive: boolean }) =>
+        usePendingBrowserInputRequests('s-1', 'agent-1', isActive),
+      { initialProps: { isActive: true } },
+    )
+
+    act(() => result.current.dismiss('tu-bi-3'))
+    expect(result.current.requests).toHaveLength(0)
+
+    rerender({ isActive: false })
+    rerender({ isActive: true })
+
+    expect(result.current.requests).toHaveLength(1)
   })
 })

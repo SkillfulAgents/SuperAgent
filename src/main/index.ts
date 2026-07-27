@@ -574,7 +574,7 @@ ipcMain.handle('show-notification', (
     liveNotifications.delete(notification)
   })
   // Track by reviewId if this is a proxy-review notification, so the SSE
-  // 'proxy_review_resolved' handler can dismiss it later.
+  // 'user_request_resolved' handler can dismiss it later.
   const ctxForTrack = context as { kind?: string; reviewId?: string } | undefined
   const reviewId =
     ctxForTrack?.kind === 'proxy_review' && typeof ctxForTrack.reviewId === 'string'

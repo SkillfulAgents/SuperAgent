@@ -2220,29 +2220,6 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         event: 'message',
       })
 
-      // Replay any pending computer use requests (survives SSE reconnection)
-      const pendingCU = messagePersister.getPendingComputerUseRequests(sessionId)
-      for (const req of pendingCU) {
-        await stream.writeSSE({
-          data: JSON.stringify({ type: 'computer_use_request', ...req }),
-          event: 'message',
-        })
-      }
-
-      // Replay any pending user-input requests (secret/connected_account/question/file/
-      // remote_mcp/script_run/browser_input). These are one-shot broadcasts, so a client
-      // that opened the stream after they fired — a freshly-created session, a reconnect,
-      // or a page refresh while the agent is awaiting input — would otherwise never see
-      // them and would hang until the safety-net messages poll. The stored payloads are
-      // re-sent verbatim; the renderer dedupes by toolUseId.
-      const pendingInputs = messagePersister.getPendingInputRequests(sessionId)
-      for (const req of pendingInputs) {
-        await stream.writeSSE({
-          data: JSON.stringify(req),
-          event: 'message',
-        })
-      }
-
       // Replay current computer use grab state (with icon if cached)
       const agentSlugForStream = getAgentId(c)
       const grabbedApp = computerUsePermissionManager.getGrabbedApp(agentSlugForStream)
@@ -5524,10 +5501,8 @@ setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 // session of the agent). This is the recovery source for the unified client
 // store: mount, reconnect, and invalidation refetch from here; live updates
 // arrive as user_request_created / user_request_resolved on the session and
-// global SSE streams. The legacy per-type events still fire server-side for
-// the renderer's two narrow holdouts: the browser tray's browser_input_request
-// feed and the script/computer-use auto-approved suppress-sets. (The chat
-// integrations moved onto this wire in Phase 7 and ignore the legacy events.)
+// global SSE streams; clients treat those as invalidation triggers and read
+// the resulting state from here.
 agents.get('/:id/pending-requests', AgentRead(), (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.query('sessionId') || undefined
@@ -5537,13 +5512,6 @@ agents.get('/:id/pending-requests', AgentRead(), (c) => {
 // =============================================================================
 // Proxy review endpoints
 // =============================================================================
-
-// GET /api/agents/:id/proxy-reviews - List pending reviews for this agent
-agents.get('/:id/proxy-reviews', AgentRead(), async (c) => {
-  const slug = getAgentId(c)
-  const reviews = reviewManager.getPendingReviewsForAgent(slug)
-  return c.json({ reviews })
-})
 
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {

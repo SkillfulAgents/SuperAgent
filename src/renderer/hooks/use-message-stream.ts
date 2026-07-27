@@ -7,22 +7,7 @@ import type { SlashCommandInfo } from '@shared/lib/container/types'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
-
-interface BrowserInputRequest {
-  toolUseId: string
-  message: string
-  requirements: string[]
-}
-
-// A subagent (Task/Agent) or workflow (Workflow) launch paused by a 'review'
-// policy, awaiting the user's Run / Block / Allow-for-session decision.
-export interface CapabilityReviewRequest {
-  toolUseId: string
-  capability: 'subagents' | 'workflows'
-  toolName: string
-  /** The launching tool's input (subagent_type/description/prompt for Task; name/script for Workflow). */
-  input: Record<string, unknown>
-}
+import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 
 export interface SubagentInfo {
   parentToolId: string | null
@@ -63,8 +48,6 @@ interface StreamState {
   isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
   streamingToolUses: Array<{ id: string; name: string; partialInput: string; ready?: boolean }>
-  pendingBrowserInputRequests: BrowserInputRequest[]
-  pendingCapabilityReviewRequests: CapabilityReviewRequest[]
   error: string | null // Error message if session encountered an error
   /** SDK error code from the LLM provider (e.g., 'authentication_failed', 'rate_limit', 'server_error') */
   apiErrorCode: string | null
@@ -105,8 +88,6 @@ const EMPTY_STREAM_STATE: StreamState = {
   isStreaming: false,
   streamingMessage: null,
   streamingToolUses: [],
-  pendingBrowserInputRequests: [],
-  pendingCapabilityReviewRequests: [],
   error: null,
   apiErrorCode: null,
   browserActive: false,
@@ -340,8 +321,6 @@ function getOrCreateEventSource(
           isStreaming: false,
           streamingMessage: null,
           streamingToolUses: [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingCapabilityReviewRequests: current?.pendingCapabilityReviewRequests ?? [],
           error: null,
           apiErrorCode: null,
           browserActive: current?.browserActive ?? false,
@@ -396,8 +375,6 @@ function getOrCreateEventSource(
           isStreaming: current?.isStreaming ?? false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: current?.streamingToolUses ?? [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingCapabilityReviewRequests: current?.pendingCapabilityReviewRequests ?? [],
           error: null, // Clear any previous error when starting new request
           apiErrorCode: null,
           browserActive: current?.browserActive ?? false,
@@ -436,8 +413,6 @@ function getOrCreateEventSource(
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: [],
-          pendingBrowserInputRequests: [],
-          pendingCapabilityReviewRequests: [],
           error: null,
           // Preserve apiErrorCode — it was set from the assistant message's error field
           // and is still valid context for the last turn. Cleared on next session_active.
@@ -483,8 +458,6 @@ function getOrCreateEventSource(
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: [],
-          pendingBrowserInputRequests: [],
-          pendingCapabilityReviewRequests: [],
           error: data.error || 'An unknown error occurred',
           apiErrorCode: data.apiErrorCode || null,
           browserActive: current?.browserActive ?? false,
@@ -648,8 +621,6 @@ function getOrCreateEventSource(
           isStreaming: true,
           streamingMessage: '',
           streamingToolUses: [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingCapabilityReviewRequests: current?.pendingCapabilityReviewRequests ?? [],
           error: null,
           apiErrorCode: null,
           browserActive: current?.browserActive ?? false,
@@ -674,8 +645,6 @@ function getOrCreateEventSource(
           isStreaming: true,
           streamingMessage: (current?.streamingMessage || '') + data.text,
           streamingToolUses: current?.streamingToolUses ?? [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingCapabilityReviewRequests: current?.pendingCapabilityReviewRequests ?? [],
           error: current?.error ?? null,
           apiErrorCode: data.apiErrorCode || current?.apiErrorCode || null,
           browserActive: current?.browserActive ?? false,
@@ -716,8 +685,6 @@ function getOrCreateEventSource(
           isStreaming: true,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: updatedTools,
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingCapabilityReviewRequests: current?.pendingCapabilityReviewRequests ?? [],
           error: current?.error ?? null,
           apiErrorCode: current?.apiErrorCode ?? null,
           browserActive: current?.browserActive ?? false,
@@ -758,8 +725,6 @@ function getOrCreateEventSource(
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: current?.streamingToolUses ?? [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingCapabilityReviewRequests: current?.pendingCapabilityReviewRequests ?? [],
           error: current?.error ?? null,
           apiErrorCode: current?.apiErrorCode ?? null,
           browserActive: current?.browserActive ?? false,
@@ -831,13 +796,10 @@ function getOrCreateEventSource(
             isStreaming: false,
           })
         }
-        // A tool_result for a pending user-input request means it was resolved —
-        // possibly by another tab/window viewing the same session. The resolving
-        // tab removes its card optimistically; every other tab relies on this
-        // broadcast to drop the stale card instead of waiting for session_idle.
-        if (data.type === 'tool_result' && typeof data.toolUseId === 'string') {
-          removePendingRequestsByToolUseId(sessionId, data.toolUseId)
-        }
+        // A tool_result that settles a pending request no longer needs its own
+        // card cleanup here: the registry resolution that accompanies it emits
+        // user_request_resolved, and the branch above invalidates the store
+        // every tab renders from.
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
       }
       else if (data.type === 'context_usage') {
@@ -890,79 +852,29 @@ function getOrCreateEventSource(
         // burst of events collapses into one consistent read and a stale
         // in-flight response can never overwrite a newer one.
         queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
-      }
-      else if (data.type === 'capability_review_request') {
-        // A subagent/workflow launch is paused awaiting the user's decision
-        const newRequest: CapabilityReviewRequest = {
-          toolUseId: data.toolUseId,
-          capability: data.capability,
-          toolName: data.toolName,
-          input: data.input ?? {},
-        }
-        if (current && !current.pendingCapabilityReviewRequests.some(r => r.toolUseId === data.toolUseId)) {
-          streamStates.set(sessionId, {
-            ...current,
-            pendingCapabilityReviewRequests: [...current.pendingCapabilityReviewRequests, newRequest],
-          })
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
-        }
-      }
-      else if (data.type === 'capability_review_resolved') {
-        // Decided (possibly in another window) — close the card everywhere now.
-        // The launched Task/Workflow's tool_result can be minutes away.
-        if (current?.pendingCapabilityReviewRequests.some(r => r.toolUseId === data.toolUseId)) {
-          streamStates.set(sessionId, {
-            ...current,
-            pendingCapabilityReviewRequests: current.pendingCapabilityReviewRequests.filter(
-              r => r.toolUseId !== data.toolUseId
-            ),
-          })
-        }
-      }
-      else if (data.type === 'browser_input_request') {
-        // Dedupe: the server may broadcast the same toolUseId from multiple detection points
-        if (current && !current.pendingBrowserInputRequests.some(r => r.toolUseId === data.toolUseId)) {
-          const newRequest: BrowserInputRequest = {
-            toolUseId: data.toolUseId,
-            message: data.message,
-            // Guard against the model emitting a non-array (e.g. a bare string):
-            // `|| []` only catches falsy values, so a string would survive and
-            // crash `.map()` in the renderer. See SUP browser-input crash.
-            requirements: Array.isArray(data.requirements) ? data.requirements : [],
+        // The one thing the snapshot can't do in time: an auto-approved
+        // script_run / computer_use is ALREADY executing server-side, and
+        // between its tool_use streaming in and its result persisting, the
+        // streaming and message-history fallbacks would draw an approval
+        // card for it. These sets suppress that card, and they have to be
+        // written synchronously with the event to beat the flash.
+        if (data.type === 'user_request_created') {
+          const request = data.request as PendingUserInputRequest | undefined
+          const target =
+            request?.autoApproved && request.kind === 'script_run'
+              ? sessionAutoApprovedScriptRunIds
+              : request?.autoApproved && request.kind === 'computer_use'
+                ? sessionAutoApprovedComputerUseIds
+                : null
+          if (target && request) {
+            let approved = target.get(sessionId)
+            if (!approved) {
+              approved = new Set()
+              target.set(sessionId, approved)
+            }
+            approved.add(request.id)
+            streamListeners.get(sessionId)?.forEach((l) => l())
           }
-          streamStates.set(sessionId, {
-            ...current,
-            pendingBrowserInputRequests: [...current.pendingBrowserInputRequests, newRequest],
-          })
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
-        }
-      }
-      else if (data.type === 'script_run_request') {
-        // Approval cards come from the unified store; this legacy event
-        // matters only for its autoApproved form — the server is already
-        // executing, and the id set suppresses the streaming/message-history
-        // fallback prompt during the window before the result persists.
-        if (data.autoApproved) {
-          let approved = sessionAutoApprovedScriptRunIds.get(sessionId)
-          if (!approved) {
-            approved = new Set()
-            sessionAutoApprovedScriptRunIds.set(sessionId, approved)
-          }
-          approved.add(data.toolUseId)
-          streamListeners.get(sessionId)?.forEach((l) => l())
-        }
-      }
-      else if (data.type === 'computer_use_request') {
-        // Same as script_run above: only the autoApproved suppress-set is
-        // fed from the legacy event; approval cards read the unified store.
-        if (data.autoApproved) {
-          let approved = sessionAutoApprovedComputerUseIds.get(sessionId)
-          if (!approved) {
-            approved = new Set()
-            sessionAutoApprovedComputerUseIds.set(sessionId, approved)
-          }
-          approved.add(data.toolUseId)
-          streamListeners.get(sessionId)?.forEach((l) => l())
         }
       }
       else if (data.type === 'compact_start') {
@@ -1266,55 +1178,6 @@ function releaseEventSource(sessionId: string): void {
       eventSources.delete(key)
     }
     refCounts.delete(key)
-  }
-}
-
-// Drop any pending user-input request matching a resolved tool call. Driven by
-// the server's `tool_result` broadcast, which fires for every tool — for ids
-// that never had a request card this is a no-op (no state write, no re-render).
-export function removePendingRequestsByToolUseId(sessionId: string, toolUseId: string): void {
-  const current = streamStates.get(sessionId)
-  if (!current) return
-  const strip = <T extends { toolUseId: string }>(list: T[]): T[] =>
-    list.some((r) => r.toolUseId === toolUseId) ? list.filter((r) => r.toolUseId !== toolUseId) : list
-  const next: StreamState = {
-    ...current,
-    pendingBrowserInputRequests: strip(current.pendingBrowserInputRequests),
-    pendingCapabilityReviewRequests: strip(current.pendingCapabilityReviewRequests),
-  }
-  const changed =
-    next.pendingBrowserInputRequests !== current.pendingBrowserInputRequests ||
-    next.pendingCapabilityReviewRequests !== current.pendingCapabilityReviewRequests
-  if (changed) {
-    streamStates.set(sessionId, next)
-    streamListeners.get(sessionId)?.forEach((listener) => listener())
-  }
-}
-
-// Helper function to remove a browser input request from a session
-export function removeBrowserInputRequest(sessionId: string, toolUseId: string): void {
-  const current = streamStates.get(sessionId)
-  if (current) {
-    streamStates.set(sessionId, {
-      ...current,
-      pendingBrowserInputRequests: current.pendingBrowserInputRequests.filter(
-        (r) => r.toolUseId !== toolUseId
-      ),
-    })
-    streamListeners.get(sessionId)?.forEach((listener) => listener())
-  }
-}
-
-export function removeCapabilityReviewRequest(sessionId: string, toolUseId: string): void {
-  const current = streamStates.get(sessionId)
-  if (current) {
-    streamStates.set(sessionId, {
-      ...current,
-      pendingCapabilityReviewRequests: current.pendingCapabilityReviewRequests.filter(
-        (r) => r.toolUseId !== toolUseId
-      ),
-    })
-    streamListeners.get(sessionId)?.forEach((listener) => listener())
   }
 }
 

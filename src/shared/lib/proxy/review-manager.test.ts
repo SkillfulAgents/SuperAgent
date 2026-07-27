@@ -1,13 +1,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// Mock the broadcast function
-const mockBroadcastReview = vi.fn()
-vi.mock('./review-broadcast', () => ({
-  broadcastReview: (...args: unknown[]) => mockBroadcastReview(...args),
-}))
-
 import { ReviewManager, humanizeActionName, generateReviewDisplayText } from './review-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import {
+  userInputRequestManager,
+  type UserInputRequestTransition,
+} from '@shared/lib/user-input/request-manager'
+
+/**
+ * What the UI actually sees when a review opens or settles: the registry
+ * transition, which the persister turns into user_request_created /
+ * user_request_resolved. ReviewManager has no announcement channel of its own.
+ */
+const transitions: UserInputRequestTransition[] = []
+let stopRecording: (() => void) | undefined
+function recordTransitions() {
+  transitions.length = 0
+  stopRecording?.()
+  stopRecording = userInputRequestManager.onTransition((t) => transitions.push(t))
+}
+const created = () => transitions.filter((t) => t.type === 'created')
+const resolved = () => transitions.filter((t) => t.type === 'resolved')
 
 describe('ReviewManager', () => {
   let manager: ReviewManager
@@ -15,11 +27,13 @@ describe('ReviewManager', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()
+    recordTransitions()
     manager = new ReviewManager()
   })
 
   afterEach(() => {
     manager.rejectAll()
+    stopRecording?.()
     vi.useRealTimers()
   })
 
@@ -282,7 +296,7 @@ describe('ReviewManager', () => {
     await expect(promise2).rejects.toThrow('Review timeout')
   })
 
-  it('broadcast function called on requestReview with correct details', async () => {
+  it('requestReview registers the review with the details the cards render', async () => {
     const details = {
       agentSlug: 'agent-1',
       accountId: 'acc-1',
@@ -295,12 +309,14 @@ describe('ReviewManager', () => {
 
     const promise = manager.requestReview(details)
 
-    expect(mockBroadcastReview).toHaveBeenCalledOnce()
-    const [agentSlug, event] = mockBroadcastReview.mock.calls[0]
-    expect(agentSlug).toBe('agent-1')
-    expect(event.type).toBe('proxy_review_request')
-    expect(event.toolkit).toBe('gmail')
-    expect(event.matchedScopes).toEqual(['gmail.readonly'])
+    expect(created()).toHaveLength(1)
+    const opened = created()[0].request
+    expect(opened.kind).toBe('proxy_review')
+    expect(opened.scope).toEqual({ agentSlug: 'agent-1' })
+    expect(opened.payload).toMatchObject({
+      toolkit: 'gmail',
+      matchedScopes: ['gmail.readonly'],
+    })
 
     // Clean up
     const pending = manager.getPendingReviewsForAgent('agent-1')
@@ -308,7 +324,7 @@ describe('ReviewManager', () => {
     await promise
   })
 
-  it('submitDecision broadcasts proxy_review_resolved event', async () => {
+  it('submitDecision settles the registry entry with the decision outcome', async () => {
     const promise = manager.requestReview({
       agentSlug: 'agent-1',
       accountId: 'acc-1',
@@ -319,20 +335,16 @@ describe('ReviewManager', () => {
       scopeDescriptions: {},
     })
 
-    mockBroadcastReview.mockClear()
     const pending = manager.getPendingReviewsForAgent('agent-1')
     manager.submitDecision(pending[0].id, 'allow')
     await promise
 
-    expect(mockBroadcastReview).toHaveBeenCalledOnce()
-    const [agentSlug, event] = mockBroadcastReview.mock.calls[0]
-    expect(agentSlug).toBe('agent-1')
-    expect(event.type).toBe('proxy_review_resolved')
-    expect(event.reviewId).toBe(pending[0].id)
-    expect(event.decision).toBe('allow')
+    expect(resolved()).toHaveLength(1)
+    expect(resolved()[0].request.id).toBe(pending[0].id)
+    expect(resolved()[0].outcome).toBe('answered')
   })
 
-  it('resolveMatchingPending broadcasts proxy_review_resolved for each resolved review', async () => {
+  it('resolveMatchingPending settles each matching review', async () => {
     const promise1 = manager.requestReview({
       agentSlug: 'agent-1',
       accountId: 'acc-1',
@@ -352,19 +364,14 @@ describe('ReviewManager', () => {
       scopeDescriptions: {},
     })
 
-    // 2 broadcasts for requestReview + clear
-    mockBroadcastReview.mockClear()
-
     manager.resolveMatchingPending('agent-1', 'gmail.readonly', 'allow')
     await promise1
     await promise2
 
-    // Should have broadcast 2 resolved events
-    expect(mockBroadcastReview).toHaveBeenCalledTimes(2)
-    for (const call of mockBroadcastReview.mock.calls) {
-      expect(call[0]).toBe('agent-1')
-      expect(call[1].type).toBe('proxy_review_resolved')
-      expect(call[1].decision).toBe('allow')
+    expect(resolved()).toHaveLength(2)
+    for (const t of resolved()) {
+      expect(t.request.scope.agentSlug).toBe('agent-1')
+      expect(t.outcome).toBe('answered')
     }
   })
 
@@ -466,7 +473,7 @@ describe('ReviewManager', () => {
     expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(0)
   })
 
-  it('abort signal broadcasts proxy_review_resolved so UI dismisses the prompt', async () => {
+  it('abort settles the entry so every surface drops the prompt', async () => {
     const controller = new AbortController()
 
     const promise = manager.requestReview({
@@ -479,15 +486,12 @@ describe('ReviewManager', () => {
       scopeDescriptions: {},
     }, controller.signal)
 
-    mockBroadcastReview.mockClear()
     controller.abort()
     await promise.catch(() => {})
 
-    expect(mockBroadcastReview).toHaveBeenCalledOnce()
-    const [agentSlug, event] = mockBroadcastReview.mock.calls[0]
-    expect(agentSlug).toBe('agent-1')
-    expect(event.type).toBe('proxy_review_resolved')
-    expect(event.decision).toBe('deny')
+    expect(resolved()).toHaveLength(1)
+    expect(resolved()[0].request.scope.agentSlug).toBe('agent-1')
+    expect(resolved()[0].outcome).toBe('cancelled')
   })
 
   describe('humanizeActionName', () => {
@@ -600,33 +604,32 @@ describe('ReviewManager', () => {
     const result = await promise
     expect(result).toBe('allow')
 
-    // Aborting after resolution should not broadcast a spurious event
-    mockBroadcastReview.mockClear()
+    // Aborting after resolution must not settle anything a second time
+    const settledBefore = resolved().length
     controller.abort()
     expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(0)
-    expect(mockBroadcastReview).not.toHaveBeenCalled()
+    expect(resolved()).toHaveLength(settledBefore)
   })
 
   describe('requestXAgentReview', () => {
-    it('broadcasts xAgent payload + scope=invoke:target for invoke ops', async () => {
+    it('registers the xAgent payload + scope=invoke:target for invoke ops', async () => {
       const promise = manager.requestXAgentReview('caller', 'target', 'Target Agent', 'invoke', 'hello there')
 
-      expect(mockBroadcastReview).toHaveBeenCalledWith(
-        'caller',
-        expect.objectContaining({
-          type: 'proxy_review_request',
-          toolkit: 'agents',
-          method: 'invoke',
-          targetPath: 'agents:invoke:target',
-          matchedScopes: ['invoke:target'],
-          xAgent: {
-            targetAgentSlug: 'target',
-            targetAgentName: 'Target Agent',
-            operation: 'invoke',
-            preview: 'hello there',
-          },
-        }),
-      )
+      expect(created()).toHaveLength(1)
+      expect(created()[0].request.kind).toBe('x_agent_review')
+      expect(created()[0].request.scope.agentSlug).toBe('caller')
+      expect(created()[0].request.payload).toMatchObject({
+        toolkit: 'agents',
+        method: 'invoke',
+        targetPath: 'agents:invoke:target',
+        matchedScopes: ['invoke:target'],
+        xAgent: {
+          targetAgentSlug: 'target',
+          targetAgentName: 'Target Agent',
+          operation: 'invoke',
+          preview: 'hello there',
+        },
+      })
 
       const pending = manager.getPendingReviewsForAgent('caller')
       expect(pending).toHaveLength(1)
@@ -641,26 +644,20 @@ describe('ReviewManager', () => {
     it('uses scope=list for list operations (no per-target row)', () => {
       // Swallow rejection — afterEach calls rejectAll which rejects unresolved reviews
       manager.requestXAgentReview('caller', '', 'all agents', 'list').catch(() => {})
-      expect(mockBroadcastReview).toHaveBeenCalledWith(
-        'caller',
-        expect.objectContaining({
-          method: 'list',
-          matchedScopes: ['list'],
-          xAgent: expect.objectContaining({ operation: 'list' }),
-        }),
-      )
+      expect(created()[0].request.payload).toMatchObject({
+        method: 'list',
+        matchedScopes: ['list'],
+        xAgent: expect.objectContaining({ operation: 'list' }),
+      })
     })
 
     it('uses scope=create for create operations', () => {
       manager.requestXAgentReview('caller', '', 'New Helper', 'create', 'New Helper').catch(() => {})
-      expect(mockBroadcastReview).toHaveBeenCalledWith(
-        'caller',
-        expect.objectContaining({
-          method: 'create',
-          matchedScopes: ['create'],
-          xAgent: expect.objectContaining({ operation: 'create', preview: 'New Helper' }),
-        }),
-      )
+      expect(created()[0].request.payload).toMatchObject({
+        method: 'create',
+        matchedScopes: ['create'],
+        xAgent: expect.objectContaining({ operation: 'create', preview: 'New Helper' }),
+      })
     })
 
     it('deny resolves with "deny"', async () => {
@@ -670,7 +667,7 @@ describe('ReviewManager', () => {
       expect(await promise).toBe('deny')
     })
 
-    it('non-x-agent reviews do NOT carry xAgent in the broadcast', () => {
+    it('non-x-agent reviews do NOT carry xAgent in the envelope', () => {
       manager.requestReview({
         agentSlug: 'agent-1',
         accountId: 'acc-1',
@@ -680,8 +677,8 @@ describe('ReviewManager', () => {
         matchedScopes: ['readonly'],
         scopeDescriptions: {},
       }).catch(() => {})
-      const call = mockBroadcastReview.mock.calls[0]
-      expect(call[1]).not.toHaveProperty('xAgent')
+      expect(created()[0].request.kind).toBe('proxy_review')
+      expect(created()[0].request.payload).not.toHaveProperty('xAgent')
     })
   })
 })
@@ -865,10 +862,6 @@ describe('ReviewManager as registry adapter (Phase 5)', () => {
       kind: 'proxy_review',
       outcome: 'answered',
     })
-    expect(mockBroadcastReview).toHaveBeenCalledWith(
-      'adapter-agent',
-      expect.objectContaining({ type: 'proxy_review_resolved', reviewId: 'registry-review-2' }),
-    )
   })
 
   it('denyAllForAgent sweeps registry-only review entries', () => {

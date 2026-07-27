@@ -1,5 +1,4 @@
 import crypto from 'crypto'
-import { broadcastReview } from './review-broadcast'
 import { getScopeLabel, type ScopeLabel } from './scope-metadata'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
@@ -186,11 +185,6 @@ export class ReviewManager {
       if (action.type === 'resolve') settler.resolve(action.decision)
       else settler.reject(action.error)
     }
-    broadcastReview(entry.scope.agentSlug ?? '', {
-      type: 'proxy_review_resolved',
-      reviewId: entry.id,
-      decision: action.type === 'resolve' ? action.decision : 'deny',
-    })
   }
 
   requestReview(details: ReviewDetails, signal?: AbortSignal): Promise<'allow' | 'deny'> {
@@ -202,11 +196,6 @@ export class ReviewManager {
         this.settlers.delete(id)
         userInputRequestManager.resolve(id, 'timeout')
         this.shadowSettlerCheck('settleTimedOut')
-        broadcastReview(details.agentSlug, {
-          type: 'proxy_review_resolved',
-          reviewId: id,
-          decision: 'deny',
-        })
         messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
         reject(new Error('Review timeout'))
       }
@@ -218,11 +207,6 @@ export class ReviewManager {
         this.settlers.delete(id)
         userInputRequestManager.resolve(id, 'cancelled')
         this.shadowSettlerCheck('abortCleanup')
-        broadcastReview(details.agentSlug, {
-          type: 'proxy_review_resolved',
-          reviewId: id,
-          decision: 'deny',
-        })
         messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
       }
 
@@ -269,19 +253,9 @@ export class ReviewManager {
       }
       this.shadowSettlerCheck('requestReview')
 
-      // Broadcast review request to agent's active sessions
-      broadcastReview(details.agentSlug, {
-        type: 'proxy_review_request',
-        reviewId: id,
-        accountId: details.accountId,
-        toolkit: details.toolkit,
-        method: details.method,
-        targetPath: details.targetPath,
-        matchedScopes: details.matchedScopes,
-        scopeDescriptions: details.scopeDescriptions,
-        displayText,
-        ...(details.xAgent ? { xAgent: details.xAgent } : {}),
-      })
+      // The card reaches every surface off the registry's 'created'
+      // transition (user_request_created on the global stream). Nothing here
+      // re-announces the review on a channel of its own.
 
       // Recompute awaiting for the agent's sessions so chat tick / activity
       // strip stop lying "Working…" while the Allow/Deny card is up — the

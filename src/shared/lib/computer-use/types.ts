@@ -35,18 +35,6 @@ export interface ComputerUseSettings {
   }>
 }
 
-/** SSE event broadcast when a computer use request needs user approval */
-export interface ComputerUseRequestEvent {
-  type: 'computer_use_request'
-  toolUseId: string
-  method: string
-  params: Record<string, unknown>
-  permissionLevel: ComputerUsePermissionLevel
-  appName?: string
-  agentSlug?: string
-  autoApproved?: boolean
-}
-
 /** Read-only AC methods that only need list_apps_windows permission */
 export const READ_ONLY_METHODS = new Set([
   'apps', 'windows', 'status', 'displays', 'permissions',

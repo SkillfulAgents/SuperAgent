@@ -212,7 +212,7 @@ interface RequestKindCase {
   label: string
   toolName: string
   input: Record<string, unknown>
-  sseType: string
+  kind: string
   waitingFor: string
 }
 
@@ -227,7 +227,7 @@ const STANDARD_KINDS: RequestKindCase[] = [
     label: 'secret',
     toolName: 'mcp__user-input__request_secret',
     input: { secretName: 'API_KEY', reason: 'Need it' },
-    sseType: 'secret_request',
+    kind: 'secret',
     waitingFor: 'secret',
   },
   {
@@ -236,42 +236,42 @@ const STANDARD_KINDS: RequestKindCase[] = [
     input: {
       questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
     },
-    sseType: 'question_request',
+    kind: 'question',
     waitingFor: 'question',
   },
   {
     label: 'connected account',
     toolName: 'mcp__user-input__request_connected_account',
     input: { toolkit: 'github', reason: 'Need access' },
-    sseType: 'connected_account_request',
+    kind: 'connected_account',
     waitingFor: 'connected_account',
   },
   {
     label: 'file',
     toolName: 'mcp__user-input__request_file',
     input: { description: 'Upload a CSV' },
-    sseType: 'file_request',
+    kind: 'file',
     waitingFor: 'file',
   },
   {
     label: 'remote MCP',
     toolName: 'mcp__user-input__request_remote_mcp',
     input: { url: 'https://example.com/mcp', name: 'Example', reason: 'Docs' },
-    sseType: 'remote_mcp_request',
+    kind: 'remote_mcp',
     waitingFor: 'remote_mcp',
   },
   {
     label: 'browser input',
     toolName: 'mcp__user-input__request_browser_input',
     input: { message: 'Please log in', requirements: ['Enter credentials'] },
-    sseType: 'browser_input_request',
+    kind: 'browser_input',
     waitingFor: 'browser_input',
   },
   {
     label: 'script run',
     toolName: 'mcp__user-input__request_script_run',
     input: { script: 'sw_vers', explanation: 'Check macOS version', scriptType: 'shell' },
-    sseType: 'script_run_request',
+    kind: 'script_run',
     waitingFor: 'script_run',
   },
 ]
@@ -322,6 +322,14 @@ describe('pending user-input request lifecycle (characterization)', () => {
     mockCheckPermission.mockReturnValue('prompt_needed')
   })
 
+  // The unified wire is the only card wire: one `user_request_created` per
+  // open request, carrying the registry envelope. These replace the per-type
+  // event filter and the persister replay-store getter this suite used to read.
+  const cardsFor = (kind: string) =>
+    sseEvents.filter((e) => e.type === 'user_request_created' && e.request?.kind === kind)
+  const openStreamRequestIds = () =>
+    userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'stream')
+
   function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
     mockClient._sendMessage({
       type: 'stream_event',
@@ -364,18 +372,18 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
   describe.each(STANDARD_KINDS)(
     'main stream: $label',
-    ({ toolName, input, sseType, waitingFor }) => {
+    ({ toolName, input, kind, waitingFor }) => {
       it('opens: broadcasts exactly one card, stores a replay entry, marks awaiting, notifies once', async () => {
         simulateToolUse(toolName, 'tool-open-1', input)
 
-        const cards = sseEvents.filter((e) => e.type === sseType)
+        const cards = cardsFor(kind)
         expect(cards).toHaveLength(1)
-        expect(cards[0].toolUseId).toBe('tool-open-1')
+        expect(cards[0].request.id).toBe('tool-open-1')
 
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
         expect(messagePersister.hasSessionsAwaitingInputForAgent(AGENT_SLUG)).toBe(true)
         expect(
-          messagePersister.getPendingInputRequests(SESSION_ID).map((r) => r.toolUseId)
+          openStreamRequestIds()
         ).toContain('tool-open-1')
 
         await vi.waitFor(() => {
@@ -392,7 +400,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         sendToolResult('tool-resolve-1')
 
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+        expect(openStreamRequestIds()).toHaveLength(0)
       })
 
       it('parallel with a second request: awaiting survives until the LAST one resolves', () => {
@@ -405,7 +413,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         // Same-kind case degenerates to a single entry; skip the duplicate.
         if (toolName === 'mcp__user-input__request_secret') return
 
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(2)
+        expect(openStreamRequestIds()).toHaveLength(2)
 
         sendToolResult('tool-par-1')
         // Derived awaiting: the projection consults what is actually still
@@ -414,11 +422,11 @@ describe('pending user-input request lifecycle (characterization)', () => {
         // request split-brain before the flip: the imperative clear dropped
         // the bit on the first tool_result.)
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+        expect(openStreamRequestIds()).toHaveLength(1)
 
         sendToolResult('tool-par-2')
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+        expect(openStreamRequestIds()).toHaveLength(0)
       })
     }
   )
@@ -435,16 +443,16 @@ describe('pending user-input request lifecycle (characterization)', () => {
     it('opens into the computer-use store, NOT the input-request store', async () => {
       simulateToolUse(TOOL, 'cu-open-1', { x: 1, y: 2 })
 
-      const cards = sseEvents.filter((e) => e.type === 'computer_use_request')
+      const cards = cardsFor('computer_use')
       expect(cards).toHaveLength(1)
-      expect(cards[0].toolUseId).toBe('cu-open-1')
-      expect(cards[0].autoApproved).toBe(false)
+      expect(cards[0].request.id).toBe('cu-open-1')
+      expect(cards[0].request.autoApproved).toBe(false)
 
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       expect(
         messagePersister.getPendingComputerUseRequests(SESSION_ID).map((r) => r.toolUseId)
       ).toContain('cu-open-1')
-      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      expect(openStreamRequestIds()).toHaveLength(0)
 
       await vi.waitFor(() => {
         expect(notificationManager.triggerSessionWaitingInput).toHaveBeenCalledTimes(1)
@@ -532,11 +540,11 @@ describe('pending user-input request lifecycle (characterization)', () => {
       simulateToolUse('Workflow', 'wf-lifecycle-1', { script: 'export const meta = {}' })
 
       await vi.waitFor(() => {
-        expect(sseEvents.filter((e) => e.type === 'capability_review_request')).toHaveLength(1)
+        expect(cardsFor('capability_review')).toHaveLength(1)
       })
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       expect(
-        messagePersister.getPendingInputRequests(SESSION_ID).map((r) => r.toolUseId)
+        openStreamRequestIds()
       ).toContain('wf-lifecycle-1')
 
       await vi.waitFor(() => {
@@ -546,16 +554,20 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(call.slice(0, 3)).toEqual([SESSION_ID, AGENT_SLUG, 'capability_review_workflows'])
     })
 
-    it('completeCapabilityReview drops the replay entry, broadcasts, and clears awaiting', async () => {
+    it('completeCapabilityReview settles the entry, announces it, and clears awaiting', async () => {
       simulateToolUse('Workflow', 'wf-lifecycle-2', { script: 'export const meta = {}' })
       await vi.waitFor(() => {
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+        expect(openStreamRequestIds()).toHaveLength(1)
       })
 
       messagePersister.completeCapabilityReview(SESSION_ID, 'wf-lifecycle-2')
 
-      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
-      expect(sseEvents.filter((e) => e.type === 'capability_review_resolved')).toHaveLength(1)
+      expect(openStreamRequestIds()).toHaveLength(0)
+      expect(
+        sseEvents.filter(
+          (e) => e.type === 'user_request_resolved' && e.requestId === 'wf-lifecycle-2',
+        ),
+      ).toHaveLength(1)
       // Derived awaiting: settling the review settles the wait. (Before the
       // flip this door emptied its store and broadcast but left the bit stuck
       // until later stream traffic cleared it — a pinned split-brain.)
@@ -647,7 +659,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     label: string
     toolName: string
     input: Record<string, unknown>
-    sseType: string
+    kind: string
     surfacesToday: boolean
   }
 
@@ -656,28 +668,28 @@ describe('pending user-input request lifecycle (characterization)', () => {
       label: 'browser input',
       toolName: 'mcp__user-input__request_browser_input',
       input: { message: 'Log in', requirements: [] },
-      sseType: 'browser_input_request',
+      kind: 'browser_input',
       surfacesToday: true,
     },
     {
       label: 'script run',
       toolName: 'mcp__user-input__request_script_run',
       input: { script: 'sw_vers', explanation: 'Version', scriptType: 'shell' },
-      sseType: 'script_run_request',
+      kind: 'script_run',
       surfacesToday: true,
     },
     {
       label: 'computer use',
       toolName: 'mcp__computer-use__computer_click',
       input: { x: 1, y: 2 },
-      sseType: 'computer_use_request',
+      kind: 'computer_use',
       surfacesToday: true,
     },
     {
       label: 'secret',
       toolName: 'mcp__user-input__request_secret',
       input: { secretName: 'API_KEY', reason: 'Need it' },
-      sseType: 'secret_request',
+      kind: 'secret',
       surfacesToday: true,
     },
     {
@@ -686,35 +698,35 @@ describe('pending user-input request lifecycle (characterization)', () => {
       input: {
         questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
       },
-      sseType: 'question_request',
+      kind: 'question',
       surfacesToday: true,
     },
     {
       label: 'connected account',
       toolName: 'mcp__user-input__request_connected_account',
       input: { toolkit: 'github', reason: 'Need access' },
-      sseType: 'connected_account_request',
+      kind: 'connected_account',
       surfacesToday: true,
     },
     {
       label: 'file',
       toolName: 'mcp__user-input__request_file',
       input: { description: 'Upload a CSV' },
-      sseType: 'file_request',
+      kind: 'file',
       surfacesToday: true,
     },
     {
       label: 'remote MCP',
       toolName: 'mcp__user-input__request_remote_mcp',
       input: { url: 'https://example.com/mcp', name: 'Example', reason: 'Docs' },
-      sseType: 'remote_mcp_request',
+      kind: 'remote_mcp',
       surfacesToday: true,
     },
   ]
 
   describe.each(SIDECHAIN_MATRIX)(
     'sidechain: $label (surfaces today: $surfacesToday)',
-    ({ toolName, input, sseType, surfacesToday }) => {
+    ({ toolName, input, kind, surfacesToday }) => {
       function sendSidechainStreamToolUse(toolId: string, parentToolId = 'parent-task-1') {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const send = (event: any) =>
@@ -750,7 +762,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       it('subagent stream events: card broadcast and awaiting match the matrix', () => {
         sendSidechainStreamToolUse('side-stream-1')
 
-        const cards = sseEvents.filter((e) => e.type === sseType)
+        const cards = cardsFor(kind)
         expect(cards).toHaveLength(surfacesToday ? 1 : 0)
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(surfacesToday)
       })
@@ -758,7 +770,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       it('complete sidechain assistant message: card broadcast and awaiting match the matrix', () => {
         sendSidechainCompleteAssistantToolUse('side-complete-1')
 
-        const cards = sseEvents.filter((e) => e.type === sseType)
+        const cards = cardsFor(kind)
         expect(cards).toHaveLength(surfacesToday ? 1 : 0)
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(surfacesToday)
       })
@@ -816,8 +828,8 @@ describe('pending user-input request lifecycle (characterization)', () => {
       sendSidechainToolUse('mcp__user-input__request_secret', 'dup-1', input, 'parent-dup', 'stream')
       sendSidechainToolUse('mcp__user-input__request_secret', 'dup-1', input, 'parent-dup', 'complete')
 
-      expect(sseEvents.filter((e) => e.type === 'secret_request')).toHaveLength(1)
-      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+      expect(cardsFor('secret')).toHaveLength(1)
+      expect(openStreamRequestIds()).toHaveLength(1)
     })
 
     it('a sidechain tool_result resolves a dispatcher-surfaced kind: entry dropped, tool_result broadcast, awaiting cleared', () => {
@@ -834,7 +846,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       sendSidechainToolResult('side-res-1', 'parent-res')
 
       expect(sseEvents.filter((e) => e.type === 'tool_result')).toHaveLength(1)
-      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      expect(openStreamRequestIds()).toHaveLength(0)
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
 
@@ -870,9 +882,9 @@ describe('pending user-input request lifecycle (characterization)', () => {
           'complete'
         )
         expect(
-          messagePersister
-            .getPendingInputRequests(SESSION_ID)
-            .some((r) => r.toolUseId === 'side-sr-auto' && r.autoApproved === true)
+          userInputRequestManager
+            .getOpenRequestsForSession(SESSION_ID)
+            .some((r) => r.id === 'side-sr-auto' && r.autoApproved === true)
         ).toBe(true)
 
         mockCheckPermission.mockReturnValue('prompt_needed')
@@ -915,7 +927,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       // The subagent's ask resolves, but the review is still parked — the
       // waiting light must stay on.
       sendSidechainToolResult('side-blk-1', 'parent-blk')
-      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      expect(openStreamRequestIds()).toHaveLength(0)
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
       userInputRequestManager.resolve('side-review-1', 'answered')
@@ -925,27 +937,15 @@ describe('pending user-input request lifecycle (characterization)', () => {
   })
 
   // ==========================================================================
-  // Shadow registry: every store mutation writes through to the
-  // UserInputRequestManager, whose per-store view must mirror the legacy
-  // stores exactly (the persister asserts this inline at every mutation —
-  // storeMismatches must stay 0). Its derived awaiting projection is what the
-  // persister's isSessionAwaitingInput now reports.
+  // The registry is the store: every kind lands in it as a typed envelope with
+  // the right store label, and its derived projection is what the persister's
+  // isSessionAwaitingInput reports.
   // ==========================================================================
 
-  describe('shadow registry equivalence', () => {
-    const KIND_BY_SSE_TYPE: Record<string, string> = {
-      secret_request: 'secret',
-      question_request: 'question',
-      connected_account_request: 'connected_account',
-      file_request: 'file',
-      remote_mcp_request: 'remote_mcp',
-      browser_input_request: 'browser_input',
-      script_run_request: 'script_run',
-    }
-
-    it('every standard kind registers a typed entry mirroring the replay store, and settles with it', async () => {
+  describe('registry entries', () => {
+    it('every standard kind registers a typed entry and settles with its tool_result', async () => {
       for (const kindCase of STANDARD_KINDS) {
-        const toolId = `shadow-${kindCase.sseType}`
+        const toolId = `shadow-${kindCase.kind}`
         simulateToolUse(kindCase.toolName, toolId, kindCase.input)
 
         await vi.waitFor(() => {
@@ -956,18 +956,10 @@ describe('pending user-input request lifecycle (characterization)', () => {
         const entry = userInputRequestManager
           .getOpenRequestsForSession(SESSION_ID)
           .find((r) => r.id === toolId)!
-        expect(entry.kind, kindCase.label).toBe(KIND_BY_SSE_TYPE[kindCase.sseType])
+        expect(entry.kind, kindCase.label).toBe(kindCase.kind)
         expect(entry.scope).toEqual({ agentSlug: AGENT_SLUG, sessionId: SESSION_ID })
 
-        // Exact mirror of the legacy replay store.
-        expect(
-          [...userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'stream')].sort()
-        ).toEqual(
-          messagePersister
-            .getPendingInputRequests(SESSION_ID)
-            .map((r) => r.toolUseId)
-            .sort()
-        )
+        expect(openStreamRequestIds()).toEqual([toolId])
 
         sendToolResult(toolId)
         expect(
@@ -975,11 +967,11 @@ describe('pending user-input request lifecycle (characterization)', () => {
         ).not.toContain(toolId)
         expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
           id: toolId,
-          kind: KIND_BY_SSE_TYPE[kindCase.sseType],
+          kind: kindCase.kind,
           outcome: 'answered',
         })
       }
-      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
+      expect(userInputRequestManager.stats.mismatches).toBe(0)
     })
 
     it('a stray main-path tool_result cannot evict the registry\'s computer-use entry (store-scoped resolve)', () => {
@@ -1003,7 +995,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         kind: 'computer_use',
         outcome: 'answered',
       })
-      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
+      expect(userInputRequestManager.stats.mismatches).toBe(0)
     })
 
     it('parallel requests: the reported status tracks the projection across partial resolves', () => {
@@ -1027,7 +1019,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       sendToolResult('shadow-par-2')
       expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
-      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
+      expect(userInputRequestManager.stats.mismatches).toBe(0)
     })
 
     it('capability review: complete settles the registry entry and the reported status together', async () => {
@@ -1052,7 +1044,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
       expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
-      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
+      expect(userInputRequestManager.stats.mismatches).toBe(0)
     })
 
     it('the direct-clear doors record the caller\'s actual outcome, not a blanket answered', async () => {
@@ -1092,7 +1084,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         kind: 'computer_use',
         outcome: 'invalidated',
       })
-      expect(userInputRequestManager.stats.storeMismatches).toBe(0)
+      expect(userInputRequestManager.stats.mismatches).toBe(0)
     })
 
     it('unsubscribe drops every session-scoped registry entry as invalidated', () => {
@@ -1131,15 +1123,18 @@ describe('pending user-input request lifecycle (characterization)', () => {
       messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
     }
 
-    it('cancelAwaitingInput rejects recovered entries on the container despite the replay filter', async () => {
+    it('cancelAwaitingInput rejects recovered entries on the container despite the wire filter', async () => {
       messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG, [
         { toolUseId: 'rec-cancel-1', toolName: 'AskUserQuestion' },
       ])
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
-      // The replay filter hides the synthesized entry from reconnecting clients…
-      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      // A recovered synthetic is a real wait in the registry but carries no
+      // renderable payload, so no card event goes out for it — clients render
+      // it from the transcript that triggered the recovery.
+      expect(openStreamRequestIds()).toEqual(['rec-cancel-1'])
+      expect(cardsFor('question')).toHaveLength(0)
 
-      // …but a replacement message must still clean it up container-side: the
+      // The container-side cleanup still has to happen on cancel: the
       // recovered ask is exactly the one whose container pending may still be
       // live, and a late answer must not land on the abandoned turn.
       await messagePersister.cancelAwaitingInput(SESSION_ID, AGENT_SLUG)
@@ -1232,7 +1227,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       // Replay store, registry entry, and cache all still agree, so a later
       // sync must NOT clear the genuinely parked ask.
       expect(
-        messagePersister.getPendingInputRequests(SESSION_ID).map((r) => r.toolUseId)
+        openStreamRequestIds()
       ).toEqual(['resub-secret-1'])
       expect(
         userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
@@ -1250,7 +1245,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         },
       })
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
-      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      expect(openStreamRequestIds()).toHaveLength(0)
     })
 
     it('the markSessionIdle revert clears the awaiting cache an agent review had set', () => {
@@ -1295,7 +1290,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(
         userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id),
       ).toEqual(['par-question-1'])
-      expect(messagePersister.getPendingInputRequests(SESSION_ID).map((r) => r.toolUseId)).toEqual(
+      expect(openStreamRequestIds()).toEqual(
         ['par-question-1'],
       )
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
@@ -1399,7 +1394,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
-      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      expect(openStreamRequestIds()).toHaveLength(0)
       expect(
         userInputRequestManager.stats.recentResolutions.find((r) => r.id === 'side-orphan-1')
           ?.outcome,

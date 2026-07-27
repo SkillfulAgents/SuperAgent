@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { BrowserTabInfo } from '@renderer/components/browser/browser-tab-bar'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
-import { clearBrowserActive, useMessageStream } from '@renderer/hooks/use-message-stream'
+import { clearBrowserActive } from '@renderer/hooks/use-message-stream'
+import { usePendingBrowserInputRequests } from '@renderer/components/messages/use-pending-requests'
 import { useUser } from '@renderer/context/user-context'
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
@@ -47,7 +48,8 @@ export function useBrowserStream({
   const isMountedRef = useRef(true)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const { pendingBrowserInputRequests } = useMessageStream(sessionId, agentSlug)
+  const { requests: pendingBrowserInputRequests, dismiss: dismissBrowserInputRequest } =
+    usePendingBrowserInputRequests(sessionId, agentSlug, isActive)
   const needsAttention = browserActive && pendingBrowserInputRequests.length > 0 && !isViewOnly
   const latestRequestId = pendingBrowserInputRequests.length > 0
     ? pendingBrowserInputRequests[pendingBrowserInputRequests.length - 1].toolUseId
@@ -513,6 +515,7 @@ export function useBrowserStream({
     needsAttention,
     showOverlay,
     pendingBrowserInputRequests,
+    dismissBrowserInputRequest,
     latestRequestId,
     // Canvas event handlers
     handleMouseDown,

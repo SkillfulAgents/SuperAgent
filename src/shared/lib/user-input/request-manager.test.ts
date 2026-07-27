@@ -437,28 +437,6 @@ describe('UserInputRequestManager', () => {
   })
 
   describe('shadow diagnostics', () => {
-    it('verifyStoreParity passes silently when both stores match', () => {
-      manager.register(secretRequest({ id: 'stream-1' }))
-      manager.verifyStoreParity({
-        sessionId: 'session-1',
-        context: 'test',
-        streamStoreIds: ['stream-1'],
-      })
-      expect(manager.stats.storeMismatches).toBe(0)
-    })
-
-    it('verifyStoreParity throws under vitest on a mismatch and counts it', () => {
-      manager.register(secretRequest({ id: 'stream-1' }))
-      expect(() =>
-        manager.verifyStoreParity({
-          sessionId: 'session-1',
-          context: 'test',
-          streamStoreIds: ['stream-1', 'stream-2'],
-        }),
-      ).toThrow(/shadow store mismatch/)
-      expect(manager.stats.storeMismatches).toBe(1)
-    })
-
     it('verifyReviewSettlerParity accepts settlers backed by open review entries', () => {
       manager.register({
         id: 'review-1',
@@ -468,7 +446,7 @@ describe('UserInputRequestManager', () => {
         payload: { toolkit: 'slack' },
       })
       manager.verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-1'] })
-      expect(manager.stats.storeMismatches).toBe(0)
+      expect(manager.stats.mismatches).toBe(0)
     })
 
     it('verifyReviewSettlerParity accepts review entries without settlers', () => {
@@ -482,7 +460,7 @@ describe('UserInputRequestManager', () => {
         payload: { toolkit: 'slack' },
       })
       manager.verifyReviewSettlerParity({ context: 'test', settlerIds: [] })
-      expect(manager.stats.storeMismatches).toBe(0)
+      expect(manager.stats.mismatches).toBe(0)
     })
 
     it('verifyReviewSettlerParity throws under vitest on an orphaned settler', () => {
@@ -490,8 +468,8 @@ describe('UserInputRequestManager', () => {
       // can ever reach.
       expect(() =>
         manager.verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-orphan'] }),
-      ).toThrow(/shadow store mismatch/)
-      expect(manager.stats.storeMismatches).toBe(1)
+      ).toThrow(/shadow mismatch/)
+      expect(manager.stats.mismatches).toBe(1)
     })
 
     it('reset wipes requests and diagnostics', () => {
@@ -501,7 +479,7 @@ describe('UserInputRequestManager', () => {
       expect(manager.stats).toEqual({
         open: 0,
         claimed: 0,
-        storeMismatches: 0,
+        mismatches: 0,
         recentResolutions: [],
       })
     })

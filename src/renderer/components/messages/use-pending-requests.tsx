@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useMessageStream, removePendingRequestsByToolUseId } from '@renderer/hooks/use-message-stream'
+import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useMessages } from '@renderer/hooks/use-messages'
 import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
-import { usePendingProxyReviews, type PendingReview } from '@renderer/hooks/use-proxy-reviews'
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { askUserQuestionDef } from '@shared/lib/tool-definitions/ask-user-question'
@@ -194,17 +193,54 @@ interface UnifiedProjection {
   buckets: PendingRequestBuckets
   capabilityReviews: UnifiedCapabilityReview[]
   reviews: PendingReview[]
+  /**
+   * Ids the server auto-approved and is ALREADY executing, per suppressible
+   * kind. They are deliberately absent from the buckets — no card is owed for
+   * them — but they must still be suppressed, because the streaming and
+   * message-history fallbacks recover the same tool call from the transcript
+   * and would draw an approval card for work already in flight. Pressing it
+   * races the internal `_auto` call and can run the side effect twice.
+   *
+   * This is the reconnect-safe half of the suppression: the live
+   * `user_request_created` event is one-shot, so a client that mounts after it
+   * fired has nothing in its live set and only the snapshot still knows.
+   */
+  autoApprovedScriptRunIds: Set<string>
+  autoApprovedComputerUseIds: Set<string>
 }
 
 function isXAgentOperation(value: unknown): value is 'list' | 'read' | 'invoke' | 'create' {
   return value === 'list' || value === 'read' || value === 'invoke' || value === 'create'
 }
 
-// Rebuild the legacy poll's PendingReview shape from a review envelope. The
-// payload carries the full ReviewDetails (plus the derived displayText), but
-// envelope payloads are lenient by design, so the card-critical fields are
-// re-validated here instead of trusted. Exported for the dashboard's
-// pending-reviews panel, which reads the same snapshot.
+/**
+ * A proxy / x-agent review as the cards render it. Formerly the response shape
+ * of the `proxy-reviews` poll; now purely the projection of a review envelope,
+ * which is the only source left.
+ */
+export interface PendingReview {
+  id: string
+  agentSlug: string
+  accountId: string
+  toolkit: string
+  method: string
+  targetPath: string
+  matchedScopes: string[]
+  scopeDescriptions: Record<string, string>
+  displayText?: string
+  xAgent?: {
+    targetAgentSlug: string
+    targetAgentName: string
+    operation: 'list' | 'read' | 'invoke' | 'create'
+    preview?: string
+  }
+}
+
+// Rebuild the PendingReview shape from a review envelope. The payload carries
+// the full ReviewDetails (plus the derived displayText), but envelope payloads
+// are lenient by design, so the card-critical fields are re-validated here
+// instead of trusted. Exported for the dashboard's pending-reviews panel,
+// which reads the same snapshot.
 export function reviewFromEnvelope(
   request: PendingUserInputRequest,
   payload: Record<string, unknown>,
@@ -263,6 +299,8 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
   const buckets = createPendingRequestBuckets()
   const capabilityReviews: UnifiedCapabilityReview[] = []
   const reviews: PendingReview[] = []
+  const autoApprovedScriptRunIds = new Set<string>()
+  const autoApprovedComputerUseIds = new Set<string>()
 
   for (const request of requests) {
     const payload = request.payload as Record<string, unknown>
@@ -330,7 +368,10 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
       case 'script_run':
         // Auto-approved scripts are already executing server-side; the entry
         // exists so recovery paths can tell "granted" from "waiting".
-        if (request.autoApproved) break
+        if (request.autoApproved) {
+          autoApprovedScriptRunIds.add(request.id)
+          break
+        }
         if (typeof payload.script === 'string' && isScriptType(payload.scriptType)) {
           buckets.scriptRunRequests.push({
             toolUseId: request.id,
@@ -341,7 +382,10 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
         }
         break
       case 'computer_use':
-        if (request.autoApproved) break
+        if (request.autoApproved) {
+          autoApprovedComputerUseIds.add(request.id)
+          break
+        }
         if (typeof payload.method === 'string' && typeof payload.permissionLevel === 'string') {
           buckets.computerUseRequests.push({
             toolUseId: request.id,
@@ -377,7 +421,55 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
     }
   }
 
-  return { buckets, capabilityReviews, reviews }
+  return {
+    buckets,
+    capabilityReviews,
+    reviews,
+    autoApprovedScriptRunIds,
+    autoApprovedComputerUseIds,
+  }
+}
+
+/**
+ * The browser tray's view of open browser_input requests.
+ *
+ * Reads the same unified snapshot the in-chat cards project from, so a request
+ * the registry recovered — or one settled on another surface — reaches the tray
+ * too. The tradeoff is timing: the overlay appears one snapshot refetch after
+ * the created event rather than synchronously with it.
+ */
+export function usePendingBrowserInputRequests(
+  sessionId: string,
+  agentSlug: string,
+  isActive: boolean,
+): {
+  requests: PendingRequestBuckets['browserInputRequests']
+  dismiss: (toolUseId: string) => void
+} {
+  const { data } = usePendingUserRequests(agentSlug, sessionId)
+  // Local dismissal, same reason as the request stack's: answering in the tray
+  // must drop the overlay now, not one server round trip later.
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set())
+  const dismiss = useCallback((toolUseId: string) => {
+    setDismissed((prev) => new Set(prev).add(toolUseId))
+  }, [])
+
+  const prevIsActive = useRef(isActive)
+  useEffect(() => {
+    if (prevIsActive.current && !isActive) setDismissed(new Set())
+    prevIsActive.current = isActive
+  }, [isActive])
+
+  const requests = useMemo(() => {
+    // Session-scoped waits die with the turn, matching the array this replaced
+    // (session_idle and session_error both emptied it).
+    if (!isActive) return []
+    return projectUnifiedRequests(data ?? []).buckets.browserInputRequests.filter(
+      (r) => !dismissed.has(r.toolUseId),
+    )
+  }, [data, isActive, dismissed])
+
+  return { requests, dismiss }
 }
 
 export type PendingRequestDescriptor =
@@ -410,25 +502,17 @@ export function usePendingRequests({
   const { data: messages } = useMessages(sessionId, agentSlug)
   const {
     isActive,
-    pendingCapabilityReviewRequests: sseCapabilityReviewRequests,
     streamingToolUses,
     autoApprovedScriptRunIds,
     autoApprovedComputerUseIds,
   } = useMessageStream(sessionId, agentSlug)
 
-  // The unified store is the primary source for every kind — session-scoped
-  // requests AND the agent-scoped reviews that used to arrive on a separate
-  // poll. The streaming/message-history fallbacks below still cover the
-  // transcript-recovery path (recovered entries are in the snapshot but carry
-  // no payload, so the per-kind guards drop them; the transcript renders them).
+  // The snapshot is the only source for reviews and capability reviews, and
+  // the primary one for every other kind. The streaming/message-history
+  // fallbacks below cover the transcript-recovery path: recovered entries are
+  // in the snapshot but carry no payload, so the per-kind guards drop them and
+  // the transcript is what renders them.
   const { data: unifiedRequestsData } = usePendingUserRequests(agentSlug, sessionId)
-  // undefined = the snapshot has NEVER succeeded (still in flight, or a cold
-  // fetch failure with nothing cached) — distinct from a successful empty [].
-  // Reviews have no message-history or streaming recovery, so until the first
-  // snapshot lands the legacy poll and stream arrays below keep those cards
-  // actionable; once a snapshot exists it is authoritative.
-  const hasSnapshot = unifiedRequestsData !== undefined
-  const { data: legacyProxyReviewsData } = usePendingProxyReviews(agentSlug)
   const unified = useMemo(() => {
     const requests = unifiedRequestsData ?? []
     // Session-scoped waits die with the turn for DISPLAY purposes — the legacy
@@ -441,10 +525,7 @@ export function usePendingRequests({
       isActive ? requests : requests.filter((r) => r.scope.sessionId === undefined),
     )
   }, [unifiedRequestsData, isActive])
-  const pendingProxyReviews = useMemo(
-    () => (hasSnapshot ? unified.reviews : legacyProxyReviewsData?.reviews ?? []),
-    [hasSnapshot, unified.reviews, legacyProxyReviewsData],
-  )
+  const pendingProxyReviews = unified.reviews
 
   // Derive pending requests from message history (for page refresh recovery).
   // Tool calls without a result are still pending, but only if there are no
@@ -520,14 +601,28 @@ export function usePendingRequests({
   // fallback ∪ message-history fallback, first occurrence of a toolUseId
   // wins, dismissed ids drop, and the auto-approved suppress-set (script_run
   // and computer_use only) hides requests the server is already executing.
+  // Live event ∪ snapshot. The live sets are written synchronously by
+  // user_request_created (they have to be, to beat the fallback-card flash),
+  // but that event is one-shot: a client that mounts or reconnects after it
+  // fired only learns from the snapshot. Without the union, the transcript
+  // fallback revives an approval card for a request already executing.
+  const suppressedScriptRunIds = useMemo(
+    () => new Set([...autoApprovedScriptRunIds, ...unified.autoApprovedScriptRunIds]),
+    [autoApprovedScriptRunIds, unified.autoApprovedScriptRunIds],
+  )
+  const suppressedComputerUseIds = useMemo(
+    () => new Set([...autoApprovedComputerUseIds, ...unified.autoApprovedComputerUseIds]),
+    [autoApprovedComputerUseIds, unified.autoApprovedComputerUseIds],
+  )
+
   const merged = useMemo(() => {
     const target = createPendingRequestBuckets()
     for (const kind of Object.keys(target) as Array<keyof PendingRequestBuckets>) {
       const suppressed =
         kind === 'scriptRunRequests'
-          ? autoApprovedScriptRunIds
+          ? suppressedScriptRunIds
           : kind === 'computerUseRequests'
-            ? autoApprovedComputerUseIds
+            ? suppressedComputerUseIds
             : undefined
       mergeBucket(
         target,
@@ -544,19 +639,18 @@ export function usePendingRequests({
     return target
   }, [
     unified.buckets, streamingBasedPendingRequests, messagesBasedPendingRequests,
-    isActive, autoApprovedScriptRunIds, autoApprovedComputerUseIds, dismissedRequestIds,
+    isActive, suppressedScriptRunIds, suppressedComputerUseIds, dismissedRequestIds,
   ])
 
-  // Capability reviews come from the unified store (with the stream source as
-  // the cold-start fallback) — no message-history or streaming recovery. A
-  // Task/Workflow call without a result usually means the launch is RUNNING
-  // (allow policy or an active session grant), not awaiting approval; only
-  // the host registry knows which.
+  // Capability reviews come from the unified store only — no message-history
+  // or streaming recovery. A Task/Workflow call without a result usually means
+  // the launch is RUNNING (allow policy or an active session grant), not
+  // awaiting approval; only the host registry knows which. A cold mount
+  // therefore shows the card one snapshot fetch late.
   const pendingCapabilityReviewRequests = useMemo(() => {
     if (!isActive) return []
-    const source = hasSnapshot ? unified.capabilityReviews : sseCapabilityReviewRequests
-    return source.filter((r) => !dismissedRequestIds.has(r.toolUseId))
-  }, [unified.capabilityReviews, sseCapabilityReviewRequests, hasSnapshot, isActive, dismissedRequestIds])
+    return unified.capabilityReviews.filter((r) => !dismissedRequestIds.has(r.toolUseId))
+  }, [unified.capabilityReviews, isActive, dismissedRequestIds])
 
   // Track arrival order so the stack is chronological. Each id gets a
   // monotonically increasing sequence number the first time it appears.
@@ -607,17 +701,12 @@ export function usePendingRequests({
 
   const handleRequestComplete = useCallback((toolUseId: string) => {
     dismissRequest(toolUseId)
-    // The stream store still holds the browser tray's entries and the
-    // capability cold-start fallback — drop the settled id from those too.
-    removePendingRequestsByToolUseId(sessionId, toolUseId)
-  }, [sessionId, dismissRequest])
+  }, [dismissRequest])
 
   const handleProxyReviewComplete = useCallback(() => {
     // The decision routes settle the registry entry, which broadcasts
-    // user_request_resolved → this invalidation is the immediate local echo
-    // (and keeps the dashboard's legacy review poll coherent).
+    // user_request_resolved → this invalidation is the immediate local echo.
     queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
-    queryClient.invalidateQueries({ queryKey: ['proxy-reviews'] })
   }, [queryClient])
 
   const items = useMemo<PendingRequestDescriptor[]>(() => {

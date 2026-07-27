@@ -93,7 +93,6 @@ describe('useMessageStream', () => {
     expect(result.current.streamingMessage).toBeNull()
     expect(result.current.streamingToolUses).toEqual([])
     expect(result.current.error).toBeNull()
-    expect(result.current.pendingBrowserInputRequests).toEqual([])
   })
 
   it('creates EventSource for session', async () => {
@@ -1202,38 +1201,6 @@ describe('useMessageStream', () => {
 
   // ---- State transition edge cases ----
 
-  it('session_idle clears the surviving pending-request arrays', async () => {
-    const { useMessageStream } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-
-    // The two arrays that outlived the unified-store migration: the browser
-    // tray's feed and the capability-review cold-start fallback.
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'browser_input_request', toolUseId: 'tu-1', message: 'Log in', requirements: [] })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'capability_review_request', toolUseId: 'tu-2', capability: 'workflows', toolName: 'Workflow', input: {} })
-    })
-
-    expect(result.current.pendingBrowserInputRequests).toHaveLength(1)
-    expect(result.current.pendingCapabilityReviewRequests).toHaveLength(1)
-
-    // session_idle should clear both
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
-    })
-
-    expect(result.current.pendingBrowserInputRequests).toHaveLength(0)
-    expect(result.current.pendingCapabilityReviewRequests).toHaveLength(0)
-  })
-
   it('session_active clears previous error', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -1509,8 +1476,8 @@ describe('useMessageStream', () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
   })
 
-  describe('script_run_request event', () => {
-    it('autoApproved:true populates suppress-set and skips pendingScriptRunRequests', async () => {
+  describe('auto-approved suppress-sets (from user_request_created)', () => {
+    it('an auto-approved script_run enters the suppress-set', async () => {
       const mod = await getHookModule()
       const wrapper = createWrapper()
 
@@ -1530,12 +1497,16 @@ describe('useMessageStream', () => {
 
       act(() => {
         es.simulateMessage({
-          type: 'script_run_request',
-          toolUseId: 'tool-auto',
-          script: 'sw_vers',
-          explanation: 'Check version',
-          scriptType: 'shell',
-          autoApproved: true,
+          type: 'user_request_created',
+          agentSlug: 'agent-1',
+          request: {
+            id: 'tool-auto',
+            kind: 'script_run',
+            scope: { agentSlug: 'agent-1', sessionId: 'session-auto-1' },
+            blocking: true,
+            autoApproved: true,
+            payload: { script: 'sw_vers', explanation: 'Check version', scriptType: 'shell' },
+          },
         })
       })
 
@@ -1557,7 +1528,7 @@ describe('useMessageStream', () => {
       expect(result.current.autoApprovedScriptRunIds.size).toBe(0)
     })
 
-    it('autoApproved:true computer-use request populates suppress-set and skips pendingComputerUseRequests', async () => {
+    it('an auto-approved computer_use enters its own suppress-set', async () => {
       const mod = await getHookModule()
       const wrapper = createWrapper()
 
@@ -1577,12 +1548,16 @@ describe('useMessageStream', () => {
 
       act(() => {
         es.simulateMessage({
-          type: 'computer_use_request',
-          toolUseId: 'tool-cu-auto',
-          method: 'apps',
-          params: {},
-          permissionLevel: 'list_apps_windows',
-          autoApproved: true,
+          type: 'user_request_created',
+          agentSlug: 'agent-1',
+          request: {
+            id: 'tool-cu-auto',
+            kind: 'computer_use',
+            scope: { agentSlug: 'agent-1', sessionId: 'session-auto-cu-1' },
+            blocking: true,
+            autoApproved: true,
+            payload: { method: 'apps', params: {}, permissionLevel: 'list_apps_windows' },
+          },
         })
       })
 
@@ -1622,28 +1597,36 @@ describe('useMessageStream', () => {
         es.simulateMessage({ type: 'connected', isActive: true })
       })
 
-      // First request: needs prompt — the approval card comes from the
-      // unified store, so the legacy event must NOT suppress it.
+      // First request: needs prompt — its approval card comes from the
+      // unified store, so nothing may suppress it.
       act(() => {
         es.simulateMessage({
-          type: 'script_run_request',
-          toolUseId: 'tool-prompt',
-          script: 'echo hi',
-          explanation: 'Say hi',
-          scriptType: 'shell',
-          autoApproved: false,
+          type: 'user_request_created',
+          agentSlug: 'agent-1',
+          request: {
+            id: 'tool-prompt',
+            kind: 'script_run',
+            scope: { agentSlug: 'agent-1', sessionId: 'session-auto-mixed' },
+            blocking: true,
+            autoApproved: false,
+            payload: { script: 'echo hi', explanation: 'Say hi', scriptType: 'shell' },
+          },
         })
       })
 
       // Second request: auto-approved.
       act(() => {
         es.simulateMessage({
-          type: 'script_run_request',
-          toolUseId: 'tool-auto',
-          script: 'sw_vers',
-          explanation: 'Check version',
-          scriptType: 'shell',
-          autoApproved: true,
+          type: 'user_request_created',
+          agentSlug: 'agent-1',
+          request: {
+            id: 'tool-auto',
+            kind: 'script_run',
+            scope: { agentSlug: 'agent-1', sessionId: 'session-auto-mixed' },
+            blocking: true,
+            autoApproved: true,
+            payload: { script: 'sw_vers', explanation: 'Check version', scriptType: 'shell' },
+          },
         })
       })
 

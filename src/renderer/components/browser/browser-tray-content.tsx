@@ -6,7 +6,7 @@ import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
 import { Button } from '@renderer/components/ui/button'
 import { DeclineButton } from '@renderer/components/messages/decline-button'
 import { apiFetch } from '@renderer/lib/api'
-import { removeBrowserInputRequest, useMessageStream } from '@renderer/hooks/use-message-stream'
+import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useBrowserInputActions } from '@renderer/hooks/use-browser-input-actions'
 import { cn } from '@shared/lib/utils/cn'
 import {
@@ -86,7 +86,7 @@ export function BrowserTrayContent({
   const { submittingAction, error: actionError, complete, decline } = useBrowserInputActions({
     agentSlug,
     sessionId,
-    onResolved: (toolUseId) => removeBrowserInputRequest(sessionId, toolUseId),
+    onResolved: (toolUseId) => stream.dismissBrowserInputRequest(toolUseId),
   })
 
   return (
