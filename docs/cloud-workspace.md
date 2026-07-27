@@ -177,8 +177,24 @@ Other properties worth not regressing:
   the laptop's credentials and settings. Anything else injected into a proxied
   document has the same obligation.
 
-Not yet forwarded: **WebSocket upgrades** (`use-browser-stream.ts`), so the
-browser view does not work against a cloud workspace.
+**WebSocket upgrades are forwarded too**, by a second handler
+(`main/cloud-stream-proxy.ts`) on the server's `upgrade` event. They have to be:
+an upgrade leaves the request/response cycle and never reaches Hono, so the two
+halves of one feature are necessarily two files. Without it the browser view —
+the renderer's one WebSocket — is dead against a cloud workspace.
+
+Two things it does differently from the sibling `browser-stream-proxy.ts`:
+
+- **The upstream socket is opened before the client is upgraded.** A 401 on the
+  handshake is the expected state every 24 hours, and once the browser has been
+  told `101` the only thing left to say is a close code. In this order a re-mint
+  is invisible — the browser is still waiting on its own handshake.
+- **A relayed close code is clamped.** Codes below 3000 are reserved and cannot
+  be sent by an application, so passing a `1006` straight through would throw
+  inside the proxy rather than close the client.
+
+It also declines any upgrade outside its prefix, so the local browser stream
+keeps working exactly as before.
 
 ## Electron-only, by design
 
@@ -244,7 +260,8 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `services/cloud-workspace-service.ts` | `getCloudWorkspace()` — the discover→ensure-token algorithm + SSRF gate |
 | `services/cloud-proxy-key.ts` | The per-boot secret in the proxy URL prefix |
 | `services/cloud-proxy-target.ts` | What the proxy forwards to; single-flight, rate-limited re-mint |
-| `api/routes/cloud-proxy.ts` | `/cloud/{key}/api/*` → the deployment |
+| `api/routes/cloud-proxy.ts` | `/cloud/{key}/api/*` → the deployment (HTTP + SSE) |
+| `main/cloud-stream-proxy.ts` | The same, for WebSocket upgrades |
 | `api/polyfill-api-prefix.ts` | Keeps dashboard-shim API calls on whichever API served the document |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |
