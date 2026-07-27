@@ -236,6 +236,8 @@ function defaultSettings() {
       expiresAt: '2026-03-25T00:00:00.000Z',
       updatedAt: '2026-03-24T00:00:00.000Z',
     },
+    apiTarget: 'cloud' as const,
+    platformNotifications: { lastNotifiedAt: '2026-03-24T00:00:00.000Z' },
   }
 }
 
@@ -434,6 +436,33 @@ describe('settings route', () => {
       // Regression: a global settings PUT must not silently drop the deployment
       // token maintained by the platform-auth flow.
       expect(saved.cloudWorkspace).toEqual(defaultSettings().cloudWorkspace)
+    })
+
+    it('preserves the desktop local-or-cloud target when updating unrelated settings', async () => {
+      const res = await putSettings({ llmProvider: 'platform' })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      // Regression: dropping this silently sends the next boot to the laptop.
+      // The reachable case is a cloud preference that fell back to local for a
+      // boot — the renderer is talking to the local API, so its settings save
+      // lands here and would erase the preference for good.
+      expect(saved.apiTarget).toBe('cloud')
+    })
+
+    it('preserves every field it does not own, including ones added later', async () => {
+      // This route REBUILDS AppSettings field by field and `updateSettings`
+      // replaces the whole persisted object, so any field left out is deleted.
+      // Every field of AppSettings is optional, so an omission typechecks —
+      // which is how both `apiTarget` and `platformNotifications` went missing.
+      // Asserting on the key set catches the next one automatically, rather
+      // than waiting for someone to remember a per-field regression test.
+      const res = await putSettings({ llmProvider: 'platform' })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      const dropped = Object.keys(defaultSettings()).filter((key) => !(key in saved))
+      expect(dropped).toEqual([])
     })
   })
 
