@@ -31,8 +31,13 @@ function initDb() {
   const dataDir = getDataDir()
 
   // Data dir (settings/agents) and DB parent may differ when SUPERAGENT_DB_PATH is set.
-  fs.mkdirSync(dataDir, { recursive: true })
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true })
+  }
+  const dbParent = path.dirname(dbPath)
+  if (!fs.existsSync(dbParent)) {
+    fs.mkdirSync(dbParent, { recursive: true })
+  }
 
   try {
     _sqlite = new Database(dbPath)
