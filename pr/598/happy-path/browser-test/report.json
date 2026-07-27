@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the QA agent successfully executed browser_open, navigated to example.com, and returned the correct page title \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application (title: \"Gamut\")",
+    "Found and clicked the \"QA-20260727-213947-t4zk\" agent in the sidebar — Successfully navigated to agent page (URL: http://localhost:47891/agents/qa-20260727-213947-t4zk-gm781bcqv8)",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully transmitted to agent and a new session was created (title: \"Browser Navigation and Page Title Check — QA-20260727-213947-t4zk\")",
+    "Waited up to 3 minutes for response — Response received within timeout. Agent executed browser_open, navigated to https://example.com, and closed browser. Working time: 14 seconds.",
+    "Verified response mentions \"Example Domain\" — Response states: \"The page title is \\\"Example Domain\\\" — the page has a single heading with that text, a short paragraph noting the domain is for documentation examples, and a \\\"Learn more\\\" link.\""
+  ],
+  "bugs": [],
+  "durationMs": 313892,
+  "sessionId": "885cdeba-3fa5-43f5-982d-6ce7c57d8e81",
+  "cost": {
+    "inputTokens": 334,
+    "outputTokens": 11365,
+    "cacheCreationTokens": 55803,
+    "cacheReadTokens": 880333,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.214946
+  }
+}
