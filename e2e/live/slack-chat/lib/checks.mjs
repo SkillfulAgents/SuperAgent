@@ -216,21 +216,87 @@ export const CHECKS = [
   },
 
   {
-    id: 'question-freetext-answer',
-    title: 'a plain-text reply answers the open question and the same turn continues',
+    id: 'question-freetext-reply',
+    title: 'a plain-text reply to an open question settles it and the agent responds',
     tags: ['question', 'answer'],
     async run(ctx) {
       // Depends on question-card leaving a single-question card open: that is
-      // the only shape the free-text path consumes.
+      // the only shape the free-text ANSWER path consumes.
       const open = await ctx.api.pendingRequests(ctx.agentSlug)
       if (!open.some((r) => r.kind === 'question')) {
         throw new Error('No open question to answer — question-card must run first')
       }
+      const sessionId = await currentSessionId(ctx)
+      const before = (await ctx.api.messages(ctx.agentSlug, sessionId)).length
+
       const tag = nonce()
       await ctx.conv.say(`Green ${tag}`)
-      await ctx.conv.awaitBot('the agent to use the free-text answer', contains(tag), 240_000)
+      await ctx.conv.awaitBot('the agent to respond to the typed reply', contains(tag), 240_000)
       await awaitRegistryEmpty(ctx)
-      return 'answered as the free-form option'
+
+      // Which of the two paths ran is worth reporting, because they are not
+      // interchangeable and the connectors differ:
+      //   answer  — the text resolves the open card as the free-form option and
+      //             the SAME turn continues (no new user message hits the
+      //             transcript). Needs `answerOpenQuestionWithText`, which only
+      //             the Telegram connector implements today.
+      //   cancel  — the parked ask is cancelled and the text starts a FRESH
+      //             turn, so it lands in the transcript as a user message.
+      // Both settle the request and both get a reply, so asserting only "the
+      // agent answered" cannot tell them apart — and a check that cannot tell
+      // them apart would stay green if the answer path broke entirely.
+      const after = await ctx.api.messages(ctx.agentSlug, sessionId)
+      const startedFreshTurn = after
+        .slice(before)
+        .some((m) => JSON.stringify(m).includes(`Green ${tag}`) && (m.role ?? m.type) === 'user')
+      return startedFreshTurn
+        ? 'cancelled → fresh turn (this connector has no free-text answer path)'
+        : 'answered in-turn as the free-form option'
+    },
+  },
+
+  {
+    id: 'question-answered-in-app',
+    title: 'answering the card in the app settles it for Slack and the same turn continues',
+    tags: ['question', 'answer', 'cross-surface'],
+    async run(ctx) {
+      // The one check that drives BOTH surfaces. Chat and the app used to read
+      // "what is the agent blocked on" from different stores; if they drift
+      // apart again, an answer given in the app leaves the Slack card live and
+      // the turn parked — which is exactly what this fails on.
+      const tag = nonce()
+      await ctx.conv.say(
+        'Use the AskUserQuestion tool to ask me exactly one question: "Pick a metal" with the ' +
+          `options "Iron" and "Tin". When I answer, reply with exactly: PICKED ${tag} <my answer>.`,
+      )
+      await ctx.conv.awaitBot('the metal question card', contains('Pick a metal'), 240_000)
+
+      const request = await awaitRegistryKind(ctx, 'question')
+      const sessionId = await currentSessionId(ctx)
+      if (request.scope?.sessionId !== sessionId) {
+        throw new Error(
+          `The app sees the question on session ${request.scope?.sessionId}, Slack is on ${sessionId} — ` +
+            `an answer in the app would settle a different session's card`,
+        )
+      }
+
+      // Answer with the question text the registry holds, not the text we asked
+      // the model for: the container keys answers by the question it actually
+      // sent, and the model is free to reword.
+      const question = request.payload?.questions?.[0]?.question ?? 'Pick a metal'
+      await ctx.api.post(
+        `/api/agents/${encodeURIComponent(ctx.agentSlug)}/sessions/${encodeURIComponent(sessionId)}/answer-question`,
+        { toolUseId: request.id, answers: { [question]: 'Iron' } },
+      )
+
+      // The continuation has to come back to SLACK: the app answered, but the
+      // turn belongs to the chat conversation.
+      await ctx.conv.awaitBot(`PICKED ${tag}`, contains(`PICKED ${tag}`), 240_000)
+      await awaitRegistryEmpty(ctx)
+      return `answered ${request.id} via the app route, continuation landed in Slack`
+    },
+    async cleanup(ctx) {
+      await clearPending(ctx)
     },
   },
 
@@ -373,6 +439,21 @@ export const CHECKS = [
     // the subagent before a poll sees it. The notice is the assertion that
     // matters here; the parked-request invariant is covered by the other kinds.
     requiresParked: false,
+  }),
+
+  unsupportedCheck({
+    id: 'unsupported-capability-review',
+    kind: 'capability_review',
+    // Before the chat integrations moved onto the unified wire this kind had no
+    // case in processSSEEvent at all: the workflow parked on an approval the
+    // chat user was never told about, and the conversation just went quiet.
+    // `workflows: 'review'` is the shipped default, so no settings tampering is
+    // needed to reach it.
+    prompt:
+      'Use the Workflow tool to run a one-agent workflow that just echoes the word ping. ' +
+      'If the tool is unavailable, say exactly: WORKFLOW TOOL UNAVAILABLE.',
+    phrase: 'wants to run a workflow, which needs your approval.',
+    tags: ['capability'],
   }),
 
   unsupportedCheck({

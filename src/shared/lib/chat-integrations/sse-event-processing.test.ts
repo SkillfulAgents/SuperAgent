@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-integration-manager'
 import { MockChatClientConnector } from './mock-connector'
+import { createdEvent } from './user-request-fixtures'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
 // ── Test helpers ────────────────────────────────────────────────────────
@@ -298,37 +299,59 @@ describe('processSSEEvent', () => {
       expect(mock.sentMessages.length).toBe(0) // no tool summary
     })
 
-    it('forwards question_request to sendUserRequestCard', async () => {
-      await processSSEEvent(managed, {
+    it('forwards a question request to sendUserRequestCard', async () => {
+      await processSSEEvent(managed, createdEvent('question', { questions: [{ question: 'Which DB?' }] }))
+
+      const mock = getMock(managed)
+      expect(mock.sentCards.length).toBe(1)
+      expect(mock.sentCards[0].event).toMatchObject({
         type: 'question_request',
         toolUseId: 'tu-1',
         questions: [{ question: 'Which DB?' }],
       })
+    })
+
+    it('forwards a secret request to sendUserRequestCard', async () => {
+      await processSSEEvent(managed, createdEvent('secret', { secretName: 'API_KEY' }, { id: 'tu-2' }))
 
       const mock = getMock(managed)
       expect(mock.sentCards.length).toBe(1)
-      expect(mock.sentCards[0].event.type).toBe('question_request')
-    })
-
-    it('forwards secret_request to sendUserRequestCard', async () => {
-      await processSSEEvent(managed, {
+      expect(mock.sentCards[0].event).toMatchObject({
         type: 'secret_request',
         toolUseId: 'tu-2',
         secretName: 'API_KEY',
       })
+    })
 
-      const mock = getMock(managed)
-      expect(mock.sentCards.length).toBe(1)
-      expect(mock.sentCards[0].event.type).toBe('secret_request')
+    it('ignores the legacy per-type event — handling both wires would double-send every card', async () => {
+      // Both wires fire until Phase 8 removes the legacy emission.
+      await processSSEEvent(managed, { type: 'secret_request', toolUseId: 'tu-2', secretName: 'API_KEY' })
+      expect(getMock(managed).sentCards.length).toBe(0)
+    })
+
+    it('stays quiet for an auto-approved ask — nothing is waiting on the user', async () => {
+      // The host is already executing it (`isRealWait` is false). Chat's only
+      // rendering for script_run is "go approve this in the app", which would
+      // send the user to a screen with nothing on it.
+      await processSSEEvent(
+        managed,
+        createdEvent('script_run', { script: 'sw_vers', explanation: 'check', scriptType: 'shell' }, { autoApproved: true }),
+      )
+      expect(getMock(managed).sentCards.length).toBe(0)
+    })
+
+    it('stays quiet for a review — those are agent-scoped and render off the global channel', async () => {
+      await processSSEEvent(managed, createdEvent('proxy_review', { toolkit: 'github', displayText: 'Allow?' }))
+      expect(getMock(managed).sentCards.length).toBe(0)
     })
 
     it('threads the originating sessionId into sendUserRequestCard', async () => {
-      await processSSEEvent(managed, { type: 'secret_request', secretName: 'K' }, false, 'sess-42')
+      await processSSEEvent(managed, createdEvent('secret', { secretName: 'K' }), false, 'sess-42')
       expect(getMock(managed).sentCards[0]?.sessionId).toBe('sess-42')
     })
 
     it('sends no sessionId when the caller has none', async () => {
-      await processSSEEvent(managed, { type: 'secret_request', secretName: 'K' }, false)
+      await processSSEEvent(managed, createdEvent('secret', { secretName: 'K' }), false)
       expect(getMock(managed).sentCards[0]?.sessionId).toBeUndefined()
     })
   })
@@ -597,22 +620,28 @@ describe('all user request event types', () => {
     managed = createManagedConnector()
   })
 
-  const userRequestEvents = [
-    { type: 'file_request', toolUseId: 'tu-1', description: 'Upload a CSV' },
-    { type: 'connected_account_request', toolUseId: 'tu-2', provider: 'github' },
-    { type: 'remote_mcp_request', toolUseId: 'tu-3', serverName: 'my-mcp' },
-    { type: 'browser_input_request', toolUseId: 'tu-4', url: 'https://example.com' },
-    { type: 'script_run_request', toolUseId: 'tu-5', script: 'npm test' },
-    { type: 'computer_use_request', toolUseId: 'tu-6', action: 'screenshot' },
+  // Every kind chat renders, and the card type each must arrive as. A kind
+  // missing from this table is one nobody would notice going silent.
+  const userRequestKinds = [
+    { kind: 'question', cardType: 'question_request', payload: { questions: [{ question: 'Which DB?' }] } },
+    { kind: 'secret', cardType: 'secret_request', payload: { secretName: 'API_KEY' } },
+    { kind: 'file', cardType: 'file_request', payload: { description: 'Upload a CSV' } },
+    { kind: 'connected_account', cardType: 'connected_account_request', payload: { toolkit: 'github' } },
+    { kind: 'remote_mcp', cardType: 'remote_mcp_request', payload: { url: 'https://example.com/mcp', name: 'my-mcp' } },
+    { kind: 'browser_input', cardType: 'browser_input_request', payload: { message: 'Sign in' } },
+    { kind: 'script_run', cardType: 'script_run_request', payload: { script: 'npm test', explanation: 'x', scriptType: 'shell' } },
+    { kind: 'capability_review', cardType: 'capability_review_request', payload: { capability: 'subagents', toolName: 'Task' } },
+    { kind: 'computer_use', cardType: 'computer_use_request', payload: { method: 'screenshot', permissionLevel: 'use_application' } },
   ]
 
-  for (const event of userRequestEvents) {
-    it(`forwards ${event.type} to sendUserRequestCard`, async () => {
-      await processSSEEvent(managed, event)
+  for (const { kind, cardType, payload } of userRequestKinds) {
+    it(`forwards a ${kind} request as ${cardType}`, async () => {
+      await processSSEEvent(managed, createdEvent(kind, payload))
 
       const mock = getMock(managed)
       expect(mock.sentCards.length).toBe(1)
-      expect(mock.sentCards[0].event.type).toBe(event.type)
+      expect(mock.sentCards[0].event.type).toBe(cardType)
+      expect(mock.sentCards[0].event.toolUseId).toBe('tu-1')
     })
   }
 
@@ -1135,25 +1164,35 @@ describe('processSSEEvent: immediate clears', () => {
     managed = createManagedConnector()
   })
 
-  const cardTypes = [
-    'question_request',
-    'secret_request',
-    'file_request',
-    'connected_account_request',
-    'remote_mcp_request',
-    'browser_input_request',
-    'script_run_request',
-    'computer_use_request',
+  const cardKinds = [
+    'question',
+    'secret',
+    'file',
+    'connected_account',
+    'remote_mcp',
+    'browser_input',
+    'script_run',
+    'capability_review',
+    'computer_use',
   ]
 
-  for (const type of cardTypes) {
-    it(`clears the indicator the moment a ${type} card is shown`, async () => {
+  for (const kind of cardKinds) {
+    it(`clears the indicator the moment a ${kind} card is shown`, async () => {
       managed.indicatorShown = true
-      await processSSEEvent(managed, { type, requestId: 'r1' })
+      await processSSEEvent(managed, createdEvent(kind))
       expect(getMock(managed).stoppedWorking).toContain('chat-123')
       expect(managed.indicatorShown).toBe(false)
     })
   }
+
+  it('does NOT clear the indicator for a card it stays quiet about', async () => {
+    // An auto-approved run keeps the session 'working': settling the indicator
+    // there would paint the agent as idle mid-turn.
+    managed.indicatorShown = true
+    await processSSEEvent(managed, createdEvent('script_run', {}, { autoApproved: true }))
+    expect(getMock(managed).stoppedWorking).not.toContain('chat-123')
+    expect(managed.indicatorShown).toBe(true)
+  })
 
   it('clears on the first reply stream_delta (the stream owns the surface)', async () => {
     managed.indicatorShown = true

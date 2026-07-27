@@ -13,7 +13,8 @@ import {
  * store. Computer-use and review requests live only here; stream kinds keep a
  * write-through mirror in the persister's per-session replay store
  * (`pendingInputRequests`, verified by `verifyStoreParity`) because the
- * legacy chat-integration events replay from it verbatim.
+ * /stream route replays the legacy per-type events from it verbatim for the
+ * renderer's remaining holdouts. Phase 8 collapses that mirror.
  *
  * Everything downstream derives from this registry: the session "awaiting
  * input" status (`isSessionAwaiting` — the persister's bit is an

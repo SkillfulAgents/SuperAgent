@@ -113,6 +113,14 @@ export type UserRequestEvent =
       autoApproved?: boolean
     }
   | {
+      type: 'capability_review_request'
+      toolUseId: string
+      capability: string
+      toolName?: string
+      input?: unknown
+      agentSlug?: string
+    }
+  | {
       type: 'tool_status'
       toolUseId: string
       toolName: string

@@ -269,8 +269,29 @@ function makeApi(base) {
     if (!res.ok) return null
     return res.json()
   }
+  /**
+   * POST and report the failure body. Used to drive the app-side decision
+   * routes — the surface a chat user is NOT on — so a check can prove both
+   * surfaces settle the same request.
+   */
+  const post = async (pathname, body) => {
+    const res = await fetch(`${base}${pathname}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const text = await res.text()
+    if (!res.ok) throw new Error(`POST ${pathname} → ${res.status}: ${text.slice(0, 300)}`)
+    try {
+      return JSON.parse(text)
+    } catch {
+      return {}
+    }
+  }
+
   return {
     json,
+    post,
     /** Sessions of an agent, newest first. */
     async sessions(agentSlug) {
       const body = await json(`/api/agents/${encodeURIComponent(agentSlug)}/sessions`)
