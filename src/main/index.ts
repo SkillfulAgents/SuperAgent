@@ -482,13 +482,16 @@ function cloudApiBaseUrl(): string | null {
   return `http://localhost:${actualApiPort}${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}`
 }
 
+/** Which Superagent this app is driving, and the base URL that reaches it. */
+function activeApiTarget() {
+  return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, cloudApiBaseUrl())
+}
+
 // Which Superagent this renderer drives, settled in main rather than in the
 // renderer — see api-target.ts. The renderer is handed a finished base URL
 // rather than assembling one, because half of the cloud prefix is the per-boot
 // proxy key, a secret owned by main (see cloud-proxy-key.ts).
-ipcMain.handle('get-api-target', () => {
-  return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, cloudApiBaseUrl())
-})
+ipcMain.handle('get-api-target', () => activeApiTarget())
 
 ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
   applyPreferredApiTarget(target)
@@ -888,7 +891,7 @@ ipcMain.handle('show-emoji-panel', () => {
 
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
-  openDashboardWindow(agentSlug, dashboardSlug, actualApiPort)
+  openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
 })
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
@@ -1101,7 +1104,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const agentSlug = decodeURIComponent(parts[0])
       const dashboardSlug = decodeURIComponent(parts[1])
       if (apiReady) {
-        openDashboardWindow(agentSlug, dashboardSlug, actualApiPort)
+        openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
       } else {
         pendingDashboardLinks.push({ agentSlug, dashboardSlug })
       }
@@ -1464,7 +1467,7 @@ async function startApp() {
   // Mark API as ready and process any queued dashboard deep links
   apiReady = true
   for (const link of pendingDashboardLinks) {
-    openDashboardWindow(link.agentSlug, link.dashboardSlug, actualApiPort)
+    openDashboardWindow(link.agentSlug, link.dashboardSlug, activeApiTarget().baseUrl)
   }
   pendingDashboardLinks.length = 0
   processPendingProtocolUrls()

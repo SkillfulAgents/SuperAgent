@@ -69,7 +69,7 @@ beforeEach(() => {
 
 describe('openDashboardWindow popup policy (SUP-219)', () => {
   it('installs a popup handler on the dashboard window webContents', () => {
-    openDashboardWindow('agent-one', 'sales', 3838)
+    openDashboardWindow('agent-one', 'sales', 'http://localhost:3838')
 
     expect(createdWindows).toHaveLength(1)
     const win = createdWindows[0]
@@ -78,7 +78,7 @@ describe('openDashboardWindow popup policy (SUP-219)', () => {
   })
 
   it('denies external popups and routes them through the scheme-validated opener', () => {
-    openDashboardWindow('agent-one', 'sales', 3838)
+    openDashboardWindow('agent-one', 'sales', 'http://localhost:3838')
     const win = createdWindows[0]
     const handler = win.webContents.setWindowOpenHandler.mock.calls[0][0] as (arg: {
       url: string
@@ -93,7 +93,7 @@ describe('openDashboardWindow popup policy (SUP-219)', () => {
   })
 
   it('routes /api/agents/.../files/ URLs through downloadURL and denies the popup', () => {
-    openDashboardWindow('agent-one', 'sales', 3838)
+    openDashboardWindow('agent-one', 'sales', 'http://localhost:3838')
     const win = createdWindows[0]
     const handler = win.webContents.setWindowOpenHandler.mock.calls[0][0] as (arg: {
       url: string

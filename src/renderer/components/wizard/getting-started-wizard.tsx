@@ -7,6 +7,7 @@ import {
   ChevronLeft,
 } from 'lucide-react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { WelcomeStep } from './welcome-step'
 import { ConfigureLLMStep } from './configure-llm-step'
 import { ConfigureModelStep } from './configure-model-step'
@@ -37,6 +38,24 @@ const PLATFORM_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] 
   { id: 'agent', label: 'Agent', skippable: true },
 ]
 
+/**
+ * The steps of a path, as this window can actually run them.
+ *
+ * The runtime step installs and starts a container runtime on the computer
+ * running this app — down to opening the Docker Desktop download and telling
+ * you to run `wsl --install` as Administrator. A cloud workspace brings its own
+ * runtime, and it is not this machine's to set up.
+ *
+ * Everything that turns a step id into a position must go through here. Two
+ * places do — rendering and restoring saved progress — and indexing one into
+ * the filtered list and the other into the constant lands the user on a
+ * different step than the one they left.
+ */
+export function stepsForPath(path: 'platform' | 'manual' | null) {
+  const all = path === 'platform' ? PLATFORM_STEPS : path === 'manual' ? MANUAL_STEPS : []
+  return canUseHostFeatures() ? all : all.filter((step) => step.id !== 'runtime')
+}
+
 interface GettingStartedWizardProps {
   agentOnly?: boolean
   onClose: () => void
@@ -56,11 +75,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
   const updateUserSettings = useUpdateUserSettings()
   const updateGlobalSettings = useUpdateSettings()
 
-  const steps = useMemo(() => {
-    if (welcomePath === 'platform') return PLATFORM_STEPS
-    if (welcomePath === 'manual') return MANUAL_STEPS
-    return []
-  }, [welcomePath])
+  const steps = useMemo(() => stepsForPath(welcomePath), [welcomePath])
 
   const activeStep = welcomePath ? steps[currentStep] : null
 
@@ -75,7 +90,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
 
     const progress = userSettings.onboardingProgress
     if (progress) {
-      const targetSteps = progress.path === 'platform' ? PLATFORM_STEPS : MANUAL_STEPS
+      const targetSteps = stepsForPath(progress.path)
       const idx = targetSteps.findIndex(s => s.id === progress.stepId)
       if (idx >= 0) {
         isRestoringRef.current = true

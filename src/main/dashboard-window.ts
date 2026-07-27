@@ -30,7 +30,13 @@ export function installPopupHandler(webContents: WebContents) {
   })
 }
 
-export function openDashboardWindow(agentSlug: string, dashboardSlug: string, apiPort: number) {
+/**
+ * `apiBaseUrl` is the base of whichever Superagent the app is currently
+ * driving — the local API, or the cloud proxy prefix on it. Popouts are built
+ * in main, so they have to be told; a hard-coded local origin opens a dashboard
+ * belonging to a different deployment's agent of the same name.
+ */
+export function openDashboardWindow(agentSlug: string, dashboardSlug: string, apiBaseUrl: string) {
   const key = `${agentSlug}/${dashboardSlug}`
 
   // Focus existing window if already open
@@ -41,7 +47,7 @@ export function openDashboardWindow(agentSlug: string, dashboardSlug: string, ap
     return
   }
 
-  const url = buildDashboardViewUrl(apiPort, agentSlug, dashboardSlug)
+  const url = buildDashboardViewUrl(apiBaseUrl, agentSlug, dashboardSlug)
   const win = new BrowserWindow({
     width: 1000,
     height: 700,

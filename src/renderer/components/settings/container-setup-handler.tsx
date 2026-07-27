@@ -3,6 +3,7 @@ import { ContainerSetupDialog } from '@renderer/components/settings/container-se
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useSettings } from '@renderer/hooks/use-settings'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
 
 /**
  * Owns the container-setup dialog lifecycle independently of the sidebar so
@@ -10,6 +11,13 @@ import { useSettings } from '@renderer/hooks/use-settings'
  */
 export function ContainerSetupHandler() {
   const [open, setOpen] = useState(false)
+  // The dialog offers to start a runner and links to the Docker Desktop
+  // download, i.e. it asks you to fix *this* computer. Runtime readiness is
+  // reported by whichever Superagent is being driven, so in cloud mode an
+  // outage in the organization's workspace would otherwise pop a modal on every
+  // desktop telling people to install Docker on their laptop. The sidebar
+  // banner still reports the outage — that part is true wherever it comes from.
+  const canSetUpRuntime = canUseHostFeatures()
   const { data: userSettings } = useUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
   const { data: settings } = useSettings()
@@ -26,6 +34,7 @@ export function ContainerSetupHandler() {
   // Auto-open on first load if runtime is unavailable. Skip until the wizard is done — it covers runtime setup.
   useEffect(() => {
     if (
+      canSetUpRuntime &&
       isRuntimeUnavailable &&
       availabilityKnown &&
       !anyRunnerAvailable &&
@@ -36,11 +45,14 @@ export function ContainerSetupHandler() {
       setOpen(true)
     }
   }, [
+    canSetUpRuntime,
     isRuntimeUnavailable,
     availabilityKnown,
     anyRunnerAvailable,
     userSettings?.setupCompleted,
   ])
+
+  if (!canSetUpRuntime) return null
 
   return <ContainerSetupDialog open={open} onOpenChange={setOpen} />
 }

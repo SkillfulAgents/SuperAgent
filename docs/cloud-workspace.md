@@ -343,6 +343,44 @@ strip above the input (`quick-dispatch.tsx`). A screen-sized portal would be
 wrong there anyway, where the window *is* the panel. Anything that grows into a
 window of its own needs the same treatment.
 
+### What this window cannot do for a workspace it does not run
+
+`canUseHostFeatures()` (`renderer/lib/host-features.ts`) is `isElectron() &&
+!targetIsRemote()`, and it is the *only* place that distinction is made.
+
+The two questions used to be one. Every host-touching feature asked
+`isElectron()`, which was correct for as long as the desktop app could only
+drive the Superagent on its own machine. In cloud mode it is still Electron —
+the bridge answers, the directory picker opens, `showInFolder` works — but they
+now reach *this* laptop while the agents, their files and their runtime are
+somewhere else. `isElectron()` remains the right question for the window itself:
+traffic lights, drag regions, the tray, app updates, the global shortcut.
+
+Gated on it today:
+
+| Site | Why |
+| --- | --- |
+| Add-a-mount, and the Volumes section when empty (`use-mounts.ts`, `home-volumes.tsx`) | The picker browses this computer; the path is handed to the agent's |
+| Open-a-mount in Finder/Explorer (`home-volumes.tsx`) | `hostPath` belongs to the agent's machine |
+| Reveal a workspace file (`folder-file-context-menu.tsx`) | The deployment returns *its* host path; opening it here lands nowhere, or on a same-named folder of yours |
+| The container-setup modal (`container-setup-handler.tsx`) | It links to the Docker Desktop download and starts a local runner. Readiness is reported by whichever Superagent is driven, so an outage in the org's workspace would otherwise pop this on every desktop |
+| The wizard's runtime step (`stepsForPath` in `getting-started-wizard.tsx`) | Same, plus `wsl --install` as Administrator |
+| Firewall detection (`use-firewall-status.ts`) | Windows Firewall rules on the machine running the app, blocking its own containers. Not even asked remotely |
+| Dropped/picked folder paths (`file-utils.ts`, `use-message-composer.ts`) | A `folderPath` exists only to be mounted or read by the agent's machine. Remotely, the web route — enumerate and upload the bytes — is the only one that works, and the mount/upload choice is not offered |
+
+**Not gated, deliberately.** Where the answer comes from the *server* it already
+comes from the machine that owns it: the host-browser providers and their Chrome
+profiles (`detectAllProviders()`), STT availability (`/api/stt/configured`), and
+runtime readiness all describe whichever Superagent is being driven. The runtime
+banner in the sidebar keeps reporting an unavailable cloud runtime — that is
+true wherever it comes from; only the offer to fix it here is not.
+
+**Dashboard popouts are corrected, not hidden.** `openDashboardWindow` builds
+the URL in main, where there is no renderer to ask, and it used to hard-code
+`http://localhost:<port>`. It now takes the base URL of the target in force
+(`activeApiTarget().baseUrl`), so a popout follows the window it was opened
+from instead of quietly showing a local agent of the same name.
+
 ## Electron-only, by design
 
 The whole feature no-ops off the Electron main process (`process.type === 'browser'`
@@ -420,6 +458,7 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `renderer/hooks/use-target-switch.ts` | Which target, whether the other is reachable, and how to move |
 | `renderer/components/layout/target-switcher.tsx` | The segmented Local/Cloud control |
 | `renderer/components/layout/cloud-mode-indicator.tsx` | The persistent cloud-mode frame |
+| `renderer/lib/host-features.ts` | Whether this window may act on the computer it runs on |
 | `api/polyfill-api-prefix.ts` | Keeps dashboard-shim API calls on whichever API served the document |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |
