@@ -131,9 +131,15 @@ interface ForwardableBody {
  *
  * No body at all is the trivially replayable case, and it is not only GET/HEAD:
  * agent start/stop/delete, interrupt, mark-notification-read and friends are
- * bodyless POSTs and DELETEs. Keying off the method — or off a `content-length`
- * a bodyless request need not send — would have denied the retry to exactly the
- * mutations a user is most likely to be making when the session expires.
+ * bodyless POSTs and DELETEs. Denying those the retry would have withheld it
+ * from exactly the mutations a user is likely to be making when a session
+ * expires.
+ *
+ * Emptiness is read off the **HTTP framing**, not off `request.body`. The Node
+ * adapter hands every non-GET/HEAD request a `ReadableStream` whether or not
+ * any bytes follow it, so the Fetch property answers "there is a body" for a
+ * bare `DELETE`. The framing does not: RFC 9112 §6 says a request with neither
+ * `Content-Length` nor `Transfer-Encoding` has no body, full stop.
  *
  * Otherwise, a declared length at or under the limit is read into memory so a
  * 401 can be retried transparently — that covers every JSON call the renderer
@@ -142,9 +148,14 @@ interface ForwardableBody {
  * unbounded.
  */
 async function readForwardableBody(request: Request): Promise<ForwardableBody> {
+  const declared = request.headers.get('content-length')
+  const chunked = request.headers.get('transfer-encoding') !== null
+
+  if (!chunked && (declared === null || Number(declared) === 0)) {
+    return { body: null, replayable: true }
+  }
   if (request.body === null) return { body: null, replayable: true }
 
-  const declared = request.headers.get('content-length')
   const declaredLength = declared === null ? Number.NaN : Number(declared)
   if (Number.isFinite(declaredLength) && declaredLength <= REPLAYABLE_BODY_LIMIT) {
     return { body: await request.arrayBuffer(), replayable: true }

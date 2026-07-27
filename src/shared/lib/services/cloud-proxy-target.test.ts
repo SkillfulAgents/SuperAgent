@@ -22,6 +22,18 @@ vi.mock('./cloud-workspace-service', () => ({
 const mockReadRecord = vi.mocked(readCloudWorkspaceRecord)
 const mockGetCloudWorkspace = vi.mocked(getCloudWorkspace)
 
+/** A cloud-workspace status; `hasValidToken` is the only field consulted. */
+function status(overrides: { hasValidToken: boolean }) {
+  return {
+    available: true,
+    found: true,
+    deploymentUrl: 'https://ws.example.com',
+    orgId: 'org_1',
+    discoveryFailed: false,
+    ...overrides,
+  } as Awaited<ReturnType<typeof getCloudWorkspace>>
+}
+
 function record(overrides: Record<string, unknown> = {}) {
   return {
     deploymentUrl: 'https://ws.example.com',
@@ -89,7 +101,7 @@ describe('refreshCloudProxyTarget', () => {
   it('re-mints and returns the new target', async () => {
     mockGetCloudWorkspace.mockImplementation(async () => {
       mockReadRecord.mockReturnValue(record({ token: 'fresh-token' }))
-      return {} as Awaited<ReturnType<typeof getCloudWorkspace>>
+      return status({ hasValidToken: true })
     })
 
     const target = await refreshCloudProxyTarget()
@@ -105,7 +117,7 @@ describe('refreshCloudProxyTarget', () => {
     })
     mockGetCloudWorkspace.mockImplementation(async () => {
       await gate
-      return {} as Awaited<ReturnType<typeof getCloudWorkspace>>
+      return status({ hasValidToken: true })
     })
 
     // A session expiring 401s every in-flight request at once; each one asks for
@@ -123,7 +135,7 @@ describe('refreshCloudProxyTarget', () => {
   })
 
   it('refuses to mint again inside the cooldown', async () => {
-    mockGetCloudWorkspace.mockResolvedValue({} as Awaited<ReturnType<typeof getCloudWorkspace>>)
+    mockGetCloudWorkspace.mockResolvedValue(status({ hasValidToken: true }))
 
     await refreshCloudProxyTarget()
     // A deployment that rejects even a fresh token would otherwise turn every
@@ -136,7 +148,7 @@ describe('refreshCloudProxyTarget', () => {
   it('hands the fresh token to a straggler that misses the single flight', async () => {
     mockGetCloudWorkspace.mockImplementation(async () => {
       mockReadRecord.mockReturnValue(record({ token: 'fresh-token' }))
-      return {} as Awaited<ReturnType<typeof getCloudWorkspace>>
+      return status({ hasValidToken: true })
     })
 
     await refreshCloudProxyTarget()
@@ -151,7 +163,7 @@ describe('refreshCloudProxyTarget', () => {
   it('does not resurrect a token cleared while the cooldown was running', async () => {
     mockGetCloudWorkspace.mockImplementation(async () => {
       mockReadRecord.mockReturnValue(record({ token: 'fresh-token' }))
-      return {} as Awaited<ReturnType<typeof getCloudWorkspace>>
+      return status({ hasValidToken: true })
     })
 
     await refreshCloudProxyTarget()
@@ -161,11 +173,19 @@ describe('refreshCloudProxyTarget', () => {
     await expect(refreshCloudProxyTarget()).resolves.toBeNull()
   })
 
+  it('reports no target when the mint failed, stale record and all', async () => {
+    // The service leaves the rejected token in the record on purpose, so the
+    // record cannot be the signal — only the status can.
+    mockGetCloudWorkspace.mockResolvedValue(status({ hasValidToken: false }))
+
+    await expect(refreshCloudProxyTarget()).resolves.toBeNull()
+    // …and the rejected token is still sitting there, resolvable. That is
+    // precisely why the record cannot be the signal.
+    expect(resolveCloudProxyTarget()?.token).toBe('deployment-token')
+  })
+
   it('declines during the cooldown when the refresh itself failed', async () => {
-    mockGetCloudWorkspace.mockImplementation(async () => {
-      mockReadRecord.mockReturnValue(null)
-      return {} as Awaited<ReturnType<typeof getCloudWorkspace>>
-    })
+    mockGetCloudWorkspace.mockResolvedValue(status({ hasValidToken: false }))
 
     await refreshCloudProxyTarget()
     // Replaying against a token we just watched be rejected only doubles the

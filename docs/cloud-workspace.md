@@ -160,7 +160,12 @@ Other properties worth not regressing:
   the call against the *local* API.
 - **A 401 re-mints once and replays**, so a 24-hour deployment session does not
   surface as the app dying overnight. Bodies under 2 MiB are buffered to make
-  that replay possible; larger uploads stream and forgo the retry.
+  that replay possible; larger uploads stream and forgo the retry. Whether a
+  request *has* a body is read off the HTTP framing, not off `request.body` —
+  the Node adapter hands every non-GET/HEAD request a stream whether or not
+  bytes follow, so a bare `DELETE` would otherwise look unreplayable. That is
+  only visible over a real listener, which is what
+  `cloud-proxy.integration.test.ts` is for.
 - **Only `/api` paths are forwarded**; anything else 404s, as does a bad key
   (a prober learns nothing either way).
 - **Documents served through the proxy don't inherit its prefix.** A dashboard

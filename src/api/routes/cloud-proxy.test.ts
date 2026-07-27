@@ -355,13 +355,15 @@ describe('cloud proxy token refresh', () => {
   })
 
   it('still refreshes for an unreplayable upload, so the user’s retry works', async () => {
-    mockFetch.mockResolvedValue(new Response('expired', { status: 401 }))
+    mockFetch.mockImplementation(async () => new Response('expired', { status: 401 }))
     mockRefreshTarget.mockResolvedValue({ ...TARGET, token: 'fresh-token' })
 
-    // No content-length: the body is a stream, already consumed by the first
-    // attempt, so there is nothing to replay.
+    // Chunked framing is how an undeclared-length upload actually arrives. The
+    // body is a stream, consumed by the first attempt, so there is nothing to
+    // replay. (The same case over a real socket: cloud-proxy.integration.test.ts.)
     const res = await call('/api/agents/x/files', {
       method: 'POST',
+      headers: { 'transfer-encoding': 'chunked' },
       body: new ReadableStream({
         start(c) {
           c.enqueue(new TextEncoder().encode('payload'))

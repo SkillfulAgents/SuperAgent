@@ -75,7 +75,12 @@ export function refreshCloudProxyTarget(): Promise<CloudProxyTarget | null> {
   // regression there degrades to "no fresh target" instead of failing a request
   // with a 500.
   inFlightRefresh = getCloudWorkspace({ forceTokenRefresh: true })
-    .then(() => resolveCloudProxyTarget())
+    // The status is what says whether a token was actually minted. The record
+    // is not: a failed re-mint deliberately leaves the old one in place (better
+    // than nothing for a caller that hasn't been rejected yet), so reading it
+    // back would hand this caller the very token the deployment just refused
+    // and call it fresh.
+    .then((status) => (status.hasValidToken ? resolveCloudProxyTarget() : null))
     .catch(() => null)
     .then((target) => {
       lastRefreshSucceeded = target !== null
