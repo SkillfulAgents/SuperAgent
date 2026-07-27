@@ -4,20 +4,22 @@ import {
   type PendingUserInputRequest,
   type PendingUserInputRequestInput,
   type UserInputRequestOutcome,
+  type UserInputRequestScope,
   type UserInputRequestStore,
 } from './request-schema'
 
 /**
- * Host-side registry of every pending user-input request, regardless of which
- * legacy store owns it (persister stream store, computer-use map, ReviewManager).
+ * Host-side registry of every pending user-input request — THE single pending
+ * store. Computer-use and review requests live only here; stream kinds keep a
+ * write-through mirror in the persister's per-session replay store
+ * (`pendingInputRequests`, verified by `verifyStoreParity`) because the
+ * legacy chat-integration events replay from it verbatim.
  *
- * Phase 3: the legacy stores stay authoritative for request CONTENTS (and
- * every mutation still writes through, with `verifyStoreParity` asserting the
- * mirror is exact), but the session "awaiting input" status is now DERIVED
- * from this registry via `isSessionAwaiting` — the persister's bit is just an
- * edge-detection cache of that projection. The imperative per-path mark/clear
- * calls (and their split-brains: parallel requests, direct-clear doors,
- * review blockers) are gone.
+ * Everything downstream derives from this registry: the session "awaiting
+ * input" status (`isSessionAwaiting` — the persister's bit is an
+ * edge-detection cache of that projection), the unified wire events, the
+ * snapshot endpoint, OS notifications, and the decision routes' already-
+ * settled gate.
  */
 /**
  * A registry transition: exactly one 'created' per accepted registration and
@@ -32,17 +34,32 @@ export interface UserInputRequestTransition {
   outcome?: UserInputRequestOutcome
 }
 
+/**
+ * A settled request as the bounded resolution trail remembers it: enough
+ * identity (kind + scope) to re-run the same authorization checks an open
+ * request gets, plus how it settled.
+ */
+export interface SettledUserInputRequest {
+  id: string
+  kind: PendingUserInputRequest['kind']
+  scope: UserInputRequestScope
+  outcome: UserInputRequestOutcome
+}
+
 export class UserInputRequestManager {
   private requests = new Map<string, PendingUserInputRequest>()
 
   private transitionListeners = new Set<(transition: UserInputRequestTransition) => void>()
 
-  /** Bounded trail of recent settlements, for shadow-mode debugging and tests. */
-  private recentResolutions: Array<{
-    id: string
-    kind: PendingUserInputRequest['kind']
-    outcome: UserInputRequestOutcome
-  }> = []
+  /**
+   * Bounded trail of recent settlements, for shadow-mode debugging and tests.
+   * Carries kind AND scope, not just the outcome: the decision routes' gate
+   * validates a settled request exactly like an open one, so a settled id must
+   * stay as tightly bound to its route as it was while open — otherwise the
+   * moment a request settles, its outcome becomes readable through any agent's
+   * route of any kind.
+   */
+  private recentResolutions: SettledUserInputRequest[] = []
 
   private storeMismatchCount = 0
 
@@ -87,7 +104,7 @@ export class UserInputRequestManager {
     const request = this.requests.get(id)
     if (!request) return null
     this.requests.delete(id)
-    this.recentResolutions.push({ id, kind: request.kind, outcome })
+    this.recentResolutions.push({ id, kind: request.kind, scope: request.scope, outcome })
     if (this.recentResolutions.length > 100) this.recentResolutions.shift()
     this.emitTransition({ type: 'resolved', request, outcome })
     return request
@@ -166,6 +183,21 @@ export class UserInputRequestManager {
   /** Look up a single open request by id. */
   getOpenRequest(id: string): PendingUserInputRequest | null {
     return this.requests.get(id) ?? null
+  }
+
+  /**
+   * How a request settled, while it is still on the bounded resolution trail.
+   * Lets an already-settled decision answer with what actually happened
+   * instead of a bare "already settled" — but the caller must first check the
+   * returned kind and scope against the route it arrived on, exactly as it
+   * would for an open request. Once the trail rotates the record out, the id
+   * is indistinguishable from one that never existed.
+   */
+  getRecentResolution(id: string): SettledUserInputRequest | undefined {
+    for (let i = this.recentResolutions.length - 1; i >= 0; i--) {
+      if (this.recentResolutions[i].id === id) return this.recentResolutions[i]
+    }
+    return undefined
   }
 
   getOpenRequestsForSession(sessionId: string): PendingUserInputRequest[] {
@@ -313,11 +345,7 @@ export class UserInputRequestManager {
   get stats(): {
     open: number
     storeMismatches: number
-    recentResolutions: Array<{
-      id: string
-      kind: PendingUserInputRequest['kind']
-      outcome: UserInputRequestOutcome
-    }>
+    recentResolutions: SettledUserInputRequest[]
   } {
     return {
       open: this.requests.size,

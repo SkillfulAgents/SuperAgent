@@ -2,7 +2,6 @@ import crypto from 'crypto'
 import { broadcastReview } from './review-broadcast'
 import { getScopeLabel, type ScopeLabel } from './scope-metadata'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 
@@ -289,23 +288,9 @@ export class ReviewManager {
       // registry entry registered above is what flips them.
       messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
 
-      // Fire ONE OS notification per review, attributed to the first active
-      // session of this agent. The proxy call is agent-scoped (no sessionId
-      // in the request), so we pick an active session — same attribution
-      // heuristic the awaiting projection applies (an agent-scoped review
-      // blocks the agent's active sessions). Whether the OS popup actually
-      // shows is the renderer's call — it knows OS focus + per-user viewing
-      // + `notifyWhenUnfocused`. An open SSE connection ≠ actively looking
-      // at the screen.
-      const targetSessionId = messagePersister.getActiveSessionIdsForAgent(details.agentSlug)[0]
-      if (targetSessionId) {
-        const kind = details.xAgent ? 'agent_action' : 'api_request'
-        notificationManager
-          .triggerSessionApiReviewWaiting(targetSessionId, details.agentSlug, id, displayText, undefined, kind)
-          .catch((err) => {
-            console.error('[ReviewManager] Failed to trigger API review notification:', err)
-          })
-      }
+      // The OS notification fires from the registry 'created' transition
+      // (persister dispatchRequestNotification) — one per review, attributed
+      // to the agent's first active session there.
     })
   }
 

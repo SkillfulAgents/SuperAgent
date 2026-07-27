@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
 vi.mock('../middleware/auth', () => ({
@@ -348,6 +348,7 @@ vi.mock('../llm-polyfill', () => ({
 }))
 
 import agents from './agents'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 
 function createApp() {
   const app = new Hono()
@@ -363,6 +364,22 @@ describe('provide-remote-mcp handler', () => {
     app = createApp()
     mockInsertValues.mockResolvedValue(undefined)
     mockGetHostApiBaseUrl.mockResolvedValue('http://10.20.107.8:3000')
+    // The route's already-settled gate only acts on requests the registry
+    // holds open — park the toolUseId this file decides on.
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tu-1',
+      kind: 'remote_mcp',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+  })
+
+  afterEach(() => {
+    userInputRequestManager.reset()
   })
 
   const ENDPOINT = '/api/agents/test-agent/sessions/sess-1/provide-remote-mcp'

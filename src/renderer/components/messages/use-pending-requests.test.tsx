@@ -28,29 +28,12 @@ const mockStreamState = {
   autoApprovedComputerUseIds: new Set<string>(),
 }
 
-const mockRemovers = {
-  removeSecretRequest: vi.fn(),
-  removeConnectedAccountRequest: vi.fn(),
-  removeRemoteMcpRequest: vi.fn(),
-  removeQuestionRequest: vi.fn(),
-  removeFileRequest: vi.fn(),
-  removeBrowserInputRequest: vi.fn(),
-  removeScriptRunRequest: vi.fn(),
-  removeComputerUseRequest: vi.fn(),
-  removeCapabilityReviewRequest: vi.fn(),
-}
+const mockRemovePendingRequestsByToolUseId = vi.fn()
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
-  removeSecretRequest: (...args: unknown[]) => mockRemovers.removeSecretRequest(...args),
-  removeConnectedAccountRequest: (...args: unknown[]) => mockRemovers.removeConnectedAccountRequest(...args),
-  removeRemoteMcpRequest: (...args: unknown[]) => mockRemovers.removeRemoteMcpRequest(...args),
-  removeQuestionRequest: (...args: unknown[]) => mockRemovers.removeQuestionRequest(...args),
-  removeFileRequest: (...args: unknown[]) => mockRemovers.removeFileRequest(...args),
-  removeBrowserInputRequest: (...args: unknown[]) => mockRemovers.removeBrowserInputRequest(...args),
-  removeScriptRunRequest: (...args: unknown[]) => mockRemovers.removeScriptRunRequest(...args),
-  removeComputerUseRequest: (...args: unknown[]) => mockRemovers.removeComputerUseRequest(...args),
-  removeCapabilityReviewRequest: (...args: unknown[]) => mockRemovers.removeCapabilityReviewRequest(...args),
+  removePendingRequestsByToolUseId: (...args: unknown[]) =>
+    mockRemovePendingRequestsByToolUseId(...args),
 }))
 
 // Mock the unified pending-request store — mutable per test.
@@ -958,79 +941,23 @@ describe('usePendingRequests', () => {
     expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['proxy-reviews'] })
   })
 
-  // ---- onComplete wiring: each kind's onComplete must call the matching remove* ----
+  // ---- onComplete wiring: every kind routes through the shared strip helper ----
 
-  it('secret onComplete calls removeSecretRequest with (sessionId, toolUseId)', () => {
+  it.each([
+    ['secret', 'tu-s', { secretName: 'A' }],
+    ['connected_account', 'tu-c', { toolkit: 'slack' }],
+    ['remote_mcp', 'tu-m', { url: 'https://x' }],
+    ['question', 'tu-q', { questions: [{ question: 'Q?', header: 'H', options: [], multiSelect: false }] }],
+    ['file', 'tu-f', { description: 'd' }],
+    ['browser_input', 'tu-b', { message: 'm', requirements: [] }],
+    ['script_run', 'tu-r', { script: 'echo', explanation: '', scriptType: 'shell' }],
+    ['computer_use', 'tu-cu', { method: 'click', params: {}, permissionLevel: 'high' }],
+  ] as const)('%s onComplete strips the settled id from the stream store', (kind, toolUseId, payload) => {
     mockStreamState.isActive = true
-    mockUnified.data = [unified('secret', 'tu-s', { secretName: 'A' })]
+    mockUnified.data = [unified(kind, toolUseId, payload as Record<string, unknown>)]
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'secret')[0].onComplete()
-    expect(mockRemovers.removeSecretRequest).toHaveBeenCalledTimes(1)
-    expect(mockRemovers.removeSecretRequest).toHaveBeenCalledWith('s-1', 'tu-s')
-  })
-
-  it('connected_account onComplete calls removeConnectedAccountRequest', () => {
-    mockStreamState.isActive = true
-    mockUnified.data = [unified('connected_account', 'tu-c', { toolkit: 'slack' })]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'connected_account')[0].onComplete()
-    expect(mockRemovers.removeConnectedAccountRequest).toHaveBeenCalledWith('s-1', 'tu-c')
-  })
-
-  it('remote_mcp onComplete calls removeRemoteMcpRequest', () => {
-    mockStreamState.isActive = true
-    mockUnified.data = [unified('remote_mcp', 'tu-m', { url: 'https://x' })]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'remote_mcp')[0].onComplete()
-    expect(mockRemovers.removeRemoteMcpRequest).toHaveBeenCalledWith('s-1', 'tu-m')
-  })
-
-  it('question onComplete calls removeQuestionRequest', () => {
-    mockStreamState.isActive = true
-    mockUnified.data = [
-      unified('question', 'tu-q', {
-        questions: [{ question: 'Q?', header: 'H', options: [], multiSelect: false }],
-      }),
-    ]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'question')[0].onComplete()
-    expect(mockRemovers.removeQuestionRequest).toHaveBeenCalledWith('s-1', 'tu-q')
-  })
-
-  it('file onComplete calls removeFileRequest', () => {
-    mockStreamState.isActive = true
-    mockUnified.data = [unified('file', 'tu-f', { description: 'd' })]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'file')[0].onComplete()
-    expect(mockRemovers.removeFileRequest).toHaveBeenCalledWith('s-1', 'tu-f')
-  })
-
-  it('browser_input onComplete calls removeBrowserInputRequest', () => {
-    mockStreamState.isActive = true
-    mockUnified.data = [unified('browser_input', 'tu-b', { message: 'm', requirements: [] })]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'browser_input')[0].onComplete()
-    expect(mockRemovers.removeBrowserInputRequest).toHaveBeenCalledWith('s-1', 'tu-b')
-  })
-
-  it('script_run onComplete calls removeScriptRunRequest', () => {
-    mockStreamState.isActive = true
-    mockUnified.data = [
-      unified('script_run', 'tu-r', { script: 'echo', explanation: '', scriptType: 'shell' }),
-    ]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'script_run')[0].onComplete()
-    expect(mockRemovers.removeScriptRunRequest).toHaveBeenCalledWith('s-1', 'tu-r')
-  })
-
-  it('computer_use onComplete calls removeComputerUseRequest', () => {
-    mockStreamState.isActive = true
-    mockUnified.data = [
-      unified('computer_use', 'tu-cu', { method: 'click', params: {}, permissionLevel: 'high' }),
-    ]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'computer_use')[0].onComplete()
-    expect(mockRemovers.removeComputerUseRequest).toHaveBeenCalledWith('s-1', 'tu-cu')
+    ofKind(result.current.items, kind)[0].onComplete()
+    expect(mockRemovePendingRequestsByToolUseId).toHaveBeenCalledWith('s-1', toolUseId)
   })
 
   // ---- Arrival-order sort across mixed types ----

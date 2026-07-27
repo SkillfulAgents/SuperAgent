@@ -852,7 +852,7 @@ export class SlackConnector extends ChatClientConnector {
     }
 
     switch (event.type) {
-      case 'user_question_request': {
+      case 'question_request': {
         let lastTs = ''
 
         // Track multi-question requests

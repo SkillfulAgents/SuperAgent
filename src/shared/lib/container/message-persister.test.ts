@@ -3979,6 +3979,42 @@ describe('MessagePersister', () => {
         vi.unstubAllGlobals()
       }
     })
+
+    it('registers the auto-approved request so the decision gate can let the auto-execute through', async () => {
+      // The /computer-use route only acts on requests the registry holds open.
+      // Auto-approved requests are executed via that same route (the _auto
+      // session), so they must be registered too — flagged autoApproved so no
+      // projection treats them as a user-facing wait, and kept out of the
+      // legacy replay so a reconnecting client never renders an approval card
+      // for a command that is already executing.
+      const originalE2eMock = process.env.E2E_MOCK
+      process.env.E2E_MOCK = 'true'
+      mockCheckPermission.mockReturnValue('granted')
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true } as Response)))
+
+      try {
+        simulateToolUse('mcp__computer-use__computer_apps', 'tool-cu-granted-reg', {
+          includeHidden: false,
+        })
+
+        await vi.waitFor(() => {
+          const open = userInputRequestManager.getOpenRequest('tool-cu-granted-reg')
+          expect(open).toMatchObject({
+            kind: 'computer_use',
+            blocking: true,
+            autoApproved: true,
+            scope: { agentSlug: AGENT_SLUG, sessionId: SESSION_ID },
+          })
+        })
+
+        expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(0)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      } finally {
+        if (originalE2eMock === undefined) delete process.env.E2E_MOCK
+        else process.env.E2E_MOCK = originalE2eMock
+        vi.unstubAllGlobals()
+      }
+    })
   })
 
   // ============================================================================

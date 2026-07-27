@@ -1538,7 +1538,7 @@ class ChatIntegrationManager {
       : `🔐 *Permission Request*\n${displayText}`
 
     const card = {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId: `review:${reviewId}:${agentSlug}`,
       questions: [{
         question: text,
@@ -1989,7 +1989,7 @@ export async function processSSEEvent(
       break
     }
 
-    case 'user_question_request':
+    case 'question_request':
     case 'secret_request':
     case 'file_request':
     case 'connected_account_request':

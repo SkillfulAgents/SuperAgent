@@ -34,6 +34,10 @@ import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import type {
+  UserInputRequestKind,
+  UserInputRequestScope,
+} from '@shared/lib/user-input/request-schema'
 import {
   listSessions,
   listSessionsByIds,
@@ -2325,6 +2329,91 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   }
 })
 
+/**
+ * Whether a request — open or recently settled — belongs to the route the
+ * decision arrived on. A caller-supplied toolUseId is an unauthenticated
+ * pointer into a global, cross-agent registry, so every dimension of the
+ * request's identity has to be re-checked against the URL before the route
+ * acts on it (or reports on it): its kind, its agent, and its session.
+ *
+ * agentSlug is matched unconditionally and exactly — including for `_auto`,
+ * which is an internal auto-execute caller that names the real agent in its
+ * URL. A request whose scope carries no agent is unattributable and matches
+ * nothing; every registration path (stream handlers, computer-use, recovery)
+ * supplies one.
+ */
+function requestMatchesRoute(
+  request: { kind: UserInputRequestKind; scope: UserInputRequestScope },
+  kind: UserInputRequestKind,
+  agentSlug: string,
+  sessionId: string,
+): boolean {
+  if (request.kind !== kind) return false
+  if (!request.scope.agentSlug || request.scope.agentSlug !== agentSlug) return false
+  // Auto-execute paths post to /sessions/_auto/… while the request stays
+  // scoped to the real session that streamed it — the ONLY dimension `_auto`
+  // waives.
+  if (sessionId === '_auto') return true
+  return request.scope.sessionId === sessionId
+}
+
+/**
+ * The already-settled gate for request-decision routes. A decision proceeds
+ * only while the registry holds the request OPEN, with the kind this route
+ * handles, for the agent and session the route addresses. Anything else gets a
+ * stable, side-effect-free answer — this is what makes decisions idempotent.
+ * Without it a duplicate POST (second tab, double-click, card revived from a
+ * stale snapshot) re-runs host side effects: run-script re-executes the
+ * script, computer-use re-drives the machine, a browser-input decline
+ * re-interrupts the session.
+ *
+ * Returns a Response to send instead of proceeding, or null to proceed.
+ */
+function gateRequestDecision(
+  c: Context,
+  toolUseId: string,
+  kind: UserInputRequestKind,
+): Response | null {
+  const agentSlug = getAgentId(c)
+  // Every gated route is mounted under /sessions/:sessionId, so the param is
+  // always present; '' is an unmatchable placeholder, not a wildcard.
+  const sessionId = c.req.param('sessionId') ?? ''
+  const open = userInputRequestManager.getOpenRequest(toolUseId)
+  if (open) {
+    if (!open.scope.agentSlug) {
+      // Fail closed, loudly: an unattributable request cannot be proven to
+      // belong to this agent, and a silent 404 on a card the user just clicked
+      // would be near-undiagnosable.
+      console.error(
+        `[agents] Refusing decision for request ${toolUseId} (kind=${kind}): scope carries no agentSlug`,
+      )
+    }
+    if (!requestMatchesRoute(open, kind, agentSlug, sessionId)) {
+      // A caller-supplied id must not settle someone else's parked wait — the
+      // same guard submitDecision has for review kinds.
+      return c.json({ error: 'Request not found' }, 404)
+    }
+    return null
+  }
+  // Settled, or never existed. A settled record is still route-bound: report
+  // its outcome only to the route that could have decided it, so settling a
+  // request can never widen who may read it. A record that fails the match is
+  // as good as absent — same 404 an open mismatch gets.
+  const settled = userInputRequestManager.getRecentResolution(toolUseId)
+  if (settled && !requestMatchesRoute(settled, kind, agentSlug, sessionId)) {
+    return c.json({ error: 'Request not found' }, 404)
+  }
+  // 200 (not an error): the caller's intent is satisfied or moot, and a stale
+  // card should dismiss itself exactly like a successful decision. Unknown and
+  // rotated-off-the-trail ids are indistinguishable and share this shape,
+  // outcome-less.
+  return c.json({
+    success: true,
+    alreadySettled: true,
+    ...(settled ? { outcome: settled.outcome } : {}),
+  })
+}
+
 // POST /api/agents/:id/sessions/:sessionId/provide-secret - Provide or decline a secret request
 agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) => {
   try {
@@ -2335,6 +2424,9 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'secret')
+    if (gated) return gated
 
     if (!secretName) {
       return c.json({ error: 'secretName is required' }, 400)
@@ -2445,6 +2537,9 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'connected_account')
+    if (gated) return gated
 
     if (!toolkit) {
       return c.json({ error: 'toolkit is required' }, 400)
@@ -2605,6 +2700,9 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'question')
+    if (gated) return gated
+
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2686,6 +2784,9 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
       return c.json({ error: 'capability must be subagents or workflows' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'capability_review')
+    if (gated) return gated
+
     const client = containerManager.getClient(agentSlug)
 
     if (decline) {
@@ -2757,6 +2858,9 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'browser_input')
+    if (gated) return gated
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2839,6 +2943,9 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'script_run')
+    if (gated) return gated
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2973,6 +3080,9 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'computer_use')
+    if (gated) return gated
 
     // Validate session belongs to this agent (skip for _auto internal calls from auto-execute)
     if (sessionId !== '_auto') {
@@ -3650,6 +3760,9 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
     if (!body.decline && requestedMcpIds.length === 0) {
       return c.json({ error: 'remoteMcpId or remoteMcpIds is required when not declining' }, 400)
     }
+
+    const gated = gateRequestDecision(c, body.toolUseId, 'remote_mcp')
+    if (gated) return gated
 
     // In auth mode, only allow providing remote MCPs the caller owns before
     // mapping them to the agent. Otherwise a user could approve another user's
@@ -4921,6 +5034,9 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'file')
+    if (gated) return gated
+
 
     const client = containerManager.getClient(agentSlug)
 
@@ -5408,8 +5524,11 @@ setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 // session of the agent). This is the recovery source for the unified client
 // store: mount, reconnect, and invalidation refetch from here; live updates
 // arrive as user_request_created / user_request_resolved on the session and
-// global SSE streams. Legacy per-type events keep firing during the client
-// migration.
+// global SSE streams. The legacy per-type events still fire server-side for
+// the chat-integration connectors (their in-process consumer has not migrated)
+// and for the renderer's two narrow holdouts: the browser tray's
+// browser_input_request feed and the script/computer-use auto-approved
+// suppress-sets.
 agents.get('/:id/pending-requests', AgentRead(), (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.query('sessionId') || undefined

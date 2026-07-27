@@ -127,6 +127,9 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     markSessionInterrupted: vi.fn(),
     cancelAwaitingInput: vi.fn(),
     completeInputRequest: vi.fn(),
+    completeCapabilityReview: vi.fn(),
+    clearPendingComputerUseRequest: vi.fn(),
+    grantSessionCapability: vi.fn(),
     getSettledInputRequests: vi.fn(() => new Map()),
     broadcastSessionEvent: vi.fn(),
   },
@@ -3241,74 +3244,102 @@ describe('decision routes settle their request immediately', () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
+    userInputRequestManager.reset()
     mockContainerFetch.mockResolvedValue(
       new Response(JSON.stringify({ success: true }), { status: 200 }),
     )
   })
 
+  afterEach(() => {
+    userInputRequestManager.reset()
+  })
+
+  function parkOpen(id: string, kind: string) {
+    userInputRequestManager.register({
+      id,
+      kind,
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+  }
+
   const CASES: Array<{
     label: string
     url: string
+    kind: string
     body: Record<string, unknown>
     outcome: 'answered' | 'declined'
   }> = [
     {
       label: 'secret decline',
       url: '/api/agents/test-agent/sessions/sess-1/provide-secret',
+      kind: 'secret',
       body: { toolUseId: 'tool-dec-1', secretName: 'K', decline: true },
       outcome: 'declined',
     },
     {
       label: 'question decline',
       url: '/api/agents/test-agent/sessions/sess-1/answer-question',
+      kind: 'question',
       body: { toolUseId: 'tool-dec-2', decline: true },
       outcome: 'declined',
     },
     {
       label: 'question answer',
       url: '/api/agents/test-agent/sessions/sess-1/answer-question',
+      kind: 'question',
       body: { toolUseId: 'tool-dec-3', answers: { 'Pick DB': 'sqlite' } },
       outcome: 'answered',
     },
     {
       label: 'browser input complete',
       url: '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      kind: 'browser_input',
       body: { toolUseId: 'tool-dec-4' },
       outcome: 'answered',
     },
     {
       label: 'browser input decline',
       url: '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      kind: 'browser_input',
       body: { toolUseId: 'tool-dec-5', decline: true },
       outcome: 'declined',
     },
     {
       label: 'script run deny',
       url: '/api/agents/test-agent/sessions/sess-1/run-script',
+      kind: 'script_run',
       body: { toolUseId: 'tool-dec-6', decline: true },
       outcome: 'declined',
     },
     {
       label: 'file decline',
       url: '/api/agents/test-agent/sessions/sess-1/provide-file',
+      kind: 'file',
       body: { toolUseId: 'tool-dec-7', decline: true },
       outcome: 'declined',
     },
     {
       label: 'connected account decline',
       url: '/api/agents/test-agent/sessions/sess-1/provide-connected-account',
+      kind: 'connected_account',
       body: { toolUseId: 'tool-dec-8', toolkit: 'github', decline: true },
       outcome: 'declined',
     },
     {
       label: 'remote MCP decline',
       url: '/api/agents/test-agent/sessions/sess-1/provide-remote-mcp',
+      kind: 'remote_mcp',
       body: { toolUseId: 'tool-dec-9', decline: true },
       outcome: 'declined',
     },
   ]
 
-  it.each(CASES)('$label settles as $outcome', async ({ url, body, outcome }) => {
+  it.each(CASES)('$label settles as $outcome', async ({ url, kind, body, outcome }) => {
+    parkOpen(body.toolUseId as string, kind)
     const res = await postJson(app, url, body)
     expect(res.status).toBe(200)
     expect(messagePersister.completeInputRequest).toHaveBeenCalledWith(
@@ -3319,6 +3350,7 @@ describe('decision routes settle their request immediately', () => {
   })
 
   it('a failed container reject does NOT settle the request', async () => {
+    parkOpen('tool-dec-10', 'secret')
     mockContainerFetch.mockResolvedValue(
       new Response(JSON.stringify({ error: 'no pending' }), { status: 404 }),
     )
@@ -3329,6 +3361,283 @@ describe('decision routes settle their request immediately', () => {
     })
     expect(res.status).toBe(500)
     expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+  })
+})
+
+describe('decision routes refuse to re-run side effects — the already-settled gate', () => {
+  // A decision can arrive for a request that is no longer open: a second tab,
+  // a double-click racing the first response, or a stale card revived from an
+  // old snapshot. Acting again is not merely redundant — run-script would
+  // re-execute on the host, computer-use would re-drive the machine, and a
+  // browser-input decline would re-interrupt the session. A decision proceeds
+  // only while the registry holds the request OPEN with the kind the route
+  // handles; anything else gets a stable, side-effect-free answer.
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    userInputRequestManager.reset()
+    mockContainerFetch.mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), { status: 200 }),
+    )
+  })
+
+  afterEach(() => {
+    userInputRequestManager.reset()
+  })
+
+  function parkOpen(
+    id: string,
+    kind: string,
+    sessionId: string | undefined = 'sess-1',
+    payload: Record<string, unknown> = {},
+    // null (not undefined — that would take the default) omits the agent.
+    agentSlug: string | null = 'test-agent',
+  ) {
+    userInputRequestManager.register({
+      id,
+      kind,
+      scope: { ...(agentSlug ? { agentSlug } : {}), ...(sessionId ? { sessionId } : {}) },
+      blocking: true,
+      autoApproved: false,
+      payload,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+  }
+
+  const GATE_CASES: Array<{
+    label: string
+    url: string
+    kind: string
+    body: Record<string, unknown>
+  }> = [
+    {
+      label: 'provide-secret',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-secret',
+      kind: 'secret',
+      body: { toolUseId: 'tool-gate-1', secretName: 'K', decline: true },
+    },
+    {
+      label: 'answer-question',
+      url: '/api/agents/test-agent/sessions/sess-1/answer-question',
+      kind: 'question',
+      body: { toolUseId: 'tool-gate-2', answers: { Q: 'A' } },
+    },
+    {
+      label: 'provide-connected-account',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-connected-account',
+      kind: 'connected_account',
+      body: { toolUseId: 'tool-gate-3', toolkit: 'github', decline: true },
+    },
+    {
+      label: 'capability-review',
+      url: '/api/agents/test-agent/sessions/sess-1/capability-review',
+      kind: 'capability_review',
+      body: { toolUseId: 'tool-gate-4', capability: 'subagents', decline: true },
+    },
+    {
+      label: 'complete-browser-input',
+      url: '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      kind: 'browser_input',
+      body: { toolUseId: 'tool-gate-5', decline: true },
+    },
+    {
+      label: 'run-script',
+      url: '/api/agents/test-agent/sessions/sess-1/run-script',
+      kind: 'script_run',
+      body: { toolUseId: 'tool-gate-6', decline: true },
+    },
+    {
+      label: 'provide-remote-mcp',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-remote-mcp',
+      kind: 'remote_mcp',
+      body: { toolUseId: 'tool-gate-7', decline: true },
+    },
+    {
+      label: 'provide-file',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-file',
+      kind: 'file',
+      body: { toolUseId: 'tool-gate-8', decline: true },
+    },
+    {
+      label: 'computer-use',
+      url: '/api/agents/test-agent/sessions/sess-1/computer-use',
+      kind: 'computer_use',
+      body: { toolUseId: 'tool-gate-9', decline: true },
+    },
+  ]
+
+  it.each(GATE_CASES)(
+    '$label with no open request answers alreadySettled and touches nothing',
+    async ({ url, body }) => {
+      const res = await postJson(app, url, body)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ success: true, alreadySettled: true })
+      expect(mockContainerFetch).not.toHaveBeenCalled()
+      expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(GATE_CASES)('$label with an open request still proceeds', async ({ url, kind, body }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.mocked(getSession).mockResolvedValue({ id: 'sess-1' } as any)
+    parkOpen(body.toolUseId as string, kind)
+    const res = await postJson(app, url, body)
+    expect(res.status).toBe(200)
+    const json = (await res.json()) as Record<string, unknown>
+    expect(json.alreadySettled).toBeUndefined()
+    expect(mockContainerFetch).toHaveBeenCalled()
+  })
+
+  it('echoes the settled outcome when the resolution is still on record', async () => {
+    parkOpen('tool-gate-out', 'secret')
+    userInputRequestManager.resolve('tool-gate-out', 'declined')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-out',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      success: true,
+      alreadySettled: true,
+      outcome: 'declined',
+    })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('a toolUseId of a DIFFERENT kind cannot be settled through this route', async () => {
+    // A caller-supplied id must not settle someone else's parked wait — the
+    // same guard submitDecision grew for reviews in the registry migration.
+    parkOpen('tool-gate-kind', 'computer_use')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-kind',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+  })
+
+  it("a request parked in a DIFFERENT session is not decidable through this session's route", async () => {
+    parkOpen('tool-gate-sess', 'secret', 'sess-2')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-sess',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('the internal _auto session bypasses the session-scope check', async () => {
+    // Auto-execute paths post to /sessions/_auto/... while the request is
+    // scoped to the real session that streamed it.
+    parkOpen('tool-gate-auto', 'computer_use', 'sess-real')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/_auto/computer-use', {
+      toolUseId: 'tool-gate-auto',
+      decline: true,
+    })
+    expect(res.status).toBe(200)
+    const json = (await res.json()) as Record<string, unknown>
+    expect(json.alreadySettled).toBeUndefined()
+    expect(mockContainerFetch).toHaveBeenCalled()
+  })
+
+  it.each(GATE_CASES)(
+    "$label cannot decide a request parked for a DIFFERENT agent",
+    async ({ url, kind, body }) => {
+      // toolUseId is a caller-supplied pointer into one global, cross-agent
+      // registry. Without an agent-bound check, another agent's parked ask is
+      // decidable here — and these routes reach host side effects (run-script
+      // executes on the host, computer-use drives the machine).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.mocked(getSession).mockResolvedValue({ id: 'sess-1' } as any)
+      parkOpen(body.toolUseId as string, kind, 'sess-1', {}, 'victim-agent')
+      const res = await postJson(app, url, body)
+      expect(res.status).toBe(404)
+      expect(mockContainerFetch).not.toHaveBeenCalled()
+      expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+      // Still open — a rejected probe must not settle what it could not decide.
+      expect(userInputRequestManager.getOpenRequest(body.toolUseId as string)).not.toBeNull()
+    },
+  )
+
+  it('the internal _auto session waives the session check ONLY, never the agent check', async () => {
+    parkOpen('tool-gate-auto-x', 'computer_use', 'sess-real', {}, 'victim-agent')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/_auto/computer-use', {
+      toolUseId: 'tool-gate-auto-x',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('a request with no agent in scope is unattributable and decidable by nobody', async () => {
+    parkOpen('tool-gate-noagent', 'secret', 'sess-1', {}, null)
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-noagent',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it("does not disclose a settled outcome to another agent's route", async () => {
+    // Settling must not widen who may read the record: the same 404 an open
+    // cross-agent probe gets, not the outcome.
+    parkOpen('tool-gate-settled-agent', 'secret', 'sess-1', {}, 'victim-agent')
+    userInputRequestManager.resolve('tool-gate-settled-agent', 'answered')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-settled-agent',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Request not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('does not disclose a settled outcome through a route of another kind', async () => {
+    parkOpen('tool-gate-settled-kind', 'secret')
+    userInputRequestManager.resolve('tool-gate-settled-kind', 'answered')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/answer-question', {
+      toolUseId: 'tool-gate-settled-kind',
+      answers: { Q: 'A' },
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Request not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it("does not disclose a settled outcome through another session's route", async () => {
+    parkOpen('tool-gate-settled-sess', 'secret', 'sess-2')
+    userInputRequestManager.resolve('tool-gate-settled-sess', 'declined')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-settled-sess',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Request not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('an id that never existed still gets the outcome-less settled shape', async () => {
+    // Unknown and rotated-off-the-trail ids are indistinguishable, and a stale
+    // card must still be able to dismiss itself.
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-never',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, alreadySettled: true })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 })
 

@@ -216,7 +216,7 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     expect(proxyReviewCalls.length).toBe(1)
   })
 
-  it('user_request_created/resolved invalidate the unified store AND the legacy review poll', () => {
+  it('user_request_created/resolved invalidate the unified store', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     render(
@@ -228,8 +228,8 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     const es = getLatestEventSource()
 
     // A dashboard-triggered review can exist with NO session anywhere — this
-    // global event is its only push signal, so it must nudge both the unified
-    // store and the dashboard panel's legacy poll (still unmigrated).
+    // global event is its only push signal. Every review surface (in-chat
+    // cards AND the dashboard panel) reads the unified store now.
     simulateSSEMessage(es, {
       type: 'user_request_created',
       request: {
@@ -251,7 +251,6 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
 
     const keys = invalidateSpy.mock.calls.map((call) => (call[0] as { queryKey?: unknown[] }).queryKey?.[0])
     expect(keys.filter((k) => k === 'pending-user-requests')).toHaveLength(2)
-    expect(keys.filter((k) => k === 'proxy-reviews')).toHaveLength(2)
   })
 
   // SECURITY: focus-aware gate — when an actionable session_waiting fires

@@ -348,7 +348,7 @@ export class IMessageConnector extends ChatClientConnector {
     }
 
     switch (event.type) {
-      case 'user_question_request': {
+      case 'question_request': {
         // Handle proxy review requests (approval cards)
         if (event.toolUseId.startsWith('review:')) {
           return this.sendApprovalCard(event, targetChatId)

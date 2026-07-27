@@ -298,16 +298,16 @@ describe('processSSEEvent', () => {
       expect(mock.sentMessages.length).toBe(0) // no tool summary
     })
 
-    it('forwards user_question_request to sendUserRequestCard', async () => {
+    it('forwards question_request to sendUserRequestCard', async () => {
       await processSSEEvent(managed, {
-        type: 'user_question_request',
+        type: 'question_request',
         toolUseId: 'tu-1',
         questions: [{ question: 'Which DB?' }],
       })
 
       const mock = getMock(managed)
       expect(mock.sentCards.length).toBe(1)
-      expect(mock.sentCards[0].event.type).toBe('user_question_request')
+      expect(mock.sentCards[0].event.type).toBe('question_request')
     })
 
     it('forwards secret_request to sendUserRequestCard', async () => {
@@ -1136,7 +1136,7 @@ describe('processSSEEvent: immediate clears', () => {
   })
 
   const cardTypes = [
-    'user_question_request',
+    'question_request',
     'secret_request',
     'file_request',
     'connected_account_request',

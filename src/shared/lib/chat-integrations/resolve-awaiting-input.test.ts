@@ -33,7 +33,7 @@ describe('consumeOrCancelAwaitingInput', () => {
   it('resolves an open question with plain text and consumes the message (no cancel/dismiss)', async () => {
     const { rec, persister, connector } = makeDeps({
       awaiting: true,
-      pending: [{ type: 'user_question_request', toolUseId: 't1' }],
+      pending: [{ type: 'question_request', toolUseId: 't1' }],
       answerResult: true,
     })
     const consumed = await consumeOrCancelAwaitingInput({ ...base, messageText: 'my answer', hasFiles: false, persister, connector })
@@ -45,7 +45,7 @@ describe('consumeOrCancelAwaitingInput', () => {
   it('resolves with the raw answerText, not the group-prefixed messageText, when both are given', async () => {
     const { rec, persister, connector } = makeDeps({
       awaiting: true,
-      pending: [{ type: 'user_question_request', toolUseId: 't1' }],
+      pending: [{ type: 'question_request', toolUseId: 't1' }],
       answerResult: true,
     })
     // messageText carries the `\[Alice]: ` sender prefix (for the fresh-turn forward); the answer
@@ -65,7 +65,7 @@ describe('consumeOrCancelAwaitingInput', () => {
   it('cancels and dismisses when the open question declines the typed text', async () => {
     const { rec, persister, connector } = makeDeps({
       awaiting: true,
-      pending: [{ type: 'user_question_request', toolUseId: 't1' }],
+      pending: [{ type: 'question_request', toolUseId: 't1' }],
       answerResult: false,
     })
     const consumed = await consumeOrCancelAwaitingInput({ ...base, messageText: 'redirect me', hasFiles: false, persister, connector })
@@ -76,7 +76,7 @@ describe('consumeOrCancelAwaitingInput', () => {
   it('does not attempt to answer with a file/non-text message — cancels and dismisses', async () => {
     const { rec, persister, connector } = makeDeps({
       awaiting: true,
-      pending: [{ type: 'user_question_request', toolUseId: 't1' }],
+      pending: [{ type: 'question_request', toolUseId: 't1' }],
     })
     const consumed = await consumeOrCancelAwaitingInput({ ...base, messageText: 'caption', hasFiles: true, persister, connector })
     expect(consumed).toBe(false)
@@ -103,7 +103,7 @@ describe('consumeOrCancelAwaitingInput', () => {
   it('treats a whitespace-only message as non-text and does not answer', async () => {
     const { rec, persister, connector } = makeDeps({
       awaiting: true,
-      pending: [{ type: 'user_question_request', toolUseId: 't1' }],
+      pending: [{ type: 'question_request', toolUseId: 't1' }],
     })
     const consumed = await consumeOrCancelAwaitingInput({ ...base, messageText: '   ', hasFiles: false, persister, connector })
     expect(consumed).toBe(false)
