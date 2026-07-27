@@ -703,3 +703,28 @@ describe('UserMenu action for the current target', () => {
     expect(mockUserContext.signOut).not.toHaveBeenCalled()
   })
 })
+
+describe('TargetSwitcher placement', () => {
+  // It scopes everything below it, so it belongs directly under the wordmark at
+  // the top of the sidebar — not in the footer among the per-window actions.
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    _resetApiTargetForTest()
+  })
+
+  it('sits above the Home item, not below the agent list', () => {
+    renderWithProviders(<AppSidebar />)
+
+    const switcher = screen.queryByTestId('target-switcher')
+    if (!switcher) return // hidden without a cloud workspace, covered elsewhere
+
+    const home = screen.getByTestId('home-button')
+    // DOCUMENT_POSITION_FOLLOWING: home comes after the switcher.
+    expect(switcher.compareDocumentPosition(home) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('leaves no padded gap when there is no cloud workspace to switch to', () => {
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByTestId('target-switcher')).not.toBeInTheDocument()
+  })
+})

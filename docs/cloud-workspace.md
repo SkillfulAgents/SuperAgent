@@ -288,8 +288,12 @@ Derived rather than stored, so the two can never disagree.
 
 ### Choosing the target
 
-`TargetSwitcher` (sidebar footer) is the segmented Local/Cloud control, and
-`useTargetSwitch` holds the logic.
+`TargetSwitcher` is the segmented Local/Cloud control, and `useTargetSwitch`
+holds the logic. It sits directly under the sidebar wordmark, above Home: it
+scopes everything below it, so it reads as a property of the whole sidebar
+rather than one more menu item. It owns its own padding, since it renders
+nothing most of the time and a wrapper would leave a stray padded div in every
+local-only sidebar.
 
 - **Hidden unless there is somewhere to go.** A single-machine user never sees a
   control with one real option.

@@ -32,36 +32,41 @@ export function TargetSwitcher() {
   if (!available) return null
 
   return (
-    <div
-      className="flex items-center gap-0.5 rounded-md bg-muted/60 p-0.5"
-      role="group"
-      aria-label="Where agents run"
-      data-testid="target-switcher"
-    >
-      {options.map(({ value, icon: Icon, label, title }) => {
-        const active = value === current
-        return (
-          <button
-            key={value}
-            type="button"
-            title={title}
-            aria-pressed={active}
-            disabled={switching}
-            data-testid={`target-option-${value}`}
-            onClick={() => void switchTo(value)}
-            className={cn(
-              'flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-xs transition-colors',
-              active
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground',
-              switching && 'cursor-wait opacity-60',
-            )}
-          >
-            <Icon className="size-3" />
-            <span className="truncate">{label}</span>
-          </button>
-        )
-      })}
+    // Own the surrounding padding rather than taking it from a wrapper at the
+    // call site: this renders nothing most of the time, and a wrapper would
+    // leave a stray padded div in every local-only sidebar.
+    <div className="px-2 pb-2">
+      <div
+        className="flex items-center gap-0.5 rounded-md bg-muted/60 p-0.5"
+        role="group"
+        aria-label="Where agents run"
+        data-testid="target-switcher"
+      >
+        {options.map(({ value, icon: Icon, label, title }) => {
+          const active = value === current
+          return (
+            <button
+              key={value}
+              type="button"
+              title={title}
+              aria-pressed={active}
+              disabled={switching}
+              data-testid={`target-option-${value}`}
+              onClick={() => void switchTo(value)}
+              className={cn(
+                'flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-xs transition-colors',
+                active
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground',
+                switching && 'cursor-wait opacity-60',
+              )}
+            >
+              <Icon className="size-3" />
+              <span className="truncate">{label}</span>
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }

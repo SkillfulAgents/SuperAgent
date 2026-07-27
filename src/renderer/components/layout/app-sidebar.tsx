@@ -886,6 +886,12 @@ export function AppSidebar() {
               </div>
             </div>
 
+            {/* Which Superagent this window drives. Sits directly under the
+                wordmark: it scopes everything below it, so it reads as a
+                property of the whole sidebar rather than one more menu item.
+                Renders nothing when there is no cloud workspace to switch to. */}
+            <TargetSwitcher />
+
             {/* Status banners — render under the wordmark so they sit inside the
                 sidebar's content area rather than pushing the wordmark down. The
                 SidebarBannerStack wrapper owns horizontal padding, inter-banner
@@ -1004,7 +1010,6 @@ export function AppSidebar() {
       </ErrorBoundary>
 
       <SidebarFooter className="border-t p-0 px-2 pt-1 pb-[env(safe-area-inset-bottom)]">
-        <TargetSwitcher />
         <UserMenu />
         <div className="flex items-center justify-between gap-2">
           <SidebarMenuButton
