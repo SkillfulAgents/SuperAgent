@@ -362,6 +362,80 @@ describe('UserInputRequestManager', () => {
     })
   })
 
+  describe('claimRequest / releaseClaim', () => {
+    it('hands the request to the FIRST caller and null to every other', () => {
+      manager.register(secretRequest())
+
+      const first = manager.claimRequest('tool-1')
+      const second = manager.claimRequest('tool-1')
+
+      expect(first?.id).toBe('tool-1')
+      // The whole point: two deciders that both read an open request would both
+      // act on it. Exactly one may win.
+      expect(second).toBeNull()
+      expect(manager.stats.claimed).toBe(1)
+    })
+
+    it('returns null for an id that is not open', () => {
+      expect(manager.claimRequest('never-existed')).toBeNull()
+      manager.register(secretRequest())
+      manager.resolve('tool-1', 'answered')
+      expect(manager.claimRequest('tool-1')).toBeNull()
+    })
+
+    it('a claim does not hide the request from any reader', () => {
+      // A claim is an in-flight decision, not a settlement — if the claimer
+      // dies the human is still waiting, so the card, the snapshot and the
+      // awaiting light must all still show it.
+      manager.register(secretRequest())
+      manager.claimRequest('tool-1')
+
+      expect(manager.getOpenRequest('tool-1')).not.toBeNull()
+      expect(manager.isSessionAwaiting('session-1', 'agent-a')).toBe(true)
+      expect(manager.getSnapshotForScope('agent-a', 'session-1')).toHaveLength(1)
+      expect(manager.stats.open).toBe(1)
+    })
+
+    it('releaseClaim makes it claimable again — a bailed decision must not strand it', () => {
+      manager.register(secretRequest())
+      manager.claimRequest('tool-1')
+
+      manager.releaseClaim('tool-1')
+
+      expect(manager.claimRequest('tool-1')?.id).toBe('tool-1')
+    })
+
+    it('releaseClaim on an unknown or already-settled id is a no-op', () => {
+      manager.register(secretRequest())
+      manager.claimRequest('tool-1')
+      manager.resolve('tool-1', 'answered')
+
+      expect(() => manager.releaseClaim('tool-1')).not.toThrow()
+      expect(() => manager.releaseClaim('never-existed')).not.toThrow()
+      expect(manager.stats.claimed).toBe(0)
+    })
+
+    it('resolve drops the claim, so a re-registered id does not inherit it', () => {
+      // Callers release in a finally, but the success path settles instead —
+      // if resolve leaked the claim, the next request to reuse the toolUseId
+      // would be born undecidable.
+      manager.register(secretRequest())
+      manager.claimRequest('tool-1')
+      manager.resolve('tool-1', 'answered')
+      expect(manager.stats.claimed).toBe(0)
+
+      manager.register(secretRequest())
+      expect(manager.claimRequest('tool-1')?.id).toBe('tool-1')
+    })
+
+    it('reset clears claims', () => {
+      manager.register(secretRequest())
+      manager.claimRequest('tool-1')
+      manager.reset()
+      expect(manager.stats.claimed).toBe(0)
+    })
+  })
+
   describe('shadow diagnostics', () => {
     it('verifyStoreParity passes silently when both stores match', () => {
       manager.register(secretRequest({ id: 'stream-1' }))
@@ -426,6 +500,7 @@ describe('UserInputRequestManager', () => {
       manager.reset()
       expect(manager.stats).toEqual({
         open: 0,
+        claimed: 0,
         storeMismatches: 0,
         recentResolutions: [],
       })

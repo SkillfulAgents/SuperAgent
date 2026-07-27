@@ -84,6 +84,7 @@ const UNSUPPORTED_IN_CHAT: ReadonlySet<UserRequestEvent['type']> = new Set([
   'browser_input_request',
   'script_run_request',
   'computer_use_request',
+  'capability_review_request',
   'secret_request',
   'file_request',
 ])
@@ -174,6 +175,8 @@ export function describeUnsupportedRequest(event: UserRequestEvent, appLink?: Ap
       return `The agent needs input in a browser session, which isn't supported in chat.${tail}`
     case 'script_run_request':
       return `The agent wants to run a script, which needs your approval.${tail}`
+    case 'capability_review_request':
+      return `The agent wants to ${event.capability === 'workflows' ? 'run a workflow' : 'launch a subagent'}, which needs your approval.${tail}`
     case 'computer_use_request':
       return `The agent wants to use your computer, which isn't supported in chat.${tail}`
     case 'secret_request':

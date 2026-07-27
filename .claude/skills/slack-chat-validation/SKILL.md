@@ -117,11 +117,27 @@ install is only ever read.**
 |---|---|
 | `inbound-turn` | An inbound Slack message creates a chat session bound to a real container session whose transcript holds the turn |
 | `question-card` | `AskUserQuestion` renders as Block Kit with one button per option and connector-registered `cb_<n>` action ids |
-| `question-freetext-answer` | A plain-text reply resolves the open single-question card as the free-form answer and the **same turn continues** — then the registry is empty |
+| `question-answered-in-app` | The card posted to Slack and the request the **app** answers are the same registry entry: answering through the app's decision route settles it and the continuation lands back in Slack |
+| `question-freetext-reply` | A plain-text reply to an open single-question card settles it and the agent responds — and the report says **which** path ran (answer-in-turn vs cancel → fresh turn) |
 | `question-cancelled-by-unrelated-message` | An unrelated message cancels the parked question instead of deadlocking behind it, and the fresh turn runs |
 | `question-multi-is-not-consumed-by-text` | A multi-question ask posts one card per question, and text does **not** answer it (an answer would be attributed to the wrong question) |
 | `file-delivery-notice` | `deliver_file` reaches the conversation as real uploaded bytes with the description as caption (text fallback accepted and reported) |
-| `unsupported-*` (6) | Per kind: the exact refusal wording, the **exact host-aware link tail**, no interactive card, and the request staying parked in the registry |
+| `unsupported-*` (7) | Per kind: the exact refusal wording, the **exact host-aware link tail**, no interactive card, and the request staying parked in the registry |
+
+`unsupported-capability-review` is the newest row and the one with the least
+margin: `workflows: 'review'` is the shipped default, so asking the agent to run
+a workflow parks a capability review — which chat was silent about entirely
+before the connectors moved onto the unified request wire. It needs the agent to
+actually reach for the `Workflow` tool, so it is the row most likely to need its
+retry.
+
+`question-freetext-reply` reports its path rather than asserting one, because
+the two are connector-dependent: the free-text **answer** path needs
+`answerOpenQuestionWithText`, which only the Telegram connector implements. On
+Slack the same message legitimately takes the **cancel** path. Both settle the
+request and both get a reply, so a check that only asserted "the agent
+answered" would stay green if the answer path broke outright — which is what
+the previous version of this check did.
 
 The `unsupported-*` checks are the regression test for the host-aware notice
 (PR #563). They rebuild the expected tail from the host shape and assert the
@@ -141,8 +157,16 @@ what stops a queued notice from linking a rotated-away session.
 - **Button taps are not automated.** Slack has no API to simulate clicking a
   Block Kit button; interactions only arrive from a real client over Socket
   Mode. The suite asserts the card is posted with the right buttons and
-  `action_id`s, and covers the answer path via the free-text branch. The
-  `action_id` → decision round trip needs a human tap in Slack.
+  `action_id`s, and covers a real decision via `question-answered-in-app` (the
+  app's decision route settles the same registry entry the Slack card came
+  from). The `action_id` → decision round trip still needs a human tap.
+- **The already-handled gate is not live-reachable on Slack.** A press on a card
+  whose request was settled elsewhere must be refused rather than buffered in
+  the container. Reaching it needs an interactive response, which on Slack means
+  a button tap — and the free-text branch does not produce one, because Slack
+  has no `answerOpenQuestionWithText`. That gate is covered instead by the
+  wire-contract suite in `chat-integration-e2e.test.ts`, which drives the real
+  persister and the real registry.
 - **`browser_input` is not asserted as parked** (`requiresParked: false`).
   `mcp__user-input__request_browser_input` is only in the web-browser
   subagent's tool list, so the main agent reaches it indirectly and the

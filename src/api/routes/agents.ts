@@ -5525,10 +5525,9 @@ setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 // store: mount, reconnect, and invalidation refetch from here; live updates
 // arrive as user_request_created / user_request_resolved on the session and
 // global SSE streams. The legacy per-type events still fire server-side for
-// the chat-integration connectors (their in-process consumer has not migrated)
-// and for the renderer's two narrow holdouts: the browser tray's
-// browser_input_request feed and the script/computer-use auto-approved
-// suppress-sets.
+// the renderer's two narrow holdouts: the browser tray's browser_input_request
+// feed and the script/computer-use auto-approved suppress-sets. (The chat
+// integrations moved onto this wire in Phase 7 and ignore the legacy events.)
 agents.get('/:id/pending-requests', AgentRead(), (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.query('sessionId') || undefined

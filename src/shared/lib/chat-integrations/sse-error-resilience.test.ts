@@ -9,6 +9,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-integration-manager'
 import { MockChatClientConnector } from './mock-connector'
+import { createdEvent } from './user-request-fixtures'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
 // Suppress console.error noise from intentional throws
@@ -189,25 +190,33 @@ describe('tool_use_start error resilience', () => {
 // ── user request card: sendUserRequestCard throws ───────────────────────
 
 describe('user request card error resilience', () => {
-  const requestTypes = [
-    'question_request',
-    'secret_request',
-    'file_request',
-    'connected_account_request',
-    'remote_mcp_request',
-    'browser_input_request',
-    'script_run_request',
-    'computer_use_request',
+  const requestKinds = [
+    'question',
+    'secret',
+    'file',
+    'connected_account',
+    'remote_mcp',
+    'browser_input',
+    'script_run',
+    'capability_review',
+    'computer_use',
   ]
 
-  for (const eventType of requestTypes) {
-    it(`does not throw when sendUserRequestCard fails for ${eventType}`, async () => {
+  for (const kind of requestKinds) {
+    it(`does not throw when sendUserRequestCard fails for ${kind}`, async () => {
       const managed = createManagedConnector()
       const mock = getMock(managed)
-      mock.sendUserRequestCard = async () => { throw new Error('card send failed') }
+      let attempted = false
+      mock.sendUserRequestCard = async () => {
+        attempted = true
+        throw new Error('card send failed')
+      }
 
       // Should not throw
-      await processSSEEvent(managed, { type: eventType, toolUseId: 'tu-1' })
+      await processSSEEvent(managed, createdEvent(kind))
+      // …and the throw must have come from a real attempt: an event the
+      // manager silently ignores would pass this test having proven nothing.
+      expect(attempted).toBe(true)
     })
   }
 
@@ -218,7 +227,7 @@ describe('user request card error resilience', () => {
     mock.sendUserRequestCard = async () => { throw new Error('card send failed') }
 
     // Card fails
-    await processSSEEvent(managed, { type: 'question_request', toolUseId: 'tu-1' })
+    await processSSEEvent(managed, createdEvent('question'))
     // Streaming still works
     await processSSEEvent(managed, { type: 'stream_delta', text: 'After card failure' })
 
@@ -337,7 +346,7 @@ describe('pipeline isolation', () => {
     }
 
     // Process a card event (fails), then a streaming event (should succeed)
-    await processSSEEvent(managed, { type: 'question_request', toolUseId: 'tu-1' })
+    await processSSEEvent(managed, createdEvent('question'))
     await processSSEEvent(managed, { type: 'stream_delta', text: 'Still works' })
 
     expect(managed.streamingState.accumulatedText).toBe('Still works')
