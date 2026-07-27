@@ -11,7 +11,46 @@ This found a P1 that 8,255 unit tests and every E2E suite missed — cloud mode 
 completely unusable, because better-auth silently declines to append `/api/auth`
 to a base URL that already has a path. See `docs/cloud-workspace.md`.
 
-## Running it
+## Two ways to run it
+
+The same 28 checks, the same harness, the same real desktop app — differing only
+in what sits on the other end.
+
+| | `ci.mjs` | `run.mjs` |
+| --- | --- | --- |
+| Platform (discovery, grant) | `stub-platform.mjs`, holding a real RS256 keypair | the real platform, against local Supabase |
+| Deployment | a real auth-mode build of this app | the same, built from `main` |
+| Needs | one checkout | Supabase + wrangler + a platform checkout |
+| Runs in CI | yes | no |
+
+`ci.mjs` is the regression net and runs on every PR. It proves the *app's*
+behaviour. It cannot prove the platform contract: if the platform changes shape,
+the stub will keep agreeing with a version that no longer exists. Wire schemas,
+the org-runtime-token rejection, the real SSRF policy and undici's form-POST
+handling stay with `run.mjs` and the service-level chain suite, which run against
+the real thing before merging anything that touches them.
+
+### In CI
+
+```bash
+npx electron-rebuild -f     # Electron ABI — the deployment shares it, see below
+npm run build:api           # the deployment's server bundle
+npx electron-vite build     # the desktop app under test
+node e2e/live/cloud-electron/ci.mjs
+```
+
+Two build choices worth not undoing. **`npm run build:web` is deliberately
+absent**: it is `vite build`, whose outDir is `dist/renderer` — the same
+directory `electron-vite build` writes the desktop renderer into. Run both and
+the app under test silently becomes a web build. Only `build:api` (tsup →
+`dist/web`) is needed, because the deployment is used purely as an API here and
+its own SPA is never loaded. And the deployment is started with
+**`ELECTRON_RUN_AS_NODE=1`** so it loads the *Electron-ABI* `better-sqlite3` the
+app already needs — one `node_modules` can hold only one build of a native
+module, and the alternative is a second `npm ci`. Getting this wrong surfaces as
+a token exchange answering 400, which is a long way from `ERR_DLOPEN_FAILED`.
+
+## Running it against the real stack
 
 1. Stand up the stack — the runbook is
    [`.claude/skills/electron-cloud-interface-validation/SKILL.md`](../../../.claude/skills/electron-cloud-interface-validation/SKILL.md).
@@ -43,7 +82,9 @@ switch with every request, response, page error and navigation logged.
 | --- | --- |
 | `stack.mjs` | Where the three nodes live; every value overridable from the environment |
 | `harness.mjs` | Launching Electron with a debugging port, seeding its data dir, attaching over CDP |
-| `run.mjs` | The 28 checks, in six groups |
+| `run.mjs` | The 28 checks, in six groups — shared by both entry points |
+| `ci.mjs` | Raises a stubbed platform + a real deployment, then runs `run.mjs` against them |
+| `stub-platform.mjs` | Discovery and grant minting, with a real RS256 keypair and JWKS |
 | `inspect.mjs` | A switch, narrated — for when a check fails and you need to know why |
 
 ## Two things the harness must keep doing

@@ -92,6 +92,18 @@ function expectEqual(actual, wanted, message) {
  * what this renderer actually booted with.
  */
 async function rendererTarget(page) {
+  // The marker first, because it survives what the switcher does not. A switch
+  // into a not-yet-onboarded workspace lands on the wizard, which replaces the
+  // whole shell — sidebar, switcher and all — while `CloudModeIndicator` stays
+  // mounted alongside it. Reading only the switcher makes that case look like a
+  // switch that never happened, which is a timeout rather than a failure and so
+  // takes the full 90s to say nothing.
+  const marker = await page
+    .locator('[data-testid="cloud-mode-indicator"]')
+    .count()
+    .catch(() => 0)
+  if (marker > 0) return 'cloud'
+
   const pressed = await page
     .locator('[data-testid="target-option-cloud"]')
     .getAttribute('aria-pressed')
