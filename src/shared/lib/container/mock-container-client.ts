@@ -667,6 +667,19 @@ export interface UserInputTool {
   input: UserInputToolInput
 }
 
+const DATABASE_QUESTION_INPUT = {
+  questions: [{
+    question: 'Which database should we use?',
+    header: 'Database',
+    options: [
+      { label: 'PostgreSQL', description: 'Reliable relational database' },
+      { label: 'MongoDB', description: 'Flexible document store' },
+      { label: 'SQLite', description: 'Lightweight embedded database' },
+    ],
+    multiSelect: false,
+  }],
+}
+
 export class UserInputRequestScenario implements MockScenario {
   constructor(
     private tools: UserInputTool[],
@@ -866,20 +879,20 @@ export class SubagentBrowserInputScenario implements MockScenario {
   }
 }
 
-/**
- * Many subagents across one turn. The activity card renders one row per
- * subagent and never drops a finished one (subagent_completed upserts), so the
- * card grows for the whole turn — a run of sequential waves reaches the same
- * height as one wide fan-out. Most rows arrive already finished, matching the
- * reported screenshot (20 ✓, 4 running). The turn is held open so the card
- * stays on screen while the test measures the layout it squeezes.
- */
+const FANOUT_SUBAGENT_COUNT = 24
+const FANOUT_RUNNING_COUNT = 4
+
 export class SubagentFanoutScenario implements MockScenario {
-  constructor(private count = 24, private runningTail = 4) {}
+  constructor(private includeQuestion = false) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
-    const toolIds = Array.from({ length: this.count }, (_, i) => `agent_fanout_${i}`)
+    const toolIds = Array.from({ length: FANOUT_SUBAGENT_COUNT }, (_, i) => `agent_fanout_${i}`)
     const describe = (i: number) => `Verify chunk ${i}`
+    const questionToolId = 'fanout_question'
+
+    if (this.includeQuestion) {
+      client.registerPendingInputs(sessionId, 1)
+    }
 
     client.writeJsonlEntry(sessionId, {
       type: 'user',
@@ -895,21 +908,27 @@ export class SubagentFanoutScenario implements MockScenario {
     }, 10)
 
     setTimeout(() => {
-      // One assistant turn that launched every subagent.
+      const assistantContent = [
+        ...toolIds.map((id, i) => ({
+          type: 'tool_use',
+          id,
+          name: 'Task',
+          input: { subagent_type: 'general-purpose', description: describe(i) },
+        })),
+        ...(this.includeQuestion ? [{
+          type: 'tool_use',
+          id: questionToolId,
+          name: 'AskUserQuestion',
+          input: DATABASE_QUESTION_INPUT,
+        }] : []),
+      ]
       client.writeJsonlEntry(sessionId, {
         type: 'assistant',
-        message: {
-          content: toolIds.map((id, i) => ({
-            type: 'tool_use',
-            id,
-            name: 'Task',
-            input: { subagent_type: 'general-purpose', description: describe(i) },
-          })),
-        },
+        message: { content: assistantContent },
         timestamp: new Date().toISOString(),
       })
 
-      // task_started is what puts a row in the card (persister → subagent_started).
+      // The card needs task_started events matched to persisted Task calls.
       toolIds.forEach((id, i) => {
         client.emitStreamMessage(sessionId, {
           type: 'system',
@@ -924,24 +943,48 @@ export class SubagentFanoutScenario implements MockScenario {
         })
       })
 
-      // Finished subagents keep their row as a ✓ for the rest of the turn.
+      if (this.includeQuestion) {
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: {
+            type: 'stream_event',
+            event: {
+              type: 'content_block_start',
+              content_block: { type: 'tool_use', id: questionToolId, name: 'AskUserQuestion' },
+            },
+          },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: {
+            type: 'stream_event',
+            event: {
+              type: 'content_block_delta',
+              delta: { type: 'input_json_delta', partial_json: JSON.stringify(DATABASE_QUESTION_INPUT) },
+            },
+          },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+        })
+      }
+
       const results = toolIds
-        .slice(0, Math.max(0, this.count - this.runningTail))
+        .slice(0, FANOUT_SUBAGENT_COUNT - FANOUT_RUNNING_COUNT)
         .map((id) => ({ type: 'tool_result', tool_use_id: id, content: 'done' }))
       client.writeJsonlEntry(sessionId, {
         type: 'user',
         message: { content: results },
         timestamp: new Date().toISOString(),
       })
-      // A 'user' stream message is what makes the client refetch persisted
-      // messages; without it the card has SSE rows but no tool calls to match.
+      // JSONL writes do not broadcast, so force a persisted-message refetch.
       client.emitStreamMessage(sessionId, {
         type: 'user',
         content: { type: 'user', message: { content: results } },
       })
     }, 60)
-
-    // No 'result': the turn stays open, like a run still fanning out.
+    // No result event: keep the activity card open for geometry checks.
   }
 }
 
@@ -1593,18 +1636,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['ask question', new UserInputRequestScenario([
       {
         name: 'AskUserQuestion',
-        input: {
-          questions: [{
-            question: 'Which database should we use?',
-            header: 'Database',
-            options: [
-              { label: 'PostgreSQL', description: 'Reliable relational database' },
-              { label: 'MongoDB', description: 'Flexible document store' },
-              { label: 'SQLite', description: 'Lightweight embedded database' },
-            ],
-            multiSelect: false,
-          }],
-        },
+        input: DATABASE_QUESTION_INPUT,
       },
     ])],
     // Note: scenarios are matched by substring in insertion order, so
@@ -1780,6 +1812,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       },
     ])],
     ['subagent browser input', new SubagentBrowserInputScenario()],
+    ['subagent fanout with question', new SubagentFanoutScenario(true)],
     ['subagent fanout', new SubagentFanoutScenario()],
     ['dead subagent input', new DeadSubagentInputScenario()],
     // Proxy review scenario for E2E tests

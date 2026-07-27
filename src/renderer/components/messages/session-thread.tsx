@@ -9,6 +9,8 @@ interface SessionThreadProps {
   agentSlug: string
   /** Footer pinned below the scrollable message list (input bar, read-only notice, etc.) */
   footer: ReactNode
+  /** Additional content in the capped growable footer region. */
+  growableFooter?: ReactNode
   /** Classes for the footer wrapper — callers set their own max-width/background. */
   footerClassName?: string
   /** Whether the browser tray tab is available (interactive session view only). */
@@ -35,6 +37,7 @@ export function SessionThread({
   sessionId,
   agentSlug,
   footer,
+  growableFooter,
   footerClassName = 'bg-background',
   browserActive = false,
   readOnly,
@@ -65,7 +68,8 @@ export function SessionThread({
         />
         <div className={`${footerClassName} pb-[env(safe-area-inset-bottom)]`} data-composer-footer>
           {/* vh: % max-height won't resolve against an auto grid row */}
-          <div className="max-h-[40vh] min-h-0 overflow-y-auto">
+          <div className="max-h-[40vh] overflow-y-auto">
+            {growableFooter}
             <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
           </div>
           {footer}

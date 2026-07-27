@@ -102,7 +102,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         }
       }
     }
-    // Running first, then newest-finished - mirrors the todo list in this card.
+    // Keep live work above completed history.
     const running = items.filter((i) => i.status === 'running')
     const completed = items.filter((i) => i.status === 'completed').reverse()
     return [...running, ...completed]
