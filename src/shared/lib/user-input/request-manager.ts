@@ -62,6 +62,16 @@ export class UserInputRequestManager {
    */
   private recentResolutions: SettledUserInputRequest[] = []
 
+  /**
+   * Ids reserved by an in-flight decision.
+   *
+   * A claim is NOT a settlement: the request stays open to every reader — the
+   * awaiting projection, the snapshot, the wire — because if the claimer fails
+   * before settling, a human is still waiting on it. All a claim does is make
+   * the DECISION path single-entry.
+   */
+  private claimed = new Set<string>()
+
   private storeMismatchCount = 0
 
   /**
@@ -105,6 +115,10 @@ export class UserInputRequestManager {
     const request = this.requests.get(id)
     if (!request) return null
     this.requests.delete(id)
+    // The claim dies with the entry: a settled id must never leave a
+    // reservation behind that a re-registration under the same toolUseId
+    // would inherit.
+    this.claimed.delete(id)
     this.recentResolutions.push({ id, kind: request.kind, scope: request.scope, outcome })
     if (this.recentResolutions.length > 100) this.recentResolutions.shift()
     this.emitTransition({ type: 'resolved', request, outcome })
@@ -184,6 +198,31 @@ export class UserInputRequestManager {
   /** Look up a single open request by id. */
   getOpenRequest(id: string): PendingUserInputRequest | null {
     return this.requests.get(id) ?? null
+  }
+
+  /**
+   * Reserve an open request for settlement, returning it to the FIRST caller
+   * only. A plain `getOpenRequest` before a decision is check-then-act: the
+   * decision path awaits (container lookup, the resolve call itself) between
+   * observing the request and settling it, so a second decider observes the
+   * same open request and both act. This is a synchronous check-and-mark with
+   * no await inside, which on node's single thread makes it atomic — the
+   * loser gets null and can report the decision as already handled.
+   *
+   * The caller MUST `releaseClaim` on every path that does NOT settle the
+   * request, or it stays open and permanently undecidable. `resolve` drops the
+   * claim with the entry, so the success path needs no explicit release.
+   */
+  claimRequest(id: string): PendingUserInputRequest | null {
+    const request = this.requests.get(id)
+    if (!request || this.claimed.has(id)) return null
+    this.claimed.add(id)
+    return request
+  }
+
+  /** Drop a claim. No-op for an id that already settled. */
+  releaseClaim(id: string): void {
+    this.claimed.delete(id)
   }
 
   /**
@@ -345,11 +384,14 @@ export class UserInputRequestManager {
 
   get stats(): {
     open: number
+    /** In-flight decision reservations. A non-zero idle value is a leaked claim. */
+    claimed: number
     storeMismatches: number
     recentResolutions: SettledUserInputRequest[]
   } {
     return {
       open: this.requests.size,
+      claimed: this.claimed.size,
       storeMismatches: this.storeMismatchCount,
       recentResolutions: [...this.recentResolutions],
     }
@@ -358,6 +400,7 @@ export class UserInputRequestManager {
   /** Test hook: wipe all state including diagnostics. */
   reset(): void {
     this.requests.clear()
+    this.claimed.clear()
     this.recentResolutions = []
     this.storeMismatchCount = 0
   }

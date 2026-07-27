@@ -1645,8 +1645,16 @@ class ChatIntegrationManager {
     // not-this-agent's collapse to the same reply on purpose: both mean the
     // button did nothing, and distinguishing them would confirm to one chat
     // that another agent holds that id.
-    const open = userInputRequestManager.getOpenRequest(toolUseId)
+    //
+    // CLAIM it rather than merely reading it: everything below yields (the
+    // dynamic import, ensureRunning, the resolve call), so a plain "is it
+    // open?" read is check-then-act — a second press observes the same open
+    // request and both proceed. claimRequest is a synchronous check-and-mark,
+    // so exactly one presser wins.
+    const open = userInputRequestManager.claimRequest(toolUseId)
     if (!open || open.scope.agentSlug !== integration.agentSlug) {
+      // Wrong agent: release immediately, we never had the right to hold it.
+      if (open) userInputRequestManager.releaseClaim(toolUseId)
       await this.replyAlreadyHandled(integrationId, chatId)
       return
     }
@@ -1654,6 +1662,18 @@ class ChatIntegrationManager {
     try {
       const { containerManager } = await import('@shared/lib/container/container-manager')
       const client = await containerManager.ensureRunning(integration.agentSlug)
+
+      // Re-check with NO await between here and the container call. The claim
+      // only excludes another chat press; a decision on another surface settles
+      // the registry directly, and if that landed while ensureRunning was in
+      // flight the container has nothing parked — resolving now would buffer an
+      // earlyResult nothing will ever collect, which is the phantom this gate
+      // exists to prevent. What remains after this is the container round trip
+      // itself, which only the container can arbitrate.
+      if (!userInputRequestManager.getOpenRequest(toolUseId)) {
+        await this.replyAlreadyHandled(integrationId, chatId)
+        return
+      }
 
       const responseObj = response as Record<string, unknown>
       if (responseObj && typeof responseObj === 'object' && 'question' in responseObj && 'answer' in responseObj) {
@@ -1699,6 +1719,13 @@ class ChatIntegrationManager {
     } catch (err) {
       console.error(`[ChatIntegrationManager] Failed to handle interactive response:`, err)
       reportError(err, 'interactive-response-resolve', { integrationId, toolUseId })
+    } finally {
+      // Unconditional: on the success path the claim is already gone (resolve
+      // drops it with the entry), so this only matters for the paths that bail
+      // — a container that never came up, a failed resolve, a settle that beat
+      // us. A leaked claim would make the request undecidable forever, which is
+      // worse than the race it guards.
+      userInputRequestManager.releaseClaim(toolUseId)
     }
   }
 

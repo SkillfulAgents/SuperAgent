@@ -552,6 +552,12 @@ describe('Chat integration E2E', () => {
       mockAgentCapabilities.workflows = 'allow'
       userInputRequestManager.reset()
 
+      // mockResolvedValue sets the DEFAULT but does not drain queued
+      // *Once implementations — an unconsumed one from a timed-out test
+      // would fire in the next one.
+      vi.mocked(containerManager.ensureRunning).mockReset()
+      vi.mocked(containerManager.ensureRunning).mockResolvedValue(mockContainerClient)
+
       // start() arms this in production; this harness drives addIntegration
       // directly, and without it the review card has no wire to arrive on.
       ;(chatIntegrationManager as unknown as { subscribeGlobalNotifications(): void })
@@ -661,6 +667,71 @@ describe('Chat integration E2E', () => {
       expect(mockConnector.sentMessages[0].message.text).toContain('already handled')
       expect(fetchSpy.mock.calls.filter(([p]) => String(p).includes('/resolve'))).toHaveLength(0)
       expect(userInputRequestManager.getOpenRequest(toolUseId)).not.toBeNull()
+      fetchSpy.mockRestore()
+    })
+
+    it('a settle that lands while ensureRunning is pending stops the container call', async () => {
+      // The check-then-act window. Reading "is it open?" and then awaiting the
+      // container lookup leaves a gap in which another surface can settle the
+      // request; resolving after that buffers an earlyResult in a container
+      // with nothing parked, and the chat user is told nothing.
+      const sent = await cardFor('ask secret')
+      const toolUseId = (sent.event as { toolUseId: string }).toolUseId
+
+      let releaseContainer = () => {}
+      const gate = new Promise<void>((resolve) => {
+        releaseContainer = resolve
+      })
+      vi.mocked(containerManager.ensureRunning).mockImplementationOnce(async () => {
+        await gate
+        return mockContainerClient
+      })
+
+      const fetchSpy = vi.spyOn(mockContainerClient, 'fetch')
+      mockConnector.sentMessages = []
+      mockConnector.simulateInteractiveResponse(toolUseId, 'hunter2', 'chat-1')
+
+      // Settle in the app while the press is parked on the container lookup.
+      await waitForCondition(() => vi.mocked(containerManager.ensureRunning).mock.calls.length > 0, 3000)
+      expect(userInputRequestManager.resolve(toolUseId, 'answered')).not.toBeNull()
+      releaseContainer()
+
+      // Wait on something BOTH outcomes produce, so the assertion below is what
+      // fails when the gate regresses — not the wait. Gated: an already-handled
+      // reply. Racy: a resolve posted to a container with nothing parked.
+      const resolveCalls = () => fetchSpy.mock.calls.filter(([p]) => String(p).includes('/resolve'))
+      await waitForCondition(
+        () => mockConnector.sentMessages.length > 0 || resolveCalls().length > 0,
+        3000,
+      )
+      expect(resolveCalls()).toHaveLength(0)
+      expect(mockConnector.sentMessages[0]?.message.text).toContain('already handled')
+      fetchSpy.mockRestore()
+    })
+
+    it('a failed decision releases the claim so the request stays decidable', async () => {
+      // A leaked claim is worse than the race: the card would stay up forever
+      // with every press refused.
+      const sent = await cardFor('ask secret')
+      const toolUseId = (sent.event as { toolUseId: string }).toolUseId
+
+      vi.mocked(containerManager.ensureRunning).mockRejectedValueOnce(new Error('container down'))
+      mockConnector.sentMessages = []
+      mockConnector.simulateInteractiveResponse(toolUseId, 'hunter2', 'chat-1')
+      await waitForCondition(
+        () => vi.mocked(containerManager.ensureRunning).mock.calls.length > 0,
+        3000,
+      )
+
+      await waitForCondition(() => userInputRequestManager.stats.claimed === 0, 3000)
+      // Still open, and the next press gets through.
+      expect(userInputRequestManager.getOpenRequest(toolUseId)).not.toBeNull()
+      const fetchSpy = vi.spyOn(mockContainerClient, 'fetch')
+      mockConnector.simulateInteractiveResponse(toolUseId, 'hunter2', 'chat-1')
+      await waitForCondition(
+        () => fetchSpy.mock.calls.some(([p]) => String(p).includes('/resolve')),
+        3000,
+      )
       fetchSpy.mockRestore()
     })
 
