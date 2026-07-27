@@ -5328,8 +5328,14 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
         const res = await fetch(basePath + '/artifacts');
         if (res.ok) {
           const artifacts = await res.json();
-          const d = Array.isArray(artifacts) && artifacts.find(a => a.slug === artifactSlug);
-          if (d && d.status === 'running') { setTitle(d.name); return; }
+          if (!Array.isArray(artifacts)) {
+            await new Promise(r => setTimeout(r, 1000));
+            continue;
+          }
+          const d = artifacts.find(a => a.slug === artifactSlug);
+          if (!d) { throw new Error('Dashboard not found.'); }
+          if (d.status === 'crashed') { throw new Error('Dashboard crashed.'); }
+          if (d.status === 'running') { setTitle(d.name); return; }
         }
         await new Promise(r => setTimeout(r, 1000));
       }
