@@ -11,7 +11,7 @@ export interface StaleSessionNoticeProps {
 function TeachingPoint({ lead, children }: { lead: string; children: ReactNode }) {
   return (
     <div className="text-xs">
-      <p className="font-semibold text-foreground">{lead}</p>
+      <p className="font-medium text-foreground">{lead}</p>
       <p className="text-muted-foreground">{children}</p>
     </div>
   )
@@ -31,7 +31,7 @@ export function StaleSessionNotice({
   }, [learnMoreOpen, onLearnMoreOpenChange])
 
   return (
-    <div data-testid="stale-toast" className="mx-auto -mb-1 w-full max-w-[740px] px-4">
+    <div data-testid="stale-toast" className="mx-auto mb-2 w-full max-w-[740px] px-4">
       <div className="flex items-center justify-between gap-4 rounded-2xl border bg-muted/50 p-4">
         <div className="flex min-w-0 max-w-[60%] flex-col gap-1.5">
           <p className="text-sm font-medium">Start a new conversation?</p>

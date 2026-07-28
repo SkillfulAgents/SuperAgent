@@ -339,6 +339,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 // Import routers after all mocks are set up.
 import connectedAccountsRouter from './connected-accounts'
 import agents from './agents'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import platformAuthRoute from './platform-auth'
 
 // ---------------------------------------------------------------------------
@@ -636,6 +637,19 @@ describe('SUP-199: remote MCP assignment ownership (AUTH_MODE)', () => {
 
   it('rejects providing another user remote MCP id at runtime approval', async () => {
     selectQueue = [[]]
+    // The decision gate answers already-settled (side-effect-free) for
+    // requests the registry does not hold open — park the request so the
+    // route reaches the ownership check this test pins.
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tu-1',
+      kind: 'remote_mcp',
+      scope: { agentSlug: 'attacker-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
 
     const res = await appWithAgents().request('http://localhost/api/agents/attacker-agent/sessions/sess-1/provide-remote-mcp', {
       method: 'POST',
@@ -645,6 +659,7 @@ describe('SUP-199: remote MCP assignment ownership (AUTH_MODE)', () => {
 
     expectClientError(res.status)
     expect(mockDbInsertValues).not.toHaveBeenCalled()
+    userInputRequestManager.reset()
   })
 
   it('allows attaching a remote MCP the acting user owns', async () => {
@@ -658,6 +673,10 @@ describe('SUP-199: remote MCP assignment ownership (AUTH_MODE)', () => {
     })
 
     expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      success: true,
+      liveRefresh: false,
+    })
     expect(mockDbInsertValues).toHaveBeenCalledTimes(1)
     expect(mockDbInsertValues).toHaveBeenCalledWith([
       expect.objectContaining({ agentSlug: 'my-agent', remoteMcpId: 'my-mcp-id' }),
@@ -718,7 +737,8 @@ describe('unlink ownership: cross-user account/MCP unlink from a shared agent (A
     const res = await appWithAgents().request('http://localhost/api/agents/my-agent/connected-accounts/my-account-id', {
       method: 'DELETE',
     })
-    expect(res.status).toBe(204)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, liveRefresh: false })
     expect(mockDbDeleteWhere).toHaveBeenCalledTimes(1)
   })
 
@@ -736,7 +756,8 @@ describe('unlink ownership: cross-user account/MCP unlink from a shared agent (A
     const res = await appWithAgents().request('http://localhost/api/agents/my-agent/remote-mcps/my-mcp-id', {
       method: 'DELETE',
     })
-    expect(res.status).toBe(204)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, liveRefresh: false })
     expect(mockDbDeleteWhere).toHaveBeenCalledTimes(1)
   })
 })

@@ -1,4 +1,4 @@
-import { query, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, startup, Options, Query, WarmQuery, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
@@ -58,6 +58,13 @@ import { createCapabilityGateHook, CAPABILITY_REVIEW_HOOK_TIMEOUT_S } from './ca
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
+
+// Upper bound on how long a message waits for freshly (re)connected remote MCP
+// servers to finish their handshake. Comfortably inside the 5-minute interactive
+// idle eviction, and the same order as the interrupt() teardown the send path
+// already awaits.
+const REMOTE_MCP_READY_TIMEOUT_MS = 8_000;
+const REMOTE_MCP_READY_POLL_MS = 250;
 
 export const AGENT_BROWSER_BASH_WARNING =
   'STRONG WARNING: This Bash command is probably bypassing Gamut\'s browser integration. For website work, use the dedicated mcp__browser__browser_* tools; if they are deferred, load their exact full names with ToolSearch. The Bash command is still allowed, but continue with agent-browser only when the dedicated browser tools genuinely cannot perform the operation.';
@@ -120,6 +127,13 @@ function parseRemoteMcps(): RemoteMcpConfig[] {
   } catch {
     return [];
   }
+}
+
+function runtimeConnectionConfigSnapshot(): string {
+  return JSON.stringify([
+    process.env.CONNECTED_ACCOUNTS || '{}',
+    process.env.REMOTE_MCPS || '[]',
+  ])
 }
 
 /**
@@ -379,12 +393,6 @@ export class MessageQueue {
   }
 }
 
-// Module-level reference to the current process (one per container)
-let currentProcess: ClaudeCodeProcess | null = null;
-export function getCurrentProcess(): ClaudeCodeProcess | null {
-  return currentProcess;
-}
-
 export interface ClaudeCodeProcessOptions {
   sessionId: string;
   workingDirectory: string;
@@ -429,6 +437,11 @@ export class ClaudeCodeProcess extends EventEmitter {
   private effort: EffortLevel | undefined;
   private speed: SpeedLevel | undefined;
   private capabilityPolicies: AgentCapabilityPolicies | undefined;
+  // Connection metadata is mutable at runtime when Agent Settings changes.
+  // The SDK snapshots MCP servers, allowed tool patterns, and the system prompt
+  // when query() is created, so the next user message must refresh a stale
+  // query before it is delivered.
+  private runtimeConnectionSnapshot = '';
   // Session-scoped review grants ("Allow for this session"). Scoped to the
   // SESSION, not the process: they must survive idle-eviction + resume (the
   // session-manager persists them via the 'capability-grant' event), or the
@@ -474,6 +487,10 @@ export class ClaudeCodeProcess extends EventEmitter {
   private lastTurnInformationals: SDKMessage[] = [];
   private lastResultMessage: SDKMessage | null = null;
   private lastSessionState: string | null = null;
+  // Pre-spawned CLI subprocess from prewarm(), waiting for a prompt. Claimed
+  // (once) by the next createQuery; see prewarm() for why the handle lives on
+  // the process rather than in a detached pool.
+  private warmHandle: WarmQuery | null = null;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
 
   constructor(options: ClaudeCodeProcessOptions) {
@@ -510,8 +527,6 @@ export class ClaudeCodeProcess extends EventEmitter {
       options.webFetchProvider,
       options.capabilityPolicies
     );
-    // Set module-level reference for tools that need access to the process
-    currentProcess = this;
   }
 
   /**
@@ -547,9 +562,9 @@ export class ClaudeCodeProcess extends EventEmitter {
    * Builds HTTP MCP server configs from the REMOTE_MCPS env var.
    * Each remote MCP is configured as an HTTP transport pointing to the proxy URL.
    */
-  private buildRemoteMcpServers(): Record<string, { type: 'http'; url: string; headers?: Record<string, string> }> {
+  private buildRemoteMcpServers(): Record<string, { type: 'http'; url: string; headers?: Record<string, string>; timeout?: number }> {
     const remoteMcps = parseRemoteMcps();
-    const configs: Record<string, { type: 'http'; url: string; headers?: Record<string, string> }> = {};
+    const configs: Record<string, { type: 'http'; url: string; headers?: Record<string, string>; timeout?: number }> = {};
     const proxyToken = process.env.PROXY_TOKEN;
 
     for (const mcp of remoteMcps) {
@@ -558,6 +573,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         type: 'http',
         url: mcp.proxyUrl,
         headers: proxyToken ? { 'Authorization': `Bearer ${proxyToken}` } : undefined,
+        // The proxy parks tool calls while the user approves them, which can
+        // take arbitrarily long. CLI 2.1.219 aborts HTTP MCP requests after
+        // 60s by default (plus a 5-min idle watchdog); this per-server
+        // timeout raises the fetch, idle, and hard limits together.
+        timeout: 86_400_000,
       };
     }
 
@@ -565,12 +585,107 @@ export class ClaudeCodeProcess extends EventEmitter {
   }
 
   /**
+   * Hold the next message until the remote MCP servers this query just
+   * (re)connected have finished their handshake.
+   *
+   * createQuery() reconnects every MCP server from scratch, and the SDK runs
+   * that handshake CONCURRENTLY with the first turn. Meanwhile the system
+   * prompt — regenerated from the same REMOTE_MCPS — already tells the model
+   * the servers "are connected and their tools are available for use". The
+   * model believes it, calls mcp__<server>__<tool>, and gets "No such tool
+   * available": the exact symptom of a connection that never arrived.
+   *
+   * Only the connection-config-changed path calls this. An unchanged config
+   * means no re-query at all, hence no handshake in flight and nothing to wait
+   * for. The other re-query triggers (effort/speed/capability change, cold-start
+   * restart) race the same handshake, but there the user has not just connected
+   * a server they are about to ask about — and gating every wake-from-idle would
+   * tax a far more common path for a far rarer payoff.
+   */
+  private async waitForRemoteMcpsReady(
+    timeoutMs: number = REMOTE_MCP_READY_TIMEOUT_MS
+  ): Promise<void> {
+    // Keys are already sanitized, and they are exactly the keys handed to
+    // query() as mcpServers — so they match the names the SDK reports back.
+    const expected = Object.keys(this.buildRemoteMcpServers());
+    if (expected.length === 0 || !this.queryInstance) return;
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const statuses = await this.queryInstance.mcpServerStatus().catch(() => null);
+      // No control channel (older CLI, or a query already torn down): the turn
+      // must never hang on a diagnostic.
+      if (!statuses) return;
+
+      // Scoped to OUR servers by name. createQuery passes settingSources
+      // ['user','project'], so this list also carries user- and project-scoped
+      // servers whose health is not ours to block a turn on. A server missing
+      // from the list entirely is still starting up — keep waiting.
+      const settled = expected.every((name) => {
+        const status = statuses.find((s) => s.name === name)?.status;
+        // 'failed' | 'needs-auth' | 'disabled' never become 'connected'; waiting
+        // past them would burn the whole timeout on a server that is simply down.
+        return status !== undefined && status !== 'pending';
+      });
+      if (settled) return;
+
+      await new Promise((resolve) => setTimeout(resolve, REMOTE_MCP_READY_POLL_MS));
+    }
+
+    console.warn(
+      `[Session ${this.sessionId}] Remote MCP handshake still pending after ${timeoutMs}ms — delivering the message anyway`
+    );
+  }
+
+  /**
    * Creates a new query instance with the standard configuration.
    * Used by start(), restart(), and interrupt() to avoid duplication.
+   *
+   * Claims the pre-warmed subprocess when prewarm() left one: its CLI is
+   * already spawned and past the initialize handshake, so the `init` message
+   * (and with it the canonical session id) lands in milliseconds instead of
+   * the ~1-3s a cold spawn costs. The handle is single-use — the SDK closes
+   * over the prompt stream we hand it here — so it is cleared on claim.
    */
   private createQuery(): Query {
+    const warm = this.warmHandle;
+    if (warm) {
+      this.warmHandle = null;
+      console.log(`[Session ${this.sessionId}] createQuery: claiming pre-warmed subprocess`);
+      return warm.query(this.messageQueue!);
+    }
+    return query({ prompt: this.messageQueue!, options: this.buildQueryOptions() });
+  }
+
+  /**
+   * Pre-spawn the CLI subprocess and complete its initialize handshake before
+   * a prompt exists, so the next start() pays no boot cost.
+   *
+   * The warm handle lives on the process (not in a detached pool of bare
+   * option sets) because the options bake in this instance's closures — the
+   * `canUseTool` callback, every hook, and the browser/agents/chat MCP servers
+   * all resolve `this.sessionId` at call time. A handle warmed against one
+   * process could therefore never be handed to another without misrouting
+   * those callbacks. The session manager pools whole pre-warmed processes
+   * instead, and only hands one to a request whose parameters match.
+   */
+  async prewarm(): Promise<void> {
+    if (this.disposed || this.warmHandle || this.queryInstance) return;
+    // Baked into the warm subprocess's options, so initializeQuery must not
+    // replace it on claim or the warm process would be unstoppable.
+    this.abortController = new AbortController();
+    this.warmHandle = await startup({ options: this.buildQueryOptions() });
+  }
+
+  /** Whether a pre-warmed subprocess is parked on this process, unclaimed. */
+  isPrewarmed(): boolean {
+    return this.warmHandle !== null;
+  }
+
+  private buildQueryOptions(): Options {
     const remoteMcpConfigs = this.buildRemoteMcpServers();
     const remoteMcpToolPatterns = Object.keys(remoteMcpConfigs).map(name => `mcp__${name}__*`);
+    this.runtimeConnectionSnapshot = runtimeConnectionConfigSnapshot();
 
     // Browser tools are bound per-session via a getter read on every request:
     // this.sessionId changes when the query (re)starts, and a module-global id
@@ -596,339 +711,353 @@ export class ClaudeCodeProcess extends EventEmitter {
       ],
     });
 
-    return query({
-      prompt: this.messageQueue!,
-      options: {
-        model: this.model,
-        cwd: this.workingDirectory,
-        abortController: this.abortController!,
-        resume: this.claudeSessionId || undefined,
-        permissionMode: 'bypassPermissions',
-        includePartialMessages: true,
-        agentProgressSummaries: true,
-        // Expose the dynamic-workflows `Workflow` tool. In headless/SDK mode the
-        // feature is hidden unless explicitly opted in (there is no interactive
-        // /config to record consent, so the SDK defaults it OFF). There is no
-        // enable env var — only CLAUDE_CODE_DISABLE_WORKFLOWS — so we set it via
-        // the `settings` flag layer (`enableWorkflows` is a Settings field, not a
-        // top-level Option). Without it the model can't see a Workflow tool at all
-        // and falls back to simulating with Agent subagents.
-        settings: { enableWorkflows: capabilityTools.enableWorkflows },
-        settingSources: ['user', 'project'],
-        allowedTools: capabilityTools.allowedTools,
-        disallowedTools: capabilityTools.disallowedTools,
-        // Request summarized thinking so reasoning text streams to the UI. Without an
-        // explicit `display`, Opus 4.8/4.7 default to `omitted` — thinking_delta events
-        // arrive empty (only a signature), so the UI can show "Thinking" but no text.
-        thinking: this.maxThinkingTokens
-          ? { type: 'enabled', budgetTokens: this.maxThinkingTokens, display: 'summarized' }
-          : { type: 'adaptive', display: 'summarized' },
-        ...(this.maxTurns && { maxTurns: this.maxTurns }),
-        ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
-        ...(this.effort && { effort: this.effort }),
-        // withAgentAttributionHeaders folds the host-injected agent identity env
-        // vars into ANTHROPIC_CUSTOM_HEADERS (composed here, after the custom-env
-        // merge, so a user-set ANTHROPIC_CUSTOM_HEADERS is appended to, not lost).
-        // withSpeedHeader then appends X-Superagent-Speed for non-normal tiers.
-        env: withSpeedHeader(withAgentAttributionHeaders({
-          // Agent SDK 0.2.113+ replaces process.env with options.env instead of
-          // overlaying it, so we must spread process.env explicitly or the Claude
-          // subprocess loses PATH, HOME, ANTHROPIC_API_KEY, connected-account env
-          // vars, and anything else set on the container.
-          ...process.env,
-          ...this.customEnvVars,
-          // Emit `session_state_changed` system events (idle/running/requires_action).
-          // The host treats `idle` as the authoritative end-of-session signal (a
-          // 'result' alone doesn't end it — queued messages can keep the run going).
-          // server.ts announces this capability on WebSocket connect — keep the two
-          // in sync. See message-persister.ts.
-          CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
-          // Explicit maxOutputTokens setting takes precedence over custom env var
-          ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
-        }), this.speed),
-        mcpServers: {
-          'user-input': createUserInputMcpServer(),
-          'browser': createBrowserMcpServer(browserMcpTools),
-          'dashboards': createDashboardsMcpServer(),
-          'agents': createAgentsMcpServer(() => this.sessionId),
-          'chat': createChatMcpServer(() => this.sessionId),
-          ...((this.webSearchProvider || this.webFetchProvider)
-            ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
-            : {}),
-          ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer() } : {}),
-          ...remoteMcpConfigs,
+    return {
+      model: this.model,
+      cwd: this.workingDirectory,
+      abortController: this.abortController!,
+      resume: this.claudeSessionId || undefined,
+      permissionMode: 'bypassPermissions',
+      includePartialMessages: true,
+      agentProgressSummaries: true,
+      // Expose the dynamic-workflows `Workflow` tool. In headless/SDK mode the
+      // feature is hidden unless explicitly opted in (there is no interactive
+      // /config to record consent, so the SDK defaults it OFF). There is no
+      // enable env var — only CLAUDE_CODE_DISABLE_WORKFLOWS — so we set it via
+      // the `settings` flag layer (`enableWorkflows` is a Settings field, not a
+      // top-level Option). Without it the model can't see a Workflow tool at all
+      // and falls back to simulating with Agent subagents.
+      settings: { enableWorkflows: capabilityTools.enableWorkflows },
+      settingSources: ['user', 'project'],
+      allowedTools: capabilityTools.allowedTools,
+      disallowedTools: capabilityTools.disallowedTools,
+      // Request summarized thinking so reasoning text streams to the UI. Without an
+      // explicit `display`, Opus 4.8/4.7 default to `omitted` — thinking_delta events
+      // arrive empty (only a signature), so the UI can show "Thinking" but no text.
+      thinking: this.maxThinkingTokens
+        ? { type: 'enabled', budgetTokens: this.maxThinkingTokens, display: 'summarized' }
+        : { type: 'adaptive', display: 'summarized' },
+      ...(this.maxTurns && { maxTurns: this.maxTurns }),
+      ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
+      ...(this.effort && { effort: this.effort }),
+      // withAgentAttributionHeaders folds the host-injected agent identity env
+      // vars into ANTHROPIC_CUSTOM_HEADERS (composed here, after the custom-env
+      // merge, so a user-set ANTHROPIC_CUSTOM_HEADERS is appended to, not lost).
+      // withSpeedHeader then appends X-Superagent-Speed for non-normal tiers.
+      env: withSpeedHeader(withAgentAttributionHeaders({
+        // Agent SDK 0.2.113+ replaces process.env with options.env instead of
+        // overlaying it, so we must spread process.env explicitly or the Claude
+        // subprocess loses PATH, HOME, ANTHROPIC_API_KEY, connected-account env
+        // vars, and anything else set on the container.
+        ...process.env,
+        ...this.customEnvVars,
+        // Emit `session_state_changed` system events (idle/running/requires_action).
+        // The host treats `idle` as the authoritative end-of-session signal (a
+        // 'result' alone doesn't end it — queued messages can keep the run going).
+        // server.ts announces this capability on WebSocket connect — keep the two
+        // in sync. See message-persister.ts.
+        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
+        // CLI 2.1.212+ moves MCP tool calls that run >2min to a background
+        // task. Our blocking user-input tools (request_user_input et al.)
+        // legitimately block far longer than that waiting on a human, and
+        // the pending-request lifecycle depends on the call staying
+        // foreground until resolved — so disable auto-backgrounding.
+        CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: '0',
+        // Boot-path network work we never benefit from: the CLI fetches
+        // feature flags and posts telemetry/error reports before the first
+        // turn, which measured ~400ms of the session-start wait and can hang
+        // far longer when egress is restricted. One switch covers the
+        // auto-updater, /bug uploads, error reporting and telemetry.
+        // Trade-off: it also stops remote feature-flag evaluation, so
+        // server-side flags and killswitches no longer reach our sessions —
+        // acceptable because the CLI version is pinned by the image, not
+        // self-updated. Pinned like the other vars here: customEnvVars is
+        // spread above, so an agent cannot turn this back on.
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        // Explicit maxOutputTokens setting takes precedence over custom env var
+        ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
+      }), this.speed),
+      mcpServers: {
+        'user-input': createUserInputMcpServer(() => this),
+        'browser': createBrowserMcpServer(browserMcpTools),
+        'dashboards': createDashboardsMcpServer(),
+        'agents': createAgentsMcpServer(() => this.sessionId),
+        'chat': createChatMcpServer(() => this.sessionId),
+        ...((this.webSearchProvider || this.webFetchProvider)
+          ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
+          : {}),
+        ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer() } : {}),
+        ...remoteMcpConfigs,
+      },
+      agents: {
+        'web-browser': {
+          description: 'Web browsing specialist. Delegate any task that requires interacting with websites — navigating pages, filling forms, clicking buttons, extracting information, searching for products, changing settings on web services, or any multi-step web interaction. The browser should already be open (use browser_open first). This agent runs on a cheaper model and handles all browser interactions autonomously.',
+          // Host-resolved concrete wire id for the browser model (any provider/
+          // model the user configured); AgentDefinition.model is a plain string.
+          // Fall back to the main model — never a hardcoded Claude alias, which
+          // would force Anthropic on non-Anthropic providers.
+          model: this.browserModel || this.model,
+          tools: [
+            ...mcpToolNames('browser', browserMcpTools),
+            // The subagent hard-codes its tools, so swap native WebSearch for the vendor tool
+            // when one is active (native is Anthropic-server-side, absent on non-Claude models).
+            ...(this.webSearchProvider ? ['mcp__web__web_search'] : ['WebSearch']),
+            'Read',
+            'mcp__user-input__request_file',
+            'mcp__user-input__request_browser_input',
+          ],
+          prompt: WEB_BROWSER_AGENT_PROMPT,
+          maxTurns: 500,
         },
-        agents: {
-          'web-browser': {
-            description: 'Web browsing specialist. Delegate any task that requires interacting with websites — navigating pages, filling forms, clicking buttons, extracting information, searching for products, changing settings on web services, or any multi-step web interaction. The browser should already be open (use browser_open first). This agent runs on a cheaper model and handles all browser interactions autonomously.',
-            // Host-resolved concrete wire id for the browser model (any provider/
-            // model the user configured); AgentDefinition.model is a plain string.
-            // Fall back to the main model — never a hardcoded Claude alias, which
-            // would force Anthropic on non-Anthropic providers.
+        'dashboard-builder': {
+          description: 'Dashboard building specialist. Delegate any task that involves creating, editing, or debugging dashboards (artifacts) — designing layouts, writing HTML/CSS/JS or React code, adding charts, connecting to data sources, fixing visual issues, or iterating on dashboard design. This agent handles the full build cycle: scaffolding, coding, starting, and verifying via screenshots.',
+          // Host-resolved dashboard-builder model (its own setting); falls back to
+          // the main model rather than a hardcoded Claude alias.
+          model: this.dashboardBuilderModel || this.model,
+          tools: [
+            'mcp__dashboards__create_dashboard',
+            'mcp__dashboards__start_dashboard',
+            'mcp__dashboards__list_dashboards',
+            'mcp__dashboards__get_dashboard_logs',
+            'Read',
+            'Write',
+            'Edit',
+            'Bash',
+          ],
+          prompt: DASHBOARD_BUILDER_AGENT_PROMPT,
+          maxTurns: 200,
+        },
+        ...(isComputerUseHost() ? {
+          'computer-use': {
+            description: 'Desktop automation specialist for macOS and Windows. Delegate any task that requires interacting with native applications — clicking buttons, filling forms, reading screen content, navigating menus, or any multi-step app interaction. The app should already be launched and grabbed (use computer_launch first). This agent runs on a cheaper model and handles all app interactions autonomously.',
+            // Cheap tier (browser model); falls back to the main model — never a
+            // hardcoded Claude alias.
             model: this.browserModel || this.model,
             tools: [
-              ...mcpToolNames('browser', browserMcpTools),
-              // The subagent hard-codes its tools, so swap native WebSearch for the vendor tool
-              // when one is active (native is Anthropic-server-side, absent on non-Claude models).
-              ...(this.webSearchProvider ? ['mcp__web__web_search'] : ['WebSearch']),
+              ...mcpToolNames('computer-use', computerUseTools, ['computer_launch', 'computer_quit', 'computer_ungrab']),
               'Read',
-              'mcp__user-input__request_file',
-              'mcp__user-input__request_browser_input',
             ],
-            prompt: WEB_BROWSER_AGENT_PROMPT,
+            prompt: COMPUTER_USE_AGENT_PROMPT,
             maxTurns: 500,
           },
-          'dashboard-builder': {
-            description: 'Dashboard building specialist. Delegate any task that involves creating, editing, or debugging dashboards (artifacts) — designing layouts, writing HTML/CSS/JS or React code, adding charts, connecting to data sources, fixing visual issues, or iterating on dashboard design. This agent handles the full build cycle: scaffolding, coding, starting, and verifying via screenshots.',
-            // Host-resolved dashboard-builder model (its own setting); falls back to
-            // the main model rather than a hardcoded Claude alias.
-            model: this.dashboardBuilderModel || this.model,
-            tools: [
-              'mcp__dashboards__create_dashboard',
-              'mcp__dashboards__start_dashboard',
-              'mcp__dashboards__list_dashboards',
-              'mcp__dashboards__get_dashboard_logs',
-              'Read',
-              'Write',
-              'Edit',
-              'Bash',
+        } : {}),
+      },
+      // Handle AskUserQuestion via canUseTool callback (per SDK docs)
+      canUseTool: async (toolName: string, toolInput: Record<string, unknown>, options: { toolUseID: string; signal: AbortSignal }) => {
+        if (toolName === 'AskUserQuestion') {
+          console.log('[canUseTool] AskUserQuestion called, toolUseID:', options.toolUseID);
+
+          const questions = toolInput.questions as Array<{
+            question: string;
+            header: string;
+            options: Array<{ label: string; description: string }>;
+            multiSelect: boolean;
+          }> | undefined;
+
+          if (!questions?.length) {
+            console.log('[canUseTool] No questions, allowing tool to proceed');
+            return { behavior: 'allow' as const, updatedInput: toolInput };
+          }
+
+          const requestId = options.toolUseID || `ask-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+          console.log('[canUseTool] Creating pending request:', requestId);
+
+          try {
+            // Block until user answers via our UI
+            const answers = await inputManager.createPendingWithType<Record<string, string>>(
+              requestId,
+              'question',
+              questions,
+              this.sessionId
+            );
+
+            console.log('[canUseTool] Got answers:', JSON.stringify(answers));
+
+            // Return answers to Claude
+            return {
+              behavior: 'allow' as const,
+              updatedInput: { questions, answers },
+            };
+          } catch (error) {
+            console.log('[canUseTool] User declined:', error);
+            return {
+              behavior: 'deny' as const,
+              message: error instanceof Error ? error.message : 'User declined to answer',
+            };
+          }
+        }
+
+        // For MCP user-input tools called by subagents, set the toolUseId
+        // so the tool handler can consume it. PreToolUse hooks may not fire
+        // for subagent tool calls, so we set it here as well.
+        // TODO: Race condition — if both canUseTool and PreToolUse fire for
+        // the same tool call, the last write wins (setCurrentToolUseId is
+        // not additive). This is acceptable because they write the same ID,
+        // but if two user-input tools fire concurrently the first ID could
+        // be overwritten before consumeCurrentToolUseId is called.
+        if ((toolName.startsWith('mcp__user-input__') || toolName.startsWith('mcp__computer-use__')) && options.toolUseID) {
+          inputManager.setCurrentToolUseId(options.toolUseID, this.sessionId);
+        }
+
+        // Auto-approve other tools (we're in bypassPermissions mode)
+        return { behavior: 'allow' as const, updatedInput: toolInput };
+      },
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'mcp__user-input__.*',
+            hooks: [
+              async (_input, toolUseId) => {
+                if (toolUseId) {
+                  inputManager.setCurrentToolUseId(toolUseId, this.sessionId);
+                }
+                return {};
+              },
             ],
-            prompt: DASHBOARD_BUILDER_AGENT_PROMPT,
-            maxTurns: 200,
           },
-          ...(isComputerUseHost() ? {
-            'computer-use': {
-              description: 'Desktop automation specialist for macOS and Windows. Delegate any task that requires interacting with native applications — clicking buttons, filling forms, reading screen content, navigating menus, or any multi-step app interaction. The app should already be launched and grabbed (use computer_launch first). This agent runs on a cheaper model and handles all app interactions autonomously.',
-              // Cheap tier (browser model); falls back to the main model — never a
-              // hardcoded Claude alias.
-              model: this.browserModel || this.model,
-              tools: [
-                ...mcpToolNames('computer-use', computerUseTools, ['computer_launch', 'computer_quit', 'computer_ungrab']),
-                'Read',
-              ],
-              prompt: COMPUTER_USE_AGENT_PROMPT,
-              maxTurns: 500,
-            },
-          } : {}),
-        },
-        // Handle AskUserQuestion via canUseTool callback (per SDK docs)
-        canUseTool: async (toolName: string, toolInput: Record<string, unknown>, options: { toolUseID: string; signal: AbortSignal }) => {
-          if (toolName === 'AskUserQuestion') {
-            console.log('[canUseTool] AskUserQuestion called, toolUseID:', options.toolUseID);
-
-            const questions = toolInput.questions as Array<{
-              question: string;
-              header: string;
-              options: Array<{ label: string; description: string }>;
-              multiSelect: boolean;
-            }> | undefined;
-
-            if (!questions?.length) {
-              console.log('[canUseTool] No questions, allowing tool to proceed');
-              return { behavior: 'allow' as const, updatedInput: toolInput };
-            }
-
-            const requestId = options.toolUseID || `ask-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-            console.log('[canUseTool] Creating pending request:', requestId);
-
-            try {
-              // Block until user answers via our UI
-              const answers = await inputManager.createPendingWithType<Record<string, string>>(
-                requestId,
-                'question',
-                questions,
-                this.sessionId
-              );
-
-              console.log('[canUseTool] Got answers:', JSON.stringify(answers));
-
-              // Return answers to Claude
-              return {
-                behavior: 'allow' as const,
-                updatedInput: { questions, answers },
-              };
-            } catch (error) {
-              console.log('[canUseTool] User declined:', error);
-              return {
-                behavior: 'deny' as const,
-                message: error instanceof Error ? error.message : 'User declined to answer',
-              };
-            }
-          }
-
-          // For MCP user-input tools called by subagents, set the toolUseId
-          // so the tool handler can consume it. PreToolUse hooks may not fire
-          // for subagent tool calls, so we set it here as well.
-          // TODO: Race condition — if both canUseTool and PreToolUse fire for
-          // the same tool call, the last write wins (setCurrentToolUseId is
-          // not additive). This is acceptable because they write the same ID,
-          // but if two user-input tools fire concurrently the first ID could
-          // be overwritten before consumeCurrentToolUseId is called.
-          if ((toolName.startsWith('mcp__user-input__') || toolName.startsWith('mcp__computer-use__')) && options.toolUseID) {
-            inputManager.setCurrentToolUseId(options.toolUseID, this.sessionId);
-          }
-
-          // Auto-approve other tools (we're in bypassPermissions mode)
-          return { behavior: 'allow' as const, updatedInput: toolInput };
-        },
-        hooks: {
-          PreToolUse: [
-            {
-              matcher: 'mcp__user-input__.*',
-              hooks: [
-                async (_input, toolUseId) => {
-                  if (toolUseId) {
-                    inputManager.setCurrentToolUseId(toolUseId, this.sessionId);
-                  }
-                  return {};
+          {
+            matcher: 'mcp__computer-use__.*',
+            hooks: [
+              async (_input, toolUseId) => {
+                if (toolUseId) {
+                  inputManager.setCurrentToolUseId(toolUseId, this.sessionId);
+                }
+                return {};
+              },
+            ],
+          },
+          {
+            matcher: 'Bash',
+            hooks: [
+              async (input) => {
+                const toolInput = (input as any).tool_input as Record<string, unknown> | undefined;
+                if (!startsWithAgentBrowserCommand(toolInput?.command)) return {};
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse' as const,
+                    additionalContext: AGENT_BROWSER_BASH_WARNING,
+                  },
+                };
+              },
+            ],
+          },
+          {
+            // Launch-policy gate for subagents/workflows — see
+            // createCapabilityGateHook for why this is a hook and not
+            // canUseTool.
+            matcher: '^(Task|Agent|Workflow)$',
+            timeout: CAPABILITY_REVIEW_HOOK_TIMEOUT_S,
+            hooks: [
+              createCapabilityGateHook({
+                sessionId: this.sessionId,
+                getPolicies: () => this.capabilityPolicies,
+                getSessionGrants: () => this.sessionCapabilityGrants,
+                onSessionGrant: (capability) => {
+                  this.sessionCapabilityGrants.add(capability);
+                  // Session-manager persists it so the grant survives eviction+resume.
+                  this.emit('capability-grant', { capability });
                 },
-              ],
-            },
-            {
-              matcher: 'mcp__computer-use__.*',
-              hooks: [
-                async (_input, toolUseId) => {
-                  if (toolUseId) {
-                    inputManager.setCurrentToolUseId(toolUseId, this.sessionId);
-                  }
-                  return {};
+                onReviewCancelled: (cancelledToolUseId, capability) => {
+                  // Same relay as SDK frames (persister → SSE → renderer),
+                  // so the host closes the orphaned approval card.
+                  this.emit('message', {
+                    type: 'capability_review_cancelled',
+                    toolUseId: cancelledToolUseId,
+                    capability,
+                    session_id: this.claudeSessionId || this.sessionId,
+                  });
                 },
-              ],
-            },
-            {
-              matcher: 'Bash',
-              hooks: [
-                async (input) => {
-                  const toolInput = (input as any).tool_input as Record<string, unknown> | undefined;
-                  if (!startsWithAgentBrowserCommand(toolInput?.command)) return {};
+              }),
+            ],
+          },
+          {
+            matcher: 'mcp__agents__create_agent',
+            hooks: [
+              async () => {
+                if (this.userMessageCount <= 1 && !this.isResumedSession) {
                   return {
                     hookSpecificOutput: {
                       hookEventName: 'PreToolUse' as const,
-                      additionalContext: AGENT_BROWSER_BASH_WARNING,
+                      permissionDecision: 'deny' as const,
+                      permissionDecisionReason:
+                        'This is the first message in the session. When users say "create an agent to..." they almost always mean they want YOU (the current agent) to to be this agent. Please re-read the user\'s message — they are likely asking you to build this agent in your current workspace - not as a seperate one. Only create a new agent if the user explicitly and unambiguously asks to set up a separate, reusable agent definition.',
                     },
                   };
-                },
-              ],
-            },
-            {
-              // Launch-policy gate for subagents/workflows — see
-              // createCapabilityGateHook for why this is a hook and not
-              // canUseTool.
-              matcher: '^(Task|Agent|Workflow)$',
-              timeout: CAPABILITY_REVIEW_HOOK_TIMEOUT_S,
-              hooks: [
-                createCapabilityGateHook({
-                  sessionId: this.sessionId,
-                  getPolicies: () => this.capabilityPolicies,
-                  getSessionGrants: () => this.sessionCapabilityGrants,
-                  onSessionGrant: (capability) => {
-                    this.sessionCapabilityGrants.add(capability);
-                    // Session-manager persists it so the grant survives eviction+resume.
-                    this.emit('capability-grant', { capability });
-                  },
-                  onReviewCancelled: (cancelledToolUseId, capability) => {
-                    // Same relay as SDK frames (persister → SSE → renderer),
-                    // so the host closes the orphaned approval card.
-                    this.emit('message', {
-                      type: 'capability_review_cancelled',
-                      toolUseId: cancelledToolUseId,
-                      capability,
-                      session_id: this.claudeSessionId || this.sessionId,
-                    });
-                  },
-                }),
-              ],
-            },
-            {
-              matcher: 'mcp__agents__create_agent',
-              hooks: [
-                async () => {
-                  if (this.userMessageCount <= 1 && !this.isResumedSession) {
-                    return {
-                      hookSpecificOutput: {
-                        hookEventName: 'PreToolUse' as const,
-                        permissionDecision: 'deny' as const,
-                        permissionDecisionReason:
-                          'This is the first message in the session. When users say "create an agent to..." they almost always mean they want YOU (the current agent) to to be this agent. Please re-read the user\'s message — they are likely asking you to build this agent in your current workspace - not as a seperate one. Only create a new agent if the user explicitly and unambiguously asks to set up a separate, reusable agent definition.',
-                      },
-                    };
+                }
+                return {};
+              },
+            ],
+          },
+          {
+            matcher: 'Write',
+            hooks: [
+              async (input) => {
+                const toolInput = (input as any).tool_input as Record<string, unknown>;
+                const filePath = resolveToolFilePath(toolInput, this.workingDirectory);
+                if (!filePath) return {};
+                for (const hook of fileHooks) {
+                  if (!hook.matches(filePath)) continue;
+                  const result = hook.onWrite(filePath, toolInput.content as string);
+                  if (result.error) {
+                    return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: result.error } };
                   }
-                  return {};
-                },
-              ],
-            },
-            {
-              matcher: 'Write',
-              hooks: [
-                async (input) => {
-                  const toolInput = (input as any).tool_input as Record<string, unknown>;
-                  const filePath = resolveToolFilePath(toolInput, this.workingDirectory);
-                  if (!filePath) return {};
-                  for (const hook of fileHooks) {
-                    if (!hook.matches(filePath)) continue;
-                    const result = hook.onWrite(filePath, toolInput.content as string);
+                  if (result.warning) {
+                    return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, additionalContext: result.warning } };
+                  }
+                }
+                return {};
+              },
+            ],
+          },
+        ],
+        PostToolUse: [
+          {
+            matcher: 'Read',
+            hooks: [
+              async (input) => {
+                const toolInput = (input as any).tool_input as Record<string, unknown>;
+                const filePath = resolveToolFilePath(toolInput, this.workingDirectory);
+                if (!filePath) return {};
+                for (const hook of fileHooks) {
+                  if (!hook.matches(filePath)) continue;
+                  const result = hook.onRead(filePath);
+                  if (result.additionalContext) {
+                    return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: result.additionalContext } };
+                  }
+                }
+                return {};
+              },
+            ],
+          },
+          {
+            matcher: 'Edit',
+            hooks: [
+              async (input) => {
+                const toolInput = (input as any).tool_input as Record<string, unknown>;
+                const filePath = resolveToolFilePath(toolInput, this.workingDirectory);
+                if (!filePath) return {};
+                for (const hook of fileHooks) {
+                  if (!hook.matches(filePath)) continue;
+                  try {
+                    const content = await fs.promises.readFile(filePath, 'utf-8');
+                    const result = hook.onEdit(filePath, content);
                     if (result.error) {
-                      return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: result.error } };
+                      return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: `Warning: ${result.error}` } };
                     }
                     if (result.warning) {
-                      return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, additionalContext: result.warning } };
+                      return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: result.warning } };
                     }
+                  } catch {
+                    // File may not exist yet after edit — skip
                   }
-                  return {};
-                },
-              ],
-            },
-          ],
-          PostToolUse: [
-            {
-              matcher: 'Read',
-              hooks: [
-                async (input) => {
-                  const toolInput = (input as any).tool_input as Record<string, unknown>;
-                  const filePath = resolveToolFilePath(toolInput, this.workingDirectory);
-                  if (!filePath) return {};
-                  for (const hook of fileHooks) {
-                    if (!hook.matches(filePath)) continue;
-                    const result = hook.onRead(filePath);
-                    if (result.additionalContext) {
-                      return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: result.additionalContext } };
-                    }
-                  }
-                  return {};
-                },
-              ],
-            },
-            {
-              matcher: 'Edit',
-              hooks: [
-                async (input) => {
-                  const toolInput = (input as any).tool_input as Record<string, unknown>;
-                  const filePath = resolveToolFilePath(toolInput, this.workingDirectory);
-                  if (!filePath) return {};
-                  for (const hook of fileHooks) {
-                    if (!hook.matches(filePath)) continue;
-                    try {
-                      const content = await fs.promises.readFile(filePath, 'utf-8');
-                      const result = hook.onEdit(filePath, content);
-                      if (result.error) {
-                        return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: `Warning: ${result.error}` } };
-                      }
-                      if (result.warning) {
-                        return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: result.warning } };
-                      }
-                    } catch {
-                      // File may not exist yet after edit — skip
-                    }
-                  }
-                  return {};
-                },
-              ],
-            },
-          ],
-        },
-        systemPrompt: this.systemPrompt,
+                }
+                return {};
+              },
+            ],
+          },
+        ],
       },
-    });
+      systemPrompt: this.systemPrompt,
+    };
   }
 
   /**
@@ -938,7 +1067,12 @@ export class ClaudeCodeProcess extends EventEmitter {
     // New query generation: a stale processMessages loop from a previous
     // query must not clobber this one's state when it finally unwinds.
     this.queryGeneration++;
-    this.abortController = new AbortController();
+    // A pre-warmed subprocess was spawned with prewarm()'s AbortController
+    // already baked into its options; replacing it here would leave that
+    // subprocess with no way to be aborted.
+    if (!this.warmHandle) {
+      this.abortController = new AbortController();
+    }
     this.messageQueue = new MessageQueue();
     this.queryInstance = this.createQuery();
     this.isReady = true;
@@ -1093,6 +1227,21 @@ export class ClaudeCodeProcess extends EventEmitter {
     const effort = options?.effort;
     const speed = options?.speed;
     const model = options?.model;
+    const runtimeConnectionConfigChanged =
+      runtimeConnectionConfigSnapshot() !== this.runtimeConnectionSnapshot;
+
+    if (runtimeConnectionConfigChanged) {
+      // The prompt's connected-account and remote-MCP sections are generated
+      // from runtime env metadata, so refresh them alongside the query config.
+      this.systemPrompt = generateSystemPrompt(
+        this.availableEnvVars,
+        this.userSystemPrompt,
+        this.modelPromptHints,
+        this.webSearchProvider,
+        this.webFetchProvider,
+        this.capabilityPolicies
+      );
+    }
 
     // Treat undefined stored effort as 'high' so pre-existing sessions (created before
     // this feature) don't trigger a spurious restart on their first post-upgrade message.
@@ -1149,7 +1298,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         await this.currentStop.catch(() => undefined);
       }
       await this.restart();
-    } else if (effortChanged || speedChanged || capabilityBlockChanged) {
+    } else if (effortChanged || speedChanged || capabilityBlockChanged || runtimeConnectionConfigChanged) {
       // Effort can only be set at query creation time — the SDK has no setEffort
       // facility — so any effort change forces an interrupt + re-query. Speed
       // lives in the query env (ANTHROPIC_CUSTOM_HEADERS), which is likewise
@@ -1160,6 +1309,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       if (effortChanged) reasons.push(`effort ${currentEffort} -> ${effort}`);
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
+      if (runtimeConnectionConfigChanged) reasons.push('runtime connection configuration changed');
       if (modelChanged) reasons.push(`model -> ${this.model}`);
       console.log(`[Session ${this.sessionId}] Restarting query (${reasons.join(', ')})`);
       await this.interrupt();
@@ -1176,6 +1326,14 @@ export class ClaudeCodeProcess extends EventEmitter {
         console.warn(`[Session ${this.sessionId}] setModel failed, falling back to restart:`, err);
         await this.interrupt();
       }
+    }
+
+    // Deliberately outside the branch chain above: BOTH the cold-session
+    // restart() and the interrupt() re-query rebuild the query with the new
+    // connection set, so both race the handshake. Guarded by the flag rather
+    // than by the branch, so an effort- or speed-only re-query pays nothing.
+    if (runtimeConnectionConfigChanged) {
+      await this.waitForRemoteMcpsReady();
     }
 
     // Create SDK user message format
@@ -1308,6 +1466,14 @@ export class ClaudeCodeProcess extends EventEmitter {
   private async performStop(options?: { graceful?: boolean; graceMs?: number }): Promise<void> {
     console.log(`[Session ${this.sessionId}] Stopping session${options?.graceful ? ' (graceful)' : ''}`);
     this.stopping = true;
+
+    // An unclaimed warm subprocess has no prompt stream and no message loop —
+    // nothing below would ever reach it, so it would outlive the session as an
+    // orphan. close() is the SDK's discard path for exactly this.
+    if (this.warmHandle) {
+      this.warmHandle.close();
+      this.warmHandle = null;
+    }
 
     // Close the message queue to signal end of input
     if (this.messageQueue) {

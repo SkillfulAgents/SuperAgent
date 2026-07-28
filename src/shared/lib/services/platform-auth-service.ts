@@ -12,6 +12,7 @@ import { verifyOidcJwt } from '@shared/lib/auth/oidc-jwt'
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
 import { runWithRequestUser } from '@shared/lib/platform-attribution/request-context'
+import { clearCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
 
 export type PlatformAuthRecord = PlatformAuthSettings
 
@@ -22,7 +23,7 @@ export type PlatformAuthSource = 'settings' | 'env' | null
 const PLATFORM_ORG_ACCESS_TOKEN_AUDIENCE = 'platform-org-runtime'
 const PLATFORM_ORG_ACCESS_TOKEN_ALG = 'RS256'
 const PLATFORM_ORG_ACCESS_TOKEN_TYP = 'JWT'
-const PLATFORM_AUTH_PROVIDER_ID = 'platform'
+export const PLATFORM_AUTH_PROVIDER_ID = 'platform'
 
 export interface VerifiedPlatformOrgAccessToken {
   orgId: string
@@ -445,7 +446,14 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
 
   const existing = readRecord()
   const newOrgId = enriched.orgId?.trim() || null
+  const newUserId = enriched.userId?.trim() || null
+  const newMemberId = enriched.memberId?.trim() || null
   const orgChanged = existing?.orgId !== newOrgId
+  // The acting principal changed if the global user or the per-org membership
+  // differs — even within the same org. A same-user metadata refresh (email,
+  // role) leaves both untouched.
+  const identityChanged =
+    existing?.userId !== newUserId || existing?.memberId !== newMemberId
 
   const now = new Date().toISOString()
   const record: PlatformAuthRecord = PlatformAuthSettingsSchema.parse({
@@ -468,6 +476,14 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
     // previous org. Runs *after* writing the new record so the polymorphic
     // reconcile sees the current auth.
     await reconcileAfterAuthChange()
+  }
+
+  if (orgChanged || identityChanged) {
+    // The cloud-workspace deployment token is principal-scoped (a session for a
+    // specific user on the deployment). Drop it whenever the acting org OR the
+    // acting user/member changes, so a different principal never reuses it; the
+    // next refresh re-mints for the new principal.
+    clearCloudWorkspaceRecord()
   }
 
   notifyPlatformServiceAuthChanged(true)
@@ -540,6 +556,9 @@ export async function refreshStoredPlatformAccount(): Promise<boolean> {
 
 async function clearPlatformAuth(): Promise<void> {
   writeRecord(null)
+  // The cloud-workspace deployment token is bound to the platform account;
+  // clear it alongside the platform token on disconnect.
+  clearCloudWorkspaceRecord()
   await reconcileAfterAuthChange()
   notifyPlatformServiceAuthChanged(false)
 }

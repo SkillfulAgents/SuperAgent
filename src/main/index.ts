@@ -53,6 +53,7 @@ import {
 } from './quick-dispatch-window'
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
+import { parseAgentDeepLink } from './agent-deep-link'
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
@@ -63,6 +64,13 @@ import { safeOpenExternalFromApp } from './safe-open-external'
 if (!app.isPackaged) {
   app.name = 'Superagent-Dev'
 }
+
+// Publish the packaged/dev distinction to `shared/` code, which can't import
+// electron. Written unconditionally on every launch, so a shipped build always
+// clobbers an inherited or spoofed value. Readers must treat "unset" as
+// packaged — see `cloud-workspace-service`, which trusts a loopback deployment
+// target only in a dev build.
+process.env.SUPERAGENT_IS_PACKAGED = app.isPackaged ? '1' : '0'
 
 // Set Electron-specific data directory BEFORE importing API.
 //
@@ -566,7 +574,7 @@ ipcMain.handle('show-notification', (
     liveNotifications.delete(notification)
   })
   // Track by reviewId if this is a proxy-review notification, so the SSE
-  // 'proxy_review_resolved' handler can dismiss it later.
+  // 'user_request_resolved' handler can dismiss it later.
   const ctxForTrack = context as { kind?: string; reviewId?: string } | undefined
   const reviewId =
     ctxForTrack?.kind === 'proxy_review' && typeof ctxForTrack.reviewId === 'string'
@@ -1026,24 +1034,37 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     return
   }
 
-  // Agent deep link — navigate to the agent and select its latest session when available.
-  if (url.startsWith(`${PROTOCOL_SCHEME}://agent/`)) {
+  // Agent deep link — session-bearing links navigate straight to the session;
+  // slug-only links resolve the agent's latest session first. Both bring the
+  // window up the same way, so a link that arrives after the window was closed
+  // recreates it instead of being dropped.
+  const agentLink = parseAgentDeepLink(url, PROTOCOL_SCHEME)
+  if (agentLink) {
+    if (agentLink.sessionId) {
+      focusMainWindowOnSession(agentLink.agentSlug, agentLink.sessionId)
+      return
+    }
     try {
-      const slug = decodeURIComponent(url.replace(`${PROTOCOL_SCHEME}://agent/`, '').split('/')[0])
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show()
-        mainWindow.focus()
-        fetch(`http://localhost:${actualApiPort}/api/agents/${slug}/sessions`)
-          .then(res => res.ok ? res.json() : [])
-          .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
-            const active = sessions.find(s => s.isActive)
-            const latest = active ?? sessions[0]
-            mainWindow!.webContents.send('navigate-to-agent', slug, latest?.id ?? null)
-          })
-          .catch(() => {
-            mainWindow!.webContents.send('navigate-to-agent', slug, null)
-          })
-      }
+      const slug = agentLink.agentSlug
+      showOrCreateMainWindow()
+      fetch(`http://localhost:${actualApiPort}/api/agents/${encodeURIComponent(slug)}/sessions`)
+        .then(res => res.ok ? res.json() : [])
+        .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
+          if (!Array.isArray(sessions)) return null
+          const active = sessions.find(s => s.isActive)
+          return (active ?? sessions[0])?.id ?? null
+        })
+        .catch(() => null)
+        .then((sessionId: string | null) => {
+          sendToMainWindowWhenReady((win) =>
+            win.webContents.send('navigate-to-agent', slug, sessionId),
+          )
+        })
+        // Terminal catch: an unhandled rejection here is fatal (the process-level
+        // handler quits the app), and a failed deep link must never do that.
+        .catch((error) => {
+          console.error('Failed to navigate to agent from deep link:', error)
+        })
     } catch (error) {
       console.error('Failed to navigate to agent from deep link:', error)
     }
@@ -1244,9 +1265,15 @@ function startNotificationListener(): void {
       // doesn't sit in Notification Center inviting stale Approve/Deny
       // clicks (review S8). This mirrors the renderer-side query
       // invalidation and works for dismissal regardless of window state.
-      if (data.type === 'session_awaiting_input' && data.review?.type === 'proxy_review_resolved') {
-        const rid = data.review.reviewId
-        if (typeof rid === 'string') dismissReviewNotification(rid)
+      // Driven by the unified resolved event — every settle path (decision,
+      // timeout, sweep, policy sibling-resolve) emits it, so a dismissal
+      // cannot be missed by a settle path that forgot the legacy broadcast.
+      if (
+        data.type === 'user_request_resolved' &&
+        (data.kind === 'proxy_review' || data.kind === 'x_agent_review') &&
+        typeof data.requestId === 'string'
+      ) {
+        dismissReviewNotification(data.requestId)
       }
 
       if (data.type === 'os_notification') {

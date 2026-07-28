@@ -15,6 +15,10 @@ vi.mock('@renderer/hooks/use-agent-preferences', () => ({
   useUpdateAgentPreferences: () => ({ mutate: mutateMock, isPending: false }),
 }))
 
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => ({ isAuthMode: false, isAdmin: false }),
+}))
+
 import { HomeDefaultModel } from './home-default-model'
 
 const ALL = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -64,7 +68,7 @@ beforeEach(() => {
   usePreferencesMock.mockReturnValue({ data: {} })
 })
 
-describe('HomeDefaultModel speed override', () => {
+describe('HomeDefaultModel overrides', () => {
   it('stores an off-default speed pick as the agent default', async () => {
     const user = userEvent.setup()
     render(<HomeDefaultModel agentSlug="agent-one" />)
@@ -96,14 +100,40 @@ describe('HomeDefaultModel speed override', () => {
     await waitFor(() => expect(mutateMock).toHaveBeenCalledWith({ defaultSpeed: null }))
   })
 
-  it('shows the Custom reset affordance only for a real override', () => {
+  it('stores a model or effort pick as the override', async () => {
     usePreferencesMock.mockReturnValue({ data: {} })
+    const user = userEvent.setup()
+    render(<HomeDefaultModel agentSlug="agent-one" />)
+
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    await user.click(await screen.findByTestId('model-latest-chip-opus'))
+    expect(mutateMock).toHaveBeenCalledWith({ defaultModel: 'opus' })
+
+    await user.click(screen.getByTestId('effort-option-high'))
+    expect(mutateMock).toHaveBeenCalledWith({ defaultEffort: 'high' })
+  })
+
+  it("enables the picker's reset action only while an override exists", async () => {
+    usePreferencesMock.mockReturnValue({ data: {} })
+    const user = userEvent.setup()
     const { rerender } = render(<HomeDefaultModel agentSlug="agent-one" />)
-    expect(screen.queryByTestId('home-default-model-reset')).not.toBeInTheDocument()
-    expect(screen.getByText('Global')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    expect(screen.getByTestId('settings-model-app-default')).toBeDisabled()
 
     usePreferencesMock.mockReturnValue({ data: { defaultSpeed: 'fast' } })
     rerender(<HomeDefaultModel agentSlug="agent-one" />)
-    expect(screen.getByTestId('home-default-model-reset')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-model-app-default')).toBeEnabled()
+  })
+
+  it('resetting to the global default clears every override key', async () => {
+    usePreferencesMock.mockReturnValue({ data: { defaultModel: 'claude-opus-4-8' } })
+    const user = userEvent.setup()
+    render(<HomeDefaultModel agentSlug="agent-one" />)
+
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    await user.click(screen.getByTestId('settings-model-app-default'))
+
+    expect(mutateMock).toHaveBeenCalledWith({ defaultModel: null, defaultEffort: null, defaultSpeed: null })
   })
 })

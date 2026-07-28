@@ -211,7 +211,13 @@ describe('containerManager.ensureRunning — env var construction', () => {
       status: string
       providerConnectionId: string
       providerName: string
-    }>
+    }>,
+    mcps: Array<{
+      id: string
+      name: string
+      status: string
+      toolsJson: string | null
+    }> = [],
   ) {
     // First db.select().from() call: connected accounts
     mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
@@ -221,7 +227,7 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
     // Second db.select().from() call: remote MCPs
     mockMcpInnerJoin.mockReturnValue({ where: mockMcpWhere })
-    mockMcpWhere.mockResolvedValue([])
+    mockMcpWhere.mockResolvedValue(mcps.map((mcp) => ({ mcp })))
   }
 
   it('sets PROXY_BASE_URL with correct format', async () => {
@@ -313,6 +319,41 @@ describe('containerManager.ensureRunning — env var construction', () => {
     expect(metadata.gmail).toHaveLength(1)
     expect(metadata.gmail[0].name).toBe('active@gmail.com')
     expect(metadata.slack).toBeUndefined()
+  })
+
+  it('serializes connection projections in stable id order', async () => {
+    setupAccountMocks(
+      [
+        { id: 'slack-z', toolkitSlug: 'slack', displayName: 'Slack Z', status: 'active', providerConnectionId: 'c3', providerName: 'composio' },
+        { id: 'gmail-z', toolkitSlug: 'gmail', displayName: 'Gmail Z', status: 'active', providerConnectionId: 'c2', providerName: 'composio' },
+        { id: 'gmail-a', toolkitSlug: 'gmail', displayName: 'Gmail A', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
+      ],
+      [
+        {
+          id: 'mcp-z',
+          name: 'Zed',
+          status: 'active',
+          toolsJson: JSON.stringify([{ name: 'search' }, { invalid: true }]),
+        },
+        { id: 'mcp-disabled', name: 'Disabled', status: 'auth_required', toolsJson: null },
+        { id: 'mcp-a', name: 'Alpha', status: 'active', toolsJson: '[]' },
+      ],
+    )
+
+    await containerManager.ensureRunning('test-agent')
+
+    const envVars = mockStart.mock.calls[0][0].envVars
+    expect(JSON.parse(envVars.CONNECTED_ACCOUNTS)).toEqual({
+      gmail: [
+        { name: 'Gmail A', id: 'gmail-a' },
+        { name: 'Gmail Z', id: 'gmail-z' },
+      ],
+      slack: [{ name: 'Slack Z', id: 'slack-z' }],
+    })
+    const mcpConfigs = JSON.parse(envVars.REMOTE_MCPS)
+    expect(mcpConfigs.map((mcp: { id: string }) => mcp.id))
+      .toEqual(['mcp-a', 'mcp-z'])
+    expect(mcpConfigs[1].tools).toEqual([{ name: 'search' }])
   })
 
   it('sets TZ env var from resolveTimezoneForAgent', async () => {

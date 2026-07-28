@@ -104,6 +104,15 @@
       "fast": 2
     }
   },
+  "claude-opus-5": {
+    "input": 10,
+    "output": 50,
+    "cacheCreation": 12.5,
+    "cacheRead": 1,
+    "speedMultipliers": {
+      "fast": 2
+    }
+  },
   "claude-sonnet-4-20250514": {
     "input": 3,
     "output": 15,
@@ -258,6 +267,15 @@
       "output": 45,
       "cacheCreation": 10,
       "cacheRead": 1
+    }
+  },
+  "kimi-k3": {
+    "input": 3,
+    "output": 15,
+    "cacheCreation": 3,
+    "cacheRead": 0.3,
+    "speedMultipliers": {
+      "fast": 1.5
     }
   }
 }

@@ -163,7 +163,7 @@ const MARKDOWN_COMPONENTS: Components = {
   // table to one giant line, while many short columns still drive the breakout.
   th: ({ children }) => (
     <th className={cn(
-      'border-b-2 px-3 py-1.5 text-left font-semibold align-top',
+      'border-b-2 px-3 py-1.5 text-left font-medium align-top',
       'border-border'
     )}>
       <div className="max-w-[32rem]">{children}</div>
@@ -328,7 +328,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               {/* Slash command display */}
               {isSlashCommand && hasText && (
                 <div className="text-sm">
-                  <span className="font-mono font-semibold">
+                  <span className="font-mono font-medium">
                     {text.split(' ')[0]}
                   </span>
                   {text.includes(' ') && (

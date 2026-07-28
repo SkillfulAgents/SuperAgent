@@ -2,7 +2,7 @@
 import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
-import { usePendingProxyReviews } from '@renderer/hooks/use-proxy-reviews'
+import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
 import { apiFetch } from '@renderer/lib/api'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
@@ -22,13 +22,10 @@ interface AgentActivityIndicatorProps {
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
   const {
     isActive, error, apiErrorCode, activeStartTime, isCompacting, activeSubagents, completedSubagents,
-    pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests,
-    pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests,
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
     isThinking,
   } = useMessageStream(sessionId, agentSlug)
-  const { data: proxyReviewsData } = usePendingProxyReviews(agentSlug)
-  const pendingProxyReviewCount = proxyReviewsData?.reviews?.length ?? 0
+  const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
@@ -50,15 +47,13 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     }
   }, [agentSlug, sessionId])
 
-  const isAwaitingInput = isActive && (
-    pendingSecretRequests.length > 0 ||
-    pendingConnectedAccountRequests.length > 0 ||
-    pendingQuestionRequests.length > 0 ||
-    pendingFileRequests.length > 0 ||
-    pendingRemoteMcpRequests.length > 0 ||
-    pendingBrowserInputRequests.length > 0 ||
-    pendingProxyReviewCount > 0
-  )
+  // The unified store's blocking predicate is the SAME one the server derives
+  // the session's awaiting status from, so this indicator can no longer
+  // disagree with the sidebar/header. It also covers the kinds the old
+  // per-type list silently omitted: script_run, computer_use, and
+  // capability_review used to read as "Working…" while a card was parked.
+  const isAwaitingInput = isActive &&
+    (pendingUserRequests ?? []).some((r) => r.blocking && !r.autoApproved)
   const { data: messages } = useMessages(sessionId, agentSlug)
 
   // Use activeStartTime from SSE (set when session_active fires) as primary source.
@@ -305,7 +300,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
                   className={cn(
                     'flex items-center gap-2',
                     todo.status === 'completed' && 'text-muted-foreground line-through',
-                    todo.status === 'in_progress' && 'font-semibold'
+                    todo.status === 'in_progress' && 'font-medium'
                   )}
                 >
                   <span className="text-xs">

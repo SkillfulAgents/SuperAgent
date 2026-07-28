@@ -128,6 +128,22 @@ function allowsLocalhostMcpException(hostname: string): boolean {
   return Boolean((isElectron || process.env.E2E_MOCK) && isLocalhostHost(hostname))
 }
 
+export interface DiscoveryHostPolicy {
+  /**
+   * Override the default localhost exception. The default (undefined) allows
+   * loopback on Electron/E2E, which suits *user-configured* targets like a local
+   * MCP server. Callers following a **remotely supplied** URL should pass an
+   * explicit value — `false` in shipped builds — so a hostile response can't
+   * steer the request at the loopback interface.
+   */
+  allowLocalhost?: boolean
+}
+
+function localhostAllowed(hostname: string, policy?: DiscoveryHostPolicy): boolean {
+  if (policy?.allowLocalhost === undefined) return allowsLocalhostMcpException(hostname)
+  return policy.allowLocalhost && isLocalhostHost(hostname)
+}
+
 type ResolvedAddress = { address: string; family: 4 | 6 }
 
 /**
@@ -156,12 +172,15 @@ async function resolveHostnameAddresses(hostname: string): Promise<ResolvedAddre
  * Resolve + apply the remote-MCP SSRF policy. Shared by validateMcpDiscoveryUrl
  * and mcpSafeFetch so pin and reject cannot drift.
  */
-export async function resolveMcpDiscoveryTarget(url: string): Promise<{
+export async function resolveMcpDiscoveryTarget(
+  url: string,
+  policy?: DiscoveryHostPolicy,
+): Promise<{
   parsed: URL
   addresses: ResolvedAddress[]
 }> {
   const parsed = validateHttpUrl(url)
-  const localhostOk = allowsLocalhostMcpException(parsed.hostname)
+  const localhostOk = localhostAllowed(parsed.hostname, policy)
 
   if (isPrivateHost(parsed.hostname) && !localhostOk) {
     throw new Error(
@@ -191,13 +210,16 @@ export async function resolveMcpDiscoveryTarget(url: string): Promise<{
  * Runs validateHttpUrl + string isPrivateHost, then resolves DNS and rejects
  * if any resolved address is private/link-local — closing the DNS-rebind
  * axis that string-only checks miss. Localhost remains allowed only under
- * the Electron / E2E_MOCK exception.
+ * the Electron / E2E_MOCK exception, unless `policy.allowLocalhost` overrides it.
  *
  * Returns the parsed URL on success; throws on rejection so callers can fail
  * closed without ever issuing the fetch.
  */
-export async function validateMcpDiscoveryUrl(url: string): Promise<URL> {
-  const { parsed } = await resolveMcpDiscoveryTarget(url)
+export async function validateMcpDiscoveryUrl(
+  url: string,
+  policy?: DiscoveryHostPolicy,
+): Promise<URL> {
+  const { parsed } = await resolveMcpDiscoveryTarget(url, policy)
   return parsed
 }
 

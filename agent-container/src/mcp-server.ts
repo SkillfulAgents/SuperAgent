@@ -11,7 +11,7 @@ import { webFetchTool } from './tools/web/web-fetch'
 import { requestSecretTool } from './tools/request-secret'
 import { requestConnectedAccountTool } from './tools/request-connected-account'
 import { searchConnectedAccountServicesTool } from './tools/search-connected-account-services'
-import { requestRemoteMcpTool } from './tools/request-remote-mcp'
+import { createRequestRemoteMcpTool, type RemoteMcpInjectionTarget } from './tools/request-remote-mcp'
 import { searchRemoteMcpServicesTool } from './tools/search-remote-mcp-services'
 import {
   scheduleTaskTool,
@@ -61,7 +61,7 @@ import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
  * one transport connection per server at a time. Reusing singletons across
  * sessions causes "Already connected to a transport" errors.
  */
-export function createUserInputMcpServer() {
+export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTarget | null = () => null) {
   // Only expose script execution tool on supported host platforms (macOS/Windows)
   const hostPlatform = process.env.HOST_PLATFORM
   const includeScriptRun = hostPlatform === 'darwin' || hostPlatform === 'win32'
@@ -78,7 +78,7 @@ export function createUserInputMcpServer() {
     version: '1.0.0',
     tools: [
       requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool,
-      requestRemoteMcpTool, searchRemoteMcpServicesTool,
+      createRequestRemoteMcpTool(getProcess), searchRemoteMcpServicesTool,
       scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,

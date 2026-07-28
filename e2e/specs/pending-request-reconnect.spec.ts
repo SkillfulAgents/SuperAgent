@@ -5,10 +5,9 @@ import { SessionPage } from '../pages/session.page'
 
 /**
  * Regression coverage for the SSE late-join / reconnect recovery of pending input
- * requests. The agent's `*_request` events are one-shot SSE broadcasts; the server
- * (MessagePersister) stores them and the /stream route replays them on (re)connect,
- * and the renderer dedupes by toolUseId. See the "pending request missing on
- * reconnect" fix and SUP-213.
+ * requests. Request create/resolve broadcasts are one-shot; on (re)connect the
+ * client recovers by refetching the unified pending-requests snapshot (the
+ * `connected` handler invalidates it), and the renderer dedupes by toolUseId.
  *
  * These exercise the reconnect path directly (toggle the network so the EventSource
  * drops and re-establishes while the agent is still awaiting input), which the

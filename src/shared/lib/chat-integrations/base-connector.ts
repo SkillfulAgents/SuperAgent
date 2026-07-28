@@ -189,7 +189,7 @@ export abstract class ChatClientConnector {
    * (Slack Block Kit, Telegram inline keyboards, etc.).
    * Returns the external message ID.
    */
-  abstract sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string>
+  abstract sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string>
 
   /**
    * Resolve an open single-question AskUserQuestion card with a free-typed message as the

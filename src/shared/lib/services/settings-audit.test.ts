@@ -25,7 +25,7 @@ describe('buildSettingsAuditDetails', () => {
 
     const details = buildSettingsAuditDetails(baseSettings(), updated)
 
-    expect(details?.sections).toEqual(['LLM Provider', 'Runtime'])
+    expect(details?.sections).toEqual(['Container Runtime', 'Model Provider'])
     expect(details?.changes['llmProvider']).toEqual({ from: 'anthropic', to: 'openrouter' })
     expect(details?.changes['container.containerRunner']).toEqual({ from: 'lima', to: 'docker' })
   })
@@ -42,7 +42,7 @@ describe('buildSettingsAuditDetails', () => {
     expect(details?.changes['apiKeys.openrouterApiKey']).toBe('removed')
     expect(details?.changes['apiKeys.exaApiKey']).toBe('set')
     expect(JSON.stringify(details)).not.toContain('secret')
-    expect(details?.sections).toEqual(['LLM Provider', 'Web'])
+    expect(details?.sections).toEqual(['Model Provider', 'Web Search'])
   })
 
   it('redacts custom env var values but keeps their names', () => {
@@ -56,7 +56,7 @@ describe('buildSettingsAuditDetails', () => {
     expect(details?.changes['customEnvVars.MY_TOKEN']).toBe('updated')
     expect(details?.changes['customEnvVars.EXTRA_VAR']).toBe('set')
     expect(JSON.stringify(details)).not.toContain('hunter')
-    expect(details?.sections).toEqual(['Runtime'])
+    expect(details?.sections).toEqual(['Container Runtime'])
   })
 
   it('redacts the favicon blob and ignores its server-stamped timestamp', () => {
@@ -88,7 +88,7 @@ describe('buildSettingsAuditDetails', () => {
 
     expect(details?.changes['webAllowedSites']).toEqual({ from: '["a.com"]', to: '["a.com","b.com"]' })
     expect(details?.changes['auth.signupMode']).toEqual({ from: 'closed', to: 'open' })
-    expect(details?.sections).toEqual(['Auth', 'Notifications', 'Web'])
+    expect(details?.sections).toEqual(['Auth', 'Notifications', 'Web Search'])
   })
 
   it('caps oversized values instead of writing them whole', () => {

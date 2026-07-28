@@ -5,7 +5,11 @@
  */
 
 import { Agent } from 'undici'
-import { resolveMcpDiscoveryTarget, tryParseUrl } from '@shared/lib/utils/url-safety'
+import {
+  resolveMcpDiscoveryTarget,
+  tryParseUrl,
+  type DiscoveryHostPolicy,
+} from '@shared/lib/utils/url-safety'
 
 const MAX_REDIRECTS = 5
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308])
@@ -37,8 +41,12 @@ function stripSensitiveHeaders(init?: RequestInit): RequestInit | undefined {
   return { ...init, headers }
 }
 
-async function pinnedFetch(url: string, init?: RequestInit): Promise<Response> {
-  const { addresses } = await resolveMcpDiscoveryTarget(url)
+async function pinnedFetch(
+  url: string,
+  init?: RequestInit,
+  policy?: DiscoveryHostPolicy,
+): Promise<Response> {
+  const { addresses } = await resolveMcpDiscoveryTarget(url, policy)
   const pinned = addresses[0]
 
   const agent = new Agent({
@@ -65,10 +73,11 @@ async function pinnedFetch(url: string, init?: RequestInit): Promise<Response> {
 export async function mcpSafeFetch(
   url: string,
   init?: RequestInit,
+  policy?: DiscoveryHostPolicy,
 ): Promise<Response> {
   let currentUrl = url
   let currentInit = init
-  let response = await pinnedFetch(currentUrl, currentInit)
+  let response = await pinnedFetch(currentUrl, currentInit, policy)
   let redirects = 0
 
   while (REDIRECT_STATUS.has(response.status) && redirects < MAX_REDIRECTS) {
@@ -95,7 +104,7 @@ export async function mcpSafeFetch(
     }
 
     currentUrl = next.href
-    response = await pinnedFetch(currentUrl, currentInit)
+    response = await pinnedFetch(currentUrl, currentInit, policy)
     redirects++
   }
 

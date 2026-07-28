@@ -48,7 +48,7 @@ async function waitForRecord(
 // The E2E seed (setup-e2e-data.js) grants Opus 4.8 a speed choice via a
 // user-level catalog override; every other model keeps the builtin
 // direct-Anthropic shape with no supportedSpeeds.
-const OPUS_LATEST = 'claude-opus-4-8'
+const OPUS_LATEST = 'claude-opus-5'
 const HAIKU = 'claude-haiku-4-5'
 
 // Open the composer popover and pick a concrete version. Picks don't dismiss

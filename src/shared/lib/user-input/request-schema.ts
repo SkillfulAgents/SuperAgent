@@ -2,13 +2,10 @@ import { z } from 'zod'
 
 /**
  * Typed model for "the agent is blocked on a human" — one envelope for every
- * pending user-input request regardless of which store currently owns it.
- *
- * Phase 2 (shadow registry): this model mirrors the existing stores via
- * write-through and is compared against them; nothing reads it for behavior
- * yet. The envelope is strict (we construct it), the per-kind payloads are
- * deliberately lenient (`looseObject` + `.catch`) so a malformed tool input
- * can never make the shadow diverge from the store it mirrors.
+ * pending user-input request. The envelope is strict (we construct it), the
+ * per-kind payloads are deliberately lenient (`looseObject` + `.catch`) so a
+ * malformed tool input can never break the delivery path that carries it —
+ * the server keeps the wait alive even when the payload is unrenderable.
  */
 
 export const USER_INPUT_REQUEST_KINDS = [
@@ -53,6 +50,13 @@ const baseRequest = z.object({
   blocking: z.boolean(),
   /** Auto-approved asks (e.g. allowlisted script_run) are visible but never block. */
   autoApproved: z.boolean().default(false),
+  /**
+   * The Task tool_use that spawned the asking subagent, when the request came
+   * from a sidechain. Subagent termination invalidates every open request
+   * registered under its parent — without this linkage a dead subagent's card
+   * is orphaned until a coarser boundary clears it.
+   */
+  parentToolUseId: z.string().optional(),
 })
 
 const lenientString = z.string().optional().catch(undefined)
@@ -149,52 +153,26 @@ export type PendingUserInputRequest = z.infer<typeof pendingUserInputRequestSche
 export type PendingUserInputRequestInput = z.input<typeof pendingUserInputRequestSchema>
 
 /**
- * Which legacy store a kind lives on today. The shadow registry uses this to
- * mirror store-scoped operations exactly (e.g. the turn-boundary clear wipes
- * only the stream store; a stray tool_result must never evict a computer-use
- * entry the store still holds).
+ * The lifecycle class of a kind. The names come from the pre-registry stores,
+ * but what they express is per-class clearing rules: the turn-boundary clear
+ * wipes only 'stream' entries, 'computer_use' entries survive idle for replay
+ * and are superseded on the next active turn, and 'review' entries are
+ * agent-scoped and outlive any one session. A stray tool_result must never
+ * evict an entry of another class.
  */
 export type UserInputRequestStore = 'stream' | 'computer_use' | 'review'
+
+/**
+ * Whether a request may be sent to clients (wire events, snapshots). Entries
+ * synthesized by transcript recovery carry no renderable payload — sending one
+ * would draw a broken card; the transcript renders those instead.
+ */
+export function isReplayableUserInputRequest(request: PendingUserInputRequest): boolean {
+  return (request.payload as Record<string, unknown>).recovered !== true
+}
 
 export function storeForKind(kind: UserInputRequestKind): UserInputRequestStore {
   if (kind === 'computer_use') return 'computer_use'
   if (kind === 'proxy_review' || kind === 'x_agent_review') return 'review'
   return 'stream'
-}
-
-/** Broadcast event type → request kind, for the persister's SSE-intercept feeder. */
-const STREAM_EVENT_TYPE_TO_KIND: Record<string, UserInputRequestKind> = {
-  user_question_request: 'question',
-  secret_request: 'secret',
-  connected_account_request: 'connected_account',
-  file_request: 'file',
-  remote_mcp_request: 'remote_mcp',
-  browser_input_request: 'browser_input',
-  script_run_request: 'script_run',
-  capability_review_request: 'capability_review',
-}
-
-/**
- * Build a registry envelope from a pending-input broadcast event (the exact
- * object the persister stores in `pendingInputRequests`). Returns null for
- * event types that are not user-input requests.
- */
-export function streamEventToPendingRequest(
-  sessionId: string,
-  evt: { type: string; toolUseId: string; [k: string]: unknown },
-): PendingUserInputRequestInput | null {
-  const kind = STREAM_EVENT_TYPE_TO_KIND[evt.type]
-  if (!kind) return null
-  const { type: _type, toolUseId: _toolUseId, agentSlug, autoApproved, ...payload } = evt
-  return {
-    id: evt.toolUseId,
-    kind,
-    scope: {
-      agentSlug: typeof agentSlug === 'string' ? agentSlug : undefined,
-      sessionId,
-    },
-    blocking: true,
-    autoApproved: autoApproved === true,
-    payload,
-  } as PendingUserInputRequestInput
 }

@@ -6,20 +6,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { ReviewManager } from './review-manager'
 
 const SESSION_ID = 'proxy-review-awaiting-session'
 const AGENT_SLUG = 'proxy-review-awaiting-agent'
-
-type StreamState = {
-  isAwaitingInput: boolean
-  pendingInputRequests: Map<string, { type: string; toolUseId: string; autoApproved?: boolean }>
-}
-
-function streamState(): StreamState | undefined {
-  return (messagePersister as unknown as { streamingStates: Map<string, StreamState> })
-    .streamingStates.get(SESSION_ID)
-}
 
 function reviewDetails() {
   return {
@@ -68,7 +59,7 @@ describe('proxy review session awaiting', () => {
     expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('working')
   })
 
-  it('clears awaiting on timeout and broadcasts proxy_review_resolved', async () => {
+  it('clears awaiting on timeout and announces the settlement', async () => {
     const globalEvents: Array<Record<string, unknown>> = []
     const unsub = messagePersister.addGlobalNotificationClient((e) => {
       globalEvents.push(e as Record<string, unknown>)
@@ -82,9 +73,7 @@ describe('proxy review session awaiting', () => {
     expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
 
     const resolved = globalEvents.filter(
-      (e) =>
-        e.type === 'session_awaiting_input' &&
-        (e.review as { type?: string } | undefined)?.type === 'proxy_review_resolved',
+      (e) => e.type === 'user_request_resolved' && e.outcome === 'timeout',
     )
     expect(resolved.length).toBeGreaterThanOrEqual(1)
     unsub()
@@ -106,10 +95,15 @@ describe('proxy review session awaiting', () => {
     const promise = manager.requestReview(reviewDetails())
     expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
-    const state = streamState()
-    state?.pendingInputRequests.set('secret-1', {
-      type: 'request_secret',
-      toolUseId: 'secret-1',
+    // Park a secret request the way the persister's handlers do — awaiting
+    // derives from the registry entry.
+    userInputRequestManager.register({
+      id: 'secret-1',
+      kind: 'secret',
+      scope: { agentSlug: AGENT_SLUG, sessionId: SESSION_ID },
+      blocking: true,
+      autoApproved: false,
+      payload: { secretName: 'API_KEY' },
     })
 
     const id = manager.getPendingReviewsForAgent(AGENT_SLUG)[0].id
@@ -118,5 +112,7 @@ describe('proxy review session awaiting', () => {
 
     expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
     expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('awaiting')
+
+    userInputRequestManager.resolve('secret-1', 'cancelled')
   })
 })

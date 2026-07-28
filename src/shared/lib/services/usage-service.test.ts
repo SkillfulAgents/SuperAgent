@@ -1120,6 +1120,14 @@ describe('usage-service', () => {
       expect(await costOf('grok-4.5', { speed: 'fast' }, 'platform')).toBeCloseTo(grokBase * 2, 9)
     })
 
+    it('bills kimi-k3 on the Fireworks fast router at 1.5x', async () => {
+      const kimiBase = (100_000 * 3 + 1_000 * 15) / 1_000_000
+      expect(await costOf('kimi-k3', {}, 'platform')).toBeCloseTo(kimiBase, 9)
+      expect(await costOf('kimi-k3', { speed: 'fast' }, 'platform')).toBeCloseTo(kimiBase * 1.5, 9)
+      // No slow tier on Fireworks — an unmapped tier bills standard.
+      expect(await costOf('kimi-k3', { speed: 'slow' }, 'platform')).toBeCloseTo(kimiBase, 9)
+    })
+
     it('prefers the local computation over tier-blind costUSD when a multiplier applies', async () => {
       expect(await costOf('gpt-5.4', { speed: 'fast', costUSD: 9.99 }, 'platform')).toBeCloseTo(
         GPT54_BASE * 2,

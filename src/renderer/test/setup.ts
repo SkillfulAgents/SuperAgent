@@ -89,12 +89,18 @@ vi.mock('@renderer/components/ui/app-link', () => ({
 
 // DialogContext drives global settings via the router. Renderer unit
 // tests have no RouterProvider, so stub it — DialogProvider passes children
-// through and useDialogs returns no-ops. A file-level mock overrides where a test
-// needs to assert on these (e.g. app-sidebar.test).
-vi.mock('@renderer/context/dialog-context', () => ({
-  DialogProvider: ({ children }: { children: React.ReactNode }) => children,
-  useDialogs: () => ({ openSettings: vi.fn(), closeSettings: vi.fn(), openWizard: vi.fn() }),
-}))
+// through, useDialogs returns no-ops, and DialogContext is a real (null-
+// default) context so consumers reading it via useContext keep working and
+// tests can wrap a Provider around them. A file-level mock overrides where a
+// test needs to assert on these (e.g. app-sidebar.test).
+vi.mock('@renderer/context/dialog-context', async () => {
+  const { createContext } = await import('react')
+  return {
+    DialogContext: createContext(null),
+    DialogProvider: ({ children }: { children: React.ReactNode }) => children,
+    useDialogs: () => ({ openSettings: vi.fn(), closeSettings: vi.fn(), openWizard: vi.fn() }),
+  }
+})
 
 // Components read navigation state via `useRouteLocation()`. It calls
 // `useRouterState()`, which throws outside a RouterProvider — renderer unit

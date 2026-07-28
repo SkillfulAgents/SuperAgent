@@ -19,6 +19,11 @@ import {
   AgentContainerStopError,
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
+import {
+  syncAgentConnectionEnvironment,
+  updateConnectedAccountsEnvironment,
+  updateRemoteMcpEnvironment,
+} from '@shared/lib/container/connection-runtime-sync'
 import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
@@ -28,6 +33,11 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import type {
+  UserInputRequestKind,
+  UserInputRequestScope,
+} from '@shared/lib/user-input/request-schema'
 import {
   listSessions,
   listSessionsByIds,
@@ -39,6 +49,7 @@ import {
   getSession,
   getSessionMetadata,
   sessionExists,
+  isSessionRegistered,
   updateSessionMetadata,
   deleteSession,
   removeMessage,
@@ -466,20 +477,26 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   )
 }
 
-function hasUnresolvedBlockingInputRequest(items: TransformedItem[]): boolean {
+// Unresolved blocking user-input tool calls in the current (trailing) turn —
+// the recovery input for messagePersister.recoverSessionAwaitingInput when the
+// one-shot request stream event was missed.
+function getUnresolvedBlockingInputRequests(
+  items: TransformedItem[],
+): Array<{ toolUseId: string; toolName: string }> {
+  const unresolved: Array<{ toolUseId: string; toolName: string }> = []
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
-    if (item.type === 'user' && !item.queued) return false
+    if (item.type === 'user' && !item.queued) break
     if (item.type !== 'assistant') continue
 
     for (const toolCall of item.toolCalls) {
       if (toolCall.result === undefined && isBlockingUserInputToolName(toolCall.name)) {
-        return true
+        unresolved.push({ toolUseId: toolCall.id, toolName: toolCall.name })
       }
     }
   }
 
-  return false
+  return unresolved
 }
 
 /**
@@ -1507,7 +1524,6 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.trunc(limitRaw), 100) : 25
       const unreadIds = await getSessionIdsWithUnreadNotifications(slug)
       const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
-      const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(slug).length > 0
       const infos = await listSessionsByIds(slug, [...new Set([...activeIds, ...unreadIds])], {
         excludeAutomated: true,
       })
@@ -1516,8 +1532,9 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         return {
           ...session,
           isActive,
-          isAwaitingInput:
-            messagePersister.isSessionAwaitingInput(session.id) || (isActive && hasAgentLevelReviews),
+          // The awaiting projection already counts agent-scoped reviews
+          // against every active session of the agent — no review special-case.
+          isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
           hasUnreadNotifications: unreadIds.has(session.id),
         }
       })
@@ -1533,7 +1550,6 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
 
     const sessionList = await listSessions(slug, { excludeAutomated: true })
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
-    const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(slug).length > 0
     const pendingWakes = await listPendingWakesByAgent(slug)
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const sessionsWithStatus = sessionList.map((session) => {
@@ -1542,7 +1558,9 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       return {
         ...session,
         isActive,
-        isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id) || (isActive && hasAgentLevelReviews),
+        // The awaiting projection already counts agent-scoped reviews against
+        // every active session of the agent — no review special-case.
+        isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
         hasUnreadNotifications: unreadSessionIds.has(session.id),
         ...(wake
           ? {
@@ -1609,6 +1627,15 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       maxBrowserTabs: getSettings().app?.maxBrowserTabs,
       effort: runtimeOptions.effort ?? agentPrefs.defaultEffort,
       speed: runtimeOptions.speed ?? agentPrefs.defaultSpeed,
+      // Same preference chain MINUS the per-session pick: this is what the
+      // composer will send next time (it only puts model/effort/speed on the
+      // wire when the user explicitly chooses one), so it is what the
+      // container should pre-warm for.
+      prewarmDefaults: {
+        model: agentPrefs.defaultModel ?? getEffectiveModels().agentModel,
+        effort: agentPrefs.defaultEffort,
+        speed: agentPrefs.defaultSpeed,
+      },
     })
     const sessionId = containerSession.id
 
@@ -1705,14 +1732,35 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
 
-    if (
-      messagePersister.isSessionActive(sessionId) &&
-      hasUnresolvedBlockingInputRequest(transformed)
-    ) {
-      // If the request-specific stream event was missed, persisted messages are
-      // the fallback source of truth. A stale transcript can briefly re-assert
-      // awaiting input, but the next stream result/idle event clears it.
-      messagePersister.recoverSessionAwaitingInput(sessionId, agentSlug)
+    // Parallel tool calls hold every sibling's transcript result until the
+    // LAST one resolves, so a request the user already decided still looks
+    // unresolved here. Stamp the settled outcome onto the transcript so every
+    // history consumer — the client's refresh fallback, the transcript card,
+    // and the recovery scan below — sees a completed call instead of
+    // resurrecting a decided one.
+    const settledRequests = messagePersister.getSettledInputRequests(sessionId)
+    if (settledRequests.size > 0) {
+      for (const item of transformed) {
+        if (item.type !== 'assistant') continue
+        for (const toolCall of item.toolCalls) {
+          if (toolCall.result !== undefined) continue
+          const outcome = settledRequests.get(toolCall.id)
+          if (outcome !== undefined) {
+            toolCall.result =
+              outcome === 'answered' ? 'User provided input' : 'User declined the request'
+          }
+        }
+      }
+    }
+
+    if (messagePersister.isSessionActive(sessionId)) {
+      const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
+      if (unresolvedRequests.length > 0) {
+        // If the request-specific stream event was missed, persisted messages are
+        // the fallback source of truth. A stale transcript can briefly re-assert
+        // awaiting input, but the next stream result/idle event clears it.
+        messagePersister.recoverSessionAwaitingInput(sessionId, agentSlug, unresolvedRequests)
+      }
     }
 
     // In auth mode, annotate user messages with sender info
@@ -2124,7 +2172,14 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
 
 // GET /api/agents/:id/sessions/:sessionId/stream - SSE stream for real-time message updates
 agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
+  const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
+  if (
+    !(await sessionExists(agentSlug, sessionId)) &&
+    !(await isSessionRegistered(agentSlug, sessionId))
+  ) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
 
   return streamSSE(c, async (stream) => {
     let pingInterval: ReturnType<typeof setInterval> | null = null
@@ -2144,7 +2199,6 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       })
 
       // Send initial connection message (include slash commands for late-joining clients)
-      const agentSlug = getAgentId(c)
       const isActive = messagePersister.isSessionActive(sessionId)
       let slashCommands = messagePersister.getSlashCommands(sessionId)
       // Fall back to persisted metadata (e.g. after container restart)
@@ -2165,29 +2219,6 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         }),
         event: 'message',
       })
-
-      // Replay any pending computer use requests (survives SSE reconnection)
-      const pendingCU = messagePersister.getPendingComputerUseRequests(sessionId)
-      for (const req of pendingCU) {
-        await stream.writeSSE({
-          data: JSON.stringify({ type: 'computer_use_request', ...req }),
-          event: 'message',
-        })
-      }
-
-      // Replay any pending user-input requests (secret/connected_account/question/file/
-      // remote_mcp/script_run/browser_input). These are one-shot broadcasts, so a client
-      // that opened the stream after they fired — a freshly-created session, a reconnect,
-      // or a page refresh while the agent is awaiting input — would otherwise never see
-      // them and would hang until the safety-net messages poll. The stored payloads are
-      // re-sent verbatim; the renderer dedupes by toolUseId.
-      const pendingInputs = messagePersister.getPendingInputRequests(sessionId)
-      for (const req of pendingInputs) {
-        await stream.writeSSE({
-          data: JSON.stringify(req),
-          event: 'message',
-        })
-      }
 
       // Replay current computer use grab state (with icon if cached)
       const agentSlugForStream = getAgentId(c)
@@ -2275,6 +2306,91 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   }
 })
 
+/**
+ * Whether a request — open or recently settled — belongs to the route the
+ * decision arrived on. A caller-supplied toolUseId is an unauthenticated
+ * pointer into a global, cross-agent registry, so every dimension of the
+ * request's identity has to be re-checked against the URL before the route
+ * acts on it (or reports on it): its kind, its agent, and its session.
+ *
+ * agentSlug is matched unconditionally and exactly — including for `_auto`,
+ * which is an internal auto-execute caller that names the real agent in its
+ * URL. A request whose scope carries no agent is unattributable and matches
+ * nothing; every registration path (stream handlers, computer-use, recovery)
+ * supplies one.
+ */
+function requestMatchesRoute(
+  request: { kind: UserInputRequestKind; scope: UserInputRequestScope },
+  kind: UserInputRequestKind,
+  agentSlug: string,
+  sessionId: string,
+): boolean {
+  if (request.kind !== kind) return false
+  if (!request.scope.agentSlug || request.scope.agentSlug !== agentSlug) return false
+  // Auto-execute paths post to /sessions/_auto/… while the request stays
+  // scoped to the real session that streamed it — the ONLY dimension `_auto`
+  // waives.
+  if (sessionId === '_auto') return true
+  return request.scope.sessionId === sessionId
+}
+
+/**
+ * The already-settled gate for request-decision routes. A decision proceeds
+ * only while the registry holds the request OPEN, with the kind this route
+ * handles, for the agent and session the route addresses. Anything else gets a
+ * stable, side-effect-free answer — this is what makes decisions idempotent.
+ * Without it a duplicate POST (second tab, double-click, card revived from a
+ * stale snapshot) re-runs host side effects: run-script re-executes the
+ * script, computer-use re-drives the machine, a browser-input decline
+ * re-interrupts the session.
+ *
+ * Returns a Response to send instead of proceeding, or null to proceed.
+ */
+function gateRequestDecision(
+  c: Context,
+  toolUseId: string,
+  kind: UserInputRequestKind,
+): Response | null {
+  const agentSlug = getAgentId(c)
+  // Every gated route is mounted under /sessions/:sessionId, so the param is
+  // always present; '' is an unmatchable placeholder, not a wildcard.
+  const sessionId = c.req.param('sessionId') ?? ''
+  const open = userInputRequestManager.getOpenRequest(toolUseId)
+  if (open) {
+    if (!open.scope.agentSlug) {
+      // Fail closed, loudly: an unattributable request cannot be proven to
+      // belong to this agent, and a silent 404 on a card the user just clicked
+      // would be near-undiagnosable.
+      console.error(
+        `[agents] Refusing decision for request ${toolUseId} (kind=${kind}): scope carries no agentSlug`,
+      )
+    }
+    if (!requestMatchesRoute(open, kind, agentSlug, sessionId)) {
+      // A caller-supplied id must not settle someone else's parked wait — the
+      // same guard submitDecision has for review kinds.
+      return c.json({ error: 'Request not found' }, 404)
+    }
+    return null
+  }
+  // Settled, or never existed. A settled record is still route-bound: report
+  // its outcome only to the route that could have decided it, so settling a
+  // request can never widen who may read it. A record that fails the match is
+  // as good as absent — same 404 an open mismatch gets.
+  const settled = userInputRequestManager.getRecentResolution(toolUseId)
+  if (settled && !requestMatchesRoute(settled, kind, agentSlug, sessionId)) {
+    return c.json({ error: 'Request not found' }, 404)
+  }
+  // 200 (not an error): the caller's intent is satisfied or moot, and a stale
+  // card should dismiss itself exactly like a successful decision. Unknown and
+  // rotated-off-the-trail ids are indistinguishable and share this shape,
+  // outcome-less.
+  return c.json({
+    success: true,
+    alreadySettled: true,
+    ...(settled ? { outcome: settled.outcome } : {}),
+  })
+}
+
 // POST /api/agents/:id/sessions/:sessionId/provide-secret - Provide or decline a secret request
 agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) => {
   try {
@@ -2285,6 +2401,9 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'secret')
+    if (gated) return gated
 
     if (!secretName) {
       return c.json({ error: 'secretName is required' }, 400)
@@ -2311,6 +2430,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
         return c.json({ error: 'Failed to reject secret request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'secret', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2375,6 +2495,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
       return c.json({ error: 'Secret saved but failed to notify agent' }, 500)
     }
     console.log(`[provide-secret] Request ${toolUseId} resolved successfully`)
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true, saved: true })
   } catch (error) {
@@ -2393,6 +2514,9 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'connected_account')
+    if (gated) return gated
 
     if (!toolkit) {
       return c.json({ error: 'toolkit is required' }, 400)
@@ -2419,6 +2543,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
         return c.json({ error: 'Failed to reject request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'connected_account', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2467,40 +2592,11 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
       }
     }
 
-    // Build updated account metadata for the container (no tokens, just names + IDs)
-    const allMappings = await db
-      .select({ account: connectedAccounts })
-      .from(agentConnectedAccounts)
-      .innerJoin(
-        connectedAccounts,
-        eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id)
-      )
-      .where(eq(agentConnectedAccounts.agentSlug, agentSlug))
-
-    const metadata: Record<string, Array<{ name: string; id: string }>> = {}
-    for (const { account } of allMappings) {
-      if (account.status !== 'active') continue
-      if (!metadata[account.toolkitSlug]) {
-        metadata[account.toolkitSlug] = []
-      }
-      metadata[account.toolkitSlug].push({
-        name: account.displayName,
-        id: account.id,
-      })
-    }
-
     // Update CONNECTED_ACCOUNTS metadata in container (no raw tokens)
     console.log(
       `[provide-connected-account] Updating CONNECTED_ACCOUNTS metadata in container`
     )
-    const envResponse = await client.fetch('/env', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        key: 'CONNECTED_ACCOUNTS',
-        value: JSON.stringify(metadata),
-      }),
-    })
+    const envResponse = await updateConnectedAccountsEnvironment(agentSlug, client)
 
     if (!envResponse.ok) {
       let errorDetails = 'Unknown error'
@@ -2554,6 +2650,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     console.log(
       `[provide-connected-account] Request ${toolUseId} resolved successfully`
     )
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({
       success: true,
@@ -2580,6 +2677,9 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'question')
+    if (gated) return gated
+
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2601,6 +2701,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
         return c.json({ error: 'Failed to reject question request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'question', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2632,6 +2733,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
       return c.json({ error: 'Failed to submit answers' }, 500)
     }
     console.log(`[answer-question] Request ${toolUseId} resolved successfully`)
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true })
   } catch (error) {
@@ -2658,6 +2760,9 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
     if (capability !== 'subagents' && capability !== 'workflows') {
       return c.json({ error: 'capability must be subagents or workflows' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'capability_review')
+    if (gated) return gated
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2731,6 +2836,9 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'browser_input')
+    if (gated) return gated
+
     const client = containerManager.getClient(agentSlug)
 
     if (decline) {
@@ -2757,8 +2865,10 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
         return c.json({ error: 'Failed to reject browser input request' }, 500)
       }
 
-      // Interrupt the session so the user can chat directly with the agent
       const sessionId = c.req.param('sessionId')
+      messagePersister.completeInputRequest(sessionId, toolUseId, 'declined')
+
+      // Interrupt the session so the user can chat directly with the agent
       try {
         await client.interruptSession(sessionId)
       } catch (e) {
@@ -2792,6 +2902,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       return c.json({ error: 'Failed to complete browser input request' }, 500)
     }
 
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to complete browser input:', error)
@@ -2809,6 +2920,9 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'script_run')
+    if (gated) return gated
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2836,6 +2950,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject script run request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'script_run', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2922,6 +3037,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to resolve script run request' }, 500)
     }
 
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
     trackServerEvent('script_executed', { scriptType, exitCode })
     return c.json({ success: true })
   } catch (error) {
@@ -2941,6 +3057,9 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'computer_use')
+    if (gated) return gated
 
     // Validate session belongs to this agent (skip for _auto internal calls from auto-execute)
     if (sessionId !== '_auto') {
@@ -3435,7 +3554,8 @@ agents.post('/:id/connected-accounts', AgentUser(), async (c) => {
       ))
 
     for (const accountId of insertedAccountIds) { logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'assigned', details: { agentSlug: slug } }) }
-    return c.json({ accounts })
+    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
+    return c.json({ accounts, liveRefresh })
   } catch (error) {
     console.error('Failed to map connected accounts to agent:', error)
     return c.json({ error: 'Failed to map connected accounts to agent' }, 500)
@@ -3471,7 +3591,8 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
       .where(eq(agentConnectedAccounts.id, found.id))
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'unassigned', details: { agentSlug: slug } })
-    return c.body(null, 204)
+    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
+    return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove account mapping:', error)
     return c.json({ error: 'Failed to remove account mapping' }, 500)
@@ -3552,7 +3673,8 @@ agents.post('/:id/remote-mcps', AgentUser(), async (c) => {
     await db.insert(agentRemoteMcps).values(values).onConflictDoNothing()
 
     for (const mcpId of newMcpIds) { logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'assigned', details: { agentSlug: slug } }) }
-    return c.json({ success: true, added: newMcpIds.length })
+    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
+    return c.json({ success: true, added: newMcpIds.length, liveRefresh })
   } catch (error) {
     console.error('Failed to assign remote MCPs to agent:', error)
     return c.json({ error: 'Failed to assign remote MCPs to agent' }, 500)
@@ -3586,7 +3708,8 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'unassigned', details: { agentSlug: slug } })
-    return c.body(null, 204)
+    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
+    return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove remote MCP from agent:', error)
     return c.json({ error: 'Failed to remove remote MCP from agent' }, 500)
@@ -3614,6 +3737,9 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
     if (!body.decline && requestedMcpIds.length === 0) {
       return c.json({ error: 'remoteMcpId or remoteMcpIds is required when not declining' }, 400)
     }
+
+    const gated = gateRequestDecision(c, body.toolUseId, 'remote_mcp')
+    if (gated) return gated
 
     // In auth mode, only allow providing remote MCPs the caller owns before
     // mapping them to the agent. Otherwise a user could approve another user's
@@ -3648,6 +3774,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
         console.error('Failed to reject remote MCP request:', await rejectResponse.text())
         return c.json({ error: 'Failed to decline the request in container' }, 502)
       }
+      messagePersister.completeInputRequest(c.req.param('sessionId'), body.toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'remote_mcp', withReason: !!body.declineReason })
       return c.json({ success: true, status: 'declined' })
     }
@@ -3702,36 +3829,8 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       await db.insert(agentRemoteMcps).values(newMappings)
     }
 
-    // Same talk-back base as container start — not getContainerHostUrl().
-    const hostApiBaseUrl = await client.getHostApiBaseUrl()
-    const mcpMappings = await db
-      .select({ mcp: remoteMcpServers })
-      .from(agentRemoteMcps)
-      .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
-      .where(eq(agentRemoteMcps.agentSlug, slug))
-
-    const mcpConfigs = mcpMappings
-      .filter(({ mcp }) => mcp.status === 'active')
-      .map(({ mcp }) => {
-        // Only pass tool names (not full schemas) to keep env var size small
-        let toolNames: Array<{ name: string }> = []
-        if (mcp.toolsJson) {
-          try { toolNames = JSON.parse(mcp.toolsJson).map((t: any) => ({ name: t.name })) } catch { /* ignore */ }
-        }
-        return {
-          id: mcp.id,
-          name: mcp.name,
-          proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${slug}/${mcp.id}`,
-          tools: toolNames,
-        }
-      })
-
     // Update container env var
-    const envResponse = await client.fetch('/env', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: 'REMOTE_MCPS', value: JSON.stringify(mcpConfigs) }),
-    })
+    const envResponse = await updateRemoteMcpEnvironment(slug, client)
     if (!envResponse.ok) {
       console.error('Failed to update REMOTE_MCPS env var:', await envResponse.text())
       return c.json({ error: 'Failed to update container environment' }, 502)
@@ -3748,6 +3847,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       return c.json({ error: 'Failed to resolve the request in container' }, 502)
     }
 
+    messagePersister.completeInputRequest(c.req.param('sessionId'), body.toolUseId, 'answered')
     return c.json({ success: true, status: 'provided' })
   } catch (error) {
     console.error('Failed to provide remote MCP:', error)
@@ -4911,6 +5011,9 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'file')
+    if (gated) return gated
+
 
     const client = containerManager.getClient(agentSlug)
 
@@ -4932,6 +5035,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject file request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'file', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -4963,6 +5067,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to notify agent of uploaded file' }, 500)
     }
     console.log(`[provide-file] Request ${toolUseId} resolved successfully`)
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true, filePath })
   } catch (error) {
@@ -5387,15 +5492,26 @@ cleanupStaleUploads()
 setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 
 // =============================================================================
-// Proxy review endpoints
+// Pending user-input requests (unified wire)
 // =============================================================================
 
-// GET /api/agents/:id/proxy-reviews - List pending reviews for this agent
-agents.get('/:id/proxy-reviews', AgentRead(), async (c) => {
-  const slug = getAgentId(c)
-  const reviews = reviewManager.getPendingReviewsForAgent(slug)
-  return c.json({ reviews })
+// GET /api/agents/:id/pending-requests?sessionId= — snapshot of the open
+// user-input requests visible to the agent, optionally narrowed to a session's
+// view (its own requests plus the agent-scoped reviews that block every
+// session of the agent). This is the recovery source for the unified client
+// store: mount, reconnect, and invalidation refetch from here; live updates
+// arrive as user_request_created / user_request_resolved on the session and
+// global SSE streams; clients treat those as invalidation triggers and read
+// the resulting state from here.
+agents.get('/:id/pending-requests', AgentRead(), (c) => {
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.query('sessionId') || undefined
+  return c.json({ requests: userInputRequestManager.getSnapshotForScope(agentSlug, sessionId) })
 })
+
+// =============================================================================
+// Proxy review endpoints
+// =============================================================================
 
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {

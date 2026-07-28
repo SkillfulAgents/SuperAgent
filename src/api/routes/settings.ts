@@ -74,6 +74,7 @@ import {
   messageAuthor,
   xAgentPolicies,
   apiScopePolicies,
+  tokenExchangeJti,
 } from '@shared/lib/db/schema'
 import fs from 'fs'
 
@@ -191,6 +192,8 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   userSettings,
   // global app audit log
   auditLog,
+  // transient single-use jti replay guard for the token-exchange endpoint
+  tokenExchangeJti,
 ]
 
 // Custom model icons are used in regular model pickers, so any authenticated
@@ -586,6 +589,9 @@ settings.put('/', async (c) => {
       customEnvVars: body.customEnvVars !== undefined ? body.customEnvVars : currentSettings.customEnvVars,
       skillsets: currentSettings.skillsets,
       platformAuth: currentSettings.platformAuth,
+      // Preserve the maintained cloud-workspace deployment token across global
+      // settings writes; it's owned by the platform-auth flow, not this route.
+      cloudWorkspace: currentSettings.cloudWorkspace,
       auth: body.auth !== undefined ? { ...currentSettings.auth, ...body.auth } : currentSettings.auth,
       voice: body.voice !== undefined ? { ...currentSettings.voice, ...body.voice } : currentSettings.voice,
       shareAnalytics: body.shareAnalytics !== undefined ? body.shareAnalytics : currentSettings.shareAnalytics,

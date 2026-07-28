@@ -1,0 +1,1 @@
+ALTER TABLE `session` ADD `creation_method` text;

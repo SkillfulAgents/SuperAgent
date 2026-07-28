@@ -72,18 +72,23 @@ test.describe('Model picker for non-admin users', () => {
     await card.locator('[data-testid="settings-model-trigger"]').click()
 
     // Same catalog, offerLatest surface: family rows carry model-latest-* ids.
-    const opusRow = user2Page.locator('[data-testid="model-latest-opus"]')
-    await expect(opusRow).toBeVisible()
+    // Haiku, NOT opus: 'opus' is the seeded global default the trigger already
+    // shows, so picking it would prove nothing about the label updating.
+    const haikuRow = user2Page.locator('[data-testid="model-latest-haiku"]')
+    await expect(haikuRow).toBeVisible()
 
     // Picking a model must persist as the agent default: the trigger label
-    // updates and the "reset to global" affordance appears (custom default set).
-    await opusRow.click()
+    // updates and the picker's reset-to-global action arms (custom default
+    // set). The footer renders for members, minus the admin-gated "Change"
+    // link.
+    await haikuRow.click()
+    await expect(user2Page.locator('[data-testid="settings-model-app-default"]')).toBeEnabled()
+    await expect(user2Page.locator('[data-testid="settings-model-app-default-change"]')).not.toBeVisible()
     await user2Page.keyboard.press('Escape')
-    await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText(/opus/i)
-    await expect(card.locator('[data-testid="home-default-model-reset"]')).toBeVisible()
+    await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText(/haiku/i)
 
     // Durable proof it hit the server, not just local state.
     await user2Page.reload()
-    await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText(/opus/i, { timeout: 15000 })
+    await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText(/haiku/i, { timeout: 15000 })
   })
 })

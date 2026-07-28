@@ -11,12 +11,16 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
 vi.mock('@shared/lib/services/platform-billing-service', () => ({
   fetchPlatformBillingInfo: () => mockFetchBilling(),
 }))
+vi.mock('@shared/lib/services/cloud-workspace-service', () => ({
+  refreshCloudWorkspace: () => mockRefreshCloudWorkspace(),
+}))
 
 let mockIsAuthMode = false
 let mockConnected = true
 let mockStatusThrows = false
 const mockRefreshAccount = vi.fn(async () => false)
 const mockFetchBilling = vi.fn()
+const mockRefreshCloudWorkspace = vi.fn(async () => undefined)
 
 import { platformService } from './platform-service'
 
@@ -34,11 +38,43 @@ describe('PlatformService', () => {
     mockStatusThrows = false
     mockRefreshAccount.mockClear()
     mockFetchBilling.mockReset()
+    mockRefreshCloudWorkspace.mockClear()
     platformService.clearCache()
   })
 
   afterEach(() => {
     platformService.stop()
+  })
+
+  it('maintains the cloud-workspace token on a recurring interval (not just once)', () => {
+    vi.useFakeTimers()
+    try {
+      platformService.start()
+      vi.advanceTimersByTime(30 * 60_000)
+      const afterFirst = mockRefreshCloudWorkspace.mock.calls.length
+      expect(afterFirst).toBeGreaterThanOrEqual(1)
+      // A second interval must fire again — proves it's periodic, not one-shot.
+      vi.advanceTimersByTime(30 * 60_000)
+      expect(mockRefreshCloudWorkspace.mock.calls.length).toBeGreaterThan(afterFirst)
+    } finally {
+      platformService.stop()
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops the cloud-workspace interval on stop()', () => {
+    vi.useFakeTimers()
+    try {
+      platformService.start()
+      vi.advanceTimersByTime(30 * 60_000)
+      platformService.stop()
+      const afterStop = mockRefreshCloudWorkspace.mock.calls.length
+      vi.advanceTimersByTime(60 * 60_000)
+      expect(mockRefreshCloudWorkspace.mock.calls.length).toBe(afterStop)
+    } finally {
+      platformService.stop()
+      vi.useRealTimers()
+    }
   })
 
   it('caches the billing snapshot in non-auth mode', async () => {

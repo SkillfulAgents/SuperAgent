@@ -321,7 +321,7 @@ describe('TelegramConnector — AskUserQuestion multi-select', () => {
 
   function multiSelectEvent(): any {
     return {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId: 'tu-multi',
       questions: [{
         question: 'Pick your stack',
@@ -341,7 +341,7 @@ describe('TelegramConnector — AskUserQuestion multi-select', () => {
 
   it('single-select question renders tap-to-resolve buttons with no Done (unchanged)', async () => {
     await (connector as any).sendUserRequestCard('123', {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId: 'tu-single',
       questions: [{ question: 'Which one?', options: [{ label: 'A' }, { label: 'B' }] }],
     })
@@ -418,7 +418,7 @@ describe('TelegramConnector — typed message answers an open question (Other)',
 
   function singleQuestionEvent(toolUseId = 'tu-q'): any {
     return {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId,
       questions: [{ question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'MySQL' }] }],
     }
@@ -437,7 +437,7 @@ describe('TelegramConnector — typed message answers an open question (Other)',
     // No options -> no keyboard, but openQuestionCard is still set (cbIds:[]) so a typed message
     // is the only way to answer. This is the core "honest Other" path.
     await (connector as any).sendUserRequestCard('123', {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId: 'tu-open',
       questions: [{ question: 'What should I name the file?' }],
     })
@@ -462,7 +462,7 @@ describe('TelegramConnector — typed message answers an open question (Other)',
 
   it('multi-question sub-card tap rebuilds its confirmation from the stored sub-card question text', async () => {
     await (connector as any).sendUserRequestCard('123', {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId: 'tu-mq2',
       questions: [
         { question: 'Q1 pick', options: [{ label: 'A' }, { label: 'B' }] },
@@ -482,7 +482,7 @@ describe('TelegramConnector — typed message answers an open question (Other)',
     // Card A: single-question (lives in openQuestionCard). Card B: multi-question (pendingQuestions).
     await (connector as any).sendUserRequestCard('123', singleQuestionEvent('tu-a')) // sent[0], msg 1001
     await (connector as any).sendUserRequestCard('123', {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId: 'tu-b',
       questions: [
         { question: 'B1', options: [{ label: 'X' }] }, // sent[1], msg 1002
@@ -511,7 +511,7 @@ describe('TelegramConnector — typed message answers an open question (Other)',
 
   it('returns false for a multi-question card (v1 falls through to cancel)', async () => {
     await (connector as any).sendUserRequestCard('123', {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId: 'tu-mq',
       questions: [
         { question: 'Q1', options: [{ label: 'A' }] },
@@ -554,7 +554,7 @@ describe('TelegramConnector — typed message answers an open question (Other)',
 
   it('a stale sibling tap on the last sub-question of a multi-question card does not double-emit', async () => {
     await (connector as any).sendUserRequestCard('123', {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId: 'tu-mq',
       questions: [
         { question: 'Q1', options: [{ label: 'A' }, { label: 'B' }] },
@@ -583,14 +583,14 @@ describe('TelegramConnector — dismissOpenCards (cancel strips abandoned cards)
 
   function singleQuestionEvent(toolUseId = 'tu-q'): any {
     return {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId,
       questions: [{ question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'MySQL' }] }],
     }
   }
   function multiSelectEvent(): any {
     return {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId: 'tu-multi',
       questions: [{ question: 'Pick your stack', multiSelect: true, options: [{ label: 'Redis' }, { label: 'S3' }] }],
     }
@@ -620,7 +620,7 @@ describe('TelegramConnector — dismissOpenCards (cancel strips abandoned cards)
 
   it('strips every sub-card of a multi-question card and invalidates their callbacks', async () => {
     await (connector as any).sendUserRequestCard('123', {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId: 'tu-mq',
       questions: [
         { question: 'Q1', options: [{ label: 'A' }, { label: 'B' }] },
@@ -673,5 +673,23 @@ describe('TelegramConnector — secret/file requests route to the desktop-only f
     const md = sent[0].rich_message.markdown as string
     expect(md).toContain("isn't supported in chat")
     expect(md).not.toMatch(/please (upload|send) the file/i)
+  })
+})
+
+describe('TelegramConnector - unsupported-request session link', () => {
+  it('renders the session-scoped link when a sessionId is passed', async () => {
+    const connector = new TelegramConnector({ botToken: 'fake:TOKEN' }, { isDesktop: true, url: 'superagent://agent/demo' })
+    const fake = attachFakeBot(connector)
+    await connector.sendUserRequestCard('123', { type: 'secret_request', toolUseId: 'tu-1', secretName: 'K' }, 'sess-1')
+    expect(JSON.stringify(fake.sent)).toContain('superagent://agent/demo/sessions/sess-1')
+  })
+
+  it('falls back to the agent-home link without a sessionId', async () => {
+    const connector = new TelegramConnector({ botToken: 'fake:TOKEN' }, { isDesktop: true, url: 'superagent://agent/demo' })
+    const fake = attachFakeBot(connector)
+    await connector.sendUserRequestCard('123', { type: 'secret_request', toolUseId: 'tu-1', secretName: 'K' })
+    const sent = JSON.stringify(fake.sent)
+    expect(sent).toContain('superagent://agent/demo')
+    expect(sent).not.toContain('/sessions/')
   })
 })
