@@ -86,7 +86,7 @@ interface SubagentStreamingState {
   currentText: string
   currentToolUse: { id: string; name: string } | null
   currentToolInput: string
-  isBackground: boolean // True for run_in_background agents — completion comes via sidechain 'result', not tool_result
+  isBackground: boolean // True for background launches and SendMessage-resumed runs
 }
 
 /**
@@ -121,7 +121,7 @@ interface StreamingState {
   lastResultCleanSuccess: boolean
   lastContextWindow: number // Last known context window size (default 200k)
   lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
-  completedSubagentIds: Set<string> // agentIds of subagents that have completed (to avoid re-discovery)
+  completedSubagentIds: Set<string> // completed agentIds; a new task_started with the same ID is a resumed run
   // Per-subagent streaming state, keyed by parent tool_use ID (supports concurrent background agents)
   activeSubagents: Map<string, SubagentStreamingState>
   slashCommands: SlashCommandInfo[] // Available slash commands from SDK
@@ -1463,6 +1463,11 @@ class MessagePersister {
                   const toolUseResult = content.tool_use_result as Record<string, unknown> | undefined
                   if (toolUseResult?.agentId && typeof toolUseResult.agentId === 'string') {
                     sub.agentId = toolUseResult.agentId
+                  } else if (
+                    toolUseResult?.resumedAgentId &&
+                    typeof toolUseResult.resumedAgentId === 'string'
+                  ) {
+                    sub.agentId = toolUseResult.resumedAgentId
                   } else {
                     // Parse agentId from the tool result text (SDK includes "agentId: <hex>")
                     const parts = Array.isArray(block.content) ? block.content : []
@@ -1478,22 +1483,18 @@ class MessagePersister {
                   }
                 }
 
-                // A background (run_in_background) Agent returns an immediate
-                // "async_launched" ack as its tool_result; its REAL completion
-                // arrives later as task_updated/task_notification (handled in the
-                // system switch), never a second tool_result or a sidechain
-                // 'result'. Detect the ack authoritatively from tool_use_result
-                // here and mark the subagent background — the streamed
-                // run_in_background input is unreliable (interleaved content
-                // blocks + the complete assistant message can clear currentToolUse
-                // before it's parsed, leaving isBackground=false). Marking it here
-                // both prevents the ack from completing the subagent and lets the
-                // later task event complete it.
+                // Background Agent launches and SendMessage resumes both return
+                // immediate acknowledgments; their REAL completion arrives later
+                // as task_updated/task_notification, never as a second tool_result.
+                // Detect those acknowledgments authoritatively from metadata. The
+                // isBackground fallback covers the streamed run_in_background flag
+                // and a resumed task_started recognized by its reused agentId.
                 const tur = content.tool_use_result as
-                  | { status?: string; isAsync?: boolean; agentId?: string }
+                  | { status?: string; isAsync?: boolean; agentId?: string; resumedAgentId?: string }
                   | undefined
                 const isAsyncLaunchAck = tur?.status === 'async_launched' || tur?.isAsync === true
-                if (isAsyncLaunchAck) {
+                const isResumeAck = typeof tur?.resumedAgentId === 'string'
+                if (isAsyncLaunchAck || isResumeAck || sub.isBackground) {
                   sub.isBackground = true
                   // A background subagent outlives its launch turn, and since SDK
                   // 0.3.197 the runtime settles the turn (result + idle) while the
@@ -1504,29 +1505,14 @@ class MessagePersister {
                   // waiting-background state; its terminal task_updated /
                   // task_notification (task_id === agentId) clears it through the
                   // existing paths.
-                  const bgAgentId = tur?.agentId ?? sub.agentId
-                  if (bgAgentId && !state.activeBackgroundTasks.has(bgAgentId)) {
-                    const startedAt = Date.now()
-                    state.activeBackgroundTasks.set(bgAgentId, {
-                      startedAt,
-                      isSubagent: true,
-                      toolUseId: block.tool_use_id,
-                    })
-                    // isSubagent lets the renderer skip these in the generic
-                    // "N background processes" row — the named subagent row
-                    // already represents this work in the activity tray.
-                    this.broadcastToSSE(sessionId, {
-                      type: 'background_task_started',
-                      taskId: bgAgentId,
-                      startedAt,
-                      isSubagent: true,
-                    })
-                    this.broadcastGlobal({
-                      type: 'background_task_started',
+                  const bgAgentId = tur?.resumedAgentId ?? tur?.agentId ?? sub.agentId
+                  if (bgAgentId) {
+                    this.registerBackgroundSubagent(
                       sessionId,
-                      agentSlug: state.agentSlug,
-                      taskId: bgAgentId,
-                    })
+                      state,
+                      bgAgentId,
+                      block.tool_use_id,
+                    )
                   }
                 } else {
                   // Foreground subagent: the tool_result IS the completion.
@@ -1640,6 +1626,10 @@ class MessagePersister {
           // guarantees task_id === subagent session ID === JSONL filename).
           const toolUseId = content.tool_use_id as string | undefined
           const agentId = content.task_id as string | undefined
+          const isResumedSubagent =
+            content.task_type === 'local_agent' &&
+            !!agentId &&
+            state.completedSubagentIds.has(agentId)
           // A subagent's own inner Bash can surface in the parent stream as an
           // unparented task_started{task_type:'local_bash'} — it is not a
           // subagent, and creating an entry for it renders a phantom subagent
@@ -1648,14 +1638,18 @@ class MessagePersister {
             const existing = state.activeSubagents.get(toolUseId)
             if (existing) {
               if (agentId) existing.agentId = agentId
+              if (isResumedSubagent) existing.isBackground = true
             } else {
               state.activeSubagents.set(toolUseId, {
                 agentId: agentId ?? null,
                 currentText: '',
                 currentToolUse: null,
                 currentToolInput: '',
-                isBackground: false,
+                isBackground: isResumedSubagent,
               })
+            }
+            if (isResumedSubagent && agentId) {
+              this.registerBackgroundSubagent(sessionId, state, agentId, toolUseId)
             }
             this.broadcastToSSE(sessionId, {
               type: 'subagent_started',
@@ -2326,6 +2320,37 @@ class MessagePersister {
         agentId: sub.agentId,
       })
     }
+  }
+
+  private registerBackgroundSubagent(
+    sessionId: string,
+    state: StreamingState,
+    agentId: string,
+    toolUseId: string,
+  ): void {
+    if (state.activeBackgroundTasks.has(agentId)) return
+
+    const startedAt = Date.now()
+    state.activeBackgroundTasks.set(agentId, {
+      startedAt,
+      isSubagent: true,
+      toolUseId,
+    })
+    // isSubagent lets the renderer skip these in the generic
+    // "N background processes" row — the named subagent row
+    // already represents this work in the activity tray.
+    this.broadcastToSSE(sessionId, {
+      type: 'background_task_started',
+      taskId: agentId,
+      startedAt,
+      isSubagent: true,
+    })
+    this.broadcastGlobal({
+      type: 'background_task_started',
+      sessionId,
+      agentSlug: state.agentSlug,
+      taskId: agentId,
+    })
   }
 
   // Clear a finished background task (backgrounded Bash OR a dynamic workflow),

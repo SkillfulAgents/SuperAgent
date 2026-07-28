@@ -19,6 +19,34 @@ interface AgentActivityIndicatorProps {
   agentSlug: string
 }
 
+function extractResumedAgentId(result: unknown): string | null {
+  if (typeof result === 'string') {
+    try {
+      return extractResumedAgentId(JSON.parse(result))
+    } catch {
+      return null
+    }
+  }
+
+  if (Array.isArray(result)) {
+    for (const block of result) {
+      const agentId = extractResumedAgentId(block)
+      if (agentId) return agentId
+    }
+    return null
+  }
+
+  if (!result || typeof result !== 'object') return null
+
+  const resumedAgentId = (result as { resumedAgentId?: unknown }).resumedAgentId
+  if (typeof resumedAgentId === 'string' && resumedAgentId.length > 0) {
+    return resumedAgentId
+  }
+
+  const text = (result as { text?: unknown }).text
+  return typeof text === 'string' ? extractResumedAgentId(text) : null
+}
+
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
   const {
     isActive, error, apiErrorCode, activeStartTime, isCompacting, activeSubagents, completedSubagents,
@@ -73,36 +101,109 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   const elapsed = useElapsedTimer(isActive ? timerStartTime : null)
 
-  // Collect subagent display info by matching activeSubagents (SSE-tracked) with tool calls in messages
+  // Build one display row per stable agentId. A SendMessage resume gets a new
+  // tool_use id but keeps the agentId, so keying rows by the launch tool alone
+  // leaves the original row completed while the resumed run works invisibly.
   const subagentItems = useMemo(() => {
     if (!messages || activeSubagents.length === 0) return []
-    const activeMap = new Map(activeSubagents.map(s => [s.parentToolId, s]))
-    const items: { id: string; name: string; description: string; status: 'running' | 'completed'; progressSummary: string | null }[] = []
+
+    type LaunchMetadata = {
+      agentId: string | null
+      name: string
+      description: string
+      completedFromResult: boolean
+    }
+    const launchByToolId = new Map<string, LaunchMetadata>()
+    const launchByAgentId = new Map<string, LaunchMetadata>()
+    const resumeAgentByToolId = new Map<string, string | null>()
+
     for (const msg of messages) {
       if (msg.type !== 'user' && msg.type !== 'assistant') continue
       for (const tc of msg.toolCalls || []) {
-        if ((tc.name === 'Agent' || tc.name === 'Task') && activeMap.has(tc.id)) {
+        if (tc.name === 'Agent' || tc.name === 'Task') {
           if (tc.isError) continue
           const input = tc.input as { subagent_type?: string; description?: string }
-          // A background agent returns an immediate "async_launched" tool result
-          // — that's the launch ack, NOT completion. It only finishes when the
-          // sidechain result fires the subagent_completed SSE (completedSubagents).
-          // Foreground agents complete when their tool result lands. (Mirrors
-          // subagent-block.tsx so the activity block and the thread block agree.)
           const isAsyncLaunched = tc.subagent?.status === 'async_launched'
-          const isCompleted = (completedSubagents?.has(tc.id) ?? false) || (!isAsyncLaunched && tc.result != null)
-          const sub = activeMap.get(tc.id)
-          items.push({
-            id: tc.id,
+          const metadata = {
+            agentId: tc.subagent?.agentId ?? null,
             name: input.subagent_type || tc.name,
             description: input.description || '',
-            status: isCompleted ? 'completed' : 'running',
-            progressSummary: sub?.progressSummary ?? null,
-          })
+            completedFromResult: !isAsyncLaunched && tc.result != null,
+          }
+          launchByToolId.set(tc.id, metadata)
+          if (tc.subagent?.agentId) {
+            launchByAgentId.set(tc.subagent.agentId, metadata)
+          }
+        } else if (tc.name === 'SendMessage') {
+          const input = tc.input as { to?: string; recipient?: string }
+          resumeAgentByToolId.set(
+            tc.id,
+            extractResumedAgentId(tc.result) ?? input.to ?? input.recipient ?? null,
+          )
         }
       }
     }
-    return items
+
+    const groups = new Map<string, typeof activeSubagents>()
+    for (const sub of activeSubagents) {
+      const directLaunch = sub.parentToolId
+        ? launchByToolId.get(sub.parentToolId)
+        : undefined
+      const originalLaunch = sub.agentId
+        ? launchByAgentId.get(sub.agentId)
+        : undefined
+      const resumedAgentId = sub.parentToolId
+        ? resumeAgentByToolId.get(sub.parentToolId)
+        : undefined
+      const isSendMessageRun = resumedAgentId !== undefined
+      // local_workflow also emits subagent lifecycle events, but it has its own
+      // activity UI. Only Agent/Task launches and their SendMessage resumes
+      // belong in this list.
+      if (!directLaunch && !originalLaunch && !isSendMessageRun) continue
+
+      const stableAgentId = sub.agentId ?? directLaunch?.agentId ?? resumedAgentId
+      const key = stableAgentId
+        ? `agent:${stableAgentId}`
+        : `tool:${sub.parentToolId ?? groups.size}`
+      const group = groups.get(key) ?? []
+      group.push(sub)
+      groups.set(key, group)
+    }
+
+    const isCompleted = (sub: (typeof activeSubagents)[number]) => {
+      const parentToolId = sub.parentToolId
+      if (parentToolId && completedSubagents?.has(parentToolId)) return true
+      return !!parentToolId && (launchByToolId.get(parentToolId)?.completedFromResult ?? false)
+    }
+
+    return [...groups.entries()].map(([key, group]) => {
+      let selected = group[group.length - 1]
+      for (let i = group.length - 1; i >= 0; i--) {
+        if (!isCompleted(group[i])) {
+          selected = group[i]
+          break
+        }
+      }
+
+      const directLaunch = selected.parentToolId
+        ? launchByToolId.get(selected.parentToolId)
+        : undefined
+      const selectedAgentId = selected.agentId
+        ?? directLaunch?.agentId
+        ?? (selected.parentToolId ? resumeAgentByToolId.get(selected.parentToolId) : undefined)
+      const originalLaunch = selectedAgentId
+        ? launchByAgentId.get(selectedAgentId)
+        : undefined
+      const metadata = directLaunch ?? originalLaunch
+
+      return {
+        id: selectedAgentId ?? selected.parentToolId ?? key,
+        name: selected.subagentType || metadata?.name || 'Agent',
+        description: selected.description || metadata?.description || '',
+        status: isCompleted(selected) ? 'completed' as const : 'running' as const,
+        progressSummary: selected.progressSummary ?? null,
+      }
+    })
   }, [messages, activeSubagents, completedSubagents])
 
   // Derive the todo/task list from TaskCreate/TaskUpdate (newer SDK) or fall back

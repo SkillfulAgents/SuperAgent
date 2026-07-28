@@ -855,6 +855,93 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(1)
     })
 
+    it('keeps a SendMessage-resumed subagent running until its task completes', () => {
+      // Real Claude Code 2.1.219 order:
+      // Agent completes → SendMessage → background_tasks_changed → task_started
+      // (same agentId, new SendMessage tool_use_id) → SendMessage ack → terminal task events.
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'agent-tool', name: 'Agent' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'agent-resumed',
+        tool_use_id: 'agent-tool',
+        subagent_type: 'general-purpose',
+        task_type: 'local_agent',
+        description: 'Lifecycle probe',
+      })
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { status: 'completed', agentId: 'agent-resumed' },
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'agent-tool', content: 'FIRST_DONE' }],
+        },
+      })
+
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'agent-resumed', task_type: 'local_agent', description: 'Lifecycle probe' }],
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'agent-resumed',
+        tool_use_id: 'send-tool',
+        subagent_type: 'general-purpose',
+        task_type: 'local_agent',
+        description: 'Lifecycle probe',
+      })
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: {
+          success: true,
+          resumedAgentId: 'agent-resumed',
+          message: 'Agent resumed from transcript in the background.',
+        },
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'send-tool',
+            content: '{"success":true,"resumedAgentId":"agent-resumed"}',
+          }],
+        },
+      })
+
+      expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(0)
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toEqual([
+        expect.objectContaining({ taskId: 'agent-resumed', isSubagent: true }),
+      ])
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'agent-resumed',
+        patch: { status: 'completed' },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'agent-resumed',
+        tool_use_id: 'send-tool',
+        status: 'completed',
+        summary: 'SECOND_DONE',
+      })
+
+      const completed = sseEvents.filter(e => e.type === 'subagent_completed')
+      expect(completed).toHaveLength(1)
+      expect(completed[0]).toEqual(expect.objectContaining({
+        parentToolId: 'send-tool',
+        agentId: 'agent-resumed',
+      }))
+    })
+
     // A dynamic workflow (task_type 'local_workflow') must get the same treatment as a
     // backgrounded Bash command: registered as a background task, surfaced via
     // session_waiting_background, and NOT phantom-cleared/finalized when the SDK fires a
