@@ -93,14 +93,21 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
 
 // Use the real messagePersister — it handles the complex stream→SSE transformation
 
-// Mock telegram connector to return our MockChatClientConnector
-vi.mock('./telegram-connector', () => ({
-  TelegramConnector: class {
-    constructor() {
-      return mockConnector
-    }
-  },
-}))
+// Mock telegram connector to return our MockChatClientConnector. Keep the REAL
+// classifyChatId static: the manager resolves the connector CLASS through this
+// module for classification, so stripping it would silently disable attribution.
+vi.mock('./telegram-connector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./telegram-connector')>()
+  return {
+    ...actual,
+    TelegramConnector: class {
+      static classifyChatId = actual.TelegramConnector.classifyChatId
+      constructor() {
+        return mockConnector
+      }
+    },
+  }
+})
 
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
@@ -254,10 +261,11 @@ describe('Chat integration E2E', () => {
       const integrationId = createTestIntegration()
       await chatIntegrationManager.addIntegration(integrationId)
 
-      // Group chat: both chatName and userName set → prefix is added.
+      // Group/supergroup: Telegram encodes that in a negative chat id. Prefix
+      // is added from the provider rule, not from chatName presence.
       // "Heyy" is a single word, so unescaped "[Alice]: Heyy" would be parsed
       // as a markdown link reference definition and render as empty text.
-      mockConnector.simulateIncomingMessage('Heyy', 'group-1', 'user-1', {
+      mockConnector.simulateIncomingMessage('Heyy', '-1001234567890', 'user-1', {
         userName: 'Alice',
         chatName: '#general',
       })

@@ -12,7 +12,12 @@ import { Bot, type Context as GrammyContext } from 'grammy'
 import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
-import { ChatClientConnector, type OutgoingMessage } from './base-connector'
+import {
+  ChatClientConnector,
+  type ChatClassifyContext,
+  type ChatConversationType,
+  type OutgoingMessage,
+} from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat, withSessionUrl, type AppLinkContext } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
@@ -105,10 +110,29 @@ export function markdownToTelegramHtml(md: string): string {
     .trim()
 }
 
+// ── Chat id classification ──────────────────────────────────────────────
+
+/**
+ * Telegram encodes the conversation type in the id sign: private chats are the
+ * user's own (positive) id, groups and supergroups are negative. Non-numeric ids
+ * are not Telegram ids; classify nothing rather than guessing.
+ */
+export function classifyTelegramChatId(chatId: string): ChatConversationType | undefined {
+  const n = Number(chatId)
+  if (!Number.isFinite(n)) return undefined
+  return n > 0 ? 'dm' : 'group'
+}
+
+export function classifyTelegramChat(chat: ChatClassifyContext): ChatConversationType | undefined {
+  return classifyTelegramChatId(chat.chatId)
+}
+
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class TelegramConnector extends ChatClientConnector {
   readonly provider = 'telegram' as const
+
+  static classifyChatId = classifyTelegramChat
 
   private bot: Bot | null = null
   private connected = false
@@ -894,7 +918,7 @@ export class TelegramConnector extends ChatClientConnector {
 
   /** Telegram private-chat ids are positive; groups/channels are negative. */
   private isPrivateChat(chatId: string): boolean {
-    return Number(chatId) > 0
+    return classifyTelegramChatId(chatId) === 'dm'
   }
 
   private get useRich(): boolean {

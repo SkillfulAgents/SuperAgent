@@ -10,7 +10,7 @@
  * Follows the TaskScheduler / TriggerManager singleton pattern.
  */
 
-import type { ChatClientConnector, ChatConnectorClass, IncomingMessage } from './base-connector'
+import { isMultiPartyChatType, type ChatClientConnector, type ChatConnectorClass, type IncomingMessage } from './base-connector'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
@@ -1300,8 +1300,19 @@ class ChatIntegrationManager {
     integration: ChatIntegration,
     message: IncomingMessage,
   ): Promise<{ text: string; failedFiles: string[] }> {
-    // In group/channel contexts, prefix with sender name so the agent can attribute messages.
-    const prefix = message.chatName && message.userName ? `\\[${message.userName}]: ` : ''
+    // Attribute only where classify says more than one person can post.
+    // Each provider owns classifyChatId; multi-party is the shared projection.
+    // Guarded: the class arrives via dynamic import, which can throw, and today
+    // this decision cannot fail - so a lookup failure must never turn into a
+    // dropped message.
+    let connectorClass: ChatConnectorClass | undefined
+    try {
+      connectorClass = await this.getConnectorClass(integration.provider)
+    } catch { /* fall through to the no-prefix default */ }
+    const prefix = message.userName
+      && isMultiPartyChatType(connectorClass?.classifyChatId?.(message))
+      ? `\\[${message.userName}]: `
+      : ''
     const text = prefix + (message.text || '')
 
     if (!message.files || message.files.length === 0) {

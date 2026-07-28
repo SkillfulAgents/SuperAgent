@@ -9,7 +9,12 @@
 import WebSocket from 'ws'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
-import { ChatClientConnector, type OutgoingMessage } from './base-connector'
+import {
+  ChatClientConnector,
+  type ChatClassifyContext,
+  type ChatConversationType,
+  type OutgoingMessage,
+} from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat, withSessionUrl, type AppLinkContext } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -69,12 +74,23 @@ const IMESSAGE_SYSTEM_PROMPT = `This is an iMessage-based conversation. Follow t
 - You can react to the user's last message by starting your response with a reaction tag. Available reactions: [[reaction:heart]], [[reaction:thumbs_up]], [[reaction:thumbs_down]], [[reaction:haha]], [[reaction:emphasize]], [[reaction:question]]. The tag will be stripped from the message and sent as a tapback reaction. If your entire response is just a reaction tag, only the reaction is sent (no text message).
 - The user may send voice notes which are automatically transcribed.`
 
+/**
+ * Classify an iMessage chat. The bridge sets chatName only for group chats;
+ * that is an assumption about an external service, unchanged from today.
+ * Without a name we return undefined (not dm) so listing callers that only
+ * have a chat id do not mislabel groups as private.
+ */
+export function classifyIMessageChat(chat: ChatClassifyContext): ChatConversationType | undefined {
+  return chat.chatName ? 'group' : undefined
+}
+
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class IMessageConnector extends ChatClientConnector {
   readonly provider = 'imessage' as const
 
   static generateSystemPrompt = () => IMESSAGE_SYSTEM_PROMPT
+  static classifyChatId = classifyIMessageChat
 
   private ws: WebSocket | null = null
   private _connected = false

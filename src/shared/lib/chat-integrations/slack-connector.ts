@@ -16,6 +16,7 @@ import {
   type ChatDirectoryChannel,
   type ChatDirectoryPage,
   type ChatDirectoryUser,
+  type ChatClassifyContext,
   type OutgoingMessage,
   type SystemPromptContext,
 } from './base-connector'
@@ -173,6 +174,10 @@ export function classifySlackChatId(chatId: string): ChatConversationType | unde
   return undefined
 }
 
+export function classifySlackChat(chat: ChatClassifyContext): ChatConversationType | undefined {
+  return classifySlackChatId(chat.chatId)
+}
+
 // ── Message routing (exported for testing) ──────────────────────────────
 
 export interface SlackMessageRoutingParams {
@@ -314,7 +319,7 @@ export class SlackConnector extends ChatClientConnector {
 
   static generateSystemPrompt = buildSlackSystemPrompt
   static discoveryCapabilities = ['list_users', 'list_channels', 'dm_by_user_id'] as const
-  static classifyChatId = classifySlackChatId
+  static classifyChatId = classifySlackChat
 
   private app: SlackApp | null = null
   private receiver: SocketModeReceiver | null = null

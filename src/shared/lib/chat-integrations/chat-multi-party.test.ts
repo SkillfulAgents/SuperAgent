@@ -1,12 +1,6 @@
 /**
- * Chat integration model/effort resolution tests.
- *
- * Preference order when a chat message spawns a new agent session:
- * integration override > agent default (agent preferences) > global default.
- * Reuses the e2e harness wiring (MockChatClientConnector →
- * ChatIntegrationManager → MockContainerClient); createSession options are
- * captured via an instance spy because the mock client normalizes the model
- * before recording it in its static call log.
+ * Multi-party attribution: each provider classifies the chat; a shared
+ * projection decides whether to prefix the sender name.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -18,6 +12,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '../db/schema'
 import { MockChatClientConnector } from './mock-connector'
+import { isMultiPartyChatType, type ChatConnectorClass } from './base-connector'
 
 // ── Test state ─────────────────────────────────────────────────────────
 
@@ -72,15 +67,40 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   getSecretEnvVars: vi.fn().mockResolvedValue([]),
 }))
 
-// The manager loads this via a dynamic import at session-spawn time; vi.mock
-// intercepts that path too.
-const mockReadAgentPreferences = vi.fn()
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({
-  readAgentPreferences: (...args: unknown[]) => mockReadAgentPreferences(...args),
+  readAgentPreferences: vi.fn().mockResolvedValue({}),
 }))
 
-// Mock telegram connector to return our MockChatClientConnector. Keep the REAL
-// classifyChatId static so classification lookups still exercise production.
+// Preserve real classifyChatId statics: the manager resolves the connector
+// CLASS through these modules for attribution.
+vi.mock('./slack-connector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./slack-connector')>()
+  return {
+    ...actual,
+    SlackConnector: class {
+      static generateSystemPrompt = actual.SlackConnector.generateSystemPrompt
+      static classifyChatId = actual.SlackConnector.classifyChatId
+      constructor() {
+        return mockConnector
+      }
+    },
+  }
+})
+
+vi.mock('./imessage-connector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./imessage-connector')>()
+  return {
+    ...actual,
+    IMessageConnector: class {
+      static generateSystemPrompt = actual.IMessageConnector.generateSystemPrompt
+      static classifyChatId = actual.IMessageConnector.classifyChatId
+      constructor() {
+        return mockConnector
+      }
+    },
+  }
+})
+
 vi.mock('./telegram-connector', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./telegram-connector')>()
   return {
@@ -97,9 +117,13 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { chatIntegrationManager } from './chat-integration-manager'
+import { classifySlackChat } from './slack-connector'
+import { classifyTelegramChat } from './telegram-connector'
+import { classifyIMessageChat } from './imessage-connector'
 import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
+import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -119,13 +143,34 @@ function waitForCondition(
   })
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+function multiPartyFrom(classify: ChatConnectorClass['classifyChatId'], chat: { chatId: string; chatName?: string }): boolean {
+  return isMultiPartyChatType(classify?.(chat))
+}
 
-describe('chat integration model and effort resolution', () => {
-  let createSessionSpy: ReturnType<typeof vi.spyOn>
+// ── Per-provider classify → multi-party projection ─────────────────────
 
+describe('classify → isMultiPartyChatType', () => {
+  it.each([
+    ['Slack DM', multiPartyFrom(classifySlackChat, { chatId: 'D0AAA111' }), false],
+    ['Slack channel', multiPartyFrom(classifySlackChat, { chatId: 'C0BBB222', chatName: '#office' }), true],
+    ['Slack channel with no chatName', multiPartyFrom(classifySlackChat, { chatId: 'C0BBB222' }), true],
+    ['iMessage with chat name', multiPartyFrom(classifyIMessageChat, { chatId: '+15559876543', chatName: 'Family' }), true],
+    ['iMessage without chat name', multiPartyFrom(classifyIMessageChat, { chatId: '+15559876543' }), false],
+    [
+      'connector class with no classify',
+      multiPartyFrom(({} as ChatConnectorClass).classifyChatId, { chatId: 'x', chatName: 'Group' }),
+      false,
+    ],
+  ] as const)('%s → %s', (_label, actual, expected) => {
+    expect(actual).toBe(expected)
+  })
+})
+
+// ── Message-builder path (Telegram DM vs group) ────────────────────────
+
+describe('Telegram multi-party attribution via message builder', () => {
   beforeEach(async () => {
-    testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'chat-model-res-test-'))
+    testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'chat-multi-party-'))
     process.env.SUPERAGENT_DATA_DIR = testDir
 
     testSqlite = new Database(':memory:')
@@ -133,79 +178,49 @@ describe('chat integration model and effort resolution', () => {
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
 
     mockConnector = new MockChatClientConnector()
-
     mockContainerClient = new MockContainerClient({ agentId: 'test-agent' })
     await mockContainerClient.start()
     MockContainerClient.resetCallRecords()
-    // Capture the raw options the manager passes, before the mock client
-    // resolves the model alias for its static call records.
-    createSessionSpy = vi.spyOn(mockContainerClient, 'createSession') as ReturnType<typeof vi.spyOn>;
 
-    (containerManager.ensureRunning as ReturnType<typeof vi.fn>).mockResolvedValue(mockContainerClient)
-
-    mockReadAgentPreferences.mockReset()
-    mockReadAgentPreferences.mockResolvedValue({})
-
-    // connectIntegration cancels itself on a stopped manager; this harness
-    // drives addIntegration directly (no start()), so mark the manager running.
+    ;(containerManager.ensureRunning as ReturnType<typeof vi.fn>).mockResolvedValue(mockContainerClient)
     ;(chatIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
   })
 
   afterEach(async () => {
     chatIntegrationManager.stop()
-    // Let pending async handlers drain before closing the DB
     await new Promise(r => setTimeout(r, 50))
     testSqlite?.close()
     await fs.promises.rm(testDir, { recursive: true, force: true }).catch(() => {})
   })
 
-  // Preference order: integration override > agent default > global default.
-  async function startSession(integrationOverrides: Record<string, unknown> = {}) {
+  it('attaches nothing for a Telegram DM even when chatName is the sender name, and attaches the name for a group', async () => {
     const integrationId = createChatIntegration({
       agentSlug: 'test-agent',
       provider: 'telegram',
       config: { botToken: 'test-token-123' },
       name: 'Test Bot',
-      ...integrationOverrides,
     })
-    // These tests exercise session-spawn defaults, not access control, so
-    // disable the owner-approval gate telegram integrations get by default.
     testSqlite.prepare('UPDATE chat_integrations SET require_approval = 0 WHERE id = ?').run(integrationId)
     await chatIntegrationManager.addIntegration(integrationId)
 
-    mockConnector.simulateIncomingMessage('Hello agent!', 'chat-1', 'user-1')
-    await waitForCondition(() => createSessionSpy.mock.calls.length > 0)
-    return createSessionSpy.mock.calls[0][0] as Record<string, unknown>
-  }
+    // Telegram fills chatName with the sender's own name in a private chat.
+    mockConnector.simulateIncomingMessage('hey', '123456789', 'user-1', {
+      userName: 'Jeremy',
+      chatName: 'Jeremy',
+    })
+    await waitForCondition(() => MockContainerClient.createSessionCalls.length === 1)
+    const dmText = MockContainerClient.createSessionCalls[0].initialMessage!
+    expect(dmText).toBe('hey')
+    expect(parseSenderPrefix(dmText)).toEqual({ sender: null, cleanText: 'hey' })
+    expect(isMultiPartyChatType(classifyTelegramChat({ chatId: '123456789', chatName: 'Jeremy' }))).toBe(false)
 
-  it('uses the global default when neither integration nor agent set one', async () => {
-    const args = await startSession()
-    expect(args.model).toBe('claude-sonnet-4-20250514')
-    // Effort/speed must be omitted entirely, not sent as undefined.
-    expect('effort' in args).toBe(false)
-    expect('speed' in args).toBe(false)
-  })
-
-  it('falls back to the agent default over the global default', async () => {
-    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' })
-    const args = await startSession()
-    expect(mockReadAgentPreferences).toHaveBeenCalledWith('test-agent')
-    expect(args.model).toBe('opus')
-    expect(args.effort).toBe('high')
-    expect(args.speed).toBe('slow')
-  })
-
-  it('prefers the integration override over the agent default', async () => {
-    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'fast' })
-    const args = await startSession({ model: 'claude-haiku-4-5-20251001', effort: 'low', speed: 'slow' })
-    expect(args.model).toBe('claude-haiku-4-5-20251001')
-    expect(args.effort).toBe('low')
-    expect(args.speed).toBe('slow')
-  })
-
-  it('a stored normal integration speed beats a non-normal agent default', async () => {
-    mockReadAgentPreferences.mockResolvedValue({ defaultSpeed: 'fast' })
-    const args = await startSession({ speed: 'normal' })
-    expect(args.speed).toBe('normal')
+    mockConnector.simulateIncomingMessage('hey', '-1001234567890', 'user-2', {
+      userName: 'Alice',
+      chatName: 'Team Chat',
+    })
+    await waitForCondition(() => MockContainerClient.createSessionCalls.length === 2)
+    const groupText = MockContainerClient.createSessionCalls[1].initialMessage!
+    expect(groupText).toBe('\\[Alice]: hey')
+    expect(isMultiPartyChatType(classifyTelegramChat({ chatId: '-1001234567890', chatName: 'Team Chat' }))).toBe(true)
   })
 })
