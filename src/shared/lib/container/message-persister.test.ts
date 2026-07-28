@@ -855,6 +855,53 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(1)
     })
 
+    it('completes an errored background launch instead of treating it as an async ack', () => {
+      // The streamed run_in_background input is only a hint. If the launch is
+      // rejected before it gets an async_launched result (for example by a
+      // capability-review gate), the error tool_result is terminal and must
+      // clean up both the subagent entry and its parked child requests.
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'blocked-bg-tool', name: 'Agent' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{"subagent_type":"general-purpose","run_in_background":true}' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      userInputRequestManager.register({
+        id: 'blocked-bg-child-request',
+        kind: 'question',
+        scope: { sessionId: SESSION_ID, agentSlug: AGENT_SLUG },
+        blocking: true,
+        autoApproved: false,
+        parentToolUseId: 'blocked-bg-tool',
+        payload: { questions: [] },
+      })
+      sseEvents.length = 0
+
+      try {
+        mockClient._sendMessage({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{
+              type: 'tool_result',
+              tool_use_id: 'blocked-bg-tool',
+              content: 'Agent launch blocked by policy',
+              is_error: true,
+            }],
+          },
+        })
+
+        expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(1)
+        expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(0)
+        expect(userInputRequestManager.getOpenRequest('blocked-bg-child-request')).toBeNull()
+      } finally {
+        userInputRequestManager.resolve('blocked-bg-child-request', 'cancelled')
+      }
+    })
+
     it('keeps a SendMessage-resumed subagent running until its task completes', () => {
       // Real Claude Code 2.1.219 order:
       // Agent completes → SendMessage → background_tasks_changed → task_started

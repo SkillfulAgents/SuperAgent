@@ -907,5 +907,56 @@ describe('AgentActivityIndicator', () => {
       expect(screen.getByText('Running name-targeted follow-up')).toBeInTheDocument()
       expect(screen.queryByText('✓')).not.toBeInTheDocument()
     })
+
+    it('joins a name-targeted resume before the SendMessage result is persisted', () => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [
+        {
+          parentToolId: 'agent-tool',
+          agentId: null,
+          subagentType: 'general-purpose',
+          description: 'Resume UI probe',
+          progressSummary: null,
+        },
+        {
+          parentToolId: 'send-tool',
+          agentId: null,
+          subagentType: 'general-purpose',
+          description: 'Resume UI probe',
+          progressSummary: 'Running before ack persistence',
+        },
+      ]
+      mockStreamState.completedSubagents = new Set(['agent-tool'])
+      mockMessages.push({
+        id: 'msg-agent',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'agent-tool',
+          name: 'Agent',
+          input: { subagent_type: 'general-purpose', description: 'Resume UI probe' },
+          result: 'FIRST_DONE',
+          subagent: { agentId: 'agent-1', status: 'completed' },
+        }],
+        createdAt: new Date(),
+      }, {
+        id: 'msg-send',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'send-tool',
+          name: 'SendMessage',
+          input: { to: 'resume-ui-probe', message: 'Continue' },
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByText('general-purpose')).toHaveLength(1)
+      expect(screen.getByText('Running before ack persistence')).toBeInTheDocument()
+      expect(screen.queryByText('✓')).not.toBeInTheDocument()
+    })
   })
 })

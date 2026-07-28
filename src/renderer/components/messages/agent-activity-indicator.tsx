@@ -113,9 +113,13 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       description: string
       completedFromResult: boolean
     }
+    type ResumeMetadata = {
+      agentId: string | null
+    }
     const launchByToolId = new Map<string, LaunchMetadata>()
     const launchByAgentId = new Map<string, LaunchMetadata>()
-    const resumeAgentByToolId = new Map<string, string | null>()
+    const launches: LaunchMetadata[] = []
+    const resumeByToolId = new Map<string, ResumeMetadata>()
 
     for (const msg of messages) {
       if (msg.type !== 'user' && msg.type !== 'assistant') continue
@@ -131,17 +135,39 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
             completedFromResult: !isAsyncLaunched && tc.result != null,
           }
           launchByToolId.set(tc.id, metadata)
+          launches.push(metadata)
           if (tc.subagent?.agentId) {
             launchByAgentId.set(tc.subagent.agentId, metadata)
           }
         } else if (tc.name === 'SendMessage') {
           const input = tc.input as { to?: string; recipient?: string }
-          resumeAgentByToolId.set(
-            tc.id,
-            extractResumedAgentId(tc.result) ?? input.to ?? input.recipient ?? null,
-          )
+          const target = input.to ?? input.recipient ?? null
+          const resultAgentId = extractResumedAgentId(tc.result)
+          resumeByToolId.set(tc.id, {
+            agentId: resultAgentId ?? (target && launchByAgentId.has(target) ? target : null),
+          })
         }
       }
+    }
+
+    const findMatchingLaunchAgentId = (sub: (typeof activeSubagents)[number]) => {
+      const hasName = !!sub.subagentType
+      const hasDescription = !!sub.description
+      if (!hasName && !hasDescription) return null
+
+      // Before the SendMessage result persists, its name target is not a stable
+      // agent ID. Join only when the lifecycle metadata identifies exactly one
+      // prior launch; ambiguous matches remain separate until the ID arrives.
+      const matches = new Set(
+        launches
+          .filter((launch) =>
+            launch.agentId &&
+            (!hasName || launch.name === sub.subagentType) &&
+            (!hasDescription || launch.description === sub.description)
+          )
+          .map((launch) => launch.agentId!)
+      )
+      return matches.size === 1 ? [...matches][0] : null
     }
 
     const groups = new Map<string, typeof activeSubagents>()
@@ -152,19 +178,23 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       const originalLaunch = sub.agentId
         ? launchByAgentId.get(sub.agentId)
         : undefined
-      const resumedAgentId = sub.parentToolId
-        ? resumeAgentByToolId.get(sub.parentToolId)
+      const resume = sub.parentToolId
+        ? resumeByToolId.get(sub.parentToolId)
         : undefined
-      const isSendMessageRun = resumedAgentId !== undefined
+      const isSendMessageRun = resume !== undefined
       // local_workflow also emits subagent lifecycle events, but it has its own
       // activity UI. Only Agent/Task launches and their SendMessage resumes
       // belong in this list.
       if (!directLaunch && !originalLaunch && !isSendMessageRun) continue
 
-      const stableAgentId = sub.agentId ?? directLaunch?.agentId ?? resumedAgentId
+      const stableAgentId = sub.agentId
+        ?? directLaunch?.agentId
+        ?? resume?.agentId
+        ?? (isSendMessageRun ? findMatchingLaunchAgentId(sub) : null)
+      if (!stableAgentId && !sub.parentToolId) continue
       const key = stableAgentId
         ? `agent:${stableAgentId}`
-        : `tool:${sub.parentToolId ?? groups.size}`
+        : `tool:${sub.parentToolId}`
       const group = groups.get(key) ?? []
       group.push(sub)
       groups.set(key, group)
@@ -190,7 +220,10 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         : undefined
       const selectedAgentId = selected.agentId
         ?? directLaunch?.agentId
-        ?? (selected.parentToolId ? resumeAgentByToolId.get(selected.parentToolId) : undefined)
+        ?? (selected.parentToolId ? resumeByToolId.get(selected.parentToolId)?.agentId : undefined)
+        ?? (selected.parentToolId && resumeByToolId.has(selected.parentToolId)
+          ? findMatchingLaunchAgentId(selected)
+          : null)
       const originalLaunch = selectedAgentId
         ? launchByAgentId.get(selectedAgentId)
         : undefined

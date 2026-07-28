@@ -86,7 +86,8 @@ interface SubagentStreamingState {
   currentText: string
   currentToolUse: { id: string; name: string } | null
   currentToolInput: string
-  isBackground: boolean // True for background launches and SendMessage-resumed runs
+  isBackground: boolean // Streamed launch hint, confirmed by an async launch acknowledgement
+  isResumed: boolean // Authoritative task_started/result signal for a SendMessage-resumed run
 }
 
 /**
@@ -1486,16 +1487,19 @@ class MessagePersister {
                 // Background Agent launches and SendMessage resumes both return
                 // immediate acknowledgments; their REAL completion arrives later
                 // as task_updated/task_notification, never as a second tool_result.
-                // Detect those acknowledgments authoritatively from metadata. The
-                // isBackground fallback covers the streamed run_in_background flag
-                // and a resumed task_started recognized by its reused agentId.
+                // Detect those acknowledgments authoritatively from result metadata
+                // or a resumed task_started. Do not use the streamed isBackground
+                // hint here: partial/interleaved input is unreliable, and an error
+                // result for a requested background launch is terminal.
                 const tur = content.tool_use_result as
                   | { status?: string; isAsync?: boolean; agentId?: string; resumedAgentId?: string }
                   | undefined
                 const isAsyncLaunchAck = tur?.status === 'async_launched' || tur?.isAsync === true
                 const isResumeAck = typeof tur?.resumedAgentId === 'string'
-                if (isAsyncLaunchAck || isResumeAck || sub.isBackground) {
-                  sub.isBackground = true
+                const isErrorResult = block.is_error === true
+                if (!isErrorResult && (isAsyncLaunchAck || isResumeAck || sub.isResumed)) {
+                  if (isAsyncLaunchAck) sub.isBackground = true
+                  if (isResumeAck) sub.isResumed = true
                   // A background subagent outlives its launch turn, and since SDK
                   // 0.3.197 the runtime settles the turn (result + idle) while the
                   // subagent is still running — older SDKs held them back, which is
@@ -1638,14 +1642,15 @@ class MessagePersister {
             const existing = state.activeSubagents.get(toolUseId)
             if (existing) {
               if (agentId) existing.agentId = agentId
-              if (isResumedSubagent) existing.isBackground = true
+              if (isResumedSubagent) existing.isResumed = true
             } else {
               state.activeSubagents.set(toolUseId, {
                 agentId: agentId ?? null,
                 currentText: '',
                 currentToolUse: null,
                 currentToolInput: '',
-                isBackground: isResumedSubagent,
+                isBackground: false,
+                isResumed: isResumedSubagent,
               })
             }
             if (isResumedSubagent && agentId) {
@@ -1723,15 +1728,15 @@ class MessagePersister {
           // A background *subagent* (task_type 'local_agent') settles via a
           // task_updated whose task_id equals the subagent's agentId. The busy
           // path can deliver this without a matching task_notification, so finish
-          // the subagent here too. Scoped to isBackground: foreground subagents
-          // complete via their tool_result (see the 'user' case) and also emit
-          // these task events — acting on them here would fire an early
-          // completion with an unresolved (null) agentId. Idempotent:
+          // the subagent here too. Scoped to background/resumed lifecycle
+          // flags: foreground subagents complete via their tool_result (see the
+          // 'user' case) and also emit these task events — acting on them here
+          // would fire an early completion with an unresolved (null) agentId. Idempotent:
           // broadcastSubagentCompleted removes it, so a trailing task_notification
           // no-ops.
           if (taskId && isTerminal) {
             for (const [parentToolId, sub] of state.activeSubagents) {
-              if (sub.isBackground && sub.agentId === taskId) {
+              if ((sub.isBackground || sub.isResumed) && sub.agentId === taskId) {
                 this.broadcastSubagentCompleted(sessionId, state, parentToolId)
                 break
               }
@@ -1744,13 +1749,14 @@ class MessagePersister {
           // Without this, broadcastSubagentCompleted never fires for a background
           // subagent — its tool_result stays the 'async_launched' ack and no
           // sidechain 'result' arrives — so the UI shows it running until the
-          // whole turn ends. Scoped to isBackground for the same reason as the
-          // task_updated branch above (foreground subagents finish via tool_result).
+          // whole turn ends. Scoped to background/resumed lifecycle flags for
+          // the same reason as the task_updated branch above (foreground
+          // subagents finish via tool_result).
           const toolUseId = content.tool_use_id as string | undefined
           const status = content.status as string | undefined
           const sub = toolUseId ? state.activeSubagents.get(toolUseId) : undefined
           if (
-            sub?.isBackground &&
+            (sub?.isBackground || sub?.isResumed) &&
             (status === 'completed' || status === 'failed' || status === 'killed')
           ) {
             const summary = typeof content.summary === 'string' ? content.summary : undefined
@@ -2210,7 +2216,14 @@ class MessagePersister {
     let sub = state.activeSubagents.get(parentToolId)
     if (!sub) {
       // Sidechain message arrived before the tool_use was tracked (rare but possible)
-      sub = { agentId: null, currentText: '', currentToolUse: null, currentToolInput: '', isBackground: false }
+      sub = {
+        agentId: null,
+        currentText: '',
+        currentToolUse: null,
+        currentToolInput: '',
+        isBackground: false,
+        isResumed: false,
+      }
       state.activeSubagents.set(parentToolId, sub)
     }
 
@@ -2980,6 +2993,7 @@ class MessagePersister {
               currentToolUse: null,
               currentToolInput: '',
               isBackground,
+              isResumed: false,
             })
           }
 
