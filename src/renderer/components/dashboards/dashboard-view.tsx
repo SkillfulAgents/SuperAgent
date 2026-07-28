@@ -138,6 +138,12 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const showOverlay = viewState.kind !== 'ready'
   const actionPending = restarting || stopAgent.isPending || startAgent.isPending
 
+  // The iframe unmounts whenever the frame is hidden, so its load state must not
+  // outlive it and mark the next mount ready before that document loads.
+  useEffect(() => {
+    if (!showFrame) setIframeLoaded(false)
+  }, [showFrame])
+
   if (!showFrame) {
     return (
       <div className="flex-1 overflow-y-auto flex flex-col items-center text-muted-foreground p-8">

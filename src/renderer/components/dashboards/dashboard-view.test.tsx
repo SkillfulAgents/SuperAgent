@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardView } from './dashboard-view'
 
 const mocks = vi.hoisted(() => ({
   agentStatus: 'running',
+  dashboardStatus: 'crashed',
   start: {
     mutate: vi.fn(),
     mutateAsync: vi.fn(),
@@ -36,7 +37,7 @@ vi.mock('@renderer/hooks/use-artifacts', () => ({
       slug: 'dashboard',
       name: 'Dashboard',
       description: '',
-      status: 'crashed',
+      status: mocks.dashboardStatus,
       port: 0,
     }],
   }),
@@ -78,6 +79,7 @@ describe('DashboardView restart', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.agentStatus = 'running'
+    mocks.dashboardStatus = 'crashed'
     mocks.start.mutateAsync.mockResolvedValue({})
   })
 
@@ -104,5 +106,27 @@ describe('DashboardView restart', () => {
     await act(async () => finishStop())
 
     expect(mocks.start.mutateAsync).toHaveBeenCalledOnce()
+  })
+
+  it('waits for the new document when the frame remounts after the agent left running', () => {
+    mocks.dashboardStatus = 'running'
+    const frame = () => document.querySelector('iframe')
+    const waiting = () => screen.queryByText('Waiting for dashboard…')
+
+    const view = render(
+      <DashboardView agentSlug="agent" dashboardSlug="dashboard" />,
+    )
+    fireEvent.load(frame()!)
+    expect(waiting()).toBeNull()
+
+    // The agent leaves running through a control outside this view.
+    mocks.agentStatus = 'stopped'
+    view.rerender(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
+    expect(frame()).toBeNull()
+
+    mocks.agentStatus = 'running'
+    view.rerender(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
+
+    expect(waiting()).not.toBeNull()
   })
 })
