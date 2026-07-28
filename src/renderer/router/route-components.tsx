@@ -99,7 +99,7 @@ export function DashboardRoute() {
   const slug = useAgentSlug()
   const { dashSlug } = useParams({ strict: false }) as { dashSlug?: string }
   if (!slug || !dashSlug) return null
-  return <DashboardView agentSlug={slug} dashboardSlug={dashSlug} />
+  return <DashboardView key={`${slug}/${dashSlug}`} agentSlug={slug} dashboardSlug={dashSlug} />
 }
 
 // integrationId is a path param and the optional active sub-session travels in
