@@ -77,6 +77,17 @@ describe('GET /auth/platform/start', () => {
     const res = await createApp().request('/auth/platform/start')
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/')
+    expect(mockSignInWithOAuth2).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when platform is absent even if another OIDC provider exists', async () => {
+    mockGetGenericOAuthProviderConfigs.mockReturnValue([
+      { providerId: 'company-sso', clientId: 'company', pkce: true },
+    ])
+    const res = await createApp().request('/auth/platform/start')
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location')).toBe('/')
+    expect(mockSignInWithOAuth2).not.toHaveBeenCalled()
   })
 
   it('falls back to / and reports when OIDC start throws', async () => {

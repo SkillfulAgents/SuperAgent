@@ -8,10 +8,10 @@ const PLATFORM_PROVIDER_ID = 'platform'
 
 function resolvePlatformProviderId(): string | null {
   const providers = getGenericOAuthProviderConfigs()
-  if (providers.some((p) => p.providerId === PLATFORM_PROVIDER_ID)) {
-    return PLATFORM_PROVIDER_ID
-  }
-  return providers[0]?.providerId ?? null
+  // Fail closed: Platform contract requires the literal provider id.
+  return providers.some((p) => p.providerId === PLATFORM_PROVIDER_ID)
+    ? PLATFORM_PROVIDER_ID
+    : null
 }
 
 function appendSetCookies(from: Headers, to: Headers): void {

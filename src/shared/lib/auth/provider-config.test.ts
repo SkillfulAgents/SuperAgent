@@ -268,6 +268,20 @@ describe('getPublicAuthProviders', () => {
     ).toThrow(/not verified/i)
   })
 
+  it('mapProfileToUser does not require email_verified for non-Platform OIDC providers', () => {
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      { id: 'company-sso', type: 'oidc', issuer: 'https://sso.example.com', clientId: 'c' },
+    ])
+    delete process.env.PLATFORM_TOKEN
+    const [config] = getGenericOAuthProviderConfigs()
+    expect(
+      config.mapProfileToUser!({
+        sub: 'user-123',
+        email: 'user@example.com',
+      }),
+    ).toEqual({})
+  })
+
   it('mapProfileToUser rejects an id_token whose org_id differs from the deployment org', () => {
     process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
       { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
