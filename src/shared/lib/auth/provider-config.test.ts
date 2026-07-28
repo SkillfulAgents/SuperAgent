@@ -201,6 +201,7 @@ describe('getPublicAuthProviders', () => {
     expect(config.mapProfileToUser!({
       sub: 'sub_member_123',
       email: 'user@example.com',
+      email_verified: true,
       'https://platform.skillfulagents.dev/claims/user_id': 'uuid-user-456',
     })).toEqual({})
   })
@@ -227,6 +228,7 @@ describe('getPublicAuthProviders', () => {
     const mapped = config.mapProfileToUser!({
       sub: MEMBER_ID,
       email: 'user@example.com',
+      email_verified: true,
       [USER_ID_CLAIM]: PLATFORM_USER_ID,
     }) as Record<string, unknown>
 
@@ -251,6 +253,35 @@ describe('getPublicAuthProviders', () => {
     }
   })
 
+  it('mapProfileToUser rejects an unverified Platform email', () => {
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
+    ])
+    delete process.env.PLATFORM_TOKEN
+    const [config] = getGenericOAuthProviderConfigs()
+    expect(() =>
+      config.mapProfileToUser!({
+        sub: 'sub_member_123',
+        email: 'user@example.com',
+        email_verified: false,
+      }),
+    ).toThrow(/not verified/i)
+  })
+
+  it('mapProfileToUser does not require email_verified for non-Platform OIDC providers', () => {
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      { id: 'company-sso', type: 'oidc', issuer: 'https://sso.example.com', clientId: 'c' },
+    ])
+    delete process.env.PLATFORM_TOKEN
+    const [config] = getGenericOAuthProviderConfigs()
+    expect(
+      config.mapProfileToUser!({
+        sub: 'user-123',
+        email: 'user@example.com',
+      }),
+    ).toEqual({})
+  })
+
   it('mapProfileToUser rejects an id_token whose org_id differs from the deployment org', () => {
     process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
       { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
@@ -260,6 +291,7 @@ describe('getPublicAuthProviders', () => {
     expect(() =>
       config.mapProfileToUser!({
         sub: 'sub_member_123',
+        email_verified: true,
         'https://platform.skillfulagents.dev/claims/org_id': 'org_BBB',
       }),
     ).toThrow(/different organization/i)
@@ -274,6 +306,7 @@ describe('getPublicAuthProviders', () => {
     expect(
       config.mapProfileToUser!({
         sub: 'sub_member_123',
+        email_verified: true,
         'https://platform.skillfulagents.dev/claims/org_id': 'org_AAA',
       }),
     ).toEqual({})
@@ -286,7 +319,11 @@ describe('getPublicAuthProviders', () => {
     process.env.PLATFORM_TOKEN = makeOrgToken('org_AAA')
     const [config] = getGenericOAuthProviderConfigs()
     expect(() =>
-      config.mapProfileToUser!({ sub: 'sub_member_123', email: 'user@example.com' }),
+      config.mapProfileToUser!({
+        sub: 'sub_member_123',
+        email: 'user@example.com',
+        email_verified: true,
+      }),
     ).toThrow(/different organization/i)
   })
 
@@ -299,6 +336,7 @@ describe('getPublicAuthProviders', () => {
     expect(
       config.mapProfileToUser!({
         sub: 'sub_member_123',
+        email_verified: true,
         'https://platform.skillfulagents.dev/claims/org_id': 'org_BBB',
       }),
     ).toEqual({})
