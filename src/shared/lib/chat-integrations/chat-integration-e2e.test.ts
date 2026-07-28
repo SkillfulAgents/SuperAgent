@@ -94,13 +94,14 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
 // Use the real messagePersister — it handles the complex stream→SSE transformation
 
 // Mock telegram connector to return our MockChatClientConnector. Keep the REAL
-// classifyChatId static: the manager resolves the connector CLASS through this
-// module for classification, so stripping it would silently disable attribution.
+// statics: the manager resolves the connector CLASS through this module, so
+// stripping either would silently disable prompt or attribution wiring.
 vi.mock('./telegram-connector', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./telegram-connector')>()
   return {
     ...actual,
     TelegramConnector: class {
+      static generateSystemPrompt = actual.TelegramConnector.generateSystemPrompt
       static classifyChatId = actual.TelegramConnector.classifyChatId
       constructor() {
         return mockConnector
@@ -200,8 +201,8 @@ describe('Chat integration E2E', () => {
       const integrationId = createTestIntegration()
       await chatIntegrationManager.addIntegration(integrationId)
 
-      // Simulate incoming message
-      mockConnector.simulateIncomingMessage('Hello agent!', 'chat-1', 'user-1')
+      // A valid positive Telegram id exercises the DM branch.
+      mockConnector.simulateIncomingMessage('Hello agent!', '123456789', 'user-1')
 
       // MockContainerClient should receive createSession with the message
       await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)

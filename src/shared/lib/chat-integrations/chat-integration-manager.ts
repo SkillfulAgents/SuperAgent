@@ -1300,18 +1300,15 @@ class ChatIntegrationManager {
     integration: ChatIntegration,
     message: IncomingMessage,
   ): Promise<{ text: string; failedFiles: string[] }> {
-    // Attribute only where classify says more than one person can post.
-    // Each provider owns classifyChatId; multi-party is the shared projection.
-    // Guarded: the class arrives via dynamic import, which can throw, and today
-    // this decision cannot fail - so a lookup failure must never turn into a
-    // dropped message.
+    // Attribution is best-effort metadata, so lookup failure falls back to no prefix.
     let connectorClass: ChatConnectorClass | undefined
     try {
       connectorClass = await this.getConnectorClass(integration.provider)
     } catch { /* fall through to the no-prefix default */ }
-    const prefix = message.userName
+    const sender = message.userName || message.userId
+    const prefix = sender
       && isMultiPartyChatType(connectorClass?.classifyChatId?.(message))
-      ? `\\[${message.userName}]: `
+      ? `\\[${sender}]: `
       : ''
     const text = prefix + (message.text || '')
 
