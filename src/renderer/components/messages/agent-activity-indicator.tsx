@@ -22,7 +22,7 @@ interface AgentActivityIndicatorProps {
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
   const {
     isActive, error, apiErrorCode, activeStartTime, isCompacting, activeSubagents, completedSubagents,
-    apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
+    apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks, backgroundWaitTasks,
     isThinking,
   } = useMessageStream(sessionId, agentSlug)
   const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
@@ -72,6 +72,16 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   }, [activeStartTime, messages])
 
   const elapsed = useElapsedTimer(isActive ? timerStartTime : null)
+
+  // Level-set entries whose work is already represented by a subagent row (keyed
+  // by agentId === task_id) or the background-process row are dropped, leaving
+  // only work nothing else can show.
+  const unroutedWaitTasks = useMemo(() => {
+    if (!backgroundWaitTasks || backgroundWaitTasks.length === 0) return []
+    const shownAsSubagent = new Set(activeSubagents.map((s) => s.agentId).filter(Boolean))
+    const shownAsProcess = new Set(backgroundTasks.map((t) => t.taskId))
+    return backgroundWaitTasks.filter((t) => !shownAsSubagent.has(t.taskId) && !shownAsProcess.has(t.taskId))
+  }, [backgroundWaitTasks, activeSubagents, backgroundTasks])
 
   // Collect subagent display info by matching activeSubagents (SSE-tracked) with tool calls in messages
   const subagentItems = useMemo(() => {
@@ -230,6 +240,29 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
                     {item.progressSummary}
                   </span>
                 )}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* Background work with no tool call in THIS transcript to hang a
+            subagent row off — i.e. a background agent a subagent started itself.
+            The subagent-row join above can structurally never match those (their
+            parentToolId belongs to the parent subagent's stream), so without this
+            the session sits on "Working..." naming nothing. Anything already
+            covered by a row above is filtered out so the same work isn't listed
+            twice. */}
+        {unroutedWaitTasks.length > 0 && (
+          <ul className="mt-2 space-y-1 text-sm pl-5">
+            {unroutedWaitTasks.map((task) => (
+              <li key={task.taskId} className="flex items-center gap-2">
+                <span className="relative flex h-2 w-2 shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                </span>
+                <span className="text-xs text-muted-foreground truncate">
+                  {task.description || task.taskId}
+                </span>
               </li>
             ))}
           </ul>

@@ -2288,6 +2288,42 @@ describe('useMessageStream', () => {
     expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-1', startedAt: 1000 }])
   })
 
+  it('keeps the named background work the session is waiting on', async () => {
+    // A background subagent spawned by another subagent can never render as a
+    // subagent row: those are built by joining activeSubagents against Agent
+    // tool calls in THIS session's transcript, and a nested task's parentToolId
+    // belongs to a subagent's stream. The waiting event carries the names, so
+    // the indicator has something to show instead of a bare "Working".
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    expect(result.current.backgroundWaitTasks).toEqual([])
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'session_waiting_background',
+        backgroundTaskCount: 1,
+        tasks: [{ taskId: 'nested-1', taskType: 'local_agent', description: 'nested probe' }],
+      })
+    })
+
+    expect(result.current.backgroundWaitTasks).toEqual([
+      { taskId: 'nested-1', taskType: 'local_agent', description: 'nested probe' },
+    ])
+
+    // Settling clears it — a stale name outliving the work reads as still-running.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_idle', isActive: false })
+    })
+    expect(result.current.backgroundWaitTasks).toEqual([])
+  })
+
   it('sets isWaitingBackground on session_waiting_background event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(

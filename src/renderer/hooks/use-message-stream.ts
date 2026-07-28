@@ -64,6 +64,10 @@ interface StreamState {
   apiRetry: ApiRetryInfo | null // Non-null while API is retrying a transient error
   backgroundTasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> // Active background Bash commands, dynamic workflows + background subagents
   isWaitingBackground: boolean // True when agent turn ended but background tasks are still running
+  // What that background work IS, from the host's level-set metadata. Subagent
+  // rows can't cover it: they join activeSubagents against Agent tool calls in
+  // THIS transcript, and a subagent's own background agent has no such call.
+  backgroundWaitTasks: Array<{ taskId: string; taskType?: string; description?: string }>
   // Uuids of queued user messages the runtime reported dead (command_lifecycle
   // state discarded/cancelled — e.g. killed by an interrupt). MessageList
   // rescues matching ghosts' text to the composer immediately instead of
@@ -103,6 +107,7 @@ const EMPTY_STREAM_STATE: StreamState = {
   apiRetry: null,
   backgroundTasks: [],
   isWaitingBackground: false,
+  backgroundWaitTasks: [],
   discardedCommandUuids: [],
 }
 
@@ -336,6 +341,7 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: Array.isArray(data.backgroundTasks) ? data.backgroundTasks : (current?.backgroundTasks ?? []),
           isWaitingBackground: Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
+          backgroundWaitTasks: current?.backgroundWaitTasks ?? [],
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         // Reconcile against the persisted transcript on every (re)connect. A client
@@ -390,6 +396,7 @@ function getOrCreateEventSource(
           apiRetry: null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: false,
+          backgroundWaitTasks: [],
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -433,6 +440,7 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: [],
           isWaitingBackground: false,
+          backgroundWaitTasks: [],
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
@@ -446,7 +454,11 @@ function getOrCreateEventSource(
       // Agent turn ended but background tasks are still running — allow sending messages
       else if (data.type === 'session_waiting_background') {
         if (current) {
-          streamStates.set(sessionId, { ...current, isWaitingBackground: true })
+          streamStates.set(sessionId, {
+            ...current,
+            isWaitingBackground: true,
+            backgroundWaitTasks: Array.isArray(data.tasks) ? data.tasks : [],
+          })
         }
       }
       else if (data.type === 'session_error') {
@@ -473,6 +485,7 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: [],
           isWaitingBackground: false,
+          backgroundWaitTasks: [],
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
@@ -530,6 +543,7 @@ function getOrCreateEventSource(
             // otherwise only reset by session_idle/session_active — so if the final
             // task clears without a follow-up idle, the composer would stay pinned.
             isWaitingBackground: current.isWaitingBackground && backgroundTasks.length > 0,
+            backgroundWaitTasks: (current.backgroundWaitTasks ?? []).filter(t => t.taskId !== data.taskId),
           })
         }
       }
@@ -636,6 +650,7 @@ function getOrCreateEventSource(
           apiRetry: null, // Clear retry state — API call succeeded
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: false,
+          backgroundWaitTasks: [],
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
       }
@@ -660,6 +675,7 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
+          backgroundWaitTasks: current?.backgroundWaitTasks ?? [],
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
       }
@@ -700,6 +716,7 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
+          backgroundWaitTasks: current?.backgroundWaitTasks ?? [],
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
       }
@@ -740,6 +757,7 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
+          backgroundWaitTasks: current?.backgroundWaitTasks ?? [],
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
       }

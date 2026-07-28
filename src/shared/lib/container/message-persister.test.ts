@@ -5684,6 +5684,88 @@ describe('MessagePersister', () => {
   // Background Bash task tracking
   // ============================================================================
 
+  // A background subagent spawned by ANOTHER subagent surfaces on the lead
+  // session's stream — its `background_tasks_changed` entry, `task_started` and
+  // terminal signals all arrive unparented (`parent_tool_use_id: null`), keyed
+  // by a `tool_use_id` the lead never issued. Captured live on SDK 0.3.219;
+  // see the frame ordering asserted below (snapshot leads task_started by ~1ms).
+  //
+  // The lead therefore never sees the `async_launched` tool_result that is the
+  // only thing marking a subagent `isBackground`, which is what these cover.
+  describe('nested background subagents', () => {
+    const NESTED = { task_id: 'nested-1', task_type: 'local_agent', description: 'nested probe' }
+    const NESTED_TOOL_USE = 'toolu_nested_unknown_to_lead'
+
+    function launchNested() {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      // The snapshot leads task_started, so the level set already knows this id.
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [NESTED] })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: NESTED.task_id,
+        tool_use_id: NESTED_TOOL_USE,
+        task_type: NESTED.task_type,
+        description: NESTED.description,
+      })
+    }
+
+    it('completes the card when the nested agent finishes', () => {
+      // Without an async_launched ack the subagent stays isBackground:false, so
+      // neither terminal branch fires broadcastSubagentCompleted and the card
+      // started here leaks for the rest of the session.
+      launchNested()
+      expect(sseEvents.filter(e => e.type === 'subagent_started').map(e => e.taskId)).toContain(NESTED.task_id)
+
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: NESTED.task_id,
+        tool_use_id: NESTED_TOOL_USE,
+        status: 'completed',
+        summary: 'Agent "nested probe" finished',
+      })
+
+      const completed = sseEvents.filter(e => e.type === 'subagent_completed')
+      expect(completed.map(e => e.parentToolId)).toContain(NESTED_TOOL_USE)
+    })
+
+    it('names the work the session is waiting on', () => {
+      // The session correctly stays "Working" while a nested agent runs, but the
+      // snapshot's description is dropped on the floor (only ids are kept), so
+      // the UI can say "Working" and nothing more. The wire already carries it.
+      launchNested()
+      sseEvents.length = 0
+
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+
+      const waiting = sseEvents.filter(e => e.type === 'session_waiting_background')
+      expect(waiting).toHaveLength(1)
+      expect(waiting[0].backgroundTaskCount).toBe(1)
+      expect(waiting[0].tasks).toEqual([
+        { taskId: NESTED.task_id, taskType: NESTED.task_type, description: NESTED.description },
+      ])
+    })
+
+    it('drops the metadata when the snapshot drains', () => {
+      launchNested()
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+      sseEvents.length = 0
+
+      // Settled: nothing to report, and no stale description carried forward.
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+    })
+  })
+
   describe('background Bash task tracking', () => {
     it('detects backgroundTaskId from tool_use_result and broadcasts start event', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
