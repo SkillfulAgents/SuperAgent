@@ -164,6 +164,10 @@ interface StreamingState {
   // arrives with the following task_started/tool-result) — liveness gates use
   // the UNION of both.
   bgTasksSnapshot: Set<string> | null
+  // What each snapshot id actually is, so a session waiting on background
+  // work can say what it is waiting ON. The SDK sends task_type + description
+  // with every level frame; without keeping them the UI has an id at best.
+  bgTasksMeta: Map<string, { taskType?: string; description?: string }>
   // Identity of the CLI process the background-task bookkeeping above belongs
   // to, from the container's handshake. Those tasks are process-local, so when
   // this changes every id we hold is unretirable and must be dropped.
@@ -456,6 +460,7 @@ class MessagePersister {
       lastApiErrorCode: null,
       activeBackgroundTasks: priorBackgroundTasks,
       bgTasksSnapshot: prior?.bgTasksSnapshot ?? null,
+      bgTasksMeta: prior?.bgTasksMeta ?? new Map(),
       // Carried with the snapshot it describes — the incoming handshake is what
       // decides whether both are still valid.
       processInstanceId: prior?.processInstanceId ?? null,
@@ -1040,6 +1045,7 @@ class MessagePersister {
         lastApiErrorCode: null,
         activeBackgroundTasks: new Map(),
         bgTasksSnapshot: null,
+        bgTasksMeta: new Map(),
         processInstanceId: null,
         pendingDeliverFiles: new Map(),
         stateEventsAuthority: false,
@@ -1690,12 +1696,21 @@ class MessagePersister {
             if (existing) {
               if (agentId) existing.agentId = agentId
             } else {
+              // The snapshot LEADS task_started (captured on 0.3.219: level frame
+              // ~1ms ahead), so if this id is in the level set it IS background
+              // work. That is the only signal available for a NESTED background
+              // subagent — one spawned by another subagent — because the
+              // `async_launched` tool_result that normally sets this flag belongs
+              // to the parent subagent's stream and never reaches the lead. Left
+              // false, neither terminal branch completes the card and it leaks
+              // for the rest of the session.
+              const isBackground = agentId ? state.bgTasksSnapshot?.has(agentId) === true : false
               state.activeSubagents.set(toolUseId, {
                 agentId: agentId ?? null,
                 currentText: '',
                 currentToolUse: null,
                 currentToolInput: '',
-                isBackground: false,
+                isBackground,
               })
             }
             this.broadcastToSSE(sessionId, {
@@ -1860,6 +1875,7 @@ class MessagePersister {
                 this.broadcastToSSE(sessionId, {
                   type: 'session_waiting_background',
                   backgroundTaskCount: openBackgroundWork,
+                  tasks: this.describeOpenBackgroundWork(state),
                 })
               } else {
                 this.finalizeIdle(sessionId, state)
@@ -1898,6 +1914,10 @@ class MessagePersister {
           const snapshot = parseBackgroundTasksChanged(content)
           if (snapshot) {
             state.bgTasksSnapshot = snapshot.taskIds
+            // REPLACE semantics, same as the id set it describes.
+            state.bgTasksMeta = new Map(
+              snapshot.tasks.map((t) => [t.task_id, { taskType: t.task_type, description: t.description }])
+            )
             // Self-heal: a tracked task the SDK no longer lists has finished.
             // Its per-task terminal signal normally follows within a frame and
             // then no-ops (clearBackgroundTask is idempotent) — but if that
@@ -2066,6 +2086,7 @@ class MessagePersister {
             this.broadcastToSSE(sessionId, {
               type: 'session_waiting_background',
               backgroundTaskCount: openBackgroundWork,
+              tasks: this.describeOpenBackgroundWork(state),
             })
           }
         }
@@ -2422,6 +2443,21 @@ class MessagePersister {
       this.clearBackgroundTask(sessionId, state, taskId)
     }
     state.bgTasksSnapshot = null
+    state.bgTasksMeta.clear()
+  }
+
+  // What the session is waiting ON, for the waiting-background indicator. Ids
+  // the level set never described (a lead-launched bash registered only from its
+  // tool_result) still appear, so the count and this list can never disagree.
+  private describeOpenBackgroundWork(
+    state: StreamingState
+  ): Array<{ taskId: string; taskType?: string; description?: string }> {
+    const ids = new Set(state.activeBackgroundTasks.keys())
+    for (const id of state.bgTasksSnapshot ?? []) ids.add(id)
+    return [...ids].map((taskId) => {
+      const meta = state.bgTasksMeta.get(taskId)
+      return { taskId, ...(meta?.taskType && { taskType: meta.taskType }), ...(meta?.description && { description: meta.description }) }
+    })
   }
 
   private clearBackgroundTask(sessionId: string, state: StreamingState, taskId: string): boolean {
@@ -2430,6 +2466,7 @@ class MessagePersister {
     // that removal frame never arrives, the freshest information has to win or
     // the union pins the session. Mirrors SessionSettlementTracker.removeTask.
     state.bgTasksSnapshot?.delete(taskId)
+    state.bgTasksMeta.delete(taskId)
     const info = state.activeBackgroundTasks.get(taskId)
     if (!info) return false
     state.activeBackgroundTasks.delete(taskId)

@@ -25,6 +25,7 @@ const mockStreamState = {
   completedSubagents: null as Set<string> | null,
   slashCommands: [],
   backgroundTasks: [] as Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }>,
+  backgroundWaitTasks: [] as Array<{ taskId: string; taskType?: string; description?: string }>,
 }
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -112,6 +113,31 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('Error')).toBeInTheDocument()
     expect(screen.getByText('The agent process was terminated unexpectedly.')).toBeInTheDocument()
     expect(screen.getByText('Send another message to retry.')).toBeInTheDocument()
+  })
+
+  it('names background work that has no tool call in this transcript', () => {
+    // A background subagent spawned by ANOTHER subagent: its parentToolId comes
+    // from the parent subagent's stream, so the subagent-row join (activeSubagents
+    // x Agent tool calls in these messages) can never match it. Without this the
+    // session reads "Working..." with nothing explaining why — the SEO incident.
+    mockStreamState.isActive = true
+    mockStreamState.backgroundWaitTasks = [
+      { taskId: 'nested-1', taskType: 'local_agent', description: 'Research MCP registry downstream consumers' },
+    ]
+    render(<AgentActivityIndicator sessionId="s1" agentSlug="a1" />)
+    expect(screen.getByText('Research MCP registry downstream consumers')).toBeInTheDocument()
+  })
+
+  it('does not repeat work already shown as a subagent row', () => {
+    // A lead-launched background agent DOES join to a tool call and renders as a
+    // named row; listing it again here would show the same work twice.
+    mockStreamState.isActive = true
+    mockStreamState.activeSubagents = [{ parentToolId: 'toolu-1', agentId: 'lead-1' }]
+    mockStreamState.backgroundWaitTasks = [
+      { taskId: 'lead-1', taskType: 'local_agent', description: 'Reply alpha' },
+    ]
+    render(<AgentActivityIndicator sessionId="s1" agentSlug="a1" />)
+    expect(screen.queryByText('Reply alpha')).not.toBeInTheDocument()
   })
 
   it('shows "Working..." status when active with no todo', () => {

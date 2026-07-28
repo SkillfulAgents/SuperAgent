@@ -16,7 +16,13 @@ import { z } from 'zod';
 // snapshot LEADS its per-task signal — the frame announcing an addition
 // arrives just before task_started, the frame announcing a removal just
 // before the terminal task_notification/task_updated. The snapshot covers
-// only the lead session's own tasks (a subagent's inner tasks never appear).
+// every background task in the session's CLI process, INCLUDING ones a
+// subagent started itself — captured on 0.3.219: a background agent spawned by
+// another subagent appears in the lead session's level frame (with its own
+// task_type + description) and its task_started/terminal signals arrive
+// unparented, keyed by a tool_use_id the lead never issued. An earlier note
+// here claimed inner tasks never appear; that was wrong, and the host relied
+// on it.
 
 const backgroundTaskSchema = z.object({
   task_id: z.string(),
