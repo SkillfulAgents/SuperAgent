@@ -94,7 +94,7 @@ export function SessionChatColumn({
       onPendingMessageAppeared={onPendingMessageAppeared}
       suppressScrollToBottom={staleSession.learnMoreOpen}
       footerClassName="bg-background max-w-[740px] mx-auto w-full"
-      growableFooter={
+      footer={
         pendingRequestCount > 0 ? (
           <div className="px-4 pb-4" data-testid="pending-request-slot">
             <PendingRequestStack>
@@ -112,10 +112,7 @@ export function SessionChatColumn({
               ))}
             </PendingRequestStack>
           </div>
-        ) : null
-      }
-      footer={
-        pendingRequestCount > 0 ? null : (
+        ) : (
           <>
             {pendingWakeAt && pendingWakeTaskId && !isActive && (
               <PendingWakeBanner

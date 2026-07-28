@@ -9,8 +9,6 @@ interface SessionThreadProps {
   agentSlug: string
   /** Footer pinned below the scrollable message list (input bar, read-only notice, etc.) */
   footer: ReactNode
-  /** Additional content in the capped growable footer region. */
-  growableFooter?: ReactNode
   /** Classes for the footer wrapper — callers set their own max-width/background. */
   footerClassName?: string
   /** Whether the browser tray tab is available (interactive session view only). */
@@ -37,7 +35,6 @@ export function SessionThread({
   sessionId,
   agentSlug,
   footer,
-  growableFooter,
   footerClassName = 'bg-background',
   browserActive = false,
   readOnly,
@@ -51,9 +48,11 @@ export function SessionThread({
       className="file-preview-container relative flex flex-1 min-h-0 min-w-0"
       data-testid="file-preview-container"
     >
-      {/* Chat column — grid pins the footer at the bottom */}
+      {/* Chat column — grid pins the footer at the bottom. The transcript's floor
+          is a row minimum, so no amount of footer content can take the history;
+          the footer row is capped by what's left and gives way from the inside. */}
       <div
-        className="flex-1 min-w-0 grid grid-rows-[1fr_auto] min-h-0"
+        className="flex-1 min-w-0 grid grid-rows-[minmax(160px,1fr)_minmax(0,auto)] min-h-0"
         data-testid="session-thread-main"
       >
         <MessageList
@@ -66,13 +65,13 @@ export function SessionThread({
           onPendingMessageAppeared={onPendingMessageAppeared}
           suppressScrollToBottom={suppressScrollToBottom}
         />
-        <div className={`${footerClassName} pb-[env(safe-area-inset-bottom)]`} data-composer-footer>
-          {/* vh: % max-height won't resolve against an auto grid row */}
-          <div className="max-h-[40vh] overflow-y-auto">
-            {growableFooter}
-            <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
-          </div>
-          {footer}
+        <div
+          className={`${footerClassName} pb-[env(safe-area-inset-bottom)] flex min-h-0 flex-col`}
+          data-composer-footer
+        >
+          {/* The activity card is the only part that gives way; it scrolls inside itself. */}
+          <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
+          <div className="shrink-0">{footer}</div>
         </div>
       </div>
       {/* Side tray (browser, file preview) */}

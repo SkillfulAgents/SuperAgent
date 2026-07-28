@@ -35,6 +35,20 @@ test.describe('Activity card must not squeeze out the chat history', () => {
     return rows
   }
 
+  // Which element owns the overflow, not just how tall things are: the card's own
+  // list absorbs a long action list, so the footer never scrolls as a single unit.
+  async function scrollOwnership(page: Page) {
+    return page.evaluate(() => {
+      const overflows = (el: Element | null | undefined) =>
+        el ? el.scrollHeight > el.clientHeight + 1 : null
+      const card = document.querySelector('[data-testid="activity-indicator"]')
+      return {
+        cardList: overflows(card?.querySelector('.overflow-y-auto')),
+        footer: overflows(document.querySelector('[data-composer-footer]')),
+      }
+    })
+  }
+
   test('a long action list leaves the history scrollable and the composer on screen', async ({ page }, testInfo) => {
     const rows = await launchFanout(page, testInfo)
     for (let i = 0; i < 4; i++) {
@@ -49,17 +63,24 @@ test.describe('Activity card must not squeeze out the chat history', () => {
     const composer = page.locator('[data-composer-footer]')
     const composerBox = await composer.boundingBox()
     expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(viewport!.height)
+
+    expect(await scrollOwnership(page)).toEqual({ cardList: true, footer: false })
   })
 
-  test('a request card shares the bounded footer without squeezing out history', async ({ page }, testInfo) => {
+  test('a pending request stays whole on screen and the card gives way instead', async ({ page }, testInfo) => {
     await launchFanout(page, testInfo, 'subagent fanout with question')
     const request = sessionPage.getQuestionRequests().first()
     await expect(request).toBeVisible({ timeout: 15000 })
 
     const history = await page.locator('[data-testid="message-list"]').boundingBox()
-    const footer = await page.locator('[data-composer-footer]').boundingBox()
+    const viewport = page.viewportSize()
     const requestBox = await request.boundingBox()
     expect(history!.height).toBeGreaterThanOrEqual(MIN_HISTORY_HEIGHT)
-    expect(requestBox!.y).toBeLessThan(footer!.y + footer!.height)
+
+    // The card the user has to act on is never the thing that gets scrolled away.
+    expect(requestBox!.y).toBeGreaterThanOrEqual(0)
+    expect(requestBox!.y + requestBox!.height).toBeLessThanOrEqual(viewport!.height)
+
+    expect(await scrollOwnership(page)).toEqual({ cardList: true, footer: false })
   })
 })

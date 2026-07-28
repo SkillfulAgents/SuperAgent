@@ -158,10 +158,10 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
           : (activeItem?.activeForm || 'Working...')
 
   return (
-    <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
-      <div className="rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
-        {/* Header with pulsing indicator */}
-        <div className="flex items-center gap-2">
+    <div className="mx-auto mb-2 flex w-full min-h-0 max-w-[740px] flex-col px-4">
+      <div className="flex min-h-0 flex-col rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
+        {/* Header with pulsing indicator — stays put while the list below scrolls */}
+        <div className="flex shrink-0 items-center gap-2">
           <span className="relative flex h-3 w-3">
             <span className={cn(
               "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
@@ -202,121 +202,125 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         {/* Streamed reasoning renders as a thinking card in the transcript
             (see ThinkingBlockItem) — only the "Thinking..." status shows here. */}
 
-        {/* Active subagents */}
-        {subagentItems.length > 0 && (
-          <ul className="mt-2 space-y-1 text-sm pl-5">
-            {subagentItems.map((item) => (
-              <li key={item.id} className="flex flex-col gap-0.5">
-                <div className="flex items-center gap-2">
-                  {item.status === 'running' ? (
-                    <span className="relative flex h-2 w-2 shrink-0">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+        {/* The card's own ceiling. The column floors the transcript separately,
+            because a sibling card can shrink this one past its cap. */}
+        <div className="min-h-0 max-h-[30vh] overflow-y-auto">
+          {/* Active subagents */}
+          {subagentItems.length > 0 && (
+            <ul className="mt-2 space-y-1 text-sm pl-5">
+              {subagentItems.map((item) => (
+                <li key={item.id} className="flex flex-col gap-0.5">
+                  <div className="flex items-center gap-2">
+                    {item.status === 'running' ? (
+                      <span className="relative flex h-2 w-2 shrink-0">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                      </span>
+                    ) : (
+                      <span className="text-xs text-green-500 shrink-0">✓</span>
+                    )}
+                    <span className={cn(
+                      'font-mono text-xs',
+                      item.status === 'completed' && 'text-muted-foreground'
+                    )}>
+                      {item.name}
                     </span>
-                  ) : (
-                    <span className="text-xs text-green-500 shrink-0">✓</span>
-                  )}
-                  <span className={cn(
-                    'font-mono text-xs',
-                    item.status === 'completed' && 'text-muted-foreground'
-                  )}>
-                    {item.name}
-                  </span>
-                  {item.description && (
-                    <span className="text-xs text-muted-foreground truncate">
-                      {item.description}
+                    {item.description && (
+                      <span className="text-xs text-muted-foreground truncate">
+                        {item.description}
+                      </span>
+                    )}
+                  </div>
+                  {item.progressSummary && item.status === 'running' && (
+                    <span className="text-xs text-muted-foreground ml-4 italic">
+                      {item.progressSummary}
                     </span>
                   )}
-                </div>
-                {item.progressSummary && item.status === 'running' && (
-                  <span className="text-xs text-muted-foreground ml-4 italic">
-                    {item.progressSummary}
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {/* Active background processes. Background subagents are excluded: they
-            already render as named subagent rows above, and counting them here
-            would show the same work twice. */}
-        {backgroundTasks.some((t) => !t.isSubagent) && (
-          <BackgroundTasksSection tasks={backgroundTasks.filter((t) => !t.isSubagent)} />
-        )}
-
-        {/* Todo list if available and at least one item is not completed */}
-        {todos && todos.length > 0 && todos.some((t) => t.status !== 'completed') && (() => {
-          const MAX_VISIBLE = 5
-          const needsTruncation = todos.length > MAX_VISIBLE && !showAllTodos
-
-          const notDone = todos.filter(t => t.status !== 'completed')
-          const doneReversed = todos.filter(t => t.status === 'completed').reverse()
-
-          let visibleTodos: Todo[]
-          let hiddenTodos: Todo[]
-
-          if (!needsTruncation) {
-            visibleTodos = [...notDone, ...doneReversed]
-            hiddenTodos = []
-          } else {
-            const visibleNotDone = notDone.slice(0, MAX_VISIBLE)
-            const remainingSlots = MAX_VISIBLE - visibleNotDone.length
-            const visibleDone = doneReversed.slice(0, remainingSlots)
-            visibleTodos = [...visibleNotDone, ...visibleDone]
-            const visibleSet = new Set(visibleTodos)
-            hiddenTodos = todos.filter(t => !visibleSet.has(t))
-          }
-
-          const hiddenPending = hiddenTodos.filter(t => t.status !== 'completed').length
-          const hiddenDone = hiddenTodos.filter(t => t.status === 'completed').length
-
-          return (
-            <ul className="mt-2 space-y-1 text-sm">
-              {hiddenTodos.length > 0 && (
-                <li>
-                  <button
-                    onClick={() => setShowAllTodos(true)}
-                    className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                  >
-                    {hiddenTodos.length} more{': '}
-                    {[
-                      hiddenPending > 0 && `${hiddenPending} pending`,
-                      hiddenDone > 0 && `${hiddenDone} done`,
-                    ].filter(Boolean).join(', ')}
-                  </button>
-                </li>
-              )}
-              {showAllTodos && todos.length > MAX_VISIBLE && (
-                <li>
-                  <button
-                    onClick={() => setShowAllTodos(false)}
-                    className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                  >
-                    Show fewer
-                  </button>
-                </li>
-              )}
-              {visibleTodos.map((todo, index) => (
-                <li
-                  key={index}
-                  className={cn(
-                    'flex items-center gap-2',
-                    todo.status === 'completed' && 'text-muted-foreground line-through',
-                    todo.status === 'in_progress' && 'font-medium'
-                  )}
-                >
-                  <span className="text-xs">
-                    {todo.status === 'completed' && '✓'}
-                    {todo.status === 'in_progress' && '→'}
-                    {todo.status === 'pending' && '○'}
-                  </span>
-                  {todo.content}
                 </li>
               ))}
             </ul>
-          )
-        })()}
+          )}
+
+          {/* Active background processes. Background subagents are excluded: they
+              already render as named subagent rows above, and counting them here
+              would show the same work twice. */}
+          {backgroundTasks.some((t) => !t.isSubagent) && (
+            <BackgroundTasksSection tasks={backgroundTasks.filter((t) => !t.isSubagent)} />
+          )}
+
+          {/* Todo list if available and at least one item is not completed */}
+          {todos && todos.length > 0 && todos.some((t) => t.status !== 'completed') && (() => {
+            const MAX_VISIBLE = 5
+            const needsTruncation = todos.length > MAX_VISIBLE && !showAllTodos
+
+            const notDone = todos.filter(t => t.status !== 'completed')
+            const doneReversed = todos.filter(t => t.status === 'completed').reverse()
+
+            let visibleTodos: Todo[]
+            let hiddenTodos: Todo[]
+
+            if (!needsTruncation) {
+              visibleTodos = [...notDone, ...doneReversed]
+              hiddenTodos = []
+            } else {
+              const visibleNotDone = notDone.slice(0, MAX_VISIBLE)
+              const remainingSlots = MAX_VISIBLE - visibleNotDone.length
+              const visibleDone = doneReversed.slice(0, remainingSlots)
+              visibleTodos = [...visibleNotDone, ...visibleDone]
+              const visibleSet = new Set(visibleTodos)
+              hiddenTodos = todos.filter(t => !visibleSet.has(t))
+            }
+
+            const hiddenPending = hiddenTodos.filter(t => t.status !== 'completed').length
+            const hiddenDone = hiddenTodos.filter(t => t.status === 'completed').length
+
+            return (
+              <ul className="mt-2 space-y-1 text-sm">
+                {hiddenTodos.length > 0 && (
+                  <li>
+                    <button
+                      onClick={() => setShowAllTodos(true)}
+                      className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                    >
+                      {hiddenTodos.length} more{': '}
+                      {[
+                        hiddenPending > 0 && `${hiddenPending} pending`,
+                        hiddenDone > 0 && `${hiddenDone} done`,
+                      ].filter(Boolean).join(', ')}
+                    </button>
+                  </li>
+                )}
+                {showAllTodos && todos.length > MAX_VISIBLE && (
+                  <li>
+                    <button
+                      onClick={() => setShowAllTodos(false)}
+                      className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                    >
+                      Show fewer
+                    </button>
+                  </li>
+                )}
+                {visibleTodos.map((todo, index) => (
+                  <li
+                    key={index}
+                    className={cn(
+                      'flex items-center gap-2',
+                      todo.status === 'completed' && 'text-muted-foreground line-through',
+                      todo.status === 'in_progress' && 'font-medium'
+                    )}
+                  >
+                    <span className="text-xs">
+                      {todo.status === 'completed' && '✓'}
+                      {todo.status === 'in_progress' && '→'}
+                      {todo.status === 'pending' && '○'}
+                    </span>
+                    {todo.content}
+                  </li>
+                ))}
+              </ul>
+            )
+          })()}
+        </div>
       </div>
     </div>
   )
