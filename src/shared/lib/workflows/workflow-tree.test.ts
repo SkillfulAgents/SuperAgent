@@ -1,5 +1,5 @@
 /* eslint-disable no-template-curly-in-string -- these strings embed workflow-script SOURCE (literal `${expr}`), not interpolation */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as path from 'path'
 import * as os from 'os'
 import { promises as fs } from 'fs'
@@ -363,5 +363,61 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
     })
     const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({ status: 'done', result: 'all good' })
+  })
+})
+
+describe('buildWorkflowTree — transcript reads stay bounded', () => {
+  /**
+   * Open one agent transcript per handle and never more than the cap at a time.
+   * Peak memory tracks the number of transcripts in flight, so a wide run
+   * (hundreds of agents, each tens of MB) is only safe while this holds.
+   */
+  it('never holds more than 10 agent transcripts open at once', async () => {
+    const AGENT_COUNT = 40
+    const agentIds = Array.from({ length: AGENT_COUNT }, (_, i) => `c${i}`)
+    const root = await scaffold({
+      script: "export const meta = { name: 'wide', description: 'd', phases: [] }\nawait agent('work', {})",
+      journal: agentIds.map((agentId, i) => ({ type: 'started', key: `v2:${i}`, agentId })),
+      agents: agentIds.map((agentId) => ({
+        agentId,
+        firstPrompt: 'work',
+        // Multi-chunk transcripts, so a read is still in flight when its
+        // siblings start — a cap that only holds for tiny files proves nothing.
+        extraLines: [{ type: 'assistant', agentId, message: { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(200_000) }] } }],
+      })),
+    })
+
+    let open = 0
+    let maxOpen = 0
+    const realOpen = fs.open
+    const openSpy = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await (realOpen as typeof fs.open)(...(args as Parameters<typeof fs.open>))
+      open++
+      maxOpen = Math.max(maxOpen, open)
+      const realClose = handle.close.bind(handle)
+      // The read stream closes the handle too, so close() lands twice per
+      // handle — only the first one releases it.
+      let released = false
+      handle.close = async () => {
+        if (!released) {
+          released = true
+          open--
+        }
+        return realClose()
+      }
+      return handle
+    })
+
+    try {
+      const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+      expect(tree!.agents).toHaveLength(AGENT_COUNT)
+      // Sanity: the transcripts really were read concurrently, so the cap is
+      // what bounds this rather than the reads happening to serialize.
+      expect(maxOpen).toBeGreaterThan(1)
+      expect(maxOpen).toBeLessThanOrEqual(10)
+      expect(open).toBe(0) // every handle closed
+    } finally {
+      openSpy.mockRestore()
+    }
   })
 })
