@@ -541,6 +541,131 @@ describe('usage-service', () => {
     })
   })
 
+  describe('loadDailyUsageData — line splitting', () => {
+    // Transcripts are scanned as raw bytes and only usage-bearing lines are
+    // decoded, so line boundaries have to survive stream chunking without a
+    // string decoder in front of them. The stream reads 64KiB at a time.
+    const CHUNK_SIZE = 64 * 1024
+
+    function usageRow(overrides: { id: string; padding?: string; note?: string }) {
+      return JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-01-01T12:00:00.000Z',
+        padding: overrides.padding,
+        note: overrides.note,
+        message: {
+          id: overrides.id,
+          model: 'claude-sonnet-4-6',
+          usage: { input_tokens: 100, output_tokens: 10 },
+        },
+      })
+    }
+
+    it('reassembles rows that span stream chunk boundaries', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-chunk-spanning-'))
+      const transcript = path.join(dir, 'session.jsonl')
+      // Each row is wider than a chunk, so every row is reassembled from
+      // several chunks and no boundary lands on a newline.
+      const rows = ['a', 'b', 'c'].map((id) =>
+        usageRow({ id, padding: 'x'.repeat(CHUNK_SIZE + 137) }),
+      )
+      writeFileSync(transcript, `${rows.join('\n')}\n`)
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.00135,
+          totalTokens: 330,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('decodes multi-byte characters split across a chunk boundary', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-multibyte-'))
+      const transcript = path.join(dir, 'session.jsonl')
+      // "€" is three bytes; pad so its bytes straddle the 64KiB read boundary.
+      const note = '€ mid-boundary'
+      const buildRow = (paddingWidth: number) =>
+        usageRow({ id: 'multibyte', padding: 'x'.repeat(paddingWidth), note })
+      // Everything ahead of the note is ASCII, so one measurement is enough to
+      // solve for the padding that puts the first "€" byte at CHUNK_SIZE - 1.
+      const probe = buildRow(0)
+      const row = buildRow(CHUNK_SIZE - 1 - probe.indexOf(note))
+      expect(Buffer.from(row, 'utf-8').indexOf(Buffer.from(note, 'utf-8'))).toBe(CHUNK_SIZE - 1)
+      writeFileSync(transcript, `${row}\n`)
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.00045,
+          totalTokens: 110,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('counts a final row written without a trailing newline', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-no-trailing-newline-'))
+      const transcript = path.join(dir, 'session.jsonl')
+      writeFileSync(transcript, usageRow({ id: 'last' }))
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.00045,
+          totalTokens: 110,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('skips blank and CRLF-terminated separator lines without flagging the load', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-blank-lines-'))
+      const transcript = path.join(dir, 'session.jsonl')
+      writeFileSync(transcript, `\n   \n${usageRow({ id: 'crlf' })}\r\n\r\n`)
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.00045,
+          totalTokens: 110,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('ignores rows whose only "_tokens" match sits outside message.usage', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-marker-decoy-'))
+      const transcript = path.join(dir, 'session.jsonl')
+      const decoy = JSON.stringify({
+        type: 'user',
+        timestamp: '2026-01-01T12:00:00.000Z',
+        message: { content: 'reported "input_tokens" in the logs' },
+      })
+      writeFileSync(transcript, `${decoy}\n${usageRow({ id: 'real' })}\n`)
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.00045,
+          totalTokens: 110,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+
   describe('loadDailyUsageData — costUSD field', () => {
     it('uses costUSD from entries when available', async () => {
       const claudePath = getClaudePath('bedrock-agent')
