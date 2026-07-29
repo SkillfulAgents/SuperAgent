@@ -86,6 +86,7 @@ export function ComputerUseTab() {
                     variant="ghost"
                     size="sm"
                     onClick={() => handleRevokeAll(agentSlug)}
+                    aria-label={`Revoke all computer use permissions for ${displayName(agentSlug)}`}
                     className="h-7 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
                   >
                     Revoke All
@@ -101,6 +102,11 @@ export function ComputerUseTab() {
                       variant="ghost"
                       size="sm"
                       onClick={() => handleRevokeGrant(agentSlug, i)}
+                      aria-label={`Revoke ${
+                        grant.appName
+                          ? `${PERMISSION_LEVEL_LABELS[grant.level]} — ${grant.appName}`
+                          : PERMISSION_LEVEL_LABELS[grant.level]
+                      } permission for ${displayName(agentSlug)}`}
                       className="h-6 px-2 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
                     >
                       Revoke
