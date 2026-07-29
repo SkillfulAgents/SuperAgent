@@ -326,6 +326,30 @@ function createWindow() {
     }),
   })
 
+  // TEMPORARY dev-only vibrancy cycler — Cmd+Alt+V steps through macOS materials
+  // on the live window so they can be compared over one fixed backdrop. Remove
+  // once the material is settled.
+  if (!app.isPackaged && process.platform === 'darwin') {
+    const materials = [
+      'under-window', 'under-page', 'sidebar', 'fullscreen-ui', 'header',
+      'titlebar', 'menu', 'popover', 'hud', 'content', 'window',
+    ] as const
+    // Start from whatever the window was actually created with, so the first
+    // press advances to the *next* material and a full cycle visits all of them.
+    let index = materials.indexOf('sidebar')
+    mainWindow.webContents.on('before-input-event', (_event, input) => {
+      if (input.type !== 'keyDown' || !input.meta || !input.alt) return
+      // Match on `code` (physical key), not `key`: on macOS Option+V emits "√",
+      // so a `key === 'v'` test never fires.
+      if (input.code !== 'KeyV') return
+      index = (index + 1) % materials.length
+      const material = materials[index]
+      mainWindow?.setVibrancy(material)
+      console.log(`[vibrancy] ${index + 1}/${materials.length} → ${material}`)
+      new Notification({ title: 'Vibrancy', body: `${index + 1}/${materials.length} — ${material}` }).show()
+    })
+  }
+
   // Grant microphone (and camera) permissions for the renderer.
   // Production loads from file:// where Chromium blocks getUserMedia by default.
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
