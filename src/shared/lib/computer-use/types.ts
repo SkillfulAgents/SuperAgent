@@ -12,6 +12,14 @@ export type ComputerUsePermissionLevel =
   | 'use_application'
   | 'use_host_shell'
 
+/** User-facing names for the permission levels, shared by the settings tab and
+    the in-chat approval card. Written to be self-explanatory without a legend. */
+export const PERMISSION_LEVEL_LABELS: Record<ComputerUsePermissionLevel, string> = {
+  list_apps_windows: 'List Apps & Windows (read-only)',
+  use_application: 'Use Application',
+  use_host_shell: 'Run Shell Commands & Scripts',
+}
+
 export type PermissionGrantType = 'once' | 'timed' | 'always'
 
 export interface PermissionGrant {

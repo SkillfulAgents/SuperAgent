@@ -12,6 +12,7 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
+import { PERMISSION_LEVEL_LABELS } from '@shared/lib/computer-use/types'
 import { DeclineButton } from './decline-button'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
@@ -30,11 +31,7 @@ interface ComputerUseRequestItemProps {
 
 type RequestStatus = 'pending' | 'submitting' | 'executed' | 'denied'
 
-const PERMISSION_LABELS: Record<string, string> = {
-  list_apps_windows: 'List Apps & Windows',
-  use_application: 'Use Application',
-  use_host_shell: 'Host Shell',
-}
+const PERMISSION_LABELS: Record<string, string> = PERMISSION_LEVEL_LABELS
 
 function formatParams(params: Record<string, unknown>): string {
   const parts: string[] = []
