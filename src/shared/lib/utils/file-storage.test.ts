@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -705,6 +705,87 @@ describe('streamJsonlFile', () => {
     }
 
     expect(results).toEqual([{ id: 1 }, { id: 2 }])
+  })
+
+  // Lines are split in the raw bytes, so chunk boundaries are the interesting
+  // failure surface: the stream reads 64KiB at a time and transcript rows are
+  // routinely wider than that.
+  const CHUNK_SIZE = 64 * 1024
+
+  it('reassembles rows wider than a read chunk', async () => {
+    const filePath = path.join(testDir, 'wide.jsonl')
+    const rows = [0, 1, 2].map((id) =>
+      JSON.stringify({ id, padding: 'x'.repeat(CHUNK_SIZE + 137) })
+    )
+    await fs.promises.writeFile(filePath, `${rows.join('\n')}\n`)
+
+    const results: { id: number; padding: string }[] = []
+    for await (const item of streamJsonlFile<{ id: number; padding: string }>(filePath)) {
+      results.push(item)
+    }
+
+    expect(results.map((r) => r.id)).toEqual([0, 1, 2])
+    expect(results.every((r) => r.padding.length === CHUNK_SIZE + 137)).toBe(true)
+  })
+
+  it('decodes a multi-byte character split across a chunk boundary', async () => {
+    const filePath = path.join(testDir, 'multibyte.jsonl')
+    // "€" is three bytes. Everything ahead of it is ASCII, so one measurement
+    // solves for the padding that lands its first byte at CHUNK_SIZE - 1.
+    const note = '€ mid-boundary'
+    const build = (width: number) => JSON.stringify({ padding: 'x'.repeat(width), note })
+    const row = build(CHUNK_SIZE - 1 - build(0).indexOf(note))
+    expect(Buffer.from(row, 'utf-8').indexOf(Buffer.from(note, 'utf-8'))).toBe(CHUNK_SIZE - 1)
+    await fs.promises.writeFile(filePath, `${row}\n`)
+
+    const results: { note: string }[] = []
+    for await (const item of streamJsonlFile<{ note: string }>(filePath)) {
+      results.push(item)
+    }
+
+    expect(results).toHaveLength(1)
+    expect(results[0].note).toBe(note)
+  })
+
+  it('skips blank lines and tolerates CRLF endings', async () => {
+    const filePath = path.join(testDir, 'crlf.jsonl')
+    await fs.promises.writeFile(filePath, '\r\n{"id": 1}\r\n   \r\n{"id": 2}\r\n')
+
+    const results: { id: number }[] = []
+    for await (const item of streamJsonlFile<{ id: number }>(filePath)) {
+      results.push(item)
+    }
+
+    expect(results).toEqual([{ id: 1 }, { id: 2 }])
+  })
+
+  it('closes the file handle when the consumer stops early', async () => {
+    const filePath = path.join(testDir, 'early-break.jsonl')
+    await fs.promises.writeFile(filePath, '{"id": 1}\n{"id": 2}\n{"id": 3}\n')
+
+    let closed = false
+    const realOpen = fs.promises.open
+    const openSpy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await (realOpen as typeof fs.promises.open)(
+        ...(args as Parameters<typeof fs.promises.open>)
+      )
+      const realClose = handle.close.bind(handle)
+      handle.close = async () => {
+        closed = true
+        return realClose()
+      }
+      return handle
+    })
+
+    try {
+      for await (const item of streamJsonlFile<{ id: number }>(filePath)) {
+        expect(item).toEqual({ id: 1 })
+        break // abandon the iterator mid-file
+      }
+      expect(closed).toBe(true)
+    } finally {
+      openSpy.mockRestore()
+    }
   })
 })
 
