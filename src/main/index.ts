@@ -334,19 +334,41 @@ function createWindow() {
       'under-window', 'under-page', 'sidebar', 'fullscreen-ui', 'header',
       'titlebar', 'menu', 'popover', 'hud', 'content', 'window',
     ] as const
+    // 12th, home-made "material": no vibrancy at all — a flat opaque sidebar
+    // gray (Linear-style), for comparison against the native frosted materials.
+    const CUSTOM = 'custom-flat'
+    const CUSTOM_FROST_CSS = `
+      html.electron-vibrancy body { background: rgb(247, 247, 247) !important; }
+      html.electron-vibrancy.dark body { background: rgb(30, 30, 30) !important; }
+    `
+    const cycle = [...materials, CUSTOM] as const
     // Start from whatever the window was actually created with, so the first
     // press advances to the *next* material and a full cycle visits all of them.
-    let index = materials.indexOf('sidebar')
+    let index = cycle.indexOf('sidebar')
+    let customCssKey: string | null = null
     mainWindow.webContents.on('before-input-event', (_event, input) => {
       if (input.type !== 'keyDown' || !input.meta || !input.alt) return
       // Match on `code` (physical key), not `key`: on macOS Option+V emits "√",
       // so a `key === 'v'` test never fires.
       if (input.code !== 'KeyV') return
-      index = (index + 1) % materials.length
-      const material = materials[index]
-      mainWindow?.setVibrancy(material)
-      console.log(`[vibrancy] ${index + 1}/${materials.length} → ${material}`)
-      new Notification({ title: 'Vibrancy', body: `${index + 1}/${materials.length} — ${material}` }).show()
+      const wc = mainWindow?.webContents
+      if (!mainWindow || !wc) return
+      index = (index + 1) % cycle.length
+      const material = cycle[index]
+      if (customCssKey) {
+        void wc.removeInsertedCSS(customCssKey)
+        customCssKey = null
+      }
+      if (material === CUSTOM) {
+        mainWindow.setVibrancy(null)
+        void wc.insertCSS(CUSTOM_FROST_CSS).then((key) => {
+          customCssKey = key
+        })
+      } else {
+        mainWindow.setVibrancy(material)
+      }
+      console.log(`[vibrancy] ${index + 1}/${cycle.length} → ${material}`)
+      new Notification({ title: 'Vibrancy', body: `${index + 1}/${cycle.length} — ${material}` }).show()
     })
   }
 
