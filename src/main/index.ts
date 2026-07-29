@@ -326,51 +326,54 @@ function createWindow() {
     }),
   })
 
-  // TEMPORARY dev-only vibrancy cycler — Cmd+Alt+V steps through macOS materials
-  // on the live window so they can be compared over one fixed backdrop. Remove
-  // once the material is settled.
-  if (!app.isPackaged && process.platform === 'darwin') {
-    const materials = [
-      'under-window', 'under-page', 'sidebar', 'fullscreen-ui', 'header',
-      'titlebar', 'menu', 'popover', 'hud', 'content', 'window',
-    ] as const
-    // 12th, home-made "material": no vibrancy at all — a flat opaque sidebar
-    // gray (Linear-style), for comparison against the native frosted materials.
-    const CUSTOM = 'custom-flat'
-    const CUSTOM_FROST_CSS = `
-      html.electron-vibrancy body { background: rgb(247, 247, 247) !important; }
-      html.electron-vibrancy.dark body { background: rgb(30, 30, 30) !important; }
-    `
-    const cycle = [...materials, CUSTOM] as const
-    // Start from whatever the window was actually created with, so the first
-    // press advances to the *next* material and a full cycle visits all of them.
-    let index = cycle.indexOf('sidebar')
-    let customCssKey: string | null = null
-    mainWindow.webContents.on('before-input-event', (_event, input) => {
-      if (input.type !== 'keyDown' || !input.meta || !input.alt) return
-      // Match on `code` (physical key), not `key`: on macOS Option+V emits "√",
-      // so a `key === 'v'` test never fires.
-      if (input.code !== 'KeyV') return
-      const wc = mainWindow?.webContents
-      if (!mainWindow || !wc) return
-      index = (index + 1) % cycle.length
-      const material = cycle[index]
-      if (customCssKey) {
-        void wc.removeInsertedCSS(customCssKey)
-        customCssKey = null
-      }
-      if (material === CUSTOM) {
-        mainWindow.setVibrancy(null)
-        void wc.insertCSS(CUSTOM_FROST_CSS).then((key) => {
-          customCssKey = key
-        })
-      } else {
-        mainWindow.setVibrancy(material)
-      }
-      console.log(`[vibrancy] ${index + 1}/${cycle.length} → ${material}`)
-      new Notification({ title: 'Vibrancy', body: `${index + 1}/${cycle.length} — ${material}` }).show()
-    })
-  }
+  // ⚠ THROWAWAY DIAGNOSTIC — MUST NOT SHIP. Cmd+Alt+V cycles the window's
+  // vibrancy material so candidates can be compared against one fixed backdrop
+  // across macOS versions. Deliberately ungated: it runs in packaged builds too,
+  // because the whole point is testing real builds on real OS installs. Delete
+  // this block (and its branch) once a material is chosen.
+  const vibrancyMaterials = [
+    'under-window', 'under-page', 'sidebar', 'fullscreen-ui', 'header',
+    'titlebar', 'menu', 'popover', 'hud', 'content', 'window',
+  ] as const
+  // 12th, home-made "material": no vibrancy at all — a flat opaque sidebar
+  // gray (Linear-style), for comparison against the native frosted materials.
+  const VIBRANCY_CUSTOM = 'custom-flat'
+  const VIBRANCY_CUSTOM_CSS = `
+    html.electron-vibrancy body { background: rgb(247, 247, 247) !important; }
+    html.electron-vibrancy.dark body { background: rgb(30, 30, 30) !important; }
+  `
+  const vibrancyCycle = [...vibrancyMaterials, VIBRANCY_CUSTOM] as const
+  // Start from whatever the window was actually created with, so the first
+  // press advances to the *next* material and a full cycle visits all of them.
+  let vibrancyIndex: number = vibrancyCycle.indexOf('sidebar')
+  let vibrancyCustomCssKey: string | null = null
+  mainWindow.webContents.on('before-input-event', (_event, input) => {
+    if (input.type !== 'keyDown' || !input.meta || !input.alt) return
+    // Match on `code` (physical key), not `key`: on macOS Option+V emits "√",
+    // so a `key === 'v'` test never fires.
+    if (input.code !== 'KeyV') return
+    const wc = mainWindow?.webContents
+    if (!mainWindow || !wc) return
+    vibrancyIndex = (vibrancyIndex + 1) % vibrancyCycle.length
+    const material = vibrancyCycle[vibrancyIndex]
+    if (vibrancyCustomCssKey) {
+      void wc.removeInsertedCSS(vibrancyCustomCssKey)
+      vibrancyCustomCssKey = null
+    }
+    if (material === VIBRANCY_CUSTOM) {
+      mainWindow.setVibrancy(null)
+      void wc.insertCSS(VIBRANCY_CUSTOM_CSS).then((key) => {
+        vibrancyCustomCssKey = key
+      })
+    } else {
+      mainWindow.setVibrancy(material)
+    }
+    const label = `${vibrancyIndex + 1}/${vibrancyCycle.length} — ${material}`
+    console.log(`[vibrancy] ${label}`)
+    // In a packaged build stdout goes nowhere visible, so the notification is
+    // the only feedback channel that reaches you.
+    new Notification({ title: 'Vibrancy', body: label }).show()
+  })
 
   // Grant microphone (and camera) permissions for the renderer.
   // Production loads from file:// where Chromium blocks getUserMedia by default.
