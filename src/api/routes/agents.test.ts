@@ -258,6 +258,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true),
+  sessionIsKnown: vi.fn().mockResolvedValue(true),
   isSessionRegistered: vi.fn().mockResolvedValue(false),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   deleteSession: vi.fn(),
@@ -460,7 +461,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, isSessionRegistered, deleteSession, getSession, readSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -5227,5 +5228,63 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
     const res = await getReq(app, `${NOTABLE_URL}&limit=zero`)
     const body = await res.json()
     expect(body).toHaveLength(25)
+  })
+})
+
+describe('session existence guards read metadata, not the transcript', () => {
+  let app: ReturnType<typeof createApp>
+
+  const SESSION_INFO = {
+    id: 'sess-1',
+    agentSlug: 'test-agent',
+    name: 'Renamed',
+    createdAt: new Date('2026-03-01T10:00:00.000Z'),
+    lastActivityAt: new Date('2026-03-01T10:05:00.000Z'),
+    messageCount: 7,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionIsKnown).mockResolvedValue(true)
+    vi.mocked(getSession).mockResolvedValue(SESSION_INFO)
+  })
+
+  it('renames a session with a single transcript read', async () => {
+    const res = await patchJson(app, '/api/agents/test-agent/sessions/sess-1', { name: 'Renamed' })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ id: 'sess-1', name: 'Renamed', messageCount: 7 })
+    expect(updateSessionName).toHaveBeenCalledWith('test-agent', 'sess-1', 'Renamed')
+    // Was two full passes over the transcript — one on each side of the rename.
+    expect(getSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('404s a rename for an unknown session without writing metadata', async () => {
+    vi.mocked(sessionIsKnown).mockResolvedValue(false)
+
+    const res = await patchJson(app, '/api/agents/test-agent/sessions/ghost', { name: 'Nope' })
+
+    expect(res.status).toBe(404)
+    // The guard has to run BEFORE the rename: updateSessionName would otherwise
+    // register metadata for a session that does not exist.
+    expect(updateSessionName).not.toHaveBeenCalled()
+    expect(getSession).not.toHaveBeenCalled()
+  })
+
+  it('guards computer-use revoke without reading the transcript', async () => {
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/computer-use/revoke', {})
+
+    expect(res.status).not.toBe(404)
+    expect(sessionIsKnown).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(getSession).not.toHaveBeenCalled()
+  })
+
+  it('404s computer-use revoke for an unknown session', async () => {
+    vi.mocked(sessionIsKnown).mockResolvedValue(false)
+
+    const res = await postJson(app, '/api/agents/test-agent/sessions/ghost/computer-use/revoke', {})
+
+    expect(res.status).toBe(404)
   })
 })
