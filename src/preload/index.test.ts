@@ -44,7 +44,7 @@ type ExposedApi = {
     context?: unknown,
   ) => Promise<void>
   minimizeWindow: () => void
-  setSidebarCollapsed: (collapsed: boolean) => void
+  focusWindow: () => void
   onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => void
   removeNavigateToAgent: () => void
   onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => void
@@ -127,10 +127,10 @@ describe('preload electronAPI bridge', () => {
     const api = await loadApi()
 
     api.minimizeWindow()
-    api.setSidebarCollapsed(true)
+    api.focusWindow()
 
     expect(electronMocks.send).toHaveBeenCalledWith('window-minimize')
-    expect(electronMocks.send).toHaveBeenCalledWith('set-sidebar-collapsed', true)
+    expect(electronMocks.send).toHaveBeenCalledWith('focus-window')
   })
 
   it('forwards navigation events and removes channel listeners', async () => {

@@ -213,8 +213,10 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
   Sidebar: ({ children, ...props }: any) => <aside {...props}>{children}</aside>,
   SidebarContent: ({ children }: any) => <div>{children}</div>,
   SidebarFooter: ({ children, className }: any) => <div data-testid="sidebar-footer" className={className}>{children}</div>,
-  SidebarHeader: ({ children, className }: any) => (
-    <div data-testid="sidebar-header" className={className}>{children}</div>
+  // Forwards `style` as well: the traffic-light reservation is an inline
+  // paddingLeft, so a mock that dropped it would make that assertion vacuous.
+  SidebarHeader: ({ children, className, style }: any) => (
+    <div data-testid="sidebar-header" className={className} style={style}>{children}</div>
   ),
   SidebarGroup: ({ children, className }: any) => <div className={className}>{children}</div>,
   SidebarGroupContent: ({ children }: any) => <div>{children}</div>,
@@ -344,9 +346,15 @@ beforeEach(() => {
 })
 
 describe('AppSidebar — layout & top nav', () => {
-  it('renders the Gamut wordmark', () => {
+  it('does not name the app in the sidebar', () => {
+    // The wordmark cost a whole row to repeat what the window already says.
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByText('Gamut')).toBeInTheDocument()
+    expect(screen.queryByText('Gamut')).not.toBeInTheDocument()
+  })
+
+  it('puts the window-level controls in the title bar row', () => {
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('sidebar-header')).toContainElement(screen.getByTestId('search-button'))
   })
 
   it('renders Home, Notifications, and New Agent in the top nav', () => {
@@ -397,12 +405,13 @@ describe('AppSidebar — layout & top nav', () => {
     expect(mockCreateUntitledAgent).toHaveBeenCalled()
   })
 
-  it('does not render a header bar in non-Electron mode (no traffic-light spacer)', () => {
+  it('keeps the title bar row in non-Electron mode, minus the traffic-light spacer', () => {
     renderWithProviders(<AppSidebar />)
-    // Header is always mounted, but collapses to h-0 / no border when not needed.
+    // The row holds the controls now, so it exists everywhere; only the space
+    // reserved for macOS traffic lights is conditional.
     const header = screen.getByTestId('sidebar-header')
-    expect(header.className).toMatch(/h-0/)
-    expect(header.className).not.toMatch(/h-12\b/)
+    expect(header.className).toMatch(/h-12\b/)
+    expect(header.style.paddingLeft).toBe('')
   })
 
   it('does not render history navigation controls in web mode', () => {
@@ -705,8 +714,8 @@ describe('UserMenu action for the current target', () => {
 })
 
 describe('TargetSwitcher placement', () => {
-  // It scopes everything below it, so it belongs directly under the wordmark at
-  // the top of the sidebar — not in the footer among the per-window actions.
+  // It scopes everything below it, so it belongs at the head of the sidebar's
+  // title bar row — not in the footer among the per-window actions.
   afterEach(() => {
     vi.unstubAllGlobals()
     _resetApiTargetForTest()

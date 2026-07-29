@@ -806,99 +806,88 @@ export function AppSidebar() {
   const isPullingOrBuilding = readiness?.status === 'PULLING_IMAGE'
   const isChecking = readiness?.status === 'CHECKING'
 
-  // The header bar exists only to leave room for macOS traffic lights when
-  // windowed. In every other case (mac fullscreen, windows, web) it collapses
-  // to 0 height so the wordmark sits flush with the top of the sidebar.
+  // macOS windowed is the only case that needs room reserved at the left of the
+  // header row; everywhere else (mac fullscreen, Windows, web) the row starts at
+  // the sidebar's own padding.
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !animatedFullScreen
   const isWindowsElectron = isElectron() && getPlatform() === 'win32'
-  const showHeaderBar = needsTrafficLightPadding
   const showHistoryNavigation = !__WEB__ && isElectron()
 
   return (
     <>
       <Sidebar variant="inset" data-testid="app-sidebar">
       {/*
-        Always rendered so height/border can transition smoothly when entering
-        or leaving fullscreen on macOS. Collapses to 0 height (with no border)
-        when there's no traffic-light spacer to make room for and no Windows
-        menu chevron to host.
+        The sidebar's title bar: one 48px row holding everything that acts on the
+        window rather than on an agent — where agents run, history, search — and,
+        on macOS, the traffic lights it leaves room for. There is no app name
+        here on purpose: it named the window in a window that is already named,
+        and its row was the only thing standing between the traffic lights and
+        the controls.
+
+        The left padding (not the height) is what changes on a fullscreen
+        toggle, so the row itself never moves and only the traffic-light gap
+        animates shut.
       */}
       <SidebarHeader
-        className={cn(
-          'app-drag-region p-0 overflow-hidden transition-[height,border-bottom-width] duration-200 ease-out',
-          showHeaderBar ? 'h-12 border-b' : 'h-0 border-b-0'
-        )}
-        style={{
-          paddingLeft: needsTrafficLightPadding ? '80px' : undefined,
-        }}
+        className="app-drag-region h-12 shrink-0 p-0 overflow-hidden transition-[padding-left] duration-200 ease-out"
+        style={{ paddingLeft: needsTrafficLightPadding ? '80px' : undefined }}
       >
-        <div className="flex items-center h-12 px-2 gap-1" />
+        {/* `overflow-hidden` is load-bearing: hovering the target switcher
+            expands it in place, which pushes the buttons after it past the right
+            edge rather than squeezing them. */}
+        <div className="flex items-center h-12 px-2 gap-1 overflow-hidden">
+          {isWindowsElectron && (
+            <button
+              className="app-no-drag shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
+              aria-label="Application menu"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect()
+                window.electronAPI?.popupAppMenu(Math.round(rect.left), Math.round(rect.bottom))
+              }}
+            >
+              <ChevronDown className="h-4 w-4 text-foreground/60" />
+            </button>
+          )}
+
+          {/* Which Superagent this window drives. First in the row, ahead of the
+              controls that act within it: it scopes them, and everything below.
+              Renders nothing when there is no cloud workspace to switch to. */}
+          <TargetSwitcher />
+
+          <div className="app-no-drag ml-auto -mr-2 flex shrink-0 items-center gap-0.5">
+            <TooltipProvider delayDuration={200}>
+              {showHistoryNavigation && <HistoryNavigationButtons />}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={openSearch}
+                    aria-label="Search"
+                    className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/10 transition-colors"
+                    data-testid="search-button"
+                  >
+                    <Search className="h-4 w-4 -translate-y-[1px]" />
+                  </button>
+                </TooltipTrigger>
+                {/* No keyboard on touch, and the Sheet's focus-trap would auto-open
+                    this tooltip with no way to dismiss it — so suppress it on mobile. */}
+                {!isMobile && (
+                  <TooltipContent side="bottom" className="flex items-center gap-2">
+                    <span>Search</span>
+                    <span className="opacity-70">{getPlatform() === 'darwin' ? '⌘K' : 'Ctrl+K'}</span>
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+        </div>
       </SidebarHeader>
 
       <ErrorBoundary compact>
         <SidebarContent className="overflow-visible">
           <SidebarGroup className="shrink-0 p-0">
-            {/*
-              When the header bar is present its 48px sit above the wordmark
-              (small `-4px` pull-up tightens the gap). When it's collapsed the
-              wordmark needs its own breathing room. Animated via marginTop so
-              the transition matches the header collapse on fullscreen toggle.
-            */}
-            <div
-              className={cn(
-                'px-2 pb-2 text-base font-medium select-none transition-[margin-top] duration-200 ease-out flex items-center gap-1',
-                isWindowsElectron && 'app-drag-region'
-              )}
-              style={{ marginTop: showHeaderBar ? '-8px' : '8px' }}
-            >
-              <span>Gamut</span>
-              {isWindowsElectron && (
-                <button
-                  className="app-no-drag p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
-                  onClick={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect()
-                    window.electronAPI?.popupAppMenu(Math.round(rect.left), Math.round(rect.bottom))
-                  }}
-                >
-                  <ChevronDown className="h-4 w-4 text-foreground/60" />
-                </button>
-              )}
-              <div className="app-no-drag ml-auto -mr-2 flex items-center gap-0.5">
-                <TooltipProvider delayDuration={200}>
-                  {showHistoryNavigation && <HistoryNavigationButtons />}
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={openSearch}
-                        aria-label="Search"
-                        className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/10 transition-colors"
-                        data-testid="search-button"
-                      >
-                        <Search className="h-4 w-4 -translate-y-[1px]" />
-                      </button>
-                    </TooltipTrigger>
-                    {/* No keyboard on touch, and the Sheet's focus-trap would auto-open
-                        this tooltip with no way to dismiss it — so suppress it on mobile. */}
-                    {!isMobile && (
-                      <TooltipContent side="bottom" className="flex items-center gap-2">
-                        <span>Search</span>
-                        <span className="opacity-70">{getPlatform() === 'darwin' ? '⌘K' : 'Ctrl+K'}</span>
-                      </TooltipContent>
-                    )}
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
-            </div>
-
-            {/* Which Superagent this window drives. Sits directly under the
-                wordmark: it scopes everything below it, so it reads as a
-                property of the whole sidebar rather than one more menu item.
-                Renders nothing when there is no cloud workspace to switch to. */}
-            <TargetSwitcher />
-
-            {/* Status banners — render under the wordmark so they sit inside the
-                sidebar's content area rather than pushing the wordmark down. The
+            {/* Status banners — render under the title bar so they sit inside the
+                sidebar's content area rather than pushing the header down. The
                 SidebarBannerStack wrapper owns horizontal padding, inter-banner
                 gap, and trailing space; render it only when at least one banner
                 is visible to avoid a stray padded div. */}
@@ -929,7 +918,7 @@ export function AppSidebar() {
 
             <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />
             <SidebarGroupContent>
-              <SidebarMenu className="gap-0.5 py-2">
+              <SidebarMenu className="gap-0.5 py-2 pt-0">
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     asChild

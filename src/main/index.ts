@@ -320,7 +320,11 @@ function createWindow() {
     },
     ...(process.platform === 'darwin' && {
       titleBarStyle: 'hiddenInset' as const,
-      trafficLightPosition: { x: 16, y: 16 },
+      // Centered in the sidebar's 48px title bar row, which is now the only
+      // thing the lights ever sit beside — the renderer used to push a second
+      // position over IPC whenever the sidebar collapsed, back when an expanded
+      // sidebar had a taller header to align with.
+      trafficLightPosition: { x: 21, y: 23 },
       vibrancy: 'sidebar' as const,
       visualEffectState: 'active' as const,
     }),
@@ -460,15 +464,6 @@ ipcMain.on('window-close', () => {
 })
 ipcMain.handle('get-window-maximized-state', () => {
   return mainWindow?.isMaximized() ?? false
-})
-
-// Reposition macOS traffic-light buttons to vertically center them in the
-// 48px top bar when the sidebar is collapsed (no sidebar header to align with).
-ipcMain.on('set-sidebar-collapsed', (_event, collapsed: boolean) => {
-  if (process.platform !== 'darwin' || !mainWindow) return
-  const y = collapsed ? 23 : 16
-  const x = collapsed ? 21 : 16
-  mainWindow.setWindowButtonPosition({ x, y })
 })
 
 // IPC handler for getting the API URL (port may vary)

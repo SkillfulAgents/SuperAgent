@@ -70,7 +70,7 @@ for (let i = 0; i < SAMPLES; i++) {
       reconnect: document.body.innerText.includes('reach your cloud workspace'),
       wizard: !!document.querySelector('[data-testid="wizard-container"]'),
       sidebar: !!document.querySelector('[data-testid="app-sidebar"]'),
-      marker: !!document.querySelector('[data-testid="cloud-mode-indicator"]'),
+      target: document.documentElement.dataset.apiTarget ?? null,
     }))
     .catch(() => ({ evaluating: 'unavailable' }))
   console.log(`${stamp()} ${JSON.stringify(shown)}`)

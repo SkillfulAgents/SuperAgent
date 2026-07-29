@@ -92,24 +92,14 @@ function expectEqual(actual, wanted, message) {
  * what this renderer actually booted with.
  */
 async function rendererTarget(page) {
-  // The marker first, because it survives what the switcher does not. A switch
-  // into a not-yet-onboarded workspace lands on the wizard, which replaces the
-  // whole shell — sidebar, switcher and all — while `CloudModeIndicator` stays
-  // mounted alongside it. Reading only the switcher makes that case look like a
-  // switch that never happened, which is a timeout rather than a failure and so
-  // takes the full 90s to say nothing.
-  const marker = await page
-    .locator('[data-testid="cloud-mode-indicator"]')
-    .count()
-    .catch(() => 0)
-  if (marker > 0) return 'cloud'
-
-  const pressed = await page
-    .locator('[data-testid="target-option-cloud"]')
-    .getAttribute('aria-pressed')
+  // `<html data-api-target>`, stamped by `setActiveTarget()` alongside the value
+  // it mirrors. Read it rather than any on-screen chrome: a switch into a
+  // not-yet-onboarded workspace lands on the wizard, which replaces the whole
+  // shell — sidebar, switcher and all — so "no switcher" would read identically
+  // to "switch never happened", which is a 90s timeout rather than a failure.
+  return page
+    .evaluate(() => document.documentElement.dataset.apiTarget ?? null)
     .catch(() => null)
-  if (pressed === null) return null
-  return pressed === 'true' ? 'cloud' : 'local'
 }
 
 async function mainTarget(page) {
@@ -236,8 +226,8 @@ try {
     expectEqual(target.baseUrl, `http://localhost:${app.apiPort}`, 'base URL')
   })
 
-  await check('A2 no cloud marker while local', async () => {
-    expectEqual(await page.locator('[data-testid="cloud-mode-indicator"]').count(), 0, 'marker count')
+  await check('A2 the renderer itself reports local', async () => {
+    expectEqual(await rendererTarget(page), 'local', 'document root target')
   })
 
   await check('A3 the switcher appears once the workspace is discovered', async () => {
@@ -282,21 +272,16 @@ try {
     expect(!baseUrl.includes('8899'), `base URL must not be the deployment origin: ${baseUrl}`)
   })
 
-  await check('A8 the cloud marker is mounted', async () => {
-    await page.waitForSelector('[data-testid="cloud-mode-indicator"]', { timeout: 30_000 })
-  })
-
-  await check('A9 the marker cannot swallow clicks', async () => {
-    const marker = page.locator('[data-testid="cloud-mode-indicator"]')
-    expectEqual(await marker.getAttribute('aria-hidden'), 'true', 'aria-hidden')
+  await check('A8 the switcher shows cloud as the selected option', async () => {
+    await waitForSwitcher(page)
     expectEqual(
-      await marker.evaluate((el) => getComputedStyle(el).pointerEvents),
-      'none',
-      'computed pointer-events',
+      await page.locator('[data-testid="target-option-cloud"]').getAttribute('aria-pressed'),
+      'true',
+      'aria-pressed on the cloud option',
     )
   })
 
-  await check('A10 the launcher is torn down on the switch', async () => {
+  await check('A9 the launcher is torn down on the switch', async () => {
     await waitFor(
       'the quick-dispatch window to be destroyed',
       () => (app.pages().some((p) => p.url().includes('quick-dispatch.html')) ? null : true),
@@ -469,8 +454,13 @@ try {
     )
   })
 
-  await check('E2 the relaunched window carries the marker', async () => {
-    await page.waitForSelector('[data-testid="cloud-mode-indicator"]', { timeout: 30_000 })
+  await check('E2 the relaunched window still drives the cloud workspace', async () => {
+    await waitForSwitcher(page)
+    expectEqual(
+      await page.locator('[data-testid="target-option-cloud"]').getAttribute('aria-pressed'),
+      'true',
+      'aria-pressed on the cloud option',
+    )
   })
 
   await check('E3 the launcher is recreated, and carries its own marker', async () => {
@@ -496,8 +486,8 @@ try {
     )
   })
 
-  await check('F3 the marker is gone', async () => {
-    expectEqual(await page.locator('[data-testid="cloud-mode-indicator"]').count(), 0, 'marker count')
+  await check('F3 the renderer reports local again', async () => {
+    expectEqual(await rendererTarget(page), 'local', 'document root target')
   })
 
   await check('F4 Computer Use is offered again on this computer', async () => {

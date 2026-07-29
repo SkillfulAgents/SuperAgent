@@ -38,6 +38,18 @@ export function setActiveTarget(target: ApiTarget, fallback: TargetFallbackReaso
   }
   activeTarget = target
   fallbackReason = fallback
+  // Publish it on the document root as well.
+  //
+  // Nothing in the app reads this — it exists so an out-of-process observer
+  // (the live suite driving a real window over CDP) can ask which Superagent a
+  // renderer settled on without inferring it from whatever chrome happens to be
+  // on screen. The sidebar switcher is not that: it is absent from the
+  // onboarding wizard, which replaces the whole shell, so "no switcher" reads
+  // identically to "switch never happened". Set once, alongside the value it
+  // mirrors, so the two cannot drift.
+  if (typeof document !== 'undefined') {
+    document.documentElement.dataset.apiTarget = target
+  }
 }
 
 /**

@@ -301,11 +301,12 @@ Derived rather than stored, so the two can never disagree.
 ### Choosing the target
 
 `TargetSwitcher` is the segmented Local/Cloud control, and `useTargetSwitch`
-holds the logic. It sits directly under the sidebar wordmark, above Home: it
-scopes everything below it, so it reads as a property of the whole sidebar
-rather than one more menu item. It owns its own padding, since it renders
-nothing most of the time and a wrapper would leave a stray padded div in every
-local-only sidebar.
+holds the logic. It sits at the head of the sidebar's title bar row, ahead of
+history and search: it scopes everything below it, so it reads as a property of
+the whole window rather than one more menu item. That row is a fixed 48px shared
+with the macOS traffic lights, so the control shows icons only and reveals its
+labels on hover (and on focus, for keyboard users), pushing the buttons after it
+past the right edge while open.
 
 - **Hidden unless there is somewhere to go.** A single-machine user never sees a
   control with one real option.
@@ -336,24 +337,29 @@ local-only sidebar.
 - Recording the preference also tears down the quick-dispatch launcher (main does
   that), so the control only owns *this* window.
 
-### The cloud-mode marker
+### How a window says which Superagent it is driving
 
-`CloudModeIndicator` frames the whole window while cloud mode is on. Two windows
-of this app look identical and one of them may be the organization's production
-Superagent, so the state has to be visible before the hand moves rather than
-something you go and check. It is `pointer-events-none` throughout and
-`aria-hidden` — it visually overlaps the window drag region and the native
-traffic lights, and a marker that swallowed clicks there would be worse than no
-marker.
+The main window says it through the sidebar switcher alone: the selected option
+is the state. It previously also carried a screen-sized frame and a "Cloud
+workspace" strip; that was removed as too loud for a state the switcher already
+shows on every screen. Collapsed, that state is the raised icon — laptop or
+cloud — which is why the two options must stay visually distinguishable without
+their labels.
 
-**Every window that resolves the target needs its own marker.** `CloudModeIndicator`
-is mounted by the router's layout, so it covers the main window only. The
-quick-dispatch launcher is a separate renderer with no router, and it can create
-a session on the organization's Superagent straight from a global shortcut — so
-it carries its own: a sky ring on the panel and a full-width "Cloud workspace"
-strip above the input (`quick-dispatch.tsx`). A screen-sized portal would be
-wrong there anyway, where the window *is* the panel. Anything that grows into a
-window of its own needs the same treatment.
+The **quick-dispatch launcher** keeps its own marker, and the reason is not
+symmetry: it is a separate renderer with no router and no switcher, and it can
+create a session on the organization's Superagent straight from a global
+shortcut — a window with no other way to tell you where that session is going.
+So it carries a sky ring on the panel and a full-width "Cloud workspace" strip
+above the input (`quick-dispatch.tsx`). Anything that grows into a window of its
+own needs to answer the same question somehow, whether by a switcher or a mark.
+
+`setActiveTarget()` also stamps `<html data-api-target="local|cloud">`. Nothing
+in the app reads it — it is there so an out-of-process observer (the live suite,
+over CDP) can ask a renderer what it settled on without inferring it from
+whatever chrome is on screen. The switcher is not usable for that: the
+onboarding wizard replaces the whole shell, so "no switcher" and "the switch
+never happened" would look identical.
 
 ### Capability gating: three questions, not one axis
 
@@ -434,8 +440,7 @@ it.
 
 | Site | Purpose |
 | --- | --- |
-| `cloud-mode-indicator.tsx` | The persistent frame on the main window |
-| `quick-dispatch.tsx` | The launcher's own ring + strip — every window that resolves a target needs its own marker |
+| `quick-dispatch.tsx` | The launcher's own ring + strip — the one window with no switcher to read |
 | `auth-gate.tsx` | `WorkspaceReconnect` instead of a login form |
 | `auth-mode.ts` | `isAuthMode()` is `__AUTH_MODE__ \|\| targetIsRemote()` — a cloud workspace *is* an auth-mode deployment |
 | `main/dashboard-window.ts` | Proxy confinement, base-URL-scoped identity, and the "Cloud workspace — " title prefix |
@@ -572,7 +577,6 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `renderer/lib/cloud-session.ts` | Carries a cloud 401 into the session store, since signing out is not an option |
 | `renderer/hooks/use-target-switch.ts` | Which target, whether the other is reachable, and how to move |
 | `renderer/components/layout/target-switcher.tsx` | The segmented Local/Cloud control |
-| `renderer/components/layout/cloud-mode-indicator.tsx` | The persistent cloud-mode frame |
 | `renderer/lib/host-features.ts` | Whether this window may act on the computer it runs on |
 | `api/polyfill-api-prefix.ts` | Keeps dashboard-shim API calls on whichever API served the document |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
