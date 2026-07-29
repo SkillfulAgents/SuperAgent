@@ -49,6 +49,7 @@ import {
   getSession,
   getSessionMetadata,
   sessionExists,
+  sessionIsKnown,
   isSessionRegistered,
   updateSessionMetadata,
   deleteSession,
@@ -2102,9 +2103,9 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
     const { name } = body
 
 
-    const session = await getSession(agentSlug, sessionId)
-
-    if (!session) {
+    // Guard before renaming so an unknown session never gets metadata written
+    // for it — the rename below would otherwise register one.
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
@@ -2112,15 +2113,22 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
       await updateSessionName(agentSlug, sessionId, name.trim())
     }
 
+    // Read the transcript once, after the rename, rather than on both sides of
+    // it: renaming touches metadata only, so the pre-rename read differed from
+    // this one by exactly the name.
     const updated = await getSession(agentSlug, sessionId)
 
+    if (!updated) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
     return c.json({
-      id: updated?.id || sessionId,
-      agentSlug: updated?.agentSlug || agentSlug,
-      name: updated?.name || name?.trim() || session.name,
-      createdAt: updated?.createdAt || session.createdAt,
-      lastActivityAt: updated?.lastActivityAt || session.lastActivityAt,
-      messageCount: updated?.messageCount || session.messageCount,
+      id: updated.id,
+      agentSlug: updated.agentSlug,
+      name: updated.name,
+      createdAt: updated.createdAt,
+      lastActivityAt: updated.lastActivityAt,
+      messageCount: updated.messageCount,
     })
   } catch (error) {
     console.error('Failed to update session:', error)
@@ -3063,8 +3071,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
 
     // Validate session belongs to this agent (skip for _auto internal calls from auto-execute)
     if (sessionId !== '_auto') {
-      const session = await getSession(agentSlug, sessionId)
-      if (!session) {
+      if (!(await sessionIsKnown(agentSlug, sessionId))) {
         return c.json({ error: 'Session not found' }, 404)
       }
     }
@@ -3221,8 +3228,7 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
-    const session = await getSession(agentSlug, sessionId)
-    if (!session) {
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
