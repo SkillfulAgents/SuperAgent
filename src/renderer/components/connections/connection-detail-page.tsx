@@ -4,7 +4,7 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { ConnectionAgentsList } from '@renderer/components/connections/connection-agents-list'
 import { IntegrationRowActions } from '@renderer/components/connections/integration-row-actions'
 import { ConnectionUsageCard } from '@renderer/components/connections/connection-usage-card'
-import { ScopePolicyEditorBody } from '@renderer/components/settings/scope-policy-editor'
+import { ScopePolicySection } from '@renderer/components/settings/scope-policy-editor'
 import { ToolPolicyEditorBody } from '@renderer/components/settings/tool-policy-editor'
 import {
   useHideSettingsHeader,
@@ -95,23 +95,27 @@ export function ConnectionDetailPage({ row, onBack, onViewLogs, backLabel = 'Con
         <div className="space-y-4 min-w-0">
           <ConnectionUsageCard row={row} onViewLogs={onViewLogs} />
 
-          <section className="space-y-2 min-w-0">
-            <h3 className="text-xs font-normal text-muted-foreground">Permissions</h3>
-            <div className="rounded-xl border bg-background p-3">
-              {row.type === 'oauth' && row.toolkit ? (
-                <ScopePolicyEditorBody accountId={row.id} toolkit={row.toolkit} />
-              ) : row.type === 'mcp' ? (
-                <ToolPolicyEditorBody
-                  mcpId={row.id}
-                  tools={row.mcpTools ?? []}
-                />
-              ) : (
-                <p className="text-sm text-muted-foreground py-4 text-center">
-                  No permissions configurable for this connection.
-                </p>
-              )}
-            </div>
-          </section>
+          {row.type === 'oauth' && row.toolkit ? (
+            <ScopePolicySection accountId={row.id} toolkit={row.toolkit} />
+          ) : (
+            <section className="space-y-2 min-w-0">
+              <h3 className="text-xs font-normal text-muted-foreground">Permissions</h3>
+              <div className="rounded-xl border bg-background py-2 overflow-hidden">
+                {row.type === 'mcp' ? (
+                  <div className="px-3">
+                    <ToolPolicyEditorBody
+                      mcpId={row.id}
+                      tools={row.mcpTools ?? []}
+                    />
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground py-4 text-center">
+                    No permissions configurable for this connection.
+                  </p>
+                )}
+              </div>
+            </section>
+          )}
         </div>
       </div>
     </div>
