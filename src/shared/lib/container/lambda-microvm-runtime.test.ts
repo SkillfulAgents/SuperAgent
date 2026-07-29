@@ -510,6 +510,122 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     await client.start()
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
   })
+
+  it('createSession replaces a TERMINATING generation then creates once', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start({ envVars: { FOO: 'bar' } })
+    sendMock.mockClear()
+
+    let runCount = 0
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') {
+        runCount++
+        responses.getState = 'RUNNING'
+        return { microvmId: `mvm-new-${runCount}`, endpoint: 'ep.lambda-microvm.aws' }
+      }
+      if (cmd.type === 'Get') return { state: responses.getState ?? 'RUNNING' }
+      if (cmd.type === 'Terminate') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    responses.getState = 'TERMINATING'
+
+    const superCreate = vi
+      .spyOn(BaseContainerClient.prototype, 'createSession')
+      .mockResolvedValue({ id: 'sess-1' } as never)
+
+    await expect(client.createSession({ initialMessage: 'hi' })).resolves.toEqual({ id: 'sess-1' })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(true)
+    expect(runCount).toBe(1)
+    expect(superCreate).toHaveBeenCalledTimes(1)
+    superCreate.mockRestore()
+  })
+
+  it('createSession replaces after a create failure when the generation is TERMINATED', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+
+    let runCount = 0
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') {
+        runCount++
+        responses.getState = 'RUNNING'
+        return { microvmId: `mvm-retry-${runCount}`, endpoint: 'ep.lambda-microvm.aws' }
+      }
+      if (cmd.type === 'Get') return { state: responses.getState ?? 'RUNNING' }
+      if (cmd.type === 'Terminate') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+
+    const superCreate = vi.spyOn(BaseContainerClient.prototype, 'createSession')
+    superCreate
+      .mockImplementationOnce(async () => {
+        responses.getState = 'TERMINATED'
+        throw new Error('Failed to start session - unable to connect to the agent')
+      })
+      .mockResolvedValueOnce({ id: 'sess-2' } as never)
+
+    await expect(client.createSession({ initialMessage: 'hi' })).resolves.toEqual({ id: 'sess-2' })
+    expect(runCount).toBe(1)
+    expect(superCreate).toHaveBeenCalledTimes(2)
+    superCreate.mockRestore()
+  })
+
+  it('createSession does not replace on a generic create failure while the VM is RUNNING', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+    responses.getState = 'RUNNING'
+
+    const superCreate = vi
+      .spyOn(BaseContainerClient.prototype, 'createSession')
+      .mockRejectedValue(new Error('Failed to create session: boom'))
+
+    await expect(client.createSession({ initialMessage: 'hi' })).rejects.toThrow(/boom/)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+    expect(superCreate).toHaveBeenCalledTimes(1)
+    superCreate.mockRestore()
+  })
+
+  it('concurrent createSession on a dead generation only RunMicrovm once', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+
+    let runCount = 0
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') {
+        runCount++
+        await new Promise((r) => setTimeout(r, 20))
+        responses.getState = 'RUNNING'
+        return { microvmId: `mvm-once-${runCount}`, endpoint: 'ep.lambda-microvm.aws' }
+      }
+      if (cmd.type === 'Get') return { state: responses.getState ?? 'RUNNING' }
+      if (cmd.type === 'Terminate') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    responses.getState = 'TERMINATING'
+
+    const superCreate = vi
+      .spyOn(BaseContainerClient.prototype, 'createSession')
+      .mockResolvedValue({ id: 'sess-x' } as never)
+
+    await Promise.all([
+      client.createSession({ initialMessage: 'a' }),
+      client.createSession({ initialMessage: 'b' }),
+    ])
+    expect(runCount).toBe(1)
+    expect(superCreate).toHaveBeenCalledTimes(2)
+    superCreate.mockRestore()
+  })
 })
 
 describe('LocalAuthForwardProxy', () => {

@@ -18,7 +18,16 @@ import type {
   RunMicrovmCommandOutput,
 } from '@aws-sdk/client-lambda-microvms'
 import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-client'
-import type { ContainerConfig, ContainerInfo, ContainerStats, StartOptions, StopOptions, StopResult } from './types'
+import type {
+  ContainerConfig,
+  ContainerInfo,
+  ContainerSession,
+  ContainerStats,
+  CreateSessionOptions,
+  StartOptions,
+  StopOptions,
+  StopResult,
+} from './types'
 import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import { setBootstrapEnv, clearBootstrapEnv } from './agent-bootstrap-env-store'
@@ -638,12 +647,18 @@ async function createMicrovmAuthToken(
   return out.authToken
 }
 
+const TERMINAL_MICROVM_STATES = new Set(['TERMINATED', 'TERMINATING'])
+
 export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   static readonly runnerName = 'lambda-microvm'
   // Image is built once via create-microvm-image and run by AWS; nothing local.
   static readonly requiresLocalImage = false
   // Image comes solely from MICROVM_AGENT_IMAGE_ARN/_VERSION; settings.container.agentImage is ignored.
   static readonly supportsCustomAgentImage = false
+
+  private lastStartOptions?: StartOptions
+  private hasStarted = false
+  private replaceInFlight: Promise<void> | null = null
 
   constructor(config: ContainerConfig) {
     super(config)
@@ -735,9 +750,23 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       await this.teardown()
       throw error
     }
+    this.lastStartOptions = options
+    this.hasStarted = true
   }
 
   // Proxy-level retry handles the suspend→resume 502 window for all HTTP calls.
+  // When the generation is already TERMINATING/TERMINATED (resume-vs-kill race),
+  // replace once then retry createSession — callers must not branch on provider type.
+  async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
+    await this.ensureAliveGeneration()
+    try {
+      return await super.createSession(options)
+    } catch (error) {
+      if (!(await this.isDeadGeneration())) throw error
+      await this.replaceGeneration('post_create_dead')
+      return await super.createSession(options)
+    }
+  }
 
   async stop(options?: StopOptions): Promise<StopResult> {
     this.terminateWebSocketConnections()
@@ -801,12 +830,64 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     return createMicrovmAuthToken(config.region, microvmId, [config.agentPort], AUTH_TOKEN_EXPIRATION_MINUTES)
   }
 
+  private async ensureAliveGeneration(): Promise<void> {
+    if (await this.isDeadGeneration()) {
+      await this.replaceGeneration('pre_create_dead')
+    }
+  }
+
+  private async isDeadGeneration(): Promise<boolean> {
+    const state = agentStates.get(this.config.agentId)
+    if (!state) return this.hasStarted
+    const config = getMicrovmRuntimeConfig()
+    try {
+      const mvm = await getMicrovm(config.region, state.microvmId)
+      return TERMINAL_MICROVM_STATES.has(mvm.state ?? '')
+    } catch (error) {
+      if (isNotFound(error)) return true
+      return false
+    }
+  }
+
+  private async replaceGeneration(reason: string): Promise<void> {
+    if (this.replaceInFlight) return this.replaceInFlight
+    this.replaceInFlight = this.replaceGenerationInner(reason).finally(() => {
+      this.replaceInFlight = null
+    })
+    return this.replaceInFlight
+  }
+
+  private async replaceGenerationInner(reason: string): Promise<void> {
+    const failedId = agentStates.get(this.config.agentId)?.microvmId
+
+    console.warn(
+      `[LambdaMicroVmRuntimeClient] Replacing dead MicroVM generation agent=${this.config.agentId} reason=${reason} old=${failedId ?? 'none'}`,
+    )
+    captureException(new Error(`MicroVM generation replaced: ${reason}`), {
+      tags: { area: 'container', op: 'microvm.replace' },
+      extra: { agentId: this.config.agentId, oldMicrovmId: failedId, reason },
+      level: 'warning',
+    })
+
+    if (failedId && agentStates.get(this.config.agentId)?.microvmId === failedId) {
+      await this.teardown()
+    } else {
+      this.cleanupLocal()
+    }
+    // Peer single-flight waiter: another replace may have already started a fresh VM.
+    if (agentStates.has(this.config.agentId)) return
+    if (!this.hasStarted) {
+      throw new Error('Cannot replace MicroVM generation before the first start')
+    }
+    await this.start(this.lastStartOptions)
+  }
+
   private async waitForRunning(region: string, microvmId: string, timeoutMs: number): Promise<void> {
     const startedAt = Date.now()
     while (Date.now() - startedAt < timeoutMs) {
       const mvm = await getMicrovm(region, microvmId)
       if (mvm.state === 'RUNNING') return
-      if (mvm.state === 'TERMINATED' || mvm.state === 'TERMINATING') {
+      if (TERMINAL_MICROVM_STATES.has(mvm.state ?? '')) {
         throw new Error(`MicroVM ${microvmId} entered ${mvm.state} before becoming ready`)
       }
       await new Promise((resolve) => setTimeout(resolve, 2_000))
@@ -822,7 +903,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     try {
       const mvm = await getMicrovm(config.region, state.microvmId)
       if (mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') return
-      if (mvm.state === 'TERMINATED' || mvm.state === 'TERMINATING') {
+      if (TERMINAL_MICROVM_STATES.has(mvm.state ?? '')) {
         this.cleanupLocal()
         return
       }
