@@ -542,7 +542,7 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     superCreate.mockRestore()
   })
 
-  it('createSession replaces after a create failure when the generation is TERMINATED', async () => {
+  it('createSession replaces after an unreachable create failure when the generation is TERMINATED', async () => {
     const { BaseContainerClient } = await import('./base-container-client')
     const client = newClient()
     await client.start()
@@ -593,6 +593,27 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     superCreate.mockRestore()
   })
 
+  it('createSession does not replace on timeout even if the generation later looks dead', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+
+    const superCreate = vi.spyOn(BaseContainerClient.prototype, 'createSession')
+    superCreate.mockImplementationOnce(async () => {
+      responses.getState = 'TERMINATED'
+      throw new Error(
+        'Failed to start session - request timed out. This may be due to network issues or the AI service being slow. Please try again.',
+      )
+    })
+
+    await expect(client.createSession({ initialMessage: 'hi' })).rejects.toThrow(/timed out/)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+    expect(superCreate).toHaveBeenCalledTimes(1)
+    superCreate.mockRestore()
+  })
+
   it('concurrent createSession on a dead generation only RunMicrovm once', async () => {
     const { BaseContainerClient } = await import('./base-container-client')
     const client = newClient()
@@ -624,6 +645,141 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     ])
     expect(runCount).toBe(1)
     expect(superCreate).toHaveBeenCalledTimes(2)
+    superCreate.mockRestore()
+  })
+
+  it('stale dead-generation observation does not terminate a newer healthy generation', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    let releaseGet: (() => void) | undefined
+    const getGate = new Promise<void>((resolve) => {
+      releaseGet = resolve
+    })
+    let observeGetStarted!: () => void
+    const observeGetStartedP = new Promise<void>((resolve) => {
+      observeGetStarted = resolve
+    })
+
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+
+    const terminateIds: string[] = []
+    let runCount = 0
+    let gated = false
+    sendMock.mockImplementation(async (cmd: { type: string; input?: { microvmIdentifier?: string } }) => {
+      if (cmd.type === 'Get') {
+        // Gate only the first Get (observeDeadGeneration on mvm-1).
+        if (!gated) {
+          gated = true
+          observeGetStarted()
+          await getGate
+          return { state: 'TERMINATING' }
+        }
+        return { state: responses.getState ?? 'RUNNING' }
+      }
+      if (cmd.type === 'Run') {
+        runCount++
+        responses.getState = 'RUNNING'
+        return { microvmId: `mvm-fresh-${runCount}`, endpoint: 'ep.lambda-microvm.aws' }
+      }
+      if (cmd.type === 'Terminate') {
+        terminateIds.push(String(cmd.input?.microvmIdentifier ?? ''))
+        return {}
+      }
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+
+    const superCreate = vi
+      .spyOn(BaseContainerClient.prototype, 'createSession')
+      .mockResolvedValue({ id: 'sess-cas' } as never)
+
+    const createPromise = client.createSession({ initialMessage: 'hi' })
+    await observeGetStartedP
+    // Swap in a healthy generation while observe is still awaiting GetMicrovm.
+    client.stopSync()
+    responses.getState = 'RUNNING'
+    await client.start()
+    releaseGet?.()
+    await createPromise
+
+    expect(terminateIds).not.toContain('mvm-fresh-1')
+    expect(runCount).toBe(1)
+    superCreate.mockRestore()
+  })
+
+  it('restartAgent single-flight prevents duplicate RunMicrovm when replace races start', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    let inflight: Promise<void> | null = null
+    let client!: LambdaMicroVmRuntimeClient
+    const restartAgent = async () => {
+      if (inflight) return inflight
+      inflight = client.start().finally(() => {
+        inflight = null
+      })
+      return inflight
+    }
+    client = new LambdaMicroVmRuntimeClient({
+      agentId: 'agent-xyz',
+      envVars: { FOO: 'bar' },
+      restartAgent,
+    })
+    await client.start()
+    sendMock.mockClear()
+
+    let runCount = 0
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') {
+        runCount++
+        await new Promise((r) => setTimeout(r, 40))
+        responses.getState = 'RUNNING'
+        return { microvmId: `mvm-race-${runCount}`, endpoint: 'ep.lambda-microvm.aws' }
+      }
+      if (cmd.type === 'Get') return { state: responses.getState ?? 'RUNNING' }
+      if (cmd.type === 'Terminate') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    responses.getState = 'TERMINATING'
+
+    const superCreate = vi
+      .spyOn(BaseContainerClient.prototype, 'createSession')
+      .mockResolvedValue({ id: 'sess-race' } as never)
+
+    // createSession replaces then restartAgent; a concurrent ensureRunning-style
+    // restart shares the same single-flight lock (prod: ContainerManager.startingAgents).
+    await Promise.all([
+      client.createSession({ initialMessage: 'a' }),
+      (async () => {
+        await new Promise((r) => setTimeout(r, 5))
+        await restartAgent()
+      })(),
+    ])
+    expect(runCount).toBe(1)
+    superCreate.mockRestore()
+  })
+
+  it('observeDeadGeneration returning false on throttling does not replace', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Get') throw new Error('ThrottlingException')
+      if (cmd.type === 'Run') return { microvmId: 'mvm-should-not', endpoint: 'ep.lambda-microvm.aws' }
+      if (cmd.type === 'Terminate') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+
+    const superCreate = vi
+      .spyOn(BaseContainerClient.prototype, 'createSession')
+      .mockResolvedValue({ id: 'sess-throttle' } as never)
+
+    await expect(client.createSession({ initialMessage: 'hi' })).resolves.toEqual({ id: 'sess-throttle' })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
     superCreate.mockRestore()
   })
 })

@@ -108,6 +108,9 @@ class ContainerManager {
             })
           })
         },
+        // MicroVM dead-generation replace (and similar) must restart through the
+        // manager so starts share startingAgents and rebuild env from the DB.
+        restartAgent: () => this.restartAgent(agentId),
       }
 
       client = createContainerClient(config)
@@ -115,6 +118,28 @@ class ContainerManager {
     }
 
     return client
+  }
+
+  // Single-flight restart used by runtime clients that tear down a dead generation.
+  private async restartAgent(agentId: string): Promise<void> {
+    if (this.stoppingAgents.has(agentId)) {
+      throw new Error(`Cannot restart agent ${agentId} while it is stopping`)
+    }
+    const inflight = this.startingAgents.get(agentId)
+    if (inflight) {
+      await inflight
+      return
+    }
+
+    this.markAsStopped(agentId)
+    const client = this.getClient(agentId)
+    const startPromise = this.doStartContainer(agentId, client)
+    this.startingAgents.set(agentId, startPromise)
+    try {
+      await startPromise
+    } finally {
+      this.startingAgents.delete(agentId)
+    }
   }
 
   /**
