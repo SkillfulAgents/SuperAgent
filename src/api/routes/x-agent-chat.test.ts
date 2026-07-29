@@ -221,7 +221,7 @@ describe('x-agent chat route', () => {
   it('labels chats and advertises capabilities from the connector class statics', async () => {
     mockGetConnectorClass.mockResolvedValue({
       discoveryCapabilities: ['list_users', 'list_channels', 'dm_by_user_id'],
-      classifyChatId: (chatId: string) => (chatId.startsWith('D') ? 'dm' : chatId.includes('|') ? 'thread' : 'channel'),
+      classifyChatId: (chat: { chatId: string }) => (chat.chatId.startsWith('D') ? 'dm' : chat.chatId.includes('|') ? 'thread' : 'channel'),
     })
     mockListChatIntegrationSessions.mockReturnValue([
       { externalChatId: 'D0AAA111', displayName: 'Iddo Gino', archivedAt: null },

@@ -12,7 +12,15 @@ import { Bot, type Context as GrammyContext } from 'grammy'
 import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
-import { ChatClientConnector, type OutgoingMessage } from './base-connector'
+import {
+  ChatClientConnector,
+  isMultiPartyChatType,
+  type ChatClassifyContext,
+  type ChatConversationType,
+  type OutgoingMessage,
+  type SystemPromptContext,
+} from './base-connector'
+import { buildSessionContextPrompt } from './chat-session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat, withSessionUrl, type AppLinkContext } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
@@ -105,10 +113,43 @@ export function markdownToTelegramHtml(md: string): string {
     .trim()
 }
 
+// ── Chat id classification ──────────────────────────────────────────────
+
+/**
+ * Telegram encodes the conversation type in the id sign: private chats are the
+ * user's own (positive) id, groups and supergroups are negative. Non-numeric ids
+ * are not Telegram ids; classify nothing rather than guessing.
+ */
+export function classifyTelegramChatId(chatId: string): ChatConversationType | undefined {
+  if (!/^-?[1-9]\d*$/.test(chatId)) return undefined
+  return chatId.startsWith('-') ? 'group' : 'dm'
+}
+
+export function classifyTelegramChat(chat: ChatClassifyContext): ChatConversationType | undefined {
+  return classifyTelegramChatId(chat.chatId)
+}
+
+export function buildTelegramSystemPrompt(message: SystemPromptContext): string {
+  const kind = classifyTelegramChat(message)
+  const whereDetail = kind === 'group'
+    ? `a group conversation (chat id: ${message.chatId})`
+    : kind === 'dm'
+      ? `a direct message (chat id: ${message.chatId})`
+      : 'a Telegram conversation'
+  return buildSessionContextPrompt({
+    surface: 'chat',
+    where: `a live Telegram conversation: you are responding inside ${whereDetail}`,
+    multiParty: isMultiPartyChatType(kind),
+  })
+}
+
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class TelegramConnector extends ChatClientConnector {
   readonly provider = 'telegram' as const
+
+  static generateSystemPrompt = buildTelegramSystemPrompt
+  static classifyChatId = classifyTelegramChat
 
   private bot: Bot | null = null
   private connected = false
@@ -894,7 +935,7 @@ export class TelegramConnector extends ChatClientConnector {
 
   /** Telegram private-chat ids are positive; groups/channels are negative. */
   private isPrivateChat(chatId: string): boolean {
-    return Number(chatId) > 0
+    return classifyTelegramChatId(chatId) === 'dm'
   }
 
   private get useRich(): boolean {

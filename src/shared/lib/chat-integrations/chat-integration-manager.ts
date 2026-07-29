@@ -10,7 +10,7 @@
  * Follows the TaskScheduler / TriggerManager singleton pattern.
  */
 
-import type { ChatClientConnector, ChatConnectorClass, IncomingMessage } from './base-connector'
+import { isMultiPartyChatType, type ChatClientConnector, type ChatConnectorClass, type IncomingMessage } from './base-connector'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
@@ -1300,8 +1300,16 @@ class ChatIntegrationManager {
     integration: ChatIntegration,
     message: IncomingMessage,
   ): Promise<{ text: string; failedFiles: string[] }> {
-    // In group/channel contexts, prefix with sender name so the agent can attribute messages.
-    const prefix = message.chatName && message.userName ? `\\[${message.userName}]: ` : ''
+    // Attribution is best-effort metadata, so lookup failure falls back to no prefix.
+    let connectorClass: ChatConnectorClass | undefined
+    try {
+      connectorClass = await this.getConnectorClass(integration.provider)
+    } catch { /* fall through to the no-prefix default */ }
+    const sender = message.userName || message.userId
+    const prefix = sender
+      && isMultiPartyChatType(connectorClass?.classifyChatId?.(message))
+      ? `\\[${sender}]: `
+      : ''
     const text = prefix + (message.text || '')
 
     if (!message.files || message.files.length === 0) {
