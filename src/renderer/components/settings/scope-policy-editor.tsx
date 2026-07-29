@@ -52,6 +52,15 @@ const LABEL_GROUPS: Array<{
   { key: 'destructive', title: 'Destructive actions' },
 ]
 
+/** Every scope a toolkit declares, flattened. Empty when we have no scope map for it. */
+function toolkitScopes(toolkit: string): string[] {
+  const provider = SCOPE_MAPS[toolkit]
+  if (!provider) return []
+  return Array.isArray(provider.allScopes)
+    ? provider.allScopes
+    : Object.values(provider.allScopes).flat()
+}
+
 const emptyLabelDefaults: Record<ScopeLabel, PolicyDecision> = {
   read: 'default',
   write: 'default',
@@ -68,6 +77,19 @@ function serializePolicies(entries: Iterable<readonly [string, string]>): string
     [...entries].filter(([, decision]) => decision !== 'default').sort(([a], [b]) => a.localeCompare(b)),
   )
 }
+
+/**
+ * Decision-filter options. The wording tracks the toggle labels ("Always allow"
+ * / "Needs approval" / "Blocked") so the filter and the controls it filters
+ * speak the same language.
+ */
+const DECISION_FILTERS: Array<{ value: 'all' | PolicyDecision; label: string }> = [
+  { value: 'all', label: 'All scopes' },
+  { value: 'allow', label: 'Always allow' },
+  { value: 'review', label: 'Needs approval' },
+  { value: 'block', label: 'Blocked' },
+  { value: 'default', label: 'No rule set' },
+]
 
 export interface ScopePolicyFilters {
   textFilter: string
@@ -155,25 +177,32 @@ export function ScopePolicyFilterControls({
             )}
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="end" className="w-32 p-1">
-          {(['all', 'allow', 'review', 'block', 'default'] as const).map((v) => (
+        <PopoverContent align="end" className="w-44 p-1">
+          {/* Matches the rule saved on the scope itself, not what it displays —
+              a scope inheriting "always allow" from its group is "No rule set". */}
+          <p className="px-2 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+            Rule set on the scope
+          </p>
+          {DECISION_FILTERS.map(({ value, label }) => (
             <button
-              key={v}
+              key={value}
               type="button"
-              data-testid={`scope-filter-${v}`}
+              data-testid={`scope-filter-${value}`}
               onClick={() => {
-                setDecisionFilter(v)
+                setDecisionFilter(value)
                 setFilterMenuOpen(false)
               }}
               className={cn(
                 'flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted',
-                decisionFilter === v && 'bg-muted',
+                decisionFilter === value && 'bg-muted',
               )}
             >
-              {(v === 'allow' || v === 'review' || v === 'block') && (
-                <PolicyDecisionIcon decision={v} className="h-3 w-3" />
-              )}
-              <span className="capitalize">{v}</span>
+              {/* Fixed-size slot so the two option rows without a glyph
+                  ("All scopes", "No rule set") still align with the three that have one. */}
+              <span className="flex h-3 w-3 shrink-0 items-center justify-center">
+                {value !== 'all' && <PolicyDecisionIcon decision={value} className="h-3 w-3" />}
+              </span>
+              {label}
             </button>
           ))}
         </PopoverContent>
@@ -230,15 +259,7 @@ export function ScopePolicyEditorBody({
 
   // Get scopes from the scope map for this toolkit
   const provider = SCOPE_MAPS[toolkit]
-  const allScopes = useMemo(
-    () =>
-      provider
-        ? Array.isArray(provider.allScopes)
-          ? provider.allScopes
-          : Object.values(provider.allScopes).flat()
-        : [],
-    [provider],
-  )
+  const allScopes = useMemo(() => toolkitScopes(toolkit), [toolkit])
 
   // For each scope, prefer the curated description; otherwise borrow the
   // first endpoint description that mentions this scope.
@@ -343,14 +364,16 @@ export function ScopePolicyEditorBody({
     return groups
   }, [filteredPolicies, toolkit])
 
-  const setLabelDefault = (label: ScopeLabel, decision: PolicyDecision) => {
+  // Only the group sentinel moves. Scopes in the group have no rule of their
+  // own, so they inherit this and re-render — no per-scope rows are written,
+  // and an explicit override on a scope keeps winning.
+  const setLabelDefault = (label: ScopeLabel, decision: PolicyDecision) =>
     setLabelDefaults((prev) => ({ ...prev, [label]: decision }))
-    // Setting a group decision cascades to every scope in that group — including
-    // rows hidden by an active filter — so rows never silently diverge from the
-    // group control. Deselecting (back to 'default') clears them the same way.
-    setPolicies((prev) =>
-      prev.map((p) => (getScopeLabel(toolkit, p.scope) === label ? { ...p, decision } : p)),
-    )
+
+  /** What a scope in this group inherits, or undefined when the group is itself on 'default'. */
+  const inheritedFor = (label: ScopeLabel): 'allow' | 'review' | 'block' | undefined => {
+    const d = labelDefaults[label]
+    return d === 'default' ? undefined : d
   }
 
   const setOpenGroup = (key: string, open: boolean) =>
@@ -359,15 +382,16 @@ export function ScopePolicyEditorBody({
   // When the user is filtering, reveal matching groups regardless of collapse state.
   const filtering = textFilter.trim() !== '' || decisionFilter !== 'all'
 
+  // Restores every default this card shows: the three group baselines and the
+  // fallback below them. Explicit per-scope overrides are deliberate choices,
+  // not defaults, so they survive.
   const resetToRecommended = () => {
     setLabelDefaults({
       read: LABEL_DEFAULT_BASELINE.read,
       write: LABEL_DEFAULT_BASELINE.write,
       destructive: LABEL_DEFAULT_BASELINE.destructive,
     })
-    // "Recommended" is the pure-defaults state: group baselines with no
-    // per-scope overrides, so clear every row back to inherit.
-    setPolicies((prev) => prev.map((p) => ({ ...p, decision: 'default' as PolicyDecision })))
+    setAccountDefault('default')
   }
 
   // The non-default policies that a Save would write, keyed by scope.
@@ -420,7 +444,7 @@ export function ScopePolicyEditorBody({
     )
   }
 
-  const renderRow = (p: ScopePolicy) => (
+  const renderRow = (p: ScopePolicy, inherited?: 'allow' | 'review' | 'block') => (
     <div
       key={p.scope}
       data-testid={`scope-row-${p.scope}`}
@@ -436,7 +460,11 @@ export function ScopePolicyEditorBody({
           </p>
         )}
       </div>
-      <PolicyDecisionToggle value={p.decision} onChange={(v) => updateScopePolicy(p.scope, v)} />
+      <PolicyDecisionToggle
+        value={p.decision}
+        inheritedValue={inherited}
+        onChange={(v) => updateScopePolicy(p.scope, v)}
+      />
     </div>
   )
 
@@ -514,7 +542,7 @@ export function ScopePolicyEditorBody({
                     />
                   </div>
                   <CollapsibleContent className="divide-y divide-border/50">
-                    {rows.map(renderRow)}
+                    {rows.map((p) => renderRow(p, inheritedFor(g.key)))}
                   </CollapsibleContent>
                 </Collapsible>
               )
@@ -543,8 +571,10 @@ export function ScopePolicyEditorBody({
                     </span>
                   </CollapsibleTrigger>
                 </div>
+                {/* Unlabeled scopes belong to no risk group, so there is no
+                    group decision for them to inherit — they show only their own. */}
                 <CollapsibleContent className="divide-y divide-border/50">
-                  {groupedPolicies.other.map(renderRow)}
+                  {groupedPolicies.other.map((p) => renderRow(p))}
                 </CollapsibleContent>
               </Collapsible>
             )}
@@ -621,11 +651,15 @@ export function ScopePolicySection({
   className,
 }: ScopePolicySectionProps) {
   const filters = useScopePolicyFilters(accountId)
+  // Nothing to search or filter when the toolkit declares no scopes — the card
+  // shows only the fallback row, so the controls would be dead. Memoized: this
+  // re-renders on every keystroke in the search box.
+  const hasScopes = useMemo(() => toolkitScopes(toolkit).length > 0, [toolkit])
   return (
     <section className={cn('flex min-h-0 min-w-0 flex-col space-y-2', className)}>
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-xs font-normal text-muted-foreground shrink-0">{title}</h3>
-        <ScopePolicyFilterControls filters={filters} className="flex-1" />
+        {hasScopes && <ScopePolicyFilterControls filters={filters} className="flex-1" />}
       </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-background py-2">
         <ScopePolicyEditorBody

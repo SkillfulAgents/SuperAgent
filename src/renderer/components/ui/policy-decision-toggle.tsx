@@ -24,6 +24,13 @@ interface PolicyDecisionToggleProps {
    * 'default' — for strict three-way policies with no inherit tier.
    */
   allowDeselect?: boolean
+  /**
+   * What applies when `value` is 'default' — e.g. the risk-group decision for a
+   * scope row. Shown as a muted chip (colored glyph, no raised background) so
+   * "inherits allow" is legible without looking like a rule set on this row.
+   * Clicking any option while inheriting pins it as an explicit override.
+   */
+  inheritedValue?: Exclude<PolicyDecision, 'default'>
 }
 
 const options = [
@@ -55,15 +62,19 @@ export function PolicyDecisionToggle({
   onChange,
   size = 'sm',
   allowDeselect = true,
+  inheritedValue,
 }: PolicyDecisionToggleProps) {
   const iconSize = size === 'sm' ? 'h-3.5 w-3.5' : 'h-4 w-4'
   const btnSize = size === 'sm' ? 'h-6 w-7' : 'h-7 w-8'
+  // Nothing of its own → show what it inherits, if the caller told us.
+  const inheriting = value === 'default' && inheritedValue !== undefined
+  const shown = inheriting ? inheritedValue : value
 
   return (
     <TooltipProvider delayDuration={300}>
       <div className="inline-flex items-center rounded-md bg-muted p-0.5 gap-0.5 text-muted-foreground">
         {options.map((opt) => {
-          const isActive = value === opt.value
+          const isActive = shown === opt.value
           const Icon = opt.icon
           return (
             <Tooltip key={opt.value}>
@@ -72,9 +83,16 @@ export function PolicyDecisionToggle({
                   type="button"
                   data-testid={`policy-toggle-${opt.value}`}
                   data-active={isActive}
+                  data-inherited={isActive && inheriting}
                   aria-label={opt.label}
                   aria-pressed={isActive}
                   onClick={() => {
+                    // While inheriting there is nothing to deselect — any click
+                    // pins the clicked decision as this row's own rule.
+                    if (inheriting) {
+                      onChange(opt.value)
+                      return
+                    }
                     if (isActive && !allowDeselect) return
                     onChange(isActive ? 'default' : opt.value)
                   }}
@@ -82,7 +100,7 @@ export function PolicyDecisionToggle({
                     'inline-flex items-center justify-center rounded-sm transition-colors',
                     btnSize,
                     isActive
-                      ? cn('bg-background shadow', opt.activeColor)
+                      ? cn(inheriting ? 'opacity-60' : 'bg-background shadow', opt.activeColor)
                       : 'hover:text-foreground'
                   )}
                 >
@@ -90,7 +108,11 @@ export function PolicyDecisionToggle({
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-xs">
-                {isActive && allowDeselect ? `Remove ${opt.label.toLowerCase()} (set to default)` : opt.tooltip}
+                {isActive && inheriting
+                  ? `${opt.tooltip} — inherited. Click to set it here.`
+                  : isActive && allowDeselect
+                    ? `Remove ${opt.label.toLowerCase()} (set to default)`
+                    : opt.tooltip}
               </TooltipContent>
             </Tooltip>
           )
