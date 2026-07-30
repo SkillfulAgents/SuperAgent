@@ -15,7 +15,7 @@ function seedDashboard(agentSlug: string) {
 }
 
 test.describe('home card arrangement', () => {
-  test('desktop Arrange keeps the context menu and persists drag/size through reload', async ({
+  test('desktop Arrange persists independently from the mobile layout', async ({
     page,
     request,
   }, testInfo) => {
@@ -97,5 +97,46 @@ test.describe('home card arrangement', () => {
       homeGridLayout?: Record<string, { x: number; y: number; w: number; h: number }>
     }
     expect(afterReload.homeGridLayout?.[agent.slug]).toEqual(settings.homeGridLayout?.[agent.slug])
+
+    const desktopRect = settings.homeGridLayout?.[agent.slug]
+    expect(desktopRect).toBeDefined()
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.reload()
+    const mobileWidget = page.locator(`[data-widget-id="${agent.slug}"]`)
+    await expect(mobileWidget).toBeVisible({ timeout: 15_000 })
+    await mobileWidget.scrollIntoViewIfNeeded()
+    await page.getByRole('button', { name: 'Agent layout options' }).click()
+    await page.getByTestId('home-arrange-action').click()
+
+    const beforeMobile = await mobileWidget.boundingBox()
+    expect(beforeMobile).not.toBeNull()
+    await page.mouse.move(
+      beforeMobile!.x + beforeMobile!.width / 2,
+      beforeMobile!.y + beforeMobile!.height / 2
+    )
+    await page.mouse.down()
+    await page.mouse.move(
+      beforeMobile!.x + beforeMobile!.width / 2,
+      beforeMobile!.y + beforeMobile!.height / 2 + 180,
+      { steps: 8 }
+    )
+    await page.mouse.up()
+
+    const mobileSaved = page.waitForResponse(
+      (response) =>
+        response.url().includes('/api/user-settings') &&
+        response.request().method() === 'PUT' &&
+        response.request().postData()?.includes('homeGridMobileLayout') === true &&
+        response.ok()
+    )
+    await page.getByRole('button', { name: 'Done' }).click()
+    await mobileSaved
+
+    const afterMobileArrange = (await (await request.get('/api/user-settings')).json()) as {
+      homeGridLayout?: Record<string, { x: number; y: number; w: number; h: number }>
+      homeGridMobileLayout?: Record<string, { x: number; y: number; w: number; h: number }>
+    }
+    expect(afterMobileArrange.homeGridMobileLayout?.[agent.slug]).toBeDefined()
+    expect(afterMobileArrange.homeGridLayout?.[agent.slug]).toEqual(desktopRect)
   })
 })

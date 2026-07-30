@@ -753,22 +753,32 @@ export function HomePage() {
   const { data: agents, isLoading: agentsLoading } = useAgents()
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
+  const isMobile = useIsMobile()
+  const layoutTarget = isMobile ? 'mobile' : 'desktop'
 
   // agentOrder (sidebar drag order) drives the initial flow-pack order of
-  // uncustomized boards; once the user drags/resizes here, homeGridLayout wins.
+  // uncustomized boards; once the user drags/resizes here, the layout for the
+  // current breakpoint wins.
   const orderedAgents = useMemo(
     () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
     [agents, userSettings?.agentOrder]
   )
 
-  // Optimistic local layout while the homeGridLayout mutation is in flight.
-  const [localLayout, setLocalLayout] = useState<Record<string, GridRect> | null>(null)
-  const layoutMutationVersion = useRef(0)
-  const savedLayout = localLayout ?? userSettings?.homeGridLayout
+  // Desktop and phone layouts are intentionally independent. A phone without a
+  // customized layout starts from the desktop map and is responsively re-packed
+  // by WidgetBoard, but its first save forks into homeGridMobileLayout.
+  const [localDesktopLayout, setLocalDesktopLayout] = useState<Record<string, GridRect> | null>(null)
+  const [localMobileLayout, setLocalMobileLayout] = useState<Record<string, GridRect> | null>(null)
+  const layoutMutationVersion = useRef({ desktop: 0, mobile: 0 })
+  const savedDesktopLayout = localDesktopLayout ?? userSettings?.homeGridLayout
+  const savedMobileLayout =
+    localMobileLayout ?? userSettings?.homeGridMobileLayout ?? savedDesktopLayout
+  const savedLayout = isMobile ? savedMobileLayout : savedDesktopLayout
   // Arrange mode stages its layout locally. Done persists the staged map once;
   // Cancel drops it and restores the last saved geometry.
   const [isArranging, setIsArranging] = useState(false)
   const [arrangeLayout, setArrangeLayout] = useState<Record<string, GridRect> | null>(null)
+  const [arrangeTarget, setArrangeTarget] = useState<'desktop' | 'mobile' | null>(null)
   const displayedLayout = arrangeLayout ?? savedLayout
 
   // Agents whose associated app/dashboard card is toggled off. localHidden is a
@@ -831,28 +841,35 @@ export function HomePage() {
     return { cronsByAgent: cronsMap, webhooksByAgent: webhooksMap }
   }, [topology])
 
-  const commitLayout = (layout: Record<string, GridRect>) => {
+  const commitLayout = (
+    layout: Record<string, GridRect>,
+    target: 'desktop' | 'mobile' = layoutTarget
+  ) => {
     // WidgetBoard only knows about currently rendered items. Preserve saved
     // geometry for any missing item whose owning agent still exists. This
     // covers intentionally hidden cards and transiently incomplete dashboard
     // inventories without retaining entries for agents that were deleted.
     const nextLayout = { ...layout }
-    for (const [id, rect] of Object.entries(savedLayout ?? {})) {
+    const targetSavedLayout = target === 'mobile' ? savedMobileLayout : savedDesktopLayout
+    for (const [id, rect] of Object.entries(targetSavedLayout ?? {})) {
       if (id in nextLayout) continue
       const ownerSlug = dashboardAgentSlugFromKey(id) ?? id
       if (agentBySlug.has(ownerSlug)) nextLayout[id] = rect
     }
 
-    const version = ++layoutMutationVersion.current
+    const version = ++layoutMutationVersion.current[target]
+    const setLocalLayout = target === 'mobile' ? setLocalMobileLayout : setLocalDesktopLayout
     setLocalLayout(nextLayout)
     updateSettings.mutate(
-      { homeGridLayout: nextLayout },
+      target === 'mobile'
+        ? { homeGridMobileLayout: nextLayout }
+        : { homeGridLayout: nextLayout },
       {
         onError: (error) => {
           toast.error('Failed to save the home layout', { description: error.message })
         },
         onSettled: () => {
-          if (version === layoutMutationVersion.current) setLocalLayout(null)
+          if (version === layoutMutationVersion.current[target]) setLocalLayout(null)
         },
       }
     )
@@ -878,7 +895,6 @@ export function HomePage() {
   }
 
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
-  const isMobile = useIsMobile()
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
@@ -895,6 +911,7 @@ export function HomePage() {
     if (next === view) return
     if (next === 'graph') {
       setArrangeLayout(null)
+      setArrangeTarget(null)
       setIsArranging(false)
     }
     void navigate({
@@ -908,24 +925,28 @@ export function HomePage() {
   const beginArrange = () => {
     if (!hasAgents) return
     setArrangeLayout(null)
+    setArrangeTarget(layoutTarget)
     setIsArranging(true)
   }
   const cancelArrange = () => {
     setArrangeLayout(null)
+    setArrangeTarget(null)
     setIsArranging(false)
   }
   const finishArrange = () => {
     const nextLayout = arrangeLayout
+    const target = arrangeTarget ?? layoutTarget
     setArrangeLayout(null)
+    setArrangeTarget(null)
     setIsArranging(false)
-    if (nextLayout) commitLayout(nextLayout)
+    if (nextLayout) commitLayout(nextLayout, target)
   }
   const handleBoardCommit = (layout: Record<string, GridRect>) => {
     if (isArranging) {
       setArrangeLayout(layout)
       return
     }
-    commitLayout(layout)
+    commitLayout(layout, layoutTarget)
   }
 
   return (

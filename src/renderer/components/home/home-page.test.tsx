@@ -576,6 +576,36 @@ describe('HomePage AgentCard', () => {
     expect(document.querySelector('[data-widget-id="test-agent"]')).toHaveClass('touch-none')
     expect(screen.getByTestId('agent-context-trigger')).toHaveAttribute('data-touch-long-press-disabled', 'true')
   })
+
+  it('forks mobile changes without overwriting the saved desktop layout', () => {
+    const desktopRect = { x: 4, y: 2, w: 2, h: 1 }
+    const settings = {
+      homeGridLayout: {
+        'test-agent': desktopRect,
+      },
+    }
+    mockUseIsMobile.mockReturnValue(true)
+    mockUserSettingsData.mockReturnValue(settings)
+    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
+    renderWithProviders(<HomePage />)
+
+    // With no mobile map yet, the phone inherits the desktop card size.
+    const expanded = screen.getByRole('switch', { name: 'Expanded' })
+    expect(expanded).toHaveAttribute('aria-checked', 'true')
+    expanded.click()
+
+    expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(
+      {
+        homeGridMobileLayout: {
+          'test-agent': expect.objectContaining({ w: 1, h: 1 }),
+        },
+      },
+      expect.any(Object)
+    )
+    const payload = mockUpdateSettingsMutate.mock.calls[0][0]
+    expect(payload).not.toHaveProperty('homeGridLayout')
+    expect(settings.homeGridLayout['test-agent']).toEqual(desktopRect)
+  })
 })
 
 describe('HomePage view toggle', () => {
