@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useModelSettings } from '@renderer/hooks/use-settings'
 import { ComposerOptionsPopover } from './composer-options-popover'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
@@ -110,7 +110,9 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     followDefaults = false,
   } = args
 
-  const { data: settings } = useSettings()
+  // Picker-safe endpoint — readable by non-admin users too, unlike the
+  // admin-gated full settings (which would leave them an empty catalog).
+  const { data: settings } = useModelSettings()
 
   // ---- Effort ----
   const [effort, setEffortState] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
@@ -268,6 +270,8 @@ interface ComposerOptionsProps {
   disabled?: boolean
   /** Show the Effort section. Disable for model-only pickers (e.g. summarizer). */
   includeEffort?: boolean
+  /** Optional caller-owned content rendered after the picker sections. */
+  footer?: ReactNode
 }
 
 /**
@@ -275,6 +279,13 @@ interface ComposerOptionsProps {
  * both the AgentHome and in-session composers. Stateless — owned by the
  * `useComposerOptions` hook above so the parent can read the values at submit.
  */
-export function ComposerOptions({ state, disabled, includeEffort }: ComposerOptionsProps) {
-  return <ComposerOptionsPopover state={state} disabled={disabled} includeEffort={includeEffort} />
+export function ComposerOptions({ state, disabled, includeEffort, footer }: ComposerOptionsProps) {
+  return (
+    <ComposerOptionsPopover
+      state={state}
+      disabled={disabled}
+      includeEffort={includeEffort}
+      footer={footer}
+    />
+  )
 }

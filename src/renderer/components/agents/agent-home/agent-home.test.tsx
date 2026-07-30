@@ -62,9 +62,10 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
 }))
 
 // Settings drive ComposerOptions: the catalog comes from llmProviderStatus,
-// fallback model from settings.models.agentModel.
-vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({
+// fallback model from settings.models.agentModel. The pickers read the
+// non-admin useModelSettings; useSettings stays for any admin-only consumers.
+vi.mock('@renderer/hooks/use-settings', () => {
+  const settings = {
     data: {
       llmProvider: 'anthropic',
       models: { agentModel: 'sonnet' },
@@ -82,8 +83,12 @@ vi.mock('@renderer/hooks/use-settings', () => ({
         },
       ],
     },
-  }),
-}))
+  }
+  return {
+    useSettings: () => settings,
+    useModelSettings: () => settings,
+  }
+})
 
 vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useScheduledTasks: () => ({ data: [] }),

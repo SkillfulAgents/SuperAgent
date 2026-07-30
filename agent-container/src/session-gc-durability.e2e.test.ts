@@ -149,6 +149,7 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
     'turns from a resumed (post-eviction) query survive on disk and across a manager restart',
     async () => {
       const manager = new SessionManager(workDir, {
+      prewarmEnabled: false,
         idleEvictionMs: 0,
         automatedIdleEvictionMs: 0,
         evictionPollMs: 500,
@@ -180,6 +181,7 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
       // Fresh manager = container restart.
       await manager.stopAll();
       const manager2 = new SessionManager(workDir, {
+      prewarmEnabled: false,
         idleEvictionMs: 60 * 60_000,
         automatedIdleEvictionMs: 60 * 60_000,
         evictionPollMs: 60_000,
@@ -208,6 +210,7 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
     'a shouldQuery:false append into a cold automated session reaches disk despite instant eviction',
     async () => {
       const manager = new SessionManager(workDir, {
+      prewarmEnabled: false,
         idleEvictionMs: 0,
         automatedIdleEvictionMs: 0,
         evictionPollMs: 250,
@@ -266,6 +269,7 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
       // queued follow-up. If a future CLI/SDK does, a threshold-0 sweep
       // landing in that gap would evict and silently kill the queued message.
       const manager = new SessionManager(workDir, {
+      prewarmEnabled: false,
         idleEvictionMs: 0, // human promotion flips class → keep both classes at 0
         automatedIdleEvictionMs: 0,
         evictionPollMs: 250,
@@ -302,6 +306,7 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
       // and workflows ride the same type-agnostic task_id bookkeeping and
       // are covered by the fixture replays.
       const manager = new SessionManager(workDir, {
+      prewarmEnabled: false,
         idleEvictionMs: 60 * 60_000,
         automatedIdleEvictionMs: 0, // most aggressive class
         evictionPollMs: 500,
@@ -356,6 +361,7 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
       // the fresh parked query gets reaped. If an SDK change stops emitting
       // those frames, every user Stop would pin a ~250MB subprocess forever.
       const manager = new SessionManager(workDir, {
+      prewarmEnabled: false,
         idleEvictionMs: 3_000,
         automatedIdleEvictionMs: -1,
         evictionPollMs: 500,

@@ -63,6 +63,24 @@ test.describe('Subagent Browser Input Status', () => {
     await agentPage.waitForStatus('idle', 15000)
   })
 
+  test('a subagent that dies with a parked request drops the card and returns status to working', async ({ page }, testInfo) => {
+    await sessionPage.sendMessage(`dead subagent input ${uniqueSuffix(testInfo)}`)
+
+    // The subagent parks on browser input: card + awaiting, same as ever.
+    await expect(page.getByTestId('browser-input-request')).toBeVisible({ timeout: 15000 })
+    await agentPage.waitForStatus('awaiting_input', 15000)
+
+    // The subagent then dies (sidechain result, no tool_result). Nothing can
+    // answer the card anymore — the host must invalidate it: card gone and
+    // status back to working while the main turn is still open.
+    // Regression: the card sat orphaned until a turn boundary.
+    await expect(page.getByTestId('browser-input-request')).toHaveCount(0, { timeout: 10000 })
+    await agentPage.waitForStatus('working', 5000)
+
+    // …and the main turn settles on its own afterwards.
+    await agentPage.waitForStatus('idle', 15000)
+  })
+
   test('declining the subagent browser input request returns the agent to idle', async ({ page }, testInfo) => {
     await sessionPage.sendMessage(`subagent browser input ${uniqueSuffix(testInfo)}`)
 

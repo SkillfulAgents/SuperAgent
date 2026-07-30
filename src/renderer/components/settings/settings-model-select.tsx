@@ -1,10 +1,12 @@
-import { memo, useMemo } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { memo, useContext, useMemo } from 'react'
+import { ChevronDown, RotateCcw, Settings } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useModelSettings } from '@renderer/hooks/use-settings'
+import { DialogContext } from '@renderer/context/dialog-context'
+import { useUser } from '@renderer/context/user-context'
 import { ModelFamilyList, findCatalogModel, familyDisplayName } from '@renderer/components/messages/model-family-list'
 import { EFFORT_LABELS, EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
 import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from '@renderer/components/messages/speed-section'
@@ -32,6 +34,17 @@ interface SettingsModelSelectProps {
    * card); 'start' for left-aligned hosts (the trigger/cron runtime card).
    */
   align?: 'start' | 'end'
+  /**
+   * Render a footer inside the picker (per-agent default surfaces) with a
+   * "Reset to Global Default" action — disabled while the host already follows
+   * the app-wide default — and an admin link to Settings → LLM Provider.
+   */
+  appDefault?: {
+    /** True when the host stores its own override (enables the reset action). */
+    isOverride: boolean
+    /** Clear the override so the host follows the app-wide default again. */
+    onUseAppDefault: () => void
+  }
 }
 
 /**
@@ -55,8 +68,11 @@ function SettingsModelSelectImpl({
   onSpeedChange,
   disabled,
   align = 'end',
+  appDefault,
 }: SettingsModelSelectProps) {
-  const { data: settings } = useSettings()
+  // Picker-safe endpoint — this select also serves non-admin surfaces (the
+  // agent-home Default Model card), where the admin-gated settings 403.
+  const { data: settings } = useModelSettings()
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const catalog = useMemo(
     () => settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
@@ -146,8 +162,56 @@ function SettingsModelSelectImpl({
             />
           </>
         )}
+        {appDefault && (
+          <>
+            <Separator className="my-2 bg-border/50" />
+            <AppDefaultFooter {...appDefault} />
+          </>
+        )}
       </PopoverContent>
     </Popover>
+  )
+}
+
+/**
+ * Footer for per-agent default surfaces. Split out of the picker body so the
+ * `useUser()` / DialogContext reads only mount for the one host that opts in —
+ * the picker's other hosts stay free of a UserProvider requirement.
+ */
+function AppDefaultFooter({ isOverride, onUseAppDefault }: NonNullable<SettingsModelSelectProps['appDefault']>) {
+  const { isAuthMode, isAdmin } = useUser()
+  // Nullable by design: router-free hosts mount no DialogProvider — the
+  // footer just drops its settings link there.
+  const dialogs = useContext(DialogContext)
+  // The LLM Provider tab is admin-gated — members get no link they can't use.
+  const canChangeAppDefault = dialogs !== null && (!isAuthMode || isAdmin)
+
+  return (
+    <div className="flex items-center justify-between gap-2">
+      {/* Disabled = the host already follows the app-wide default. */}
+      <button
+        type="button"
+        data-testid="settings-model-app-default"
+        disabled={!isOverride}
+        onClick={() => onUseAppDefault()}
+        className="flex min-w-0 items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50"
+      >
+        <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        <span className="truncate">Reset to Global Default</span>
+      </button>
+      {canChangeAppDefault && (
+        <button
+          type="button"
+          data-testid="settings-model-app-default-change"
+          aria-label="Change global default in Settings"
+          title="Change global default in Settings"
+          onClick={() => dialogs?.openSettings('llm')}
+          className="shrink-0 rounded-sm p-1 text-muted-foreground/70 hover:text-foreground"
+        >
+          <Settings className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      )}
+    </div>
   )
 }
 

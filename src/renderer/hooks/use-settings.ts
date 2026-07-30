@@ -2,6 +2,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type {
   GlobalSettingsResponse,
+  ModelPickerSettingsResponse,
   ContainerSettings,
   AppPreferences,
   ModelSettings,
@@ -18,7 +19,7 @@ import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 import type { RunnerSetupRemediation } from '@shared/lib/container/wsl2-setup-errors'
 import type { ModelCatalogSettings, ModelSearchResult } from '@shared/lib/llm-provider'
 
-export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability, RunnerSetupRemediation }
+export type { GlobalSettingsResponse, ModelPickerSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability, RunnerSetupRemediation }
 
 export function useSettings(options?: { enabled?: boolean }) {
   return useQuery<GlobalSettingsResponse>({
@@ -30,6 +31,25 @@ export function useSettings(options?: { enabled?: boolean }) {
     },
     refetchInterval: 60000, // Poll less frequently - container status is cached server-side
     enabled: options?.enabled,
+  })
+}
+
+/**
+ * Picker-safe model settings served to EVERY authenticated user. The composer
+ * and default-model pickers must read this — not `useSettings()`, whose
+ * endpoint is admin-gated in auth mode and leaves non-admins with an empty
+ * catalog. The `['settings', …]` key keeps it refreshed by the same broad
+ * invalidations the settings mutations already fire (e.g. a catalog edit).
+ */
+export function useModelSettings() {
+  return useQuery<ModelPickerSettingsResponse>({
+    queryKey: ['settings', 'models'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/settings/models')
+      if (!res.ok) throw new Error('Failed to fetch model settings')
+      return res.json()
+    },
+    staleTime: 60000,
   })
 }
 

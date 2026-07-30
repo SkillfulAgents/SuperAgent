@@ -22,7 +22,7 @@
     --destructive-foreground: 0 0% 98%;
     --border: 0 0% 89.8%;
     --input: 0 0% 89.8%;
-    --ring: 0 0% 3.9%;
+    --ring: 0 0% 63.9%;
     --radius: 0.5rem;
     --chart-1: 12 76% 61%;
     --chart-2: 173 58% 39%;
@@ -58,7 +58,7 @@
     --destructive-foreground: 0 0% 98%;
     --border: 0 0% 19%;
     --input: 0 0% 19%;
-    --ring: 0 0% 83.1%;
+    --ring: 0 0% 45%;
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
@@ -155,14 +155,14 @@ html[data-keyboard-open] [data-composer-footer] {
   margin-top: .25rem;
 }
 
-.markdown-composer-editor h1 { font-size: 1.25rem; line-height: 1.6rem; font-weight: 700; }
-.markdown-composer-editor h2 { font-size: 1.125rem; line-height: 1.5rem; font-weight: 700; }
+.markdown-composer-editor h1 { font-size: 1.25rem; line-height: 1.6rem; font-weight: 500; }
+.markdown-composer-editor h2 { font-size: 1.125rem; line-height: 1.5rem; font-weight: 500; }
 .markdown-composer-editor h3,
 .markdown-composer-editor h4,
 .markdown-composer-editor h5,
-.markdown-composer-editor h6 { font-size: 1rem; line-height: 1.4rem; font-weight: 650; }
+.markdown-composer-editor h6 { font-size: 1rem; line-height: 1.4rem; font-weight: 500; }
 
-.markdown-composer-editor strong { font-weight: 700; }
+.markdown-composer-editor strong { font-weight: 500; }
 .markdown-composer-editor em { font-style: italic; }
 .markdown-composer-editor s { color: hsl(var(--muted-foreground)); }
 
@@ -682,6 +682,33 @@ html[data-keyboard-open] [data-composer-footer] {
 }
 
 /*
+  Long sidebar labels stay ellipsized until the user has briefly dwelled on
+  them, then ease into one pass that reveals the hidden end. Removing
+  data-scrolling on mouse leave removes the animation and restores the start
+  immediately, matching native sidebar marquee behavior.
+*/
+@keyframes hover-scroll-text {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-1 * var(--hover-scroll-distance))); }
+}
+
+.hover-scroll-text[data-scrolling="true"] .hover-scroll-text-content {
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  animation: hover-scroll-text var(--hover-scroll-duration) cubic-bezier(0.42, 0, 0.58, 1) forwards;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hover-scroll-text[data-scrolling="true"] .hover-scroll-text-content {
+    animation: none;
+  }
+}
+
+/*
   Installed-PWA full height (iOS). `h-screen`/`min-h-svh` resolve to the DYNAMIC viewport
   (100dvh/100svh) so mobile-BROWSER layouts track the URL bar — keep that. But in an
   installed PWA there's no URL bar, and iOS reports dvh/svh EXCLUDING the top safe area
@@ -701,16 +728,15 @@ html[data-keyboard-open] [data-composer-footer] {
 /*
   File previews can render in the agent body or in a smaller embedded session
   mirror. A viewport or app-level query cannot describe both spaces. Make each
-  immediate tray host a query container and switch the file tray between a
-  fixed-width overlay and a full-width overlay at 768px. Neither mode
-  participates in flex layout, so opening a file never reflows or squeezes the
-  content beneath it.
+  immediate tray host a query container. Above 768px, Session View keeps its
+  file tray in the flex layout while Agent Home opts into an overlay. Below the
+  breakpoint, both use the same full-width overlay.
 */
 .file-preview-container {
   container-type: inline-size;
 }
 
-.file-preview-responsive-overlay {
+.file-preview-wide-overlay {
   position: absolute;
   inset-block: 0;
   right: 0;
@@ -719,6 +745,10 @@ html[data-keyboard-open] [data-composer-footer] {
 
 @container (max-width: 767px) {
   .file-preview-responsive-overlay {
+    position: absolute;
+    inset-block: 0;
+    right: 0;
+    z-index: 30;
     left: 0;
     width: 100% !important; /* overrides the persisted inline drawer width */
     border-left-width: 0;

@@ -181,6 +181,8 @@ describe('AudioRenderer', () => {
         filePath="/workspace/a.mp3"
         fileUrl="/files/a.mp3"
         agentSlug="agent-1"
+        pdfPage={1}
+        onPdfPageChange={vi.fn()}
       />,
     )
 
@@ -192,6 +194,8 @@ describe('AudioRenderer', () => {
         filePath="/workspace/b.mp3"
         fileUrl="/files/b.mp3"
         agentSlug="agent-1"
+        pdfPage={1}
+        onPdfPageChange={vi.fn()}
       />,
     )
 

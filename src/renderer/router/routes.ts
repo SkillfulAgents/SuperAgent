@@ -18,6 +18,7 @@ import {
   ChatRoute,
   ConnectionsRoute,
   DashboardRoute,
+  SecretsRoute,
   SessionRoute,
   SettingsLayout,
   SettingsIndexRoute,
@@ -154,6 +155,12 @@ export const connectionsRoute = createRoute({
   component: ConnectionsRoute,
 })
 
+export const secretsRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'secrets',
+  component: SecretsRoute,
+})
+
 // ── SETTINGS: SIBLING of app-shell → replaces the whole shell (App.tsx) ───────
 // LAYOUT (just an <Outlet/>): so the `$tab` child renders. `?from=` close-target
 // (open-redirect-safe) lives here and is inherited by both children.
@@ -200,6 +207,7 @@ export const routeTree = rootRoute.addChildren([
       dashboardRoute,
       apiLogsRoute,
       connectionsRoute,
+      secretsRoute,
     ]),
   ]),
   settingsRoute.addChildren([settingsIndexRoute, settingsTabRoute]),

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
 vi.mock('../middleware/auth', () => ({
@@ -33,6 +33,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     broadcastGlobal: vi.fn(),
     persistMessage: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),
+    completeInputRequest: vi.fn(),
   },
 }))
 
@@ -117,8 +118,8 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   listSecrets: vi.fn(),
   getSecret: vi.fn(),
   setSecret: vi.fn(),
+  updateSecret: vi.fn(),
   deleteSecret: vi.fn(),
-  keyToEnvVar: vi.fn(),
   getSecretEnvVars: vi.fn(),
 }))
 
@@ -347,6 +348,7 @@ vi.mock('../llm-polyfill', () => ({
 }))
 
 import agents from './agents'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 
 function createApp() {
   const app = new Hono()
@@ -362,6 +364,22 @@ describe('provide-remote-mcp handler', () => {
     app = createApp()
     mockInsertValues.mockResolvedValue(undefined)
     mockGetHostApiBaseUrl.mockResolvedValue('http://10.20.107.8:3000')
+    // The route's already-settled gate only acts on requests the registry
+    // holds open — park the toolUseId this file decides on.
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tu-1',
+      kind: 'remote_mcp',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+  })
+
+  afterEach(() => {
+    userInputRequestManager.reset()
   })
 
   const ENDPOINT = '/api/agents/test-agent/sessions/sess-1/provide-remote-mcp'
@@ -449,5 +467,98 @@ describe('provide-remote-mcp handler', () => {
     // Neither the agent mapping nor the pending input in the container is touched
     expect(mockInsertValues).not.toHaveBeenCalled()
     expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('Agent Settings remote MCP live sync', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockGetHostApiBaseUrl.mockResolvedValue('http://10.20.107.8:3000')
+  })
+
+  it('updates REMOTE_MCPS in a running container after assignment', async () => {
+    const onConflictDoNothing = vi.fn().mockResolvedValue(undefined)
+    mockInsertValues.mockReturnValueOnce({ onConflictDoNothing })
+
+    // Existing assignments lookup → none.
+    mockSelectFrom.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([]),
+    })
+    // Runtime projection after insert.
+    mockSelectFrom.mockReturnValueOnce({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([
+          {
+            mcp: {
+              id: 'mcp-1',
+              name: 'Calendar',
+              status: 'active',
+              toolsJson: JSON.stringify([{ name: 'list_events' }]),
+            },
+          },
+        ]),
+      }),
+    })
+    mockContainerFetch.mockResolvedValueOnce({
+      ok: true,
+      text: async () => '',
+    })
+
+    const res = await app.request('http://localhost/api/agents/test-agent/remote-mcps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpIds: ['mcp-1'] }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(onConflictDoNothing).toHaveBeenCalledOnce()
+    const envCall = mockContainerFetch.mock.calls.find(([path]) => path === '/env')
+    expect(envCall).toBeDefined()
+    const envBody = JSON.parse(envCall![1].body as string)
+    const configs = JSON.parse(envBody.value)
+    expect(configs).toEqual([
+      {
+        id: 'mcp-1',
+        name: 'Calendar',
+        proxyUrl: 'http://10.20.107.8:3000/api/mcp-proxy/test-agent/mcp-1',
+        tools: [{ name: 'list_events' }],
+      },
+    ])
+  })
+
+  it('updates REMOTE_MCPS in a running container after removal', async () => {
+    // Mapping ownership lookup.
+    mockSelectFrom.mockReturnValueOnce({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'mapping-1' }]),
+        }),
+      }),
+    })
+    // Runtime projection after delete → empty.
+    mockSelectFrom.mockReturnValueOnce({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    })
+    mockContainerFetch.mockResolvedValueOnce({
+      ok: true,
+      text: async () => '',
+    })
+
+    const res = await app.request(
+      'http://localhost/api/agents/test-agent/remote-mcps/mcp-1',
+      { method: 'DELETE' },
+    )
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, liveRefresh: true })
+    const envCall = mockContainerFetch.mock.calls.find(([path]) => path === '/env')
+    expect(envCall).toBeDefined()
+    const envBody = JSON.parse(envCall![1].body as string)
+    expect(JSON.parse(envBody.value)).toEqual([])
   })
 })

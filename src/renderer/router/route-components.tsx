@@ -1,5 +1,6 @@
 import { Outlet, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
+import { AgentSecretsView } from '@renderer/components/agents/agent-secrets/agent-secrets-view'
 import { ConnectionsView } from '@renderer/components/connections/connections-view'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
@@ -38,9 +39,17 @@ export function AgentHomeRoute() {
   return (
     <FilePreviewProvider sessionId={homePreviewId} commentsEnabled={false}>
       <WorkflowProvider sessionId={homePreviewId}>
-        <div className="file-preview-container relative flex flex-1 min-h-0 min-w-0">
+        <div
+          className="file-preview-container relative flex flex-1 min-h-0 min-w-0"
+          data-testid="file-preview-container"
+        >
           <AgentHome key={agent.slug} agent={agent} onSessionCreated={onSessionCreated} />
-          <TrayManager agentSlug={agent.slug} sessionId={homePreviewId} browserActive={false} />
+          <TrayManager
+            agentSlug={agent.slug}
+            sessionId={homePreviewId}
+            browserActive={false}
+            filePreviewWideLayout="overlay"
+          />
         </div>
       </WorkflowProvider>
     </FilePreviewProvider>
@@ -52,6 +61,13 @@ export function ApiLogsRoute() {
   const slug = useAgentSlug()
   if (!slug) return null
   return <ApiLogsView agentSlug={slug} />
+}
+
+// secrets route: the agent slug is read from the URL.
+export function SecretsRoute() {
+  const slug = useAgentSlug()
+  if (!slug) return null
+  return <AgentSecretsView agentSlug={slug} />
 }
 
 // The open detail overlay travels in the URL search (`?detail&source`),
@@ -91,7 +107,7 @@ export function DashboardRoute() {
   const slug = useAgentSlug()
   const { dashSlug } = useParams({ strict: false }) as { dashSlug?: string }
   if (!slug || !dashSlug) return null
-  return <DashboardView agentSlug={slug} dashboardSlug={dashSlug} />
+  return <DashboardView key={`${slug}/${dashSlug}`} agentSlug={slug} dashboardSlug={dashSlug} />
 }
 
 // integrationId is a path param and the optional active sub-session travels in

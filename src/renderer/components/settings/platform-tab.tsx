@@ -9,8 +9,18 @@ import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { RequestError } from '@renderer/components/messages/request-error'
 import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
+import { useCloudWorkspace } from '@renderer/hooks/use-cloud-workspace'
+import { isElectron } from '@renderer/lib/env'
 import { cn } from '@shared/lib/utils'
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
+
+async function openExternalUrl(url: string) {
+  if (window.electronAPI?.openExternal) {
+    await window.electronAPI.openExternal(url)
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
 
 interface PlatformTabProps {
   readOnly?: boolean
@@ -180,6 +190,104 @@ function PlatformBillingCard({
       )}
 
       {error && !billing && (
+        <RequestError message={error instanceof Error ? error.message : String(error)} />
+      )}
+    </div>
+  )
+}
+
+function CloudWorkspaceCard({
+  platformBaseUrl,
+  orgId,
+}: {
+  platformBaseUrl?: string | null
+  orgId?: string | null
+}) {
+  const { data, isLoading, isFetching, error, refetch } = useCloudWorkspace(true, orgId)
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between px-1">
+        <h3 className="text-xs font-medium text-muted-foreground">Cloud Workspace</h3>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 gap-1.5 text-xs"
+          onClick={() => void refetch()}
+          disabled={isFetching}
+        >
+          <RefreshCw className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')} />
+          Refresh
+        </Button>
+      </div>
+
+      <div className={CARD_CLASS}>
+        {isLoading ? (
+          <div className="flex items-center gap-2 py-6 px-4 text-xs text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading cloud workspace…
+          </div>
+        ) : data?.found && data.deploymentUrl ? (
+          <SettingRow
+            name="Cloud workspace"
+            subtitle={data.deploymentUrl}
+            right={
+              <Button
+                size="sm"
+                className="group gap-0"
+                onClick={() => void openExternalUrl(data.deploymentUrl!)}
+              >
+                Open
+                <HoverArrow />
+              </Button>
+            }
+          />
+        ) : !data || data.discoveryFailed ? (
+          // Discovery didn't complete, so we don't know whether a workspace
+          // exists. Offer a retry — claiming "none yet" here would push the user
+          // to create a second one.
+          <SettingRow
+            name="Cloud workspace"
+            subtitle="Couldn't check for a cloud workspace right now"
+            right={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void refetch()}
+                disabled={isFetching}
+              >
+                Retry
+              </Button>
+            }
+          />
+        ) : (
+          // Discovery succeeded and listed none — CTA to create one on the web
+          // dashboard.
+          <SettingRow
+            name="Cloud workspace"
+            subtitle="No cloud workspace yet for this organization"
+            right={
+              <Button
+                size="sm"
+                variant="outline"
+                className="group gap-0"
+                onClick={() => {
+                  if (!platformBaseUrl || !orgId) return
+                  void openExternalUrl(
+                    `${platformBaseUrl}/dashboard/organizations/${orgId}?tab=cloud`,
+                  )
+                }}
+                disabled={!platformBaseUrl || !orgId}
+              >
+                Create workspace
+                <HoverArrow />
+              </Button>
+            }
+          />
+        )}
+      </div>
+
+      {error && !data && (
         <RequestError message={error instanceof Error ? error.message : String(error)} />
       )}
     </div>
@@ -434,6 +542,15 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
         // down the Account screen. Errors render a compact, retryable fallback.
         <ErrorBoundary compact>
           <PlatformBillingCard platformBaseUrl={data?.platformBaseUrl} orgId={data?.orgId} />
+        </ErrorBoundary>
+      )}
+
+      {isConnected && isElectron() && (
+        // Desktop-only: discovers the org's cloud workspace and maintains the
+        // deployment token behind the scenes. Deployment→deployment discovery is
+        // meaningless (and can loop), so it never renders in the web app.
+        <ErrorBoundary compact>
+          <CloudWorkspaceCard platformBaseUrl={data?.platformBaseUrl} orgId={data?.orgId} />
         </ErrorBoundary>
       )}
 

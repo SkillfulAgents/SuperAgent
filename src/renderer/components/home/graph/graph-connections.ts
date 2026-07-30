@@ -10,6 +10,7 @@
 
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
+import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
 import type { GraphEdgeSpec } from './use-graph-data'
 
 export function nodeKind(nodeId: string): string {
@@ -49,6 +50,7 @@ export async function deleteGraphConnection(edge: GraphEdgeSpec): Promise<boolea
         { method: 'DELETE' },
       )
       if (!res.ok) throw new Error(`Failed to unlink (${res.status})`)
+      warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
       toast.success(resourceKind === 'account' ? 'Account unlinked' : 'MCP server unlinked')
       return true
     }
@@ -134,6 +136,7 @@ export async function createDrawnConnection(source: string, target: string): Pro
             body: JSON.stringify({ mcpIds: [resourceId] }),
           })
     if (!res.ok) throw new Error(`Failed to link (${res.status})`)
+    warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     toast.success(kind === 'account' ? 'Account linked to agent' : 'MCP server linked to agent')
     return true
   } catch (error) {

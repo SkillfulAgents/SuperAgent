@@ -10,13 +10,15 @@
  * Follows the TaskScheduler / TriggerManager singleton pattern.
  */
 
-import type { ChatClientConnector, ChatConnectorClass, IncomingMessage } from './base-connector'
-import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import { isMultiPartyChatType, type ChatClientConnector, type ChatConnectorClass, type IncomingMessage } from './base-connector'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
 import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
-import { formatProviderName, formatSessionTimestamp } from './utils'
+import { formatSessionTimestamp, resolveAppLinkContext } from './utils'
+import { requestCardFromRegistry, reviewCardFromRegistry } from './request-card'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import {
   listStartupChatIntegrations,
@@ -214,13 +216,7 @@ class ChatIntegrationManager {
       })
     }, HEALTH_CHECK_INTERVAL_MS)
 
-    // Subscribe to global notifications for proxy review requests (tool approvals)
-    this.globalNotificationUnsubscribe = messagePersister.addGlobalNotificationClient((event: unknown) => {
-      this.handleGlobalNotification(event).catch((err) => {
-        console.error('[ChatIntegrationManager] Error handling global notification:', err)
-        reportError(err, 'global-notification')
-      })
-    })
+    this.subscribeGlobalNotifications()
 
     // Positive start signal: startup.ts only logs start() FAILURES, so without
     // this a dead manager is indistinguishable from a healthy idle one.
@@ -558,18 +554,20 @@ class ChatIntegrationManager {
       throw new Error(`Invalid config for ${integration.provider} integration ${integration.id}`)
     }
 
+    const appLink = resolveAppLinkContext(integration.agentSlug)
+
     switch (integration.provider) {
       case 'telegram': {
         const { TelegramConnector } = await import('./telegram-connector')
-        return new TelegramConnector(config as import('./telegram-connector').TelegramConfig)
+        return new TelegramConnector(config as import('./telegram-connector').TelegramConfig, appLink)
       }
       case 'slack': {
         const { SlackConnector } = await import('./slack-connector')
-        return new SlackConnector(config as import('./slack-connector').SlackConfig)
+        return new SlackConnector(config as import('./slack-connector').SlackConfig, appLink)
       }
       case 'imessage': {
         const { IMessageConnector } = await import('./imessage-connector')
-        return new IMessageConnector(config as import('./imessage-connector').IMessageConfig)
+        return new IMessageConnector(config as import('./imessage-connector').IMessageConfig, appLink)
       }
       default:
         throw new Error(`Unknown chat integration provider: ${integration.provider}`)
@@ -578,12 +576,14 @@ class ChatIntegrationManager {
 
   /**
    * Resolve a provider's connector CLASS for static capability lookups (e.g.
-   * generateSystemPrompt). Mirrors createConnector's lazy imports — connector
-   * modules stay unloaded until their provider is actually used. Returns
-   * undefined for unknown providers rather than throwing: static lookups are
-   * best-effort decorations, not connection attempts.
+   * generateSystemPrompt, discoveryCapabilities, classifyChatId). Mirrors
+   * createConnector's lazy imports — connector modules stay unloaded until
+   * their provider is actually used. Returns undefined for unknown providers
+   * rather than throwing: static lookups are best-effort decorations, not
+   * connection attempts. Public so API routes can label listings and advertise
+   * capabilities without a live connector.
    */
-  private async getConnectorClass(provider: string): Promise<ChatConnectorClass | undefined> {
+  async getConnectorClass(provider: string): Promise<ChatConnectorClass | undefined> {
     switch (provider) {
       case 'telegram':
         return (await import('./telegram-connector')).TelegramConnector
@@ -658,7 +658,7 @@ class ChatIntegrationManager {
       armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(sessionId))
       // Serialize SSE event processing per chat session to prevent race conditions
       // (e.g. session_idle arriving while stream_delta's sendStreamingUpdate is still in-flight)
-      this.enqueueSSEEvent(integrationId, chatId, event)
+      this.enqueueSSEEvent(integrationId, chatId, event, sessionId)
     })
     session.sseUnsubscribe = unsubscribe
     // Arm-if-busy from the cold snapshot — the same primitive as the wake. Busy → arm + paint
@@ -673,11 +673,11 @@ class ChatIntegrationManager {
     if (!BUSY_ACTIVITIES.has(coldActivity)) clearIndicator(session)
   }
 
-  private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown): void {
+  private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string): void {
     const queueKey = `sse:${integrationId}:${chatId}`
     const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
     const next = current.then(() =>
-      this.handleSSEEvent(integrationId, chatId, event).catch((err) => {
+      this.handleSSEEvent(integrationId, chatId, event, sessionId).catch((err) => {
         console.error(`[ChatIntegrationManager] Error handling SSE event:`, err)
         reportError(err, 'sse-event', { integrationId, chatId, eventType: (event as any)?.type })
       })
@@ -1039,6 +1039,7 @@ class ChatIntegrationManager {
         answerText: message.text ?? '',
         hasFiles: !!(message.files && message.files.length > 0),
         persister: messagePersister,
+        registry: userInputRequestManager,
         connector: conn.connector,
       })
       if (consumed) return
@@ -1299,8 +1300,16 @@ class ChatIntegrationManager {
     integration: ChatIntegration,
     message: IncomingMessage,
   ): Promise<{ text: string; failedFiles: string[] }> {
-    // In group/channel contexts, prefix with sender name so the agent can attribute messages.
-    const prefix = message.chatName && message.userName ? `\\[${message.userName}]: ` : ''
+    // Attribution is best-effort metadata, so lookup failure falls back to no prefix.
+    let connectorClass: ChatConnectorClass | undefined
+    try {
+      connectorClass = await this.getConnectorClass(integration.provider)
+    } catch { /* fall through to the no-prefix default */ }
+    const sender = message.userName || message.userId
+    const prefix = sender
+      && isMultiPartyChatType(connectorClass?.classifyChatId?.(message))
+      ? `\\[${sender}]: `
+      : ''
     const text = prefix + (message.text || '')
 
     if (!message.files || message.files.length === 0) {
@@ -1514,36 +1523,43 @@ class ChatIntegrationManager {
 
   // ── Global notification handling (proxy review requests) ─────────
 
+  /**
+   * Reviews are agent-scoped, so they reach no session SSE stream — this
+   * subscription is the ONLY way an Allow/Deny card ever gets to chat.
+   * Idempotent so a harness that drives integrations without start() can arm
+   * it without risking a double-send.
+   */
+  private subscribeGlobalNotifications(): void {
+    if (this.globalNotificationUnsubscribe) return
+    this.globalNotificationUnsubscribe = messagePersister.addGlobalNotificationClient((event: unknown) => {
+      this.handleGlobalNotification(event).catch((err) => {
+        console.error('[ChatIntegrationManager] Error handling global notification:', err)
+        reportError(err, 'global-notification')
+      })
+    })
+  }
+
   private async handleGlobalNotification(event: unknown): Promise<void> {
     const data = event as Record<string, unknown>
-    if (data.type !== 'session_awaiting_input') return
+    // Reviews are agent-scoped, so they never reach a session SSE stream —
+    // the global registry event is the only place chat can see them. Same
+    // wire the session cards come from, filtered to the review kinds.
+    if (data.type !== 'user_request_created') return
+    const request = data.request as PendingUserInputRequest | undefined
+    if (!request) return
 
-    const review = data.review as Record<string, unknown> | undefined
-    if (!review || review.type !== 'proxy_review_request') return
+    // Non-review kinds return null here and are left to the session stream —
+    // they arrive on BOTH wires, so rendering them here too would double-send.
+    const card = reviewCardFromRegistry(request)
+    const agentSlug = request.scope.agentSlug
+    if (!card || !agentSlug) return
 
-    const agentSlug = data.agentSlug as string
-    const sessionId = data.sessionId as string
-    if (!agentSlug) return
-
-    const reviewId = review.reviewId as string
-    const displayText = review.displayText as string || 'Allow this action?'
-    const toolkit = review.toolkit as string || ''
-
-    const text = toolkit
-      ? `🔐 *${formatProviderName(toolkit)} — Permission Request*\n${displayText}`
-      : `🔐 *Permission Request*\n${displayText}`
-
-    const card = {
-      type: 'user_question_request',
-      toolUseId: `review:${reviewId}:${agentSlug}`,
-      questions: [{
-        question: text,
-        options: [
-          { label: '✅ Allow', value: 'allow' },
-          { label: '❌ Deny', value: 'deny' },
-        ],
-      }],
-    } as any
+    // A proxied call carries no session of its own, so the scope has none to
+    // route by; the agent's active session is the same fallback the review
+    // notification uses, and it is what gives the card's link a live session
+    // to open rather than the agent home.
+    const sessionId =
+      request.scope.sessionId ?? messagePersister.getActiveSessionIdsForAgent(agentSlug)[0]
 
     // If we know the sessionId, send only to the chat session that owns it
     if (sessionId) {
@@ -1553,7 +1569,7 @@ class ChatIntegrationManager {
           const key = `${chatSession.integrationId}:${chatSession.externalChatId}`
           const managed = this.chatSessions.get(key)
           if (managed) {
-            await managed.connector.sendUserRequestCard(managed.chatId, card)
+            await managed.connector.sendUserRequestCard(managed.chatId, card, sessionId)
             return
           }
         }
@@ -1580,7 +1596,7 @@ class ChatIntegrationManager {
 
   // ── SSE event handling ────────────────────────────────────────────
 
-  private async handleSSEEvent(integrationId: string, chatId: string, event: unknown): Promise<void> {
+  private async handleSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string): Promise<void> {
     const key = this.getChatSessionKey(integrationId, chatId)
     const session = this.chatSessions.get(key)
     if (!session) return
@@ -1591,7 +1607,7 @@ class ChatIntegrationManager {
     if (!isChatAllowed(integrationId, chatId)) return
 
     const showToolCalls = getChatIntegration(integrationId)?.showToolCalls ?? false
-    await processSSEEvent(session, event, showToolCalls)
+    await processSSEEvent(session, event, showToolCalls, sessionId)
   }
 
   // ── Interactive response handling ─────────────────────────────────
@@ -1604,6 +1620,9 @@ class ChatIntegrationManager {
   ): Promise<void> {
     if (!isChatAllowed(integrationId, chatId ?? '')) return // revoked/stale keyboard, or missing identity → fail closed
 
+    const integration = getChatIntegration(integrationId)
+    if (!integration) return
+
     // Handle proxy review decisions (tool approval requests)
     if (toolUseId.startsWith('review:')) {
       const parts = toolUseId.split(':')
@@ -1614,7 +1633,11 @@ class ChatIntegrationManager {
 
       try {
         const { reviewManager } = await import('@shared/lib/proxy/review-manager')
-        reviewManager.submitDecision(reviewId, decision as 'allow' | 'deny')
+        // Bound to this integration's agent: the id rides in from a chat
+        // client, and submitDecision returns false for a review that is
+        // settled, of another kind, or another agent's.
+        const settled = reviewManager.submitDecision(reviewId, decision as 'allow' | 'deny', integration.agentSlug)
+        if (!settled) await this.replyAlreadyHandled(integrationId, chatId)
       } catch (err) {
         console.error(`[ChatIntegrationManager] Failed to submit review decision:`, err)
         reportError(err, 'review-decision', { integrationId, reviewId, decision })
@@ -1622,12 +1645,43 @@ class ChatIntegrationManager {
       return
     }
 
-    const integration = getChatIntegration(integrationId)
-    if (!integration) return
+    // The same gate for container inputs. A card whose request was settled
+    // elsewhere — answered in the app, cancelled by the next turn, invalidated
+    // with a dead subagent — keeps live-looking buttons in chat; without this
+    // the press buffers an earlyResult in the container that nothing will ever
+    // consume, and the user walks away believing they answered. Not-open and
+    // not-this-agent's collapse to the same reply on purpose: both mean the
+    // button did nothing, and distinguishing them would confirm to one chat
+    // that another agent holds that id.
+    //
+    // CLAIM it rather than merely reading it: everything below yields (the
+    // dynamic import, ensureRunning, the resolve call), so a plain "is it
+    // open?" read is check-then-act — a second press observes the same open
+    // request and both proceed. claimRequest is a synchronous check-and-mark,
+    // so exactly one presser wins.
+    const open = userInputRequestManager.claimRequest(toolUseId)
+    if (!open || open.scope.agentSlug !== integration.agentSlug) {
+      // Wrong agent: release immediately, we never had the right to hold it.
+      if (open) userInputRequestManager.releaseClaim(toolUseId)
+      await this.replyAlreadyHandled(integrationId, chatId)
+      return
+    }
 
     try {
       const { containerManager } = await import('@shared/lib/container/container-manager')
       const client = await containerManager.ensureRunning(integration.agentSlug)
+
+      // Re-check with NO await between here and the container call. The claim
+      // only excludes another chat press; a decision on another surface settles
+      // the registry directly, and if that landed while ensureRunning was in
+      // flight the container has nothing parked — resolving now would buffer an
+      // earlyResult nothing will ever collect, which is the phantom this gate
+      // exists to prevent. What remains after this is the container round trip
+      // itself, which only the container can arbitrate.
+      if (!userInputRequestManager.getOpenRequest(toolUseId)) {
+        await this.replyAlreadyHandled(integrationId, chatId)
+        return
+      }
 
       const responseObj = response as Record<string, unknown>
       if (responseObj && typeof responseObj === 'object' && 'question' in responseObj && 'answer' in responseObj) {
@@ -1646,6 +1700,11 @@ class ChatIntegrationManager {
           const text = await resolveResponse.text().catch(() => '')
           console.error(`[ChatIntegrationManager] Failed to resolve question ${toolUseId}:`, text)
           reportError(new Error(`Resolve question failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
+        } else {
+          // Settle immediately — parallel tool calls hold the transcript
+          // tool_result until every sibling resolves. The registry entry's
+          // scope supplies the session.
+          messagePersister.completeInputRequest(undefined, toolUseId, 'answered')
         }
         return
       }
@@ -1662,10 +1721,38 @@ class ChatIntegrationManager {
         const text = await resolveResponse.text().catch(() => '')
         console.error(`[ChatIntegrationManager] Failed to resolve input ${toolUseId}:`, text)
         reportError(new Error(`Resolve input failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
+      } else {
+        messagePersister.completeInputRequest(undefined, toolUseId, 'answered')
       }
     } catch (err) {
       console.error(`[ChatIntegrationManager] Failed to handle interactive response:`, err)
       reportError(err, 'interactive-response-resolve', { integrationId, toolUseId })
+    } finally {
+      // Unconditional: on the success path the claim is already gone (resolve
+      // drops it with the entry), so this only matters for the paths that bail
+      // — a container that never came up, a failed resolve, a settle that beat
+      // us. A leaked claim would make the request undecidable forever, which is
+      // worse than the race it guards.
+      userInputRequestManager.releaseClaim(toolUseId)
+    }
+  }
+
+  /**
+   * Tell the chat that the button it just pressed is dead. Best-effort and
+   * deliberately vague about why: silence is the failure mode this replaces —
+   * a user who pressed Allow and got nothing back has no way to know whether
+   * the agent is thinking or the press was swallowed.
+   */
+  private async replyAlreadyHandled(integrationId: string, chatId?: string): Promise<void> {
+    if (!chatId) return
+    const connector = this.connections.get(integrationId)?.connector
+    if (!connector) return
+    try {
+      await connector.sendMessage(chatId, {
+        text: 'That request was already handled — this card is no longer waiting on you.',
+      })
+    } catch (err) {
+      console.error('[ChatIntegrationManager] Failed to send already-handled notice:', err)
     }
   }
 
@@ -1869,6 +1956,7 @@ export async function processSSEEvent(
   managed: ManagedConnector,
   event: unknown,
   showToolCalls = false,
+  sessionId?: string,
 ): Promise<void> {
   const data = event as Record<string, unknown>
   const eventType = data.type as string
@@ -1977,26 +2065,36 @@ export async function processSSEEvent(
       break
     }
 
-    case 'user_question_request':
-    case 'secret_request':
-    case 'file_request':
-    case 'connected_account_request':
-    case 'remote_mcp_request':
-    case 'browser_input_request':
-    case 'script_run_request':
-    case 'computer_use_request': {
+    case 'user_request_created': {
+      // The one wire chat renders cards from. The legacy per-type events still
+      // fire alongside this one (they die in Phase 8) and are deliberately NOT
+      // handled here — handling both would double-send every card.
+      const request = (data as { request?: PendingUserInputRequest }).request
+      if (!request) break
+      const card = requestCardFromRegistry(request)
+      // null = chat stays quiet: a review (agent-scoped, rendered off the
+      // global channel) or an auto-approved ask nobody has to decide.
+      if (!card) break
+
       // The agent is now waiting on the user → 'awaiting' (non-busy). Settle the
       // indicator the moment the card is shown (the persister flips isAwaitingInput,
       // so the tick would clear within a tick anyway — this just makes it instant). The
-      // tick then sleeps after the lull and re-checks activity at fire time, so an
-      // auto-approved script run (card shown but the session stays 'working') keeps its tick.
+      // tick then sleeps after the lull and re-checks activity at fire time.
       clearIndicator(managed)
       try {
-        await managed.connector.sendUserRequestCard(managed.chatId, data as UserRequestEvent)
+        await managed.connector.sendUserRequestCard(managed.chatId, card, sessionId)
       } catch (err) {
-        console.error(`[ChatIntegrationManager] Failed to send user request card (${eventType}):`, err)
-        reportError(err, 'send-user-request-card', { integrationId: managed.integration.id, provider: managed.integration.provider, eventType })
+        console.error(`[ChatIntegrationManager] Failed to send user request card (${request.kind}):`, err)
+        reportError(err, 'send-user-request-card', { integrationId: managed.integration.id, provider: managed.integration.provider, eventType: card.type })
       }
+      break
+    }
+
+    case 'user_request_resolved': {
+      // Settled — by a decision here, in the app, or by a sweep. Nothing to
+      // render: the gate in handleInteractiveResponse is what stops a press on
+      // the now-dead card, because no connector can dismiss a single card yet
+      // (dismissOpenCards is all-or-nothing, and Slack does not implement it).
       break
     }
 

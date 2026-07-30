@@ -17,11 +17,11 @@ const SETTINGS_TAB_TITLES = {
   platform: 'Account',
   connections: 'Connections',
   usage: 'Usage',
-  llm: 'LLM Provider',
-  runtime: 'Runtime',
+  llm: 'Model Provider',
+  runtime: 'Container Runtime',
   browser: 'Browser Use',
-  web: 'Web',
-  capabilities: 'Agent Capabilities',
+  web: 'Web Search',
+  capabilities: 'Subagents',
   'computer-use': 'Computer Use',
   'account-provider': 'Account Provider',
   voice: 'Voice',
@@ -103,6 +103,8 @@ function titleForAgentView(view: AgentView, input: DocumentTitleInput): string {
       return joinView(agentTitle, cleanTitlePart(input.dashboardName) ?? humanizeIdentifier(view.slug) ?? 'Dashboard')
     case 'apiLogs':
       return joinView(agentTitle, 'API Logs')
+    case 'secrets':
+      return joinView(agentTitle, 'Secrets')
     case 'connections':
       return joinView(agentTitle, view.detail?.view === 'logs' ? 'Connection Logs' : 'Connections')
     case 'notifications':

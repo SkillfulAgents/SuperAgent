@@ -24,7 +24,7 @@ const EMPTY_PENDING_MESSAGES: PendingMessage[] = []
  *
  * It is also the shared layout — it owns the agent header chrome (`AgentHeader`)
  * and agent-level banners (`AgentBanners`) above a single `<Outlet/>`, so every
- * sub-view (the agent body index, plus the api-logs/connections leaf routes)
+ * sub-view (the agent body index, plus the api-logs/connections/secrets leaf routes)
  * inherits one mounted header instead of re-rendering its own.
  *
  * The agent slug AND the active sessionId both come from the route:

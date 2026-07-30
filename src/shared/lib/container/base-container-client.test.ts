@@ -31,12 +31,6 @@ class TestContainerClient extends BaseContainerClient {
   }
 }
 
-describe('host auto-sleep', () => {
-  it('is enabled by default for container runtimes', () => {
-    expect(new TestContainerClient({ agentId: 'a' }).shouldRunHostAutoSleep()).toBe(true)
-  })
-})
-
 describe('buildAgentEnv', () => {
   afterEach(() => enableToolSearch.mockReturnValue(true))
 

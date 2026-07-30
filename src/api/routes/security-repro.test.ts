@@ -255,8 +255,8 @@ vi.mock('@shared/lib/services/session-service', () => ({
 }))
 
 vi.mock('@shared/lib/services/secrets-service', () => ({
-  listSecrets: vi.fn(), getSecret: vi.fn(), setSecret: vi.fn(), deleteSecret: vi.fn(),
-  keyToEnvVar: vi.fn(), getSecretEnvVars: vi.fn(),
+  listSecrets: vi.fn(), getSecret: vi.fn(), setSecret: vi.fn(), updateSecret: vi.fn(), deleteSecret: vi.fn(),
+  getSecretEnvVars: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
@@ -339,6 +339,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 // Import routers after all mocks are set up.
 import connectedAccountsRouter from './connected-accounts'
 import agents from './agents'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import platformAuthRoute from './platform-auth'
 
 // ---------------------------------------------------------------------------
@@ -452,6 +453,70 @@ describe('SUP-200: GET /api/agents/:id/files/* — workspace containment', () =>
 
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('hello world')
+  })
+
+  it('rejects a file symlink that resolves outside the agent workspace', async () => {
+    if (process.platform === 'win32') return
+    const workspace = path.join(agentDataRoot, 'agent')
+    const outsideFile = path.join(agentDataRoot, 'outside-secret.txt')
+    fs.mkdirSync(workspace, { recursive: true })
+    fs.writeFileSync(outsideFile, 'outside secret')
+    fs.symlinkSync(outsideFile, path.join(workspace, 'linked-secret.txt'))
+
+    const res = await appWithAgents().request('http://localhost/api/agents/agent/files/linked-secret.txt')
+
+    expect(res.status).toBe(400)
+  })
+
+  it('does not delete through a bookmarked-folder symlink that escapes the root', async () => {
+    if (process.platform === 'win32') return
+    const workspace = path.join(agentDataRoot, 'agent')
+    const reports = path.join(workspace, 'reports')
+    const outsideFile = path.join(agentDataRoot, 'outside-secret.txt')
+    fs.mkdirSync(reports, { recursive: true })
+    fs.writeFileSync(path.join(workspace, 'bookmarks.json'), JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+    fs.writeFileSync(outsideFile, 'outside secret')
+    fs.symlinkSync(outsideFile, path.join(reports, 'linked-secret.txt'))
+
+    const res = await appWithAgents().request('http://localhost/api/agents/agent/folders/file', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports/linked-secret.txt',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fs.existsSync(outsideFile)).toBe(true)
+  })
+
+  it('does not recursively delete through a directory symlink that escapes the root', async () => {
+    if (process.platform === 'win32') return
+    const workspace = path.join(agentDataRoot, 'agent')
+    const reports = path.join(workspace, 'reports')
+    const outsideDirectory = path.join(agentDataRoot, 'outside-directory')
+    fs.mkdirSync(reports, { recursive: true })
+    fs.mkdirSync(outsideDirectory, { recursive: true })
+    fs.writeFileSync(path.join(workspace, 'bookmarks.json'), JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+    fs.writeFileSync(path.join(outsideDirectory, 'keep.txt'), 'do not delete')
+    fs.symlinkSync(outsideDirectory, path.join(reports, 'linked-directory'))
+
+    const res = await appWithAgents().request('http://localhost/api/agents/agent/folders/directory', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports/linked-directory',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fs.existsSync(path.join(outsideDirectory, 'keep.txt'))).toBe(true)
   })
 })
 
@@ -572,6 +637,19 @@ describe('SUP-199: remote MCP assignment ownership (AUTH_MODE)', () => {
 
   it('rejects providing another user remote MCP id at runtime approval', async () => {
     selectQueue = [[]]
+    // The decision gate answers already-settled (side-effect-free) for
+    // requests the registry does not hold open — park the request so the
+    // route reaches the ownership check this test pins.
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tu-1',
+      kind: 'remote_mcp',
+      scope: { agentSlug: 'attacker-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
 
     const res = await appWithAgents().request('http://localhost/api/agents/attacker-agent/sessions/sess-1/provide-remote-mcp', {
       method: 'POST',
@@ -581,6 +659,7 @@ describe('SUP-199: remote MCP assignment ownership (AUTH_MODE)', () => {
 
     expectClientError(res.status)
     expect(mockDbInsertValues).not.toHaveBeenCalled()
+    userInputRequestManager.reset()
   })
 
   it('allows attaching a remote MCP the acting user owns', async () => {
@@ -594,6 +673,10 @@ describe('SUP-199: remote MCP assignment ownership (AUTH_MODE)', () => {
     })
 
     expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      success: true,
+      liveRefresh: false,
+    })
     expect(mockDbInsertValues).toHaveBeenCalledTimes(1)
     expect(mockDbInsertValues).toHaveBeenCalledWith([
       expect.objectContaining({ agentSlug: 'my-agent', remoteMcpId: 'my-mcp-id' }),
@@ -654,7 +737,8 @@ describe('unlink ownership: cross-user account/MCP unlink from a shared agent (A
     const res = await appWithAgents().request('http://localhost/api/agents/my-agent/connected-accounts/my-account-id', {
       method: 'DELETE',
     })
-    expect(res.status).toBe(204)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, liveRefresh: false })
     expect(mockDbDeleteWhere).toHaveBeenCalledTimes(1)
   })
 
@@ -672,7 +756,8 @@ describe('unlink ownership: cross-user account/MCP unlink from a shared agent (A
     const res = await appWithAgents().request('http://localhost/api/agents/my-agent/remote-mcps/my-mcp-id', {
       method: 'DELETE',
     })
-    expect(res.status).toBe(204)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, liveRefresh: false })
     expect(mockDbDeleteWhere).toHaveBeenCalledTimes(1)
   })
 })

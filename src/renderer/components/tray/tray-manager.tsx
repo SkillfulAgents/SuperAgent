@@ -15,11 +15,18 @@ interface TrayManagerProps {
   agentSlug: string
   sessionId: string
   browserActive: boolean
+  /** Wide-screen file previews split the layout by default; Agent Home opts into an overlay. */
+  filePreviewWideLayout?: 'split' | 'overlay'
 }
 
-export function TrayManager({ agentSlug, sessionId, browserActive }: TrayManagerProps) {
+export function TrayManager({
+  agentSlug,
+  sessionId,
+  browserActive,
+  filePreviewWideLayout = 'split',
+}: TrayManagerProps) {
   const filePreview = useFilePreview()
-  const hasOpenFiles = filePreview.openFiles.length > 0 && filePreview.isOpen
+  const hasOpenFiles = filePreview.openTabs.length > 0 && filePreview.isOpen
   const workflow = useWorkflow()
   const hasWorkflow = workflow.openWorkflows.length > 0 && workflow.isOpen
   const [selectedTrayId, setSelectedTrayId] = useState<string>('browser')
@@ -96,7 +103,7 @@ export function TrayManager({ agentSlug, sessionId, browserActive }: TrayManager
       icon: FileText,
       label: 'Files',
       available: hasOpenFiles,
-      badge: filePreview.openFiles.length,
+      badge: filePreview.openTabs.length,
       content: filePreviewTrayContent,
     },
     {
@@ -107,7 +114,7 @@ export function TrayManager({ agentSlug, sessionId, browserActive }: TrayManager
       badge: workflow.openWorkflows.length,
       content: workflowTrayContent,
     },
-  ], [browserActive, hasOpenFiles, filePreview.openFiles.length, browserTrayContent, filePreviewTrayContent, hasWorkflow, workflow.openWorkflows.length, workflowTrayContent])
+  ], [browserActive, hasOpenFiles, filePreview.openTabs.length, browserTrayContent, filePreviewTrayContent, hasWorkflow, workflow.openWorkflows.length, workflowTrayContent])
 
   const availableTrays = trays.filter(t => t.available)
   const anyAvailable = availableTrays.length > 0
@@ -122,7 +129,7 @@ export function TrayManager({ agentSlug, sessionId, browserActive }: TrayManager
     }
   }, [browserActive, userClosed])
 
-  const fileCount = filePreview.openFiles.length
+  const fileCount = filePreview.openTabs.length
   useEffect(() => {
     if (hasOpenFiles && !userClosed) {
       requestAnimationFrame(() => {
@@ -188,6 +195,7 @@ export function TrayManager({ agentSlug, sessionId, browserActive }: TrayManager
       isOpen={isOpen}
       storageKey={DRAWER_STORAGE_KEY}
       responsiveFullWidth={activeTray?.id === 'files'}
+      wideOverlay={activeTray?.id === 'files' && filePreviewWideLayout === 'overlay'}
     >
       <div className="flex flex-1 min-h-0">
         <div className="flex-1 flex flex-col min-w-0 min-h-0">

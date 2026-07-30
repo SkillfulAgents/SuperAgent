@@ -289,10 +289,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     this.config = config
   }
 
-  shouldRunHostAutoSleep(): boolean {
-    return true
-  }
-
   /**
    * Emit an 'error' event without crashing the process.
    *
@@ -1105,6 +1101,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // Resolve stored selections (bare aliases or concrete ids) to the active
     // provider's concrete wire id before the container ever sees them.
     const resolvedModel = resolveContainerModel(options.model, 'agent')
+    // Resolved on the same path as the session's own model, so the prompt
+    // hints the container pre-warms with match what a default session would
+    // actually be built with.
+    const resolvedPrewarmModel = resolveContainerModel(options.prewarmDefaults?.model, 'agent')
+    const prewarmPromptHints = getContainerModelPromptHints(resolvedPrewarmModel)
     const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
     const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
     const modelPromptHints = getContainerModelPromptHints(resolvedModel)
@@ -1150,6 +1151,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           effort: options.effort,
           speed: options.speed,
           capabilityPolicies,
+          prewarmDefaults: options.prewarmDefaults && {
+            model: resolvedPrewarmModel,
+            modelPromptHints: prewarmPromptHints.length > 0 ? prewarmPromptHints : undefined,
+            effort: options.prewarmDefaults.effort,
+            speed: options.prewarmDefaults.speed,
+          },
         }),
         signal: controller.signal,
       })

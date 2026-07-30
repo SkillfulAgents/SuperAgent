@@ -54,6 +54,9 @@ class MockClaudeProcess extends EventEmitter {
       throw err
     }
     this.running = true
+    // Faithful to ClaudeCodeProcess: initializeQuery() emits this from start(),
+    // i.e. before the caller can publish the session or attach a subscriber.
+    this.emit('query-start')
   }
 
   async sendMessage(content?: string): Promise<void> {
@@ -137,6 +140,7 @@ describe('SessionManager idle eviction', () => {
     nextStartDelayMs = 0
     // Interactive waits IDLE_MS; automated (cron/webhook) evicts immediately when idle.
     manager = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: IDLE_MS,
       automatedIdleEvictionMs: 0,
     })
@@ -266,6 +270,7 @@ describe('SessionManager idle eviction', () => {
     // the single final idle. A threshold-0 sweep landing after result #1
     // must not kill the queued turns.
     const promoOff = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: 0,
       automatedIdleEvictionMs: 0,
     })
@@ -417,6 +422,7 @@ describe('SessionManager idle eviction', () => {
   it('holds through the completion-wake gap and evicts only after the wake turn settles', async () => {
     // Automated threshold 0 — the exact class exposed to the wake-gap race.
     const gapManager = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: IDLE_MS,
       automatedIdleEvictionMs: 0,
       wakeGraceMs: 60_000,
@@ -445,6 +451,7 @@ describe('SessionManager idle eviction', () => {
 
   it('settles after the wake grace expires when no wake ever comes', async () => {
     const graceManager = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: IDLE_MS,
       automatedIdleEvictionMs: 0,
       wakeGraceMs: 5,
@@ -481,6 +488,7 @@ describe('SessionManager idle eviction', () => {
     // Resume via a bare getSession — a human message would (correctly)
     // promote the session to interactive instead.
     const restarted = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: 60 * 60_000,
       automatedIdleEvictionMs: 0,
     })
@@ -498,6 +506,7 @@ describe('SessionManager idle eviction', () => {
 
   it('a human message promotes an automated session to the interactive class', async () => {
     const promoManager = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: 60 * 60_000, // interactive effectively off
       automatedIdleEvictionMs: 0,
     })
@@ -591,6 +600,7 @@ describe('SessionManager idle eviction', () => {
     await manager.stopAll()
 
     const restarted = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: IDLE_MS,
       automatedIdleEvictionMs: 0,
     })
@@ -614,6 +624,7 @@ describe('SessionManager idle eviction', () => {
     await manager.stopAll()
 
     const restarted = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: IDLE_MS,
       automatedIdleEvictionMs: 0,
     })
@@ -643,6 +654,7 @@ describe('SessionManager idle eviction', () => {
     await manager.stopAll()
 
     const restarted = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: IDLE_MS,
       automatedIdleEvictionMs: 0,
     })
@@ -680,8 +692,61 @@ describe('SessionManager idle eviction', () => {
     expect(proc.stopCalls).toBe(1)
   })
 
+  it('announces process replacement to subscribers so the host can reset too', async () => {
+    // The host keeps its own copy of the background-task level set and has no
+    // other way to learn the CLI was replaced — `query-start` is an in-process
+    // event. Without this frame the host's snapshot keeps ids from the dead
+    // process forever and pins the session "working" at the end of every turn.
+    const { id, proc } = await createIdleSession()
+    const received: Array<Record<string, unknown>> = []
+    const unsubscribe = manager.subscribe(id, (msg) => received.push(msg as Record<string, unknown>))
+
+    proc.emit('query-start')
+    unsubscribe()
+
+    expect(received).toContainEqual(
+      expect.objectContaining({ type: 'system', subtype: 'process_restarted' })
+    )
+    // The live frame and the handshake must name the SAME process, or a client
+    // that sees both would read the second one as another restart.
+    const announced = received.find((m) => m.subtype === 'process_restarted')
+    expect(announced?.process_instance).toBe(manager.getProcessInstanceId(id))
+  })
+
+  it('records a fresh process instance id on a cold resume, before any subscriber exists', async () => {
+    // Regression: process.start() emits query-start synchronously, BEFORE
+    // doResumeSession publishes the SessionData and long before the WebSocket
+    // subscriber attaches — so the live announcement reaches nobody. The host
+    // then reconnects still holding a bgTasksSnapshot from the dead process,
+    // the fresh CLI emits no initial snapshot, and the session is pinned
+    // "working" forever. The restart has to be readable at subscribe time, not
+    // only broadcast at restart time.
+    persistedSessions.set('cold-restart', {
+      sessionId: 'cold-restart',
+      claudeSessionId: 'cold-restart',
+      workingDirectory: workDir,
+      createdAt: new Date().toISOString(),
+      lastActivity: new Date().toISOString(),
+    })
+
+    await manager.getSession('cold-restart')
+
+    const afterResume = manager.getProcessInstanceId('cold-restart')
+    expect(afterResume).toBeTruthy()
+
+    // Same live process → the same id, so a plain reattach must not be
+    // mistaken for a restart (that would drop a genuinely running task).
+    expect(manager.getProcessInstanceId('cold-restart')).toBe(afterResume)
+
+    // A later replacement mints a new one.
+    const proc = spawnedProcesses[spawnedProcesses.length - 1]
+    proc.emit('query-start')
+    expect(manager.getProcessInstanceId('cold-restart')).not.toBe(afterResume)
+  })
+
   it('a shouldQuery:false append does NOT promote an automated session', async () => {
     const promoManager = new SessionManager(workDir, {
+      prewarmEnabled: false,
       idleEvictionMs: 60 * 60_000,
       automatedIdleEvictionMs: 0,
     })

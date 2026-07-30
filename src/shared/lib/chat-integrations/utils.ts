@@ -84,6 +84,7 @@ const UNSUPPORTED_IN_CHAT: ReadonlySet<UserRequestEvent['type']> = new Set([
   'browser_input_request',
   'script_run_request',
   'computer_use_request',
+  'capability_review_request',
   'secret_request',
   'file_request',
 ])
@@ -120,12 +121,51 @@ export function splitChatMessage(text: string, maxLength: number): string[] {
   return chunks
 }
 
+/** Where to send the user when chat can't fulfill a request. */
+export interface AppLinkContext {
+  isDesktop: boolean
+  url: string | null
+}
+
+/**
+ * Resolve the app surface + optional deep/web link for an agent.
+ * Env reads stay inside this function (SUPERAGENT_PROTOCOL is assigned after
+ * this module is imported in Electron main).
+ */
+export function resolveAppLinkContext(agentSlug: string): AppLinkContext {
+  if (process.type === 'browser') {
+    // `||`, not `??`: an empty value must fall back too, or the link degrades to
+    // a scheme-less `://agent/…` that chat clients still render as a dead link.
+    const scheme = process.env.SUPERAGENT_PROTOCOL || 'superagent'
+    return { isDesktop: true, url: `${scheme}://agent/${encodeURIComponent(agentSlug)}` }
+  }
+  const base = process.env.HOST_PUBLIC_URL?.trim().replace(/\/+$/, '')
+  return { isDesktop: false, url: base ? `${base}/agents/${encodeURIComponent(agentSlug)}` : null }
+}
+
+/**
+ * Session-scoped variant of an app link: suffix the session path onto the base
+ * link. Passthrough when there is no base URL (self-hosted cloud) or no session
+ * identity (link stays agent-home). One rule serves both surfaces because the
+ * desktop and web base shapes are parallel.
+ */
+export function withSessionUrl(
+  appLink: AppLinkContext | undefined,
+  sessionId?: string,
+): AppLinkContext | undefined {
+  if (!appLink?.url || !sessionId) return appLink
+  const base = appLink.url.replace(/\/+$/, '')
+  return { ...appLink, url: `${base}/sessions/${encodeURIComponent(sessionId)}` }
+}
+
 /**
  * Plain-text user-facing message for an event the chat integration can't fulfill.
  * Connectors wrap this in their own formatting (Telegram HTML, Slack mrkdwn).
  */
-export function describeUnsupportedRequest(event: UserRequestEvent): string {
-  const tail = ' Open Gamut on your desktop to continue.'
+export function describeUnsupportedRequest(event: UserRequestEvent, appLink?: AppLinkContext): string {
+  const isDesktop = appLink?.isDesktop ?? true // no-context fallback = current behavior
+  const url = appLink?.url ?? null
+  const tail = ` Open Gamut${isDesktop ? ' on your desktop' : ''} to continue${url ? `: ${url}` : '.'}`
   switch (event.type) {
     case 'connected_account_request':
       return `The agent wants to connect your ${event.toolkit} account, which isn't supported in chat.${tail}`
@@ -135,6 +175,8 @@ export function describeUnsupportedRequest(event: UserRequestEvent): string {
       return `The agent needs input in a browser session, which isn't supported in chat.${tail}`
     case 'script_run_request':
       return `The agent wants to run a script, which needs your approval.${tail}`
+    case 'capability_review_request':
+      return `The agent wants to ${event.capability === 'workflows' ? 'run a workflow' : 'launch a subagent'}, which needs your approval.${tail}`
     case 'computer_use_request':
       return `The agent wants to use your computer, which isn't supported in chat.${tail}`
     case 'secret_request':

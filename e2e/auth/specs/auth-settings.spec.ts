@@ -56,12 +56,14 @@ test.describe('Auth Settings Enforcement', () => {
     await appPage.dismissWizardIfVisible()
   })
 
-  test('admin sees grouped "My Settings" / "Admin Settings" sections', async ({ user1Page }) => {
+  test('admin sees all four semantic settings groups', async ({ user1Page }) => {
     const settingsPage = new SettingsPage(user1Page)
     await settingsPage.open()
-    // Both group labels should render in admin auth mode.
-    await expect(user1Page.locator('[data-sidebar="group-label"]', { hasText: 'My Settings' })).toBeVisible()
-    await expect(user1Page.locator('[data-sidebar="group-label"]', { hasText: 'Admin Settings' })).toBeVisible()
+    // Admins see every group, including admin-only Infrastructure.
+    await expect(user1Page.locator('[data-sidebar="group-label"]', { hasText: 'App Settings' })).toBeVisible()
+    await expect(user1Page.locator('[data-sidebar="group-label"]', { hasText: 'Agent Capabilities' })).toBeVisible()
+    await expect(user1Page.locator('[data-sidebar="group-label"]', { hasText: 'Agent Infrastructure' })).toBeVisible()
+    await expect(user1Page.locator('[data-sidebar="group-label"]', { hasText: 'Agent Activity' })).toBeVisible()
     await settingsPage.close()
   })
 

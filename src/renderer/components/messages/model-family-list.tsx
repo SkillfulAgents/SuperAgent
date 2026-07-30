@@ -29,6 +29,7 @@ const VENDOR_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   zai: 'Z.AI',
   xai: 'xAI',
+  kimi: 'Moonshot AI',
 }
 
 const NO_VENDOR = 'other'
@@ -51,7 +52,7 @@ export function vendorDisplayName(key: string): string {
  * Families outside this set (e.g. 'gpt', where each entry is a distinct tier)
  * keep one row per concrete model.
  */
-const LINEAGE_FAMILIES = new Set(['fable', 'opus', 'sonnet', 'haiku'])
+const LINEAGE_FAMILIES = new Set(['fable', 'opus', 'sonnet', 'haiku', 'kimi'])
 
 /** Chip label for a version: its label minus the family prefix ("Opus 4.8" → "4.8"). */
 function versionChipLabel(label: string, familyName: string): string {
@@ -118,10 +119,10 @@ export function webToolsWarning(
 ): string | null {
   if (!model || webVendorSet) return null
   if (model.supportsWebSearch === false) {
-    return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web to use them on any model.'
+    return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web Search to use them on any model.'
   }
   if (model.supportsWebFetch === false) {
-    return 'Native web fetch isn’t available on this model. Set a provider under Settings → Web to use fetch (search still works).'
+    return 'Native web fetch isn’t available on this model. Set a provider under Settings → Web Search to use fetch (search still works).'
   }
   return null
 }

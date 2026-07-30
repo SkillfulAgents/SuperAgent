@@ -44,9 +44,15 @@ export function SessionThread({
   suppressScrollToBottom,
 }: SessionThreadProps) {
   return (
-    <div className="file-preview-container relative flex flex-1 min-h-0 min-w-0">
+    <div
+      className="file-preview-container relative flex flex-1 min-h-0 min-w-0"
+      data-testid="file-preview-container"
+    >
       {/* Chat column — grid pins the footer at the bottom */}
-      <div className="flex-1 min-w-0 grid grid-rows-[1fr_auto] min-h-0">
+      <div
+        className="flex-1 min-w-0 grid grid-rows-[1fr_auto] min-h-0"
+        data-testid="session-thread-main"
+      >
         <MessageList
           key={sessionId}
           sessionId={sessionId}

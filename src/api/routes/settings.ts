@@ -32,6 +32,7 @@ import {
   type ApiKeySettings,
   type ContainerSettings,
   type GlobalSettingsResponse,
+  type ModelPickerSettingsResponse,
 } from '@shared/lib/config/settings'
 import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
 import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
@@ -73,6 +74,7 @@ import {
   messageAuthor,
   xAgentPolicies,
   apiScopePolicies,
+  tokenExchangeJti,
 } from '@shared/lib/db/schema'
 import fs from 'fs'
 
@@ -190,11 +192,34 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   userSettings,
   // global app audit log
   auditLog,
+  // transient single-use jti replay guard for the token-exchange endpoint
+  tokenExchangeJti,
 ]
 
 // Custom model icons are used in regular model pickers, so any authenticated
 // user may read them. Writes and the rest of settings stay admin-only.
 settings.get('/model-icons/:fileName', Authenticated(), serveUploadedModelIcon)
+
+// The model catalog drives the composer and default-model pickers, which every
+// authenticated user may use — choosing a model is not an admin action, only
+// editing provider config/catalog is. Serve the picker-safe subset above the
+// admin gate; it carries no secrets (provider ids/names, an isConfigured
+// boolean, catalogs, and default selections).
+settings.get('/models', Authenticated(), (c) => {
+  try {
+    const appSettings = getSettings()
+    const response: ModelPickerSettingsResponse = {
+      llmProvider: appSettings.llmProvider ?? 'anthropic',
+      llmProviderStatus: getAllProviderInfo(),
+      models: getEffectiveModels(),
+      webProvider: resolveEffectiveWebVendor(),
+    }
+    return c.json(response)
+  } catch (error) {
+    console.error('Failed to fetch model settings:', error)
+    return c.json({ error: 'Failed to fetch model settings' }, 500)
+  }
+})
 
 settings.use('*', Authenticated(), IsAdmin())
 
@@ -564,6 +589,9 @@ settings.put('/', async (c) => {
       customEnvVars: body.customEnvVars !== undefined ? body.customEnvVars : currentSettings.customEnvVars,
       skillsets: currentSettings.skillsets,
       platformAuth: currentSettings.platformAuth,
+      // Preserve the maintained cloud-workspace deployment token across global
+      // settings writes; it's owned by the platform-auth flow, not this route.
+      cloudWorkspace: currentSettings.cloudWorkspace,
       auth: body.auth !== undefined ? { ...currentSettings.auth, ...body.auth } : currentSettings.auth,
       voice: body.voice !== undefined ? { ...currentSettings.voice, ...body.voice } : currentSettings.voice,
       shareAnalytics: body.shareAnalytics !== undefined ? body.shareAnalytics : currentSettings.shareAnalytics,

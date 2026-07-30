@@ -3,12 +3,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useComposerOptions, type UseComposerOptionsArgs } from './composer-options'
 
-// Mutable settings the mocked useSettings reads at call time, so tests can
+// Mutable settings the mocked useModelSettings reads at call time, so tests can
 // simulate the query resolving (undefined → loaded) and later refetches.
 const state = vi.hoisted(() => ({ settings: undefined as unknown }))
 
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({ data: state.settings }),
+  useModelSettings: () => ({ data: state.settings }),
 }))
 
 const LOADED_SETTINGS = {

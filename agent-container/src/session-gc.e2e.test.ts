@@ -128,6 +128,7 @@ describe.skipIf(!ENABLED)('session GC end-to-end (real CLI subprocesses)', () =>
       // class, so the re-reap at the end exercises the promoted (interactive)
       // path — the first reap exercises the automated (threshold 0) path.
       const manager = new SessionManager(workDir, {
+      prewarmEnabled: false,
         idleEvictionMs: 5_000,
         automatedIdleEvictionMs: 0,
         evictionPollMs: 1_000,
@@ -183,6 +184,7 @@ describe.skipIf(!ENABLED)('session GC end-to-end (real CLI subprocesses)', () =>
     async () => {
       const IDLE_MS = 6_000;
       const manager = new SessionManager(workDir, {
+      prewarmEnabled: false,
         idleEvictionMs: IDLE_MS,
         automatedIdleEvictionMs: 0,
         evictionPollMs: 1_000,

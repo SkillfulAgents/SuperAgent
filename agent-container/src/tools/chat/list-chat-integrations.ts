@@ -4,6 +4,7 @@ import { callChatHost, textResult, XAgentError } from './host-client'
 interface ChatSession {
   chatId: string
   displayName: string | null
+  type?: string
 }
 
 interface ChatIntegrationInfo {
@@ -11,6 +12,7 @@ interface ChatIntegrationInfo {
   provider: string
   name: string | null
   status: string
+  capabilities?: string[]
   chats: ChatSession[]
 }
 
@@ -20,9 +22,9 @@ interface ListResult {
 
 export const listChatIntegrationsTool = tool(
   'list_chat_integrations',
-  `List chat integrations configured for this agent. Returns each integration's ID, provider, status, and active chat sessions with their chat IDs.
+  `List chat integrations configured for this agent. Returns each integration's ID, provider, status, discovery capabilities, and active chat sessions with their chat IDs and conversation type (dm/channel/group/thread).
 
-Use the integration ID and chat ID when calling send_chat_message.`,
+Use the integration ID and chat ID when calling send_chat_message. Integrations whose capabilities include list_users / list_channels / dm_by_user_id also support the list_chat_users and list_chat_channels tools and send_chat_message's user_id parameter — use those to reach people or channels with no existing chat.`,
   {},
   async () => {
     try {
@@ -32,10 +34,11 @@ Use the integration ID and chat ID when calling send_chat_message.`,
       }
       const lines = data.integrations.map((i) => {
         const name = i.name ? ` "${i.name}"` : ''
+        const capabilities = i.capabilities?.length ? ` — capabilities: ${i.capabilities.join(', ')}` : ''
         const chatLines = i.chats.length > 0
-          ? i.chats.map((c) => `    - chatId: ${c.chatId}${c.displayName ? ` (${c.displayName})` : ''}`).join('\n')
+          ? i.chats.map((c) => `    - chatId: ${c.chatId}${c.displayName ? ` (${c.displayName})` : ''}${c.type ? ` [${c.type}]` : ''}`).join('\n')
           : '    (no active chats yet)'
-        return `- ${i.provider}${name} [${i.status}] (id: ${i.id})\n${chatLines}`
+        return `- ${i.provider}${name} [${i.status}] (id: ${i.id})${capabilities}\n${chatLines}`
       })
       return textResult(`Chat integrations (${data.integrations.length}):\n${lines.join('\n')}`)
     } catch (error) {

@@ -1,6 +1,8 @@
 import * as path from 'path'
 import { promises as fs } from 'fs'
+import pLimit from 'p-limit'
 import { isPathWithinDir } from '../utils/path-safety'
+import { streamJsonlFile } from '../utils/file-storage'
 import { parseWorkflowScript } from './workflow-script-parser'
 import {
   JournalLineSchema,
@@ -14,6 +16,13 @@ import {
 // The join produces the structural fields; per-agent transcript stats (prompt,
 // toolCount, tokens, durationMs) are layered on afterwards from readAgentStats.
 type JoinedAgent = Omit<WorkflowAgentNode, 'prompt' | 'toolCount' | 'tokens' | 'durationMs'>
+
+/**
+ * How many agent transcripts readAgentStats has open concurrently. Peak memory
+ * is roughly this times the largest transcript, so it bounds the drawer's cost
+ * on a run with hundreds of agents instead of scaling with the run.
+ */
+const AGENT_STATS_CONCURRENCY = 10
 
 /**
  * Reconstruct a workflow's per-agent tree from its on-disk artifacts and join each
@@ -77,10 +86,15 @@ export async function buildWorkflowTree(opts: {
   const invocation = await findWorkflowInvocation(sessionsDir, sessionId, runId)
   const script = await loadScript(sessionsDir, sessionId, runId, invocation.scriptHostPath)
   const stats = new Map<string, AgentStats>()
+  // A wide run has hundreds of agent transcripts and they are individually
+  // large; reading them all at once puts the whole run dir in memory at peak.
+  const statsLimit = pLimit(AGENT_STATS_CONCURRENCY)
   await Promise.all(
-    startedOrder.map(async (agentId) => {
-      stats.set(agentId, await readAgentStats(path.join(runDir, `agent-${agentId}.jsonl`)))
-    })
+    startedOrder.map((agentId) =>
+      statsLimit(async () => {
+        stats.set(agentId, await readAgentStats(path.join(runDir, `agent-${agentId}.jsonl`)))
+      })
+    )
   )
 
   const firstPrompts = new Map([...stats].map(([id, s]) => [id, s.firstPrompt]))
@@ -262,42 +276,37 @@ async function findWorkflowInvocation(
   runId: string
 ): Promise<WorkflowInvocation> {
   const none: WorkflowInvocation = { scriptHostPath: null, args: undefined }
-  let raw: string
-  try {
-    raw = await fs.readFile(path.join(sessionsDir, `${sessionId}.jsonl`), 'utf8')
-  } catch {
-    return none
-  }
   // sessionsDir = <workspace>/.claude/projects/-workspace
   const workspaceDir = path.resolve(sessionsDir, '..', '..', '..')
 
   const inputsByToolUseId = new Map<string, Record<string, unknown>>()
   let resultText: string | null = null
   let resultToolUseId: string | null = null
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-    let entry: { message?: { content?: unknown } }
-    try {
-      entry = JSON.parse(trimmed)
-    } catch {
-      continue
-    }
-    const content = entry.message?.content
-    if (!Array.isArray(content)) continue
-    for (const block of content as Array<Record<string, unknown>>) {
-      if (block?.type === 'tool_use' && block.name === 'Workflow' && typeof block.id === 'string') {
-        const input = block.input
-        inputsByToolUseId.set(block.id, input !== null && typeof input === 'object' ? (input as Record<string, unknown>) : {})
-      }
-      if (resultText === null && block?.type === 'tool_result') {
-        const text = messageText(block.content)
-        if (text.includes(runId)) {
-          resultText = text
-          resultToolUseId = typeof block.tool_use_id === 'string' ? block.tool_use_id : null
+  try {
+    // The parent transcript is the largest file this module touches; stream it
+    // rather than holding it whole to pull one tool_use/tool_result pair out.
+    const lines = streamJsonlFile<{ message?: { content?: unknown } }>(
+      path.join(sessionsDir, `${sessionId}.jsonl`)
+    )
+    for await (const entry of lines) {
+      const content = entry.message?.content
+      if (!Array.isArray(content)) continue
+      for (const block of content as Array<Record<string, unknown>>) {
+        if (block?.type === 'tool_use' && block.name === 'Workflow' && typeof block.id === 'string') {
+          const input = block.input
+          inputsByToolUseId.set(block.id, input !== null && typeof input === 'object' ? (input as Record<string, unknown>) : {})
+        }
+        if (resultText === null && block?.type === 'tool_result') {
+          const text = messageText(block.content)
+          if (text.includes(runId)) {
+            resultText = text
+            resultToolUseId = typeof block.tool_use_id === 'string' ? block.tool_use_id : null
+          }
         }
       }
     }
+  } catch {
+    return none
   }
   if (resultText === null) return none
 
@@ -351,58 +360,51 @@ async function readAgentStats(filePath: string): Promise<AgentStats> {
     lastTs: null,
     trailingError: null,
   }
-  let raw: string
-  try {
-    raw = await fs.readFile(filePath, 'utf8')
-  } catch {
-    return empty
-  }
   let firstPrompt = ''
   let toolCount = 0
   let tokens = 0
   let firstTs: number | null = null
   let lastTs: number | null = null
   let trailingError: string | null = null
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-    let entry: {
+  try {
+    // Streamed, not read whole: a single agent transcript can be tens of MB and
+    // a wide run holds AGENT_STATS_CONCURRENCY of them open at once.
+    const lines = streamJsonlFile<{
       type?: string
       timestamp?: string
       error?: unknown
       errorDetails?: unknown
       message?: { content?: unknown; usage?: { output_tokens?: number } }
-    }
-    try {
-      entry = JSON.parse(trimmed)
-    } catch {
-      continue
-    }
-    // Track the error marker of the LAST entry only: a mid-transcript error the
-    // agent recovered from must not read as failure, so any later entry clears it.
-    trailingError =
-      typeof entry.error === 'string'
-        ? typeof entry.errorDetails === 'string'
-          ? entry.errorDetails
-          : entry.error
-        : null
-    if (typeof entry.timestamp === 'string') {
-      const t = Date.parse(entry.timestamp)
-      if (!Number.isNaN(t)) {
-        if (firstTs == null) firstTs = t
-        lastTs = t
+    }>(filePath)
+    for await (const entry of lines) {
+      // Track the error marker of the LAST entry only: a mid-transcript error the
+      // agent recovered from must not read as failure, so any later entry clears it.
+      trailingError =
+        typeof entry.error === 'string'
+          ? typeof entry.errorDetails === 'string'
+            ? entry.errorDetails
+            : entry.error
+          : null
+      if (typeof entry.timestamp === 'string') {
+        const t = Date.parse(entry.timestamp)
+        if (!Number.isNaN(t)) {
+          if (firstTs == null) firstTs = t
+          lastTs = t
+        }
+      }
+      if (entry.type === 'user' && !firstPrompt) {
+        firstPrompt = messageText(entry.message?.content)
+      }
+      if (entry.type === 'assistant') {
+        const content = entry.message?.content
+        if (Array.isArray(content)) {
+          toolCount += content.filter((b) => (b as { type?: string })?.type === 'tool_use').length
+        }
+        tokens += entry.message?.usage?.output_tokens ?? 0
       }
     }
-    if (entry.type === 'user' && !firstPrompt) {
-      firstPrompt = messageText(entry.message?.content)
-    }
-    if (entry.type === 'assistant') {
-      const content = entry.message?.content
-      if (Array.isArray(content)) {
-        toolCount += content.filter((b) => (b as { type?: string })?.type === 'tool_use').length
-      }
-      tokens += entry.message?.usage?.output_tokens ?? 0
-    }
+  } catch {
+    return empty
   }
   return { firstPrompt, toolCount, tokens, firstTs, lastTs, trailingError }
 }

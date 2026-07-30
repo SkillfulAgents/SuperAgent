@@ -22,7 +22,7 @@ function HighlightedName({ name, filter }: { name: string; filter: string }) {
   return (
     <>
       {name.slice(0, idx)}
-      <span className="font-bold">{name.slice(idx, idx + filter.length)}</span>
+      <span className="font-medium">{name.slice(idx, idx + filter.length)}</span>
       {name.slice(idx + filter.length)}
     </>
   )

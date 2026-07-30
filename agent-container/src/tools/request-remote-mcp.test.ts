@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { inputManager } from '../input-manager'
 
+// The tool is built against its owning process, so the test supplies one
+// rather than stubbing a module global.
 const mockAddRemoteMcpServer = vi.fn()
-vi.mock('../claude-code', () => ({
-  getCurrentProcess: () => ({
-    addRemoteMcpServer: (...args: unknown[]) => mockAddRemoteMcpServer(...args),
-  }),
-}))
+const owningProcess = {
+  addRemoteMcpServer: (...args: unknown[]) => mockAddRemoteMcpServer(...args),
+}
 
 const GRANOLA_MCP = {
   id: 'mcp-granola-1',
@@ -32,8 +32,8 @@ describe('requestRemoteMcpTool', () => {
   })
 
   async function invokeTool() {
-    const { requestRemoteMcpTool } = await import('./request-remote-mcp')
-    const handler = (requestRemoteMcpTool as any).handler
+    const { createRequestRemoteMcpTool } = await import('./request-remote-mcp')
+    const handler = (createRequestRemoteMcpTool(() => owningProcess) as any).handler
     return handler({ url: 'https://mcp.granola.ai/mcp', name: 'Granola', authHint: 'oauth' })
   }
 
@@ -91,5 +91,48 @@ describe('requestRemoteMcpTool', () => {
 
     expect(result.isError).toBe(true)
     expect(result.content[0].text).toContain('declined')
+  })
+
+
+  // Regression: the injection target used to come from a module global set in
+  // the ClaudeCodeProcess constructor, so the most recently CONSTRUCTED process
+  // won. Once the container pre-warms a process for the next session, that
+  // global points at the parked process from the moment a session starts — the
+  // approved MCP would be injected into a query nobody is talking to, and the
+  // asking session would never see the tools.
+  it('injects into the owning process, never the pre-warmed one built after it', async () => {
+    process.env.REMOTE_MCPS = JSON.stringify([GRANOLA_MCP])
+    const parkedInjections: string[] = []
+    const { createRequestRemoteMcpTool } = await import('./request-remote-mcp')
+    // Built for the live session; the parked process is created afterwards.
+    const tool = createRequestRemoteMcpTool(() => owningProcess) as any
+    const parked = { addRemoteMcpServer: (name: string) => parkedInjections.push(name) }
+    void parked
+
+    const toolUseId = `mcp-test-${Date.now()}-5`
+    inputManager.setCurrentToolUseId(toolUseId)
+    inputManager.resolve(toolUseId, GRANOLA_MCP.id)
+    await tool.handler({ url: 'https://mcp.granola.ai/mcp', name: 'Granola' })
+
+    expect(mockAddRemoteMcpServer).toHaveBeenCalledWith(GRANOLA_MCP.name)
+    expect(parkedInjections).toEqual([])
+  })
+
+  // The owning process object is replaced on interrupt/restart, so the target
+  // has to be read when the tool runs rather than captured at build time.
+  it('resolves the owning process at call time', async () => {
+    process.env.REMOTE_MCPS = JSON.stringify([GRANOLA_MCP])
+    const injections: string[] = []
+    let current = { addRemoteMcpServer: (_: string) => { throw new Error('stale process was used') } }
+    const { createRequestRemoteMcpTool } = await import('./request-remote-mcp')
+    const tool = createRequestRemoteMcpTool(() => current) as any
+    current = { addRemoteMcpServer: (name: string) => injections.push(name) }
+
+    const toolUseId = `mcp-test-${Date.now()}-6`
+    inputManager.setCurrentToolUseId(toolUseId)
+    inputManager.resolve(toolUseId, GRANOLA_MCP.id)
+    await tool.handler({ url: 'https://mcp.granola.ai/mcp', name: 'Granola' })
+
+    expect(injections).toEqual([GRANOLA_MCP.name])
   })
 })

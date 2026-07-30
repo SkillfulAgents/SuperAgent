@@ -22,6 +22,7 @@ import {
   DownloadNonceUnavailableError,
 } from '@shared/lib/services/download-nonce-service'
 import { platformService } from '@shared/lib/services/platform-service'
+import { getCloudWorkspace } from '@shared/lib/services/cloud-workspace-service'
 import { PlatformRequestError } from '@shared/lib/platform-auth/platform-fetch'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { setErrorReportingUser } from '@shared/lib/error-reporting'
@@ -87,6 +88,16 @@ platformAuth.get('/billing', async (c) => {
     }
     throw error
   }
+})
+
+// Cloud-workspace discovery for the Account screen (Electron desktop only).
+// `getCloudWorkspace` self-gates off Electron and returns `available: false`,
+// and it runs the discover → ensure-deployment-token cycle so viewing the tab
+// keeps the maintained token fresh. It never throws — any platform failure
+// degrades to `found: false`. The response never carries the deployment token.
+platformAuth.get('/deployments', async (c) => {
+  const status = await getCloudWorkspace()
+  return c.json(status)
 })
 
 platformAuth.post('/initiate', (c) => {

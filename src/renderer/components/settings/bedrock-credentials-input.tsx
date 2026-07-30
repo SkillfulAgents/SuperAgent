@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
-import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { PasswordInput } from '@renderer/components/ui/password-input'
 import { RequestError } from '@renderer/components/messages/request-error'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
@@ -141,12 +140,10 @@ export function BedrockCredentialsInput({
       </div>
 
       {showNotConfiguredAlert && !apiKeyStatus?.isConfigured && (
-        <Alert variant="destructive">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertDescription>
-            No Bedrock credentials configured. Enter a Bedrock API Key or AWS credentials below.
-          </AlertDescription>
-        </Alert>
+        <div className="flex gap-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+          <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <p>No Bedrock credentials configured. Enter a Bedrock API Key or AWS credentials below.</p>
+        </div>
       )}
 
       {/* Tab bar */}
@@ -201,7 +198,7 @@ export function BedrockCredentialsInput({
             <div className="flex gap-2">
               {apiKeyInput.trim() && (
                 <Button size="sm" onClick={handleValidateSimple} disabled={isBusy}>
-                  {isValidating ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Validating...</> : 'Validate & Save'}
+                  {isValidating ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Validating...</> : 'Save'}
                 </Button>
               )}
               {apiKeyStatus?.source === 'settings' && (
@@ -244,7 +241,7 @@ export function BedrockCredentialsInput({
             <div className="flex gap-2">
               {accessKeyId.trim() && secretAccessKey.trim() && (
                 <Button size="sm" onClick={handleValidateAdvanced} disabled={isBusy}>
-                  {isValidating ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Validating...</> : 'Validate & Save'}
+                  {isValidating ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Validating...</> : 'Save'}
                 </Button>
               )}
               {apiKeyStatus?.source === 'settings' && (

@@ -308,7 +308,7 @@ export function UsersTab() {
                       value={user.role || 'user'}
                       onValueChange={(value) => handleRoleChange(user.id, value as 'admin' | 'user')}
                     >
-                      <SelectTrigger className="h-6 text-xs w-[85px]" data-testid={`user-role-${user.email}`}>
+                      <SelectTrigger className="h-6 w-[85px]" data-testid={`user-role-${user.email}`}>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>

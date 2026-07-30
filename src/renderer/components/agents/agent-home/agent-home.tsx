@@ -26,10 +26,10 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
-import { HomeDefaultModel } from './home-default-model'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
 import { HomeChatIntegrations } from './home-chat-integrations'
@@ -119,8 +119,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // so the post-submit deriveAgentName fallback doesn't clobber it.
   const nameAssignedRef = useRef(false)
   // Agent-scoped settings dialogs — opened from the settings button and
-  // HomeExtras (system-prompt/secrets). NOT the global /settings route; they
-  // stay local dialog state here.
+  // HomeExtras (system prompt). Secrets now have a standalone route; these
+  // settings remain local dialog state rather than global /settings routes.
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
@@ -324,8 +324,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                       description: error instanceof Error ? error.message : 'Please try again.',
                     })
                   }}
-                  displayClassName="text-xl font-semibold"
-                  inputClassName="h-9 text-xl font-semibold"
+                  displayClassName="text-xl font-medium"
+                  inputClassName="h-9 text-xl font-medium"
                   saveButtonClassName="h-8 w-8"
                   ariaLabel="Rename agent"
                   saveAriaLabel="Save name"
@@ -403,7 +403,17 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                         onRecentFileAttach={(file) => composer.addFiles([{ file }])}
                         disabled={isDisabled}
                       />
-                      <ComposerOptions state={composerOptions} disabled={isDisabled} />
+                      <ComposerOptions
+                        state={composerOptions}
+                        disabled={isDisabled}
+                        footer={
+                          <AgentDefaultFooter
+                            agentSlug={agent.slug}
+                            state={composerOptions}
+                            agentHomeLink={false}
+                          />
+                        }
+                      />
                     </>
                   )}
                   topRightActions={(
@@ -563,7 +573,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             }} />
             <HomeChatIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
             <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
-            <HomeDefaultModel className="intro-step intro-step-9" agentSlug={agent.slug} />
             <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
             <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={isOwner} />
           </div>

@@ -55,6 +55,17 @@ const GIT_ENV = {
   LANG: 'C',
 }
 
+function getRepoGitEnv(repoDir: string) {
+  const inheritedCount = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? '0', 10)
+  const configIndex = Number.isInteger(inheritedCount) && inheritedCount >= 0 ? inheritedCount : 0
+  return {
+    ...GIT_ENV,
+    GIT_CONFIG_COUNT: String(configIndex + 1),
+    [`GIT_CONFIG_KEY_${configIndex}`]: 'safe.directory',
+    [`GIT_CONFIG_VALUE_${configIndex}`]: repoDir,
+  }
+}
+
 const activeSkillsetRefreshes = new Map<string, Promise<SkillsetIndex>>()
 
 // ============================================================================
@@ -506,7 +517,7 @@ async function resolveDefaultBranch(repoDir: string): Promise<DefaultBranchResol
     try {
       const { stdout } = await execFileAsync(
         'git', ['symbolic-ref', 'refs/remotes/origin/HEAD'],
-        { cwd: repoDir, timeout: 5000, env: GIT_ENV },
+        { cwd: repoDir, timeout: 5000, env: getRepoGitEnv(repoDir) },
       )
       const branch = stdout.trim().replace('refs/remotes/origin/', '')
       return branch || null
@@ -526,7 +537,7 @@ async function resolveDefaultBranch(repoDir: string): Promise<DefaultBranchResol
   let setHeadError: unknown = null
   try {
     await execFileAsync('git', ['remote', 'set-head', 'origin', '--auto'], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      cwd: repoDir, timeout: 10000, env: getRepoGitEnv(repoDir),
     })
   } catch (err) {
     setHeadError = err
@@ -573,7 +584,7 @@ async function gitPull(repoDir: string): Promise<GitPullResult> {
 
   try {
     await execFileAsync('git', ['checkout', defaultBranch], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      cwd: repoDir, timeout: 10000, env: getRepoGitEnv(repoDir),
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -593,10 +604,10 @@ async function gitPull(repoDir: string): Promise<GitPullResult> {
   // would break `reset --hard origin/<branch>` / `git pull`.
   try {
     await execFileAsync('git', ['fetch', '--depth', '1', 'origin', defaultBranch], {
-      cwd: repoDir, timeout: 30000, env: GIT_ENV,
+      cwd: repoDir, timeout: 30000, env: getRepoGitEnv(repoDir),
     })
     await execFileAsync('git', ['reset', '--hard', 'FETCH_HEAD'], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      cwd: repoDir, timeout: 10000, env: getRepoGitEnv(repoDir),
     })
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
@@ -813,7 +824,7 @@ async function refreshSkillsetCache(
       // corrupt-cache shape as an unresolvable origin/HEAD, so it recovers
       // through the same nuke-and-reclone.
       await execFileAsync('git', ['remote', 'set-url', 'origin', freshUrl], {
-        cwd: repoDir, timeout: 5000, env: GIT_ENV,
+        cwd: repoDir, timeout: 5000, env: getRepoGitEnv(repoDir),
       })
       pullResult = await gitPull(repoDir)
     } catch (error) {

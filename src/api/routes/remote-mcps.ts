@@ -20,6 +20,11 @@ import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import { discoverTools } from '@shared/lib/mcp/discover-tools'
+import {
+  findAgentsAssignedRemoteMcp,
+  syncAgentsAssignedRemoteMcp,
+  syncRemoteMcpAgents,
+} from '@shared/lib/container/connection-runtime-sync'
 
 function safeParseTools(json: string | null): McpToolInfo[] {
   if (!json) return []
@@ -396,6 +401,12 @@ remoteMcps.get('/oauth-callback', async (c) => {
 
   // Discover tools to verify the connection works
   let serverUrl: string | undefined
+  let assignedAgentSlugs: string[] | null = null
+  try {
+    assignedAgentSlugs = await findAgentsAssignedRemoteMcp(result.mcpId)
+  } catch (error) {
+    console.warn('Failed to resolve agents assigned to OAuth MCP:', error)
+  }
   try {
     const [server] = await db
       .select()
@@ -415,9 +426,13 @@ remoteMcps.get('/oauth-callback', async (c) => {
         })
         .where(eq(remoteMcpServers.id, result.mcpId))
     }
+    // This HTML callback has no renderer response channel for a refresh
+    // warning. The sync remains best-effort and logs failures server-side.
+    if (assignedAgentSlugs) await syncRemoteMcpAgents(assignedAgentSlugs)
   } catch (err: any) {
     // Tool discovery failed — delete the server so we don't leave a broken entry
     await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, result.mcpId))
+    if (assignedAgentSlugs) await syncRemoteMcpAgents(assignedAgentSlugs)
     const errorMsg = err.message || 'Tool discovery failed'
     return c.html(mcpOAuthCallbackBody(
       {
@@ -519,9 +534,11 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     .limit(1)
 
   logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'updated' })
+  const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
 
   return c.json({
     server: sanitizeServer(updated),
+    liveRefresh,
   })
 })
 
@@ -539,11 +556,20 @@ remoteMcps.delete('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     return c.json({ error: 'MCP server not found' }, 404)
   }
 
+  let assignedAgentSlugs: string[] | null = null
+  try {
+    assignedAgentSlugs = await findAgentsAssignedRemoteMcp(id)
+  } catch (error) {
+    console.warn(`Failed to resolve agents assigned MCP ${id} before delete:`, error)
+  }
   await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, id))
+  const liveRefresh = assignedAgentSlugs
+    ? await syncRemoteMcpAgents(assignedAgentSlugs)
+    : false
 
   logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'deleted', details: { name: existing.name } })
 
-  return c.json({ success: true })
+  return c.json({ success: true, liveRefresh })
 })
 
 // Discover tools from an MCP server
@@ -575,7 +601,8 @@ remoteMcps.post('/:id/discover-tools', Or(UsersMcpServer(), IsAdmin()), async (c
       })
       .where(eq(remoteMcpServers.id, id))
 
-    return c.json({ tools })
+    const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+    return c.json({ tools, liveRefresh })
   } catch (error: any) {
     const errorMessage = error.message || 'Tool discovery failed'
     await db
@@ -587,7 +614,8 @@ remoteMcps.post('/:id/discover-tools', Or(UsersMcpServer(), IsAdmin()), async (c
       })
       .where(eq(remoteMcpServers.id, id))
 
-    return c.json({ error: errorMessage }, 502)
+    const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+    return c.json({ error: errorMessage, liveRefresh }, 502)
   }
 })
 
@@ -636,7 +664,13 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
         .update(remoteMcpServers)
         .set({ status: 'auth_required', errorMessage: 'Authentication required', updatedAt: new Date() })
         .where(eq(remoteMcpServers.id, id))
-      return c.json({ success: false, error: 'Authentication required', needsAuth: true })
+      const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+      return c.json({
+        success: false,
+        error: 'Authentication required',
+        needsAuth: true,
+        liveRefresh,
+      })
     }
 
     if (!res.ok) {
@@ -648,14 +682,16 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
       .set({ status: 'active', errorMessage: null, updatedAt: new Date() })
       .where(eq(remoteMcpServers.id, id))
 
-    return c.json({ success: true })
+    const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+    return c.json({ success: true, liveRefresh })
   } catch (error: any) {
     const errorMessage = error.message || 'Connection test failed'
     await db
       .update(remoteMcpServers)
       .set({ status: 'error', errorMessage, updatedAt: new Date() })
       .where(eq(remoteMcpServers.id, id))
-    return c.json({ success: false, error: errorMessage })
+    const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+    return c.json({ success: false, error: errorMessage, liveRefresh })
   }
 })
 

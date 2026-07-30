@@ -5,10 +5,16 @@ import userEvent from '@testing-library/user-event'
 
 const useSettingsMock = vi.fn()
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => useSettingsMock(),
+  useModelSettings: () => useSettingsMock(),
+}))
+
+const useUserMock = vi.fn(() => ({ isAuthMode: false, isAdmin: false }))
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => useUserMock(),
 }))
 
 import { SettingsModelSelect } from './settings-model-select'
+import { DialogContext, type DialogContextType } from '@renderer/context/dialog-context'
 
 const ALL = ['low', 'medium', 'high', 'xhigh', 'max']
 const STD = ['low', 'medium', 'high']
@@ -113,6 +119,96 @@ describe('SettingsModelSelect (flat picker)', () => {
     expect(screen.getByTestId('effort-option-high')).toBeInTheDocument()
     expect(screen.queryByTestId('effort-option-xhigh')).not.toBeInTheDocument()
     expect(screen.queryByTestId('effort-option-max')).not.toBeInTheDocument()
+  })
+
+  describe('App Default footer', () => {
+    beforeEach(() => {
+      useUserMock.mockReturnValue({ isAuthMode: false, isAdmin: false })
+      useSettingsMock.mockReturnValue({
+        data: {
+          llmProvider: 'anthropic',
+          llmProviderStatus: [
+            { id: 'anthropic', name: 'Anthropic', isConfigured: true, catalog: CATALOG },
+          ],
+          models: { agentModel: 'opus', agentEffort: 'high' },
+        },
+      })
+    })
+
+    it('does not render without the appDefault prop', async () => {
+      const user = userEvent.setup()
+      render(<SettingsModelSelect model="opus" onModelChange={vi.fn()} />)
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      expect(screen.queryByTestId('settings-model-app-default')).not.toBeInTheDocument()
+    })
+
+    it('disables the reset action while already following the global default', async () => {
+      const user = userEvent.setup()
+      render(
+        <SettingsModelSelect
+          model="opus"
+          onModelChange={vi.fn()}
+          appDefault={{ isOverride: false, onUseAppDefault: vi.fn() }}
+        />,
+      )
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      const reset = screen.getByTestId('settings-model-app-default')
+      expect(reset).toHaveTextContent('Reset to Global Default')
+      expect(reset).toBeDisabled()
+    })
+
+    it('resets to the global default when an override exists', async () => {
+      const user = userEvent.setup()
+      const onUseAppDefault = vi.fn()
+      render(
+        <SettingsModelSelect
+          model="claude-haiku-4-5"
+          onModelChange={vi.fn()}
+          appDefault={{ isOverride: true, onUseAppDefault }}
+        />,
+      )
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      const reset = screen.getByTestId('settings-model-app-default')
+      expect(reset).toBeEnabled()
+      await user.click(reset)
+      expect(onUseAppDefault).toHaveBeenCalledTimes(1)
+    })
+
+    it('links admins to the LLM Provider settings tab', async () => {
+      const user = userEvent.setup()
+      const openSettings = vi.fn()
+      const dialogs: DialogContextType = { openSettings, closeSettings: vi.fn(), openWizard: vi.fn() }
+      render(
+        <DialogContext.Provider value={dialogs}>
+          <SettingsModelSelect
+            model="opus"
+            onModelChange={vi.fn()}
+            appDefault={{ isOverride: false, onUseAppDefault: vi.fn() }}
+          />
+        </DialogContext.Provider>,
+      )
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      await user.click(screen.getByTestId('settings-model-app-default-change'))
+      expect(openSettings).toHaveBeenCalledWith('llm')
+    })
+
+    it('hides the settings link from non-admin members in auth mode', async () => {
+      useUserMock.mockReturnValue({ isAuthMode: true, isAdmin: false })
+      const user = userEvent.setup()
+      const dialogs: DialogContextType = { openSettings: vi.fn(), closeSettings: vi.fn(), openWizard: vi.fn() }
+      render(
+        <DialogContext.Provider value={dialogs}>
+          <SettingsModelSelect
+            model="opus"
+            onModelChange={vi.fn()}
+            appDefault={{ isOverride: false, onUseAppDefault: vi.fn() }}
+          />
+        </DialogContext.Provider>,
+      )
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      expect(screen.getByTestId('settings-model-app-default')).toBeInTheDocument()
+      expect(screen.queryByTestId('settings-model-app-default-change')).not.toBeInTheDocument()
+    })
   })
 
   describe('web-tools warning reads the active vendor', () => {

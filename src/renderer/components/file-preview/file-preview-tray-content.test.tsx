@@ -1,28 +1,49 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { FilePreviewTrayContent } from './file-preview-tray-content'
+import type { PreviewTab } from '@renderer/context/file-preview-context'
+
+const mocks = vi.hoisted((): { openTabs: PreviewTab[] } => ({
+  openTabs: [{
+    kind: 'file' as const,
+    filePath: '/workspace/report.md',
+    agentSlug: 'test-agent',
+    displayName: 'report.md',
+    version: 0,
+    pdfPage: 1,
+  }],
+}))
 
 vi.mock('@renderer/context/file-preview-context', () => ({
   useFilePreview: () => ({
-    openFiles: [{
-      filePath: '/workspace/report.md',
-      agentSlug: 'test-agent',
-      displayName: 'report.md',
-      version: 0,
-    }],
-    activeFileIndex: 0,
-    setActiveFile: vi.fn(),
-    closeFile: vi.fn(),
+    openTabs: mocks.openTabs,
+    activeTabIndex: 0,
+    setActiveTab: vi.fn(),
+    setPdfPage: vi.fn(),
+    closeTab: vi.fn(),
     comments: new Map(),
+    commentsEnabled: true,
   }),
 }))
 
 vi.mock('./file-tab-bar', () => ({ FileTabBar: () => null }))
-vi.mock('./renderers/file-renderer', () => ({ FileRenderer: () => null }))
-vi.mock('./comments/comment-bar', () => ({ CommentBar: () => null }))
+vi.mock('./renderers/file-renderer', () => ({ FileRenderer: () => <div data-testid="file-renderer" /> }))
+vi.mock('./folder-browser', () => ({ FolderBrowser: () => <div data-testid="folder-browser" /> }))
+vi.mock('./comments/comment-bar', () => ({ CommentBar: () => <div data-testid="comment-bar" /> }))
 
 describe('FilePreviewTrayContent', () => {
+  beforeEach(() => {
+    mocks.openTabs = [{
+      kind: 'file',
+      filePath: '/workspace/report.md',
+      agentSlug: 'test-agent',
+      displayName: 'report.md',
+      version: 0,
+      pdfPage: 1,
+    }]
+  })
+
   it('exposes container-responsive close controls on opposite sides', () => {
     const onClose = vi.fn()
     render(
@@ -40,5 +61,26 @@ describe('FilePreviewTrayContent', () => {
     fireEvent.click(mobileClose)
     fireEvent.click(desktopClose)
     expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows folder navigation without file-only download and comment actions', () => {
+    mocks.openTabs = [{
+      kind: 'folder',
+      rootPath: '/workspace/reports',
+      agentSlug: 'test-agent',
+      displayName: 'reports',
+      expandedPaths: ['/workspace/reports'],
+      query: '',
+    }]
+    render(
+      <FilePreviewTrayContent
+        sessionId="test-session"
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId('folder-browser')).toBeVisible()
+    expect(screen.queryByTitle('Download file')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('comment-bar')).not.toBeInTheDocument()
   })
 })

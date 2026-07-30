@@ -10,13 +10,15 @@ Format: a JSON array of objects, each with:
 - "name" (string, required): Display name for the bookmark
 - "link" (string, optional): An https:// URL (for web links)
 - "file" (string, optional): A workspace file path (same paths as deliver_file, e.g. "/workspace/reports/daily.csv")
+- "folder" (string, optional): A workspace folder path (e.g. "/workspace/reports")
 
-Each bookmark must have exactly one of "link" or "file", not both.
+Each bookmark must have exactly one of "link", "file", or "folder".
 
 Example:
 [
   { "name": "Sales Dashboard", "link": "https://docs.google.com/spreadsheets/d/abc123" },
-  { "name": "Daily Report", "file": "/workspace/reports/daily-report.html" }
+  { "name": "Daily Report", "file": "/workspace/reports/daily-report.html" },
+  { "name": "Reports", "folder": "/workspace/reports" }
 ]
 
 Keep bookmarks to important, frequently-accessed resources (max ${MAX_RECOMMENDED_BOOKMARKS} recommended). Remove bookmarks that are no longer relevant.`

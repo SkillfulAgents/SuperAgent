@@ -475,10 +475,6 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
   })
 
-  it('disables host auto-sleep because idlePolicy owns idle', () => {
-    expect(newClient().shouldRunHostAutoSleep()).toBe(false)
-  })
-
   it('a plain stop() suspends (preserves state for warm resume), not terminate', async () => {
     const client = newClient()
     await client.start()

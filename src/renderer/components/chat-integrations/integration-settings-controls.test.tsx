@@ -25,8 +25,9 @@ vi.mock('@renderer/hooks/use-chat-integrations', () => ({
   }),
 }))
 
-vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({
+vi.mock('@renderer/hooks/use-settings', () => {
+  // Built lazily — the hoisted factory runs before CATALOG is initialized.
+  const settings = () => ({
     data: {
       llmProvider: 'anthropic',
       llmProviderStatus: [{
@@ -35,8 +36,12 @@ vi.mock('@renderer/hooks/use-settings', () => ({
         defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
       }],
     },
-  }),
-}))
+  })
+  return {
+    useSettings: settings,
+    useModelSettings: settings,
+  }
+})
 
 describe('IntegrationModelEffort', () => {
   beforeEach(() => {

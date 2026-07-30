@@ -19,6 +19,7 @@ import {
   readSessionMetadata,
   updateSessionName,
   sessionExists,
+  sessionIsKnown,
   registerSession,
   isSessionRegistered,
   updateSessionMetadata,
@@ -489,6 +490,137 @@ describe('session-service', () => {
       const session = await getSession('test-agent', 'half-written')
       expect(session).toBeNull()
     })
+
+    // The transcript is summarized in a single streaming pass rather than parsed
+    // into an array, so the shapes real transcripts take — rows far wider than a
+    // read chunk, tool-result user rows ahead of any prose, queued commands —
+    // are what the summary has to keep getting right.
+    it('summarizes a transcript whose rows are wider than a read chunk', async () => {
+      const CHUNK_SIZE = 64 * 1024
+      await createSessionFile('test-agent', 'wide-session', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-02-01T10:00:00.000Z',
+          message: { role: 'user', content: 'Summarize the attached log' },
+        },
+        {
+          type: 'assistant',
+          uuid: 'a1',
+          timestamp: '2026-02-01T10:00:05.000Z',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(CHUNK_SIZE * 3) }] },
+        },
+        {
+          type: 'user',
+          uuid: 'u2',
+          timestamp: '2026-02-01T10:00:09.000Z',
+          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'y'.repeat(CHUNK_SIZE * 2) }] },
+        },
+      ])
+
+      const session = await getSession('test-agent', 'wide-session')
+
+      expect(session?.messageCount).toBe(3)
+      expect(session?.createdAt.toISOString()).toBe('2026-02-01T10:00:00.000Z')
+      expect(session?.lastActivityAt.toISOString()).toBe('2026-02-01T10:00:09.000Z')
+      expect(session?.name).toBe('Summarize the attached log')
+    })
+
+    it('names the session from the first user row with string content, not a tool result', async () => {
+      await createSessionFile('test-agent', 'tool-first', [
+        // A resumed session can open on a tool_result user row; its content is an
+        // array, so it must not be mistaken for the prompt.
+        {
+          type: 'user',
+          uuid: 'u0',
+          timestamp: '2026-02-02T10:00:00.000Z',
+          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't0', content: 'ok' }] },
+        },
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-02-02T10:00:01.000Z',
+          message: { role: 'user', content: 'The actual prompt' },
+        },
+        // A later turn must not overwrite the name.
+        {
+          type: 'user',
+          uuid: 'u2',
+          timestamp: '2026-02-02T10:00:02.000Z',
+          message: { role: 'user', content: 'A follow-up question' },
+        },
+      ])
+
+      const session = await getSession('test-agent', 'tool-first')
+
+      expect(session?.name).toBe('The actual prompt')
+      expect(session?.messageCount).toBe(3)
+      // Timestamps still span every message, including the tool_result row.
+      expect(session?.createdAt.toISOString()).toBe('2026-02-02T10:00:00.000Z')
+      expect(session?.lastActivityAt.toISOString()).toBe('2026-02-02T10:00:02.000Z')
+    })
+
+    it('truncates a long derived name to 50 chars with an ellipsis', async () => {
+      await createSessionFile('test-agent', 'long-name', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-02-03T10:00:00.000Z',
+          message: { role: 'user', content: 'a'.repeat(80) },
+        },
+      ])
+
+      const session = await getSession('test-agent', 'long-name')
+      expect(session?.name).toBe(`${'a'.repeat(50)}...`)
+    })
+
+    it('counts a mid-turn queued_command attachment as a user message', async () => {
+      await createSessionFile('test-agent', 'queued-session', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-02-04T10:00:00.000Z',
+          message: { role: 'user', content: 'first' },
+        },
+        {
+          type: 'attachment',
+          uuid: 'att1',
+          timestamp: '2026-02-04T10:00:30.000Z',
+          attachment: {
+            type: 'queued_command',
+            commandMode: 'prompt',
+            prompt: 'steer left',
+            source_uuid: 'q1',
+          },
+        },
+        // Not user-typed — must not count.
+        {
+          type: 'attachment',
+          uuid: 'att2',
+          timestamp: '2026-02-04T10:01:00.000Z',
+          attachment: { type: 'queued_command', commandMode: 'prompt', prompt: 'meta', isMeta: true },
+        },
+      ])
+
+      const session = await getSession('test-agent', 'queued-session')
+
+      expect(session?.messageCount).toBe(2)
+      // The queued command is the last activity, so it moves the timestamp.
+      expect(session?.lastActivityAt.toISOString()).toBe('2026-02-04T10:00:30.000Z')
+    })
+
+    it('skips a half-written trailing row rather than failing the whole session', async () => {
+      const sessionsDir = await createSessionsDir('test-agent')
+      await fs.promises.writeFile(
+        path.join(sessionsDir, 'torn.jsonl'),
+        `${JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-02-05T10:00:00.000Z', message: { role: 'user', content: 'hello' } })}\n{"type":"assistant","timestamp":"2026-02-05T10`
+      )
+
+      const session = await getSession('test-agent', 'torn')
+
+      expect(session?.messageCount).toBe(1)
+      expect(session?.name).toBe('hello')
+    })
   })
 
   describe('getSessionMessages', () => {
@@ -751,6 +883,56 @@ describe('session-service', () => {
 
       const exists = await sessionExists('test-agent', 'test-session')
       expect(exists).toBe(true)
+    })
+  })
+
+  describe('sessionIsKnown', () => {
+    // Existence guards use this instead of getSession, so it has to agree with
+    // getSession on every case — otherwise a route 404s a session the rest of
+    // the app considers real (or the reverse).
+    it('agrees with getSession on a written transcript', async () => {
+      await createSessionFile('test-agent', 'test-session', SAMPLE_JSONL_ENTRIES)
+
+      expect(await sessionIsKnown('test-agent', 'test-session')).toBe(true)
+      expect(await getSession('test-agent', 'test-session')).not.toBeNull()
+    })
+
+    it('agrees with getSession on a registered session with no transcript yet', async () => {
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'settling-session': { name: 'Brand New', createdAt: '2026-06-18T12:00:00.000Z' },
+      })
+
+      expect(await sessionIsKnown('test-agent', 'settling-session')).toBe(true)
+      expect(await getSession('test-agent', 'settling-session')).not.toBeNull()
+    })
+
+    it('agrees with getSession on a metadata entry with no createdAt', async () => {
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', { 'half-written': { name: 'No CreatedAt' } })
+
+      expect(await sessionIsKnown('test-agent', 'half-written')).toBe(false)
+      expect(await getSession('test-agent', 'half-written')).toBeNull()
+    })
+
+    it('agrees with getSession on an unknown session', async () => {
+      await createSessionsDir('test-agent')
+
+      expect(await sessionIsKnown('test-agent', 'nonexistent')).toBe(false)
+      expect(await getSession('test-agent', 'nonexistent')).toBeNull()
+    })
+
+    it('never reads the transcript', async () => {
+      // The whole point: a 404 guard must not pay for a 100MB transcript pass.
+      await createSessionFile('test-agent', 'test-session', SAMPLE_JSONL_ENTRIES)
+      const openSpy = vi.spyOn(fs.promises, 'open')
+
+      try {
+        expect(await sessionIsKnown('test-agent', 'test-session')).toBe(true)
+        expect(openSpy).not.toHaveBeenCalled()
+      } finally {
+        openSpy.mockRestore()
+      }
     })
   })
 

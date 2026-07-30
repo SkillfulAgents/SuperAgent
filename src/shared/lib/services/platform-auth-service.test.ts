@@ -45,6 +45,10 @@ import {
   verifyPlatformOrgAccessTokenSigned,
 } from './platform-auth-service'
 import { _setOidcJwksResolverForTest } from '@shared/lib/auth/oidc-jwt'
+import {
+  readCloudWorkspaceRecord,
+  writeCloudWorkspaceRecord,
+} from '@shared/lib/platform-auth/cloud-workspace-record'
 
 const TEST_ISSUER = 'https://auth.test.example'
 const TEST_KID = 'platform-oidc-main'
@@ -801,5 +805,63 @@ describe('platform-auth-service', () => {
       getAgentsDir(), 'agent-c', 'workspace', '.claude', 'skills', 'stale-skill',
     )
     expect(fs.existsSync(skillDir)).toBe(false)
+  })
+
+  describe('cloud-workspace token invalidation on identity change', () => {
+    function seedCloudToken() {
+      writeCloudWorkspaceRecord({
+        deploymentUrl: 'https://ws.example.com',
+        orgId: 'org_x',
+        token: 'deploy_session_token',
+        tokenPreview: 'deploy...oken',
+        expiresAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
+        updatedAt: new Date().toISOString(),
+        userId: 'user_a',
+        memberId: 'sub_a',
+        tokenFingerprint: 'fingerprint_a',
+      })
+    }
+
+    it('clears the deployment token when the acting user/member changes (same org)', async () => {
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_a_0000000000000000',
+        orgId: 'org_x',
+        userId: 'user_a',
+        memberId: 'sub_a',
+      })
+      seedCloudToken()
+      expect(readCloudWorkspaceRecord()).not.toBeNull()
+
+      // Reconnect as a DIFFERENT member of the SAME org.
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_b_1111111111111111',
+        orgId: 'org_x',
+        userId: 'user_b',
+        memberId: 'sub_b',
+      })
+      expect(readCloudWorkspaceRecord()).toBeNull()
+    })
+
+    it('keeps the deployment token on a same-identity metadata refresh', async () => {
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_a_0000000000000000',
+        orgId: 'org_x',
+        userId: 'user_a',
+        memberId: 'sub_a',
+        role: 'owner',
+      })
+      seedCloudToken()
+
+      // Same principal, only role/email changed (the refreshStoredPlatformAccount path).
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_a_0000000000000000',
+        orgId: 'org_x',
+        userId: 'user_a',
+        memberId: 'sub_a',
+        role: 'admin',
+        email: 'user_a@example.com',
+      })
+      expect(readCloudWorkspaceRecord()).not.toBeNull()
+    })
   })
 })

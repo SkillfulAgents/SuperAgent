@@ -170,6 +170,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   messageAuthor: {},
   xAgentPolicies: {},
   apiScopePolicies: {},
+  tokenExchangeJti: {},
 }))
 
 vi.mock('fs', () => ({
@@ -225,6 +226,14 @@ function defaultSettings() {
       orgName: 'Test Org',
       role: 'owner',
       createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    },
+    cloudWorkspace: {
+      deploymentUrl: 'https://ws.example.com',
+      orgId: 'org_test_123',
+      token: 'deploy_session_token',
+      tokenPreview: 'deploy...oken',
+      expiresAt: '2026-03-25T00:00:00.000Z',
       updatedAt: '2026-03-24T00:00:00.000Z',
     },
   }
@@ -416,6 +425,16 @@ describe('settings route', () => {
       expect(saved.platformAuth).toEqual(defaultSettings().platformAuth)
       expect(saved.llmProvider).toBe('platform')
     })
+
+    it('preserves the maintained cloudWorkspace token when updating unrelated settings', async () => {
+      const res = await putSettings({ llmProvider: 'platform' })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      // Regression: a global settings PUT must not silently drop the deployment
+      // token maintained by the platform-auth flow.
+      expect(saved.cloudWorkspace).toEqual(defaultSettings().cloudWorkspace)
+    })
   })
 
   // =========================================================================
@@ -557,7 +576,7 @@ describe('settings route', () => {
       const call = mockLogAuditEvent.mock.calls[0][0]
       expect(call.object).toBe('settings')
       expect(call.action).toBe('updated')
-      expect(call.details.sections).toContain('LLM Provider')
+      expect(call.details.sections).toContain('Model Provider')
       expect(call.details.changes['llmProvider']).toEqual({ from: null, to: 'openrouter' })
       expect(call.details.changes['apiKeys.anthropicApiKey']).toBe('updated')
       expect(JSON.stringify(call.details)).not.toContain('sk-brand-new')

@@ -44,8 +44,8 @@ vi.mock('@renderer/hooks/use-humanized-cron', () => ({
   useHumanizedCron: () => 'Every day at 9:00 AM',
 }))
 
-vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({
+vi.mock('@renderer/hooks/use-settings', () => {
+  const settings = {
     data: {
       llmProvider: 'anthropic',
       models: { agentModel: 'sonnet' },
@@ -61,8 +61,12 @@ vi.mock('@renderer/hooks/use-settings', () => ({
         },
       ],
     },
-  }),
-}))
+  }
+  return {
+    useSettings: () => settings,
+    useModelSettings: () => settings,
+  }
+})
 
 vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useScheduledTask: () => ({ data: mockTask, isLoading: false, error: null }),

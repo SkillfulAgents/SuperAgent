@@ -17,6 +17,7 @@ import { registerSessionComposerFocus } from './composer-focus'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
+import { AgentDefaultFooter } from './agent-default-footer'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
@@ -250,7 +251,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   return (
     <form
       onSubmit={composer.handleSubmit}
-      className={`relative px-4 pt-3 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      className={`relative px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       {...composer.dragHandlers}
     >
       <MountChoiceDialog
@@ -304,7 +305,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
             />
             {/* Model/effort are locked while the agent works — changing them
                 mid-turn would interrupt the running query. */}
-            <ComposerOptions state={composerOptions} disabled={isDisabled || isActive} />
+            <ComposerOptions
+              state={composerOptions}
+              disabled={isDisabled || isActive}
+              footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
+            />
           </>
         )}
         rightActions={(

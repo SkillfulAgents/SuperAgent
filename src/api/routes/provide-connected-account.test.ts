@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
 // ============================================================================
@@ -35,6 +35,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     broadcastGlobal: vi.fn(),
     persistMessage: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),
+    completeInputRequest: vi.fn(),
   },
 }))
 
@@ -125,8 +126,8 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   listSecrets: vi.fn(),
   getSecret: vi.fn(),
   setSecret: vi.fn(),
+  updateSecret: vi.fn(),
   deleteSecret: vi.fn(),
-  keyToEnvVar: vi.fn(),
   getSecretEnvVars: vi.fn(),
 }))
 
@@ -207,6 +208,7 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 
 function createApp() {
   const app = new Hono()
@@ -221,6 +223,33 @@ describe('provide-connected-account handler', () => {
     vi.clearAllMocks()
     app = createApp()
     mockInsertValues.mockResolvedValue(undefined)
+    // The route's already-settled gate only acts on requests the registry
+    // holds open — park every toolUseId this file decides on.
+    userInputRequestManager.reset()
+    for (const id of [
+      'tu-1',
+      'tu-active-only',
+      'tu-decline-1',
+      'tu-decline-2',
+      'tu-dup',
+      'tu-env-fail',
+      'tu-happy',
+      'tu-resolve-fail',
+    ]) {
+      userInputRequestManager.register({
+        id,
+        kind: 'connected_account',
+        scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+        blocking: true,
+        autoApproved: false,
+        payload: {},
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any)
+    }
+  })
+
+  afterEach(() => {
+    userInputRequestManager.reset()
   })
 
   const ENDPOINT = '/api/agents/test-agent/sessions/sess-1/provide-connected-account'

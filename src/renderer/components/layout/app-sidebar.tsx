@@ -70,6 +70,7 @@ import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useIsOnline } from '@renderer/context/connectivity-context'
+import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import {
   DndContext,
   closestCenter,
@@ -163,7 +164,13 @@ function SessionSubItem({
             className="flex items-center gap-2 w-full"
             data-testid={`session-item-${session.id}`}
           >
-            <span className="flex-1 min-w-0 truncate text-left">{session.name}</span>
+            <HoverScrollText
+              className="flex-1 text-left"
+              data-testid={`session-name-${session.id}`}
+              hoverTarget="parent"
+            >
+              {session.name}
+            </HoverScrollText>
             {hint !== null ? (
               <CmdHintBadge hint={hint} />
             ) : (
@@ -823,7 +830,7 @@ export function AppSidebar() {
             */}
             <div
               className={cn(
-                'px-2 pb-2 text-base font-semibold select-none transition-[margin-top] duration-200 ease-out flex items-center gap-1',
+                'px-2 pb-2 text-base font-medium select-none transition-[margin-top] duration-200 ease-out flex items-center gap-1',
                 isWindowsElectron && 'app-drag-region'
               )}
               style={{ marginTop: showHeaderBar ? '-8px' : '8px' }}

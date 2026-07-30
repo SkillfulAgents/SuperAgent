@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -26,6 +26,7 @@ interface HarnessProps {
   catalog?: ModelDefinition[]
   onState?: (state: ComposerOptionsState) => void
   disabled?: boolean
+  footer?: ReactNode
 }
 
 // Minimal real-state harness — the popover's auto-reset effect and any state
@@ -37,6 +38,7 @@ function Harness({
   catalog = CATALOG,
   onState,
   disabled,
+  footer,
 }: HarnessProps) {
   const [effort, setEffort] = useState<EffortLevel>(initialEffort)
   const [speed, setSpeed] = useState<SpeedLevel>(initialSpeed)
@@ -52,7 +54,7 @@ function Harness({
     toRuntimeOptions: () => ({ effort, speed, ...(model ? { model } : {}) }),
   }
   onState?.(state)
-  return <ComposerOptionsPopover state={state} disabled={disabled} />
+  return <ComposerOptionsPopover state={state} disabled={disabled} footer={footer} />
 }
 
 describe('ComposerOptionsPopover', () => {
@@ -83,6 +85,13 @@ describe('ComposerOptionsPopover', () => {
     expect(screen.getByTestId('model-pinned-claude-opus-4-8')).toBeInTheDocument()
     // Composer never offers the bare-alias "latest" row.
     expect(screen.queryByTestId('model-latest-opus')).not.toBeInTheDocument()
+  })
+
+  it('renders arbitrary caller-provided footer content after the picker sections', async () => {
+    const user = userEvent.setup()
+    render(<Harness initialModel="claude-sonnet-4-6" footer={<div>Custom footer</div>} />)
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    expect(await screen.findByText('Custom footer')).toBeInTheDocument()
   })
 
   it('picking a version calls setModel with the concrete id and keeps the popover open', async () => {

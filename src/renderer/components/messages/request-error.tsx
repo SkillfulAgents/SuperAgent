@@ -12,7 +12,9 @@ interface RequestErrorProps {
 
 const VARIANT_CLASSES: Record<NonNullable<RequestErrorProps['variant']>, string> = {
   default: '',
-  compact: 'mt-0 bg-destructive/10 px-2 text-destructive dark:bg-destructive/10 dark:text-destructive',
+  // Tight inline form errors keep the same soft red palette as the default
+  // banner — only the spacing differs.
+  compact: 'mt-0 px-2',
 }
 
 export function RequestError({ message, className, variant = 'default' }: RequestErrorProps) {
