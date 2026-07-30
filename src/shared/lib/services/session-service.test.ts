@@ -2599,6 +2599,22 @@ describe('session-service', () => {
       expect(sessions.length).toBe(1)
       expect(sessions[0].id).toBe('sess-1')
     })
+
+    it('uses metadata createdAt instead of filesystem birthtime', async () => {
+      await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'sess-1': {
+          name: 'Webhook Run',
+          createdAt: '2026-07-30T19:44:31.000Z',
+          webhookTriggerId: 'trigger-abc',
+          isWebhookExecution: true,
+        },
+      })
+
+      const sessions = await getSessionsByWebhookTrigger('test-agent', 'trigger-abc')
+      expect(sessions).toHaveLength(1)
+      expect(sessions[0].createdAt).toEqual(new Date('2026-07-30T19:44:31.000Z'))
+    })
   })
 
   describe('listSessionsByIds', () => {
