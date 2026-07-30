@@ -158,8 +158,30 @@ function SettingsPageContent({
     if (initialSection && sectionIds.includes(initialSection)) {
       setActive(initialSection)
       if (isMobile) setMobileView('content')
+      return
     }
+
+    // Deep link or stale active points at a non-content section (e.g. Users
+    // became external-only after platform-auth resolved) — fall back and sync URL.
+    setActive((current) => {
+      if (sectionIds.includes(current)) return current
+      return sectionIds[0] ?? ''
+    })
   }, [initialSection, sectionIds, isMobile])
+
+  const onSectionChangeRef = React.useRef(onSectionChange)
+  onSectionChangeRef.current = onSectionChange
+
+  React.useEffect(() => {
+    const change = onSectionChangeRef.current
+    if (!change || sectionIds.length === 0) return
+    if (initialSection && sectionIds.includes(initialSection)) return
+    if (!sectionIds.includes(active)) return
+    // URL still names a removed/external section while content shows a valid tab.
+    if (initialSection && initialSection !== active) {
+      change(active)
+    }
+  }, [initialSection, sectionIds, active])
 
   const handleSectionClick = (id: string) => {
     setActive(id)
