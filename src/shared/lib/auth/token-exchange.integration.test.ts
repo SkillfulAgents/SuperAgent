@@ -489,33 +489,8 @@ describe('approval and ban enforcement', () => {
     expect(second.banned).toBe(0)
   })
 
-  it('bans pending approval when AUTH_MODE has no env PLATFORM_TOKEN', async () => {
-    const pinned = process.env.PLATFORM_TOKEN
-    delete process.env.PLATFORM_TOKEN
-    try {
-      const first = await exchangeRequest(await signGrant())
-      expect(first.status).toBe(200)
-
-      await writeAuthSettings({ requireAdminApproval: true })
-      const res = await exchangeRequest(
-        await signGrant({ payload: { sub: 'sub_member_2', email: 'second@example.com' } }),
-      )
-      expect(res.status).toBe(400)
-      expect((await res.json()).error).toBe('invalid_grant')
-
-      const pending = dbModule.sqlite
-        .prepare(`SELECT id, banned, ban_reason FROM user WHERE email = 'second@example.com'`)
-        .get() as { id: string; banned: number; ban_reason: string }
-      expect(pending.banned).toBe(1)
-      expect(pending.ban_reason).toBe('Pending admin approval')
-      const sessions = dbModule.sqlite
-        .prepare(`SELECT count(*) AS n FROM session WHERE user_id = ?`)
-        .get(pending.id) as { n: number }
-      expect(sessions.n).toBe(0)
-    } finally {
-      process.env.PLATFORM_TOKEN = pinned
-    }
-  })
+  // No PLATFORM_TOKEN → exchange fails closed at the org pin (covered above).
+  // requireAdminApproval staying on in that case is covered by auth-settings.test.ts.
 
   it('refuses a session for a banned user', async () => {
     const first = await exchangeRequest(await signGrant())
