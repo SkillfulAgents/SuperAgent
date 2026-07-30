@@ -34,6 +34,9 @@ export interface ComposerOptionsState {
   /** Active host web-provider id (settings-derived), so the model picker's web-tools availability
    *  warning knows a configured vendor makes those tools work on any model. Undefined = native. */
   webProvider?: string
+  /** Autopilot switch: the user wants this session seen through autonomously. */
+  autopilot: boolean
+  setAutopilot: (v: boolean) => void
   /**
    * Pluck the runtime-options bag for an API payload. UNTOUCHED knobs (no
    * explicit user pick, no session-seeded value) are OMITTED, not serialized:
@@ -42,7 +45,7 @@ export interface ComposerOptionsState {
    * a still-loading preferences query — and would override the actual model of
    * a session that carries none in its metadata (e.g. trigger-created).
    */
-  toRuntimeOptions(): { effort?: EffortLevel; speed?: SpeedLevel; model?: string }
+  toRuntimeOptions(): { effort?: EffortLevel; speed?: SpeedLevel; model?: string; autopilot?: boolean }
 }
 
 /**
@@ -68,6 +71,14 @@ export interface UseComposerOptionsArgs {
   initialSpeed?: SpeedLevel
   /** Model last used on this session, seeds the selector once if provided. */
   initialModel?: string
+  /**
+   * Server-side autopilot intent for this session (state is requested or
+   * engaged). Unlike the one-shot model/effort seeds, the switch FOLLOWS this
+   * value until the user touches it, and resumes following once the server
+   * confirms the user's pick — so a watchdog-driven state change (completed,
+   * paused) is reflected on the switch.
+   */
+  initialAutopilot?: boolean
   /** The agent's own default model, if set. Slots between a session's initial model and the app-wide default. */
   agentDefaultModel?: string
   /** The agent's own default effort, if set. Slots between a session's initial effort and the app-wide default. */
@@ -102,6 +113,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     initialEffort,
     initialSpeed,
     initialModel,
+    initialAutopilot,
     agentDefaultModel,
     agentDefaultEffort,
     agentDefaultSpeed,
@@ -143,6 +155,25 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const setSpeed = useCallback((sp: SpeedLevel) => {
     speedSeededRef.current = true
     setSpeedState(sp)
+  }, [])
+
+  // ---- Autopilot ----
+  // Follows the server value until the user flips the switch; once the server
+  // confirms the pick, follow-mode resumes (so watchdog-driven transitions —
+  // done, paused — are reflected without a reload).
+  const [autopilot, setAutopilotState] = useState<boolean>(initialAutopilot ?? false)
+  const autopilotTouchedRef = useRef(false)
+  useEffect(() => {
+    if (initialAutopilot === undefined) return
+    if (autopilotTouchedRef.current) {
+      if (initialAutopilot === autopilot) autopilotTouchedRef.current = false
+      return
+    }
+    setAutopilotState(initialAutopilot)
+  }, [initialAutopilot, autopilot])
+  const setAutopilot = useCallback((v: boolean) => {
+    autopilotTouchedRef.current = true
+    setAutopilotState(v)
   }, [])
 
   // ---- Catalog from active provider ----
@@ -245,8 +276,13 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       ...(effortSeededRef.current ? { effort } : {}),
       ...(speedSeededRef.current ? { speed } : {}),
       ...(modelSeededRef.current && model ? { model } : {}),
+      // Sent whenever the switch is on, or when the user explicitly turned it
+      // off (an explicit disengage). An untouched off switch sends nothing —
+      // messages from surfaces that don't know about autopilot must not read
+      // as a toggle-off, and a paused session must stay paused.
+      ...(autopilotTouchedRef.current || autopilot ? { autopilot } : {}),
     }),
-    [effort, speed, model],
+    [effort, speed, model, autopilot],
   )
 
   return useMemo(
@@ -257,11 +293,13 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       setSpeed,
       model,
       setModel,
+      autopilot,
+      setAutopilot,
       catalog,
       webProvider: settings?.webProvider,
       toRuntimeOptions,
     }),
-    [effort, setEffort, speed, setSpeed, model, setModel, catalog, settings, toRuntimeOptions],
+    [effort, setEffort, speed, setSpeed, model, setModel, autopilot, setAutopilot, catalog, settings, toRuntimeOptions],
   )
 }
 

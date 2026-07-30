@@ -19,6 +19,7 @@ import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { InformationalItem } from './informational-item'
+import { AutopilotReviewItem } from './autopilot-review-item'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
@@ -29,7 +30,7 @@ import { useWorkflow } from '@renderer/context/workflow-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, Fragment, type ReactNode } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
-import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
+import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational, ApiAutopilotReview } from '@shared/lib/types/api'
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts
@@ -793,6 +794,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
             ) : item.type === 'informational' ? (
               <InformationalItem item={item as ApiInformational} />
+            ) : item.type === 'autopilot_review' ? (
+              <AutopilotReviewItem item={item as ApiAutopilotReview} />
             ) : (
               <>
                 <MessageErrorBoundary kind="message" raw={item} itemId={item.id}>

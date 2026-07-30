@@ -22,6 +22,8 @@ import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ComposerSnapshot } from '@renderer/lib/new-session-carryover'
+import { AutopilotToggle } from './autopilot-toggle'
+import { normalizeAutopilotState, type AutopilotMetadata } from '@shared/lib/autopilot/autopilot-schema'
 
 interface MessageInputProps {
   sessionId: string
@@ -38,11 +40,13 @@ interface MessageInputProps {
   initialSpeed?: SpeedLevel
   /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
   initialModel?: string
+  /** Session's autopilot block from metadata — drives the composer switch + engaged styling. */
+  autopilot?: AutopilotMetadata
   /** Registers a getter so the stale-session prompt can move the live draft. */
   registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, registerSnapshot }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, autopilot, registerSnapshot }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -50,10 +54,12 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
+  const autopilotState = normalizeAutopilotState(autopilot?.state)
   const composerOptions = useComposerOptions({
     initialEffort,
     initialSpeed,
     initialModel,
+    initialAutopilot: autopilotState === 'requested' || autopilotState === 'engaged',
     agentDefaultModel: agentPrefs?.defaultModel,
     agentDefaultEffort: agentPrefs?.defaultEffort,
     agentDefaultSpeed: agentPrefs?.defaultSpeed,
@@ -309,6 +315,14 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
               state={composerOptions}
               disabled={isDisabled || isActive}
               footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
+            />
+            {/* Autopilot stays flippable mid-turn: the transition is applied
+                server-side at a turn boundary, never as an interrupt. */}
+            <AutopilotToggle
+              checked={composerOptions.autopilot}
+              onCheckedChange={composerOptions.setAutopilot}
+              engaged={autopilotState === 'engaged'}
+              disabled={isDisabled}
             />
           </>
         )}

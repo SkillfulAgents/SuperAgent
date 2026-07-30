@@ -34,6 +34,7 @@ import { deliverFileTool } from './tools/deliver-file'
 import { deliverSessionTool } from './tools/deliver-session'
 import { requestFileTool } from './tools/request-file'
 import { requestBrowserInputTool } from './tools/request-browser-input'
+import { createEngageAutopilotTool, type AutopilotEngagementTarget } from './tools/engage-autopilot'
 import { requestScriptRunTool } from './tools/request-script-run'
 import { createBrowserTools } from './tools/browser'
 import { computerUseTools } from './tools/computer-use'
@@ -61,7 +62,10 @@ import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
  * one transport connection per server at a time. Reusing singletons across
  * sessions causes "Already connected to a transport" errors.
  */
-export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTarget | null = () => null) {
+export function createUserInputMcpServer(
+  getProcess: () => (RemoteMcpInjectionTarget & AutopilotEngagementTarget) | null = () => null,
+  options?: { autopilotRequested?: boolean }
+) {
   // Only expose script execution tool on supported host platforms (macOS/Windows)
   const hostPlatform = process.env.HOST_PLATFORM
   const includeScriptRun = hostPlatform === 'darwin' || hostPlatform === 'win32'
@@ -82,6 +86,9 @@ export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTar
       scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
+      // Force-loaded during the preflight window so engaging never needs a
+      // ToolSearch hop; deferred like everything else otherwise.
+      createEngageAutopilotTool({ alwaysLoad: options?.autopilotRequested === true, getProcess }),
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeComposioTriggers ? [getAvailableTriggersTool, setupTriggerTool] : []),
       ...(includeComposioTriggers || includeWebhookEndpoints

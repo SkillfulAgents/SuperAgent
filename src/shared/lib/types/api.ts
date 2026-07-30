@@ -7,6 +7,7 @@
 
 import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/container/types'
 import type { SessionUsage } from '@shared/lib/types/agent'
+import type { AutopilotMetadata } from '@shared/lib/autopilot/autopilot-schema'
 
 // ============================================================================
 // Agent API Types
@@ -112,6 +113,8 @@ export interface ApiSession {
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  // Autopilot block from session metadata (state machine + goal contract).
+  autopilot?: AutopilotMetadata
 }
 
 // ============================================================================
@@ -223,9 +226,25 @@ export interface ApiInformational {
 }
 
 /**
+ * Autopilot watchdog decision in API response: rendered as a timeline card
+ * showing whether the reviewer let the session rest, restarted it with a
+ * nudge, or escalated to the user.
+ */
+export interface ApiAutopilotReview {
+  id: string
+  type: 'autopilot_review'
+  verdict: 'done' | 'continue' | 'blocked' | 'escalated'
+  reasoning: string
+  nudge?: string
+  iteration?: number
+  maxIterations?: number
+  createdAt: Date
+}
+
+/**
  * Union type for all message-like items in the API response
  */
-export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational
+export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational | ApiAutopilotReview
 
 // ============================================================================
 // Secret API Types

@@ -68,6 +68,11 @@ export interface AgentCapabilityPolicies {
   workflows?: CapabilityPolicy;
 }
 
+// Session autopilot state, host-authoritative (mirrors the host's session
+// metadata). Drives the mode-dependent system-prompt fragment: `requested`
+// renders the preflight instructions, `engaged` the autonomous posture.
+export type AutopilotState = 'off' | 'requested' | 'engaged' | 'paused';
+
 export interface CreateSessionRequest {
   metadata?: Record<string, any>;
   workingDirectory?: string;
@@ -101,6 +106,7 @@ export interface CreateSessionRequest {
     effort?: EffortLevel;
     speed?: SpeedLevel;
   };
+  autopilotState?: AutopilotState; // Session autopilot state (absent = off)
 }
 
 export interface SendMessageRequest {
@@ -112,4 +118,5 @@ export interface SendMessageRequest {
   model?: string; // If set and different from current session model, triggers interrupt+restart with new model
   shouldQuery?: boolean; // When false, appends to transcript without triggering an assistant turn
   capabilityPolicies?: AgentCapabilityPolicies; // Current launch policies; a block-boundary change triggers interrupt+restart
+  autopilotState?: AutopilotState; // Current autopilot state; a change triggers interrupt+restart (prompt fragment is baked at query creation)
 }

@@ -1,6 +1,7 @@
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import { inputManager, HUMAN_INPUT_TTL_MS } from './input-manager';
-import type { AgentCapabilityPolicies } from './types';
+import { autopilotApprovalDeniedMessage } from './autopilot-input-gate';
+import type { AgentCapabilityPolicies, AutopilotState } from './types';
 import {
   blockedCapabilityMessage,
   capabilityGateFor,
@@ -24,6 +25,11 @@ export interface CapabilityGateContext {
   sessionId: string;
   getPolicies: () => AgentCapabilityPolicies | undefined;
   getSessionGrants: () => ReadonlySet<Capability>;
+  // Live session autopilot state — a review-tier launch while ENGAGED is
+  // refused with corrective guidance instead of parking an approval card the
+  // absent user cannot answer. Optional so existing tests/harnesses that
+  // never engage need no changes.
+  getAutopilotState?: () => AutopilotState | undefined;
   onSessionGrant: (capability: Capability) => void;
   // The CLI stopped waiting for this hook (its timeout elapsed, or the turn
   // was aborted/interrupted) — the pending review is already rejected; the
@@ -54,6 +60,19 @@ export function createCapabilityGateHook(ctx: CapabilityGateContext): HookCallba
           hookEventName: 'PreToolUse' as const,
           permissionDecision: 'deny' as const,
           permissionDecisionReason: blockedCapabilityMessage(gate.capability),
+        },
+      };
+    }
+
+    if (ctx.getAutopilotState?.() === 'engaged') {
+      console.log(`[PreToolUse] Denying ${hookToolName} review (${gate.capability}, autopilot engaged)`);
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse' as const,
+          permissionDecision: 'deny' as const,
+          permissionDecisionReason: autopilotApprovalDeniedMessage(
+            gate.capability === 'workflows' ? 'Running this workflow' : 'Launching this subagent'
+          ),
         },
       };
     }

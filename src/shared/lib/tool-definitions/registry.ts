@@ -26,6 +26,7 @@ import { requestFileDef } from './request-file'
 import { requestRemoteMcpDef } from './request-remote-mcp'
 import { requestScriptRunDef } from './request-script-run'
 import { requestBrowserInputDef } from './request-browser-input'
+import { engageAutopilotDef } from './engage-autopilot'
 import {
   browserOpenDef,
   browserCloseDef,
@@ -108,6 +109,7 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__user-input__request_remote_mcp': requestRemoteMcpDef,
   'mcp__user-input__request_script_run': requestScriptRunDef,
   'mcp__user-input__request_browser_input': requestBrowserInputDef,
+  'mcp__user-input__engage_autopilot': engageAutopilotDef,
 
   // MCP tools - browser
   'mcp__browser__browser_open': browserOpenDef,

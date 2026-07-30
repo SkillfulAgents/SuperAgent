@@ -165,7 +165,7 @@ class NotificationManager {
   async triggerSessionWaitingInput(
     sessionId: string,
     agentSlug: string,
-    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run' | 'computer_use' | 'capability_review_subagents' | 'capability_review_workflows',
+    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run' | 'computer_use' | 'capability_review_subagents' | 'capability_review_workflows' | 'autopilot',
     agentName?: string
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
@@ -203,6 +203,9 @@ class NotificationManager {
         break
       case 'capability_review_workflows':
         waitingMessage = 'wants to run a workflow'
+        break
+      case 'autopilot':
+        waitingMessage = 'paused autopilot and needs you'
         break
     }
 

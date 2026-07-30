@@ -5,6 +5,7 @@
  */
 
 import type { EffortLevel, SlashCommandInfo, SpeedLevel } from '../container/types'
+import type { AutopilotMetadata } from '../autopilot/autopilot-schema'
 
 // ============================================================================
 // Agent Roles
@@ -116,6 +117,9 @@ export interface SessionMetadata {
   model?: string
   // X-Agent: present when this session was created by another agent invoking this one
   invokedByAgentSlug?: string
+  // Autopilot: present once the user requests autonomous execution on this
+  // session. See autopilot-schema.ts for the state machine and goal contract.
+  autopilot?: AutopilotMetadata
 }
 
 /**

@@ -56,6 +56,8 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
+import { requestAutopilot, disengageAutopilot } from '@shared/lib/autopilot/autopilot-service'
+import { normalizeAutopilotState } from '@shared/lib/autopilot/autopilot-schema'
 import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
@@ -1645,6 +1647,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         effort: agentPrefs.defaultEffort,
         speed: agentPrefs.defaultSpeed,
       },
+      autopilotState: runtimeOptions.autopilot ? 'requested' : undefined,
     })
     const sessionId = containerSession.id
 
@@ -1685,6 +1688,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
     if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
     if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
+    if (runtimeOptions.autopilot) initialMetadata.autopilot = { state: 'requested' }
     if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
     if (Object.keys(initialMetadata).length > 0) {
       updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)
@@ -1973,6 +1977,34 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       delete runtimeOptions.model
     }
 
+    // Autopilot transitions driven by this message. The composer sends
+    // `autopilot: true` while its switch is on (request; a user message while
+    // engaged also drops back to requested — autonomy is interrupted until the
+    // agent re-engages), `false` on an explicit toggle-off, and nothing from
+    // surfaces that don't know about autopilot — where a genuine user message
+    // mid-engagement disengages entirely (day-one guardrail). Applied BEFORE
+    // the send for fresh turns so the container picks the new state up with
+    // this message, but AFTER the send for queued ones — the state change
+    // restarts the in-flight query, which is exactly what queued sends strip
+    // model/effort/speed to avoid.
+    const applyAutopilotTransition = async (): Promise<void> => {
+      let changed = false
+      if (runtimeOptions.autopilot === true) {
+        changed = await requestAutopilot(agentSlug, sessionId)
+      } else if (runtimeOptions.autopilot === false) {
+        changed = await disengageAutopilot(agentSlug, sessionId, 'user_toggle')
+      } else {
+        const state = normalizeAutopilotState(
+          (await getSessionMetadata(agentSlug, sessionId))?.autopilot?.state
+        )
+        if (state === 'engaged') {
+          changed = await disengageAutopilot(agentSlug, sessionId, 'user_message')
+        }
+      }
+      if (changed) messagePersister.broadcastSessionUpdate(sessionId)
+    }
+    if (!wasQueued) await applyAutopilotTransition()
+
     // Server-generated message uuid (never client-supplied — the uuid keys the
     // messageAuthor attribution row, so a client-chosen value could collide
     // with another user's message and misattribute it). It is forwarded to the
@@ -2004,6 +2036,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     await client.sendMessage(sessionId, content.trim(), messageUuid, runtimeOptions)
+    if (wasQueued) await applyAutopilotTransition()
     const updates: Parameters<typeof updateSessionMetadata>[2] = {}
     if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
     if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
@@ -2088,6 +2121,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       effort: metadata?.effort,
       speed: metadata?.speed,
       model: metadata?.model,
+      autopilot: metadata?.autopilot,
       ...(pendingWake
         ? {
             pendingWakeAt: pendingWake.nextExecutionAt.toISOString(),

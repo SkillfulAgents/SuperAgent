@@ -3260,6 +3260,8 @@ describe('MessagePersister', () => {
         try {
           messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
           simulateToolUse('mcp__computer-use__computer_click', 'cu-1', { ref: 'win:1' })
+          // Settle the handler's async autopilot-metadata check before the park lands.
+          await new Promise((r) => setImmediate(r))
           expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
           expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(1)
           mockContainerClientFetch.mockClear()
@@ -3908,7 +3910,7 @@ describe('MessagePersister', () => {
       })
     }
 
-    it('registers a script_run with autoApproved:false when permission needed', () => {
+    it('registers a script_run with autoApproved:false when permission needed', async () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
@@ -3917,6 +3919,9 @@ describe('MessagePersister', () => {
         explanation: 'Check macOS version',
         scriptType: 'shell',
       })
+      // The handler consults session autopilot metadata (async) before
+      // parking/broadcasting — settle it before asserting.
+      await new Promise((r) => setImmediate(r))
 
       const scriptEvents = requestCards('script_run')
       expect(scriptEvents).toHaveLength(1)
@@ -3973,7 +3978,7 @@ describe('MessagePersister', () => {
       vi.unstubAllGlobals()
     })
 
-    it('registers a script_run even without prior permission (prompts user)', () => {
+    it('registers a script_run even without prior permission (prompts user)', async () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
@@ -3982,6 +3987,9 @@ describe('MessagePersister', () => {
         explanation: 'Check version',
         scriptType: 'shell',
       })
+      // The handler consults session autopilot metadata (async) before
+      // parking/broadcasting — settle it before asserting.
+      await new Promise((r) => setImmediate(r))
 
       // Should reach the client for approval (no cached permission → prompt user)
       const scriptEvents = requestCards('script_run')
@@ -4014,7 +4022,7 @@ describe('MessagePersister', () => {
       expect(scriptEvents).toHaveLength(0)
     })
 
-    it('sets isAwaitingInput after request_script_run tool fires (prompt path)', () => {
+    it('sets isAwaitingInput after request_script_run tool fires (prompt path)', async () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
 
       simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-6', {
@@ -4022,6 +4030,8 @@ describe('MessagePersister', () => {
         explanation: 'Check version',
         scriptType: 'shell',
       })
+      // Settle the handler's async autopilot-metadata check.
+      await new Promise((r) => setImmediate(r))
 
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
     })

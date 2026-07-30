@@ -30,6 +30,8 @@ import { resolveContainerModel, getContainerModelPromptHints } from './resolve-m
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { getOrCreateHostToken } from './host-token-store'
+import { getSessionMetadata } from '@shared/lib/services/session-service'
+import { normalizeAutopilotState } from '@shared/lib/autopilot/autopilot-schema'
 
 const execAsync = promisify(exec)
 
@@ -1157,6 +1159,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             effort: options.prewarmDefaults.effort,
             speed: options.prewarmDefaults.speed,
           },
+          autopilotState: options.autopilotState,
         }),
         signal: controller.signal,
       })
@@ -1259,6 +1262,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // Refreshed on every message so a long-lived session tracks settings
     // changes; the container restarts its query only on a block-boundary flip.
     const capabilityPolicies = getAgentCapabilitySettings()
+    // Autopilot state is host-authoritative session metadata, refreshed on
+    // every message like capability policies — the container must never be
+    // able to keep a stale (or self-declared) mode.
+    const autopilotState = normalizeAutopilotState(
+      (await getSessionMetadata(this.config.agentId, sessionId))?.autopilot?.state
+    )
 
     try {
       const controller = new AbortController()
@@ -1277,6 +1286,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             ...(model ? { model } : {}),
             ...(shouldQuery !== undefined ? { shouldQuery } : {}),
             capabilityPolicies,
+            autopilotState,
           }),
           signal: controller.signal,
         }

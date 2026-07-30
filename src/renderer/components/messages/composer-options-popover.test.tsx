@@ -50,6 +50,8 @@ function Harness({
     setSpeed,
     model,
     setModel,
+    autopilot: false,
+    setAutopilot: () => {},
     catalog,
     toRuntimeOptions: () => ({ effort, speed, ...(model ? { model } : {}) }),
   }
@@ -106,6 +108,8 @@ describe('ComposerOptionsPopover', () => {
           setSpeed: vi.fn(),
           model: 'claude-sonnet-4-6',
           setModel,
+          autopilot: false,
+          setAutopilot: vi.fn(),
           catalog: CATALOG,
           toRuntimeOptions: () => ({ effort: 'high', model: 'claude-sonnet-4-6' }),
         }}
@@ -130,6 +134,8 @@ describe('ComposerOptionsPopover', () => {
           setSpeed: vi.fn(),
           model: 'claude-opus-4-8',
           setModel: vi.fn(),
+          autopilot: false,
+          setAutopilot: vi.fn(),
           catalog: CATALOG,
           toRuntimeOptions: () => ({ effort: 'high', model: 'claude-opus-4-8' }),
         }}

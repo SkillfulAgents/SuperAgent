@@ -1,0 +1,435 @@
+import { randomUUID } from 'crypto'
+import { messagePersister } from '@shared/lib/container/message-persister'
+import { containerManager } from '@shared/lib/container/container-manager'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
+import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
+import { getEffectiveModels } from '@shared/lib/config/settings'
+import {
+  getSessionMetadata,
+  getSessionMessagesWithCompact,
+  mutateSessionAutopilot,
+} from '@shared/lib/services/session-service'
+import { appendAutopilotReviewEntry } from '@shared/lib/services/session-transcript-append'
+import type { JsonlMessageEntry, JsonlSystemEntry, ContentBlock } from '@shared/lib/types/agent'
+import {
+  DEFAULT_MAX_ITERATIONS,
+  normalizeAutopilotState,
+  watchdogVerdictSchema,
+  type AutopilotReviewEntry,
+  type GoalContract,
+  type WatchdogVerdict,
+} from './autopilot-schema'
+import { applyContinueVerdict, disengageAutopilot, pauseAutopilot } from './autopilot-service'
+
+/**
+ * The autopilot watchdog: reviews every stop of an engaged session against the
+ * session's goal contract using the summarizer model, then either lets the
+ * session rest (done), restarts it with a nudge (continue), or pauses and
+ * notifies the user (blocked / guardrail tripped).
+ *
+ * Wake signals (global persister broadcasts):
+ * - session_idle          → run a review (unless the stop was a user interrupt)
+ * - session_error         → mechanical pause + notify (no judge involved)
+ * - session_awaiting_input → mechanical pause (the input request's own
+ *   notification already alerts the user; pausing records why autonomy ended)
+ */
+
+/** Character budget for the transcript excerpt handed to the judge. */
+const TRANSCRIPT_CHAR_BUDGET = 24_000
+
+const JUDGE_SYSTEM_PROMPT = `You are a strict completion reviewer for an autonomous AI agent session. You are given the agent's goal contract (goal + explicit success criteria), the current continuation count, and the tail of the session transcript.
+
+Decide exactly one verdict:
+- "done": every success criterion is verifiably satisfied in the transcript.
+- "continue": not done, but nothing requires the user — the agent can make progress on its own.
+- "blocked": the agent genuinely needs the user (expired/missing credentials, a decision only the user can make, an irreversible action needing approval, repeated failures with no path forward).
+
+Respond with ONLY a JSON object, no markdown fences, no prose:
+{"verdict": "done" | "continue" | "blocked", "reasoning": "<1-3 sentences>", "nudge": "<REQUIRED for continue: concrete instruction telling the agent exactly what is still missing and what to do next>", "missing": "<REQUIRED for continue: terse stable fingerprint of the outstanding criteria, e.g. 'criteria 2,4: tests not run; PR not opened'>"}
+
+Judge only against the declared success criteria — not what you would have done differently. Unverifiable claims of completion count as not done.
+
+The transcript excerpt is a rendering, not raw data — do not mistake presentation artifacts for content. In particular, file-read results are shown with line numbers prefixed to each line (e.g. "5\t3" means line 5 contains "3"), and long tool outputs may be truncated. Judge what the agent did and verified, and only fail a criterion on evidence of an actual mismatch, not on formatting of the excerpt.`
+
+class AutopilotWatchdog {
+  private unsubscribe: (() => void) | null = null
+  private inFlight = new Set<string>()
+
+  start(): void {
+    if (this.unsubscribe) return
+    this.unsubscribe = messagePersister.addGlobalNotificationClient((data) => {
+      const event = data as { type?: string; sessionId?: string; agentSlug?: string }
+      if (!event.sessionId || !event.agentSlug) return
+      if (event.type === 'session_idle') {
+        void this.handleIdle(event.sessionId, event.agentSlug)
+      } else if (event.type === 'session_error') {
+        void this.handleMechanicalBlock(
+          event.sessionId,
+          event.agentSlug,
+          'The session stopped with an error.',
+          { notify: true }
+        )
+      } else if (event.type === 'session_awaiting_input') {
+        void this.handleMechanicalBlock(
+          event.sessionId,
+          event.agentSlug,
+          'The agent requested user input.',
+          // The input request fires its own "Action Required" notification;
+          // a second one here would be a duplicate.
+          { notify: false }
+        )
+      }
+    })
+    console.log('[AutopilotWatchdog] Started')
+  }
+
+  stop(): void {
+    this.unsubscribe?.()
+    this.unsubscribe = null
+  }
+
+  private async handleIdle(sessionId: string, agentSlug: string): Promise<void> {
+    if (this.inFlight.has(sessionId)) return
+    const autopilot = (await getSessionMetadata(agentSlug, sessionId))?.autopilot
+    if (normalizeAutopilotState(autopilot?.state) !== 'engaged') return
+
+    // A stop-button press is user intervention, not a stop to review: suspend
+    // autonomy back to `requested` (the agent re-engages after the user's next
+    // message) instead of restarting work the user just halted.
+    if (messagePersister.wasSessionInterrupted(sessionId)) {
+      const changed = await mutateSessionAutopilot(agentSlug, sessionId, (current) => {
+        if (normalizeAutopilotState(current?.state) !== 'engaged') return false
+        return { ...current, state: 'requested' }
+      })
+      if (changed) messagePersister.broadcastSessionUpdate(sessionId)
+      return
+    }
+
+    this.inFlight.add(sessionId)
+    try {
+      await this.review(sessionId, agentSlug)
+    } catch (error) {
+      console.error('[AutopilotWatchdog] Review failed:', error)
+      await this.escalate(sessionId, agentSlug, {
+        verdict: 'escalated',
+        reasoning: 'Autopilot review failed; pausing so nothing runs unsupervised.',
+      })
+    } finally {
+      this.inFlight.delete(sessionId)
+      messagePersister.broadcastSessionEvent(sessionId, {
+        type: 'autopilot_review',
+        status: 'finished',
+      })
+    }
+  }
+
+  /** Input request / stream error while engaged: pause without consulting the judge. */
+  private async handleMechanicalBlock(
+    sessionId: string,
+    agentSlug: string,
+    reason: string,
+    opts: { notify: boolean }
+  ): Promise<void> {
+    const autopilot = (await getSessionMetadata(agentSlug, sessionId))?.autopilot
+    if (normalizeAutopilotState(autopilot?.state) !== 'engaged') return
+
+    const paused = await pauseAutopilot(agentSlug, sessionId, reason)
+    if (!paused) return
+
+    await this.appendReview(sessionId, agentSlug, {
+      verdict: 'blocked',
+      reasoning: reason,
+      iteration: autopilot?.iteration,
+      maxIterations: autopilot?.goal?.max_iterations ?? DEFAULT_MAX_ITERATIONS,
+    })
+    messagePersister.broadcastSessionUpdate(sessionId)
+    if (opts.notify) {
+      await notificationManager
+        .triggerSessionWaitingInput(sessionId, agentSlug, 'autopilot')
+        .catch((err) => console.error('[AutopilotWatchdog] Notification failed:', err))
+    }
+  }
+
+  private async review(sessionId: string, agentSlug: string): Promise<void> {
+    const meta = await getSessionMetadata(agentSlug, sessionId)
+    const autopilot = meta?.autopilot
+    const goal = autopilot?.goal
+    if (!goal) {
+      // Engaged without a contract should be impossible (engagement validates
+      // it) — treat as corrupt state and hand control back to the user.
+      await this.escalate(sessionId, agentSlug, {
+        verdict: 'escalated',
+        reasoning: 'Autopilot is engaged but no goal contract is stored.',
+      })
+      return
+    }
+
+    messagePersister.broadcastSessionEvent(sessionId, {
+      type: 'autopilot_review',
+      status: 'started',
+    })
+
+    const iteration = autopilot?.iteration ?? 0
+    const maxIterations = goal.max_iterations ?? DEFAULT_MAX_ITERATIONS
+    const entries = await getSessionMessagesWithCompact(agentSlug, sessionId)
+    const transcript = buildTranscriptExcerpt(entries)
+    const verdict = await this.judge(goal, transcript, iteration, maxIterations)
+
+    // Judge unusable (provider down, unparseable output): pause rather than
+    // loop blind or silently drop autonomy.
+    if (!verdict) {
+      await this.escalate(sessionId, agentSlug, {
+        verdict: 'escalated',
+        reasoning: 'Autopilot reviewer returned no usable verdict.',
+        iteration,
+        maxIterations,
+      })
+      return
+    }
+
+    if (verdict.verdict === 'done') {
+      const changed = await disengageAutopilot(agentSlug, sessionId, 'completed')
+      if (!changed) return // user intervened mid-review
+      await this.appendReview(sessionId, agentSlug, {
+        verdict: 'done',
+        reasoning: verdict.reasoning,
+        iteration,
+        maxIterations,
+      })
+      messagePersister.broadcastSessionUpdate(sessionId)
+      return
+    }
+
+    if (verdict.verdict === 'blocked') {
+      const paused = await pauseAutopilot(agentSlug, sessionId, verdict.reasoning)
+      if (!paused) return
+      await this.appendReview(sessionId, agentSlug, {
+        verdict: 'blocked',
+        reasoning: verdict.reasoning,
+        iteration,
+        maxIterations,
+      })
+      messagePersister.broadcastSessionUpdate(sessionId)
+      await notificationManager
+        .triggerSessionWaitingInput(sessionId, agentSlug, 'autopilot')
+        .catch((err) => console.error('[AutopilotWatchdog] Notification failed:', err))
+      return
+    }
+
+    // continue: the iteration cap and no-progress guardrails are applied
+    // atomically with the verdict record inside the metadata lock.
+    const decision = await applyContinueVerdict(agentSlug, sessionId, verdict)
+    if (decision.action === 'not-engaged') return
+    if (decision.action === 'escalate') {
+      await this.appendReview(sessionId, agentSlug, {
+        verdict: 'escalated',
+        reasoning:
+          decision.reason === 'iteration-cap'
+            ? `Iteration cap reached (${decision.maxIterations} continuations). ${verdict.reasoning}`
+            : `No progress across consecutive reviews. ${verdict.reasoning}`,
+        iteration: decision.iteration,
+        maxIterations: decision.maxIterations,
+      })
+      messagePersister.broadcastSessionUpdate(sessionId)
+      await notificationManager
+        .triggerSessionWaitingInput(sessionId, agentSlug, 'autopilot')
+        .catch((err) => console.error('[AutopilotWatchdog] Notification failed:', err))
+      return
+    }
+
+    const nudge = verdict.nudge?.trim() || verdict.missing?.trim() || verdict.reasoning
+    await this.appendReview(sessionId, agentSlug, {
+      verdict: 'continue',
+      reasoning: verdict.reasoning,
+      nudge,
+      iteration: decision.iteration,
+      maxIterations: decision.maxIterations,
+    })
+    messagePersister.broadcastSessionUpdate(sessionId)
+    await this.dispatchNudge(sessionId, agentSlug, nudge, decision.iteration, decision.maxIterations)
+  }
+
+  private async judge(
+    goal: GoalContract,
+    transcript: string,
+    iteration: number,
+    maxIterations: number
+  ): Promise<WatchdogVerdict | null> {
+    let text: string | null
+    try {
+      const client = getConfiguredLlmClient()
+      text = await createSummarizerText(client, {
+        model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
+        system: JUDGE_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              `GOAL: ${goal.goal}`,
+              '',
+              'SUCCESS CRITERIA:',
+              ...goal.success_criteria.map((c, i) => `${i + 1}. ${c}`),
+              '',
+              `Continuations used so far: ${iteration}/${maxIterations}`,
+              '',
+              'TRANSCRIPT (tail):',
+              transcript,
+            ].join('\n'),
+          },
+        ],
+      })
+    } catch (error) {
+      console.error('[AutopilotWatchdog] Judge call failed:', error)
+      return null
+    }
+    if (!text) {
+      console.error('[AutopilotWatchdog] Judge returned an empty response')
+      return null
+    }
+
+    // The model is told "JSON only", but be defensive: strip fences, and if
+    // prose still surrounds the object, cut to the outermost braces.
+    let stripped = text
+      .trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/, '')
+    if (!stripped.startsWith('{')) {
+      const start = stripped.indexOf('{')
+      const end = stripped.lastIndexOf('}')
+      if (start !== -1 && end > start) stripped = stripped.slice(start, end + 1)
+    }
+    try {
+      const parsed = watchdogVerdictSchema.safeParse(JSON.parse(stripped))
+      if (!parsed.success) {
+        console.error(
+          '[AutopilotWatchdog] Judge verdict failed schema validation:',
+          stripped.slice(0, 500)
+        )
+      }
+      return parsed.success ? parsed.data : null
+    } catch {
+      console.error('[AutopilotWatchdog] Judge returned non-JSON output:', stripped.slice(0, 500))
+      return null
+    }
+  }
+
+  private async dispatchNudge(
+    sessionId: string,
+    agentSlug: string,
+    nudge: string,
+    iteration: number,
+    maxIterations: number
+  ): Promise<void> {
+    // Same delivery discipline as scheduled session wakes: ensure the
+    // container, attach the stream, mark active BEFORE sending (harness rule),
+    // and revert the optimistic active flag if the send never reached the
+    // container. The [SYSTEM] prefix keeps the nudge from counting as a human
+    // message anywhere in session lifecycle accounting.
+    const client = await containerManager.ensureRunning(agentSlug)
+    if (!messagePersister.isSubscribed(sessionId)) {
+      await messagePersister.subscribeToSession(sessionId, client, sessionId, agentSlug)
+    }
+    messagePersister.markSessionActive(sessionId, agentSlug)
+    const message =
+      `[SYSTEM] Autopilot continuation ${iteration}/${maxIterations}. ` +
+      `The reviewer found the goal is not yet met. Still missing: ${nudge} ` +
+      `Continue working toward the declared success criteria. Do not ask the user anything.`
+    try {
+      await client.sendMessage(sessionId, message, randomUUID(), { shouldQuery: true })
+    } catch (error) {
+      messagePersister.markSessionIdle(sessionId)
+      console.error('[AutopilotWatchdog] Nudge delivery failed:', error)
+      await this.escalate(sessionId, agentSlug, {
+        verdict: 'escalated',
+        reasoning: 'Failed to restart the session for the next autopilot continuation.',
+        iteration,
+        maxIterations,
+      })
+    }
+  }
+
+  /** Pause + record + notify — the shared "hand control back to the user" tail. */
+  private async escalate(
+    sessionId: string,
+    agentSlug: string,
+    review: AutopilotReviewEntry
+  ): Promise<void> {
+    const paused = await pauseAutopilot(agentSlug, sessionId, review.reasoning)
+    if (!paused) return
+    await this.appendReview(sessionId, agentSlug, review)
+    messagePersister.broadcastSessionUpdate(sessionId)
+    await notificationManager
+      .triggerSessionWaitingInput(sessionId, agentSlug, 'autopilot')
+      .catch((err) => console.error('[AutopilotWatchdog] Notification failed:', err))
+  }
+
+  private async appendReview(
+    sessionId: string,
+    agentSlug: string,
+    review: AutopilotReviewEntry
+  ): Promise<void> {
+    try {
+      await appendAutopilotReviewEntry(agentSlug, sessionId, {
+        uuid: randomUUID(),
+        review,
+      })
+      messagePersister.broadcastSessionEvent(sessionId, { type: 'messages_updated' })
+    } catch (error) {
+      console.error('[AutopilotWatchdog] Failed to persist review entry:', error)
+    }
+  }
+}
+
+export const autopilotWatchdog = new AutopilotWatchdog()
+
+/**
+ * Compact textual excerpt of the transcript tail for the judge: newest entries
+ * kept whole-first until the character budget runs out, then re-emitted in
+ * chronological order.
+ */
+export function buildTranscriptExcerpt(
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[]
+): string {
+  const lines: string[] = []
+  for (const entry of entries) {
+    if (entry.type === 'system') {
+      const sys = entry as JsonlSystemEntry
+      if (sys.subtype === 'informational') lines.push(`[system] ${sys.content ?? ''}`)
+      continue
+    }
+    const msg = entry as JsonlMessageEntry
+    const role = msg.type === 'user' ? 'USER' : 'AGENT'
+    const content = msg.message?.content
+    if (typeof content === 'string') {
+      if (content.trim()) lines.push(`${role}: ${content}`)
+      continue
+    }
+    if (!Array.isArray(content)) continue
+    const parts: string[] = []
+    for (const block of content as ContentBlock[]) {
+      if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+        parts.push(block.text)
+      } else if (block.type === 'tool_use') {
+        parts.push(`[tool: ${(block as { name?: string }).name ?? 'unknown'}]`)
+      } else if (block.type === 'tool_result') {
+        const raw = (block as { content?: unknown }).content
+        const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? '')
+        parts.push(`[tool result: ${text.slice(0, 400)}]`)
+      }
+    }
+    if (parts.length > 0) lines.push(`${role}: ${parts.join('\n')}`)
+  }
+
+  // Keep the newest lines within budget.
+  const kept: string[] = []
+  let total = 0
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].length > 4000 ? `${lines[i].slice(0, 4000)}…` : lines[i]
+    if (total + line.length > TRANSCRIPT_CHAR_BUDGET) break
+    kept.unshift(line)
+    total += line.length
+  }
+  if (kept.length < lines.length) kept.unshift(`[…${lines.length - kept.length} earlier entries omitted…]`)
+  return kept.join('\n\n')
+}

@@ -131,6 +131,13 @@ export interface ThinkingBlock {
 interface ThinkingState { blocks: ThinkingBlock[]; isThinking: boolean }
 const EMPTY_THINKING: ThinkingState = { blocks: [], isThinking: false }
 const sessionThinking = new Map<string, ThinkingState>()
+
+// Autopilot watchdog review-in-progress per session. Side map (like thinking /
+// slash commands) so the full StreamState rebuild sites stay untouched. True
+// between the watchdog's `autopilot_review` started/finished events — the
+// activity indicator keeps showing the session as working while the review runs
+// even though isActive is false.
+const sessionAutopilotReviewing = new Map<string, boolean>()
 let nextThinkingBlockId = 1
 
 // Stamp endedAt on any still-open block. Used when a new block starts (at most
@@ -370,6 +377,8 @@ function getOrCreateEventSource(
         if (data.sessionId && data.sessionId !== sessionId) return
         // Reset thinking stream for the new turn
         sessionThinking.delete(sessionId)
+        // A new turn supersedes any watchdog review-in-progress display
+        sessionAutopilotReviewing.delete(sessionId)
         streamStates.set(sessionId, {
           isActive: true,
           isStreaming: current?.isStreaming ?? false,
@@ -442,6 +451,11 @@ function getOrCreateEventSource(
         // short bounded reconcile so the turn's "Worked for Xs" line appears
         // promptly instead of waiting for the next safety-net poll.
         void reconcileMessagesAfterIdle(sessionId, queryClient, current?.streamingMessage ?? null)
+      }
+      // Autopilot watchdog is reviewing the stop (or just finished)
+      else if (data.type === 'autopilot_review') {
+        sessionAutopilotReviewing.set(sessionId, data.status === 'started')
+        streamListeners.get(sessionId)?.forEach((listener) => listener())
       }
       // Agent turn ended but background tasks are still running — allow sending messages
       else if (data.type === 'session_waiting_background') {
@@ -1243,6 +1257,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
   const [autoApprovedScriptRunIds, setAutoApprovedScriptRunIds] = useState<ReadonlySet<string>>(EMPTY_AUTO_APPROVED_SET)
   const [autoApprovedComputerUseIds, setAutoApprovedComputerUseIds] = useState<ReadonlySet<string>>(EMPTY_AUTO_APPROVED_SET)
   const [workflows, setWorkflows] = useState<WorkflowRunLive[]>(EMPTY_WORKFLOWS)
+  const [autopilotReviewing, setAutopilotReviewing] = useState(false)
   const queryClient = useQueryClient()
 
   // Update local state when global state changes
@@ -1294,6 +1309,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
       // Workflows are stored as immutable arrays (a new ref only on workflow events),
       // so a plain ref-equal set bails out of re-render on every other event.
       setWorkflows(sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS)
+      setAutopilotReviewing(sessionAutopilotReviewing.get(sessionId) ?? false)
     }
   }, [sessionId])
 
@@ -1308,6 +1324,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
       setAutoApprovedScriptRunIds(EMPTY_AUTO_APPROVED_SET)
       setAutoApprovedComputerUseIds(EMPTY_AUTO_APPROVED_SET)
       setWorkflows(EMPTY_WORKFLOWS)
+      setAutopilotReviewing(false)
       return
     }
 
@@ -1337,5 +1354,5 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     }
   }, [sessionId, agentSlug, updateState, queryClient])
 
-  return { ...state, slashCommands, autoApprovedScriptRunIds, autoApprovedComputerUseIds, workflows, isThinking: thinking.isThinking, thinkingBlocks: thinking.blocks }
+  return { ...state, slashCommands, autoApprovedScriptRunIds, autoApprovedComputerUseIds, workflows, isThinking: thinking.isThinking, thinkingBlocks: thinking.blocks, autopilotReviewing }
 }

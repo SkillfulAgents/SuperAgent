@@ -18,6 +18,16 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   }) as unknown as MediaQueryList
 }
 
+// jsdom has no ResizeObserver; Radix primitives (Switch, and others) construct
+// one on mount. No-op stub — layout observation is meaningless in jsdom.
+if (typeof window !== 'undefined' && !window.ResizeObserver) {
+  window.ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  } as unknown as typeof ResizeObserver
+}
+
 const signIn = {
   email: vi.fn(),
   oauth2: vi.fn(),

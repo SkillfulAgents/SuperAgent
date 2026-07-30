@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import { writeFileAtomicSync } from './atomic-file';
-import type { AgentCapabilityPolicies, EffortLevel, SpeedLevel } from './types';
+import type { AgentCapabilityPolicies, AutopilotState, EffortLevel, SpeedLevel } from './types';
 
 interface SessionMetadata {
   sessionId: string;
@@ -26,6 +26,9 @@ interface SessionMetadata {
   // Must survive resume: doResumeSession starts the query straight from these
   // options, so an unpersisted block policy would briefly re-expose the tools.
   capabilityPolicies?: AgentCapabilityPolicies;
+  // Must survive resume for the same reason: the autopilot prompt fragment is
+  // rendered from this at query creation.
+  autopilotState?: AutopilotState;
   // "Allow for this session" review grants — session-scoped, so they must
   // survive eviction+resume (the host's grant record assumes they do).
   sessionCapabilityGrants?: Array<'subagents' | 'workflows'>;
@@ -151,6 +154,14 @@ export class SessionPersistence {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.capabilityPolicies = policies;
+      this.save();
+    }
+  }
+
+  updateAutopilotState(sessionId: string, autopilotState: AutopilotState | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.autopilotState = autopilotState;
       this.save();
     }
   }

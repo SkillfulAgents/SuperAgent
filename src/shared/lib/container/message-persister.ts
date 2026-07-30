@@ -65,6 +65,8 @@ import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { engageAutopilot, autopilotApprovalDeniedMessage } from '@shared/lib/autopilot/autopilot-service'
+import { DEFAULT_MAX_ITERATIONS, normalizeAutopilotState } from '@shared/lib/autopilot/autopilot-schema'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -541,6 +543,14 @@ class MessagePersister {
   isSessionActive(sessionId: string): boolean {
     const state = this.streamingStates.get(sessionId)
     return state?.isActive ?? false
+  }
+
+  // Whether the session's last stop came from a user interrupt (the flag is
+  // reset on the next outbound message). The autopilot watchdog reads this to
+  // treat a stop-button press as user intervention rather than a stop to review.
+  wasSessionInterrupted(sessionId: string): boolean {
+    const state = this.streamingStates.get(sessionId)
+    return state?.isInterrupted ?? false
   }
 
   // Wait until a session is no longer active (i.e. a 'result' message arrived,
@@ -2832,6 +2842,16 @@ class MessagePersister {
             state.agentSlug,
           )
 
+          // Engage autopilot - blocking, host validates + flips session state
+          if (state.currentToolUse.name === 'mcp__user-input__engage_autopilot') {
+            this.handleEngageAutopilotTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           // Check if this is a schedule task tool
           if (state.currentToolUse.name === 'mcp__user-input__schedule_task') {
             this.handleScheduleTaskTool(
@@ -3105,6 +3125,73 @@ class MessagePersister {
   // Handle schedule task tool - blocking: persist to database, then resolve the
   // container tool only after the task is actually saved (fixes the false-success
   // bug where the tool reported success while persistence ran/failed in the
+  /**
+   * Engage autopilot: Zod-validate the goal contract and flip the session
+   * requested → engaged (the transition guard runs under the metadata lock in
+   * autopilot-service). A fast automated host operation — resolves or rejects
+   * immediately and never marks the session awaiting input. The rejection text
+   * is agent-facing: it tells the model why engagement was refused so it can
+   * correct course instead of retrying blindly.
+   */
+  private handleEngageAutopilotTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      if (!agentSlug) {
+        console.error('[MessagePersister] Engage autopilot missing agentSlug')
+        return
+      }
+
+      let input: unknown
+      try {
+        input = JSON.parse(toolInput)
+      } catch {
+        await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input').catch(console.error)
+        return
+      }
+
+      try {
+        const result = await engageAutopilot(agentSlug, sessionId, input)
+        if (result === 'invalid-contract') {
+          await this.rejectContainerInput(
+            agentSlug,
+            toolUseId,
+            'Invalid goal contract: goal must be a non-empty string and success_criteria a non-empty array of strings (max_iterations: optional integer 1-50).'
+          )
+          return
+        }
+        if (result === 'not-requested') {
+          await this.rejectContainerInput(
+            agentSlug,
+            toolUseId,
+            'Autopilot has not been requested on this session (or the user turned it off). Continue working interactively and do not call engage_autopilot again unless your instructions say autopilot was requested.'
+          )
+          return
+        }
+
+        // Engaged. Everything past here is best-effort delivery of the
+        // confirmation — the state is already persisted.
+        this.broadcastSessionUpdate(sessionId)
+        const contract = (await getSessionMetadata(agentSlug, sessionId))?.autopilot?.goal
+        const maxIterations = contract?.max_iterations ?? DEFAULT_MAX_ITERATIONS
+        await this.resolveContainerInput(
+          agentSlug,
+          toolUseId,
+          `Autopilot engaged. Each time you stop, your work is reviewed against the declared success criteria (up to ${maxIterations} autonomous continuations before the user is brought back in). Proceed with the task now — do not wait for user input.`
+        )
+      } catch (error) {
+        console.error('[MessagePersister] Error handling engage autopilot:', error)
+        const msg = error instanceof Error ? error.message : String(error)
+        await this.rejectContainerInput(agentSlug, toolUseId, `Failed to engage autopilot: ${msg}`).catch(
+          console.error
+        )
+      }
+    })()
+  }
+
   // background). Also appends a warning for too-frequent recurring schedules.
   private handleScheduleTaskTool(
     sessionId: string,
@@ -4479,6 +4566,13 @@ ${continuation}`
   }
 
   /** Auto-reject a pending input request on the container with a reason message. */
+  // Approval gates consult this before parking a card: an engaged autopilot
+  // session has no user to answer it.
+  private async isSessionAutopilotEngaged(sessionId: string, agentSlug: string): Promise<boolean> {
+    const autopilot = (await getSessionMetadata(agentSlug, sessionId))?.autopilot
+    return normalizeAutopilotState(autopilot?.state) === 'engaged'
+  }
+
   private autoRejectInput(agentSlug: string | undefined, toolUseId: string, reason: string): void {
     if (!agentSlug) return
     getContainerManager().then((cm) =>
@@ -4494,13 +4588,13 @@ ${continuation}`
   }
 
   // Handle script run request tool - broadcast to SSE clients or auto-reject
-  private handleScriptRunRequestTool(
+  private async handleScriptRunRequestTool(
     sessionId: string,
     toolUseId: string,
     toolInput: string,
     agentSlug?: string,
     parentToolUseId?: string
-  ): void {
+  ): Promise<void> {
     try {
       let input: RequestScriptRunInput = {}
       try {
@@ -4539,6 +4633,14 @@ ${continuation}`
           autoApproved = true
           this.autoExecuteScriptRun(agentSlug, toolUseId, input.script, input.scriptType)
         }
+      }
+
+      // Autopilot: a script-approval card would park on a user who delegated
+      // the task and left — refuse with corrective guidance instead. The
+      // cached-grant auto-execution above is unaffected.
+      if (!autoApproved && agentSlug && (await this.isSessionAutopilotEngaged(sessionId, agentSlug))) {
+        this.autoRejectInput(agentSlug, toolUseId, autopilotApprovalDeniedMessage('Running this host script'))
+        return
       }
 
       this.registerStreamRequest(
@@ -4628,6 +4730,13 @@ ${continuation}`
           this.autoExecuteComputerUseCommand(sessionId, agentSlug, toolUseId, method, params, permissionLevel, appName)
           return
         }
+      }
+
+      // Autopilot: a permission card would park on a user who delegated the
+      // task and left — refuse with corrective guidance instead.
+      if (agentSlug && (await this.isSessionAutopilotEngaged(sessionId, agentSlug))) {
+        this.autoRejectInput(agentSlug, toolUseId, autopilotApprovalDeniedMessage('This computer-use action'))
+        return
       }
 
       // Permission needed — register and broadcast to UI for user approval.

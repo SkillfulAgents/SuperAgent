@@ -330,7 +330,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
   const openStreamRequestIds = () =>
     userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'stream')
 
-  function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
+  async function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
     mockClient._sendMessage({
       type: 'stream_event',
       event: {
@@ -349,6 +349,10 @@ describe('pending user-input request lifecycle (characterization)', () => {
       type: 'stream_event',
       event: { type: 'content_block_stop' },
     })
+    // The script-run / computer-use handlers consult session autopilot
+    // metadata asynchronously before parking; settle that work so callers
+    // observe the settled state, same as the synchronous kinds.
+    await new Promise((r) => setImmediate(r))
   }
 
   function sendToolResult(toolUseId: string) {
@@ -374,7 +378,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     'main stream: $label',
     ({ toolName, input, kind, waitingFor }) => {
       it('opens: broadcasts exactly one card, stores a replay entry, marks awaiting, notifies once', async () => {
-        simulateToolUse(toolName, 'tool-open-1', input)
+        await simulateToolUse(toolName, 'tool-open-1', input)
 
         const cards = cardsFor(kind)
         expect(cards).toHaveLength(1)
@@ -393,8 +397,8 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(call.slice(0, 3)).toEqual([SESSION_ID, AGENT_SLUG, waitingFor])
       })
 
-      it('resolves: the tool_result drops the replay entry and clears awaiting', () => {
-        simulateToolUse(toolName, 'tool-resolve-1', input)
+      it('resolves: the tool_result drops the replay entry and clears awaiting', async () => {
+        await simulateToolUse(toolName, 'tool-resolve-1', input)
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
         sendToolResult('tool-resolve-1')
@@ -403,10 +407,10 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(openStreamRequestIds()).toHaveLength(0)
       })
 
-      it('parallel with a second request: awaiting survives until the LAST one resolves', () => {
-        simulateToolUse(toolName, 'tool-par-1', input)
+      it('parallel with a second request: awaiting survives until the LAST one resolves', async () => {
+        await simulateToolUse(toolName, 'tool-par-1', input)
         // A second, different-kind blocking request in the same turn.
-        simulateToolUse('mcp__user-input__request_secret', 'tool-par-2', {
+        await simulateToolUse('mcp__user-input__request_secret', 'tool-par-2', {
           secretName: 'OTHER_KEY',
           reason: 'Second wait',
         })
@@ -441,7 +445,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     const TOOL = 'mcp__computer-use__computer_click'
 
     it('opens into the computer-use store, NOT the input-request store', async () => {
-      simulateToolUse(TOOL, 'cu-open-1', { x: 1, y: 2 })
+      await simulateToolUse(TOOL, 'cu-open-1', { x: 1, y: 2 })
 
       const cards = cardsFor('computer_use')
       expect(cards).toHaveLength(1)
@@ -461,8 +465,8 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(call.slice(0, 3)).toEqual([SESSION_ID, AGENT_SLUG, 'computer_use'])
     })
 
-    it('a tool_result alone does NOT drop the parked entry — and awaiting stays on with it', () => {
-      simulateToolUse(TOOL, 'cu-clear-1', { x: 1, y: 2 })
+    it('a tool_result alone does NOT drop the parked entry — and awaiting stays on with it', async () => {
+      await simulateToolUse(TOOL, 'cu-clear-1', { x: 1, y: 2 })
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
       // The computer-use store is cleared only via the decision route's
@@ -481,14 +485,14 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
 
-    it('the route clear flips awaiting and broadcasts when it was the last blocking wait', () => {
+    it('the route clear flips awaiting and broadcasts when it was the last blocking wait', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const globalEvents: any[] = []
       const cleanup = messagePersister.addGlobalNotificationClient((data) => {
         globalEvents.push(data)
       })
       try {
-        simulateToolUse(TOOL, 'cu-clear-2', { x: 1, y: 2 })
+        await simulateToolUse(TOOL, 'cu-clear-2', { x: 1, y: 2 })
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
         // The route clear applies the shared waiting-light rule: with both
@@ -506,12 +510,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
       }
     })
 
-    it('the route clear defers while another input request is still parked', () => {
-      simulateToolUse('mcp__user-input__request_secret', 'cu-mix-secret', {
+    it('the route clear defers while another input request is still parked', async () => {
+      await simulateToolUse('mcp__user-input__request_secret', 'cu-mix-secret', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
-      simulateToolUse(TOOL, 'cu-clear-3', { x: 1, y: 2 })
+      await simulateToolUse(TOOL, 'cu-clear-3', { x: 1, y: 2 })
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
       // Clearing the computer-use entry must NOT flip awaiting: the secret
@@ -537,7 +541,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     })
 
     it('opens like a standard kind: card, replay entry, awaiting, one notification', async () => {
-      simulateToolUse('Workflow', 'wf-lifecycle-1', { script: 'export const meta = {}' })
+      await simulateToolUse('Workflow', 'wf-lifecycle-1', { script: 'export const meta = {}' })
 
       await vi.waitFor(() => {
         expect(cardsFor('capability_review')).toHaveLength(1)
@@ -555,7 +559,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     })
 
     it('completeCapabilityReview settles the entry, announces it, and clears awaiting', async () => {
-      simulateToolUse('Workflow', 'wf-lifecycle-2', { script: 'export const meta = {}' })
+      await simulateToolUse('Workflow', 'wf-lifecycle-2', { script: 'export const meta = {}' })
       await vi.waitFor(() => {
         expect(openStreamRequestIds()).toHaveLength(1)
       })
@@ -598,14 +602,14 @@ describe('pending user-input request lifecycle (characterization)', () => {
       messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
     }
 
-    it('a parked agent-scoped review keeps awaiting alive through tool_results and the cu clear', () => {
+    it('a parked agent-scoped review keeps awaiting alive through tool_results and the cu clear', async () => {
       parkAgentReview('mix-review-1')
 
-      simulateToolUse('mcp__user-input__request_secret', 'mix-secret-1', {
+      await simulateToolUse('mcp__user-input__request_secret', 'mix-secret-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
-      simulateToolUse('mcp__computer-use__computer_click', 'mix-cu-1', { x: 1, y: 2 })
+      await simulateToolUse('mcp__computer-use__computer_click', 'mix-cu-1', { x: 1, y: 2 })
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
       // The secret resolves, but the cu entry AND the review are still open.
@@ -622,7 +626,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
 
-    it('the agent-wide sync cannot clear awaiting while a review remains open', () => {
+    it('the agent-wide sync cannot clear awaiting while a review remains open', async () => {
       parkAgentReview('mix-review-2')
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
@@ -759,16 +763,20 @@ describe('pending user-input request lifecycle (characterization)', () => {
         })
       }
 
-      it('subagent stream events: card broadcast and awaiting match the matrix', () => {
+      it('subagent stream events: card broadcast and awaiting match the matrix', async () => {
         sendSidechainStreamToolUse('side-stream-1')
+        // Settle the handler's async autopilot-metadata check.
+        await new Promise((r) => setImmediate(r))
 
         const cards = cardsFor(kind)
         expect(cards).toHaveLength(surfacesToday ? 1 : 0)
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(surfacesToday)
       })
 
-      it('complete sidechain assistant message: card broadcast and awaiting match the matrix', () => {
+      it('complete sidechain assistant message: card broadcast and awaiting match the matrix', async () => {
         sendSidechainCompleteAssistantToolUse('side-complete-1')
+        // Settle the handler's async autopilot-metadata check.
+        await new Promise((r) => setImmediate(r))
 
         const cards = cardsFor(kind)
         expect(cards).toHaveLength(surfacesToday ? 1 : 0)
@@ -823,7 +831,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       })
     }
 
-    it('first delivery wins: stream stop then complete-assistant with the same toolUseId emits ONE card', () => {
+    it('first delivery wins: stream stop then complete-assistant with the same toolUseId emits ONE card', async () => {
       const input = { secretName: 'DUP_KEY', reason: 'Dedupe check' }
       sendSidechainToolUse('mcp__user-input__request_secret', 'dup-1', input, 'parent-dup', 'stream')
       sendSidechainToolUse('mcp__user-input__request_secret', 'dup-1', input, 'parent-dup', 'complete')
@@ -832,7 +840,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(openStreamRequestIds()).toHaveLength(1)
     })
 
-    it('a sidechain tool_result resolves a dispatcher-surfaced kind: entry dropped, tool_result broadcast, awaiting cleared', () => {
+    it('a sidechain tool_result resolves a dispatcher-surfaced kind: entry dropped, tool_result broadcast, awaiting cleared', async () => {
       sendSidechainToolUse(
         'mcp__user-input__request_secret',
         'side-res-1',
@@ -850,7 +858,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
 
-    it('the sidechain resolve applies the both-stores rule: a parked computer-use keeps awaiting on', () => {
+    it('the sidechain resolve applies the both-stores rule: a parked computer-use keeps awaiting on', async () => {
       sendSidechainToolUse(
         'AskUserQuestion',
         'side-q-1',
@@ -858,7 +866,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         'parent-mix',
         'complete'
       )
-      simulateToolUse('mcp__computer-use__computer_click', 'side-cu-1', { x: 1, y: 2 })
+      await simulateToolUse('mcp__computer-use__computer_click', 'side-cu-1', { x: 1, y: 2 })
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
 
       sendSidechainToolResult('side-q-1', 'parent-mix')
@@ -906,7 +914,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       }
     })
 
-    it('the sidechain resolve keeps awaiting on while a proxy/x-agent review is parked', () => {
+    it('the sidechain resolve keeps awaiting on while a proxy/x-agent review is parked', async () => {
       userInputRequestManager.register({
         id: 'side-review-1',
         kind: 'proxy_review',
@@ -946,7 +954,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     it('every standard kind registers a typed entry and settles with its tool_result', async () => {
       for (const kindCase of STANDARD_KINDS) {
         const toolId = `shadow-${kindCase.kind}`
-        simulateToolUse(kindCase.toolName, toolId, kindCase.input)
+        await simulateToolUse(kindCase.toolName, toolId, kindCase.input)
 
         await vi.waitFor(() => {
           expect(
@@ -974,8 +982,8 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(userInputRequestManager.stats.mismatches).toBe(0)
     })
 
-    it('a stray main-path tool_result cannot evict the registry\'s computer-use entry (store-scoped resolve)', () => {
-      simulateToolUse('mcp__computer-use__computer_click', 'shadow-cu-1', { x: 1, y: 2 })
+    it('a stray main-path tool_result cannot evict the registry\'s computer-use entry (store-scoped resolve)', async () => {
+      await simulateToolUse('mcp__computer-use__computer_click', 'shadow-cu-1', { x: 1, y: 2 })
       expect(userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'computer_use')).toEqual([
         'shadow-cu-1',
       ])
@@ -998,12 +1006,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(userInputRequestManager.stats.mismatches).toBe(0)
     })
 
-    it('parallel requests: the reported status tracks the projection across partial resolves', () => {
-      simulateToolUse('mcp__user-input__request_secret', 'shadow-par-1', {
+    it('parallel requests: the reported status tracks the projection across partial resolves', async () => {
+      await simulateToolUse('mcp__user-input__request_secret', 'shadow-par-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
-      simulateToolUse('AskUserQuestion', 'shadow-par-2', {
+      await simulateToolUse('AskUserQuestion', 'shadow-par-2', {
         questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
       })
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
@@ -1030,7 +1038,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         json: async () => ({ grants: [] }),
       } as unknown as Response)
 
-      simulateToolUse('Workflow', 'shadow-cap-1', { script: 'export const meta = {}' })
+      await simulateToolUse('Workflow', 'shadow-cap-1', { script: 'export const meta = {}' })
       await vi.waitFor(() => {
         expect(
           userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
@@ -1055,7 +1063,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         ok: true,
         json: async () => ({ grants: [] }),
       } as unknown as Response)
-      simulateToolUse('Workflow', 'shadow-out-1', { script: 'export const meta = {}' })
+      await simulateToolUse('Workflow', 'shadow-out-1', { script: 'export const meta = {}' })
       await vi.waitFor(() => {
         expect(
           userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
@@ -1069,7 +1077,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       })
 
       // Computer use denied, then a second one consumed by an execution failure.
-      simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-2', { x: 1, y: 2 })
+      await simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-2', { x: 1, y: 2 })
       messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-out-2', 'declined')
       expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-out-2',
@@ -1077,7 +1085,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         outcome: 'declined',
       })
 
-      simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-3', { x: 3, y: 4 })
+      await simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-3', { x: 3, y: 4 })
       messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-out-3', 'invalidated')
       expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-out-3',
@@ -1087,12 +1095,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(userInputRequestManager.stats.mismatches).toBe(0)
     })
 
-    it('unsubscribe drops every session-scoped registry entry as invalidated', () => {
-      simulateToolUse('mcp__user-input__request_secret', 'shadow-drop-1', {
+    it('unsubscribe drops every session-scoped registry entry as invalidated', async () => {
+      await simulateToolUse('mcp__user-input__request_secret', 'shadow-drop-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
-      simulateToolUse('mcp__computer-use__computer_click', 'shadow-drop-2', { x: 1, y: 2 })
+      await simulateToolUse('mcp__computer-use__computer_click', 'shadow-drop-2', { x: 1, y: 2 })
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
 
       messagePersister.unsubscribeFromSession(SESSION_ID)
@@ -1146,7 +1154,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
 
-    it('a clean success mid-turn re-derives awaiting instead of blind-clearing it', () => {
+    it('a clean success mid-turn re-derives awaiting instead of blind-clearing it', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const globalEvents: any[] = []
       const cleanup = messagePersister.addGlobalNotificationClient((data) => {
@@ -1181,7 +1189,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       }
     })
 
-    it('a runtime-started turn picks up an already-parked agent review', () => {
+    it('a runtime-started turn picks up an already-parked agent review', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const globalEvents: any[] = []
       const cleanup = messagePersister.addGlobalNotificationClient((data) => {
@@ -1213,7 +1221,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     })
 
     it('a transport re-subscribe preserves parked requests, their registry entries, and replay', async () => {
-      simulateToolUse('mcp__user-input__request_secret', 'resub-secret-1', {
+      await simulateToolUse('mcp__user-input__request_secret', 'resub-secret-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
@@ -1248,7 +1256,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(openStreamRequestIds()).toHaveLength(0)
     })
 
-    it('the markSessionIdle revert clears the awaiting cache an agent review had set', () => {
+    it('the markSessionIdle revert clears the awaiting cache an agent review had set', async () => {
       parkAgentReview('boundary-review-3')
       // markSessionActive's trailing sync picks up the open review.
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
@@ -1272,12 +1280,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
   // ==========================================================================
 
   describe('decision settle under parallel tool calls', () => {
-    it('completeInputRequest settles one of two parallel asks without waiting for its tool_result', () => {
-      simulateToolUse('mcp__user-input__request_secret', 'par-secret-1', {
+    it('completeInputRequest settles one of two parallel asks without waiting for its tool_result', async () => {
+      await simulateToolUse('mcp__user-input__request_secret', 'par-secret-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
-      simulateToolUse('AskUserQuestion', 'par-question-1', {
+      await simulateToolUse('AskUserQuestion', 'par-question-1', {
         questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
       })
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
@@ -1318,11 +1326,11 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
 
-    it('the settled outcome is stamped for the messages route until the turn boundary clears it', () => {
+    it('the settled outcome is stamped for the messages route until the turn boundary clears it', async () => {
       // The transcript still shows the declined call as unresolved while its
       // sibling holds the results back — the messages route stamps this
       // outcome so history consumers see a completed call.
-      simulateToolUse('mcp__user-input__request_secret', 'par-stamp-1', {
+      await simulateToolUse('mcp__user-input__request_secret', 'par-stamp-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
@@ -1337,8 +1345,8 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.getSettledInputRequests(SESSION_ID).size).toBe(0)
     })
 
-    it('settling the last parked ask clears awaiting, and callers without a sessionId derive it', () => {
-      simulateToolUse('mcp__user-input__request_secret', 'par-solo-1', {
+    it('settling the last parked ask clears awaiting, and callers without a sessionId derive it', async () => {
+      await simulateToolUse('mcp__user-input__request_secret', 'par-solo-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
@@ -1415,7 +1423,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       })
     })
 
-    it('a dead subagent also invalidates its parked script_run approval', () => {
+    it('a dead subagent also invalidates its parked script_run approval', async () => {
       // script_run is dispatched ADJACENT to the blocking-tool funnel (its own
       // handler call at the sidechain sites), so its parent threading is a
       // separate seam from the six funnel kinds — and unlike capability
@@ -1435,6 +1443,9 @@ describe('pending user-input request lifecycle (characterization)', () => {
           ],
         },
       })
+      // The script-run handler consults session autopilot metadata (async)
+      // before parking — settle it before asserting.
+      await new Promise((r) => setImmediate(r))
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       expect(
         userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id),
@@ -1454,7 +1465,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       ).toBe('invalidated')
     })
 
-    it("a sibling subagent's death leaves another subagent's parked request open", () => {
+    it("a sibling subagent's death leaves another subagent's parked request open", async () => {
       sendSidechainToolUse('parent-alive-1', 'side-kept-1')
       sendSidechainToolUse('parent-dying-1', 'side-dropped-1')
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
@@ -1470,8 +1481,8 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
     })
 
-    it("a main-agent request has no parent linkage and survives subagent completions", () => {
-      simulateToolUse('mcp__user-input__request_secret', 'main-secret-1', {
+    it("a main-agent request has no parent linkage and survives subagent completions", async () => {
+      await simulateToolUse('mcp__user-input__request_secret', 'main-secret-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
@@ -1518,8 +1529,8 @@ describe('pending user-input request lifecycle (characterization)', () => {
     const resolvedFor = (events: any[], id: string) =>
       events.filter((e) => e.type === 'user_request_resolved' && e.requestId === id)
 
-    it('a stream kind emits created on BOTH streams and resolved on its tool_result', () => {
-      simulateToolUse('mcp__user-input__request_secret', 'wire-secret-1', {
+    it('a stream kind emits created on BOTH streams and resolved on its tool_result', async () => {
+      await simulateToolUse('mcp__user-input__request_secret', 'wire-secret-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
@@ -1539,8 +1550,8 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(resolvedFor(sseEvents, 'wire-secret-1')).toHaveLength(1)
     })
 
-    it('a turn boundary settles parked entries onto the wire (no silent clears)', () => {
-      simulateToolUse('mcp__user-input__request_secret', 'wire-boundary-1', {
+    it('a turn boundary settles parked entries onto the wire (no silent clears)', async () => {
+      await simulateToolUse('mcp__user-input__request_secret', 'wire-boundary-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
@@ -1551,12 +1562,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(resolved[0].outcome).toBe('cancelled')
     })
 
-    it('wire events carry a top-level agentSlug — the global-stream ACL filter reads only that', () => {
+    it('wire events carry a top-level agentSlug — the global-stream ACL filter reads only that', async () => {
       // notifications.ts filters global events by the TOP-LEVEL agentSlug and
       // forwards anything without one to every authenticated user. Nesting
       // the slug inside request.scope/scope would broadcast full request
       // payloads (secret names, scripts, review details) tenant-wide.
-      simulateToolUse('mcp__user-input__request_secret', 'wire-acl-1', {
+      await simulateToolUse('mcp__user-input__request_secret', 'wire-acl-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
@@ -1570,7 +1581,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(resolved[0].agentSlug).toBe(AGENT_SLUG)
     })
 
-    it('an agent-scoped review emits on the global stream only (it has no session stream)', () => {
+    it('an agent-scoped review emits on the global stream only (it has no session stream)', async () => {
       userInputRequestManager.register({
         id: 'wire-review-1',
         kind: 'proxy_review',
@@ -1588,7 +1599,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(resolved[0].outcome).toBe('declined')
     })
 
-    it('a request without a verified agentSlug never reaches the global stream (fail closed)', () => {
+    it('a request without a verified agentSlug never reaches the global stream (fail closed)', async () => {
       // The global-stream ACL filter forwards events without a top-level
       // agentSlug to EVERY authenticated user. The scope schema types the
       // slug as optional, so the broadcast boundary must fail closed rather
@@ -1623,7 +1634,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(resolvedFor(sseEvents, 'wire-noslug-1')).toHaveLength(1)
     })
 
-    it('recovery synthetics never hit the wire — the transcript renders those cards', () => {
+    it('recovery synthetics never hit the wire — the transcript renders those cards', async () => {
       messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG, [
         { toolUseId: 'wire-recovered-1', toolName: 'AskUserQuestion' },
       ])
@@ -1632,7 +1643,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(createdFor(sseEvents, 'wire-recovered-1')).toHaveLength(0)
     })
 
-    it('the real registration upgrades a recovered synthetic and finally hits the wire', () => {
+    it('the real registration upgrades a recovered synthetic and finally hits the wire', async () => {
       // Recovery beat the stream event (the GET-messages read raced the
       // container stream). Without the upgrade, the payload-less stub blocks
       // the real registration forever: clients never receive a renderable
@@ -1643,7 +1654,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       ])
       expect(createdFor(globalEvents, 'wire-upgrade-1')).toHaveLength(0)
 
-      simulateToolUse('mcp__user-input__request_secret', 'wire-upgrade-1', {
+      await simulateToolUse('mcp__user-input__request_secret', 'wire-upgrade-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
@@ -1659,8 +1670,8 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect((entry?.payload as { secretName?: string }).secretName).toBe('API_KEY')
     })
 
-    it('the snapshot a reconnecting client fetches matches the wire it missed', () => {
-      simulateToolUse('mcp__user-input__request_secret', 'wire-snap-1', {
+    it('the snapshot a reconnecting client fetches matches the wire it missed', async () => {
+      await simulateToolUse('mcp__user-input__request_secret', 'wire-snap-1', {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
@@ -1690,7 +1701,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
   // ==========================================================================
 
   describe('notification dispatch (registry-transition-driven)', () => {
-    it('duplicate deliveries of the same request notify exactly ONCE', () => {
+    it('duplicate deliveries of the same request notify exactly ONCE', async () => {
       // The subagent stream and the complete-assistant message can both carry
       // the same tool_use. The registry dedupes the ENTRY (first delivery
       // wins), and the notification must ride that dedupe — per-handler
@@ -1725,6 +1736,9 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
       send('stream')
       send('complete')
+      // The script-run handler consults session autopilot metadata (async)
+      // before registering — settle both deliveries before asserting.
+      await new Promise((r) => setImmediate(r))
 
       const triggerSpy = vi.mocked(notificationManager.triggerSessionWaitingInput)
       const forThisRequest = triggerSpy.mock.calls.filter(
@@ -1734,7 +1748,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(forThisRequest[0]).toEqual([SESSION_ID, AGENT_SLUG, 'script_run'])
     })
 
-    it('a review registered directly with the registry notifies like any other review', () => {
+    it('a review registered directly with the registry notifies like any other review', async () => {
       // Since the registry became the pending-review store, registry-only
       // entries are decidable and sweepable — they must be noticeable too.
       userInputRequestManager.register({
@@ -1757,7 +1771,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       )
     })
 
-    it('a recovered synthetic does not notify; its real upgrade notifies once', () => {
+    it('a recovered synthetic does not notify; its real upgrade notifies once', async () => {
       userInputRequestManager.register({
         id: 'notif-rec-1',
         kind: 'secret',
@@ -1770,7 +1784,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       const triggerSpy = vi.mocked(notificationManager.triggerSessionWaitingInput)
       expect(triggerSpy).not.toHaveBeenCalled()
 
-      simulateToolUse('mcp__user-input__request_secret', 'notif-rec-1', {
+      await simulateToolUse('mcp__user-input__request_secret', 'notif-rec-1', {
         secretName: 'API_KEY',
         reason: 'Recovered then streamed',
       })

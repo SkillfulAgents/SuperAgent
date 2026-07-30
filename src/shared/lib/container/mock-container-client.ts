@@ -1841,6 +1841,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     effort?: string
     speed?: string
     model?: string
+    autopilot?: boolean
   } | null = null
   static sendMessageCalls: Array<{
     sessionId: string
@@ -1848,6 +1849,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     effort?: string
     speed?: string
     model?: string
+    autopilot?: boolean
   }> = []
   static lastCreateSessionCall: {
     effort?: string
@@ -2509,6 +2511,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       effort: options?.effort,
       speed: options?.speed,
       model,
+      autopilot: options?.autopilot,
     }
     MockContainerClient.sendMessageCalls.push({
       sessionId,
@@ -2516,6 +2519,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       effort: options?.effort,
       speed: options?.speed,
       model,
+      autopilot: options?.autopilot,
     })
     this.writeMockRecord({
       type: 'sendMessage',
@@ -2525,6 +2529,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       effort: options?.effort,
       speed: options?.speed,
       model,
+      autopilot: options?.autopilot,
       timestamp: new Date().toISOString(),
     })
     const session = this.sessions.get(sessionId)

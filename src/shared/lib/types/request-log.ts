@@ -13,6 +13,8 @@ export interface RequestLogEntry {
   durationMs: number | null
   policyDecision: string | null
   matchedScopes: string | null
+  /** Reviewer-supplied reason for autopilot approvals/denials. */
+  decisionReason: string | null
   /** Date on the server; ISO string after JSON transport. */
   createdAt: Date | string
 }
@@ -34,6 +36,7 @@ export const requestLogEntrySchema = z.object({
   durationMs: z.number().nullable(),
   policyDecision: z.string().nullable(),
   matchedScopes: z.string().nullable(),
+  decisionReason: z.string().nullable(),
   createdAt: z.string(),
 }) satisfies z.ZodType<RequestLogEntry>
 
@@ -55,6 +58,7 @@ export function normalizeProxyRequestLog(entry: ProxyAuditLogEntry): RequestLogE
     durationMs: entry.durationMs ?? null,
     policyDecision: entry.policyDecision ?? null,
     matchedScopes: entry.matchedScopes ?? null,
+    decisionReason: entry.decisionReason ?? null,
     createdAt: entry.createdAt,
   }
 }
@@ -72,6 +76,7 @@ export function normalizeMcpRequestLog(entry: McpAuditLogEntry): RequestLogEntry
     durationMs: entry.durationMs ?? null,
     policyDecision: entry.policyDecision ?? null,
     matchedScopes: entry.matchedTool ? JSON.stringify([entry.matchedTool]) : null,
+    decisionReason: entry.decisionReason ?? null,
     createdAt: entry.createdAt,
   }
 }

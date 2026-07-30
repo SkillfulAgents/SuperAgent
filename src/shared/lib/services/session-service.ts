@@ -38,6 +38,7 @@ import {
   ContentBlock,
 } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
+import type { AutopilotMetadata } from '@shared/lib/autopilot/autopilot-schema'
 
 // ============================================================================
 // Session Metadata (custom names, starred status)
@@ -125,6 +126,31 @@ export async function updateSessionMetadata(
       ...updates,
     }
   })
+}
+
+/**
+ * Serialized read-modify-write of one session's autopilot block. Same locked,
+ * TOCTOU-free discipline as finalizeAutomationStatus: the mutator sees the
+ * fresh block (and the surrounding metadata for guards) and returns the new
+ * block to write, or `false` for "no change". Returns whether a write happened.
+ */
+export async function mutateSessionAutopilot(
+  agentSlug: string,
+  sessionId: string,
+  mutator: (
+    autopilot: AutopilotMetadata | undefined,
+    meta: SessionMetadata | undefined
+  ) => AutopilotMetadata | false
+): Promise<boolean> {
+  let changed = false
+  await mutateSessionMetadata(agentSlug, (metadata) => {
+    const meta = metadata[sessionId]
+    const next = mutator(meta?.autopilot, meta)
+    if (next === false) return false
+    metadata[sessionId] = { ...meta, autopilot: next }
+    changed = true
+  })
+  return changed
 }
 
 export type AutomationStatusResult = 'updated' | 'not-automation' | 'already-final'
@@ -599,7 +625,12 @@ function isMessageOrSystemDisplayEntry(
   if (entry.type === 'user' || entry.type === 'assistant') return true
   if (entry.type === 'system') {
     const subtype = (entry as JsonlSystemEntry).subtype
-    return subtype === 'compact_boundary' || subtype === 'memory_recall' || subtype === 'informational'
+    return (
+      subtype === 'compact_boundary' ||
+      subtype === 'memory_recall' ||
+      subtype === 'informational' ||
+      subtype === 'autopilot_review'
+    )
   }
   return false
 }

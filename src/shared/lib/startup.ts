@@ -28,6 +28,7 @@ import { shutdownAC } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
 import { initErrorReporting, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
+import { autopilotWatchdog } from './autopilot/autopilot-watchdog'
 
 /**
  * Initialize all background services.
@@ -117,6 +118,9 @@ export async function initializeServices() {
     console.error('Failed to start task scheduler:', error)
   })
 
+  // Arm the autopilot watchdog (reviews engaged sessions on every stop)
+  autopilotWatchdog.start()
+
   // Start trigger manager whenever platform auth exists: webhook events
   // (Composio-brokered AND custom endpoints) are claimed from the platform
   // with the platform token, so a personal Composio key must not disable
@@ -184,6 +188,7 @@ export function setupServerHandlers(server: ServerType): void {
  */
 export async function shutdownServices() {
   reviewManager.rejectAll()
+  autopilotWatchdog.stop()
   chatIntegrationManager.stop()
   await stopAllProviders()
   taskScheduler.stop()

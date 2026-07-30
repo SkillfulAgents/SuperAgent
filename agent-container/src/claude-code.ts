@@ -45,7 +45,7 @@ import { inputManager } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
 import { withAgentAttributionHeaders, withSpeedHeader } from './attribution-headers';
 import { renderPrompt } from './render-prompt';
-import type { AgentCapabilityPolicies } from './types';
+import type { AgentCapabilityPolicies, AutopilotState } from './types';
 import {
   applyCapabilityPolicies,
   blockBoundaryChanged,
@@ -54,6 +54,13 @@ import {
   type Capability,
 } from './capability-policies';
 import { createCapabilityGateHook, CAPABILITY_REVIEW_HOOK_TIMEOUT_S } from './capability-gate-hook';
+import {
+  AUTOPILOT_GATED_INPUT_TOOLS_MATCHER,
+  autopilotInputDeniedMessage,
+  autopilotPreflightReminder,
+  createAutopilotInputGateHook,
+  isAutopilotGatedInputTool,
+} from './autopilot-input-gate';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
@@ -264,6 +271,8 @@ export interface SystemPromptVars {
   hasEnvVars: boolean;
   envVars: string[];
   userInstructions: string;
+  autopilotRequested: boolean;
+  autopilotEngaged: boolean;
 }
 
 /**
@@ -279,6 +288,7 @@ export function buildSystemPromptVars(
   webSearchProvider?: string,
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
+  autopilotState?: AutopilotState,
 ): SystemPromptVars {
   const composioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true';
   const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
@@ -307,6 +317,8 @@ export function buildSystemPromptVars(
     hasEnvVars: envVars.length > 0,
     envVars,
     userInstructions,
+    autopilotRequested: autopilotState === 'requested',
+    autopilotEngaged: autopilotState === 'engaged',
   };
 }
 
@@ -322,8 +334,9 @@ export function generateSystemPrompt(
   webSearchProvider?: string,
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
+  autopilotState?: AutopilotState,
 ): string {
-  const vars = buildSystemPromptVars(availableEnvVars, userSystemPrompt, modelPromptHints, webSearchProvider, webFetchProvider, capabilityPolicies);
+  const vars = buildSystemPromptVars(availableEnvVars, userSystemPrompt, modelPromptHints, webSearchProvider, webFetchProvider, capabilityPolicies, autopilotState);
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
 
@@ -414,6 +427,7 @@ export interface ClaudeCodeProcessOptions {
   speed?: SpeedLevel;
   capabilityPolicies?: AgentCapabilityPolicies;
   sessionCapabilityGrants?: Capability[];
+  autopilotState?: AutopilotState;
 }
 
 export class ClaudeCodeProcess extends EventEmitter {
@@ -437,6 +451,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private effort: EffortLevel | undefined;
   private speed: SpeedLevel | undefined;
   private capabilityPolicies: AgentCapabilityPolicies | undefined;
+  private autopilotState: AutopilotState | undefined;
   // Connection metadata is mutable at runtime when Agent Settings changes.
   // The SDK snapshots MCP servers, allowed tool patterns, and the system prompt
   // when query() is created, so the next user message must refresh a stale
@@ -515,6 +530,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.effort = options.effort;
     this.speed = options.speed;
     this.capabilityPolicies = options.capabilityPolicies;
+    this.autopilotState = options.autopilotState;
     this.sessionCapabilityGrants = new Set(options.sessionCapabilityGrants ?? []);
     this.availableEnvVars = options.availableEnvVars;
     this.userSystemPrompt = options.userSystemPrompt;
@@ -525,8 +541,25 @@ export class ClaudeCodeProcess extends EventEmitter {
       options.modelPromptHints,
       options.webSearchProvider,
       options.webFetchProvider,
-      options.capabilityPolicies
+      options.capabilityPolicies,
+      options.autopilotState
     );
+  }
+
+  /**
+   * Called by the engage_autopilot tool once the HOST confirms the engagement,
+   * so the input gate covers the REMAINDER of the engagement turn — the state
+   * otherwise only refreshes with the next message send. The engaged prompt
+   * fragment still lands at that next send (prompt is baked per query); the
+   * gate and canUseTool read live state. The event lets the session-manager
+   * persist the state so an eviction+resume before the next message doesn't
+   * revert to the preflight posture.
+   */
+  noteAutopilotEngaged(): void {
+    if (this.autopilotState === 'engaged') return;
+    console.log(`[Session ${this.sessionId}] Autopilot engaged (host-confirmed)`);
+    this.autopilotState = 'engaged';
+    this.emit('autopilot-state', { autopilotState: 'engaged' as const });
   }
 
   /**
@@ -843,6 +876,15 @@ export class ClaudeCodeProcess extends EventEmitter {
       },
       // Handle AskUserQuestion via canUseTool callback (per SDK docs)
       canUseTool: async (toolName: string, toolInput: Record<string, unknown>, options: { toolUseID: string; signal: AbortSignal }) => {
+        // Autopilot: ask-the-user tools are denied while engaged. This seam
+        // covers what the PreToolUse gate may not see — subagent tool calls,
+        // and AskUserQuestion (whose parking lives right below) — so the
+        // check must run before the parking logic.
+        if (this.autopilotState === 'engaged' && isAutopilotGatedInputTool(toolName)) {
+          console.log(`[canUseTool] Denying ${toolName} (autopilot engaged)`);
+          return { behavior: 'deny' as const, message: autopilotInputDeniedMessage(toolName) };
+        }
+
         if (toolName === 'AskUserQuestion') {
           console.log('[canUseTool] AskUserQuestion called, toolUseID:', options.toolUseID);
 
@@ -904,6 +946,15 @@ export class ClaudeCodeProcess extends EventEmitter {
       hooks: {
         PreToolUse: [
           {
+            // Autopilot: blocking ask-the-user tools are denied while
+            // engaged — a hook, not canUseTool, because bypassPermissions
+            // shadows canUseTool for regular tools (same reason as the
+            // capability gate below). Reads live state so an engagement
+            // mid-query is honored without a restart.
+            matcher: AUTOPILOT_GATED_INPUT_TOOLS_MATCHER,
+            hooks: [createAutopilotInputGateHook(() => this.autopilotState)],
+          },
+          {
             matcher: 'mcp__user-input__.*',
             hooks: [
               async (_input, toolUseId) => {
@@ -951,6 +1002,7 @@ export class ClaudeCodeProcess extends EventEmitter {
                 sessionId: this.sessionId,
                 getPolicies: () => this.capabilityPolicies,
                 getSessionGrants: () => this.sessionCapabilityGrants,
+                getAutopilotState: () => this.autopilotState,
                 onSessionGrant: (capability) => {
                   this.sessionCapabilityGrants.add(capability);
                   // Session-manager persists it so the grant survives eviction+resume.
@@ -1223,7 +1275,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies; autopilotState?: AutopilotState }): Promise<void> {
     const effort = options?.effort;
     const speed = options?.speed;
     const model = options?.model;
@@ -1239,7 +1291,8 @@ export class ClaudeCodeProcess extends EventEmitter {
         this.modelPromptHints,
         this.webSearchProvider,
         this.webFetchProvider,
-        this.capabilityPolicies
+        this.capabilityPolicies,
+        this.autopilotState
       );
     }
 
@@ -1273,10 +1326,32 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.modelPromptHints,
           this.webSearchProvider,
           this.webFetchProvider,
-          nextPolicies
+          nextPolicies,
+          this.autopilotState
         );
       }
       this.reconcilePendingCapabilityReviews();
+    }
+
+    // Autopilot state is host-authoritative and rides every message, like
+    // capability policies. The mode-dependent prompt fragment is baked at query
+    // creation, so any state change regenerates the prompt and re-queries.
+    // Undefined stored state IS 'off' (pre-autopilot sessions must not restart
+    // on their first post-upgrade message).
+    const nextAutopilotState = options?.autopilotState;
+    const autopilotChanged =
+      nextAutopilotState !== undefined && nextAutopilotState !== (this.autopilotState ?? 'off');
+    if (autopilotChanged) {
+      this.autopilotState = nextAutopilotState;
+      this.systemPrompt = generateSystemPrompt(
+        this.availableEnvVars,
+        this.userSystemPrompt,
+        this.modelPromptHints,
+        this.webSearchProvider,
+        this.webFetchProvider,
+        this.capabilityPolicies,
+        nextAutopilotState
+      );
     }
 
     if (effortChanged) {
@@ -1298,7 +1373,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         await this.currentStop.catch(() => undefined);
       }
       await this.restart();
-    } else if (effortChanged || speedChanged || capabilityBlockChanged || runtimeConnectionConfigChanged) {
+    } else if (effortChanged || speedChanged || capabilityBlockChanged || runtimeConnectionConfigChanged || autopilotChanged) {
       // Effort can only be set at query creation time — the SDK has no setEffort
       // facility — so any effort change forces an interrupt + re-query. Speed
       // lives in the query env (ANTHROPIC_CUSTOM_HEADERS), which is likewise
@@ -1310,6 +1385,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
       if (runtimeConnectionConfigChanged) reasons.push('runtime connection configuration changed');
+      if (autopilotChanged) reasons.push(`autopilot -> ${nextAutopilotState}`);
       if (modelChanged) reasons.push(`model -> ${this.model}`);
       console.log(`[Session ${this.sessionId}] Restarting query (${reasons.join(', ')})`);
       await this.interrupt();
@@ -1338,17 +1414,24 @@ export class ClaudeCodeProcess extends EventEmitter {
 
     // Create SDK user message format
     const shouldQuery = options?.shouldQuery;
+    const contentBlocks: Array<{ type: 'text'; text: string }> = [{ type: 'text', text: content }];
+    // While autopilot is requested, the preflight instruction must ride next to
+    // the task itself — the system-prompt fragment alone is reliably ignored.
+    // Real user messages only: [SYSTEM] injections and no-response appends
+    // don't start a turn the agent could preflight in.
+    if (
+      this.autopilotState === 'requested' &&
+      shouldQuery !== false &&
+      !content.startsWith(SYSTEM_MESSAGE_PREFIX)
+    ) {
+      contentBlocks.push({ type: 'text', text: autopilotPreflightReminder() });
+    }
     const message: SDKUserMessage = {
       type: 'user',
       session_id: this.claudeSessionId || this.sessionId,
       message: {
         role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: content,
-          },
-        ],
+        content: contentBlocks,
       },
       parent_tool_use_id: null,
       ...(uuid ? { uuid } : {}),

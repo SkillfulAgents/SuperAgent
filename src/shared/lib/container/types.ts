@@ -1,4 +1,5 @@
 import type { RuntimeOptions } from './runtime-options'
+import type { AutopilotState } from '@shared/lib/autopilot/autopilot-schema'
 
 export type ContainerStatus = 'stopped' | 'running'
 
@@ -79,6 +80,7 @@ export interface CreateSessionOptions {
     effort?: EffortLevel
     speed?: SpeedLevel
   }
+  autopilotState?: AutopilotState // Initial autopilot state (session metadata does not exist yet at creation)
 }
 
 export interface StartOptions {

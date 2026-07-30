@@ -6,6 +6,7 @@
  */
 
 import { ContentBlock, JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+import { autopilotReviewEntrySchema } from '@shared/lib/autopilot/autopilot-schema'
 
 export interface TransformedMessage {
   id: string
@@ -73,7 +74,23 @@ export interface TransformedInformational {
   createdAt: Date
 }
 
-export type TransformedItem = TransformedMessage | TransformedCompactBoundary | TransformedMemoryRecall | TransformedInformational
+/**
+ * Host-persisted autopilot watchdog decision. Written by the watchdog after it
+ * reviews a stop; the payload lives JSON-stringified in the entry's `content`
+ * and is parsed (leniently — malformed entries are dropped, not thrown) here.
+ */
+export interface TransformedAutopilotReview {
+  id: string
+  type: 'autopilot_review'
+  verdict: 'done' | 'continue' | 'blocked' | 'escalated'
+  reasoning: string
+  nudge?: string
+  iteration?: number
+  maxIterations?: number
+  createdAt: Date
+}
+
+export type TransformedItem = TransformedMessage | TransformedCompactBoundary | TransformedMemoryRecall | TransformedInformational | TransformedAutopilotReview
 
 /**
  * Parse a user message that may contain SDK-injected slash command XML tags.
@@ -115,6 +132,17 @@ export function parseCommandMessage(text: string): ParsedCommand | null {
     name: nameMatch[1],
     args: argsMatch?.[1]?.trim() || undefined,
   }
+}
+
+/**
+ * Remove harness-injected <system-reminder> segments from user-message text.
+ * Queued mid-turn messages get flattened to a single string by the CLI's
+ * queued_command recording, so the block-level skip in the transform loop
+ * can't catch riders there — this regex pass can.
+ */
+function stripUserSystemReminders(text: string): string {
+  if (!text.includes('<system-reminder>')) return text
+  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trimEnd()
 }
 
 /**
@@ -166,6 +194,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   const compactBoundaries = new Map<number, { boundary: JsonlSystemEntry; summaryContent: string }>()
   const memoryRecalls = new Map<number, JsonlSystemEntry>()
   const informationals = new Map<number, JsonlSystemEntry>()
+  const autopilotReviews = new Map<number, JsonlSystemEntry>()
   const skipIndices = new Set<number>()
 
   for (let i = 0; i < entries.length; i++) {
@@ -202,6 +231,14 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
         (prev as JsonlMessageEntry).message.content === sysEntry.content
       ) {
         skipIndices.add(i - 1)
+      }
+    } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'autopilot_review') {
+      const sysEntry = entry as JsonlSystemEntry
+      skipIndices.add(i)
+      // Dedupe by uuid: resume history replay re-appends system entries verbatim
+      const isDuplicate = [...autopilotReviews.values()].some((e) => e.uuid === sysEntry.uuid)
+      if (!isDuplicate) {
+        autopilotReviews.set(i, sysEntry)
       }
     } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'compact_boundary') {
       const sysEntry = entry as JsonlSystemEntry
@@ -381,6 +418,8 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   const trailingBoundaries: TransformedCompactBoundary[] = []
   const trailingRecalls: TransformedMemoryRecall[] = []
   const trailingInformationals: TransformedInformational[] = []
+  const autopilotReviewBeforeUuid = new Map<string, TransformedAutopilotReview[]>()
+  const trailingAutopilotReviews: TransformedAutopilotReview[] = []
 
   for (const [idx, { boundary, summaryContent }] of compactBoundaries) {
     const item: TransformedCompactBoundary = {
@@ -465,6 +504,47 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     }
   }
 
+  for (const [idx, sysEntry] of autopilotReviews) {
+    // Content is a JSON payload written by the watchdog; a malformed entry is
+    // dropped rather than 500-ing the messages route.
+    let parsed: ReturnType<typeof autopilotReviewEntrySchema.safeParse>
+    try {
+      parsed = autopilotReviewEntrySchema.safeParse(JSON.parse(sysEntry.content || ''))
+    } catch {
+      continue
+    }
+    if (!parsed.success) continue
+
+    const item: TransformedAutopilotReview = {
+      id: sysEntry.uuid,
+      type: 'autopilot_review',
+      verdict: parsed.data.verdict,
+      reasoning: parsed.data.reasoning,
+      nudge: parsed.data.nudge,
+      iteration: parsed.data.iteration,
+      maxIterations: parsed.data.maxIterations,
+      createdAt: new Date(sysEntry.timestamp),
+    }
+
+    let nextUuid: string | null = null
+    for (let j = idx + 1; j < entries.length; j++) {
+      if (skipIndices.has(j)) continue
+      const nextEntry = entries[j]
+      if (nextEntry.type === 'user' || nextEntry.type === 'assistant') {
+        nextUuid = (nextEntry as JsonlMessageEntry).uuid
+        break
+      }
+    }
+
+    if (nextUuid) {
+      const existing = autopilotReviewBeforeUuid.get(nextUuid) || []
+      existing.push(item)
+      autopilotReviewBeforeUuid.set(nextUuid, existing)
+    } else {
+      trailingAutopilotReviews.push(item)
+    }
+  }
+
   // Transform merged message entries, inserting boundaries at correct positions
   const result: TransformedItem[] = []
 
@@ -487,6 +567,12 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       result.push(...infos)
     }
 
+    // Insert any autopilot watchdog decisions that precede this message
+    const reviews = autopilotReviewBeforeUuid.get(entry.uuid)
+    if (reviews) {
+      result.push(...reviews)
+    }
+
     // Skip user messages that only contain tool results
     if (isToolResultOnlyMessage(entry)) continue
 
@@ -501,10 +587,16 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     const thinking = thinkingByEntry.get(entry)
 
     if (typeof content === 'string') {
-      text = content
+      text = entry.type === 'user' ? stripUserSystemReminders(content) : content
     } else if (Array.isArray(content)) {
       for (const block of content as ContentBlock[]) {
         if (block.type === 'text') {
+          // Harness-injected riders on user messages (e.g. the autopilot
+          // preflight reminder block) are model-facing only — the displayed
+          // message must stay exactly what the user typed.
+          if (entry.type === 'user' && block.text.trimStart().startsWith('<system-reminder>')) {
+            continue
+          }
           text += block.text
         } else if (block.type === 'tool_use') {
           const toolResult = toolResults.get(block.id)
@@ -565,6 +657,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   result.push(...trailingRecalls)
   result.push(...trailingBoundaries)
   result.push(...trailingInformationals)
+  result.push(...trailingAutopilotReviews)
 
   return result
 }

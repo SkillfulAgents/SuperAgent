@@ -5,6 +5,9 @@ import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
+import { isAgentAutopilotEngaged } from '@shared/lib/autopilot/autopilot-status'
+import { reviewAutopilotApproval } from '@shared/lib/autopilot/autopilot-approval-reviewer'
+import { autopilotApprovalDeniedMessage } from '@shared/lib/autopilot/autopilot-service'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -27,6 +30,7 @@ interface ProxyAuditEntry {
   errorMessage?: string
   policyDecision?: string
   matchedScopes?: string
+  decisionReason?: string
 }
 
 async function writeProxyAuditEntry(entry: ProxyAuditEntry & { durationMs?: number }): Promise<void> {
@@ -215,19 +219,29 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   // Track the precise outcome for audit logging
   let resolvedPolicyDecision: string = policyResult.decision // 'allow' or 'review'
 
+  // Reason recorded alongside autopilot reviewer decisions; rides the final
+  // audit entry for approvals.
+  let autopilotDecisionReason: string | undefined
+
   if (policyResult.decision === 'review') {
-    try {
-      const decision = await reviewManager.requestReview({
+    // Autopilot: a review card would park on a user who delegated the task and
+    // left. Instead, an automated reviewer decides on the user's behalf — it
+    // sees ONLY the user's own messages plus this request (never the agent
+    // trajectory, so injected instructions can't reach it). Block policy never
+    // gets here; a deny keeps the pre-reviewer corrective guidance.
+    if (await isAgentAutopilotEngaged(agentSlug)) {
+      const scopeDetails = Object.entries(policyResult.scopeDescriptions ?? {})
+        .map(([scope, description]) => `${scope}: ${description}`)
+        .join('\n')
+      const review = await reviewAutopilotApproval({
         agentSlug,
-        accountId,
-        toolkit: account.toolkitSlug,
-        method,
-        targetPath,
-        matchedScopes: policyResult.matchedScopes,
-        scopeDescriptions: policyResult.scopeDescriptions,
-        endpointDescription: policyResult.endpointDescription,
-      }, c.req.raw.signal)
-      if (decision === 'deny') {
+        action: `API request: ${method} https://${targetHost}/${targetPath}`,
+        details: [
+          policyResult.endpointDescription,
+          scopeDetails,
+        ].filter(Boolean).join('\n') || undefined,
+      })
+      if (review.decision === 'deny') {
         await logAuditEntry({
           agentSlug,
           accountId,
@@ -235,28 +249,66 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
           targetHost,
           targetPath,
           method,
-          policyDecision: 'denied_by_user',
+          policyDecision: 'denied_autopilot',
+          matchedScopes: JSON.stringify(policyResult.matchedScopes),
+          decisionReason: review.reason,
+        })
+        return c.json(
+          {
+            error: 'requires_user_approval',
+            message: `${autopilotApprovalDeniedMessage('This API request')} Reviewer: ${review.reason}`,
+            scopes: policyResult.matchedScopes,
+            toolkit: account.toolkitSlug,
+          },
+          403
+        )
+      }
+      resolvedPolicyDecision = 'approved_autopilot'
+      autopilotDecisionReason = review.reason
+    } else {
+      try {
+        const decision = await reviewManager.requestReview({
+          agentSlug,
+          accountId,
+          toolkit: account.toolkitSlug,
+          method,
+          targetPath,
+          matchedScopes: policyResult.matchedScopes,
+          scopeDescriptions: policyResult.scopeDescriptions,
+          endpointDescription: policyResult.endpointDescription,
+        }, c.req.raw.signal)
+        if (decision === 'deny') {
+          await logAuditEntry({
+            agentSlug,
+            accountId,
+            toolkit: account.toolkitSlug,
+            targetHost,
+            targetPath,
+            method,
+            policyDecision: 'denied_by_user',
+            matchedScopes: JSON.stringify(policyResult.matchedScopes),
+          })
+          return c.json({ error: 'denied_by_user', message: 'Request denied by user.' }, 403)
+        }
+        resolvedPolicyDecision = 'approved_by_user'
+      } catch {
+        await logAuditEntry({
+          agentSlug,
+          accountId,
+          toolkit: account.toolkitSlug,
+          targetHost,
+          targetPath,
+          method,
+          policyDecision: 'review_timeout',
           matchedScopes: JSON.stringify(policyResult.matchedScopes),
         })
-        return c.json({ error: 'denied_by_user', message: 'Request denied by user.' }, 403)
+        return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.' }, 408)
       }
-      resolvedPolicyDecision = 'approved_by_user'
-    } catch {
-      await logAuditEntry({
-        agentSlug,
-        accountId,
-        toolkit: account.toolkitSlug,
-        targetHost,
-        targetPath,
-        method,
-        policyDecision: 'review_timeout',
-        matchedScopes: JSON.stringify(policyResult.matchedScopes),
-      })
-      return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.' }, 408)
     }
   }
 
-  // resolvedPolicyDecision is now 'allow' (auto) or 'approved_by_user' (manual)
+  // resolvedPolicyDecision is now 'allow' (auto), 'approved_by_user' (manual),
+  // or 'approved_autopilot' (reviewed on the user's behalf while engaged)
 
   // Audit helper: curried with all the context fields shared by every
   // post-policy audit entry. Caller supplies only what varies (statusCode,
@@ -274,6 +326,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       method,
       policyDecision: resolvedPolicyDecision,
       matchedScopes: JSON.stringify(policyResult.matchedScopes),
+      decisionReason: autopilotDecisionReason,
       ...extras,
     })
 

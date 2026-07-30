@@ -3,6 +3,9 @@ import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { resolveMcpPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
+import { isAgentAutopilotEngaged } from '@shared/lib/autopilot/autopilot-status'
+import { reviewAutopilotApproval } from '@shared/lib/autopilot/autopilot-approval-reviewer'
+import { autopilotApprovalDeniedMessage } from '@shared/lib/autopilot/autopilot-service'
 import { db } from '@shared/lib/db'
 import {
   remoteMcpServers,
@@ -23,6 +26,7 @@ async function logMcpAuditEntry(entry: {
   durationMs?: number
   policyDecision?: string
   matchedTool?: string
+  decisionReason?: string
 }): Promise<void> {
   try {
     await db.insert(mcpAuditLog).values({
@@ -33,6 +37,7 @@ async function logMcpAuditEntry(entry: {
       durationMs: entry.durationMs ?? null,
       policyDecision: entry.policyDecision ?? null,
       matchedTool: entry.matchedTool ?? null,
+      decisionReason: entry.decisionReason ?? null,
       createdAt: new Date(),
     })
   } catch (error) {
@@ -158,19 +163,25 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   let bodyBuffer: ArrayBuffer | undefined
   let mcpMethodInfo = rest || '/'
   let toolName: string | null = null
+  let toolArgsPreview: string | undefined
   if (method !== 'GET' && method !== 'HEAD') {
     bodyBuffer = await c.req.arrayBuffer()
     try {
       const text = new TextDecoder().decode(bodyBuffer)
       const jsonRpc = JSON.parse(text) as {
         method?: string
-        params?: { name?: string }
+        params?: { name?: string; arguments?: unknown }
       }
       if (jsonRpc.method) {
         mcpMethodInfo = jsonRpc.method
         if (jsonRpc.method === 'tools/call' && jsonRpc.params?.name) {
           toolName = jsonRpc.params.name
           mcpMethodInfo = `tools/call: ${toolName}`
+          if (jsonRpc.params.arguments !== undefined) {
+            // For the autopilot approval reviewer: the args ARE the action
+            // being judged. Capped — a huge payload adds nothing to scoping.
+            toolArgsPreview = JSON.stringify(jsonRpc.params.arguments).slice(0, 1500)
+          }
         }
       }
     } catch {
@@ -202,6 +213,9 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
 
   const userId = mcp.userId ?? 'local'
   let resolvedPolicyDecision: string = 'allow'
+  // Reason recorded alongside autopilot reviewer decisions; rides the final
+  // audit entry for approvals.
+  let autopilotDecisionReason: string | undefined
 
   if (!isProtocolMethod) {
     let policyResult
@@ -233,40 +247,74 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     resolvedPolicyDecision = policyResult.decision
 
     if (policyResult.decision === 'review') {
-      try {
-        const decision = await reviewManager.requestReview({
+      // Autopilot: instead of parking a review card the user is not there to
+      // answer, an automated reviewer decides on their behalf — it sees ONLY
+      // the user's own messages plus this request (never the agent
+      // trajectory). See the API proxy's mirror branch.
+      if (await isAgentAutopilotEngaged(agentSlug)) {
+        const review = await reviewAutopilotApproval({
           agentSlug,
-          accountId: mcpId,
-          toolkit: mcp.name,
-          method,
-          targetPath: mcpMethodInfo,
-          matchedScopes: policyResult.matchedScopes,
-          scopeDescriptions: policyResult.scopeDescriptions,
-        }, c.req.raw.signal)
-        if (decision === 'deny') {
+          action: `MCP tool call: ${toolName ?? mcpMethodInfo} on server "${mcp.name}"`,
+          details: toolArgsPreview ? `Arguments: ${toolArgsPreview}` : undefined,
+        })
+        if (review.decision === 'deny') {
           await logMcpAuditEntry({
             agentSlug,
             remoteMcpId: mcp.id,
             remoteMcpName: mcp.name,
             method,
             requestPath: mcpMethodInfo,
-            policyDecision: 'denied_by_user',
+            policyDecision: 'denied_autopilot',
+            matchedTool: toolName ?? undefined,
+            decisionReason: review.reason,
+          })
+          return c.json(
+            {
+              error: 'requires_user_approval',
+              message: `${autopilotApprovalDeniedMessage('This MCP tool call')} Reviewer: ${review.reason}`,
+              tool: toolName,
+            },
+            403
+          )
+        }
+        resolvedPolicyDecision = 'approved_autopilot'
+        autopilotDecisionReason = review.reason
+      } else {
+        try {
+          const decision = await reviewManager.requestReview({
+            agentSlug,
+            accountId: mcpId,
+            toolkit: mcp.name,
+            method,
+            targetPath: mcpMethodInfo,
+            matchedScopes: policyResult.matchedScopes,
+            scopeDescriptions: policyResult.scopeDescriptions,
+          }, c.req.raw.signal)
+          if (decision === 'deny') {
+            await logMcpAuditEntry({
+              agentSlug,
+              remoteMcpId: mcp.id,
+              remoteMcpName: mcp.name,
+              method,
+              requestPath: mcpMethodInfo,
+              policyDecision: 'denied_by_user',
+              matchedTool: toolName ?? undefined,
+            })
+            return c.json({ error: 'denied_by_user', message: 'Request denied by user.' }, 403)
+          }
+          resolvedPolicyDecision = 'approved_by_user'
+        } catch {
+          await logMcpAuditEntry({
+            agentSlug,
+            remoteMcpId: mcp.id,
+            remoteMcpName: mcp.name,
+            method,
+            requestPath: mcpMethodInfo,
+            policyDecision: 'review_timeout',
             matchedTool: toolName ?? undefined,
           })
-          return c.json({ error: 'denied_by_user', message: 'Request denied by user.' }, 403)
+          return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.' }, 408)
         }
-        resolvedPolicyDecision = 'approved_by_user'
-      } catch {
-        await logMcpAuditEntry({
-          agentSlug,
-          remoteMcpId: mcp.id,
-          remoteMcpName: mcp.name,
-          method,
-          requestPath: mcpMethodInfo,
-          policyDecision: 'review_timeout',
-          matchedTool: toolName ?? undefined,
-        })
-        return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.' }, 408)
       }
     }
   }
@@ -299,6 +347,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
           errorMessage: 'Token refresh failed',
           policyDecision: resolvedPolicyDecision,
           matchedTool: toolName ?? undefined,
+          decisionReason: autopilotDecisionReason,
         })
 
         return c.json({ error: 'MCP server requires re-authentication' }, 401)
@@ -360,6 +409,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       durationMs,
       policyDecision: resolvedPolicyDecision,
       matchedTool: toolName ?? undefined,
+      decisionReason: autopilotDecisionReason,
     })
 
     // If 401, mark MCP as auth_required
@@ -403,6 +453,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       durationMs,
       policyDecision: resolvedPolicyDecision,
       matchedTool: toolName ?? undefined,
+      decisionReason: autopilotDecisionReason,
     })
     return c.json(
       { error: 'MCP proxy request failed', details: String(error) },
