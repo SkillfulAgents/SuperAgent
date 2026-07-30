@@ -228,6 +228,8 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
     // Start the integration
     try {
       await chatIntegrationManager.addIntegration(id)
+      // Not awaited: the upload has its own 30s timeout and setup must not block on it.
+      void chatIntegrationManager.sendContactCard(id)
     } catch (err) {
       // Integration was created but failed to connect — update status to error
       const errMsg = err instanceof Error ? err.message : String(err)

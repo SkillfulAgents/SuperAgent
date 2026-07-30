@@ -156,6 +156,7 @@ xAgentChat.post('/add', async (c) => {
 
     try {
       await chatIntegrationManager.addIntegration(id)
+      void chatIntegrationManager.sendContactCard(id)
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err)
       updateChatIntegrationStatus(id, 'error', errMsg)

@@ -17,6 +17,8 @@ import { formatToolName } from '@shared/lib/tool-definitions/types'
 import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
 import { formatSessionTimestamp, resolveAppLinkContext } from './utils'
 import { requestCardFromRegistry, reviewCardFromRegistry } from './request-card'
+import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
+import { getAgent } from '@shared/lib/services/agent-service'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
@@ -430,6 +432,44 @@ class ChatIntegrationManager {
 
   getConnector(integrationId: string): ChatClientConnector | undefined {
     return this.connections.get(integrationId)?.connector
+  }
+
+  /**
+   * Introduce the agent as a saveable phone contact, once, at integration creation.
+   *
+   * Never called on connect: `connectIntegration` also fires on every boot, every
+   * reconnect backoff, and every reconcile cycle, so a connect hook would re-send
+   * forever and would need a once-only flag that the creation hook does not.
+   *
+   * Fire-and-forget by design — a missing contact card is cosmetic, a failed setup
+   * is not, so this never throws.
+   */
+  async sendContactCard(integrationId: string): Promise<void> {
+    try {
+      const integration = getChatIntegration(integrationId)
+      if (integration?.provider !== 'imessage') return
+
+      const connector = this.getConnector(integrationId)
+      if (!connector) return
+
+      const agent = await getAgent(integration.agentSlug)
+      if (!agent) return
+
+      const card = buildAgentContactCard({
+        slug: integration.agentSlug,
+        name: agent.frontmatter.name,
+        description: agent.frontmatter.description,
+        appUrl: resolveAgentWebUrl(integration.agentSlug),
+      })
+
+      // No chatId: the gateway falls back to the chat it already knows, else
+      // creates one from the phone it stored during `/setup`. That fallback is
+      // what lets this send before the user has ever messaged the agent.
+      await connector.sendFile('', card, `${agent.frontmatter.name}.vcf`)
+    } catch (err) {
+      console.error('[ChatIntegrationManager] Failed to send contact card:', err)
+      reportError(err, 'send-contact-card', { integrationId })
+    }
   }
 
   isIntegrationConnected(integrationId: string): boolean {
