@@ -148,15 +148,11 @@ describe('AgentDefaultFooter', () => {
     expect(screen.queryByTestId('composer-agent-default-change')).not.toBeInTheDocument()
   })
 
-  it('pulses once when a pick first diverges from the default', () => {
+  it('swaps the status label for the promote action when the pick diverges', () => {
     const { rerender } = render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith()} />)
     expect(screen.getByTestId('composer-agent-default-current')).toBeInTheDocument()
     rerender(<AgentDefaultFooter agentSlug="my-agent" state={stateWith({ model: 'claude-sonnet-4-6' })} />)
-    expect(screen.getByTestId('composer-agent-default').className).toContain('animate-promote-pulse')
-  })
-
-  it('does not pulse when mounted into an already-diverged session', () => {
-    render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith({ model: 'claude-sonnet-4-6' })} />)
-    expect(screen.getByTestId('composer-agent-default').className).not.toContain('animate-promote-pulse')
+    expect(screen.getByTestId('composer-agent-default')).toBeInTheDocument()
+    expect(screen.queryByTestId('composer-agent-default-current')).not.toBeInTheDocument()
   })
 })

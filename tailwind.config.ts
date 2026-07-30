@@ -117,19 +117,10 @@ const config: Config = {
 					opacity: '1',
 				},
 			},
-			'promote-pulse': {
-				'0%, 100%': {
-					backgroundColor: 'transparent',
-				},
-				'50%': {
-					backgroundColor: 'hsl(var(--accent))',
-				},
-			},
 		},
 		animation: {
 			'cobalt-glow': 'cobalt-glow 4s ease-in-out infinite',
 			'dot-wave': 'dot-wave 2s ease-in-out infinite',
-			'promote-pulse': 'promote-pulse 0.65s ease-in-out 2',
 		}
 	}
   },

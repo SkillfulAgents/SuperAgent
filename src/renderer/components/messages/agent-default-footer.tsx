@@ -1,8 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
 import { Check, Pin, Settings } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { toast } from 'sonner'
-import { cn } from '@shared/lib/utils'
 import { Separator } from '@renderer/components/ui/separator'
 import { useModelSettings } from '@renderer/hooks/use-settings'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
@@ -58,24 +56,8 @@ export function AgentDefaultFooter({ agentSlug, state, agentHomeLink = true }: A
   const modelDiffers = (resolvedCurrent?.id ?? state.model) !== (resolvedDefault?.id ?? defaultModel)
   const differs = modelDiffers || state.effort !== defaultEffort || state.speed !== defaultSpeed
 
-  // One brief highlight when a pick first diverges from the default — draws
-  // the eye to the promote action without an interrupting prompt. Ref-gated on
-  // the false→true edge so mounting into an already-diverged session (seeded
-  // metadata) stays quiet.
-  const [pulse, setPulse] = useState(false)
-  const prevDiffersRef = useRef(differs)
-  useEffect(() => {
-    const wasDiffering = prevDiffersRef.current
-    prevDiffersRef.current = differs
-    if (differs && !wasDiffering) {
-      setPulse(true)
-      const timer = setTimeout(() => setPulse(false), 1300)
-      return () => clearTimeout(timer)
-    }
-  }, [differs])
-
   // Wait for both default sources — a footer computed off a half-loaded
-  // default would flash the wrong enabled state (and a spurious pulse).
+  // default would flash the wrong state.
   if (!settings || !prefsFetched || !state.model) return null
 
   const promote = () => {
@@ -128,10 +110,7 @@ export function AgentDefaultFooter({ agentSlug, state, agentHomeLink = true }: A
             data-testid="composer-agent-default"
             disabled={updatePreferences.isPending}
             onClick={promote}
-            className={cn(
-              'flex min-w-0 items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50',
-              pulse && 'animate-promote-pulse',
-            )}
+            className="flex min-w-0 items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50"
           >
             <Pin className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span className="truncate">Set as Agent Default</span>
