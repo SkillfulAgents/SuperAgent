@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import { fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
 
@@ -17,7 +17,7 @@ const {
   mockToastError,
   mockUseIsMobile,
 } = vi.hoisted(() => ({
-  mockUseNotableSessions: vi.fn(() => ({ data: [] })),
+  mockUseNotableSessions: vi.fn<() => { data: Array<Record<string, unknown>> }>(() => ({ data: [] })),
   mockUseAgentActivityStats: vi.fn(() => ({ data: undefined, isPending: true })),
   mockUserSettingsData: vi.fn<() => Record<string, unknown> | null>(() => null),
   mockUpdateSettingsMutate: vi.fn(),
@@ -106,12 +106,17 @@ vi.mock('@renderer/components/agents/agent-context-menu', () => ({
     children,
     additionalOptions,
     onArrange,
+    disableTouchLongPress,
   }: {
     children: React.ReactNode
     additionalOptions?: React.ReactNode
     onArrange?: () => void
+    disableTouchLongPress?: boolean
   }) => (
-    <div>
+    <div
+      data-testid="agent-context-trigger"
+      data-touch-long-press-disabled={disableTouchLongPress || undefined}
+    >
       {children}
       {additionalOptions}
       {onArrange && (
@@ -184,6 +189,16 @@ vi.mock('@renderer/lib/env', () => ({
 
 // Import after mocks
 import { HomePage } from './home-page'
+
+beforeEach(() => {
+  // Halftone intentionally owns its canvas mock in its focused test file.
+  // Homepage tests only need the no-context bail path.
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 function makeAgent(overrides = {}) {
   return {
@@ -340,9 +355,34 @@ describe('HomePage AgentCard', () => {
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    // status='running' + hasSessionsAwaitingInput → getAgentActivityStatus aggregates
-    // to 'awaiting_input', surfaced as the dot-matrix indicator's aria-label.
-    expect(screen.getByRole('img', { name: 'awaiting_input' })).toBeInTheDocument()
+    // The status chip is the single accessible announcement; the decorative
+    // dot matrix must not expose its internal enum.
+    expect(screen.getByText('Needs input')).toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: 'awaiting_input' })).not.toBeInTheDocument()
+  })
+
+  it('uses a real link for card navigation and keeps notification actions reachable', () => {
+    mockUseNotableSessions.mockReturnValue({
+      data: [
+        {
+          id: 'session-1',
+          name: 'Test Agent Review',
+          hasUnreadNotifications: true,
+          lastActivityAt: new Date('2026-03-26T11:55:00Z'),
+        },
+      ],
+    })
+    mockAgentsData.mockReturnValue({
+      data: [makeAgent({ hasUnreadNotifications: true })],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+
+    const cardLink = screen.getByRole('link', { name: 'Open Test Agent' })
+    expect(cardLink.tagName).toBe('A')
+    expect(cardLink).toHaveAttribute('data-widget-drag-surface')
+    expect(screen.getByRole('button', { name: 'Mark as read' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open session' })).toBeVisible()
   })
 
   it('uses the notable-session fast path for cards with live or unread work', () => {
@@ -405,6 +445,50 @@ describe('HomePage AgentCard', () => {
     expect(layoutCall?.[0].homeGridLayout['dash::test-agent::sales']).toEqual(dashboardRect)
   })
 
+  it('preserves missing dashboard geometry while its owning agent still exists', () => {
+    const dashboardRect = { x: 2, y: 3, w: 1, h: 1 }
+    mockUserSettingsData.mockReturnValue({
+      hiddenAppCards: [],
+      homeGridLayout: {
+        'test-agent': { x: 0, y: 0, w: 2, h: 1 },
+        'dash::test-agent::sales': dashboardRect,
+      },
+    })
+    mockAgentsData.mockReturnValue({
+      data: [makeAgent({ dashboardCount: 0, dashboards: [] })],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+
+    screen.getByRole('switch', { name: 'Expanded' }).click()
+
+    const layoutCall = mockUpdateSettingsMutate.mock.calls.find(
+      ([data]) => data && typeof data === 'object' && 'homeGridLayout' in data
+    )
+    expect(layoutCall?.[0].homeGridLayout['dash::test-agent::sales']).toEqual(dashboardRect)
+  })
+
+  it('rolls back an optimistic layout change when persistence fails', () => {
+    mockUserSettingsData.mockReturnValue({
+      homeGridLayout: {
+        'test-agent': { x: 0, y: 0, w: 2, h: 1 },
+      },
+    })
+    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
+    mockUpdateSettingsMutate.mockImplementationOnce((_data, options) => {
+      options?.onError?.(new Error('offline'))
+      options?.onSettled?.()
+    })
+    renderWithProviders(<HomePage />)
+
+    screen.getByRole('switch', { name: 'Expanded' }).click()
+
+    expect(screen.getByRole('switch', { name: 'Expanded' })).toHaveAttribute('aria-checked', 'true')
+    expect(mockToastError).toHaveBeenCalledWith('Failed to save the home layout', {
+      description: 'offline',
+    })
+  })
+
   it('rolls back an optimistic app-card toggle when persistence fails', () => {
     mockUserSettingsData.mockReturnValue({ hiddenAppCards: [] })
     mockAgentsData.mockReturnValue({
@@ -441,6 +525,7 @@ describe('HomePage AgentCard', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument()
     expect(document.querySelector('[data-widget-id="test-agent"]')).toHaveAttribute('data-arranging', 'true')
+    expect(screen.getByTestId('agent-context-trigger')).not.toHaveAttribute('data-touch-long-press-disabled')
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.getByRole('button', { name: 'New Agent' })).toBeInTheDocument()
@@ -489,6 +574,7 @@ describe('HomePage AgentCard', () => {
 
     fireEvent.click(screen.getByTestId('home-arrange-action'))
     expect(document.querySelector('[data-widget-id="test-agent"]')).toHaveClass('touch-none')
+    expect(screen.getByTestId('agent-context-trigger')).toHaveAttribute('data-touch-long-press-disabled', 'true')
   })
 })
 

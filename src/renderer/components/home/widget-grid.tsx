@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { MoreVertical } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
@@ -40,7 +40,7 @@ export function widgetSizeKey(w: number, h: number): WidgetSizeKey {
 const GAP = 16 // px between cells
 const TARGET_CELL = 232 // desired cell+gap size — drives the column count
 
-interface Placed extends GridRect {
+export interface Placed extends GridRect {
   id: string
 }
 
@@ -89,6 +89,20 @@ export function placeOne(items: GridRect[], cols: number, w: number, h: number):
     for (let x = 0; x <= cols - w; x++) if (fits(x, y)) return { x, y }
   }
   return { x: 0, y: 0 }
+}
+
+/** Repack a saved layout row-major when its coordinates no longer fit a
+ * narrower responsive column count. The saved desktop geometry is not mutated,
+ * so expanding the viewport restores it until the user explicitly commits. */
+export function repackLayout(items: Placed[], cols: number): Placed[] {
+  const packed: Placed[] = []
+  const ordered = [...items].sort((a, b) => (a.y === b.y ? a.x - b.x : a.y - b.y))
+  for (const item of ordered) {
+    const w = Math.min(item.w, cols)
+    const spot = placeOne(packed, cols, w, item.h)
+    packed.push({ ...item, ...spot, w })
+  }
+  return packed
 }
 
 export interface WidgetItem {
@@ -142,6 +156,7 @@ export function WidgetBoard({
     if (!el) return
     const measure = () => {
       const wpx = el.clientWidth
+      if (wpx <= 0) return
       const c = Math.max(2, Math.min(6, Math.round((wpx + GAP) / TARGET_CELL)))
       setCols(c)
       setCellW((wpx - (c - 1) * GAP) / c)
@@ -156,15 +171,18 @@ export function WidgetBoard({
   // flow-packed placement for items without one. Recomputes on resize, so
   // uncustomized boards stay responsively packed.
   const placed = useMemo<Placed[]>(() => {
-    const out: Placed[] = []
+    const saved: Placed[] = []
     for (const it of items) {
       if (!it.rect) continue
       const w = Math.min(it.rect.w, cols)
       // Clamp to 1-tall: layouts saved before the Tall/Large sizes were removed
       // may still carry h:2 rects.
-      out.push({ id: it.id, w, h: Math.min(it.rect.h, 1), x: Math.min(it.rect.x, cols - w), y: it.rect.y })
+      saved.push({ id: it.id, w, h: Math.min(it.rect.h, 1), x: it.rect.x, y: it.rect.y })
     }
-    let resolved = resolveLayout(out, null)
+    const needsResponsiveRepack = saved.some((it) => it.x < 0 || it.x + it.w > cols)
+    let resolved = needsResponsiveRepack
+      ? repackLayout(saved, cols)
+      : resolveLayout(saved.map((it) => ({ ...it, x: Math.min(it.x, cols - it.w) })), null)
     for (const it of items) {
       if (it.rect) continue
       const def = WIDGET_SIZES.find((s) => s.key === it.defaultSize) ?? WIDGET_SIZES[WIDGET_SIZES.length - 1]
@@ -191,6 +209,17 @@ export function WidgetBoard({
   // Suppresses the click that follows a drag release, so dragging a card
   // doesn't also open the agent.
   const didDragRef = useRef(false)
+  const activeDragCleanupRef = useRef<(() => void) | null>(null)
+
+  useEffect(
+    () => () => {
+      activeDragCleanupRef.current?.()
+      activeDragCleanupRef.current = null
+      dragRef.current = null
+      didDragRef.current = false
+    },
+    []
+  )
 
   const commitFromPlaced = (grids: Placed[]) => {
     const layout: Record<string, GridRect> = {}
@@ -201,13 +230,15 @@ export function WidgetBoard({
   function onPointerDown(e: React.PointerEvent, item: Placed) {
     if (!dragEnabled) return
     if (e.button !== 0) return
-    // Drag can start anywhere on the card — our cards are themselves <button>s,
-    // so we can't exclude interactive elements generically. Inner controls keep
-    // working because a drag only arms after 5px of movement (a plain click
-    // never moves) and only an actual drag swallows the following click.
-    // data-widget-no-drag opts out the pencil/popover explicitly.
+    // Native controls opt out of direct desktop dragging so a small pointer slip
+    // cannot swallow their click. The full-card AppLink is the intentional drag
+    // surface and opts back in with data-widget-drag-surface. In Arrange mode
+    // the board always owns the gesture (with an extra touch shield on mobile).
     const target = e.target as HTMLElement
-    if (!arranging && target.closest('[data-widget-no-drag]')) return
+    const interactive = target.closest<HTMLElement>(
+      'button, a, input, select, textarea, [role="button"], [data-widget-no-drag]'
+    )
+    if (!arranging && interactive && !interactive.hasAttribute('data-widget-drag-surface')) return
     const board = wrapRef.current
     if (!board) return
     const boardRect = board.getBoundingClientRect()
@@ -237,6 +268,7 @@ export function WidgetBoard({
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       window.removeEventListener('pointercancel', cancel)
+      if (activeDragCleanupRef.current === cleanup) activeDragCleanupRef.current = null
     }
     const up = () => {
       cleanup()
@@ -253,6 +285,8 @@ export function WidgetBoard({
       setDrag(null)
       didDragRef.current = false
     }
+    activeDragCleanupRef.current?.()
+    activeDragCleanupRef.current = cleanup
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
     window.addEventListener('pointercancel', cancel)
@@ -334,7 +368,12 @@ export function WidgetBoard({
               if (disableContextMenu) e.preventDefault()
             }}
             onClickCapture={(e) => {
-              if (didDragRef.current) {
+              // Radix context-menu content is portaled outside this widget's
+              // DOM but still bubbles through its React tree. Only shield
+              // clicks that physically originated on the card; otherwise
+              // Arrange mode would cancel its own menu items.
+              const originatedOnCard = e.currentTarget.contains(e.target as Node)
+              if (originatedOnCard && (arranging || didDragRef.current)) {
                 e.preventDefault()
                 e.stopPropagation()
               }
@@ -346,10 +385,13 @@ export function WidgetBoard({
             >
               {renderItem(item.id, widgetSizeKey(item.w, item.h), (s) => setSize(item, s))}
             </div>
-            {/* Arrange mode turns the full card surface into the drag handle.
-                Besides preventing accidental navigation/actions, this keeps a
-                touch hold from reaching Radix's context-menu long press. */}
-            {arranging && <div className="absolute inset-0 z-[60] cursor-grab active:cursor-grabbing" />}
+            {/* Mobile Arrange gets a full-card overlay so a touch hold cannot
+                reach Radix's long-press menu. Desktop uses the board's bubbling
+                pointer handler instead, leaving the real card under right-click
+                so its unified context menu remains available. */}
+            {arranging && disableContextMenu && (
+              <div className="absolute inset-0 z-[60] cursor-grab active:cursor-grabbing" />
+            )}
           </div>
         )
       })}

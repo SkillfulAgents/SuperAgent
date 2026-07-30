@@ -15,6 +15,8 @@ type AppLinkProps = LinkProps & {
   title?: string
   'aria-label'?: string
   'data-testid'?: string
+  /** Marks a full-card navigation link that may also initiate board dragging. */
+  'data-widget-drag-surface'?: string
 }
 
 /**

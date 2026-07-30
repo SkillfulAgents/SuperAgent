@@ -30,6 +30,7 @@ import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
+import { AppLink } from '@renderer/components/ui/app-link'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { ContextMenuSwitchItem } from '@renderer/components/ui/context-menu'
 import { useSidebar } from '@renderer/components/ui/sidebar'
@@ -70,6 +71,23 @@ function hashSlug(s: string): number {
   return h
 }
 
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+  )
+
+  useEffect(() => {
+    const media = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+    if (!media) return
+    const update = () => setReduced(media.matches)
+    update()
+    media.addEventListener?.('change', update)
+    return () => media.removeEventListener?.('change', update)
+  }, [])
+
+  return reduced
+}
+
 // State label for the top-right status/control chip.
 const AGENT_STATE_TAG: Record<'sleeping' | 'idle' | 'working' | 'awaiting', string> = {
   sleeping: 'Sleeping',
@@ -108,23 +126,17 @@ function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
     // with it natively.
     <div className="flex items-center gap-1.5 rounded-md border border-border/50 bg-white/10 py-0.5 pl-1.5 pr-1 text-xs backdrop-blur-sm">
       <span className="leading-none text-muted-foreground">{label}</span>
-      <span
-        role="button"
-        tabIndex={0}
+      <button
+        type="button"
+        disabled={isPending}
         aria-label={isRunning ? 'Stop agent' : 'Wake up agent'}
         title={isRunning ? 'Stop agent' : 'Wake up agent'}
         onClick={activate}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault()
-            activate(e)
-          }
-        }}
         className={cn(
           'flex h-5 w-5 shrink-0 items-center justify-center rounded border bg-background text-foreground shadow-sm',
           'cursor-pointer transition-colors hover:bg-muted',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-          isPending && 'pointer-events-none opacity-60'
+          'disabled:cursor-wait disabled:opacity-60'
         )}
       >
         {isPending ? (
@@ -134,7 +146,7 @@ function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
         ) : (
           <Power className="h-2.5 w-2.5" />
         )}
-      </span>
+      </button>
     </div>
   )
 }
@@ -169,8 +181,7 @@ function AgentCardMatrix({
   const stateTweak = activityStatus === 'awaiting_input' ? undefined : HALFTONE_STATE[activityStatus]
   return (
     <div
-      role="img"
-      aria-label={activityStatus}
+      aria-hidden="true"
       className={cn('w-full overflow-hidden', className ?? 'aspect-[32/9]', HALFTONE_INK[activityStatus])}
     >
       <Halftone
@@ -257,25 +268,6 @@ function SessionStateDot({ state }: { state: SessionState }) {
   return <span className="flex h-3 w-3 shrink-0 items-center justify-center">{dot}</span>
 }
 
-/** Keyboard-activatable span — cards are <button>s, so inner controls can't be native buttons. */
-function rowButtonProps(onActivate: (e: React.SyntheticEvent) => void) {
-  return {
-    role: 'button' as const,
-    tabIndex: 0,
-    onClick: (e: React.MouseEvent) => {
-      e.stopPropagation()
-      onActivate(e)
-    },
-    onKeyDown: (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
-        e.stopPropagation()
-        onActivate(e)
-      }
-    },
-  }
-}
-
 /**
  * Notifications section: a frosted panel (matching the title pill / health
  * chips) of hairline-divided rows — state dot, name, and a right-aligned
@@ -319,37 +311,50 @@ function AgentCardSessions({
               key={s.id}
               className="group/row flex h-6 w-full items-center gap-2.5 text-xs"
             >
-              <span {...rowButtonProps(() => open(s.id))} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  open(s.id)
+                }}
+                className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
                 <SessionStateDot state={st} />
                 <span className="truncate text-foreground">
                   <span className="text-muted-foreground">{SESSION_STATE_PREFIX[st]}: </span>
                   {stripAgentPrefix(s.name, agentName)}
                 </span>
-              </span>
+              </button>
               {st === 'unread' || st === 'awaiting' ? (
                 <>
-                  {/* The timestamp swaps for actions on hover: unread gets
-                      clear + open; needs-input has nothing to clear, just open. */}
-                  <span className="shrink-0 text-muted-foreground tabular-nums group-hover/row:hidden">{right}</span>
-                  <span className="hidden shrink-0 items-center gap-0.5 group-hover/row:flex">
+                  <span className="shrink-0 text-muted-foreground tabular-nums">{right}</span>
+                  <span className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100">
                     {st === 'unread' && (
-                      <span
-                        {...rowButtonProps(() => markRead.mutate(s.id))}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          markRead.mutate(s.id)
+                        }}
                         aria-label="Mark as read"
                         title="Mark as read"
-                        className="inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         <Check className="h-3.5 w-3.5" />
-                      </span>
+                      </button>
                     )}
-                    <span
-                      {...rowButtonProps(() => open(s.id))}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        open(s.id)
+                      }}
                       aria-label="Open session"
                       title="Open session"
-                      className="inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <ArrowRight className="h-3.5 w-3.5" />
-                    </span>
+                    </button>
                   </span>
                 </>
               ) : (
@@ -359,17 +364,19 @@ function AgentCardSessions({
           )
         })}
         {moreCount > 0 && (
-          <span
-            {...rowButtonProps(() => {
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
               void navigate({ to: '/agents/$slug', params: { slug: agentDisplaySlug } })
-            })}
+            }}
             className="group/row flex h-6 w-full cursor-pointer items-center justify-end gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
             <span>{moreCount} more</span>
-            <span className="hidden h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground group-hover/row:inline-flex">
+            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-60 transition-all group-hover/row:opacity-100">
               <ArrowRight className="h-3.5 w-3.5" />
             </span>
-          </span>
+          </button>
         )}
       </div>
     </div>
@@ -412,7 +419,10 @@ function AgentHealthCarousel({
     { live: false }
   )
   const [index, setIndex] = useState(0)
-  const [paused, setPaused] = useState(false)
+  const [hovered, setHovered] = useState(false)
+  const [focusWithin, setFocusWithin] = useState(false)
+  const reduceMotion = usePrefersReducedMotion()
+  const paused = hovered || focusWithin || reduceMotion
 
   useEffect(() => {
     if (paused || count < 2) return
@@ -448,8 +458,12 @@ function AgentHealthCarousel({
       metric = `${total}/${DEFAULT_ACTIVITY_DAYS}d`
     }
     return (
-      <span
-        {...rowButtonProps(() => openSlide(s))}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          openSlide(s)
+        }}
         className="flex w-full cursor-pointer items-center gap-2 text-xs"
       >
         <span className="min-w-0 flex-1 truncate">
@@ -458,15 +472,19 @@ function AgentHealthCarousel({
         </span>
         <span className="shrink-0">{chart}</span>
         <span className="shrink-0 tabular-nums text-muted-foreground">{metric}</span>
-      </span>
+      </button>
     )
   }
 
   return (
     <div
       className="pointer-events-auto mt-auto flex shrink-0 items-center gap-1.5"
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setFocusWithin(true)}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusWithin(false)
+      }}
     >
       {/* The frosted panel (title's bg-white/10 + backdrop-blur) lives on the
           container so the halftone reads softly through it and never flashes.
@@ -475,24 +493,33 @@ function AgentHealthCarousel({
       <div className="relative min-w-0 flex-1 overflow-hidden rounded-md border border-border/50 bg-white/10 backdrop-blur-sm">
         <div
           key={active.id}
-          className="px-2 py-1.5 animate-in slide-in-from-bottom-full duration-300"
+          className={cn('px-2 py-1.5', !reduceMotion && 'animate-in slide-in-from-bottom-full duration-300')}
         >
           {renderSlide(active)}
         </div>
       </div>
       {/* Vertical position dots, outside the chip to the right */}
       {count > 1 && (
-        <span className="flex shrink-0 flex-col items-center gap-1">
+        <span className="flex shrink-0 items-center">
           {slides.map((s, i) => (
-            <span
+            <button
+              type="button"
               key={s.id}
-              {...rowButtonProps(() => setIndex(i))}
+              onClick={(e) => {
+                e.stopPropagation()
+                setIndex(i)
+              }}
               aria-label={`Show health row ${i + 1} of ${count}`}
-              className={cn(
-                'h-[3px] w-[3px] cursor-pointer rounded-full transition-colors',
-                i === index % count ? 'bg-foreground/70' : 'bg-muted-foreground/30 hover:bg-muted-foreground/60'
-              )}
-            />
+              aria-pressed={i === index % count}
+              className="group inline-flex h-6 w-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span
+                className={cn(
+                  'h-[3px] w-[3px] rounded-full transition-colors',
+                  i === index % count ? 'bg-foreground/70' : 'bg-muted-foreground/30 group-hover:bg-muted-foreground/60'
+                )}
+              />
+            </button>
           ))}
         </span>
       )}
@@ -525,11 +552,7 @@ function TickerTitleMeta({
   )
   return (
     <div className="relative h-4 overflow-hidden text-xs">
-      <style>{'@keyframes title-ticker{from{transform:translateX(0)}to{transform:translateX(-50%)}}'}</style>
-      <div
-        className="flex w-max items-center whitespace-nowrap"
-        style={{ animation: 'title-ticker 14s linear infinite' }}
-      >
+      <div className="home-title-ticker flex w-max items-center whitespace-nowrap group-hover/widget:[animation-play-state:paused] group-focus-within/widget:[animation-play-state:paused]">
         {run}
         {run}
       </div>
@@ -561,7 +584,6 @@ function AgentCard({
   webhooks?: HomeGraphWebhook[]
 }) {
   useRenderTracker('AgentCard')
-  const navigate = useNavigate()
   const lastWorked = agent.lastActivityAt ? formatDistanceToNow(new Date(agent.lastActivityAt), { addSuffix: true }) : null
 
   const isSmall = size === 'S'
@@ -610,12 +632,11 @@ function AgentCard({
         {/* Keep navigation as a sibling of the card controls so the DOM never
             nests buttons inside a button. Interactive rows sit above this
             transparent hit target and handle their own actions. */}
-        <button
-          type="button"
+        <AppLink
+          to="/agents/$slug"
+          params={{ slug: agent.displaySlug }}
+          data-widget-drag-surface=""
           aria-label={`Open ${agent.name}`}
-          onClick={() => {
-            void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
-          }}
           className="absolute inset-0 z-20 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         />
 
@@ -812,12 +833,14 @@ export function HomePage() {
 
   const commitLayout = (layout: Record<string, GridRect>) => {
     // WidgetBoard only knows about currently rendered items. Preserve saved
-    // geometry for intentionally hidden dashboard cards so a later drag does
-    // not reset their position/size when they are shown again.
+    // geometry for any missing item whose owning agent still exists. This
+    // covers intentionally hidden cards and transiently incomplete dashboard
+    // inventories without retaining entries for agents that were deleted.
     const nextLayout = { ...layout }
     for (const [id, rect] of Object.entries(savedLayout ?? {})) {
-      const agentSlug = dashboardAgentSlugFromKey(id)
-      if (agentSlug && hiddenApps.has(agentSlug)) nextLayout[id] = rect
+      if (id in nextLayout) continue
+      const ownerSlug = dashboardAgentSlugFromKey(id) ?? id
+      if (agentBySlug.has(ownerSlug)) nextLayout[id] = rect
     }
 
     const version = ++layoutMutationVersion.current

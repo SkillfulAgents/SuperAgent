@@ -66,4 +66,44 @@ describe('Halftone animation lifecycle', () => {
     unmount()
     expect(disconnectObserver).toHaveBeenCalled()
   })
+
+  it('recovers when its first measurement is zero-sized', () => {
+    let resizeCallback: ResizeObserverCallback | undefined
+    const observe = vi.fn()
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          resizeCallback = callback
+        }
+        observe = observe
+        unobserve() {}
+        disconnect() {}
+      }
+    )
+
+    let width = 0
+    let height = 0
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => width)
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(() => height)
+    const setTransform = vi.fn()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      setTransform,
+    } as unknown as CanvasRenderingContext2D)
+    const requestAnimationFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
+
+    renderWithProviders(<Halftone motif="flow_3d" />)
+    expect(observe).toHaveBeenCalledTimes(1)
+    expect(setTransform).not.toHaveBeenCalled()
+    expect(requestAnimationFrame).not.toHaveBeenCalled()
+
+    width = 240
+    height = 120
+    act(() => {
+      resizeCallback?.([], {} as ResizeObserver)
+    })
+
+    expect(setTransform).toHaveBeenCalled()
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
+  })
 })

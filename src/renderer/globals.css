@@ -350,8 +350,25 @@ html[data-keyboard-open] [data-composer-footer] {
   animation: home-card-jiggle 160ms ease-in-out infinite alternate;
 }
 
+@keyframes home-title-ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.home-title-ticker {
+  animation: home-title-ticker 14s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .home-card-jiggle {
+    animation: none;
+  }
+
+  .home-title-ticker {
     animation: none;
   }
 }
