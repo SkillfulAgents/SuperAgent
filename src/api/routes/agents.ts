@@ -4617,12 +4617,13 @@ async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: 
       await fs.promises.unlink(result.filePath)
     } catch (err) {
       // rename may have already moved the file
-      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return
-      console.warn('[agents] failed to unlink assembled file upload:', err)
-      captureException(err, {
-        tags: { component: 'agents', operation: 'unlink-assembled-upload' },
-        extra: { filePath: result.filePath, agentSlug },
-      })
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.warn('[agents] failed to unlink assembled file upload:', err)
+        captureException(err, {
+          tags: { component: 'agents', operation: 'unlink-assembled-upload' },
+          extra: { filePath: result.filePath, agentSlug },
+        })
+      }
     }
   }
 }
