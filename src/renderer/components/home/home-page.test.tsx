@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
-import { screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
 
 // ============================================================================
@@ -15,12 +15,14 @@ const {
   mockUserSettingsData,
   mockUpdateSettingsMutate,
   mockToastError,
+  mockUseIsMobile,
 } = vi.hoisted(() => ({
   mockUseNotableSessions: vi.fn(() => ({ data: [] })),
   mockUseAgentActivityStats: vi.fn(() => ({ data: undefined, isPending: true })),
   mockUserSettingsData: vi.fn<() => Record<string, unknown> | null>(() => null),
   mockUpdateSettingsMutate: vi.fn(),
   mockToastError: vi.fn(),
+  mockUseIsMobile: vi.fn(() => false),
 }))
 
 vi.mock('@shared/lib/utils/cn', () => ({
@@ -100,7 +102,25 @@ vi.mock('@renderer/lib/agent-ordering', () => ({
 }))
 
 vi.mock('@renderer/components/agents/agent-context-menu', () => ({
-  AgentContextMenu: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  AgentContextMenu: ({
+    children,
+    additionalOptions,
+    onArrange,
+  }: {
+    children: React.ReactNode
+    additionalOptions?: React.ReactNode
+    onArrange?: () => void
+  }) => (
+    <div>
+      {children}
+      {additionalOptions}
+      {onArrange && (
+        <button type="button" data-testid="agent-menu-arrange" onClick={onArrange}>
+          Arrange
+        </button>
+      )}
+    </div>
+  ),
 }))
 
 
@@ -123,8 +143,33 @@ vi.mock('@renderer/components/ui/popover', () => ({
   PopoverContent: ({ children }: { children: React.ReactNode }) => <div data-testid="popover-content">{children}</div>,
 }))
 
+vi.mock('@renderer/components/ui/context-menu', () => ({
+  ContextMenuSwitchItem: ({
+    children,
+    checked,
+    onCheckedChange,
+  }: {
+    children: React.ReactNode
+    checked: boolean
+    onCheckedChange: (checked: boolean) => void
+  }) => (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onCheckedChange(!checked)}
+    >
+      {children}
+    </button>
+  ),
+}))
+
 vi.mock('@renderer/hooks/use-fullscreen', () => ({
   useFullScreen: () => false,
+}))
+
+vi.mock('@renderer/hooks/use-mobile', () => ({
+  useIsMobile: mockUseIsMobile,
 }))
 
 vi.mock('sonner', () => ({
@@ -167,6 +212,7 @@ describe('HomePage AgentCard', () => {
     vi.setSystemTime(new Date('2026-03-26T12:00:00Z'))
     vi.clearAllMocks()
     mockUserSettingsData.mockReturnValue(null)
+    mockUseIsMobile.mockReturnValue(false)
   })
 
   afterAll(() => {
@@ -319,11 +365,12 @@ describe('HomePage AgentCard', () => {
     expect(mockUseAgentActivityStats).toHaveBeenCalledWith(null, 14, { live: false })
   })
 
-  it('keeps card options reachable and avoids nested native buttons', () => {
+  it('moves card options into the context menu and avoids nested native buttons', () => {
     mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
     renderWithProviders(<HomePage />)
 
-    expect(screen.getByRole('button', { name: 'Card options' })).not.toHaveClass('hidden')
+    expect(screen.queryByRole('button', { name: 'Card options' })).not.toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Expanded' })).toBeInTheDocument()
     expect(document.querySelector('button button')).toBeNull()
     const widget = document.querySelector('[data-widget-id="test-agent"]')
     expect(widget).toHaveClass('touch-pan-y')
@@ -381,6 +428,67 @@ describe('HomePage AgentCard', () => {
     expect(mockToastError).toHaveBeenCalledWith('Failed to update app-card visibility', {
       description: 'offline',
     })
+  })
+
+  it('replaces New Agent with Cancel and Done while arranging', () => {
+    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
+    renderWithProviders(<HomePage />)
+
+    expect(screen.getByRole('button', { name: 'New Agent' })).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('home-arrange-action'))
+
+    expect(screen.queryByRole('button', { name: 'New Agent' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument()
+    expect(document.querySelector('[data-widget-id="test-agent"]')).toHaveAttribute('data-arranging', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'New Agent' })).toBeInTheDocument()
+  })
+
+  it('can enter arrange mode from an agent context menu', () => {
+    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
+    renderWithProviders(<HomePage />)
+
+    fireEvent.click(screen.getByTestId('agent-menu-arrange'))
+
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+    expect(document.querySelector('[data-widget-id="test-agent"]')).toHaveAttribute('data-arranging', 'true')
+  })
+
+  it('stages arrange-mode drags until Done persists them', () => {
+    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
+    renderWithProviders(<HomePage />)
+    fireEvent.click(screen.getByTestId('home-arrange-action'))
+
+    const widget = document.querySelector('[data-widget-id="test-agent"]')
+    expect(widget).not.toBeNull()
+    fireEvent.pointerDown(widget!, { button: 0, clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(window, { clientX: 40, clientY: 80 })
+    fireEvent.pointerUp(window)
+
+    expect(mockUpdateSettingsMutate).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ homeGridLayout: expect.any(Object) }),
+      expect.any(Object),
+    )
+  })
+
+  it('disables mobile dragging until explicit arrange mode', () => {
+    mockUseIsMobile.mockReturnValue(true)
+    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
+    renderWithProviders(<HomePage />)
+
+    const widget = document.querySelector('[data-widget-id="test-agent"]')
+    fireEvent.pointerDown(widget!, { button: 0, clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(window, { clientX: 40, clientY: 80 })
+    fireEvent.pointerUp(window)
+    expect(mockUpdateSettingsMutate).not.toHaveBeenCalled()
+    expect(widget).toHaveClass('touch-pan-y')
+
+    fireEvent.click(screen.getByTestId('home-arrange-action'))
+    expect(document.querySelector('[data-widget-id="test-agent"]')).toHaveClass('touch-none')
   })
 })
 

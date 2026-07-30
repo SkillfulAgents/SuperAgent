@@ -106,6 +106,13 @@ interface WidgetBoardProps {
   renderItem: (id: string, size: WidgetSizeKey, onResize: (size: WidgetSizeKey) => void) => ReactNode
   /** Called with the full layout map after any user drag or resize. */
   onCommit: (layout: Record<string, GridRect>) => void
+  /** Whether pointer gestures may reorder cards. Mobile disables this outside
+   *  explicit arrange mode; desktop leaves it enabled. */
+  dragEnabled?: boolean
+  /** Applies the edit-mode treatment and makes the whole card a drag target. */
+  arranging?: boolean
+  /** Suppress native/synthetic context menus while touch arrange mode is active. */
+  disableContextMenu?: boolean
 }
 
 interface DragState {
@@ -118,7 +125,14 @@ interface DragState {
   preview: Placed[]
 }
 
-export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
+export function WidgetBoard({
+  items,
+  renderItem,
+  onCommit,
+  dragEnabled = true,
+  arranging = false,
+  disableContextMenu = false,
+}: WidgetBoardProps) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const [cols, setCols] = useState(4)
   const [cellW, setCellW] = useState(216)
@@ -185,6 +199,7 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
   }
 
   function onPointerDown(e: React.PointerEvent, item: Placed) {
+    if (!dragEnabled) return
     if (e.button !== 0) return
     // Drag can start anywhere on the card — our cards are themselves <button>s,
     // so we can't exclude interactive elements generically. Inner controls keep
@@ -192,7 +207,7 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
     // never moves) and only an actual drag swallows the following click.
     // data-widget-no-drag opts out the pencil/popover explicitly.
     const target = e.target as HTMLElement
-    if (target.closest('[data-widget-no-drag]')) return
+    if (!arranging && target.closest('[data-widget-no-drag]')) return
     const board = wrapRef.current
     if (!board) return
     const boardRect = board.getBoundingClientRect()
@@ -283,7 +298,7 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
         />
       )}
 
-      {placed.map((item) => {
+      {placed.map((item, index) => {
         const isDragging = drag?.id === item.id
         const g = previewMap.get(item.id) ?? item
         const p = pos(g)
@@ -294,11 +309,16 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
           <div
             key={item.id}
             data-widget-id={item.id}
+            data-arranging={arranging || undefined}
             className={cn(
               // Keep vertical touch panning available. If the browser claims a
               // gesture for scrolling it sends pointercancel, which tears down
-              // the tentative drag above without committing it.
-              'group/widget absolute touch-pan-y',
+              // the tentative drag above without committing it. Explicit
+              // arrange mode owns the gesture instead, so touch scrolling is
+              // disabled until the card is dropped.
+              'group/widget absolute',
+              arranging ? 'touch-none' : 'touch-pan-y',
+              dragEnabled && (isDragging ? 'cursor-grabbing' : 'cursor-grab'),
               // Tiles glide to new positions (reflow, drop-settle) but snap
               // their size in one frame — tweening width/height fights the
               // card's contents (instant inner-layout swap + the halftone
@@ -310,6 +330,9 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
             )}
             style={style}
             onPointerDown={(e) => onPointerDown(e, item)}
+            onContextMenu={(e) => {
+              if (disableContextMenu) e.preventDefault()
+            }}
             onClickCapture={(e) => {
               if (didDragRef.current) {
                 e.preventDefault()
@@ -317,9 +340,16 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
               }
             }}
           >
-            <div className="h-full w-full">
+            <div
+              className={cn('h-full w-full', arranging && !isDragging && 'home-card-jiggle')}
+              style={arranging ? { animationDelay: `${-(index % 5) * 37}ms` } : undefined}
+            >
               {renderItem(item.id, widgetSizeKey(item.w, item.h), (s) => setSize(item, s))}
             </div>
+            {/* Arrange mode turns the full card surface into the drag handle.
+                Besides preventing accidental navigation/actions, this keeps a
+                touch hold from reaching Radix's context-menu long press. */}
+            {arranging && <div className="absolute inset-0 z-[60] cursor-grab active:cursor-grabbing" />}
           </div>
         )
       })}

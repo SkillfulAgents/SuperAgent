@@ -1,7 +1,7 @@
 
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
-import { WidgetBoard, WidgetSizePopover, WidgetToggleRow, type GridRect, type WidgetItem, type WidgetSizeKey } from './widget-grid'
+import { WidgetBoard, WidgetSizePopover, type GridRect, type WidgetItem, type WidgetSizeKey } from './widget-grid'
 import { useAgents, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
@@ -30,12 +30,15 @@ import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { ContextMenuSwitchItem } from '@renderer/components/ui/context-menu'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
+import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { DashboardCard } from './dashboard-card'
 import { PwaInstallBanner } from './pwa-install-banner'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { Plus, Bot, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints } from 'lucide-react'
+import { Plus, Bot, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints, MoreVertical, Move } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -543,13 +546,17 @@ function TickerTitleMeta({
 function AgentCard({
   agent,
   size = 'W',
-  sizeControl,
+  additionalOptions,
+  onArrange,
+  disableTouchLongPress,
   crons = [],
   webhooks = [],
 }: {
   agent: ApiAgent
   size?: WidgetSizeKey
-  sizeControl?: ReactNode
+  additionalOptions?: ReactNode
+  onArrange?: () => void
+  disableTouchLongPress?: boolean
   crons?: HomeGraphCron[]
   webhooks?: HomeGraphWebhook[]
 }) {
@@ -591,7 +598,12 @@ function AgentCard({
   )
 
   return (
-    <AgentContextMenu agent={agent}>
+    <AgentContextMenu
+      agent={agent}
+      additionalOptions={additionalOptions}
+      onArrange={onArrange}
+      disableTouchLongPress={disableTouchLongPress}
+    >
       <div
         className="relative flex h-full w-full flex-col gap-3 overflow-hidden rounded-lg border bg-card p-4 text-left shadow-sm transition-[box-shadow,transform,border-color] duration-150 hover:border-accent-foreground/20 group-hover/widget:-translate-y-0.5 group-hover/widget:shadow-md"
       >
@@ -607,12 +619,10 @@ function AgentCard({
           className="absolute inset-0 z-20 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         />
 
-        {/* Control row: status chip + size kebab share one flex row, so
-            items-center vertically centers the kebab against the chip in one
-            right-anchored row. */}
+        {/* The card now has one menu surface: its context menu. Keep only the
+            status/power chip visible on the card itself. */}
         <div className="absolute top-2 right-4 z-30 flex items-center gap-1.5">
           <AgentCardPowerButton agent={agent} />
-          {sizeControl}
         </div>
 
         {isSmall ? (
@@ -678,6 +688,45 @@ function dashboardAgentSlugFromKey(id: string): string | null {
   return separator === -1 ? null : rest.slice(0, separator)
 }
 
+function HomeArrangeMenu({
+  onArrange,
+  disabled,
+}: {
+  onArrange: () => void
+  disabled: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label="Agent layout options"
+          title="Agent layout options"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <MoreVertical className="h-4 w-4" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-40 p-1">
+        <button
+          type="button"
+          data-testid="home-arrange-action"
+          disabled={disabled}
+          onClick={() => {
+            setOpen(false)
+            onArrange()
+          }}
+          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+        >
+          <Move className="h-4 w-4" />
+          Arrange
+        </button>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 export function HomePage() {
   useRenderTracker('HomePage')
   const { data: agents, isLoading: agentsLoading } = useAgents()
@@ -695,6 +744,11 @@ export function HomePage() {
   const [localLayout, setLocalLayout] = useState<Record<string, GridRect> | null>(null)
   const layoutMutationVersion = useRef(0)
   const savedLayout = localLayout ?? userSettings?.homeGridLayout
+  // Arrange mode stages its layout locally. Done persists the staged map once;
+  // Cancel drops it and restores the last saved geometry.
+  const [isArranging, setIsArranging] = useState(false)
+  const [arrangeLayout, setArrangeLayout] = useState<Record<string, GridRect> | null>(null)
+  const displayedLayout = arrangeLayout ?? savedLayout
 
   // Agents whose associated app/dashboard card is toggled off. localHidden is a
   // session override that wins over the server value, so the toggle takes effect
@@ -711,18 +765,18 @@ export function HomePage() {
     const dashes = new Map<string, { agentSlug: string; dashboard: { slug: string; name: string } }>()
     const withApp = new Set<string>()
     for (const agent of orderedAgents) {
-      items.push({ id: agent.slug, rect: savedLayout?.[agent.slug], defaultSize: 'W' })
+      items.push({ id: agent.slug, rect: displayedLayout?.[agent.slug], defaultSize: 'W' })
       const dashboards = Array.isArray(agent.dashboards) ? agent.dashboards : []
       if (dashboards.length > 0) withApp.add(agent.slug)
       if (hiddenApps.has(agent.slug)) continue // app card toggled off — skip its dashboard tiles
       for (const d of dashboards) {
         const id = dashKey(agent.slug, d.slug)
-        items.push({ id, rect: savedLayout?.[id], defaultSize: 'S' })
+        items.push({ id, rect: displayedLayout?.[id], defaultSize: 'S' })
         dashes.set(id, { agentSlug: agent.slug, dashboard: d })
       }
     }
     return { widgetItems: items, dashboardsById: dashes, agentsWithApp: withApp }
-  }, [orderedAgents, savedLayout, hiddenApps])
+  }, [orderedAgents, displayedLayout, hiddenApps])
 
   const agentBySlug = useMemo(() => new Map(orderedAgents.map((a) => [a.slug, a])), [orderedAgents])
 
@@ -801,6 +855,7 @@ export function HomePage() {
   }
 
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
+  const isMobile = useIsMobile()
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
@@ -815,6 +870,10 @@ export function HomePage() {
   const view: 'cards' | 'graph' = routeSearch.view === 'graph' ? 'graph' : 'cards'
   const setView = (next: 'cards' | 'graph') => {
     if (next === view) return
+    if (next === 'graph') {
+      setArrangeLayout(null)
+      setIsArranging(false)
+    }
     void navigate({
       to: '/',
       search: (prev: Record<string, unknown>) => ({
@@ -822,6 +881,28 @@ export function HomePage() {
         view: next === 'graph' ? ('graph' as const) : undefined,
       }),
     })
+  }
+  const beginArrange = () => {
+    if (!hasAgents) return
+    setArrangeLayout(null)
+    setIsArranging(true)
+  }
+  const cancelArrange = () => {
+    setArrangeLayout(null)
+    setIsArranging(false)
+  }
+  const finishArrange = () => {
+    const nextLayout = arrangeLayout
+    setArrangeLayout(null)
+    setIsArranging(false)
+    if (nextLayout) commitLayout(nextLayout)
+  }
+  const handleBoardCommit = (layout: Record<string, GridRect>) => {
+    if (isArranging) {
+      setArrangeLayout(layout)
+      return
+    }
+    commitLayout(layout)
   }
 
   return (
@@ -909,16 +990,30 @@ export function HomePage() {
           {/* Agents Section */}
           <section>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-medium">Your Agents</h2>
-              <Button
-                size="sm"
-                onClick={() => { void createUntitledAgent() }}
-                className="app-no-drag"
-                disabled={isCreatingAgent}
-              >
-                <Plus className="h-4 w-4 mr-1" />
-                New Agent
-              </Button>
+              <div className="flex items-center gap-1">
+                <h2 className="text-lg font-medium">Your Agents</h2>
+                {!isArranging && <HomeArrangeMenu onArrange={beginArrange} disabled={!hasAgents} />}
+              </div>
+              {isArranging ? (
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={cancelArrange}>
+                    Cancel
+                  </Button>
+                  <Button size="sm" onClick={finishArrange}>
+                    Done
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={() => { void createUntitledAgent() }}
+                  className="app-no-drag"
+                  disabled={isCreatingAgent}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  New Agent
+                </Button>
+              )}
             </div>
 
             {agentsLoading ? (
@@ -928,7 +1023,10 @@ export function HomePage() {
             ) : hasAgents ? (
               <WidgetBoard
                 items={widgetItems}
-                onCommit={commitLayout}
+                onCommit={handleBoardCommit}
+                arranging={isArranging}
+                dragEnabled={!isMobile || isArranging}
+                disableContextMenu={isMobile && isArranging}
                 renderItem={(id, size, onResize) => {
                   const dash = dashboardsById.get(id)
                   if (dash) {
@@ -943,29 +1041,34 @@ export function HomePage() {
                   }
                   const agent = agentBySlug.get(id)
                   if (!agent) return null
-                  const sizeControl = (
-                    <WidgetSizePopover
-                      size={size}
-                      onPick={onResize}
-                      extra={(close) =>
-                        agentsWithApp.has(agent.slug) ? (
-                          <WidgetToggleRow
-                            label="Show app"
-                            checked={!hiddenApps.has(agent.slug)}
-                            onToggle={() => {
-                              close()
-                              toggleAppCard(agent.slug)
-                            }}
-                          />
-                        ) : null
-                      }
-                    />
-                  )
                   return (
                     <AgentCard
                       agent={agent}
                       size={size}
-                      sizeControl={sizeControl}
+                      onArrange={beginArrange}
+                      disableTouchLongPress={isMobile && isArranging}
+                      additionalOptions={
+                        <>
+                          <ContextMenuSwitchItem
+                            checked={size === 'W'}
+                            onCheckedChange={() => {
+                              onResize(size === 'W' ? 'S' : 'W')
+                            }}
+                          >
+                            Expanded
+                          </ContextMenuSwitchItem>
+                          {agentsWithApp.has(agent.slug) && (
+                            <ContextMenuSwitchItem
+                              checked={!hiddenApps.has(agent.slug)}
+                              onCheckedChange={() => {
+                                toggleAppCard(agent.slug)
+                              }}
+                            >
+                              Show app
+                            </ContextMenuSwitchItem>
+                          )}
+                        </>
+                      }
                       crons={cronsByAgent.get(agent.slug)}
                       webhooks={webhooksByAgent.get(agent.slug)}
                     />
