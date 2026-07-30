@@ -270,6 +270,10 @@ interface ComposerOptionsProps {
   disabled?: boolean
   /** Show the Effort section. Disable for model-only pickers (e.g. summarizer). */
   includeEffort?: boolean
+  /** Render the Agent Default footer for this agent (main-app hosts only). */
+  agentSlug?: string
+  /** Show the footer's gear link to Agent Home. Off for the agent-home composer itself. */
+  agentHomeLink?: boolean
 }
 
 /**
@@ -277,6 +281,14 @@ interface ComposerOptionsProps {
  * both the AgentHome and in-session composers. Stateless — owned by the
  * `useComposerOptions` hook above so the parent can read the values at submit.
  */
-export function ComposerOptions({ state, disabled, includeEffort }: ComposerOptionsProps) {
-  return <ComposerOptionsPopover state={state} disabled={disabled} includeEffort={includeEffort} />
+export function ComposerOptions({ state, disabled, includeEffort, agentSlug, agentHomeLink }: ComposerOptionsProps) {
+  return (
+    <ComposerOptionsPopover
+      state={state}
+      disabled={disabled}
+      includeEffort={includeEffort}
+      agentSlug={agentSlug}
+      agentHomeLink={agentHomeLink}
+    />
+  )
 }

@@ -402,7 +402,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                         onRecentFileAttach={(file) => composer.addFiles([{ file }])}
                         disabled={isDisabled}
                       />
-                      <ComposerOptions state={composerOptions} disabled={isDisabled} />
+                      <ComposerOptions state={composerOptions} disabled={isDisabled} agentSlug={agent.slug} agentHomeLink={false} />
                     </>
                   )}
                   topRightActions={(
