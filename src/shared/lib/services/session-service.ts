@@ -360,6 +360,17 @@ function emptySessionFromMetadata(
   }
 }
 
+// Prefer metadata createdAt; birthtime is unsupported (epoch 0) on
+// network filesystems like S3 Files / EFS used by the k8s / microVM runtime.
+function resolveSessionCreatedAt(
+  meta: SessionMetadata | undefined,
+  stat: { birthtimeMs: number; birthtime: Date; mtimeMs: number },
+): Date {
+  if (meta?.createdAt) return new Date(meta.createdAt)
+  if (stat.birthtimeMs > 0) return stat.birthtime
+  return new Date(stat.mtimeMs)
+}
+
 // ============================================================================
 // Session Operations
 // ============================================================================
@@ -457,20 +468,11 @@ export async function listSessions(
         continue
       }
 
-      // Prefer metadata createdAt; birthtime is unsupported (epoch 0) on
-      // network filesystems like S3 Files / EFS used by the k8s runtime.
-      const metaCreatedAt = metadata[sessionId]?.createdAt
-      const createdAt = metaCreatedAt
-        ? new Date(metaCreatedAt)
-        : stat.birthtimeMs > 0
-          ? stat.birthtime
-          : new Date(stat.mtimeMs)
-
       sessions.push({
         id: sessionId,
         agentSlug,
         name: metadata[sessionId]?.name || 'New Session',
-        createdAt,
+        createdAt: resolveSessionCreatedAt(metadata[sessionId], stat),
         lastActivityAt: new Date(stat.mtimeMs),
         messageCount: 0,
       })
@@ -523,17 +525,11 @@ export async function listSessionsByIds(
           // Same rule as listSessions: unregistered empty JSONLs are SDK
           // subagent artifacts, not sessions.
           if (stat.size === 0 && !metadata[sessionId]) return null
-          const metaCreatedAt = metadata[sessionId]?.createdAt
-          const createdAt = metaCreatedAt
-            ? new Date(metaCreatedAt)
-            : stat.birthtimeMs > 0
-              ? stat.birthtime
-              : new Date(stat.mtimeMs)
           return {
             id: sessionId,
             agentSlug,
             name: metadata[sessionId]?.name || 'New Session',
-            createdAt,
+            createdAt: resolveSessionCreatedAt(metadata[sessionId], stat),
             lastActivityAt: new Date(stat.mtimeMs),
             messageCount: 0,
           }
@@ -970,26 +966,22 @@ async function getSessionsByMetadata(
   const sessions: SessionInfo[] = []
   for (const sessionId of matchingIds) {
     const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+    const meta = metadata[sessionId]
     try {
       const stat = await fs.promises.stat(jsonlPath)
       sessions.push({
         id: sessionId,
         agentSlug,
-        name: metadata[sessionId]?.name || 'New Session',
-        createdAt: stat.birthtime,
+        name: meta?.name || 'New Session',
+        createdAt: resolveSessionCreatedAt(meta, stat),
         lastActivityAt: new Date(stat.mtimeMs),
         messageCount: 0,
       })
     } catch {
       // JSONL doesn't exist yet — use metadata createdAt
-      sessions.push({
-        id: sessionId,
-        agentSlug,
-        name: metadata[sessionId]?.name || 'New Session',
-        createdAt: new Date(metadata[sessionId]?.createdAt || Date.now()),
-        lastActivityAt: new Date(metadata[sessionId]?.createdAt || Date.now()),
-        messageCount: 0,
-      })
+      if (meta) {
+        sessions.push(emptySessionFromMetadata(sessionId, agentSlug, meta))
+      }
     }
   }
 
