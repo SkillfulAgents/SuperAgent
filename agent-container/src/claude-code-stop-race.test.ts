@@ -104,6 +104,36 @@ describe('ClaudeCodeProcess stop/restart teardown race', () => {
     await proc.stop()
   })
 
+  it('a restart clears process-local background replay state', async () => {
+    const proc = new ClaudeCodeProcess({ sessionId: 'replay-reset', workingDirectory: '/tmp' })
+    const track = (message: unknown) =>
+      (
+        proc as unknown as {
+          trackForLateJoinReplay(frame: unknown): void
+        }
+      ).trackForLateJoinReplay(message)
+
+    await proc.start()
+    track({ type: 'result', subtype: 'success' })
+    track({
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [{ task_id: 'old-process-task' }],
+    })
+    track({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+    await proc.stop()
+    await proc.sendMessage('follow-up')
+    expect(proc.getLateJoinReplay()).toEqual([])
+    track({ type: 'result', subtype: 'success' })
+    track({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+    const replay = proc.getLateJoinReplay() as Array<Record<string, unknown>>
+    expect(replay.some((frame) => frame.subtype === 'background_tasks_changed')).toBe(false)
+
+    await proc.stop()
+  })
+
   it('interrupt() landing during a stop() teardown must not revive the query', async () => {
     const proc = new ClaudeCodeProcess({ sessionId: 's4', workingDirectory: '/tmp' })
     await proc.start()

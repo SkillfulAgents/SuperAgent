@@ -54,6 +54,13 @@ describe('getLateJoinReplay — background snapshot', () => {
       backgroundTasksFrameSchema.parse({
         type: 'system',
         subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'finished-task' }],
+      })
+    )
+    track(
+      backgroundTasksFrameSchema.parse({
+        type: 'system',
+        subtype: 'background_tasks_changed',
         tasks: [],
       })
     )

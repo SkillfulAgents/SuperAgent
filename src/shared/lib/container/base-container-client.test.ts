@@ -2,6 +2,9 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import WebSocket, { WebSocketServer } from 'ws'
 import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient } from './base-container-client'
 import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
 
@@ -646,6 +649,20 @@ class StoppedTestClient extends BaseContainerClient {
   }
 }
 
+class RunningStreamTestClient extends BaseContainerClient {
+  constructor(private readonly port: number) {
+    super({ agentId: 'test-agent' } as ContainerConfig)
+  }
+
+  protected getRunnerCommand(): string {
+    return 'docker'
+  }
+
+  async getInfoFromRuntime(): Promise<ContainerInfo> {
+    return { status: 'running', port: this.port }
+  }
+}
+
 function makeStoppedClient(): StoppedTestClient {
   return new StoppedTestClient({ agentId: 'test-agent' } as ContainerConfig)
 }
@@ -683,6 +700,41 @@ describe('subscribeToStream failure handling', () => {
 
     expect(errors).toHaveLength(1)
     expect((errors[0] as Error).message).toContain('Container is not running')
+  })
+
+  it('a late close from the replaced socket cannot evict the replacement', async () => {
+    const server = createServer()
+    const wss = new WebSocketServer({ server })
+    const peers: WebSocket[] = []
+    wss.on('connection', (peer) => peers.push(peer))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+
+    try {
+      const port = (server.address() as AddressInfo).port
+      const client = new RunningStreamTestClient(port)
+      const first = client.subscribeToStream('replacement-owner', () => {})
+      await first.ready
+      const oldSocket = (
+        client as unknown as { wsConnections: Map<string, WebSocket> }
+      ).wsConnections.get('replacement-owner')
+      expect(oldSocket).toBeDefined()
+
+      // Hold the peer's close handshake so the old close lands after replacement.
+      peers[0].pause()
+      first.unsubscribe()
+      const replacement = client.subscribeToStream('replacement-owner', () => {})
+      await replacement.ready
+      expect(peers).toHaveLength(2)
+
+      oldSocket?.emit('close', 1006, Buffer.alloc(0))
+      replacement.unsubscribe()
+
+      await vi.waitFor(() => expect(peers[1].readyState).toBe(WebSocket.CLOSED))
+    } finally {
+      for (const peer of peers) peer.terminate()
+      await new Promise<void>((resolve) => wss.close(() => resolve()))
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
   })
 })
 

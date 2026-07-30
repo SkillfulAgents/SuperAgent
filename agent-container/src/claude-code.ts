@@ -1080,10 +1080,14 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.messageQueue = new MessageQueue();
     this.queryInstance = this.createQuery();
     this.isReady = true;
-    // Background tasks are process-local and die with the old process; the
-    // SessionManager listens for this to reset its settlement bookkeeping —
-    // a task id carried across the replacement would pin the session
-    // unevictable forever (no terminal signal or snapshot ever comes).
+    // Late-join replay is process-local. Carrying a terminal frame across a
+    // replacement could settle the new process before it emits its own result;
+    // carrying a background task could pin it forever without a terminal frame.
+    this.currentTurnInformationals = [];
+    this.lastTurnInformationals = [];
+    this.lastResultMessage = null;
+    this.lastSessionState = null;
+    this.lastBackgroundTasksChanged = null;
     this.emit('query-start');
   }
 

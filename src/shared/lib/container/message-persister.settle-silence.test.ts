@@ -1,6 +1,6 @@
 /**
  * Regression: a finished turn never settles when a settle frame is lost or
- * discarded (SUP-468). One case per cause, plus a positive control.
+ * discarded. One case per cause, plus a positive control.
  *
  * Wire frames are built through Zod (and the production background-tasks
  * parser) so a hand-rolled shape cannot pin a dead path.
@@ -138,8 +138,19 @@ function backgroundTasksFrame(
 
 function createMockClient(): ContainerClient & {
   _sendMessage: (content: unknown) => void
+  _flushCloses: () => void
+  _failNextSubscribe: () => void
 } {
   let messageCallback: ((message: StreamMessage) => void) | null = null
+  let failNextSubscribe = false
+  const pendingCloses: Array<() => void> = []
+  const connectionClosed = (callback: (message: StreamMessage) => void) =>
+    callback({
+      type: 'connection_closed',
+      content: { type: 'connection_closed' },
+      timestamp: new Date(),
+      sessionId: 'settle-silence',
+    })
   const client = {
     _sendMessage(content: unknown) {
       if (!messageCallback) return
@@ -149,6 +160,12 @@ function createMockClient(): ContainerClient & {
         timestamp: new Date(),
         sessionId: 'settle-silence',
       })
+    },
+    _flushCloses() {
+      for (const close of pendingCloses.splice(0)) close()
+    },
+    _failNextSubscribe() {
+      failNextSubscribe = true
     },
     start: vi.fn(),
     stop: vi.fn(),
@@ -165,25 +182,31 @@ function createMockClient(): ContainerClient & {
     sendMessage: vi.fn(),
     interruptSession: vi.fn(),
     subscribeToStream: vi.fn((_sessionId: string, callback: (message: StreamMessage) => void) => {
+      if (failNextSubscribe) {
+        failNextSubscribe = false
+        connectionClosed(callback)
+        return {
+          unsubscribe: vi.fn(),
+          ready: Promise.reject(new Error('replacement failed')),
+        }
+      }
       messageCallback = callback
-      // Mirror base-container-client: intentional close synthesizes
-      // connection_closed on the callback that owned the socket.
+      // Real half-open sockets deliver their close after the replacement is
+      // installed. Keep each callback bound to the socket that owned it.
       const unsubscribe = vi.fn(() => {
-        const closed = messageCallback
-        messageCallback = null
-        closed?.({
-          type: 'connection_closed',
-          content: { type: 'connection_closed' },
-          timestamp: new Date(),
-          sessionId: 'settle-silence',
-        })
+        if (messageCallback === callback) messageCallback = null
+        pendingCloses.push(() => connectionClosed(callback))
       })
       return { unsubscribe, ready: Promise.resolve() }
     }),
     on: vi.fn(),
     off: vi.fn(),
   }
-  return client as unknown as ContainerClient & { _sendMessage: (content: unknown) => void }
+  return client as unknown as ContainerClient & {
+    _sendMessage: (content: unknown) => void
+    _flushCloses: () => void
+    _failNextSubscribe: () => void
+  }
 }
 
 describe('settle silence / discarded settle memory', () => {
@@ -219,9 +242,29 @@ describe('settle silence / discarded settle memory', () => {
     client._sendMessage(resultFrame())
 
     await messagePersister.subscribeToSession(SESSION, client, SESSION, AGENT)
+    client._flushCloses()
     client._sendMessage(sessionStateFrame('idle'))
 
     expect(messagePersister.getSessionActivity(SESSION)).toBe('idle')
+  })
+
+  it('external re-subscribe does not let a bare idle settle a new turn', async () => {
+    messagePersister.markSessionActive(SESSION, AGENT)
+    client._sendMessage(capabilitiesFrame())
+
+    await messagePersister.subscribeToSession(SESSION, client, SESSION, AGENT)
+    client._flushCloses()
+    client._sendMessage(sessionStateFrame('idle'))
+
+    expect(messagePersister.getSessionActivity(SESSION)).not.toBe('idle')
+  })
+
+  it('a turn that starts on an already-quiet stream arms recovery', async () => {
+    messagePersister.markSessionActive(SESSION, AGENT)
+
+    await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS)
+
+    expect(client.subscribeToStream).toHaveBeenCalledTimes(2)
   })
 
   it('stream silence while a turn is live reattaches and settles from late-join replay', async () => {
@@ -234,13 +277,17 @@ describe('settle silence / discarded settle memory', () => {
     expect(client.subscribeToStream).toHaveBeenCalledTimes(1)
 
     await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS)
+    client._flushCloses()
     // Flush getSession().then from any connection_closed the detach synthesized.
     await Promise.resolve()
     await Promise.resolve()
 
+    // Reattach is only transport recovery. Time alone never settles the turn.
+    expect(messagePersister.getSessionActivity(SESSION)).not.toBe('idle')
     // Exactly one replacement subscribe — not silence reattach PLUS a stacked
     // handleConnectionClosed resubscribe (that double-applied stream_deltas).
     expect(client.subscribeToStream).toHaveBeenCalledTimes(2)
+    expect(client.getSession).not.toHaveBeenCalled()
     // Container late-join replay for a finished turn (result + idle).
     client._sendMessage(resultFrame({ replayed: true }))
     client._sendMessage(sessionStateFrame('idle', { replayed: true }))
@@ -248,17 +295,18 @@ describe('settle silence / discarded settle memory', () => {
     expect(messagePersister.getSessionActivity(SESSION)).toBe('idle')
   })
 
-  it('silence reattach must not stack a connection_closed resubscribe', async () => {
+  it('a failed silence replacement is handled as the current connection closing', async () => {
     messagePersister.markSessionActive(SESSION, AGENT)
     client._sendMessage(capabilitiesFrame())
     client._sendMessage(resultFrame())
+    client._failNextSubscribe()
 
     await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS)
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(client.subscribeToStream).toHaveBeenCalledTimes(2)
-    expect(client.getSession).not.toHaveBeenCalled()
+    expect(client.getSession).toHaveBeenCalledTimes(1)
+    expect(client.subscribeToStream).toHaveBeenCalledTimes(3)
   })
 
   it('late-join replay with an empty background snapshot unpins a lost task terminal', async () => {

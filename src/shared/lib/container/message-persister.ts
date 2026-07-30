@@ -272,6 +272,7 @@ class MessagePersister {
   // with no pending entry, so we must stop broadcasting review cards for them.
   private sessionCapabilityGrants: Map<string, Set<'subagents' | 'workflows'>> = new Map()
   private subscriptions: Map<string, () => void> = new Map()
+  private streamTokens: Map<string, object> = new Map()
   private sseClients: Map<string, Set<(data: unknown) => void>> = new Map()
   // Per-run journal tailers driving the live workflow drawer, keyed `${sessionId}::${runId}`
   private workflowTailers: Map<string, WorkflowJournalTailer> = new Map()
@@ -288,15 +289,6 @@ class MessagePersister {
   // subscribeToSession() calls for the same session share the underlying
   // promise so we don't double-install listeners or double-tear-down state.
   private subscribingNow: Map<string, Promise<void>> = new Map()
-  // Intentional transport detach (silence reattach / re-subscribe) closes the
-  // socket itself. That close still synthesizes connection_closed on the old
-  // callback — which must NOT run handleConnectionClosed's resubscribe, or we
-  // stack a second live stream and double-apply stream_deltas in the UI.
-  private ignoreNextConnectionClosed: Set<string> = new Set()
-  // Bumped on intentional detach so an in-flight handleConnectionClosed
-  // (getSession already started) cannot overwrite the replacement subscribe.
-  private connectionRecoveryEpoch: Map<string, number> = new Map()
-
   constructor() {
     // Unified wire: every registry transition — no matter which of the many
     // mutation paths drove it — broadcasts ONE typed event, to the global
@@ -446,11 +438,6 @@ class MessagePersister {
     const priorLastResultSubtype = prior?.lastResultSubtype ?? null
     const priorLastResultCleanSuccess = prior?.lastResultCleanSuccess ?? false
 
-    // Detach only the transport if already subscribed. NOT unsubscribeFromSession:
-    // that is a full teardown — it drops the session's registry entries, which
-    // must outlive a transport reattach for the same live session.
-    this.detachStreamTransport(sessionId)
-
     // Initialize state
     this.streamingStates.set(sessionId, {
       currentText: '',
@@ -486,12 +473,7 @@ class MessagePersister {
     this.containerClients.set(sessionId, client)
 
     // Subscribe to the container's message stream
-    const { unsubscribe, ready } = client.subscribeToStream(
-      containerSessionId,
-      (message) => this.handleMessage(sessionId, message)
-    )
-
-    this.subscriptions.set(sessionId, unsubscribe)
+    const ready = this.attachStreamTransport(sessionId, client, containerSessionId)
 
     if (this.capture && agentSlug) {
       const subagentsDir = path.join(getAgentSessionsDir(agentSlug), sessionId, 'subagents')
@@ -506,8 +488,6 @@ class MessagePersister {
   // Unsubscribe from a session
   unsubscribeFromSession(sessionId: string): void {
     this.cancelSettleProbe(sessionId)
-    // Full teardown: ignore the synthetic close from our own unsubscribe so it
-    // cannot race a resubscribe after streamingStates/containerClients are gone.
     this.detachStreamTransport(sessionId)
     this.streamingStates.delete(sessionId)
     // Shadow registry (Phase 2): every session-scoped entry dies with the state.
@@ -516,26 +496,41 @@ class MessagePersister {
     // Safe to drop: the container's persisted grants are authoritative, so a
     // resubscribed session repopulates this on the next launch with one GET.
     this.sessionCapabilityGrants.delete(sessionId)
-    this.ignoreNextConnectionClosed.delete(sessionId)
-    this.connectionRecoveryEpoch.delete(sessionId)
+    this.streamTokens.delete(sessionId)
   }
 
   /**
-   * Drop the live transport without treating the resulting close as peer death.
-   * Real ws.close() synthesizes connection_closed on the old callback; that
-   * path must not stack handleConnectionClosed's resubscribe on top of the
-   * replacement we are about to install.
+   * Install the only current stream callback for a session. Every replacement
+   * installs its token before closing the old socket, so late frames from
+   * that socket cannot affect the replacement or start another recovery.
    */
+  private attachStreamTransport(
+    sessionId: string,
+    client: ContainerClient,
+    containerSessionId: string
+  ): Promise<void> {
+    const streamToken = {}
+    this.streamTokens.set(sessionId, streamToken)
+
+    const existingUnsubscribe = this.subscriptions.get(sessionId)
+    existingUnsubscribe?.()
+
+    const { unsubscribe, ready } = client.subscribeToStream(containerSessionId, (message) => {
+      if (this.streamTokens.get(sessionId) !== streamToken) return
+      this.handleMessage(sessionId, message, streamToken)
+    })
+    this.subscriptions.set(sessionId, unsubscribe)
+    return ready
+  }
+
   private detachStreamTransport(sessionId: string): void {
-    this.connectionRecoveryEpoch.set(
-      sessionId,
-      (this.connectionRecoveryEpoch.get(sessionId) ?? 0) + 1
-    )
+    this.streamTokens.set(sessionId, {})
     const existingUnsubscribe = this.subscriptions.get(sessionId)
     if (!existingUnsubscribe) return
-    this.ignoreNextConnectionClosed.add(sessionId)
     existingUnsubscribe()
-    this.subscriptions.delete(sessionId)
+    if (this.subscriptions.get(sessionId) === existingUnsubscribe) {
+      this.subscriptions.delete(sessionId)
+    }
   }
 
   private armSettleProbe(sessionId: string): void {
@@ -567,14 +562,7 @@ class MessagePersister {
     if (!state?.isActive) return
     const client = this.containerClients.get(sessionId)
     if (!client) return
-    // Detach only the transport — same boundary as doSubscribeToSession.
-    // Silence can fire while the old socket is still half-open or merely quiet;
-    // closing it ourselves must not look like an unexpected peer death.
-    this.detachStreamTransport(sessionId)
-    const { unsubscribe, ready } = client.subscribeToStream(sessionId, (message) =>
-      this.handleMessage(sessionId, message)
-    )
-    this.subscriptions.set(sessionId, unsubscribe)
+    const ready = this.attachStreamTransport(sessionId, client, sessionId)
     ready.catch((err) => {
       console.error(`[MessagePersister] Silence reattach failed for session ${sessionId}:`, err)
     })
@@ -972,11 +960,7 @@ class MessagePersister {
           this.markSessionInactive(sessionId, state)
         }
         // Clean up stale WebSocket subscription so next message re-subscribes to the new container
-        const unsubscribe = this.subscriptions.get(sessionId)
-        if (unsubscribe) {
-          unsubscribe()
-          this.subscriptions.delete(sessionId)
-        }
+        this.detachStreamTransport(sessionId)
         this.containerClients.delete(sessionId)
       }
     }
@@ -1129,6 +1113,7 @@ class MessagePersister {
     // completion notification against the turn this message is starting.
     state.lastResultSubtype = null
     state.lastResultCleanSuccess = false
+    this.armSettleProbe(sessionId)
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
@@ -1440,7 +1425,8 @@ class MessagePersister {
   // Handle incoming message from container
   private handleMessage(
     sessionId: string,
-    message: StreamMessage
+    message: StreamMessage,
+    streamToken: object
   ): void {
     this.capture?.recordInput(sessionId, message)
     const state = this.streamingStates.get(sessionId)
@@ -2010,6 +1996,7 @@ class MessagePersister {
         if (isError || classification.isInterrupt) {
           state.isActive = false
           state.isAwaitingInput = false
+          this.cancelSettleProbe(sessionId)
         } else if (state.stateEventsAuthority || this.openBackgroundWorkCount(state) > 0) {
           this.syncSessionAwaiting(sessionId)
         } else {
@@ -2170,15 +2157,10 @@ class MessagePersister {
         break
 
       case 'connection_closed':
-        // Intentional detach (silence reattach / re-subscribe) closes the socket
-        // itself — that synthetic close is not peer death.
-        if (this.ignoreNextConnectionClosed.delete(sessionId)) {
-          return
-        }
         // WebSocket connection to container was lost
         // Check if session is still actually running in the container
         console.log(`[MessagePersister] Connection closed for session ${sessionId}, checking container state`)
-        this.handleConnectionClosed(sessionId, state)
+        this.handleConnectionClosed(sessionId, state, streamToken)
         break
 
       case 'stream_event':
@@ -2197,7 +2179,11 @@ class MessagePersister {
   }
 
   // Handle connection closed - check container and mark inactive if session is done
-  private handleConnectionClosed(sessionId: string, state: StreamingState): void {
+  private handleConnectionClosed(
+    sessionId: string,
+    state: StreamingState,
+    streamToken: object
+  ): void {
     const client = this.containerClients.get(sessionId)
     if (!client) {
       // No client reference, assume session is done
@@ -2205,14 +2191,10 @@ class MessagePersister {
       return
     }
 
-    // Capture epoch before the async hop. An intentional detach (or a newer
-    // recovery) bumps it; stale then-handlers must not stack another subscribe.
-    const epoch = this.connectionRecoveryEpoch.get(sessionId) ?? 0
-
     // Check container asynchronously
     client.getSession(sessionId)
       .then((containerSession) => {
-        if ((this.connectionRecoveryEpoch.get(sessionId) ?? 0) !== epoch) {
+        if (this.streamTokens.get(sessionId) !== streamToken) {
           return
         }
         if (!containerSession) {
@@ -2228,20 +2210,7 @@ class MessagePersister {
         if (isRunning) {
           // Session still running, try to re-subscribe
           console.log(`[MessagePersister] Session ${sessionId} still running, re-subscribing`)
-          // Peer already closed the socket — do not call unsubscribe() (and do
-          // not set ignoreNext). On the real client unsubscribe is a no-op once
-          // close cleared wsConnections; calling detachStreamTransport would
-          // leave ignoreNext sticky and swallow the next real close.
-          this.connectionRecoveryEpoch.set(
-            sessionId,
-            (this.connectionRecoveryEpoch.get(sessionId) ?? 0) + 1
-          )
-          this.subscriptions.delete(sessionId)
-          const { unsubscribe, ready } = client.subscribeToStream(
-            sessionId,
-            (message) => this.handleMessage(sessionId, message)
-          )
-          this.subscriptions.set(sessionId, unsubscribe)
+          const ready = this.attachStreamTransport(sessionId, client, sessionId)
           // Defense-in-depth: we don't await the re-subscribe here, so attach a
           // handler to the `ready` promise. A failed reconnect routes a
           // synthesized connection_closed message through the callback above;
@@ -2256,7 +2225,7 @@ class MessagePersister {
         }
       })
       .catch((error) => {
-        if ((this.connectionRecoveryEpoch.get(sessionId) ?? 0) !== epoch) {
+        if (this.streamTokens.get(sessionId) !== streamToken) {
           return
         }
         // Can't reach container, assume session is done
