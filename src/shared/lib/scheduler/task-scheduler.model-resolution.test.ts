@@ -160,6 +160,9 @@ describe('TaskScheduler model, effort, and speed resolution', () => {
     expect(args.model).toBe('claude-sonnet-4-20250514')
     expect(args.effort).toBeUndefined()
     expect(args.speed).toBeUndefined()
+    expect(args.systemPrompt).toBe(
+      'This session was started by a scheduled task, not by a person in a conversation. Your response goes to the session transcript, and writing it does not reach anyone. If you need to tell a person or agent something, that takes a tool.',
+    )
   })
 
   it('falls back to the agent default over the global default', async () => {

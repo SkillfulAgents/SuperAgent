@@ -28,6 +28,7 @@ import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
 import { deliverSessionWake } from './wake-delivery'
+import { buildSessionContextPrompt } from '@shared/lib/session-context'
 
 /**
  * How long an overdue session wake keeps retrying (via the normal poll loop)
@@ -228,6 +229,10 @@ class TaskScheduler {
       availableEnvVars:
         availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
+      systemPrompt: buildSessionContextPrompt({
+        surface: 'automation',
+        kind: 'scheduled-task',
+      }),
       model: task.model || agentPrefs.defaultModel || models.agentModel,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,

@@ -17,7 +17,7 @@ import {
   type OutgoingMessage,
   type SystemPromptContext,
 } from './base-connector'
-import { buildSessionContextPrompt } from './chat-session-context'
+import { buildSessionContextPrompt } from '@shared/lib/session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat, withSessionUrl, type AppLinkContext } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 

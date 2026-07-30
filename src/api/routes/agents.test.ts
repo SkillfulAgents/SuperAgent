@@ -5259,6 +5259,9 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('haiku')
     expect(args.effort).toBe('high')
+    expect(args.systemPrompt).toBe(
+      'This session is a conversation in the app. Your response is delivered into it — writing it is what sends it, and no tool is needed for that.',
+    )
   })
 
   it('explicit per-session model/effort win over agent preference defaults', async () => {
