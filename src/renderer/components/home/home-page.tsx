@@ -635,6 +635,7 @@ function AgentCard({
         <AppLink
           to="/agents/$slug"
           params={{ slug: agent.displaySlug }}
+          draggable={false}
           data-widget-drag-surface=""
           aria-label={`Open ${agent.name}`}
           className="absolute inset-0 z-20 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"

@@ -37,6 +37,34 @@ test.describe('home card arrangement', () => {
     await expect(widget).toBeVisible({ timeout: 15_000 })
     await widget.scrollIntoViewIfNeeded()
     await expect(widget.locator('button button')).toHaveCount(0)
+    await expect(widget.getByRole('link', { name: `Open ${agent.name}` })).toHaveAttribute(
+      'draggable',
+      'false'
+    )
+
+    // Outside Arrange mode, desktop still supports direct pointer reordering.
+    // The full-card anchor must not hand the gesture to native HTML link drag.
+    const beforeDirectDrag = await widget.boundingBox()
+    expect(beforeDirectDrag).not.toBeNull()
+    const directSaved = page.waitForResponse(
+      (response) =>
+        response.url().includes('/api/user-settings') &&
+        response.request().method() === 'PUT' &&
+        response.request().postData()?.includes('homeGridLayout') === true &&
+        response.ok()
+    )
+    await page.mouse.move(
+      beforeDirectDrag!.x + beforeDirectDrag!.width / 2,
+      beforeDirectDrag!.y + beforeDirectDrag!.height / 2
+    )
+    await page.mouse.down()
+    await page.mouse.move(
+      beforeDirectDrag!.x + beforeDirectDrag!.width / 2,
+      beforeDirectDrag!.y + beforeDirectDrag!.height / 2 + 180,
+      { steps: 8 }
+    )
+    await page.mouse.up()
+    await directSaved
 
     await page.getByRole('button', { name: 'Agent layout options' }).click()
     await page.getByTestId('home-arrange-action').click()

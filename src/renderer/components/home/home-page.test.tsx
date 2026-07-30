@@ -380,6 +380,7 @@ describe('HomePage AgentCard', () => {
 
     const cardLink = screen.getByRole('link', { name: 'Open Test Agent' })
     expect(cardLink.tagName).toBe('A')
+    expect(cardLink).toHaveAttribute('draggable', 'false')
     expect(cardLink).toHaveAttribute('data-widget-drag-surface')
     expect(screen.getByRole('button', { name: 'Mark as read' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Open session' })).toBeVisible()

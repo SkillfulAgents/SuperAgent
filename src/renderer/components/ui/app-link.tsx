@@ -13,6 +13,7 @@ type AppLinkProps = LinkProps & {
   onClick?: MouseEventHandler<HTMLAnchorElement>
   onDoubleClick?: MouseEventHandler<HTMLAnchorElement>
   title?: string
+  draggable?: boolean
   'aria-label'?: string
   'data-testid'?: string
   /** Marks a full-card navigation link that may also initiate board dragging. */
