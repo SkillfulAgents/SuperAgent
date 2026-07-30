@@ -23,6 +23,7 @@ import { ComputerUseTab } from './computer-use-tab'
 import { CapabilitiesTab } from './capabilities-tab'
 import { AuditLogTab } from './audit-log-tab'
 import { useUser } from '@renderer/context/user-context'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { isElectron } from '@renderer/lib/env'
 
 interface GlobalSettingsPageProps {
@@ -33,10 +34,22 @@ interface GlobalSettingsPageProps {
   sectionLinkProps?: (id: string) => LinkProps
 }
 
+function platformTeamUrl(platformBaseUrl: string, orgId: string): string {
+  return `${platformBaseUrl}/dashboard/organizations/${orgId}?tab=team`
+}
+
 export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSectionChange, sectionLinkProps }: GlobalSettingsPageProps) {
   const { isAuthMode, isAdmin } = useUser()
+  const { data: platformAuth } = usePlatformAuthStatus()
   const showAdminSettings = !isAuthMode || isAdmin
   const showAuthAdmin = isAuthMode && isAdmin
+
+  // Env-managed platform token = platform-controlled deployment; manage users there.
+  const usersExternalHref =
+    platformAuth?.source === 'env' && platformAuth.platformBaseUrl && platformAuth.orgId
+      ? platformTeamUrl(platformAuth.platformBaseUrl, platformAuth.orgId)
+      : undefined
+  const hideLocalAuthSections = Boolean(usersExternalHref)
 
   // Grouped by what the setting concerns (app-level vs agent behavior), not by
   // who can edit it — admin-only sections are filtered per-item instead.
@@ -49,8 +62,21 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
     ...(showAdminSettings ? [{ id: 'admin', label: 'Admin', icon: <Shield className="h-4 w-4" />, render: () => <AdminTab /> }] : []),
     ...(showAuthAdmin
       ? [
-          { id: 'users', label: 'Users', icon: <Users className="h-4 w-4" />, render: () => <UsersTab /> },
-          { id: 'auth', label: 'Auth', icon: <Shield className="h-4 w-4" />, render: () => <AuthTab /> },
+          usersExternalHref
+            ? {
+                id: 'users',
+                label: 'Users',
+                icon: <Users className="h-4 w-4" />,
+                externalHref: usersExternalHref,
+                render: () => null,
+              }
+            : { id: 'users', label: 'Users', icon: <Users className="h-4 w-4" />, render: () => <UsersTab /> },
+          {
+            id: 'auth',
+            label: 'Auth',
+            icon: <Shield className="h-4 w-4" />,
+            render: () => <AuthTab hideLocalAuthSections={hideLocalAuthSections} />,
+          },
         ]
       : []),
   ]
