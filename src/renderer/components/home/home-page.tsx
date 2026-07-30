@@ -1,5 +1,5 @@
 
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { WidgetBoard, WidgetSizePopover, WidgetToggleRow, type GridRect, type WidgetItem, type WidgetSizeKey } from './widget-grid'
 import { useAgents, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
@@ -7,7 +7,7 @@ import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
 import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
-import { useSessions } from '@renderer/hooks/use-sessions'
+import { useNotableSessions } from '@renderer/hooks/use-sessions'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { Halftone } from '@renderer/components/agents/halftone'
@@ -41,6 +41,7 @@ import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { formatDistanceToNow } from 'date-fns'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { toast } from 'sonner'
 
 // Code-split: the graph pulls in @xyflow/react + d3-force, which nobody
 // should pay for on a cards-only page load.
@@ -305,7 +306,7 @@ function AgentCardSessions({
   const moreCount = notable.length - visible.length
 
   return (
-    <div className="flex max-h-full min-h-0 flex-col overflow-hidden rounded-md border border-border/50 bg-white/10 backdrop-blur-sm">
+    <div className="pointer-events-auto flex max-h-full min-h-0 flex-col overflow-hidden rounded-md border border-border/50 bg-white/10 backdrop-blur-sm">
       <div className="min-h-0 overflow-y-auto px-2 py-1">
         {visible.map((s) => {
           const st = sessionState(s)
@@ -392,12 +393,6 @@ function AgentHealthCarousel({
   webhooks: HomeGraphWebhook[]
 }) {
   const navigate = useNavigate()
-  // live:false — many cards mount at once; same reasoning as the graph's
-  // hover cards (no poll, refetch only when stale).
-  const { data: stats, isPending: statsPending } = useAgentActivityStats(agent.slug, DEFAULT_ACTIVITY_DAYS, {
-    live: false,
-  })
-
   const slides = useMemo<HealthSlide[]>(
     () => [
       ...crons.map((c) => ({ kind: 'cron' as const, id: c.id, name: c.name ?? c.scheduleExpression })),
@@ -406,6 +401,13 @@ function AgentHealthCarousel({
     [crons, webhooks]
   )
   const count = slides.length
+  // Avoid one activity request per agent when there are no charts to render.
+  // live:false also prevents decorative cards from polling independently.
+  const { data: stats, isPending: statsPending } = useAgentActivityStats(
+    count > 0 ? agent.slug : null,
+    DEFAULT_ACTIVITY_DAYS,
+    { live: false }
+  )
   const [index, setIndex] = useState(0)
   const [paused, setPaused] = useState(false)
 
@@ -459,7 +461,7 @@ function AgentHealthCarousel({
 
   return (
     <div
-      className="mt-auto flex shrink-0 items-center gap-1.5"
+      className="pointer-events-auto mt-auto flex shrink-0 items-center gap-1.5"
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
     >
@@ -560,7 +562,10 @@ function AgentCard({
   // Fetch sessions whenever there are notable ones — the Wide card lists them,
   // the Small card rotates a count into the title.
   const hasNotable = agent.hasActiveSessions || agent.hasSessionsAwaitingInput || agent.hasUnreadNotifications
-  const { data: sessions } = useSessions(hasNotable ? agent.slug : null, { staleTime: 30_000 })
+  const { data: sessions } = useNotableSessions(hasNotable ? agent.slug : null, {
+    limit: 100,
+    staleTime: 30_000,
+  })
 
   // Notification summary for the Small card's rotating title meta. Orange
   // (needs input) always wins over blue (unread).
@@ -575,7 +580,7 @@ function AgentCard({
       : null
 
   const titleOverlay = (
-    <div className="absolute bottom-2 left-4 max-w-[calc(100%-2rem)] rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">
+    <div className="pointer-events-none absolute bottom-2 left-4 z-10 max-w-[calc(100%-2rem)] rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">
       <div className="truncate text-sm font-normal text-foreground">{agent.name}</div>
       {isSmall && notifState ? (
         <TickerTitleMeta lastWorked={lastWorked} notifCount={notifSessions.length} notifState={notifState} />
@@ -587,15 +592,24 @@ function AgentCard({
 
   return (
     <AgentContextMenu agent={agent}>
-      <button
-        onClick={() => {
-          void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
-        }}
+      <div
         className="relative flex h-full w-full flex-col gap-3 overflow-hidden rounded-lg border bg-card p-4 text-left shadow-sm transition-[box-shadow,transform,border-color] duration-150 hover:border-accent-foreground/20 group-hover/widget:-translate-y-0.5 group-hover/widget:shadow-md"
       >
+        {/* Keep navigation as a sibling of the card controls so the DOM never
+            nests buttons inside a button. Interactive rows sit above this
+            transparent hit target and handle their own actions. */}
+        <button
+          type="button"
+          aria-label={`Open ${agent.name}`}
+          onClick={() => {
+            void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
+          }}
+          className="absolute inset-0 z-20 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        />
+
         {/* Control row: status chip + size kebab share one flex row, so
-            items-center vertically centers the kebab against the chip, and the
-            kebab simply appears to its right on hover (right-anchored row). */}
+            items-center vertically centers the kebab against the chip in one
+            right-anchored row. */}
         <div className="absolute top-2 right-4 z-30 flex items-center gap-1.5">
           <AgentCardPowerButton agent={agent} />
           {sizeControl}
@@ -630,7 +644,7 @@ function AgentCard({
                 className="h-full"
               />
             </div>
-            <div className="relative z-10 flex min-h-0 flex-1 flex-col gap-1.5 pb-11">
+            <div className="pointer-events-none relative z-30 flex min-h-0 flex-1 flex-col gap-1.5 pb-11">
               {/* Notifications sit directly above the cron/webhook carousel
                   (bottom-aligned); any slack opens up above them. Scrolls when
                   the list overflows. */}
@@ -649,13 +663,20 @@ function AgentCard({
             {titleOverlay}
           </>
         )}
-      </button>
+      </div>
     </AgentContextMenu>
   )
 }
 
 /** Widget-grid key for a dashboard tile. Agents use their bare slug. */
 const dashKey = (agentSlug: string, dashSlug: string) => `dash::${agentSlug}::${dashSlug}`
+
+function dashboardAgentSlugFromKey(id: string): string | null {
+  if (!id.startsWith('dash::')) return null
+  const rest = id.slice('dash::'.length)
+  const separator = rest.indexOf('::')
+  return separator === -1 ? null : rest.slice(0, separator)
+}
 
 export function HomePage() {
   useRenderTracker('HomePage')
@@ -672,12 +693,14 @@ export function HomePage() {
 
   // Optimistic local layout while the homeGridLayout mutation is in flight.
   const [localLayout, setLocalLayout] = useState<Record<string, GridRect> | null>(null)
+  const layoutMutationVersion = useRef(0)
   const savedLayout = localLayout ?? userSettings?.homeGridLayout
 
   // Agents whose associated app/dashboard card is toggled off. localHidden is a
   // session override that wins over the server value, so the toggle takes effect
   // immediately and isn't clobbered by the post-save refetch.
   const [localHidden, setLocalHidden] = useState<Set<string> | null>(null)
+  const hiddenMutationVersion = useRef(0)
   const hiddenApps = useMemo(
     () => localHidden ?? new Set(userSettings?.hiddenAppCards ?? []),
     [localHidden, userSettings?.hiddenAppCards]
@@ -734,16 +757,47 @@ export function HomePage() {
   }, [topology])
 
   const commitLayout = (layout: Record<string, GridRect>) => {
-    setLocalLayout(layout)
-    updateSettings.mutate({ homeGridLayout: layout }, { onSettled: () => setLocalLayout(null) })
+    // WidgetBoard only knows about currently rendered items. Preserve saved
+    // geometry for intentionally hidden dashboard cards so a later drag does
+    // not reset their position/size when they are shown again.
+    const nextLayout = { ...layout }
+    for (const [id, rect] of Object.entries(savedLayout ?? {})) {
+      const agentSlug = dashboardAgentSlugFromKey(id)
+      if (agentSlug && hiddenApps.has(agentSlug)) nextLayout[id] = rect
+    }
+
+    const version = ++layoutMutationVersion.current
+    setLocalLayout(nextLayout)
+    updateSettings.mutate(
+      { homeGridLayout: nextLayout },
+      {
+        onError: (error) => {
+          toast.error('Failed to save the home layout', { description: error.message })
+        },
+        onSettled: () => {
+          if (version === layoutMutationVersion.current) setLocalLayout(null)
+        },
+      }
+    )
   }
 
   const toggleAppCard = (agentSlug: string) => {
     const next = new Set(hiddenApps)
     if (next.has(agentSlug)) next.delete(agentSlug)
     else next.add(agentSlug)
+    const version = ++hiddenMutationVersion.current
     setLocalHidden(next)
-    updateSettings.mutate({ hiddenAppCards: [...next] })
+    updateSettings.mutate(
+      { hiddenAppCards: [...next] },
+      {
+        onError: (error) => {
+          toast.error('Failed to update app-card visibility', { description: error.message })
+        },
+        onSettled: () => {
+          if (version === hiddenMutationVersion.current) setLocalHidden(null)
+        },
+      }
+    )
   }
 
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()

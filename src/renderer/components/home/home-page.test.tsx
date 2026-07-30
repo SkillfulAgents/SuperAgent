@@ -9,6 +9,20 @@ import { renderWithProviders } from '@renderer/test/test-utils'
 
 // Mock all dependencies for HomePage rendering
 
+const {
+  mockUseNotableSessions,
+  mockUseAgentActivityStats,
+  mockUserSettingsData,
+  mockUpdateSettingsMutate,
+  mockToastError,
+} = vi.hoisted(() => ({
+  mockUseNotableSessions: vi.fn(() => ({ data: [] })),
+  mockUseAgentActivityStats: vi.fn(() => ({ data: undefined, isPending: true })),
+  mockUserSettingsData: vi.fn<() => Record<string, unknown> | null>(() => null),
+  mockUpdateSettingsMutate: vi.fn(),
+  mockToastError: vi.fn(),
+}))
+
 vi.mock('@shared/lib/utils/cn', () => ({
   cn: (...args: unknown[]) => {
     const classes: string[] = []
@@ -43,11 +57,11 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 })
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
-  useSessions: () => ({ data: [] }),
+  useNotableSessions: mockUseNotableSessions,
 }))
 
 vi.mock('@renderer/hooks/use-activity-stats', () => ({
-  useAgentActivityStats: () => ({ data: undefined, isPending: true }),
+  useAgentActivityStats: mockUseAgentActivityStats,
 }))
 
 // The home page fetches the /api/home-graph topology snapshot for the cards'
@@ -77,8 +91,8 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-user-settings', () => ({
-  useUserSettings: () => ({ data: null }),
-  useUpdateUserSettings: () => ({ mutate: vi.fn(), isPending: false }),
+  useUserSettings: () => ({ data: mockUserSettingsData() }),
+  useUpdateUserSettings: () => ({ mutate: mockUpdateSettingsMutate, isPending: false }),
 }))
 
 vi.mock('@renderer/lib/agent-ordering', () => ({
@@ -111,6 +125,10 @@ vi.mock('@renderer/components/ui/popover', () => ({
 
 vi.mock('@renderer/hooks/use-fullscreen', () => ({
   useFullScreen: () => false,
+}))
+
+vi.mock('sonner', () => ({
+  toast: { error: mockToastError },
 }))
 
 vi.mock('@renderer/lib/env', () => ({
@@ -148,6 +166,7 @@ describe('HomePage AgentCard', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-03-26T12:00:00Z'))
     vi.clearAllMocks()
+    mockUserSettingsData.mockReturnValue(null)
   })
 
   afterAll(() => {
@@ -278,6 +297,90 @@ describe('HomePage AgentCard', () => {
     // status='running' + hasSessionsAwaitingInput → getAgentActivityStatus aggregates
     // to 'awaiting_input', surfaced as the dot-matrix indicator's aria-label.
     expect(screen.getByRole('img', { name: 'awaiting_input' })).toBeInTheDocument()
+  })
+
+  it('uses the notable-session fast path for cards with live or unread work', () => {
+    mockAgentsData.mockReturnValue({
+      data: [makeAgent({ hasUnreadNotifications: true })],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+
+    expect(mockUseNotableSessions).toHaveBeenCalledWith('test-agent', {
+      limit: 100,
+      staleTime: 30_000,
+    })
+  })
+
+  it('does not request activity statistics for agents without health slides', () => {
+    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
+    renderWithProviders(<HomePage />)
+
+    expect(mockUseAgentActivityStats).toHaveBeenCalledWith(null, 14, { live: false })
+  })
+
+  it('keeps card options reachable and avoids nested native buttons', () => {
+    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
+    renderWithProviders(<HomePage />)
+
+    expect(screen.getByRole('button', { name: 'Card options' })).not.toHaveClass('hidden')
+    expect(document.querySelector('button button')).toBeNull()
+    const widget = document.querySelector('[data-widget-id="test-agent"]')
+    expect(widget).toHaveClass('touch-pan-y')
+    expect(widget).not.toHaveClass('touch-none')
+  })
+
+  it('preserves hidden dashboard geometry when another card is resized', () => {
+    const dashboardRect = { x: 2, y: 3, w: 1, h: 1 }
+    mockUserSettingsData.mockReturnValue({
+      hiddenAppCards: ['test-agent'],
+      homeGridLayout: {
+        'test-agent': { x: 0, y: 0, w: 2, h: 1 },
+        'dash::test-agent::sales': dashboardRect,
+      },
+    })
+    mockAgentsData.mockReturnValue({
+      data: [
+        makeAgent({
+          dashboardCount: 1,
+          dashboards: [{ slug: 'sales', name: 'Sales' }],
+        }),
+      ],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+
+    screen.getByRole('switch', { name: 'Expanded' }).click()
+
+    const layoutCall = mockUpdateSettingsMutate.mock.calls.find(
+      ([data]) => data && typeof data === 'object' && 'homeGridLayout' in data
+    )
+    expect(layoutCall?.[0].homeGridLayout['dash::test-agent::sales']).toEqual(dashboardRect)
+  })
+
+  it('rolls back an optimistic app-card toggle when persistence fails', () => {
+    mockUserSettingsData.mockReturnValue({ hiddenAppCards: [] })
+    mockAgentsData.mockReturnValue({
+      data: [
+        makeAgent({
+          dashboardCount: 1,
+          dashboards: [{ slug: 'sales', name: 'Sales' }],
+        }),
+      ],
+      isLoading: false,
+    })
+    mockUpdateSettingsMutate.mockImplementationOnce((_data, options) => {
+      options?.onError?.(new Error('offline'))
+      options?.onSettled?.()
+    })
+    renderWithProviders(<HomePage />)
+
+    screen.getByRole('switch', { name: 'Show app' }).click()
+
+    expect(screen.getByText('Open app')).toBeInTheDocument()
+    expect(mockToastError).toHaveBeenCalledWith('Failed to update app-card visibility', {
+      description: 'offline',
+    })
   })
 })
 

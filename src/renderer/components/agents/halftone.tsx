@@ -260,28 +260,77 @@ export function Halftone({
       }
     }
 
+    let intersecting = true
+    let pointerListening = false
+
+    const setPointerListening = (next: boolean) => {
+      if (next === pointerListening) return
+      pointerListening = next
+      if (next) {
+        window.addEventListener('pointermove', onPointerMove, { passive: true })
+      } else {
+        window.removeEventListener('pointermove', onPointerMove)
+        pointerSeen = false
+      }
+    }
+
     function frame() {
-      if (stopped) return
+      raf = 0
+      if (stopped || !intersecting || document.hidden) return
       draw()
       t += speed
       raf = requestAnimationFrame(frame)
     }
 
+    const syncAnimation = () => {
+      const active = !reduce && intersecting && !document.hidden && !stopped
+      setPointerListening(active)
+      if (active && raf === 0) {
+        raf = requestAnimationFrame(frame)
+      } else if (!active && raf !== 0) {
+        cancelAnimationFrame(raf)
+        raf = 0
+      }
+    }
+
     if (!setup()) return
     if (reduce) draw()
-    else frame()
+    else syncAnimation()
 
     const ro = new ResizeObserver(() => {
       if (setup() && reduce) draw()
     })
     ro.observe(wrap)
-    if (!reduce) window.addEventListener('pointermove', onPointerMove, { passive: true })
+
+    const io =
+      typeof IntersectionObserver === 'undefined'
+        ? null
+        : new IntersectionObserver(([entry]) => {
+            intersecting = entry?.isIntersecting ?? true
+            if (reduce) {
+              if (intersecting) draw()
+            } else {
+              syncAnimation()
+            }
+          })
+    io?.observe(wrap)
+
+    const onVisibilityChange = () => {
+      if (reduce) {
+        if (!document.hidden && intersecting) draw()
+      } else {
+        syncAnimation()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     return () => {
       stopped = true
       cancelAnimationFrame(raf)
       ro.disconnect()
-      window.removeEventListener('pointermove', onPointerMove)
+      io?.disconnect()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      setPointerListening(false)
     }
   }, [motif, state, speedProp, color, spacing, maxRadius, vignette, contrast, speedScale, dim, seed])
 

@@ -9,8 +9,8 @@ import { cn } from '@shared/lib/utils/cn'
  * Cards live on a board of square cells (responsive 2–6 columns). Each card
  * occupies a rect {x, y, w, h} in cell units and comes in two footprints:
  * Small 1×1 and Wide 2×1. Cards are dragged anywhere on the
- * board with a snapped drop-ghost and live reflow of the other cards; a hover
- * pencil opens a popover with the size picker. The parent owns persistence —
+ * board with a snapped drop-ghost and live reflow of the other cards; a card
+ * options control opens a popover with the size picker. The parent owns persistence —
  * the board calls onCommit with the full layout map after a drag or resize.
  *
  * Ported from the Claude Design handoff (Agent Homepage prototype): the
@@ -218,9 +218,13 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
       const preview = resolveLayout(moved, item.id)
       setDrag({ id: item.id, left, top, w: item.w, h: item.h, target: { x: tx, y: ty }, preview })
     }
-    const up = () => {
+    const cleanup = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', cancel)
+    }
+    const up = () => {
+      cleanup()
       const d = dragRef.current
       if (d?.preview) commitFromPlaced(d.preview)
       setDrag(null)
@@ -229,8 +233,14 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
         didDragRef.current = false
       }, 0)
     }
+    const cancel = () => {
+      cleanup()
+      setDrag(null)
+      didDragRef.current = false
+    }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
   }
 
   function setSize(item: Placed, size: WidgetSizeKey) {
@@ -285,7 +295,10 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
             key={item.id}
             data-widget-id={item.id}
             className={cn(
-              'group/widget absolute touch-none',
+              // Keep vertical touch panning available. If the browser claims a
+              // gesture for scrolling it sends pointercancel, which tears down
+              // the tentative drag above without committing it.
+              'group/widget absolute touch-pan-y',
               // Tiles glide to new positions (reflow, drop-settle) but snap
               // their size in one frame — tweening width/height fights the
               // card's contents (instant inner-layout swap + the halftone
@@ -368,6 +381,7 @@ export function WidgetSizePopover({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
+          type="button"
           data-widget-no-drag
           aria-label="Card options"
           title="Card options"
@@ -376,9 +390,11 @@ export function WidgetSizePopover({
           className={cn(
             // Same size as the status chip's stop button (h-5 w-5). The caller
             // places it in an items-center row so it centers against the chip.
-            // Hidden until the card is hovered.
-            'hidden h-5 w-5 items-center justify-center rounded border bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground group-hover/widget:flex',
-            open && 'flex bg-muted text-foreground'
+            // Keep the control in the focus order and available on coarse
+            // pointers; reducing opacity preserves the quiet default treatment
+            // without making it hover-only.
+            'flex h-5 w-5 items-center justify-center rounded border bg-background text-muted-foreground opacity-60 shadow-sm transition-[color,background-color,opacity] hover:bg-muted hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+            open && 'bg-muted text-foreground opacity-100'
           )}
         >
           <MoreVertical className="h-3.5 w-3.5" />
