@@ -9,15 +9,24 @@ import { type ComposerOptionsState } from './composer-options'
 import { ModelFamilyList, findCatalogModel } from './model-family-list'
 import { EFFORT_LABELS, EffortSection, useEffortClamp } from './effort-slider'
 import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from './speed-section'
+import { AgentDefaultFooter } from './agent-default-footer'
 
 interface ComposerOptionsPopoverProps {
   state: ComposerOptionsState
   disabled?: boolean
   /** Show the Effort section. Disable for model-only pickers (e.g. summarizer). */
   includeEffort?: boolean
+  /**
+   * Render the Agent Default footer ("Set as Agent Default" + link to the
+   * agent home card) for this agent. Requires router + user providers, so
+   * only main-app hosts pass it — quick-dispatch's slim window doesn't.
+   */
+  agentSlug?: string
+  /** Show the footer's gear link to Agent Home. Off for the agent-home composer itself. */
+  agentHomeLink?: boolean
 }
 
-function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: ComposerOptionsPopoverProps) {
+function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, agentSlug, agentHomeLink }: ComposerOptionsPopoverProps) {
   const { effort, setEffort, speed, setSpeed, model, setModel, catalog, webProvider } = state
 
   // Trigger display fallback for the brief window before useComposerOptions
@@ -117,6 +126,8 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
             <SpeedSection speeds={visibleSpeeds} value={speed} onChange={setSpeed} />
           </>
         )}
+        {/* Renders its own separator (it returns null until defaults load). */}
+        {agentSlug && <AgentDefaultFooter agentSlug={agentSlug} state={state} agentHomeLink={agentHomeLink} />}
       </PopoverContent>
     </Popover>
   )

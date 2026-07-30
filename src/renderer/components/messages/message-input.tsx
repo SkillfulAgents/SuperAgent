@@ -304,7 +304,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
             />
             {/* Model/effort are locked while the agent works — changing them
                 mid-turn would interrupt the running query. */}
-            <ComposerOptions state={composerOptions} disabled={isDisabled || isActive} />
+            <ComposerOptions state={composerOptions} disabled={isDisabled || isActive} agentSlug={agentSlug} />
           </>
         )}
         rightActions={(
