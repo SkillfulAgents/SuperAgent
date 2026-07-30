@@ -472,6 +472,7 @@ vi.mock('@shared/lib/utils/chunked-upload', () => {
     UploadTooLargeError,
     storeUploadChunk: (...args: unknown[]) => mockStoreUploadChunk(...args),
     moveUploadedFile: (...args: unknown[]) => mockMoveUploadedFile(...args),
+    cleanupStaleTempUploads: vi.fn(async () => undefined),
   }
 })
 
