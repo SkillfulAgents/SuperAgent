@@ -26,7 +26,7 @@ import {
   ChatIntegrationApiError,
 } from '@renderer/hooks/use-chat-integrations'
 import { Loader2, CheckCircle, AlertCircle, Copy, Check, Eye, EyeOff } from 'lucide-react'
-import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { IMESSAGE_PHONE_E164, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 
 function generateSlackManifest(botName: string): string {
   return JSON.stringify({
@@ -71,11 +71,10 @@ function generateSlackManifest(botName: string): string {
   }, null, 2)
 }
 
-const IMESSAGE_SETUP_NUMBER_RAW = '+12053967934'
 const IMESSAGE_SETUP_NUMBER_DISPLAY = '+1 (205) 396-7934'
 
 function PhoneNumberCopyButton() {
-  const smsUrl = `sms:${IMESSAGE_SETUP_NUMBER_RAW}&body=${encodeURIComponent('/setup')}`
+  const smsUrl = `sms:${IMESSAGE_PHONE_E164}&body=${encodeURIComponent('/setup')}`
   return (
     <a
       href={smsUrl}

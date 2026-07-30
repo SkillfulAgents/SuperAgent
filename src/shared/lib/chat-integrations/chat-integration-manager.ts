@@ -19,6 +19,7 @@ import { formatSessionTimestamp, resolveAppLinkContext } from './utils'
 import { requestCardFromRegistry, reviewCardFromRegistry } from './request-card'
 import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
 import { getAgent } from '@shared/lib/services/agent-service'
+import { displaySlug } from '@shared/lib/utils/file-storage'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
@@ -456,16 +457,26 @@ class ChatIntegrationManager {
       if (!agent) return
 
       const card = buildAgentContactCard({
+        // UID stays the minted id: renaming the agent must not mint a second
+        // contact on the phone. Only the link carries the prettier display slug.
         slug: integration.agentSlug,
         name: agent.frontmatter.name,
         description: agent.frontmatter.description,
-        appUrl: resolveAgentWebUrl(integration.agentSlug),
+        appUrl: resolveAgentWebUrl(displaySlug(agent.frontmatter.name, integration.agentSlug)),
       })
 
       // No chatId: the gateway falls back to the chat it already knows, else
       // creates one from the phone it stored during `/setup`. That fallback is
       // what lets this send before the user has ever messaged the agent.
-      await connector.sendFile('', card, `${agent.frontmatter.name}.vcf`)
+      //
+      // The caption also covers the connector's upload-failure path, which would
+      // otherwise send a bare `[File: ….vcf]`.
+      await connector.sendFile(
+        '',
+        card,
+        `${sanitizeUploadFilename(agent.frontmatter.name)}.vcf`,
+        `Save me as a contact so I'm not just a number. Text me anytime.`,
+      )
     } catch (err) {
       console.error('[ChatIntegrationManager] Failed to send contact card:', err)
       reportError(err, 'send-contact-card', { integrationId })

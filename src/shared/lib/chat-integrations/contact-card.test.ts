@@ -1,18 +1,15 @@
-import { describe, it, expect, afterEach, vi } from 'vitest'
-import { readCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
+import { describe, it, expect, afterEach } from 'vitest'
 import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
-
-vi.mock('@shared/lib/platform-auth/cloud-workspace-record', () => ({
-  readCloudWorkspaceRecord: vi.fn(),
-}))
 
 const base = { slug: 'ada', name: 'Ada', appUrl: null }
 const originalHostPublicUrl = process.env.HOST_PUBLIC_URL
+const originalType = (process as { type?: string }).type
 
 afterEach(() => {
   if (originalHostPublicUrl === undefined) delete process.env.HOST_PUBLIC_URL
   else process.env.HOST_PUBLIC_URL = originalHostPublicUrl
-  vi.mocked(readCloudWorkspaceRecord).mockReset()
+  if (originalType === undefined) delete (process as { type?: string }).type
+  else (process as { type?: string }).type = originalType
 })
 
 describe('buildAgentContactCard', () => {
@@ -28,6 +25,7 @@ describe('buildAgentContactCard', () => {
     const vcf = buildAgentContactCard(base).toString('utf8')
     for (const field of [
       'UID:gamut-agent-ada',
+      'N:Ada;;;;',
       'FN:Ada',
       'TITLE:AI Agent',
       'ORG:Gamut',
@@ -81,9 +79,21 @@ describe('buildAgentContactCard', () => {
 })
 
 describe('resolveAgentWebUrl', () => {
-  it('returns null when no public or cloud URL exists', () => {
+  it('returns null on desktop, where the app link is a superagent:// scheme no phone can open', () => {
+    ;(process as { type?: string }).type = 'browser'
+    process.env.HOST_PUBLIC_URL = 'https://app.example.com'
+    expect(resolveAgentWebUrl('ada')).toBeNull()
+  })
+
+  it('returns the https agent URL on a public web host', () => {
+    delete (process as { type?: string }).type
+    process.env.HOST_PUBLIC_URL = 'https://app.example.com'
+    expect(resolveAgentWebUrl('ada')).toBe('https://app.example.com/agents/ada')
+  })
+
+  it('returns null when the web host has no public URL', () => {
+    delete (process as { type?: string }).type
     delete process.env.HOST_PUBLIC_URL
-    vi.mocked(readCloudWorkspaceRecord).mockReturnValue(null)
     expect(resolveAgentWebUrl('ada')).toBeNull()
   })
 })
