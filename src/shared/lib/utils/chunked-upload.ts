@@ -1,10 +1,15 @@
 import * as fs from 'fs'
 import path from 'path'
 import { pipeline } from 'stream/promises'
+import { captureException } from '@shared/lib/error-reporting'
 import { ensureDirectory, getTempUploadsDir, removeDirectory } from './file-storage'
 
 // Workspace chat/file uploads. Streaming assembly keeps RAM O(chunk); this caps disk.
 export const MAX_UPLOAD_TOTAL_SIZE = 2 * 1024 * 1024 * 1024
+
+export function formatUploadTooLargeMessage(size: number, maxBytes: number): string {
+  return `File too large (${(size / 1024 / 1024).toFixed(1)}MB, max ${maxBytes / 1024 / 1024}MB)`
+}
 
 // Throw from storeUploadChunk so routes can map to HTTP 413 without reading bytes.
 export class UploadTooLargeError extends Error {
@@ -12,7 +17,7 @@ export class UploadTooLargeError extends Error {
   readonly maxBytes: number
 
   constructor(size: number, maxBytes: number) {
-    super(`File too large (${(size / 1024 / 1024).toFixed(1)}MB, max ${maxBytes / 1024 / 1024}MB)`)
+    super(formatUploadTooLargeMessage(size, maxBytes))
     this.name = 'UploadTooLargeError'
     this.size = size
     this.maxBytes = maxBytes
@@ -23,6 +28,13 @@ export type StoreChunkResult =
   | { status: 'received' }
   | { status: 'assembled'; filePath: string }
 
+function ignoreCleanupError(err: unknown, op: string, extra?: Record<string, unknown>): void {
+  if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return
+  console.warn(`[chunked-upload] ${op} failed:`, err)
+  captureException(err, { tags: { area: 'chunked-upload', op }, extra })
+}
+
+// O(chunks) per call; fine while totalChunks is capped at 200 by parseChunkFields.
 async function sumChunkBytes(uploadDir: string, chunkIndexToReplace?: number): Promise<{ total: number; replaced: number }> {
   let total = 0
   let replaced = 0
@@ -60,7 +72,11 @@ export async function storeUploadChunk(
     const { total, replaced } = await sumChunkBytes(uploadDir, chunkIndex)
     const projected = total - replaced + chunk.byteLength
     if (projected > maxTotalBytes) {
-      try { await removeDirectory(uploadDir) } catch { /* ignore cleanup errors */ }
+      try {
+        await removeDirectory(uploadDir)
+      } catch (err) {
+        ignoreCleanupError(err, 'remove-oversized-upload-dir', { uploadId })
+      }
       throw new UploadTooLargeError(projected, maxTotalBytes)
     }
   }
@@ -90,10 +106,18 @@ export async function storeUploadChunk(
     }
     return { status: 'assembled', filePath: assembledPath }
   } catch (err) {
-    try { await fs.promises.unlink(assembledPath) } catch { /* ignore */ }
+    try {
+      await fs.promises.unlink(assembledPath)
+    } catch (cleanupErr) {
+      ignoreCleanupError(cleanupErr, 'unlink-partial-assembled', { uploadId })
+    }
     throw err
   } finally {
-    try { await removeDirectory(uploadDir) } catch { /* ignore cleanup errors */ }
+    try {
+      await removeDirectory(uploadDir)
+    } catch (err) {
+      ignoreCleanupError(err, 'remove-chunk-dir-after-assemble', { uploadId })
+    }
   }
 }
 
@@ -105,7 +129,11 @@ export async function moveUploadedFile(srcPath: string, destPath: string): Promi
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err
     await pipeline(fs.createReadStream(srcPath), fs.createWriteStream(destPath))
-    try { await fs.promises.unlink(srcPath) } catch { /* ignore */ }
+    try {
+      await fs.promises.unlink(srcPath)
+    } catch (cleanupErr) {
+      ignoreCleanupError(cleanupErr, 'unlink-src-after-exdev-copy', { srcPath, destPath })
+    }
   }
   return (await fs.promises.stat(destPath)).size
 }
@@ -113,15 +141,36 @@ export async function moveUploadedFile(srcPath: string, destPath: string): Promi
 // Remove stale chunk dirs and orphaned `.assembled` files (crash between assemble and consume).
 export async function cleanupStaleTempUploads(maxAgeMs: number, nowMs: number = Date.now()): Promise<void> {
   const uploadsDir = getTempUploadsDir()
-  const entries = await fs.promises.readdir(uploadsDir, { withFileTypes: true }).catch(() => [])
+  let entries: fs.Dirent[]
+  try {
+    entries = await fs.promises.readdir(uploadsDir, { withFileTypes: true })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return
+    ignoreCleanupError(err, 'readdir-temp-uploads', { uploadsDir })
+    return
+  }
   for (const entry of entries) {
     const entryPath = path.join(uploadsDir, entry.name)
-    const stat = await fs.promises.stat(entryPath).catch(() => null)
-    if (!stat || nowMs - stat.mtimeMs <= maxAgeMs) continue
+    let stat: fs.Stats
+    try {
+      stat = await fs.promises.stat(entryPath)
+    } catch (err) {
+      ignoreCleanupError(err, 'stat-temp-upload-entry', { entryPath })
+      continue
+    }
+    if (nowMs - stat.mtimeMs <= maxAgeMs) continue
     if (entry.isDirectory()) {
-      await removeDirectory(entryPath).catch(() => {})
+      try {
+        await removeDirectory(entryPath)
+      } catch (err) {
+        ignoreCleanupError(err, 'remove-stale-upload-dir', { entryPath })
+      }
     } else {
-      await fs.promises.unlink(entryPath).catch(() => {})
+      try {
+        await fs.promises.unlink(entryPath)
+      } catch (err) {
+        ignoreCleanupError(err, 'unlink-stale-assembled', { entryPath })
+      }
     }
   }
 }

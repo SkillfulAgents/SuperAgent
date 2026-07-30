@@ -6,9 +6,14 @@ import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
   cleanupStaleTempUploads,
+  formatUploadTooLargeMessage,
   moveUploadedFile,
   storeUploadChunk,
 } from './chunked-upload'
+
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: vi.fn(),
+}))
 
 const tmpRoot = path.join(os.tmpdir(), `chunked-upload-${process.pid}-${Date.now()}`)
 const tempUploadsDir = path.join(tmpRoot, 'tmp', 'uploads')
@@ -151,6 +156,14 @@ describe('cleanupStaleTempUploads', () => {
     expect(fs.existsSync(staleAssembled)).toBe(false)
     expect(fs.existsSync(freshDir)).toBe(true)
     expect(fs.existsSync(freshAssembled)).toBe(true)
+  })
+})
+
+describe('formatUploadTooLargeMessage', () => {
+  it('matches UploadTooLargeError message', () => {
+    const message = formatUploadTooLargeMessage(150 * 1024 * 1024, 100 * 1024 * 1024)
+    expect(message).toBe('File too large (150.0MB, max 100MB)')
+    expect(new UploadTooLargeError(150 * 1024 * 1024, 100 * 1024 * 1024).message).toBe(message)
   })
 })
 

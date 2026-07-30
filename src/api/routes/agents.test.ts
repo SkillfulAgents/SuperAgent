@@ -457,11 +457,14 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
 const mockStoreUploadChunk = vi.fn()
 const mockMoveUploadedFile = vi.fn()
 vi.mock('@shared/lib/utils/chunked-upload', () => {
+  function formatUploadTooLargeMessage(size: number, maxBytes: number): string {
+    return `File too large (${(size / 1024 / 1024).toFixed(1)}MB, max ${maxBytes / 1024 / 1024}MB)`
+  }
   class UploadTooLargeError extends Error {
     size: number
     maxBytes: number
     constructor(size: number, maxBytes: number) {
-      super(`File too large (${(size / 1024 / 1024).toFixed(1)}MB, max ${maxBytes / 1024 / 1024}MB)`)
+      super(formatUploadTooLargeMessage(size, maxBytes))
       this.name = 'UploadTooLargeError'
       this.size = size
       this.maxBytes = maxBytes
@@ -469,6 +472,7 @@ vi.mock('@shared/lib/utils/chunked-upload', () => {
   }
   return {
     MAX_UPLOAD_TOTAL_SIZE: 2 * 1024 * 1024 * 1024,
+    formatUploadTooLargeMessage,
     UploadTooLargeError,
     storeUploadChunk: (...args: unknown[]) => mockStoreUploadChunk(...args),
     moveUploadedFile: (...args: unknown[]) => mockMoveUploadedFile(...args),

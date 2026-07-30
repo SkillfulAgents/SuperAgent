@@ -61,6 +61,7 @@ import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
   cleanupStaleTempUploads,
+  formatUploadTooLargeMessage,
   moveUploadedFile,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
@@ -582,10 +583,6 @@ agents.use('*', Authenticated())
 // (paths like /import-template would otherwise match as :id)
 // ============================================================
 
-function tooLargeMessage(size: number, maxBytes: number): string {
-  return `File too large (${(size / 1024 / 1024).toFixed(1)}MB, max ${maxBytes / 1024 / 1024}MB)`
-}
-
 // POST /api/agents/import-template - Import agent from uploaded ZIP
 // Supports both single-request (file field) and chunked upload (chunk field)
 agents.post('/import-template', async (c) => {
@@ -605,7 +602,7 @@ agents.post('/import-template', async (c) => {
     }
 
     if (file.size > MAX_COMPRESSED_SIZE) {
-      return c.json({ error: tooLargeMessage(file.size, MAX_COMPRESSED_SIZE) }, 413)
+      return c.json({ error: formatUploadTooLargeMessage(file.size, MAX_COMPRESSED_SIZE) }, 413)
     }
 
     const arrayBuffer = await file.arrayBuffer()
@@ -670,18 +667,27 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
   try {
     const size = (await fs.promises.stat(result.filePath)).size
     if (size > MAX_COMPRESSED_SIZE) {
-      return c.json({ error: tooLargeMessage(size, MAX_COMPRESSED_SIZE) }, 413)
+      return c.json({ error: formatUploadTooLargeMessage(size, MAX_COMPRESSED_SIZE) }, 413)
     }
     const zipBuffer = await fs.promises.readFile(result.filePath)
     return await processImport(c, zipBuffer, formData)
   } finally {
-    try { await fs.promises.unlink(result.filePath) } catch { /* ignore */ }
+    try {
+      await fs.promises.unlink(result.filePath)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return
+      console.warn('[agents] failed to unlink assembled import upload:', err)
+      captureException(err, {
+        tags: { component: 'agents', operation: 'unlink-assembled-import' },
+        extra: { filePath: result.filePath },
+      })
+    }
   }
 }
 
 async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
   if (zipBuffer.length > MAX_COMPRESSED_SIZE) {
-    return c.json({ error: tooLargeMessage(zipBuffer.length, MAX_COMPRESSED_SIZE) }, 413)
+    return c.json({ error: formatUploadTooLargeMessage(zipBuffer.length, MAX_COMPRESSED_SIZE) }, 413)
   }
 
   const nameOverride = formData.get('name') as string | null
@@ -4340,14 +4346,14 @@ agents.post('/:id/skills/import-zip', AgentAdmin(), async (c) => {
     }
 
     if (file.size > SKILL_MAX_COMPRESSED_SIZE) {
-      return c.json({ error: tooLargeMessage(file.size, SKILL_MAX_COMPRESSED_SIZE) }, 413)
+      return c.json({ error: formatUploadTooLargeMessage(file.size, SKILL_MAX_COMPRESSED_SIZE) }, 413)
     }
 
     const arrayBuffer = await file.arrayBuffer()
     const zipBuffer = Buffer.from(arrayBuffer)
 
     if (zipBuffer.length > SKILL_MAX_COMPRESSED_SIZE) {
-      return c.json({ error: tooLargeMessage(zipBuffer.length, SKILL_MAX_COMPRESSED_SIZE) }, 413)
+      return c.json({ error: formatUploadTooLargeMessage(zipBuffer.length, SKILL_MAX_COMPRESSED_SIZE) }, 413)
     }
 
     const result = await importSkillFromZip(agentSlug, zipBuffer)
@@ -4607,7 +4613,17 @@ async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: 
     const uploadResult = await writeUploadedFileFromPath(agentSlug, filename, result.filePath, relativePath || undefined)
     return { pending: null, uploadResult }
   } finally {
-    try { await fs.promises.unlink(result.filePath) } catch { /* rename may have moved it */ }
+    try {
+      await fs.promises.unlink(result.filePath)
+    } catch (err) {
+      // rename may have already moved the file
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return
+      console.warn('[agents] failed to unlink assembled file upload:', err)
+      captureException(err, {
+        tags: { component: 'agents', operation: 'unlink-assembled-upload' },
+        extra: { filePath: result.filePath, agentSlug },
+      })
+    }
   }
 }
 
@@ -5577,8 +5593,9 @@ const STALE_UPLOAD_MS = 60 * 60 * 1000 // 1 hour
 async function cleanupStaleUploads() {
   try {
     await cleanupStaleTempUploads(STALE_UPLOAD_MS)
-  } catch {
-    // Ignore cleanup errors
+  } catch (err) {
+    console.warn('[agents] stale upload cleanup failed:', err)
+    captureException(err, { tags: { component: 'agents', operation: 'cleanup-stale-uploads' } })
   }
 }
 
