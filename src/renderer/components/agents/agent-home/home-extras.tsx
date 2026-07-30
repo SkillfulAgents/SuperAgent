@@ -26,7 +26,13 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
           hoverIcon={<PanelRightOpen className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
           testId="home-agent-directory-open-browser"
         />
-        <ExtrasButton label="Secrets" onClick={() => onOpenSettings?.('secrets')} />
+        <ExtrasButton
+          label="Secrets"
+          onClick={() => {
+            void navigate({ to: '/agents/$slug/secrets', params: { slug: agentSlug } })
+          }}
+          testId="home-secrets-open-page"
+        />
         <ExtrasButton
           label="API Logs"
           onClick={() => {
