@@ -17,6 +17,7 @@ import {
 } from '@shared/lib/utils/file-storage'
 import { AgentSecret } from '@shared/lib/types/agent'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
+import { keyToEnvVar } from '@shared/lib/utils/secrets'
 
 // ============================================================================
 // .env File Parsing
@@ -122,18 +123,6 @@ export function serializeEnvFile(secrets: AgentSecret[]): string {
   return lines.join('\n') + '\n'
 }
 
-/**
- * Convert display name to environment variable name
- * "My API Key" -> "MY_API_KEY"
- */
-export function keyToEnvVar(key: string): string {
-  return key
-    .toUpperCase()
-    .trim()
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-}
-
 // ============================================================================
 // Secrets Operations
 // ============================================================================
@@ -221,6 +210,62 @@ export async function setSecret(agentSlug: string, secret: AgentSecret): Promise
     }
 
     await writeFileAtomic(envPath, serializeEnvFile(secrets), { mode: 0o666, forceMode: true })
+  })
+}
+
+export type UpdateSecretResult =
+  | { status: 'updated'; secret: AgentSecret }
+  | { status: 'not_found' }
+  | { status: 'conflict'; envVar: string }
+  | { status: 'invalid_key' }
+  | { status: 'reserved'; envVar: string }
+
+/**
+ * Update (and optionally rename) a secret as one locked read-modify-write.
+ *
+ * Renames must not be implemented as delete-then-set: a failed second write
+ * loses the source, and a stale client can overwrite a concurrently-created
+ * destination. This operation revalidates both names under the file lock.
+ */
+export async function updateSecret(
+  agentSlug: string,
+  currentEnvVar: string,
+  patch: { key?: string; value?: string },
+): Promise<UpdateSecretResult> {
+  const envPath = getAgentEnvPath(agentSlug)
+  // A missing .env means there cannot be a source secret. Check before taking
+  // the lock so a direct service call for an unknown agent does not create an
+  // otherwise-empty agents/<slug>/workspace directory as a side effect.
+  if (!(await fileExists(envPath))) {
+    return { status: 'not_found' }
+  }
+
+  return withCrossProcessFileLock(envPath, async () => {
+    const secrets = await listSecrets(agentSlug)
+    const sourceIndex = secrets.findIndex((secret) => secret.envVar === currentEnvVar)
+    if (sourceIndex < 0 || isReservedEnvVar(currentEnvVar)) {
+      return { status: 'not_found' }
+    }
+
+    const existing = secrets[sourceIndex]
+    const key = patch.key?.trim() || existing.key
+    const envVar = keyToEnvVar(key)
+    if (!envVar) return { status: 'invalid_key' }
+    if (isReservedEnvVar(envVar)) return { status: 'reserved', envVar }
+
+    const destinationIndex = secrets.findIndex((secret) => secret.envVar === envVar)
+    if (destinationIndex >= 0 && destinationIndex !== sourceIndex) {
+      return { status: 'conflict', envVar }
+    }
+
+    const updated = {
+      key,
+      envVar,
+      value: patch.value !== undefined ? patch.value : existing.value,
+    }
+    secrets[sourceIndex] = updated
+    await writeFileAtomic(envPath, serializeEnvFile(secrets), { mode: 0o666, forceMode: true })
+    return { status: 'updated', secret: updated }
   })
 }
 
