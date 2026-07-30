@@ -34,17 +34,25 @@ test.describe('home card arrangement', () => {
 
     await page.goto('/')
     const widget = page.locator(`[data-widget-id="${agent.slug}"]`)
+    const dashboardWidget = page.locator(
+      `[data-widget-id="dash::${agent.slug}::arrange-dashboard"]`
+    )
     await expect(widget).toBeVisible({ timeout: 15_000 })
+    await expect(dashboardWidget).toBeVisible({ timeout: 15_000 })
     await widget.scrollIntoViewIfNeeded()
     await expect(widget.locator('button button')).toHaveCount(0)
     await expect(widget.getByRole('link', { name: `Open ${agent.name}` })).toHaveAttribute(
       'draggable',
       'false'
     )
+    const dashboardLink = dashboardWidget.getByRole('link', { name: 'Open app' })
+    await expect(dashboardLink).toHaveAttribute('draggable', 'false')
+    await expect(dashboardLink).toHaveAttribute('data-widget-drag-surface')
 
     // Outside Arrange mode, desktop still supports direct pointer reordering.
     // The full-card anchor must not hand the gesture to native HTML link drag.
-    const beforeDirectDrag = await widget.boundingBox()
+    await dashboardWidget.scrollIntoViewIfNeeded()
+    const beforeDirectDrag = await dashboardWidget.boundingBox()
     expect(beforeDirectDrag).not.toBeNull()
     const directSaved = page.waitForResponse(
       (response) =>
@@ -70,6 +78,23 @@ test.describe('home card arrangement', () => {
     await page.getByTestId('home-arrange-action').click()
     await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Done' })).toBeVisible()
+
+    // Dashboard anchors also remain grid drag surfaces in desktop Arrange.
+    await dashboardWidget.scrollIntoViewIfNeeded()
+    const beforeDashboardArrangeDrag = await dashboardWidget.boundingBox()
+    expect(beforeDashboardArrangeDrag).not.toBeNull()
+    await page.mouse.move(
+      beforeDashboardArrangeDrag!.x + beforeDashboardArrangeDrag!.width / 2,
+      beforeDashboardArrangeDrag!.y + beforeDashboardArrangeDrag!.height / 2
+    )
+    await page.mouse.down()
+    await page.mouse.move(
+      beforeDashboardArrangeDrag!.x + beforeDashboardArrangeDrag!.width / 2,
+      beforeDashboardArrangeDrag!.y + beforeDashboardArrangeDrag!.height / 2 + 180,
+      { steps: 8 }
+    )
+    await expect(dashboardWidget).toHaveClass(/scale-\[1\.02\]/)
+    await page.mouse.up()
 
     // Arrange owns pointer dragging, but desktop right-click still bubbles
     // through its overlay to the unified agent context menu.

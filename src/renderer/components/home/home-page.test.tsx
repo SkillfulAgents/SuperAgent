@@ -286,6 +286,10 @@ describe('HomePage AgentCard', () => {
     renderWithProviders(<HomePage />)
     // Each dashboard tile is an "Open app" screenshot card; agent cards aren't.
     expect(screen.getAllByText('Open app').length).toBeGreaterThanOrEqual(2)
+    for (const link of screen.getAllByRole('link', { name: 'Open app' })) {
+      expect(link).toHaveAttribute('draggable', 'false')
+      expect(link).toHaveAttribute('data-widget-drag-surface')
+    }
   })
 
   it('renders a screenshot img when hasScreenshot is true', () => {

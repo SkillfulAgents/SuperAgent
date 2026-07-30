@@ -45,6 +45,8 @@ export function DashboardCard({
     return (
       <AppLink
         {...linkProps}
+        draggable={false}
+        data-widget-drag-surface=""
         className="group relative block h-full w-full overflow-hidden rounded-lg border bg-card text-left shadow-sm transition-[box-shadow,border-color] duration-150 hover:border-accent-foreground/20 group-hover/widget:shadow-md"
       >
         <CardContent screenshotUrl={screenshotUrl} objectClass={align === 'top-left' ? 'object-left-top' : 'object-top'} />

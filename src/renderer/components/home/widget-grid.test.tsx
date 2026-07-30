@@ -78,6 +78,28 @@ describe('WidgetBoard pointer behavior', () => {
     })
   })
 
+  it('allows a marked full-card link to initiate direct desktop dragging', () => {
+    const onCommit = vi.fn()
+    renderWithProviders(
+      <WidgetBoard
+        items={[{ id: 'dashboard', defaultSize: 'S' }]}
+        renderItem={() => (
+          <a href="/dashboard" draggable={false} data-widget-drag-surface="">
+            Open app
+          </a>
+        )}
+        onCommit={onCommit}
+      />
+    )
+
+    const link = screen.getByRole('link', { name: 'Open app' })
+    fireEvent.pointerDown(link, { button: 0, clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(window, { clientX: 250, clientY: 250 })
+    fireEvent.pointerUp(window)
+
+    expect(onCommit).toHaveBeenCalledTimes(1)
+  })
+
   it('does not arm direct dragging from an interactive control', () => {
     const onCommit = vi.fn()
     renderWithProviders(
