@@ -26,6 +26,7 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
@@ -402,7 +403,17 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                         onRecentFileAttach={(file) => composer.addFiles([{ file }])}
                         disabled={isDisabled}
                       />
-                      <ComposerOptions state={composerOptions} disabled={isDisabled} agentSlug={agent.slug} agentHomeLink={false} />
+                      <ComposerOptions
+                        state={composerOptions}
+                        disabled={isDisabled}
+                        footer={
+                          <AgentDefaultFooter
+                            agentSlug={agent.slug}
+                            state={composerOptions}
+                            agentHomeLink={false}
+                          />
+                        }
+                      />
                     </>
                   )}
                   topRightActions={(
