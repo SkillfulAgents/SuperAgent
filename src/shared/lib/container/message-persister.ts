@@ -253,8 +253,19 @@ export function redactStreamedToolInput(toolName: string | undefined, partialInp
 }
 
 // TODO this file is too big, this class is HUGE. Needs breaking up
+
+/**
+ * Quiet window before reattaching a stream the host still believes is live.
+ * Same 30s family as the SSE keep-alive that reconciles isActive one hop up
+ * (api/routes/agents.ts ping), the idle-eviction sweep, and the completion-wake
+ * grace. Not a wall-clock settle: the only action is reattach; settling still
+ * requires a frame the container actually emitted.
+ */
+export const STREAM_SILENCE_REATTACH_MS = 30_000
+
 class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
+  private settleProbeTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
   // "Allow for this session" capability grants, keyed by sessionId. Display
   // bookkeeping ONLY — enforcement lives in the container (which persists its
   // copy with the session). Once granted, launches auto-allow container-side
@@ -277,6 +288,14 @@ class MessagePersister {
   // subscribeToSession() calls for the same session share the underlying
   // promise so we don't double-install listeners or double-tear-down state.
   private subscribingNow: Map<string, Promise<void>> = new Map()
+  // Intentional transport detach (silence reattach / re-subscribe) closes the
+  // socket itself. That close still synthesizes connection_closed on the old
+  // callback — which must NOT run handleConnectionClosed's resubscribe, or we
+  // stack a second live stream and double-apply stream_deltas in the UI.
+  private ignoreNextConnectionClosed: Set<string> = new Set()
+  // Bumped on intentional detach so an in-flight handleConnectionClosed
+  // (getSession already started) cannot overwrite the replacement subscribe.
+  private connectionRecoveryEpoch: Map<string, number> = new Map()
 
   constructor() {
     // Unified wire: every registry transition — no matter which of the many
@@ -421,15 +440,16 @@ class MessagePersister {
     const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
     const priorBackgroundTasks = prior?.activeBackgroundTasks ?? new Map()
     const priorSettledInputRequests = prior?.settledInputRequests ?? new Map()
+    // Reply memory is settle-relevant and must survive a transport reattach:
+    // wiping it makes the next idle look like a stale idle from a prior turn,
+    // and the idle guard then discards it. Nothing was lost on the wire.
+    const priorLastResultSubtype = prior?.lastResultSubtype ?? null
+    const priorLastResultCleanSuccess = prior?.lastResultCleanSuccess ?? false
 
     // Detach only the transport if already subscribed. NOT unsubscribeFromSession:
     // that is a full teardown — it drops the session's registry entries, which
     // must outlive a transport reattach for the same live session.
-    const existingUnsubscribe = this.subscriptions.get(sessionId)
-    if (existingUnsubscribe) {
-      existingUnsubscribe()
-      this.subscriptions.delete(sessionId)
-    }
+    this.detachStreamTransport(sessionId)
 
     // Initialize state
     this.streamingStates.set(sessionId, {
@@ -457,8 +477,8 @@ class MessagePersister {
       processInstanceId: prior?.processInstanceId ?? null,
       pendingDeliverFiles: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
-      lastResultSubtype: null,
-      lastResultCleanSuccess: false,
+      lastResultSubtype: priorLastResultSubtype,
+      lastResultCleanSuccess: priorLastResultCleanSuccess,
       isRetrying: false,
     })
 
@@ -485,11 +505,10 @@ class MessagePersister {
 
   // Unsubscribe from a session
   unsubscribeFromSession(sessionId: string): void {
-    const unsubscribe = this.subscriptions.get(sessionId)
-    if (unsubscribe) {
-      unsubscribe()
-      this.subscriptions.delete(sessionId)
-    }
+    this.cancelSettleProbe(sessionId)
+    // Full teardown: ignore the synthetic close from our own unsubscribe so it
+    // cannot race a resubscribe after streamingStates/containerClients are gone.
+    this.detachStreamTransport(sessionId)
     this.streamingStates.delete(sessionId)
     // Shadow registry (Phase 2): every session-scoped entry dies with the state.
     userInputRequestManager.dropSessionRequests(sessionId, 'invalidated')
@@ -497,12 +516,78 @@ class MessagePersister {
     // Safe to drop: the container's persisted grants are authoritative, so a
     // resubscribed session repopulates this on the next launch with one GET.
     this.sessionCapabilityGrants.delete(sessionId)
+    this.ignoreNextConnectionClosed.delete(sessionId)
+    this.connectionRecoveryEpoch.delete(sessionId)
+  }
+
+  /**
+   * Drop the live transport without treating the resulting close as peer death.
+   * Real ws.close() synthesizes connection_closed on the old callback; that
+   * path must not stack handleConnectionClosed's resubscribe on top of the
+   * replacement we are about to install.
+   */
+  private detachStreamTransport(sessionId: string): void {
+    this.connectionRecoveryEpoch.set(
+      sessionId,
+      (this.connectionRecoveryEpoch.get(sessionId) ?? 0) + 1
+    )
+    const existingUnsubscribe = this.subscriptions.get(sessionId)
+    if (!existingUnsubscribe) return
+    this.ignoreNextConnectionClosed.add(sessionId)
+    existingUnsubscribe()
+    this.subscriptions.delete(sessionId)
+  }
+
+  private armSettleProbe(sessionId: string): void {
+    this.cancelSettleProbe(sessionId)
+    if (!this.streamingStates.get(sessionId)?.isActive) return
+    const timer = setTimeout(() => {
+      this.settleProbeTimers.delete(sessionId)
+      this.reattachAfterSilence(sessionId)
+    }, STREAM_SILENCE_REATTACH_MS)
+    this.settleProbeTimers.set(sessionId, timer)
+  }
+
+  private cancelSettleProbe(sessionId: string): void {
+    const timer = this.settleProbeTimers.get(sessionId)
+    if (!timer) return
+    clearTimeout(timer)
+    this.settleProbeTimers.delete(sessionId)
+  }
+
+  /**
+   * The stream went quiet while we still believe a turn is running. Reattach
+   * the transport: the container replays the terminal frames of its last turn
+   * to any late joiner, which is the recovery road a silently-dead socket never
+   * reaches (no close event, so no connection_closed). Reuses existing
+   * machinery on both sides — no new container contract.
+   */
+  private reattachAfterSilence(sessionId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (!state?.isActive) return
+    const client = this.containerClients.get(sessionId)
+    if (!client) return
+    // Detach only the transport — same boundary as doSubscribeToSession.
+    // Silence can fire while the old socket is still half-open or merely quiet;
+    // closing it ourselves must not look like an unexpected peer death.
+    this.detachStreamTransport(sessionId)
+    const { unsubscribe, ready } = client.subscribeToStream(sessionId, (message) =>
+      this.handleMessage(sessionId, message)
+    )
+    this.subscriptions.set(sessionId, unsubscribe)
+    ready.catch((err) => {
+      console.error(`[MessagePersister] Silence reattach failed for session ${sessionId}:`, err)
+    })
+    // Keep watching: a reattach that replays nothing must be retried, not
+    // treated as evidence the turn ended.
+    this.armSettleProbe(sessionId)
   }
 
   // Single idle finalizer — flips state and broadcasts to session + global
   // listeners. Used by the result handler (legacy result-driven idle), the
   // session_state_changed handler (authoritative idle), and markSessionInactive.
   private finalizeIdle(sessionId: string, state: StreamingState): void {
+    this.cancelSettleProbe(sessionId)
     // The session is truly settled: persist the automation outcome for a turn
     // that ended in a clean success. (Failures were already persisted at their
     // result — an error ends the turn immediately. Interrupts never set the
@@ -931,6 +1016,7 @@ class MessagePersister {
 
   // Mark a session as interrupted (not active)
   async markSessionInterrupted(sessionId: string): Promise<void> {
+    this.cancelSettleProbe(sessionId)
     const state = this.streamingStates.get(sessionId)
 
     // Set interrupted flag FIRST to prevent race conditions with incoming events
@@ -1359,6 +1445,8 @@ class MessagePersister {
     this.capture?.recordInput(sessionId, message)
     const state = this.streamingStates.get(sessionId)
     if (!state) return
+
+    this.armSettleProbe(sessionId)
 
     // Skip processing if session was interrupted (prevents race conditions)
     // Allow 'result' through as it indicates the container actually stopped.
@@ -2082,6 +2170,11 @@ class MessagePersister {
         break
 
       case 'connection_closed':
+        // Intentional detach (silence reattach / re-subscribe) closes the socket
+        // itself — that synthetic close is not peer death.
+        if (this.ignoreNextConnectionClosed.delete(sessionId)) {
+          return
+        }
         // WebSocket connection to container was lost
         // Check if session is still actually running in the container
         console.log(`[MessagePersister] Connection closed for session ${sessionId}, checking container state`)
@@ -2112,9 +2205,16 @@ class MessagePersister {
       return
     }
 
+    // Capture epoch before the async hop. An intentional detach (or a newer
+    // recovery) bumps it; stale then-handlers must not stack another subscribe.
+    const epoch = this.connectionRecoveryEpoch.get(sessionId) ?? 0
+
     // Check container asynchronously
     client.getSession(sessionId)
       .then((containerSession) => {
+        if ((this.connectionRecoveryEpoch.get(sessionId) ?? 0) !== epoch) {
+          return
+        }
         if (!containerSession) {
           // Session doesn't exist in container anymore
           console.log(`[MessagePersister] Session ${sessionId} not found in container, marking inactive`)
@@ -2128,6 +2228,15 @@ class MessagePersister {
         if (isRunning) {
           // Session still running, try to re-subscribe
           console.log(`[MessagePersister] Session ${sessionId} still running, re-subscribing`)
+          // Peer already closed the socket — do not call unsubscribe() (and do
+          // not set ignoreNext). On the real client unsubscribe is a no-op once
+          // close cleared wsConnections; calling detachStreamTransport would
+          // leave ignoreNext sticky and swallow the next real close.
+          this.connectionRecoveryEpoch.set(
+            sessionId,
+            (this.connectionRecoveryEpoch.get(sessionId) ?? 0) + 1
+          )
+          this.subscriptions.delete(sessionId)
           const { unsubscribe, ready } = client.subscribeToStream(
             sessionId,
             (message) => this.handleMessage(sessionId, message)
@@ -2147,6 +2256,9 @@ class MessagePersister {
         }
       })
       .catch((error) => {
+        if ((this.connectionRecoveryEpoch.get(sessionId) ?? 0) !== epoch) {
+          return
+        }
         // Can't reach container, assume session is done
         console.error(`[MessagePersister] Failed to check container for session ${sessionId}:`, error)
         this.markSessionInactive(sessionId, state)
@@ -2155,6 +2267,7 @@ class MessagePersister {
 
   // Mark a session as inactive and broadcast the update
   private markSessionInactive(sessionId: string, state: StreamingState): void {
+    this.cancelSettleProbe(sessionId)
     // A session that was mid-turn (user message sent, no result yet) and not
     // deliberately interrupted didn't finish — its runtime vanished (container
     // crash, guest OOM kill of the agent process, VM death). Surface that as an

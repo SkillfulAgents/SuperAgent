@@ -487,6 +487,10 @@ export class ClaudeCodeProcess extends EventEmitter {
   private lastTurnInformationals: SDKMessage[] = [];
   private lastResultMessage: SDKMessage | null = null;
   private lastSessionState: string | null = null;
+  // Latest authoritative background-task snapshot, replayed to a late joiner:
+  // a host holding a task whose terminal signal was lost would otherwise stay
+  // pinned forever (the live consumer self-heals when a snapshot arrives).
+  private lastBackgroundTasksChanged: SDKMessage | null = null;
   // Pre-spawned CLI subprocess from prewarm(), waiting for a prompt. Claimed
   // (once) by the next createQuery; see prewarm() for why the handle lives on
   // the process rather than in a detached pool.
@@ -1528,6 +1532,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.lastResultMessage = message;
       this.lastTurnInformationals = this.currentTurnInformationals;
       this.currentTurnInformationals = [];
+    } else if (msg.type === 'system' && msg.subtype === 'background_tasks_changed') {
+      this.lastBackgroundTasksChanged = message;
     } else if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
       this.lastSessionState = msg.state ?? null;
     }
@@ -1552,6 +1558,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     return [
       ...this.lastTurnInformationals,
       this.lastResultMessage,
+      ...(this.lastBackgroundTasksChanged ? [this.lastBackgroundTasksChanged] : []),
       {
         type: 'system',
         subtype: 'session_state_changed',
