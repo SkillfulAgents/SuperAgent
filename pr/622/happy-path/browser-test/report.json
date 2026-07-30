@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent can execute browser actions to open a URL and retrieve page title information, with proper response communication back to the user.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — App loaded successfully (Gamut) with agent list visible.",
+    "Step 2: Found and clicked on \"QA-20260730-220340-698f\" agent in sidebar — Agent detail page opened with chat interface.",
+    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message sent successfully, agent status changed to \"working\".",
+    "Step 4: Waited up to 3 minutes for response — Response received in approximately 13 seconds with all expected information.",
+    "Step 5: Verified response mentions \"Example Domain\" — Response explicitly states: \"The page title is 'Example Domain' — a placeholder page stating the domain is for use in documentation examples, with a 'Learn more' link. Browser is closed.\""
+  ],
+  "bugs": [],
+  "durationMs": 71821,
+  "sessionId": "26ecf698-b17a-4422-b99f-7b5c4c3da83b",
+  "cost": {
+    "inputTokens": 380,
+    "outputTokens": 10907,
+    "cacheCreationTokens": 73031,
+    "cacheReadTokens": 1079941,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.254198
+  }
+}
