@@ -228,8 +228,6 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
     // Start the integration
     try {
       await chatIntegrationManager.addIntegration(id)
-      // Not awaited: the upload has its own 30s timeout and setup must not block on it.
-      void chatIntegrationManager.sendContactCard(id)
     } catch (err) {
       // Integration was created but failed to connect — update status to error
       const errMsg = err instanceof Error ? err.message : String(err)
@@ -240,6 +238,11 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
       })
       updateChatIntegrationStatus(id, 'error', errMsg)
     }
+
+    // Outside the connect try/catch: a contact-card failure is cosmetic and must
+    // never surface as a connect error. Not awaited either — the upload has its
+    // own 30s timeout and setup must not block on it.
+    void chatIntegrationManager.sendContactCard(id)
 
     const integration = getChatIntegration(id)
     if (!integration) throw new Error('Chat integration disappeared after creation')
