@@ -454,12 +454,39 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   CorruptFileError: class CorruptFileError extends Error {},
 }))
 
+const mockStoreUploadChunk = vi.fn()
+const mockMoveUploadedFile = vi.fn()
+vi.mock('@shared/lib/utils/chunked-upload', () => {
+  function formatUploadTooLargeMessage(size: number, maxBytes: number): string {
+    return `File too large (${(size / 1024 / 1024).toFixed(1)}MB, max ${maxBytes / 1024 / 1024}MB)`
+  }
+  class UploadTooLargeError extends Error {
+    size: number
+    maxBytes: number
+    constructor(size: number, maxBytes: number) {
+      super(formatUploadTooLargeMessage(size, maxBytes))
+      this.name = 'UploadTooLargeError'
+      this.size = size
+      this.maxBytes = maxBytes
+    }
+  }
+  return {
+    MAX_UPLOAD_TOTAL_SIZE: 2 * 1024 * 1024 * 1024,
+    formatUploadTooLargeMessage,
+    UploadTooLargeError,
+    storeUploadChunk: (...args: unknown[]) => mockStoreUploadChunk(...args),
+    moveUploadedFile: (...args: unknown[]) => mockMoveUploadedFile(...args),
+    cleanupStaleTempUploads: vi.fn(async () => undefined),
+  }
+})
+
 vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))
 const mockStreamSSE = vi.fn((..._args: unknown[]) => new Response(null, { status: 200 }))
 vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStreamSSE(...args) }))
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
+import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
   importAgentFromTemplate,
   hasOnboardingSkill,
@@ -973,10 +1000,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
   }
 
   it('accepts intermediate chunks and returns chunk_received', async () => {
-    // Simulate first of 2 chunks — readdir returns only 1 file
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
-    mockFsReaddir.mockResolvedValue(['chunk-0'])
+    mockStoreUploadChunk.mockResolvedValue({ status: 'received' })
 
     const form = buildChunkForm({
       chunk: 'data-part-0',
@@ -993,19 +1017,21 @@ describe('POST /api/agents/import-template (chunked)', () => {
     expect(body.status).toBe('chunk_received')
     expect(body.chunkIndex).toBe(0)
     expect(importAgentFromTemplate).not.toHaveBeenCalled()
+    expect(mockStoreUploadChunk).toHaveBeenCalledWith(
+      '11111111-1111-1111-1111-111111111111',
+      0,
+      2,
+      expect.any(Buffer),
+      500 * 1024 * 1024,
+    )
   })
 
   it('assembles and processes on final chunk', async () => {
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
-    // readdir returns both chunks → triggers assembly
-    mockFsReaddir.mockResolvedValue(['chunk-0', 'chunk-1'])
-    // readFile for each chunk during assembly
-    mockFsReadFile.mockImplementation((filePath: string) => {
-      if (filePath.endsWith('chunk-0')) return Promise.resolve(Buffer.from('part0'))
-      if (filePath.endsWith('chunk-1')) return Promise.resolve(Buffer.from('part1'))
-      return Promise.reject(new Error('unexpected read'))
-    })
+    const assembledPath = '/mock/tmp/uploads/22222222-2222-2222-2222-222222222222.assembled'
+    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
+    mockFsStat.mockResolvedValue({ size: 10 })
+    mockFsReadFile.mockResolvedValue(Buffer.from('part0part1'))
+    mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
       chunk: 'data-part-1',
@@ -1021,17 +1047,19 @@ describe('POST /api/agents/import-template (chunked)', () => {
     const body = await res.json()
     expect(body.slug).toBe('imported-agent')
     expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      Buffer.concat([Buffer.from('part0'), Buffer.from('part1')]),
+      Buffer.from('part0part1'),
       undefined,
       'full',
     )
+    expect(mockFsUnlink).toHaveBeenCalledWith(assembledPath)
   })
 
   it('passes name override on final chunk', async () => {
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
-    mockFsReaddir.mockResolvedValue(['chunk-0'])
+    const assembledPath = '/mock/tmp/uploads/33333333-3333-3333-3333-333333333333.assembled'
+    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
+    mockFsStat.mockResolvedValue({ size: 7 })
     mockFsReadFile.mockResolvedValue(Buffer.from('zipdata'))
+    mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
       chunk: 'zipdata',
@@ -1064,6 +1092,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
 
     const body = await res.json()
     expect(body.error).toContain('Invalid uploadId')
+    expect(mockStoreUploadChunk).not.toHaveBeenCalled()
   })
 
   it('rejects missing chunked upload fields', async () => {
@@ -1121,52 +1150,38 @@ describe('POST /api/agents/import-template (chunked)', () => {
 
   it('handles duplicate chunk index by overwriting and still assembles correctly', async () => {
     const uploadId = '66666666-6666-6666-6666-666666666666'
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
+    mockStoreUploadChunk
+      .mockResolvedValueOnce({ status: 'received' })
+      .mockResolvedValueOnce({
+        status: 'assembled',
+        filePath: `/mock/tmp/uploads/${uploadId}.assembled`,
+      })
+    mockFsStat.mockResolvedValue({ size: 12 })
+    mockFsReadFile.mockResolvedValue(Buffer.from('new-datapart1'))
+    mockFsUnlink.mockResolvedValue(undefined)
 
-    // First send of chunk 0 — not all chunks present yet
-    mockFsReaddir.mockResolvedValue(['chunk-0'])
     const form1 = buildChunkForm({ chunk: 'old-data', uploadId, chunkIndex: 0, totalChunks: 2 })
     const res1 = await postFormData(app, '/api/agents/import-template', form1)
     expect(res1.status).toBe(200)
     expect((await res1.json()).status).toBe('chunk_received')
 
-    // Re-send chunk 0 with different data (duplicate), then send chunk 1 as final
-    mockFsReaddir.mockResolvedValue(['chunk-0', 'chunk-1'])
-    mockFsReadFile.mockImplementation((filePath: string) => {
-      if (filePath.endsWith('chunk-0')) return Promise.resolve(Buffer.from('new-data'))
-      if (filePath.endsWith('chunk-1')) return Promise.resolve(Buffer.from('part1'))
-      return Promise.reject(new Error('unexpected read'))
-    })
-
     const form2 = buildChunkForm({ chunk: 'part1', uploadId, chunkIndex: 1, totalChunks: 2, mode: 'template' })
     const res2 = await postFormData(app, '/api/agents/import-template', form2)
     expect(res2.status).toBe(201)
     expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      Buffer.concat([Buffer.from('new-data'), Buffer.from('part1')]),
+      Buffer.from('new-datapart1'),
       undefined,
       'template',
     )
   })
 
   it('rejects when assembled compressed size exceeds limit', async () => {
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
-    // Simulate a single chunk that, once assembled, exceeds MAX_COMPRESSED_SIZE (500MB)
-    // We can't actually allocate 500MB+ in a test, so we verify the check is in processImport
-    // by creating a buffer just over the limit via mock readFile responses
     const uploadId = '77777777-7777-7777-7777-777777777777'
-    mockFsReaddir.mockResolvedValue(['chunk-0'])
-
-    // Create a buffer that's larger than 500MB limit
-    // Instead of allocating a huge buffer, mock readFile to return a large length indicator
-    const oversizedBuffer = Buffer.alloc(100)
-    // We can't easily test with real 500MB+ buffers in unit tests, but we can verify
-    // the route correctly rejects via the processImport guard by setting up a mock
-    // that returns a buffer larger than MAX_COMPRESSED_SIZE
+    const assembledPath = `/mock/tmp/uploads/${uploadId}.assembled`
     const MAX = 500 * 1024 * 1024
-    const mockBuf = { length: MAX + 1 } as Buffer
-    mockFsReadFile.mockResolvedValue(oversizedBuffer)
+    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
+    mockFsStat.mockResolvedValue({ size: MAX + 1 })
+    mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
       chunk: 'data',
@@ -1175,12 +1190,43 @@ describe('POST /api/agents/import-template (chunked)', () => {
       totalChunks: 1,
     })
 
-    // For this test, we directly verify that processImport would reject
-    // We can't easily simulate >500MB in a unit test, so this is a sanity check
-    // that the route handler calls through correctly for small payloads
     const res = await postFormData(app, '/api/agents/import-template', form)
-    // The small payload will succeed (pass size check) then fail at import (mock)
-    expect(res.status).toBe(201)
+    expect(res.status).toBe(413)
+    expect(importAgentFromTemplate).not.toHaveBeenCalled()
+    expect(mockFsReadFile).not.toHaveBeenCalled()
+    expect(mockFsUnlink).toHaveBeenCalledWith(assembledPath)
+  })
+
+  it('returns 413 when storeUploadChunk throws UploadTooLargeError', async () => {
+    mockStoreUploadChunk.mockRejectedValue(new UploadTooLargeError(600 * 1024 * 1024, 500 * 1024 * 1024))
+
+    const form = buildChunkForm({
+      chunk: 'data',
+      uploadId: '88888888-8888-8888-8888-888888888888',
+      chunkIndex: 0,
+      totalChunks: 1,
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(413)
+    const body = await res.json()
+    expect(body.error).toContain('File too large')
+  })
+
+  it('rejects single-request upload when file.size exceeds limit before arrayBuffer', async () => {
+    const file = new File(['x'], 'big.zip', { type: 'application/zip' })
+    const sizeSpy = vi.spyOn(File.prototype, 'size', 'get').mockReturnValue(500 * 1024 * 1024 + 1)
+    const form = new FormData()
+    form.append('file', file)
+    form.append('mode', 'template')
+
+    try {
+      const res = await postFormData(app, '/api/agents/import-template', form)
+      expect(res.status).toBe(413)
+      expect(importAgentFromTemplate).not.toHaveBeenCalled()
+    } finally {
+      sizeSpy.mockRestore()
+    }
   })
 })
 
@@ -2868,6 +2914,53 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toBe('No file provided')
+  })
+
+  it('returns 413 when file.size exceeds MAX_UPLOAD_TOTAL_SIZE before reading', async () => {
+    const file = new File(['x'], 'huge.bin', { type: 'application/octet-stream' })
+    const sizeSpy = vi.spyOn(File.prototype, 'size', 'get').mockReturnValue(2 * 1024 * 1024 * 1024 + 1)
+    const formData = new FormData()
+    formData.append('file', file)
+
+    try {
+      const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+      expect(res.status).toBe(413)
+      expect(mockFsWriteFile).not.toHaveBeenCalled()
+    } finally {
+      sizeSpy.mockRestore()
+    }
+  })
+
+  it('moves assembled chunked upload via moveUploadedFile', async () => {
+    const assembledPath = '/mock/tmp/uploads/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.assembled'
+    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
+    mockMoveUploadedFile.mockResolvedValue(11)
+    mockFsUnlink.mockResolvedValue(undefined)
+
+    const form = new FormData()
+    form.append('chunk', new File(['final'], 'chunk.bin'))
+    form.append('uploadId', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+    form.append('chunkIndex', '0')
+    form.append('totalChunks', '1')
+    form.append('filename', 'report.pdf')
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', form)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.success).toBe(true)
+    expect(body.filename).toBe('report.pdf')
+    expect(body.size).toBe(11)
+    expect(mockMoveUploadedFile).toHaveBeenCalledWith(
+      assembledPath,
+      expect.stringContaining('/mock/workspace/uploads/'),
+    )
+    expect(mockStoreUploadChunk).toHaveBeenCalledWith(
+      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      0,
+      1,
+      expect.any(Buffer),
+      2 * 1024 * 1024 * 1024,
+    )
   })
 })
 
@@ -4835,6 +4928,21 @@ describe('POST /api/agents/:id/skills/import-zip', () => {
 
     const body = await res.json()
     expect(body.error).toBe('No file provided')
+  })
+
+  it('returns 413 when file.size exceeds SKILL_MAX_COMPRESSED_SIZE before reading', async () => {
+    const file = new File(['x'], 'skill.zip', { type: 'application/zip' })
+    const sizeSpy = vi.spyOn(File.prototype, 'size', 'get').mockReturnValue(100 * 1024 * 1024 + 1)
+    const form = new FormData()
+    form.append('file', file)
+
+    try {
+      const res = await postFormData(app, '/api/agents/my-agent/skills/import-zip', form)
+      expect(res.status).toBe(413)
+      expect(importSkillFromZip).not.toHaveBeenCalled()
+    } finally {
+      sizeSpy.mockRestore()
+    }
   })
 
   it('returns 500 when service throws', async () => {
