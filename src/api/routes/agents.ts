@@ -675,12 +675,13 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
     try {
       await fs.promises.unlink(result.filePath)
     } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return
-      console.warn('[agents] failed to unlink assembled import upload:', err)
-      captureException(err, {
-        tags: { component: 'agents', operation: 'unlink-assembled-import' },
-        extra: { filePath: result.filePath },
-      })
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.warn('[agents] failed to unlink assembled import upload:', err)
+        captureException(err, {
+          tags: { component: 'agents', operation: 'unlink-assembled-import' },
+          extra: { filePath: result.filePath },
+        })
+      }
     }
   }
 }
