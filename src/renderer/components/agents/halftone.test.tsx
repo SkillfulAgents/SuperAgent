@@ -2,7 +2,7 @@
 import { act } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '@renderer/test/test-utils'
-import { Halftone } from './halftone'
+import { Halftone, LazyHalftone } from './halftone'
 import { HalftoneFrameRenderer } from './halftone-renderer'
 
 function createCanvasContext() {
@@ -24,7 +24,7 @@ describe('Halftone animation lifecycle', () => {
     vi.unstubAllGlobals()
   })
 
-  it('pauses its animation while the card is offscreen and resumes on re-entry', () => {
+  it('waits for visibility before starting, then pauses and resumes with intersection', () => {
     let intersectionCallback: IntersectionObserverCallback | undefined
     const disconnectObserver = vi.fn()
     vi.stubGlobal(
@@ -58,8 +58,16 @@ describe('Halftone animation lifecycle', () => {
     const cancelAnimationFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
 
     const { unmount } = renderWithProviders(<Halftone motif="flow_3d" />)
-    expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
+    expect(requestAnimationFrame).not.toHaveBeenCalled()
     expect(intersectionCallback).toBeTypeOf('function')
+
+    act(() => {
+      intersectionCallback?.(
+        [{ isIntersecting: true } as IntersectionObserverEntry],
+        {} as IntersectionObserver
+      )
+    })
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
 
     act(() => {
       intersectionCallback?.(
@@ -79,6 +87,79 @@ describe('Halftone animation lifecycle', () => {
 
     unmount()
     expect(disconnectObserver).toHaveBeenCalled()
+  })
+
+  it('does not mount a lazy canvas until its card is near the viewport', () => {
+    const intersectionCallbacks: IntersectionObserverCallback[] = []
+    const disconnectObservers: ReturnType<typeof vi.fn>[] = []
+    const rootMargins: string[] = []
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        disconnect = vi.fn()
+        root = null
+        rootMargin: string
+        thresholds = [0]
+
+        constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+          intersectionCallbacks.push(callback)
+          disconnectObservers.push(this.disconnect)
+          this.rootMargin = options?.rootMargin ?? '0px'
+          rootMargins.push(this.rootMargin)
+        }
+
+        observe() {}
+        unobserve() {}
+        takeRecords() {
+          return []
+        }
+      }
+    )
+
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(240)
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(120)
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      setTransform: vi.fn(),
+    } as unknown as CanvasRenderingContext2D)
+    const requestAnimationFrame = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation(() => 1)
+    const cancelAnimationFrame = vi
+      .spyOn(window, 'cancelAnimationFrame')
+      .mockImplementation(() => {})
+
+    const { container } = renderWithProviders(<LazyHalftone motif="flow_3d" />)
+    expect(container.querySelector('canvas')).not.toBeInTheDocument()
+    expect(intersectionCallbacks).toHaveLength(1)
+    expect(rootMargins).toEqual(['320px 0px'])
+
+    act(() => {
+      intersectionCallbacks[0](
+        [{ isIntersecting: true } as IntersectionObserverEntry],
+        {} as IntersectionObserver
+      )
+    })
+    expect(container.querySelector('canvas')).toBeInTheDocument()
+    expect(intersectionCallbacks).toHaveLength(2)
+    expect(requestAnimationFrame).not.toHaveBeenCalled()
+
+    act(() => {
+      intersectionCallbacks[1](
+        [{ isIntersecting: true } as IntersectionObserverEntry],
+        {} as IntersectionObserver
+      )
+    })
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      intersectionCallbacks[0](
+        [{ isIntersecting: false } as IntersectionObserverEntry],
+        {} as IntersectionObserver
+      )
+    })
+    expect(container.querySelector('canvas')).not.toBeInTheDocument()
+    expect(cancelAnimationFrame).toHaveBeenCalledWith(1)
+    expect(disconnectObservers[1]).toHaveBeenCalled()
   })
 
   it('recovers when its first measurement is zero-sized', () => {
@@ -229,10 +310,13 @@ describe('Halftone animation lifecycle', () => {
       }
     )
     const intersectionDisconnect = vi.fn()
+    let intersectionCallback: IntersectionObserverCallback | undefined
     vi.stubGlobal(
       'IntersectionObserver',
       class {
-        constructor(_callback: IntersectionObserverCallback) {}
+        constructor(callback: IntersectionObserverCallback) {
+          intersectionCallback = callback
+        }
         observe() {}
         unobserve() {}
         disconnect = intersectionDisconnect
@@ -256,6 +340,12 @@ describe('Halftone animation lifecycle', () => {
     const removeDocumentListener = vi.spyOn(document, 'removeEventListener')
 
     const { unmount } = renderWithProviders(<Halftone motif="flow_3d" />)
+    act(() => {
+      intersectionCallback?.(
+        [{ isIntersecting: true } as IntersectionObserverEntry],
+        {} as IntersectionObserver
+      )
+    })
     hidden = true
     act(() => document.dispatchEvent(new Event('visibilitychange')))
     expect(cancelAnimationFrame).toHaveBeenCalledWith(1)
