@@ -221,6 +221,28 @@ interface MessageItemProps {
   readOnly?: boolean
 }
 
+function resolveSubagentRun(
+  toolCall: ApiToolCall,
+  activeSubagents: SubagentInfo[] | undefined,
+  completedSubagents: Set<string> | null | undefined,
+): { activeSubagent: SubagentInfo | null; isCompleted: boolean } {
+  const directRun = activeSubagents?.find((sub) => sub.parentToolId === toolCall.id)
+  const agentId = toolCall.subagent?.agentId
+  const resumedRun = agentId
+    ? activeSubagents?.find((sub) =>
+      sub.agentId === agentId &&
+      sub.parentToolId !== toolCall.id &&
+      (!sub.parentToolId || !completedSubagents?.has(sub.parentToolId))
+    )
+    : undefined
+  const activeSubagent = resumedRun ?? directRun ?? null
+  const selectedToolId = activeSubagent?.parentToolId ?? toolCall.id
+  return {
+    activeSubagent,
+    isCompleted: completedSubagents?.has(selectedToolId) ?? false,
+  }
+}
+
 function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
@@ -418,32 +440,35 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         {/* Tool calls - shown below assistant message */}
         {isAssistant && toolCalls.length > 0 && (
           <div className="w-full space-y-2">
-            {toolCalls.map((toolCall) => (
-              <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
-                <div>
-                  <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
-                    {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
-                      <SubAgentBlock
-                        toolCall={toolCall}
-                        sessionId={sessionId}
-                        agentSlug={agentSlug!}
-                        isSessionActive={isSessionActive}
-                        activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
-                        isCompleted={completedSubagents?.has(toolCall.id) ?? false}
-                      />
-                    ) : toolCall.name === 'Workflow' ? (
-                      <WorkflowBlock
-                        toolCall={toolCall}
-                        activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
-                        isCompleted={completedSubagents?.has(toolCall.id) ?? false}
-                      />
-                    ) : (
-                      <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
-                    )}
-                  </MessageErrorBoundary>
-                </div>
-              </MessageContextMenu>
-            ))}
+            {toolCalls.map((toolCall) => {
+              const subagentRun = resolveSubagentRun(toolCall, activeSubagents, completedSubagents)
+              return (
+                <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
+                  <div>
+                    <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
+                      {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
+                        <SubAgentBlock
+                          toolCall={toolCall}
+                          sessionId={sessionId}
+                          agentSlug={agentSlug!}
+                          isSessionActive={isSessionActive}
+                          activeSubagent={subagentRun.activeSubagent}
+                          isCompleted={subagentRun.isCompleted}
+                        />
+                      ) : toolCall.name === 'Workflow' ? (
+                        <WorkflowBlock
+                          toolCall={toolCall}
+                          activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
+                          isCompleted={completedSubagents?.has(toolCall.id) ?? false}
+                        />
+                      ) : (
+                        <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
+                      )}
+                    </MessageErrorBoundary>
+                  </div>
+                </MessageContextMenu>
+              )
+            })}
           </div>
         )}
       </div>

@@ -89,7 +89,7 @@ function simulateSSEMessage(es: MockEventSource, data: unknown) {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
+describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
   let queryClient: QueryClient
 
   beforeEach(async () => {
@@ -129,94 +129,7 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     Reflect.deleteProperty(document, 'visibilityState')
   })
 
-  it('session_awaiting_input with review data invalidates proxy-reviews query', async () => {
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <GlobalNotificationHandler />
-      </QueryClientProvider>
-    )
-
-    const es = getLatestEventSource()
-
-    simulateSSEMessage(es, {
-      type: 'session_awaiting_input',
-      agentSlug: 'my-agent',
-      review: {
-        type: 'proxy_review_request',
-        reviewId: 'r-123',
-      },
-    })
-
-    // Should have invalidated proxy-reviews for this agent
-    const proxyReviewCalls = invalidateSpy.mock.calls.filter(
-      (call) => {
-        const opts = call[0] as { queryKey?: unknown[] }
-        return opts.queryKey?.[0] === 'proxy-reviews'
-      }
-    )
-    expect(proxyReviewCalls.length).toBe(1)
-    expect((proxyReviewCalls[0][0] as { queryKey: unknown[] }).queryKey).toEqual(['proxy-reviews', 'my-agent'])
-  })
-
-  it('session_awaiting_input WITHOUT review data does NOT invalidate proxy-reviews', () => {
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <GlobalNotificationHandler />
-      </QueryClientProvider>
-    )
-
-    const es = getLatestEventSource()
-
-    // Normal session awaiting input (not a proxy review — e.g., user input request)
-    simulateSSEMessage(es, {
-      type: 'session_awaiting_input',
-      agentSlug: 'my-agent',
-    })
-
-    const proxyReviewCalls = invalidateSpy.mock.calls.filter(
-      (call) => {
-        const opts = call[0] as { queryKey?: unknown[] }
-        return opts.queryKey?.[0] === 'proxy-reviews'
-      }
-    )
-    expect(proxyReviewCalls.length).toBe(0)
-  })
-
-  it('proxy_review_resolved event also invalidates proxy-reviews', () => {
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <GlobalNotificationHandler />
-      </QueryClientProvider>
-    )
-
-    const es = getLatestEventSource()
-
-    simulateSSEMessage(es, {
-      type: 'session_awaiting_input',
-      agentSlug: 'my-agent',
-      review: {
-        type: 'proxy_review_resolved',
-        reviewId: 'r-123',
-        decision: 'allow',
-      },
-    })
-
-    const proxyReviewCalls = invalidateSpy.mock.calls.filter(
-      (call) => {
-        const opts = call[0] as { queryKey?: unknown[] }
-        return opts.queryKey?.[0] === 'proxy-reviews'
-      }
-    )
-    expect(proxyReviewCalls.length).toBe(1)
-  })
-
-  it('user_request_created/resolved invalidate the unified store AND the legacy review poll', () => {
+  it('user_request_created/resolved invalidate the unified store', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     render(
@@ -228,8 +141,8 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     const es = getLatestEventSource()
 
     // A dashboard-triggered review can exist with NO session anywhere — this
-    // global event is its only push signal, so it must nudge both the unified
-    // store and the dashboard panel's legacy poll (still unmigrated).
+    // global event is its only push signal. Every review surface (in-chat
+    // cards AND the dashboard panel) reads the unified store now.
     simulateSSEMessage(es, {
       type: 'user_request_created',
       request: {
@@ -251,7 +164,6 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
 
     const keys = invalidateSpy.mock.calls.map((call) => (call[0] as { queryKey?: unknown[] }).queryKey?.[0])
     expect(keys.filter((k) => k === 'pending-user-requests')).toHaveLength(2)
-    expect(keys.filter((k) => k === 'proxy-reviews')).toHaveLength(2)
   })
 
   // SECURITY: focus-aware gate — when an actionable session_waiting fires

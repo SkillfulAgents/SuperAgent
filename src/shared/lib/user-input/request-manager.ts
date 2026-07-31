@@ -4,20 +4,19 @@ import {
   type PendingUserInputRequest,
   type PendingUserInputRequestInput,
   type UserInputRequestOutcome,
+  type UserInputRequestScope,
   type UserInputRequestStore,
 } from './request-schema'
 
 /**
- * Host-side registry of every pending user-input request, regardless of which
- * legacy store owns it (persister stream store, computer-use map, ReviewManager).
+ * Host-side registry of every pending user-input request — THE pending store.
+ * There is no second one.
  *
- * Phase 3: the legacy stores stay authoritative for request CONTENTS (and
- * every mutation still writes through, with `verifyStoreParity` asserting the
- * mirror is exact), but the session "awaiting input" status is now DERIVED
- * from this registry via `isSessionAwaiting` — the persister's bit is just an
- * edge-detection cache of that projection. The imperative per-path mark/clear
- * calls (and their split-brains: parallel requests, direct-clear doors,
- * review blockers) are gone.
+ * Everything downstream derives from this registry: the session "awaiting
+ * input" status (`isSessionAwaiting` — the persister's bit is an
+ * edge-detection cache of that projection), the unified wire events, the
+ * snapshot endpoint, OS notifications, and the decision routes' already-
+ * settled gate.
  */
 /**
  * A registry transition: exactly one 'created' per accepted registration and
@@ -32,42 +31,79 @@ export interface UserInputRequestTransition {
   outcome?: UserInputRequestOutcome
 }
 
+/**
+ * A settled request as the bounded resolution trail remembers it: enough
+ * identity (kind + scope) to re-run the same authorization checks an open
+ * request gets, plus how it settled.
+ */
+export interface SettledUserInputRequest {
+  id: string
+  kind: PendingUserInputRequest['kind']
+  scope: UserInputRequestScope
+  outcome: UserInputRequestOutcome
+}
+
 export class UserInputRequestManager {
   private requests = new Map<string, PendingUserInputRequest>()
 
   private transitionListeners = new Set<(transition: UserInputRequestTransition) => void>()
 
-  /** Bounded trail of recent settlements, for shadow-mode debugging and tests. */
-  private recentResolutions: Array<{
-    id: string
-    kind: PendingUserInputRequest['kind']
-    outcome: UserInputRequestOutcome
-  }> = []
+  /**
+   * Bounded trail of recent settlements, for shadow-mode debugging and tests.
+   * Carries kind AND scope, not just the outcome: the decision routes' gate
+   * validates a settled request exactly like an open one, so a settled id must
+   * stay as tightly bound to its route as it was while open — otherwise the
+   * moment a request settles, its outcome becomes readable through any agent's
+   * route of any kind.
+   */
+  private recentResolutions: SettledUserInputRequest[] = []
 
-  private storeMismatchCount = 0
+  /**
+   * Ids reserved by an in-flight decision.
+   *
+   * A claim is NOT a settlement: the request stays open to every reader — the
+   * awaiting projection, the snapshot, the wire — because if the claimer fails
+   * before settling, a human is still waiting on it. All a claim does is make
+   * the DECISION path single-entry.
+   */
+  private claimed = new Set<string>()
+
+  private mismatchCount = 0
 
   /**
    * Register a pending request. First delivery wins: re-registering an id that
    * is still open returns the original entry unchanged (stream stop and
    * complete-assistant can both carry the same tool_use).
    *
+   * One exception: a real registration REPLACES a recovered synthetic for the
+   * same id. Transcript recovery can synthesize a payload-less stub before the
+   * stream event lands; the stub's 'created' transition is filtered off the
+   * wire, so the upgrade emits 'created' again — the first renderable event
+   * clients get for the id. A recovered input never replaces anything.
+   *
    * Never throws — a malformed envelope is logged and dropped so shadow-mode
    * registration can never break a production delivery path.
    */
   register(input: PendingUserInputRequestInput): PendingUserInputRequest | null {
     const existing = this.requests.get(input.id)
-    if (existing) return existing
+    if (existing && !UserInputRequestManager.isRecoveredSynthetic(existing)) return existing
     const parsed = pendingUserInputRequestSchema.safeParse(input)
     if (!parsed.success) {
+      if (existing) return existing
       console.error(
         `[UserInputRequestManager] Dropped malformed request registration (id=${input.id}):`,
         parsed.error.message,
       )
       return null
     }
+    if (existing && UserInputRequestManager.isRecoveredSynthetic(parsed.data)) return existing
     this.requests.set(parsed.data.id, parsed.data)
     this.emitTransition({ type: 'created', request: parsed.data })
     return parsed.data
+  }
+
+  private static isRecoveredSynthetic(request: PendingUserInputRequest): boolean {
+    return (request.payload as Record<string, unknown>).recovered === true
   }
 
   /** Settle and remove a request. Idempotent: unknown ids are a no-op (null). */
@@ -75,7 +111,11 @@ export class UserInputRequestManager {
     const request = this.requests.get(id)
     if (!request) return null
     this.requests.delete(id)
-    this.recentResolutions.push({ id, kind: request.kind, outcome })
+    // The claim dies with the entry: a settled id must never leave a
+    // reservation behind that a re-registration under the same toolUseId
+    // would inherit.
+    this.claimed.delete(id)
+    this.recentResolutions.push({ id, kind: request.kind, scope: request.scope, outcome })
     if (this.recentResolutions.length > 100) this.recentResolutions.shift()
     this.emitTransition({ type: 'resolved', request, outcome })
     return request
@@ -125,6 +165,24 @@ export class UserInputRequestManager {
     }
   }
 
+  /**
+   * Settle every open request registered under a parent Task tool_use — the
+   * dead-subagent sweep. Returns what was settled so the caller can clean up
+   * its mirrors (replay store, container pendings).
+   */
+  resolveRequestsByParent(
+    parentToolUseId: string,
+    outcome: UserInputRequestOutcome = 'invalidated',
+  ): PendingUserInputRequest[] {
+    const settled: PendingUserInputRequest[] = []
+    for (const request of [...this.requests.values()]) {
+      if (request.parentToolUseId !== parentToolUseId) continue
+      const resolved = this.resolve(request.id, outcome)
+      if (resolved) settled.push(resolved)
+    }
+    return settled
+  }
+
   /** Mirror of `streamingStates.delete` — every session-scoped entry dies with the state. */
   dropSessionRequests(sessionId: string, outcome: UserInputRequestOutcome = 'invalidated'): void {
     for (const request of [...this.requests.values()]) {
@@ -133,8 +191,58 @@ export class UserInputRequestManager {
     }
   }
 
+  /** Look up a single open request by id. */
+  getOpenRequest(id: string): PendingUserInputRequest | null {
+    return this.requests.get(id) ?? null
+  }
+
+  /**
+   * Reserve an open request for settlement, returning it to the FIRST caller
+   * only. A plain `getOpenRequest` before a decision is check-then-act: the
+   * decision path awaits (container lookup, the resolve call itself) between
+   * observing the request and settling it, so a second decider observes the
+   * same open request and both act. This is a synchronous check-and-mark with
+   * no await inside, which on node's single thread makes it atomic — the
+   * loser gets null and can report the decision as already handled.
+   *
+   * The caller MUST `releaseClaim` on every path that does NOT settle the
+   * request, or it stays open and permanently undecidable. `resolve` drops the
+   * claim with the entry, so the success path needs no explicit release.
+   */
+  claimRequest(id: string): PendingUserInputRequest | null {
+    const request = this.requests.get(id)
+    if (!request || this.claimed.has(id)) return null
+    this.claimed.add(id)
+    return request
+  }
+
+  /** Drop a claim. No-op for an id that already settled. */
+  releaseClaim(id: string): void {
+    this.claimed.delete(id)
+  }
+
+  /**
+   * How a request settled, while it is still on the bounded resolution trail.
+   * Lets an already-settled decision answer with what actually happened
+   * instead of a bare "already settled" — but the caller must first check the
+   * returned kind and scope against the route it arrived on, exactly as it
+   * would for an open request. Once the trail rotates the record out, the id
+   * is indistinguishable from one that never existed.
+   */
+  getRecentResolution(id: string): SettledUserInputRequest | undefined {
+    for (let i = this.recentResolutions.length - 1; i >= 0; i--) {
+      if (this.recentResolutions[i].id === id) return this.recentResolutions[i]
+    }
+    return undefined
+  }
+
   getOpenRequestsForSession(sessionId: string): PendingUserInputRequest[] {
     return [...this.requests.values()].filter((r) => r.scope.sessionId === sessionId)
+  }
+
+  /** Every open request of a store, across all scopes (e.g. shutdown sweeps). */
+  getOpenRequestsForStore(store: UserInputRequestStore): PendingUserInputRequest[] {
+    return [...this.requests.values()].filter((r) => storeForKind(r.kind) === store)
   }
 
   /** Session-scoped AND agent-scoped entries for the agent. */
@@ -212,95 +320,42 @@ export class UserInputRequestManager {
     return false
   }
 
-  private static describeIdMismatch(
-    label: string,
-    storeIds: string[],
-    registryIds: string[],
-  ): string | null {
-    const expected = [...storeIds].sort()
-    const actual = [...registryIds].sort()
-    if (expected.length === actual.length && expected.every((id, i) => id === actual[i])) {
-      return null
-    }
-    return `${label}: store=[${expected.join(',')}] registry=[${actual.join(',')}]`
-  }
-
-  private reportStoreMismatch(scope: string, context: string, mismatches: string[]): void {
-    this.storeMismatchCount++
+  private reportMismatch(scope: string, context: string, mismatches: string[]): void {
+    this.mismatchCount++
     const message =
-      `[UserInputRequestManager] shadow store mismatch (${scope}, ` +
+      `[UserInputRequestManager] shadow mismatch (${scope}, ` +
       `context=${context}): ${mismatches.join('; ')}`
     if (process.env.VITEST) throw new Error(message)
     console.error(message)
   }
 
   /**
-   * Shadow invariant: the registry's per-store view of a session must equal the
-   * legacy store exactly, at every store mutation point. Under vitest a
-   * mismatch throws (mutation paths swallow errors in places, so tests should
-   * ALSO assert `stats.storeMismatches === 0`); in dev it logs.
+   * Review-side invariant, one-directional: every promise settler ReviewManager
+   * holds must correspond to an open review-store entry — a settler without
+   * one is a parked proxied call no sweep can ever reach (the silent-exit bug
+   * class). The converse is NOT an invariant: registry entries without
+   * settlers are legitimate (feeders other than requestReview own no promise).
    */
-  verifyStoreParity(check: {
-    sessionId: string
-    context: string
-    streamStoreIds: string[]
-    computerUseStoreIds: string[]
-  }): void {
-    const mismatches = [
-      UserInputRequestManager.describeIdMismatch(
-        'stream',
-        check.streamStoreIds,
-        this.getStoreIdsForSession(check.sessionId, 'stream'),
-      ),
-      UserInputRequestManager.describeIdMismatch(
-        'computer_use',
-        check.computerUseStoreIds,
-        this.getStoreIdsForSession(check.sessionId, 'computer_use'),
-      ),
-    ].filter((m): m is string => m !== null)
-    if (mismatches.length === 0) return
-    this.reportStoreMismatch(`session=${check.sessionId}`, check.context, mismatches)
-  }
-
-  /**
-   * Same invariant for the review store: the registry's agent-scoped review
-   * view must equal ReviewManager's pending store for the agent, at every
-   * review mutation point.
-   */
-  verifyReviewStoreParity(check: {
-    agentSlug: string
-    context: string
-    reviewStoreIds: string[]
-  }): void {
-    const registryIds = [...this.requests.values()]
-      .filter(
-        (r) =>
-          r.scope.agentSlug === check.agentSlug &&
-          r.scope.sessionId === undefined &&
-          storeForKind(r.kind) === 'review',
-      )
-      .map((r) => r.id)
-    const mismatch = UserInputRequestManager.describeIdMismatch(
-      'review',
-      check.reviewStoreIds,
-      registryIds,
-    )
-    if (mismatch === null) return
-    this.reportStoreMismatch(`agent=${check.agentSlug}`, check.context, [mismatch])
+  verifyReviewSettlerParity(check: { context: string; settlerIds: string[] }): void {
+    const registryIds = new Set(this.getOpenRequestsForStore('review').map((r) => r.id))
+    const orphans = check.settlerIds.filter((id) => !registryIds.has(id))
+    if (orphans.length === 0) return
+    this.reportMismatch('review-settlers', check.context, [
+      `orphaned settlers=[${[...orphans].sort().join(',')}]`,
+    ])
   }
 
   get stats(): {
     open: number
-    storeMismatches: number
-    recentResolutions: Array<{
-      id: string
-      kind: PendingUserInputRequest['kind']
-      outcome: UserInputRequestOutcome
-    }>
+    /** In-flight decision reservations. A non-zero idle value is a leaked claim. */
+    claimed: number
+    mismatches: number
+    recentResolutions: SettledUserInputRequest[]
   } {
     return {
       open: this.requests.size,
-      storeMismatches: this.storeMismatchCount,
+      claimed: this.claimed.size,
+      mismatches: this.mismatchCount,
       recentResolutions: [...this.recentResolutions],
     }
   }
@@ -308,8 +363,9 @@ export class UserInputRequestManager {
   /** Test hook: wipe all state including diagnostics. */
   reset(): void {
     this.requests.clear()
+    this.claimed.clear()
     this.recentResolutions = []
-    this.storeMismatchCount = 0
+    this.mismatchCount = 0
   }
 }
 

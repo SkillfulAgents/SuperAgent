@@ -22,8 +22,13 @@ export function getDataDir(): string {
 
 /**
  * Get the path to the SQLite database file.
+ * SUPERAGENT_DB_PATH overrides the default ($SUPERAGENT_DATA_DIR/superagent.db).
  */
 export function getDatabasePath(): string {
+  const envDbPath = process.env.SUPERAGENT_DB_PATH
+  if (envDbPath) {
+    return path.resolve(envDbPath)
+  }
   return path.join(getDataDir(), 'superagent.db')
 }
 

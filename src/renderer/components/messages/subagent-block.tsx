@@ -38,11 +38,12 @@ export function SubAgentBlock({
   activeSubagent,
   isCompleted,
 }: SubAgentBlockProps) {
-  // Determine subagent ID: prefer SSE-discovered agentId (stable, cached once via FIFO)
-  // over API-based agentId (from resolveInterruptedSubagents, which re-sorts by mtime
-  // on every refetch and can flip during active streaming).
+  // Determine subagent ID: prefer the SSE-discovered ID from the selected
+  // original or resumed run over the API-based ID (from
+  // resolveInterruptedSubagents, which re-sorts by mtime on every refetch and
+  // can flip during active streaming).
   // Latch the ID once resolved — it should never revert to null.
-  const sseAgentId = activeSubagent?.parentToolId === toolCall.id ? activeSubagent.agentId : null
+  const sseAgentId = activeSubagent?.agentId ?? null
   const computedSubagentId = sseAgentId
     ?? toolCall.subagent?.agentId
     ?? null
@@ -54,7 +55,17 @@ export function SubAgentBlock({
 
   // Determine status
   let status: SubagentStatus = 'cancelled'
-  if (toolCall.result !== null && toolCall.result !== undefined) {
+  const isResumedRun = !!activeSubagent && activeSubagent.parentToolId !== toolCall.id
+  if (
+    isSessionActive &&
+    activeSubagent &&
+    !isCompleted &&
+    (isResumedRun || toolCall.result === null || toolCall.result === undefined)
+  ) {
+    // activeSubagent may be a later SendMessage run for the same stable agent.
+    // Its live lifecycle takes precedence over the original Agent tool result.
+    status = 'running'
+  } else if (toolCall.result !== null && toolCall.result !== undefined) {
     // Background agents return an immediate "async_launched" result — don't treat as completed
     // unless we've received a subagent_completed SSE event (isCompleted) for this tool
     if (toolCall.subagent?.status === 'async_launched' && isSessionActive && !isCompleted) {

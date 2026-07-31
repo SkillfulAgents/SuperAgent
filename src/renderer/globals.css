@@ -691,6 +691,33 @@ html[data-keyboard-open] [data-composer-footer] {
 }
 
 /*
+  Long sidebar labels stay ellipsized until the user has briefly dwelled on
+  them, then ease into one pass that reveals the hidden end. Removing
+  data-scrolling on mouse leave removes the animation and restores the start
+  immediately, matching native sidebar marquee behavior.
+*/
+@keyframes hover-scroll-text {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-1 * var(--hover-scroll-distance))); }
+}
+
+.hover-scroll-text[data-scrolling="true"] .hover-scroll-text-content {
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  animation: hover-scroll-text var(--hover-scroll-duration) cubic-bezier(0.42, 0, 0.58, 1) forwards;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hover-scroll-text[data-scrolling="true"] .hover-scroll-text-content {
+    animation: none;
+  }
+}
+
+/*
   Installed-PWA full height (iOS). `h-screen`/`min-h-svh` resolve to the DYNAMIC viewport
   (100dvh/100svh) so mobile-BROWSER layouts track the URL bar — keep that. But in an
   installed PWA there's no URL bar, and iOS reports dvh/svh EXCLUDING the top safe area

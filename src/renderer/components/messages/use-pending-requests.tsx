@@ -1,20 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import {
-  useMessageStream,
-  removeSecretRequest,
-  removeConnectedAccountRequest,
-  removeRemoteMcpRequest,
-  removeQuestionRequest,
-  removeFileRequest,
-  removeBrowserInputRequest,
-  removeScriptRunRequest,
-  removeComputerUseRequest,
-  removeCapabilityReviewRequest,
-} from '@renderer/hooks/use-message-stream'
+import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useMessages } from '@renderer/hooks/use-messages'
 import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
-import { usePendingProxyReviews, type PendingReview } from '@renderer/hooks/use-proxy-reviews'
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { askUserQuestionDef } from '@shared/lib/tool-definitions/ask-user-question'
@@ -66,6 +54,28 @@ function createPendingRequestBuckets(): PendingRequestBuckets {
     browserInputRequests: [],
     scriptRunRequests: [],
     computerUseRequests: [],
+  }
+}
+
+// The single merge rule the per-kind memos used to duplicate eight times:
+// first occurrence of a toolUseId across the ordered sources wins, dismissed
+// and suppressed ids never surface.
+function mergeBucket<K extends keyof PendingRequestBuckets>(
+  target: PendingRequestBuckets,
+  kind: K,
+  sources: Array<PendingRequestBuckets[K]>,
+  dismissed: ReadonlySet<string>,
+  suppressed?: ReadonlySet<string>,
+): void {
+  const seen = new Set<string>()
+  const out = target[kind] as Array<PendingRequestBuckets[K][number]>
+  for (const source of sources) {
+    for (const req of source) {
+      if (suppressed?.has(req.toolUseId)) continue
+      if (seen.has(req.toolUseId) || dismissed.has(req.toolUseId)) continue
+      seen.add(req.toolUseId)
+      out.push(req)
+    }
   }
 }
 
@@ -183,17 +193,55 @@ interface UnifiedProjection {
   buckets: PendingRequestBuckets
   capabilityReviews: UnifiedCapabilityReview[]
   reviews: PendingReview[]
+  /**
+   * Ids the server auto-approved and is ALREADY executing, per suppressible
+   * kind. They are deliberately absent from the buckets — no card is owed for
+   * them — but they must still be suppressed, because the streaming and
+   * message-history fallbacks recover the same tool call from the transcript
+   * and would draw an approval card for work already in flight. Pressing it
+   * races the internal `_auto` call and can run the side effect twice.
+   *
+   * This is the reconnect-safe half of the suppression: the live
+   * `user_request_created` event is one-shot, so a client that mounts after it
+   * fired has nothing in its live set and only the snapshot still knows.
+   */
+  autoApprovedScriptRunIds: Set<string>
+  autoApprovedComputerUseIds: Set<string>
 }
 
 function isXAgentOperation(value: unknown): value is 'list' | 'read' | 'invoke' | 'create' {
   return value === 'list' || value === 'read' || value === 'invoke' || value === 'create'
 }
 
-// Rebuild the legacy poll's PendingReview shape from a review envelope. The
-// payload carries the full ReviewDetails (plus the derived displayText), but
-// envelope payloads are lenient by design, so the card-critical fields are
-// re-validated here instead of trusted.
-function reviewFromEnvelope(
+/**
+ * A proxy / x-agent review as the cards render it. Formerly the response shape
+ * of the `proxy-reviews` poll; now purely the projection of a review envelope,
+ * which is the only source left.
+ */
+export interface PendingReview {
+  id: string
+  agentSlug: string
+  accountId: string
+  toolkit: string
+  method: string
+  targetPath: string
+  matchedScopes: string[]
+  scopeDescriptions: Record<string, string>
+  displayText?: string
+  xAgent?: {
+    targetAgentSlug: string
+    targetAgentName: string
+    operation: 'list' | 'read' | 'invoke' | 'create'
+    preview?: string
+  }
+}
+
+// Rebuild the PendingReview shape from a review envelope. The payload carries
+// the full ReviewDetails (plus the derived displayText), but envelope payloads
+// are lenient by design, so the card-critical fields are re-validated here
+// instead of trusted. Exported for the dashboard's pending-reviews panel,
+// which reads the same snapshot.
+export function reviewFromEnvelope(
   request: PendingUserInputRequest,
   payload: Record<string, unknown>,
 ): PendingReview | null {
@@ -251,6 +299,8 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
   const buckets = createPendingRequestBuckets()
   const capabilityReviews: UnifiedCapabilityReview[] = []
   const reviews: PendingReview[] = []
+  const autoApprovedScriptRunIds = new Set<string>()
+  const autoApprovedComputerUseIds = new Set<string>()
 
   for (const request of requests) {
     const payload = request.payload as Record<string, unknown>
@@ -318,7 +368,10 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
       case 'script_run':
         // Auto-approved scripts are already executing server-side; the entry
         // exists so recovery paths can tell "granted" from "waiting".
-        if (request.autoApproved) break
+        if (request.autoApproved) {
+          autoApprovedScriptRunIds.add(request.id)
+          break
+        }
         if (typeof payload.script === 'string' && isScriptType(payload.scriptType)) {
           buckets.scriptRunRequests.push({
             toolUseId: request.id,
@@ -329,7 +382,10 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
         }
         break
       case 'computer_use':
-        if (request.autoApproved) break
+        if (request.autoApproved) {
+          autoApprovedComputerUseIds.add(request.id)
+          break
+        }
         if (typeof payload.method === 'string' && typeof payload.permissionLevel === 'string') {
           buckets.computerUseRequests.push({
             toolUseId: request.id,
@@ -365,7 +421,55 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
     }
   }
 
-  return { buckets, capabilityReviews, reviews }
+  return {
+    buckets,
+    capabilityReviews,
+    reviews,
+    autoApprovedScriptRunIds,
+    autoApprovedComputerUseIds,
+  }
+}
+
+/**
+ * The browser tray's view of open browser_input requests.
+ *
+ * Reads the same unified snapshot the in-chat cards project from, so a request
+ * the registry recovered — or one settled on another surface — reaches the tray
+ * too. The tradeoff is timing: the overlay appears one snapshot refetch after
+ * the created event rather than synchronously with it.
+ */
+export function usePendingBrowserInputRequests(
+  sessionId: string,
+  agentSlug: string,
+  isActive: boolean,
+): {
+  requests: PendingRequestBuckets['browserInputRequests']
+  dismiss: (toolUseId: string) => void
+} {
+  const { data } = usePendingUserRequests(agentSlug, sessionId)
+  // Local dismissal, same reason as the request stack's: answering in the tray
+  // must drop the overlay now, not one server round trip later.
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set())
+  const dismiss = useCallback((toolUseId: string) => {
+    setDismissed((prev) => new Set(prev).add(toolUseId))
+  }, [])
+
+  const prevIsActive = useRef(isActive)
+  useEffect(() => {
+    if (prevIsActive.current && !isActive) setDismissed(new Set())
+    prevIsActive.current = isActive
+  }, [isActive])
+
+  const requests = useMemo(() => {
+    // Session-scoped waits die with the turn, matching the array this replaced
+    // (session_idle and session_error both emptied it).
+    if (!isActive) return []
+    return projectUnifiedRequests(data ?? []).buckets.browserInputRequests.filter(
+      (r) => !dismissed.has(r.toolUseId),
+    )
+  }, [data, isActive, dismissed])
+
+  return { requests, dismiss }
 }
 
 export type PendingRequestDescriptor =
@@ -398,25 +502,17 @@ export function usePendingRequests({
   const { data: messages } = useMessages(sessionId, agentSlug)
   const {
     isActive,
-    pendingCapabilityReviewRequests: sseCapabilityReviewRequests,
     streamingToolUses,
     autoApprovedScriptRunIds,
     autoApprovedComputerUseIds,
   } = useMessageStream(sessionId, agentSlug)
 
-  // The unified store is the primary source for every kind — session-scoped
-  // requests AND the agent-scoped reviews that used to arrive on a separate
-  // poll. The streaming/message-history fallbacks below still cover the
-  // transcript-recovery path (recovered entries are in the snapshot but carry
-  // no payload, so the per-kind guards drop them; the transcript renders them).
+  // The snapshot is the only source for reviews and capability reviews, and
+  // the primary one for every other kind. The streaming/message-history
+  // fallbacks below cover the transcript-recovery path: recovered entries are
+  // in the snapshot but carry no payload, so the per-kind guards drop them and
+  // the transcript is what renders them.
   const { data: unifiedRequestsData } = usePendingUserRequests(agentSlug, sessionId)
-  // undefined = the snapshot has NEVER succeeded (still in flight, or a cold
-  // fetch failure with nothing cached) — distinct from a successful empty [].
-  // Reviews have no message-history or streaming recovery, so until the first
-  // snapshot lands the legacy poll and stream arrays below keep those cards
-  // actionable; once a snapshot exists it is authoritative.
-  const hasSnapshot = unifiedRequestsData !== undefined
-  const { data: legacyProxyReviewsData } = usePendingProxyReviews(agentSlug)
   const unified = useMemo(() => {
     const requests = unifiedRequestsData ?? []
     // Session-scoped waits die with the turn for DISPLAY purposes — the legacy
@@ -429,10 +525,7 @@ export function usePendingRequests({
       isActive ? requests : requests.filter((r) => r.scope.sessionId === undefined),
     )
   }, [unifiedRequestsData, isActive])
-  const pendingProxyReviews = useMemo(
-    () => (hasSnapshot ? unified.reviews : legacyProxyReviewsData?.reviews ?? []),
-    [hasSnapshot, unified.reviews, legacyProxyReviewsData],
-  )
+  const pendingProxyReviews = unified.reviews
 
   // Derive pending requests from message history (for page refresh recovery).
   // Tool calls without a result are still pending, but only if there are no
@@ -504,133 +597,60 @@ export function usePendingRequests({
     prevIsActive.current = isActive
   }, [isActive])
 
-  // TODO: currently request handling is super duplicative for different types
-  // (question, browser, permission, ...) — need to unify into a single helper.
-  // Tracked: SUP-163.
-  const pendingSecretRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; secretName: string; reason?: string }[] = []
-    const messageBased = isActive ? messagesBasedPendingRequests.secretRequests : []
-    const streamingBased = isActive ? streamingBasedPendingRequests.secretRequests : []
-    for (const req of [...unified.buckets.secretRequests, ...streamingBased, ...messageBased]) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [unified.buckets.secretRequests, streamingBasedPendingRequests.secretRequests, messagesBasedPendingRequests.secretRequests, isActive, dismissedRequestIds])
+  // One merge rule for every bucket kind: unified snapshot ∪ streaming
+  // fallback ∪ message-history fallback, first occurrence of a toolUseId
+  // wins, dismissed ids drop, and the auto-approved suppress-set (script_run
+  // and computer_use only) hides requests the server is already executing.
+  // Live event ∪ snapshot. The live sets are written synchronously by
+  // user_request_created (they have to be, to beat the fallback-card flash),
+  // but that event is one-shot: a client that mounts or reconnects after it
+  // fired only learns from the snapshot. Without the union, the transcript
+  // fallback revives an approval card for a request already executing.
+  const suppressedScriptRunIds = useMemo(
+    () => new Set([...autoApprovedScriptRunIds, ...unified.autoApprovedScriptRunIds]),
+    [autoApprovedScriptRunIds, unified.autoApprovedScriptRunIds],
+  )
+  const suppressedComputerUseIds = useMemo(
+    () => new Set([...autoApprovedComputerUseIds, ...unified.autoApprovedComputerUseIds]),
+    [autoApprovedComputerUseIds, unified.autoApprovedComputerUseIds],
+  )
 
-  const pendingConnectedAccountRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; toolkit: string; reason?: string }[] = []
-    const messageBased = isActive ? messagesBasedPendingRequests.connectedAccountRequests : []
-    const streamingBased = isActive ? streamingBasedPendingRequests.connectedAccountRequests : []
-    for (const req of [...unified.buckets.connectedAccountRequests, ...streamingBased, ...messageBased]) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
+  const merged = useMemo(() => {
+    const target = createPendingRequestBuckets()
+    for (const kind of Object.keys(target) as Array<keyof PendingRequestBuckets>) {
+      const suppressed =
+        kind === 'scriptRunRequests'
+          ? suppressedScriptRunIds
+          : kind === 'computerUseRequests'
+            ? suppressedComputerUseIds
+            : undefined
+      mergeBucket(
+        target,
+        kind,
+        // The fallbacks recover only ACTIVE turns — an idle session's
+        // unanswered tool calls are history, not open requests.
+        isActive
+          ? [unified.buckets[kind], streamingBasedPendingRequests[kind], messagesBasedPendingRequests[kind]]
+          : [unified.buckets[kind]],
+        dismissedRequestIds,
+        suppressed,
+      )
     }
-    return merged
-  }, [unified.buckets.connectedAccountRequests, streamingBasedPendingRequests.connectedAccountRequests, messagesBasedPendingRequests.connectedAccountRequests, isActive, dismissedRequestIds])
+    return target
+  }, [
+    unified.buckets, streamingBasedPendingRequests, messagesBasedPendingRequests,
+    isActive, suppressedScriptRunIds, suppressedComputerUseIds, dismissedRequestIds,
+  ])
 
-  const pendingQuestionRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; questions: Question[] }[] = []
-    const messageBased = isActive ? messagesBasedPendingRequests.questionRequests : []
-    const streamingBased = isActive ? streamingBasedPendingRequests.questionRequests : []
-    for (const req of [...unified.buckets.questionRequests, ...streamingBased, ...messageBased]) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [unified.buckets.questionRequests, streamingBasedPendingRequests.questionRequests, messagesBasedPendingRequests.questionRequests, isActive, dismissedRequestIds])
-
-  const pendingFileRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; description: string; fileTypes?: string }[] = []
-    const messageBased = isActive ? messagesBasedPendingRequests.fileRequests : []
-    const streamingBased = isActive ? streamingBasedPendingRequests.fileRequests : []
-    for (const req of [...unified.buckets.fileRequests, ...streamingBased, ...messageBased]) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [unified.buckets.fileRequests, streamingBasedPendingRequests.fileRequests, messagesBasedPendingRequests.fileRequests, isActive, dismissedRequestIds])
-
-  const pendingRemoteMcpRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }[] = []
-    const messageBased = isActive ? messagesBasedPendingRequests.remoteMcpRequests : []
-    const streamingBased = isActive ? streamingBasedPendingRequests.remoteMcpRequests : []
-    for (const req of [...unified.buckets.remoteMcpRequests, ...streamingBased, ...messageBased]) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [unified.buckets.remoteMcpRequests, streamingBasedPendingRequests.remoteMcpRequests, messagesBasedPendingRequests.remoteMcpRequests, isActive, dismissedRequestIds])
-
-  const pendingBrowserInputRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; message: string; requirements: string[] }[] = []
-    const messageBased = isActive ? messagesBasedPendingRequests.browserInputRequests : []
-    const streamingBased = isActive ? streamingBasedPendingRequests.browserInputRequests : []
-    for (const req of [...unified.buckets.browserInputRequests, ...streamingBased, ...messageBased]) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [unified.buckets.browserInputRequests, streamingBasedPendingRequests.browserInputRequests, messagesBasedPendingRequests.browserInputRequests, isActive, dismissedRequestIds])
-
-  const pendingScriptRunRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[] = []
-    const messageBased = isActive ? messagesBasedPendingRequests.scriptRunRequests : []
-    const streamingBased = isActive ? streamingBasedPendingRequests.scriptRunRequests : []
-    for (const req of [...unified.buckets.scriptRunRequests, ...streamingBased, ...messageBased]) {
-      if (autoApprovedScriptRunIds.has(req.toolUseId)) continue
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [unified.buckets.scriptRunRequests, streamingBasedPendingRequests.scriptRunRequests, messagesBasedPendingRequests.scriptRunRequests, isActive, autoApprovedScriptRunIds, dismissedRequestIds])
-
-  const pendingComputerUseRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }[] = []
-    const messageBased = isActive ? messagesBasedPendingRequests.computerUseRequests : []
-    const streamingBased = isActive ? streamingBasedPendingRequests.computerUseRequests : []
-    for (const req of [...unified.buckets.computerUseRequests, ...streamingBased, ...messageBased]) {
-      if (autoApprovedComputerUseIds.has(req.toolUseId)) continue
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [unified.buckets.computerUseRequests, streamingBasedPendingRequests.computerUseRequests, messagesBasedPendingRequests.computerUseRequests, isActive, autoApprovedComputerUseIds, dismissedRequestIds])
-
-  // Capability reviews come from the unified store (with the stream source as
-  // the cold-start fallback) — no message-history or streaming recovery. A
-  // Task/Workflow call without a result usually means the launch is RUNNING
-  // (allow policy or an active session grant), not awaiting approval; only
-  // the host registry knows which.
+  // Capability reviews come from the unified store only — no message-history
+  // or streaming recovery. A Task/Workflow call without a result usually means
+  // the launch is RUNNING (allow policy or an active session grant), not
+  // awaiting approval; only the host registry knows which. A cold mount
+  // therefore shows the card one snapshot fetch late.
   const pendingCapabilityReviewRequests = useMemo(() => {
     if (!isActive) return []
-    const source = hasSnapshot ? unified.capabilityReviews : sseCapabilityReviewRequests
-    return source.filter((r) => !dismissedRequestIds.has(r.toolUseId))
-  }, [unified.capabilityReviews, sseCapabilityReviewRequests, hasSnapshot, isActive, dismissedRequestIds])
+    return unified.capabilityReviews.filter((r) => !dismissedRequestIds.has(r.toolUseId))
+  }, [unified.capabilityReviews, isActive, dismissedRequestIds])
 
   // Track arrival order so the stack is chronological. Each id gets a
   // monotonically increasing sequence number the first time it appears.
@@ -640,14 +660,14 @@ export function usePendingRequests({
   const allPendingIds = useMemo(() => {
     const ids: string[] = []
     for (const arr of [
-      pendingSecretRequests,
-      pendingConnectedAccountRequests,
-      pendingRemoteMcpRequests,
-      pendingQuestionRequests,
-      pendingFileRequests,
-      pendingBrowserInputRequests,
-      pendingScriptRunRequests,
-      pendingComputerUseRequests,
+      merged.secretRequests,
+      merged.connectedAccountRequests,
+      merged.remoteMcpRequests,
+      merged.questionRequests,
+      merged.fileRequests,
+      merged.browserInputRequests,
+      merged.scriptRunRequests,
+      merged.computerUseRequests,
       pendingCapabilityReviewRequests,
     ]) {
       for (const req of arr) ids.push(req.toolUseId)
@@ -655,9 +675,9 @@ export function usePendingRequests({
     for (const review of pendingProxyReviews) ids.push(review.id)
     return ids
   }, [
-    pendingSecretRequests, pendingConnectedAccountRequests, pendingRemoteMcpRequests,
-    pendingQuestionRequests, pendingFileRequests, pendingBrowserInputRequests,
-    pendingScriptRunRequests, pendingComputerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
+    merged.secretRequests, merged.connectedAccountRequests, merged.remoteMcpRequests,
+    merged.questionRequests, merged.fileRequests, merged.browserInputRequests,
+    merged.scriptRunRequests, merged.computerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
   ])
 
   // Effect — not useMemo — because we mutate refs. useMemo may re-run for the
@@ -679,82 +699,39 @@ export function usePendingRequests({
     return arrivalOrder.current.get(id) ?? Infinity
   }, [])
 
-  const handleSecretRequestComplete = useCallback((toolUseId: string) => {
+  const handleRequestComplete = useCallback((toolUseId: string) => {
     dismissRequest(toolUseId)
-    removeSecretRequest(sessionId, toolUseId)
-  }, [sessionId, dismissRequest])
-
-  const handleConnectedAccountRequestComplete = useCallback((toolUseId: string) => {
-    dismissRequest(toolUseId)
-    removeConnectedAccountRequest(sessionId, toolUseId)
-  }, [sessionId, dismissRequest])
-
-  const handleQuestionRequestComplete = useCallback((toolUseId: string) => {
-    dismissRequest(toolUseId)
-    removeQuestionRequest(sessionId, toolUseId)
-  }, [sessionId, dismissRequest])
-
-  const handleRemoteMcpRequestComplete = useCallback((toolUseId: string) => {
-    dismissRequest(toolUseId)
-    removeRemoteMcpRequest(sessionId, toolUseId)
-  }, [sessionId, dismissRequest])
-
-  const handleFileRequestComplete = useCallback((toolUseId: string) => {
-    dismissRequest(toolUseId)
-    removeFileRequest(sessionId, toolUseId)
-  }, [sessionId, dismissRequest])
-
-  const handleScriptRunRequestComplete = useCallback((toolUseId: string) => {
-    dismissRequest(toolUseId)
-    removeScriptRunRequest(sessionId, toolUseId)
-  }, [sessionId, dismissRequest])
-
-  const handleComputerUseRequestComplete = useCallback((toolUseId: string) => {
-    dismissRequest(toolUseId)
-    removeComputerUseRequest(sessionId, toolUseId)
-  }, [sessionId, dismissRequest])
-
-  const handleBrowserInputRequestComplete = useCallback((toolUseId: string) => {
-    dismissRequest(toolUseId)
-    removeBrowserInputRequest(sessionId, toolUseId)
-  }, [sessionId, dismissRequest])
-
-  const handleCapabilityReviewRequestComplete = useCallback((toolUseId: string) => {
-    dismissRequest(toolUseId)
-    removeCapabilityReviewRequest(sessionId, toolUseId)
-  }, [sessionId, dismissRequest])
+  }, [dismissRequest])
 
   const handleProxyReviewComplete = useCallback(() => {
     // The decision routes settle the registry entry, which broadcasts
-    // user_request_resolved → this invalidation is the immediate local echo
-    // (and keeps the dashboard's legacy review poll coherent).
+    // user_request_resolved → this invalidation is the immediate local echo.
     queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
-    queryClient.invalidateQueries({ queryKey: ['proxy-reviews'] })
   }, [queryClient])
 
   const items = useMemo<PendingRequestDescriptor[]>(() => {
     const all: PendingRequestDescriptor[] = []
-    for (const r of pendingSecretRequests) {
+    for (const r of merged.secretRequests) {
       all.push({
         kind: 'secret',
         key: r.toolUseId,
         toolUseId: r.toolUseId,
         secretName: r.secretName,
         reason: r.reason,
-        onComplete: () => handleSecretRequestComplete(r.toolUseId),
+        onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }
-    for (const r of pendingConnectedAccountRequests) {
+    for (const r of merged.connectedAccountRequests) {
       all.push({
         kind: 'connected_account',
         key: r.toolUseId,
         toolUseId: r.toolUseId,
         toolkit: r.toolkit,
         reason: r.reason,
-        onComplete: () => handleConnectedAccountRequestComplete(r.toolUseId),
+        onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }
-    for (const r of pendingRemoteMcpRequests) {
+    for (const r of merged.remoteMcpRequests) {
       all.push({
         kind: 'remote_mcp',
         key: r.toolUseId,
@@ -763,39 +740,39 @@ export function usePendingRequests({
         name: r.name,
         reason: r.reason,
         authHint: r.authHint,
-        onComplete: () => handleRemoteMcpRequestComplete(r.toolUseId),
+        onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }
-    for (const r of pendingQuestionRequests) {
+    for (const r of merged.questionRequests) {
       all.push({
         kind: 'question',
         key: r.toolUseId,
         toolUseId: r.toolUseId,
         questions: r.questions,
-        onComplete: () => handleQuestionRequestComplete(r.toolUseId),
+        onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }
-    for (const r of pendingFileRequests) {
+    for (const r of merged.fileRequests) {
       all.push({
         kind: 'file',
         key: r.toolUseId,
         toolUseId: r.toolUseId,
         description: r.description,
         fileTypes: r.fileTypes,
-        onComplete: () => handleFileRequestComplete(r.toolUseId),
+        onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }
-    for (const r of pendingBrowserInputRequests) {
+    for (const r of merged.browserInputRequests) {
       all.push({
         kind: 'browser_input',
         key: r.toolUseId,
         toolUseId: r.toolUseId,
         message: r.message,
         requirements: r.requirements,
-        onComplete: () => handleBrowserInputRequestComplete(r.toolUseId),
+        onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }
-    for (const r of pendingScriptRunRequests) {
+    for (const r of merged.scriptRunRequests) {
       all.push({
         kind: 'script_run',
         key: r.toolUseId,
@@ -803,10 +780,10 @@ export function usePendingRequests({
         script: r.script,
         explanation: r.explanation,
         scriptType: r.scriptType,
-        onComplete: () => handleScriptRunRequestComplete(r.toolUseId),
+        onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }
-    for (const r of pendingComputerUseRequests) {
+    for (const r of merged.computerUseRequests) {
       all.push({
         kind: 'computer_use',
         key: r.toolUseId,
@@ -815,7 +792,7 @@ export function usePendingRequests({
         params: r.params,
         permissionLevel: r.permissionLevel,
         appName: r.appName,
-        onComplete: () => handleComputerUseRequestComplete(r.toolUseId),
+        onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }
     for (const r of pendingCapabilityReviewRequests) {
@@ -826,7 +803,7 @@ export function usePendingRequests({
         capability: r.capability,
         toolName: r.toolName,
         input: r.input,
-        onComplete: () => handleCapabilityReviewRequestComplete(r.toolUseId),
+        onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }
     for (const review of pendingProxyReviews) {
@@ -856,15 +833,10 @@ export function usePendingRequests({
     }
     return all.sort((a, b) => getArrivalOrder(a.key) - getArrivalOrder(b.key))
   }, [
-    pendingSecretRequests, pendingConnectedAccountRequests, pendingRemoteMcpRequests,
-    pendingQuestionRequests, pendingFileRequests, pendingBrowserInputRequests,
-    pendingScriptRunRequests, pendingComputerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
-    getArrivalOrder,
-    handleSecretRequestComplete, handleConnectedAccountRequestComplete,
-    handleRemoteMcpRequestComplete, handleQuestionRequestComplete,
-    handleFileRequestComplete, handleBrowserInputRequestComplete,
-    handleScriptRunRequestComplete, handleComputerUseRequestComplete,
-    handleCapabilityReviewRequestComplete, handleProxyReviewComplete,
+    merged.secretRequests, merged.connectedAccountRequests, merged.remoteMcpRequests,
+    merged.questionRequests, merged.fileRequests, merged.browserInputRequests,
+    merged.scriptRunRequests, merged.computerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
+    getArrivalOrder, handleRequestComplete, handleProxyReviewComplete,
   ])
 
   return { items, count: items.length }

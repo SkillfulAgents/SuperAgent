@@ -148,7 +148,7 @@ export function GlobalNotificationHandler() {
         if (!res.ok && res.status !== 404) {
           console.error('[notification-action] Failed to submit proxy review decision:', res.status)
         }
-        queryClient.invalidateQueries({ queryKey: ['proxy-reviews', ctx.agentSlug] })
+        queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
       })
       .catch((err) => {
         console.error('[notification-action] Error submitting proxy review decision:', err)
@@ -347,10 +347,6 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['webhook-trigger-sessions'] })
             queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions'] })
 
-            // Proxy review created or resolved — refetch review list
-            if (eventAgentSlug && data.review) {
-              queryClient.invalidateQueries({ queryKey: ['proxy-reviews', eventAgentSlug] })
-            }
             break
           }
 
@@ -362,12 +358,6 @@ export function GlobalNotificationHandler() {
             // the cross-tab/cross-session sync for everything else; the
             // store's interval refetch is the safety net for a missed event.
             queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
-            // The dashboard's pending-reviews panel still reads the legacy
-            // poll (its store migration is a later phase). Nudging it here
-            // makes dashboard-triggered reviews — which may have NO session
-            // anywhere — appear/settle on creation, decision, timeout, and
-            // auto-deny instead of on the next 30s poll tick.
-            queryClient.invalidateQueries({ queryKey: ['proxy-reviews'] })
             break
 
           case 'agent_status_changed':

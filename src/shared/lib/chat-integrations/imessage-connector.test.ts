@@ -148,7 +148,7 @@ describe('IMessageConnector', () => {
 
     it('sends approval card text with reaction instructions', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-1',
         questions: [{ question: 'Run command: rm -rf /' }],
       }
@@ -166,7 +166,7 @@ describe('IMessageConnector', () => {
 
     it('tracks the pending approval', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-1',
         questions: [{ question: 'Allow this?' }],
       }
@@ -182,7 +182,7 @@ describe('IMessageConnector', () => {
 
     it('uses fallback text when no questions provided', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-2',
       }
 
@@ -195,7 +195,7 @@ describe('IMessageConnector', () => {
 
     it('emits allow response on thumbs-up reaction', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-1',
         questions: [{ question: 'Allow?' }],
       }
@@ -219,7 +219,7 @@ describe('IMessageConnector', () => {
 
     it('emits deny response on thumbs-down reaction', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-1',
         questions: [{ question: 'Allow?' }],
       }
@@ -242,7 +242,7 @@ describe('IMessageConnector', () => {
 
     it('removes pending approval after it is resolved', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-1',
         questions: [{ question: 'Allow?' }],
       }
@@ -272,7 +272,7 @@ describe('IMessageConnector', () => {
 
     it('formats question with numbered options', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-1',
         questions: [{
           question: 'Pick a color',
@@ -298,7 +298,7 @@ describe('IMessageConnector', () => {
 
     it('includes option descriptions when present', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-2',
         questions: [{
           question: 'Choose a plan',
@@ -318,7 +318,7 @@ describe('IMessageConnector', () => {
 
     it('includes header when present', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-3',
         questions: [{
           header: 'Configuration',
@@ -335,7 +335,7 @@ describe('IMessageConnector', () => {
 
     it('renders "(No question provided)" when questions array is empty', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-4',
         questions: [],
       }
@@ -348,7 +348,7 @@ describe('IMessageConnector', () => {
 
     it('tracks pending question', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-5',
         questions: [{
           question: 'Pick one',
@@ -365,7 +365,7 @@ describe('IMessageConnector', () => {
 
     it('resolves question by number', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-6',
         questions: [{
           question: 'Pick a color',
@@ -398,7 +398,7 @@ describe('IMessageConnector', () => {
 
     it('resolves question by exact label (case-insensitive)', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-7',
         questions: [{
           question: 'Pick a color',
@@ -426,7 +426,7 @@ describe('IMessageConnector', () => {
 
     it('resolves question with raw text when no match', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-8',
         questions: [{
           question: 'Pick a color',
@@ -454,7 +454,7 @@ describe('IMessageConnector', () => {
 
     it('does not emit a regular message when answering a question', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-9',
         questions: [{
           question: 'Pick one',
@@ -480,7 +480,7 @@ describe('IMessageConnector', () => {
 
     it('removes pending question after resolution', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-10',
         questions: [{
           question: 'Pick one',
@@ -715,7 +715,7 @@ describe('IMessageConnector', () => {
       wireUp(connector)
 
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-A',
         questions: [{ question: 'Allow A?' }],
       }
@@ -773,7 +773,7 @@ describe('IMessageConnector', () => {
       wireUp(connector)
 
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-C',
         questions: [{ question: 'Allow?' }],
       }

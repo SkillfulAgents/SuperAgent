@@ -64,7 +64,7 @@ xAgentChat.post('/list', async (c) => {
       const activeChats = sessions
         .filter((s) => !s.archivedAt)
         .map((s) => {
-          const type = connectorClass?.classifyChatId?.(s.externalChatId)
+          const type = connectorClass?.classifyChatId?.({ chatId: s.externalChatId })
           return {
             chatId: s.externalChatId,
             displayName: s.displayName,

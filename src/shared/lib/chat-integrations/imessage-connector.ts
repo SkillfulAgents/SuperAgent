@@ -9,7 +9,15 @@
 import WebSocket from 'ws'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
-import { ChatClientConnector, type OutgoingMessage } from './base-connector'
+import {
+  ChatClientConnector,
+  isMultiPartyChatType,
+  type ChatClassifyContext,
+  type ChatConversationType,
+  type OutgoingMessage,
+  type SystemPromptContext,
+} from './base-connector'
+import { buildSessionContextPrompt } from './chat-session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat, withSessionUrl, type AppLinkContext } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -60,21 +68,39 @@ interface PendingQuestion {
   }>
 }
 
-// ── Session system prompt ───────────────────────────────────────────────
+/**
+ * Classify an iMessage chat. This depends on the bridge contract that chatName
+ * is present only for group chats.
+ * Without a name we return undefined (not dm) so listing callers that only
+ * have a chat id do not mislabel groups as private.
+ */
+export function classifyIMessageChat(chat: ChatClassifyContext): ChatConversationType | undefined {
+  return chat.chatName ? 'group' : undefined
+}
 
-const IMESSAGE_SYSTEM_PROMPT = `This is an iMessage-based conversation. Follow these rules:
-- Keep responses concise and conversational — this is a text message, not a document.
-- Use tools, skills, and capabilities as you normally would.
-- Prefer asking questions directly in natural language rather than using the ask questions tool.
+const IMESSAGE_PROVIDER_RULES = `- Prefer asking questions directly in natural language rather than using the ask questions tool.
 - You can react to the user's last message by starting your response with a reaction tag. Available reactions: [[reaction:heart]], [[reaction:thumbs_up]], [[reaction:thumbs_down]], [[reaction:haha]], [[reaction:emphasize]], [[reaction:question]]. The tag will be stripped from the message and sent as a tapback reaction. If your entire response is just a reaction tag, only the reaction is sent (no text message).
 - The user may send voice notes which are automatically transcribed.`
+
+export function buildIMessageSystemPrompt(message: SystemPromptContext): string {
+  const kind = classifyIMessageChat(message)
+  const shared = buildSessionContextPrompt({
+    surface: 'chat',
+    where: kind === 'group'
+      ? 'a live iMessage group conversation'
+      : 'a live iMessage conversation',
+    multiParty: isMultiPartyChatType(kind),
+  })
+  return `${shared}\n${IMESSAGE_PROVIDER_RULES}`
+}
 
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class IMessageConnector extends ChatClientConnector {
   readonly provider = 'imessage' as const
 
-  static generateSystemPrompt = () => IMESSAGE_SYSTEM_PROMPT
+  static generateSystemPrompt = buildIMessageSystemPrompt
+  static classifyChatId = classifyIMessageChat
 
   private ws: WebSocket | null = null
   private _connected = false
@@ -348,7 +374,7 @@ export class IMessageConnector extends ChatClientConnector {
     }
 
     switch (event.type) {
-      case 'user_question_request': {
+      case 'question_request': {
         // Handle proxy review requests (approval cards)
         if (event.toolUseId.startsWith('review:')) {
           return this.sendApprovalCard(event, targetChatId)

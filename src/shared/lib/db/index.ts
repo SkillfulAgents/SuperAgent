@@ -20,8 +20,7 @@ function getMigrationsFolder(): string {
 }
 
 // Lazy initialization: defer DB creation until first access so that
-// SUPERAGENT_DATA_DIR (set by the Electron main process at startup)
-// is available when the path is resolved.
+// SUPERAGENT_DATA_DIR / SUPERAGENT_DB_PATH (set at startup) are available.
 let _sqlite: InstanceType<typeof Database> | null = null
 let _db: BetterSQLite3Database<typeof schema> | null = null
 
@@ -31,9 +30,13 @@ function initDb() {
   const dbPath = getDatabasePath()
   const dataDir = getDataDir()
 
-  // Ensure data directory exists
+  // Data dir (settings/agents) and DB parent may differ when SUPERAGENT_DB_PATH is set.
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true })
+  }
+  const dbParent = path.dirname(dbPath)
+  if (!fs.existsSync(dbParent)) {
+    fs.mkdirSync(dbParent, { recursive: true })
   }
 
   try {

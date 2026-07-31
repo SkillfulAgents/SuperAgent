@@ -34,6 +34,10 @@ import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import type {
+  UserInputRequestKind,
+  UserInputRequestScope,
+} from '@shared/lib/user-input/request-schema'
 import {
   listSessions,
   listSessionsByIds,
@@ -45,13 +49,22 @@ import {
   getSession,
   getSessionMetadata,
   sessionExists,
+  sessionIsKnown,
   isSessionRegistered,
   updateSessionMetadata,
   deleteSession,
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
+import {
+  MAX_UPLOAD_TOTAL_SIZE,
+  UploadTooLargeError,
+  cleanupStaleTempUploads,
+  formatUploadTooLargeMessage,
+  moveUploadedFile,
+  storeUploadChunk,
+} from '@shared/lib/utils/chunked-upload'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
@@ -59,11 +72,12 @@ import {
   listUserSecrets,
   getSecret,
   setSecret,
+  updateSecret,
   deleteSecret,
-  keyToEnvVar,
   getSecretEnvVars,
 } from '@shared/lib/services/secrets-service'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
+import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import {
   listScheduledTasks,
   listPendingScheduledTasks,
@@ -148,7 +162,7 @@ import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/ut
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
-import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { captureException } from '@shared/lib/error-reporting'
 import * as fs from 'fs'
@@ -162,6 +176,7 @@ import {
   toAgentConnectedAccountDto,
   toAgentRemoteMcpDto,
 } from '@shared/lib/agent-connections/public'
+import { createSecretRequestSchema, updateSecretRequestSchema } from './secrets-schema'
 
 const WorkspaceBookmarkSchema = z.object({
   name: z.string().min(1),
@@ -586,11 +601,18 @@ agents.post('/import-template', async (c) => {
       return c.json({ error: 'No file or chunk provided' }, 400)
     }
 
+    if (file.size > MAX_COMPRESSED_SIZE) {
+      return c.json({ error: formatUploadTooLargeMessage(file.size, MAX_COMPRESSED_SIZE) }, 413)
+    }
+
     const arrayBuffer = await file.arrayBuffer()
     const zipBuffer = Buffer.from(arrayBuffer)
 
     return await processImport(c, zipBuffer, formData)
   } catch (error) {
+    if (error instanceof UploadTooLargeError) {
+      return c.json({ error: error.message }, 413)
+    }
     const message = error instanceof Error ? error.message : 'Failed to import template'
     console.error('Failed to import template:', error)
     captureException(error, { tags: { component: 'agents', operation: 'import-template' } })
@@ -626,56 +648,47 @@ function parseChunkFields(formData: FormData): ParsedChunkFields {
   return { ok: true, uploadId, chunkIndex, totalChunks }
 }
 
-type StoreChunkResult = { status: 'received' } | { status: 'assembled'; buffer: Buffer }
-
-// Persist one chunk; assemble once all arrive (`.assembling` lock prevents double assembly).
-// TODO(upload-memory): cap total size before reading; stream to disk instead of Buffer.concat.
-async function storeUploadChunk(uploadId: string, chunkIndex: number, totalChunks: number, chunk: Buffer): Promise<StoreChunkResult> {
-  const uploadDir = path.join(getTempUploadsDir(), uploadId)
-  await ensureDirectory(uploadDir)
-
-  await fs.promises.writeFile(path.join(uploadDir, `chunk-${chunkIndex}`), chunk)
-
-  const files = await fs.promises.readdir(uploadDir)
-  const chunkFiles = files.filter((f) => f.startsWith('chunk-'))
-  if (chunkFiles.length < totalChunks) {
-    return { status: 'received' }
-  }
-
-  const lockPath = path.join(uploadDir, '.assembling')
-  try {
-    await fs.promises.writeFile(lockPath, '', { flag: 'wx' }) // fails if already exists
-  } catch {
-    return { status: 'received' }
-  }
-
-  try {
-    const buffers: Buffer[] = []
-    for (let i = 0; i < totalChunks; i++) {
-      buffers.push(await fs.promises.readFile(path.join(uploadDir, `chunk-${i}`)))
-    }
-    return { status: 'assembled', buffer: Buffer.concat(buffers) }
-  } finally {
-    try { await removeDirectory(uploadDir) } catch { /* ignore cleanup errors */ }
-  }
-}
-
 async function handleChunkedImport(c: Context, formData: FormData, chunk: File) {
   const parsed = parseChunkFields(formData)
   if (!parsed.ok) return c.json({ error: parsed.error }, 400)
 
-  const result = await storeUploadChunk(parsed.uploadId, parsed.chunkIndex, parsed.totalChunks, Buffer.from(await chunk.arrayBuffer()))
+  const result = await storeUploadChunk(
+    parsed.uploadId,
+    parsed.chunkIndex,
+    parsed.totalChunks,
+    Buffer.from(await chunk.arrayBuffer()),
+    MAX_COMPRESSED_SIZE,
+  )
 
   if (result.status === 'received') {
     return c.json({ status: 'chunk_received', chunkIndex: parsed.chunkIndex })
   }
 
-  return await processImport(c, result.buffer, formData)
+  try {
+    const size = (await fs.promises.stat(result.filePath)).size
+    if (size > MAX_COMPRESSED_SIZE) {
+      return c.json({ error: formatUploadTooLargeMessage(size, MAX_COMPRESSED_SIZE) }, 413)
+    }
+    const zipBuffer = await fs.promises.readFile(result.filePath)
+    return await processImport(c, zipBuffer, formData)
+  } finally {
+    try {
+      await fs.promises.unlink(result.filePath)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.warn('[agents] failed to unlink assembled import upload:', err)
+        captureException(err, {
+          tags: { component: 'agents', operation: 'unlink-assembled-import' },
+          extra: { filePath: result.filePath },
+        })
+      }
+    }
+  }
 }
 
 async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
   if (zipBuffer.length > MAX_COMPRESSED_SIZE) {
-    return c.json({ error: `File too large (${(zipBuffer.length / 1024 / 1024).toFixed(1)}MB, max ${MAX_COMPRESSED_SIZE / 1024 / 1024}MB)` }, 413)
+    return c.json({ error: formatUploadTooLargeMessage(zipBuffer.length, MAX_COMPRESSED_SIZE) }, 413)
   }
 
   const nameOverride = formData.get('name') as string | null
@@ -1728,6 +1741,27 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
 
+    // Parallel tool calls hold every sibling's transcript result until the
+    // LAST one resolves, so a request the user already decided still looks
+    // unresolved here. Stamp the settled outcome onto the transcript so every
+    // history consumer — the client's refresh fallback, the transcript card,
+    // and the recovery scan below — sees a completed call instead of
+    // resurrecting a decided one.
+    const settledRequests = messagePersister.getSettledInputRequests(sessionId)
+    if (settledRequests.size > 0) {
+      for (const item of transformed) {
+        if (item.type !== 'assistant') continue
+        for (const toolCall of item.toolCalls) {
+          if (toolCall.result !== undefined) continue
+          const outcome = settledRequests.get(toolCall.id)
+          if (outcome !== undefined) {
+            toolCall.result =
+              outcome === 'answered' ? 'User provided input' : 'User declined the request'
+          }
+        }
+      }
+    }
+
     if (messagePersister.isSessionActive(sessionId)) {
       const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
       if (unresolvedRequests.length > 0) {
@@ -2077,9 +2111,9 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
     const { name } = body
 
 
-    const session = await getSession(agentSlug, sessionId)
-
-    if (!session) {
+    // Guard before renaming so an unknown session never gets metadata written
+    // for it — the rename below would otherwise register one.
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
@@ -2087,15 +2121,22 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
       await updateSessionName(agentSlug, sessionId, name.trim())
     }
 
+    // Read the transcript once, after the rename, rather than on both sides of
+    // it: renaming touches metadata only, so the pre-rename read differed from
+    // this one by exactly the name.
     const updated = await getSession(agentSlug, sessionId)
 
+    if (!updated) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
     return c.json({
-      id: updated?.id || sessionId,
-      agentSlug: updated?.agentSlug || agentSlug,
-      name: updated?.name || name?.trim() || session.name,
-      createdAt: updated?.createdAt || session.createdAt,
-      lastActivityAt: updated?.lastActivityAt || session.lastActivityAt,
-      messageCount: updated?.messageCount || session.messageCount,
+      id: updated.id,
+      agentSlug: updated.agentSlug,
+      name: updated.name,
+      createdAt: updated.createdAt,
+      lastActivityAt: updated.lastActivityAt,
+      messageCount: updated.messageCount,
     })
   } catch (error) {
     console.error('Failed to update session:', error)
@@ -2195,29 +2236,6 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         event: 'message',
       })
 
-      // Replay any pending computer use requests (survives SSE reconnection)
-      const pendingCU = messagePersister.getPendingComputerUseRequests(sessionId)
-      for (const req of pendingCU) {
-        await stream.writeSSE({
-          data: JSON.stringify({ type: 'computer_use_request', ...req }),
-          event: 'message',
-        })
-      }
-
-      // Replay any pending user-input requests (secret/connected_account/question/file/
-      // remote_mcp/script_run/browser_input). These are one-shot broadcasts, so a client
-      // that opened the stream after they fired — a freshly-created session, a reconnect,
-      // or a page refresh while the agent is awaiting input — would otherwise never see
-      // them and would hang until the safety-net messages poll. The stored payloads are
-      // re-sent verbatim; the renderer dedupes by toolUseId.
-      const pendingInputs = messagePersister.getPendingInputRequests(sessionId)
-      for (const req of pendingInputs) {
-        await stream.writeSSE({
-          data: JSON.stringify(req),
-          event: 'message',
-        })
-      }
-
       // Replay current computer use grab state (with icon if cached)
       const agentSlugForStream = getAgentId(c)
       const grabbedApp = computerUsePermissionManager.getGrabbedApp(agentSlugForStream)
@@ -2304,6 +2322,91 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   }
 })
 
+/**
+ * Whether a request — open or recently settled — belongs to the route the
+ * decision arrived on. A caller-supplied toolUseId is an unauthenticated
+ * pointer into a global, cross-agent registry, so every dimension of the
+ * request's identity has to be re-checked against the URL before the route
+ * acts on it (or reports on it): its kind, its agent, and its session.
+ *
+ * agentSlug is matched unconditionally and exactly — including for `_auto`,
+ * which is an internal auto-execute caller that names the real agent in its
+ * URL. A request whose scope carries no agent is unattributable and matches
+ * nothing; every registration path (stream handlers, computer-use, recovery)
+ * supplies one.
+ */
+function requestMatchesRoute(
+  request: { kind: UserInputRequestKind; scope: UserInputRequestScope },
+  kind: UserInputRequestKind,
+  agentSlug: string,
+  sessionId: string,
+): boolean {
+  if (request.kind !== kind) return false
+  if (!request.scope.agentSlug || request.scope.agentSlug !== agentSlug) return false
+  // Auto-execute paths post to /sessions/_auto/… while the request stays
+  // scoped to the real session that streamed it — the ONLY dimension `_auto`
+  // waives.
+  if (sessionId === '_auto') return true
+  return request.scope.sessionId === sessionId
+}
+
+/**
+ * The already-settled gate for request-decision routes. A decision proceeds
+ * only while the registry holds the request OPEN, with the kind this route
+ * handles, for the agent and session the route addresses. Anything else gets a
+ * stable, side-effect-free answer — this is what makes decisions idempotent.
+ * Without it a duplicate POST (second tab, double-click, card revived from a
+ * stale snapshot) re-runs host side effects: run-script re-executes the
+ * script, computer-use re-drives the machine, a browser-input decline
+ * re-interrupts the session.
+ *
+ * Returns a Response to send instead of proceeding, or null to proceed.
+ */
+function gateRequestDecision(
+  c: Context,
+  toolUseId: string,
+  kind: UserInputRequestKind,
+): Response | null {
+  const agentSlug = getAgentId(c)
+  // Every gated route is mounted under /sessions/:sessionId, so the param is
+  // always present; '' is an unmatchable placeholder, not a wildcard.
+  const sessionId = c.req.param('sessionId') ?? ''
+  const open = userInputRequestManager.getOpenRequest(toolUseId)
+  if (open) {
+    if (!open.scope.agentSlug) {
+      // Fail closed, loudly: an unattributable request cannot be proven to
+      // belong to this agent, and a silent 404 on a card the user just clicked
+      // would be near-undiagnosable.
+      console.error(
+        `[agents] Refusing decision for request ${toolUseId} (kind=${kind}): scope carries no agentSlug`,
+      )
+    }
+    if (!requestMatchesRoute(open, kind, agentSlug, sessionId)) {
+      // A caller-supplied id must not settle someone else's parked wait — the
+      // same guard submitDecision has for review kinds.
+      return c.json({ error: 'Request not found' }, 404)
+    }
+    return null
+  }
+  // Settled, or never existed. A settled record is still route-bound: report
+  // its outcome only to the route that could have decided it, so settling a
+  // request can never widen who may read it. A record that fails the match is
+  // as good as absent — same 404 an open mismatch gets.
+  const settled = userInputRequestManager.getRecentResolution(toolUseId)
+  if (settled && !requestMatchesRoute(settled, kind, agentSlug, sessionId)) {
+    return c.json({ error: 'Request not found' }, 404)
+  }
+  // 200 (not an error): the caller's intent is satisfied or moot, and a stale
+  // card should dismiss itself exactly like a successful decision. Unknown and
+  // rotated-off-the-trail ids are indistinguishable and share this shape,
+  // outcome-less.
+  return c.json({
+    success: true,
+    alreadySettled: true,
+    ...(settled ? { outcome: settled.outcome } : {}),
+  })
+}
+
 // POST /api/agents/:id/sessions/:sessionId/provide-secret - Provide or decline a secret request
 agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) => {
   try {
@@ -2314,6 +2417,9 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'secret')
+    if (gated) return gated
 
     if (!secretName) {
       return c.json({ error: 'secretName is required' }, 400)
@@ -2340,6 +2446,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
         return c.json({ error: 'Failed to reject secret request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'secret', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2404,6 +2511,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
       return c.json({ error: 'Secret saved but failed to notify agent' }, 500)
     }
     console.log(`[provide-secret] Request ${toolUseId} resolved successfully`)
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true, saved: true })
   } catch (error) {
@@ -2422,6 +2530,9 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'connected_account')
+    if (gated) return gated
 
     if (!toolkit) {
       return c.json({ error: 'toolkit is required' }, 400)
@@ -2448,6 +2559,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
         return c.json({ error: 'Failed to reject request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'connected_account', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2554,6 +2666,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     console.log(
       `[provide-connected-account] Request ${toolUseId} resolved successfully`
     )
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({
       success: true,
@@ -2580,6 +2693,9 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'question')
+    if (gated) return gated
+
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2601,6 +2717,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
         return c.json({ error: 'Failed to reject question request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'question', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2632,6 +2749,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
       return c.json({ error: 'Failed to submit answers' }, 500)
     }
     console.log(`[answer-question] Request ${toolUseId} resolved successfully`)
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true })
   } catch (error) {
@@ -2658,6 +2776,9 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
     if (capability !== 'subagents' && capability !== 'workflows') {
       return c.json({ error: 'capability must be subagents or workflows' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'capability_review')
+    if (gated) return gated
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2731,6 +2852,9 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'browser_input')
+    if (gated) return gated
+
     const client = containerManager.getClient(agentSlug)
 
     if (decline) {
@@ -2757,8 +2881,10 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
         return c.json({ error: 'Failed to reject browser input request' }, 500)
       }
 
-      // Interrupt the session so the user can chat directly with the agent
       const sessionId = c.req.param('sessionId')
+      messagePersister.completeInputRequest(sessionId, toolUseId, 'declined')
+
+      // Interrupt the session so the user can chat directly with the agent
       try {
         await client.interruptSession(sessionId)
       } catch (e) {
@@ -2792,6 +2918,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       return c.json({ error: 'Failed to complete browser input request' }, 500)
     }
 
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to complete browser input:', error)
@@ -2809,6 +2936,9 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+
+    const gated = gateRequestDecision(c, toolUseId, 'script_run')
+    if (gated) return gated
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2836,6 +2966,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject script run request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'script_run', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2922,6 +3053,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to resolve script run request' }, 500)
     }
 
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
     trackServerEvent('script_executed', { scriptType, exitCode })
     return c.json({ success: true })
   } catch (error) {
@@ -2942,10 +3074,12 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'computer_use')
+    if (gated) return gated
+
     // Validate session belongs to this agent (skip for _auto internal calls from auto-execute)
     if (sessionId !== '_auto') {
-      const session = await getSession(agentSlug, sessionId)
-      if (!session) {
+      if (!(await sessionIsKnown(agentSlug, sessionId))) {
         return c.json({ error: 'Session not found' }, 404)
       }
     }
@@ -3102,8 +3236,7 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
-    const session = await getSession(agentSlug, sessionId)
-    if (!session) {
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
@@ -3221,23 +3354,80 @@ agents.get('/:id/secrets', AgentRead(), async (c) => {
   }
 })
 
+function isRetryableAuditWriteError(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (typeof current !== 'object' || current === null) return false
+    const code = 'code' in current ? current.code : undefined
+    if (
+      typeof code === 'string' &&
+      (code.startsWith('SQLITE_BUSY') || code.startsWith('SQLITE_LOCKED'))
+    ) {
+      return true
+    }
+    current = 'cause' in current ? current.cause : undefined
+  }
+  return false
+}
+
+// GET /api/agents/:id/secrets/:secretId/value - Reveal the raw value of a single secret
+agents.get('/:id/secrets/:secretId/value', AgentAdmin(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    const envVar = c.req.param('secretId')
+
+    // Reserved runtime vars are system-managed and hidden from the secrets
+    // list (SUP-239 bug 3), so they don't exist as user secrets here either —
+    // 404 rather than confirming the var and leaking e.g. CONNECTED_ACCOUNTS.
+    const secret = isReservedEnvVar(envVar) ? null : await getSecret(slug, envVar)
+    if (!secret) {
+      return c.json({ error: 'Secret not found' }, 404)
+    }
+
+    // Revealing plaintext is fail-closed on audit storage: the endpoint must
+    // never disclose a value unless its durable `revealed` row was written.
+    await logAuditEventOrThrow({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${envVar}`, action: 'revealed' })
+    return c.json(
+      { value: secret.value },
+      200,
+      { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+    )
+  } catch (error) {
+    console.error('Failed to reveal secret:', error)
+    if (isRetryableAuditWriteError(error)) {
+      return c.json(
+        { error: 'The audit log is temporarily busy. Please try revealing the secret again.' },
+        503,
+        { 'Retry-After': '1' },
+      )
+    }
+    return c.json({ error: 'Failed to reveal secret' }, 500)
+  }
+})
+
 // POST /api/agents/:id/secrets - Create or update a secret
 agents.post('/:id/secrets', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const body = await c.req.json()
-    const { key, value } = body
+    const parsedBody = createSecretRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    )
+    if (!parsedBody.success) {
+      return c.json({ error: 'Invalid request body' }, 400)
+    }
+    const { key, value } = parsedBody.data
 
-    if (!key?.trim()) {
+    if (!key.trim()) {
       return c.json({ error: 'Key is required' }, 400)
     }
-
-    if (value === undefined || value === null) {
+    if (!value) {
       return c.json({ error: 'Value is required' }, 400)
     }
 
-
     const envVar = keyToEnvVar(key.trim())
+    if (!envVar) {
+      return c.json({ error: 'Key must contain at least one letter or number' }, 400)
+    }
 
     // A secret is just an env var injected into the container, so it must obey
     // the same reserved-runtime-var rule as global custom env vars (SUP-210 /
@@ -3270,39 +3460,37 @@ agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
     const envVar = c.req.param('secretId')
-    const body = await c.req.json()
-    const { key, value } = body
+    const parsedBody = updateSecretRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    )
+    if (!parsedBody.success) {
+      return c.json({ error: 'Invalid request body' }, 400)
+    }
+    const { key, value } = parsedBody.data
 
-
-    const existing = await getSecret(slug, envVar)
-    if (!existing) {
+    const result = await updateSecret(slug, envVar, { key, value })
+    if (result.status === 'not_found') {
       return c.json({ error: 'Secret not found' }, 404)
     }
-
-    const newKey = key?.trim() || existing.key
-    const newEnvVar = keyToEnvVar(newKey)
-    const newValue = value !== undefined ? value : existing.value
-
-    // Renaming a secret onto a reserved runtime var is blocked too (SUP-239 bug 2).
-    if (isReservedEnvVar(newEnvVar)) {
+    if (result.status === 'invalid_key') {
+      return c.json({ error: 'Key must contain at least one letter or number' }, 400)
+    }
+    if (result.status === 'reserved') {
       return c.json(
-        { error: `"${newEnvVar}" is a reserved runtime variable and cannot be used as a secret` },
+        { error: `"${result.envVar}" is a reserved runtime variable and cannot be used as a secret` },
         400
       )
     }
-
-    if (newEnvVar !== envVar) {
-      await deleteSecret(slug, envVar)
+    if (result.status === 'conflict') {
+      return c.json(
+        { error: `A secret with env var "${result.envVar}" already exists` },
+        409,
+      )
     }
 
-    await setSecret(slug, {
-      key: newKey,
-      envVar: newEnvVar,
-      value: newValue,
-    })
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${newEnvVar}`, action: 'updated', details: { key: newKey } })
-    return c.json({ id: newEnvVar, key: newKey, envVar: newEnvVar, hasValue: true })
+    const updated = result.secret
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${updated.envVar}`, action: 'updated', details: { key: updated.key } })
+    return c.json({ id: updated.envVar, key: updated.key, envVar: updated.envVar, hasValue: true })
   } catch (error) {
     console.error('Failed to update secret:', error)
     return c.json({ error: 'Failed to update secret' }, 500)
@@ -3619,6 +3807,9 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       return c.json({ error: 'remoteMcpId or remoteMcpIds is required when not declining' }, 400)
     }
 
+    const gated = gateRequestDecision(c, body.toolUseId, 'remote_mcp')
+    if (gated) return gated
+
     // In auth mode, only allow providing remote MCPs the caller owns before
     // mapping them to the agent. Otherwise a user could approve another user's
     // remote MCP (and its stored credentials) for the agent's proxy. See SUP-199.
@@ -3652,6 +3843,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
         console.error('Failed to reject remote MCP request:', await rejectResponse.text())
         return c.json({ error: 'Failed to decline the request in container' }, 502)
       }
+      messagePersister.completeInputRequest(c.req.param('sessionId'), body.toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'remote_mcp', withReason: !!body.declineReason })
       return c.json({ success: true, status: 'declined' })
     }
@@ -3724,6 +3916,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       return c.json({ error: 'Failed to resolve the request in container' }, 502)
     }
 
+    messagePersister.completeInputRequest(c.req.param('sessionId'), body.toolUseId, 'answered')
     return c.json({ success: true, status: 'provided' })
   } catch (error) {
     console.error('Failed to provide remote MCP:', error)
@@ -4153,11 +4346,15 @@ agents.post('/:id/skills/import-zip', AgentAdmin(), async (c) => {
       return c.json({ error: 'No file provided' }, 400)
     }
 
+    if (file.size > SKILL_MAX_COMPRESSED_SIZE) {
+      return c.json({ error: formatUploadTooLargeMessage(file.size, SKILL_MAX_COMPRESSED_SIZE) }, 413)
+    }
+
     const arrayBuffer = await file.arrayBuffer()
     const zipBuffer = Buffer.from(arrayBuffer)
 
     if (zipBuffer.length > SKILL_MAX_COMPRESSED_SIZE) {
-      return c.json({ error: `File too large (${(zipBuffer.length / 1024 / 1024).toFixed(1)}MB, max ${SKILL_MAX_COMPRESSED_SIZE / 1024 / 1024}MB)` }, 413)
+      return c.json({ error: formatUploadTooLargeMessage(zipBuffer.length, SKILL_MAX_COMPRESSED_SIZE) }, 413)
     }
 
     const result = await importSkillFromZip(agentSlug, zipBuffer)
@@ -4326,8 +4523,7 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
   }
 })
 
-// Shared upload logic - writes a buffer to the agent workspace
-async function writeUploadedFile(agentSlug: string, filename: string, buffer: Buffer, relativePath?: string) {
+function resolveUploadDestPath(agentSlug: string, filename: string, relativePath?: string) {
   // If relativePath is provided (folder upload), preserve directory structure
   let uploadPath: string
   if (relativePath) {
@@ -4348,6 +4544,13 @@ async function writeUploadedFile(agentSlug: string, filename: string, buffer: Bu
     throw new Error('Invalid file path')
   }
 
+  return { uploadPath, fullPath }
+}
+
+// Shared upload logic - writes a buffer to the agent workspace
+async function writeUploadedFile(agentSlug: string, filename: string, buffer: Buffer, relativePath?: string) {
+  const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, filename, relativePath)
+
   // Write directly to host filesystem (volume-mounted into container)
   await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
   await fs.promises.writeFile(fullPath, buffer)
@@ -4360,14 +4563,28 @@ async function writeUploadedFile(agentSlug: string, filename: string, buffer: Bu
   }
 }
 
+async function writeUploadedFileFromPath(agentSlug: string, filename: string, srcPath: string, relativePath?: string) {
+  const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, filename, relativePath)
+  const size = await moveUploadedFile(srcPath, fullPath)
+  return {
+    success: true,
+    path: `/workspace/${uploadPath}`,
+    filename,
+    size,
+  }
+}
+
 async function handleFileUpload(agentSlug: string, file: File, relativePath?: string) {
+  if (file.size > MAX_UPLOAD_TOTAL_SIZE) {
+    throw new UploadTooLargeError(file.size, MAX_UPLOAD_TOTAL_SIZE)
+  }
   const buffer = Buffer.from(await file.arrayBuffer())
   return writeUploadedFile(agentSlug, file.name, buffer, relativePath)
 }
 
 // Shared by both upload-file routes. When a `chunk` field is present, persist it
 // and only write the final file once every chunk has arrived. Returns
-// `{ pending }` (a Response to return immediately — either a 400 or the interim
+// `{ pending }` (a Response to return immediately — either a 400/413 or the interim
 // `chunk_received` ack) or `{ uploadResult }` once the file is fully assembled.
 type ChunkedFileUploadOutcome = {
   pending: Response | null
@@ -4381,14 +4598,35 @@ async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: 
   const filename = (formData.get('filename') as string | null) || 'upload'
   const relativePath = formData.get('relativePath') as string | null
 
-  const result = await storeUploadChunk(parsed.uploadId, parsed.chunkIndex, parsed.totalChunks, Buffer.from(await chunk.arrayBuffer()))
+  const result = await storeUploadChunk(
+    parsed.uploadId,
+    parsed.chunkIndex,
+    parsed.totalChunks,
+    Buffer.from(await chunk.arrayBuffer()),
+    MAX_UPLOAD_TOTAL_SIZE,
+  )
 
   if (result.status === 'received') {
     return { pending: c.json({ status: 'chunk_received', chunkIndex: parsed.chunkIndex }) }
   }
 
-  const uploadResult = await writeUploadedFile(agentSlug, filename, result.buffer, relativePath || undefined)
-  return { pending: null, uploadResult }
+  try {
+    const uploadResult = await writeUploadedFileFromPath(agentSlug, filename, result.filePath, relativePath || undefined)
+    return { pending: null, uploadResult }
+  } finally {
+    try {
+      await fs.promises.unlink(result.filePath)
+    } catch (err) {
+      // rename may have already moved the file
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.warn('[agents] failed to unlink assembled file upload:', err)
+        captureException(err, {
+          tags: { component: 'agents', operation: 'unlink-assembled-upload' },
+          extra: { filePath: result.filePath, agentSlug },
+        })
+      }
+    }
+  }
 }
 
 // Shared handler for both agent-level and session-level upload-file routes.
@@ -4420,6 +4658,9 @@ async function respondUploadFile(c: Context) {
     logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.filename}`, action: 'uploaded' })
     return c.json(result)
   } catch (error) {
+    if (error instanceof UploadTooLargeError) {
+      return c.json({ error: error.message }, 413)
+    }
     console.error('Failed to upload file:', error)
     captureException(error, { tags: { component: 'agents', operation: 'upload-file' }, extra: { agentSlug: getAgentId(c) } })
     return c.json({ error: 'Failed to upload file' }, 500)
@@ -4887,6 +5128,9 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
+    const gated = gateRequestDecision(c, toolUseId, 'file')
+    if (gated) return gated
+
 
     const client = containerManager.getClient(agentSlug)
 
@@ -4908,6 +5152,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject file request' }, 500)
       }
 
+      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'file', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -4939,6 +5184,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to notify agent of uploaded file' }, 500)
     }
     console.log(`[provide-file] Request ${toolUseId} resolved successfully`)
+    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true, filePath })
   } catch (error) {
@@ -5176,8 +5422,14 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
         const res = await fetch(basePath + '/artifacts');
         if (res.ok) {
           const artifacts = await res.json();
-          const d = Array.isArray(artifacts) && artifacts.find(a => a.slug === artifactSlug);
-          if (d && d.status === 'running') { setTitle(d.name); return; }
+          if (!Array.isArray(artifacts)) {
+            await new Promise(r => setTimeout(r, 1000));
+            continue;
+          }
+          const d = artifacts.find(a => a.slug === artifactSlug);
+          if (!d) { throw new Error('Dashboard not found.'); }
+          if (d.status === 'crashed') { throw new Error('Dashboard crashed.'); }
+          if (d.status === 'running') { setTitle(d.name); return; }
         }
         await new Promise(r => setTimeout(r, 1000));
       }
@@ -5342,19 +5594,10 @@ const STALE_UPLOAD_MS = 60 * 60 * 1000 // 1 hour
 
 async function cleanupStaleUploads() {
   try {
-    const uploadsDir = getTempUploadsDir()
-    const entries = await fs.promises.readdir(uploadsDir, { withFileTypes: true }).catch(() => [])
-    const now = Date.now()
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-      const dirPath = path.join(uploadsDir, entry.name)
-      const stat = await fs.promises.stat(dirPath).catch(() => null)
-      if (stat && now - stat.mtimeMs > STALE_UPLOAD_MS) {
-        await removeDirectory(dirPath).catch(() => {})
-      }
-    }
-  } catch {
-    // Ignore cleanup errors
+    await cleanupStaleTempUploads(STALE_UPLOAD_MS)
+  } catch (err) {
+    console.warn('[agents] stale upload cleanup failed:', err)
+    captureException(err, { tags: { component: 'agents', operation: 'cleanup-stale-uploads' } })
   }
 }
 
@@ -5372,8 +5615,8 @@ setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 // session of the agent). This is the recovery source for the unified client
 // store: mount, reconnect, and invalidation refetch from here; live updates
 // arrive as user_request_created / user_request_resolved on the session and
-// global SSE streams. Legacy per-type events keep firing during the client
-// migration.
+// global SSE streams; clients treat those as invalidation triggers and read
+// the resulting state from here.
 agents.get('/:id/pending-requests', AgentRead(), (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.query('sessionId') || undefined
@@ -5383,13 +5626,6 @@ agents.get('/:id/pending-requests', AgentRead(), (c) => {
 // =============================================================================
 // Proxy review endpoints
 // =============================================================================
-
-// GET /api/agents/:id/proxy-reviews - List pending reviews for this agent
-agents.get('/:id/proxy-reviews', AgentRead(), async (c) => {
-  const slug = getAgentId(c)
-  const reviews = reviewManager.getPendingReviewsForAgent(slug)
-  return c.json({ reviews })
-})
 
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {

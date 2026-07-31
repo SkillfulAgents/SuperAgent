@@ -40,8 +40,19 @@ export type TypingHintHandler = (chatId: string) => void
 /** Context available at chat-session creation, passed to generateSystemPrompt. */
 export type SystemPromptContext = Pick<IncomingMessage, 'chatId' | 'chatName' | 'userName'>
 
-/** What kind of conversation a chat id addresses, for labeling chat listings. */
+/** What a connector's chat classifier gets to look at. */
+export type ChatClassifyContext = Pick<IncomingMessage, 'chatId' | 'chatName'>
+
+/** What kind of conversation a chat addresses, for labeling and attribution. */
 export type ChatConversationType = 'dm' | 'channel' | 'group' | 'thread'
+
+/**
+ * Whether more than one person can post. Fail-closed: only group/channel/thread
+ * count; undefined (unclassified) does not.
+ */
+export function isMultiPartyChatType(type: ChatConversationType | undefined): boolean {
+  return type === 'group' || type === 'channel' || type === 'thread'
+}
 
 /** Optional discovery features a provider can support (see discoveryCapabilities). */
 export type ChatDiscoveryCapability = 'list_users' | 'list_channels' | 'dm_by_user_id'
@@ -109,11 +120,13 @@ export abstract class ChatClientConnector {
   static discoveryCapabilities?: ReadonlyArray<ChatDiscoveryCapability>
 
   /**
-   * Classify a chat id as dm/channel/group/thread from the id alone (e.g.
-   * Slack's D/C/G prefixes and `channel|threadTs` composites). Optional:
-   * providers whose ids don't encode the type simply leave chats unlabeled.
+   * Classify a chat as dm/channel/group/thread. Each provider uses its best
+   * signal (Slack/Telegram: id shape; iMessage: chatName when the bridge set
+   * one). Optional: providers that cannot classify leave chats unlabeled.
+   * Static for the same reason generateSystemPrompt is: it derives from the
+   * message alone. Listing callers may pass only chatId.
    */
-  static classifyChatId?: (chatId: string) => ChatConversationType | undefined
+  static classifyChatId?: (chat: ChatClassifyContext) => ChatConversationType | undefined
 
   /**
    * List people reachable through the provider's directory (capability:

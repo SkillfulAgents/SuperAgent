@@ -22,6 +22,7 @@ import {
   withFileLock,
   CorruptFileError,
   readJsonlFile,
+  streamJsonlFile,
   ensureDirectory,
 } from '@shared/lib/utils/file-storage'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
@@ -248,40 +249,79 @@ function normalizeQueuedCommandEntry(entry: JsonlEntry): JsonlEntry {
 }
 
 /**
- * Parse session info from JSONL entries
+ * The four things a SessionInfo needs from a transcript. Accumulated in one
+ * streaming pass so a session's size never has to be held in memory: transcripts
+ * routinely reach 100MB+ and this summary is a handful of scalars.
+ */
+interface TranscriptSummary {
+  messageCount: number
+  firstTimestamp: string | undefined
+  lastTimestamp: string | undefined
+  /** Content of the first user message whose content is a plain string. */
+  firstUserText: string | undefined
+}
+
+const EMPTY_TRANSCRIPT_SUMMARY: TranscriptSummary = {
+  messageCount: 0,
+  firstTimestamp: undefined,
+  lastTimestamp: undefined,
+  firstUserText: undefined,
+}
+
+/**
+ * Stream a session transcript and accumulate only what SessionInfo reports.
+ * Nothing per-entry is retained, so cost is one pass and constant memory.
+ */
+async function summarizeSessionTranscript(jsonlPath: string): Promise<TranscriptSummary> {
+  const summary: TranscriptSummary = { ...EMPTY_TRANSCRIPT_SUMMARY }
+
+  for await (const raw of streamJsonlFile<JsonlEntry>(jsonlPath)) {
+    // Normalize queued_command attachments so mid-turn messages count toward
+    // naming, messageCount, and activity timestamps like any other user message.
+    const entry = normalizeQueuedCommandEntry(raw)
+    if (!isMessageEntry(entry)) continue
+
+    summary.messageCount++
+    if (summary.messageCount === 1) summary.firstTimestamp = entry.timestamp
+    summary.lastTimestamp = entry.timestamp
+    if (
+      summary.firstUserText === undefined &&
+      entry.type === 'user' &&
+      typeof entry.message.content === 'string'
+    ) {
+      summary.firstUserText = entry.message.content
+    }
+  }
+
+  return summary
+}
+
+/**
+ * Project a transcript summary into the session's SessionInfo.
  */
 function parseSessionInfo(
   sessionId: string,
   agentSlug: string,
-  entries: JsonlEntry[],
+  summary: TranscriptSummary,
   metadata?: SessionMetadata
 ): SessionInfo {
-  // Normalize queued_command attachments so mid-turn messages count toward
-  // naming, messageCount, and activity timestamps like any other user message.
-  const messages = entries.map(normalizeQueuedCommandEntry).filter(isMessageEntry)
-
   // Get timestamps
   let createdAt = new Date()
   let lastActivityAt = new Date()
 
-  if (messages.length > 0) {
-    createdAt = new Date(messages[0].timestamp)
-    lastActivityAt = new Date(messages[messages.length - 1].timestamp)
+  if (summary.messageCount > 0) {
+    createdAt = new Date(summary.firstTimestamp as string)
+    lastActivityAt = new Date(summary.lastTimestamp as string)
   }
 
   // Generate name from first user message if no custom name
   let name = metadata?.name || 'New Session'
-  if (!metadata?.name && messages.length > 0) {
-    const firstUserMessage = messages.find(
-      (m) => m.type === 'user' && typeof m.message.content === 'string'
-    )
-    if (firstUserMessage && typeof firstUserMessage.message.content === 'string') {
-      // Use first 50 chars of first message as name
-      const content = firstUserMessage.message.content
-      name = content.substring(0, 50).trim()
-      if (content.length > 50) {
-        name += '...'
-      }
+  if (!metadata?.name && summary.firstUserText !== undefined) {
+    // Use first 50 chars of first message as name
+    const content = summary.firstUserText
+    name = content.substring(0, 50).trim()
+    if (content.length > 50) {
+      name += '...'
     }
   }
 
@@ -291,7 +331,7 @@ function parseSessionInfo(
     name,
     createdAt,
     lastActivityAt,
-    messageCount: messages.length,
+    messageCount: summary.messageCount,
   }
 }
 
@@ -318,6 +358,17 @@ function emptySessionFromMetadata(
     lastActivityAt: createdAt,
     messageCount: 0,
   }
+}
+
+// Prefer metadata createdAt; birthtime is unsupported (epoch 0) on
+// network filesystems like S3 Files / EFS used by the k8s / microVM runtime.
+function resolveSessionCreatedAt(
+  meta: SessionMetadata | undefined,
+  stat: { birthtimeMs: number; birthtime: Date; mtimeMs: number },
+): Date {
+  if (meta?.createdAt) return new Date(meta.createdAt)
+  if (stat.birthtimeMs > 0) return stat.birthtime
+  return new Date(stat.mtimeMs)
 }
 
 // ============================================================================
@@ -417,20 +468,11 @@ export async function listSessions(
         continue
       }
 
-      // Prefer metadata createdAt; birthtime is unsupported (epoch 0) on
-      // network filesystems like S3 Files / EFS used by the k8s runtime.
-      const metaCreatedAt = metadata[sessionId]?.createdAt
-      const createdAt = metaCreatedAt
-        ? new Date(metaCreatedAt)
-        : stat.birthtimeMs > 0
-          ? stat.birthtime
-          : new Date(stat.mtimeMs)
-
       sessions.push({
         id: sessionId,
         agentSlug,
         name: metadata[sessionId]?.name || 'New Session',
-        createdAt,
+        createdAt: resolveSessionCreatedAt(metadata[sessionId], stat),
         lastActivityAt: new Date(stat.mtimeMs),
         messageCount: 0,
       })
@@ -483,17 +525,11 @@ export async function listSessionsByIds(
           // Same rule as listSessions: unregistered empty JSONLs are SDK
           // subagent artifacts, not sessions.
           if (stat.size === 0 && !metadata[sessionId]) return null
-          const metaCreatedAt = metadata[sessionId]?.createdAt
-          const createdAt = metaCreatedAt
-            ? new Date(metaCreatedAt)
-            : stat.birthtimeMs > 0
-              ? stat.birthtime
-              : new Date(stat.mtimeMs)
           return {
             id: sessionId,
             agentSlug,
             name: metadata[sessionId]?.name || 'New Session',
-            createdAt,
+            createdAt: resolveSessionCreatedAt(metadata[sessionId], stat),
             lastActivityAt: new Date(stat.mtimeMs),
             messageCount: 0,
           }
@@ -519,8 +555,8 @@ export async function getSession(
   const metadata = await getSessionMetadata(agentSlug, sessionId)
 
   if (await fileExists(jsonlPath)) {
-    const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-    return parseSessionInfo(sessionId, agentSlug, entries, metadata || undefined)
+    const summary = await summarizeSessionTranscript(jsonlPath)
+    return parseSessionInfo(sessionId, agentSlug, summary, metadata || undefined)
   }
 
   // No transcript yet, but the session is registered → it was just created and
@@ -700,6 +736,22 @@ export async function sessionExists(
 ): Promise<boolean> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   return fileExists(jsonlPath)
+}
+
+/**
+ * Whether a session exists at all — a written transcript, or a registration for
+ * one whose agent hasn't streamed its first message yet. This is exactly the
+ * rule getSession returns non-null on, but it costs a stat and a metadata read
+ * instead of a full transcript pass. Use it for 404 guards that don't go on to
+ * read any SessionInfo field.
+ */
+export async function sessionIsKnown(
+  agentSlug: string,
+  sessionId: string
+): Promise<boolean> {
+  if (await sessionExists(agentSlug, sessionId)) return true
+  const metadata = await getSessionMetadata(agentSlug, sessionId)
+  return Boolean(metadata?.createdAt)
 }
 
 // ============================================================================
@@ -914,26 +966,22 @@ async function getSessionsByMetadata(
   const sessions: SessionInfo[] = []
   for (const sessionId of matchingIds) {
     const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+    const meta = metadata[sessionId]
     try {
       const stat = await fs.promises.stat(jsonlPath)
       sessions.push({
         id: sessionId,
         agentSlug,
-        name: metadata[sessionId]?.name || 'New Session',
-        createdAt: stat.birthtime,
+        name: meta?.name || 'New Session',
+        createdAt: resolveSessionCreatedAt(meta, stat),
         lastActivityAt: new Date(stat.mtimeMs),
         messageCount: 0,
       })
     } catch {
       // JSONL doesn't exist yet — use metadata createdAt
-      sessions.push({
-        id: sessionId,
-        agentSlug,
-        name: metadata[sessionId]?.name || 'New Session',
-        createdAt: new Date(metadata[sessionId]?.createdAt || Date.now()),
-        lastActivityAt: new Date(metadata[sessionId]?.createdAt || Date.now()),
-        messageCount: 0,
-      })
+      if (meta) {
+        sessions.push(emptySessionFromMetadata(sessionId, agentSlug, meta))
+      }
     }
   }
 

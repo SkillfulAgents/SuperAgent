@@ -613,7 +613,7 @@ ipcMain.handle('show-notification', (
     liveNotifications.delete(notification)
   })
   // Track by reviewId if this is a proxy-review notification, so the SSE
-  // 'proxy_review_resolved' handler can dismiss it later.
+  // 'user_request_resolved' handler can dismiss it later.
   const ctxForTrack = context as { kind?: string; reviewId?: string } | undefined
   const reviewId =
     ctxForTrack?.kind === 'proxy_review' && typeof ctxForTrack.reviewId === 'string'
@@ -1304,9 +1304,15 @@ function startNotificationListener(): void {
       // doesn't sit in Notification Center inviting stale Approve/Deny
       // clicks (review S8). This mirrors the renderer-side query
       // invalidation and works for dismissal regardless of window state.
-      if (data.type === 'session_awaiting_input' && data.review?.type === 'proxy_review_resolved') {
-        const rid = data.review.reviewId
-        if (typeof rid === 'string') dismissReviewNotification(rid)
+      // Driven by the unified resolved event — every settle path (decision,
+      // timeout, sweep, policy sibling-resolve) emits it, so a dismissal
+      // cannot be missed by a settle path that forgot the legacy broadcast.
+      if (
+        data.type === 'user_request_resolved' &&
+        (data.kind === 'proxy_review' || data.kind === 'x_agent_review') &&
+        typeof data.requestId === 'string'
+      ) {
+        dismissReviewNotification(data.requestId)
       }
 
       if (data.type === 'os_notification') {

@@ -6,8 +6,22 @@ import { createUserMessage, createAssistantMessage, createToolCall } from '@rend
 
 // Mock SubAgentBlock and ToolCallItem to isolate MessageItem
 vi.mock('./subagent-block', () => ({
-  SubAgentBlock: ({ toolCall }: { toolCall: { name: string } }) => (
-    <div data-testid="subagent-block">{toolCall.name}</div>
+  SubAgentBlock: ({
+    toolCall,
+    activeSubagent,
+    isCompleted,
+  }: {
+    toolCall: { name: string }
+    activeSubagent?: { parentToolId: string } | null
+    isCompleted?: boolean
+  }) => (
+    <div
+      data-testid="subagent-block"
+      data-active-parent={activeSubagent?.parentToolId ?? ''}
+      data-completed={String(!!isCompleted)}
+    >
+      {toolCall.name}
+    </div>
   ),
 }))
 
@@ -233,6 +247,45 @@ describe('MessageItem', () => {
       })
       render(<MessageItem message={msg} sessionId="s1" agentSlug="agent1" />)
       expect(screen.getByTestId('subagent-block')).toBeInTheDocument()
+    })
+
+    it('passes the running resumed lifecycle to the original subagent block', () => {
+      const msg = createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [createToolCall({
+          id: 'agent-tool',
+          name: 'Agent',
+          result: 'FIRST_DONE',
+          subagent: { agentId: 'agent-1', status: 'completed' },
+        })],
+      })
+      const baseSubagent = {
+        agentId: 'agent-1',
+        streamingMessage: null,
+        streamingToolUse: null,
+        progressSummary: null,
+        subagentType: 'general-purpose',
+        description: 'Resume UI probe',
+        usage: null,
+        lastToolName: null,
+      }
+
+      render(
+        <MessageItem
+          message={msg}
+          sessionId="s1"
+          agentSlug="agent1"
+          isSessionActive
+          activeSubagents={[
+            { ...baseSubagent, parentToolId: 'agent-tool' },
+            { ...baseSubagent, parentToolId: 'send-tool', progressSummary: 'Running resumed task' },
+          ]}
+          completedSubagents={new Set(['agent-tool'])}
+        />
+      )
+
+      expect(screen.getByTestId('subagent-block')).toHaveAttribute('data-active-parent', 'send-tool')
+      expect(screen.getByTestId('subagent-block')).toHaveAttribute('data-completed', 'false')
     })
   })
 

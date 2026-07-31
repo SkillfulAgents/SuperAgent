@@ -59,10 +59,15 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 }))
 
 // Telegram connector → a real mock connector that connects without network.
-vi.mock('./telegram-connector', async () => {
+// Keep the REAL classifyChatId static so classification still exercises
+// production rather than silently bypassing it.
+vi.mock('./telegram-connector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./telegram-connector')>()
   const { MockChatClientConnector } = await import('./mock-connector')
   return {
+    ...actual,
     TelegramConnector: class {
+      static classifyChatId = actual.TelegramConnector.classifyChatId
       constructor() {
         return new MockChatClientConnector()
       }

@@ -91,6 +91,25 @@ describe('OpenRouterLlmProvider.searchModels — listing mapping', () => {
     })
   })
 
+  it('maps a Moonshot listing to the Kimi brand icon', async () => {
+    stubFetch({
+      data: [
+        {
+          id: 'moonshotai/kimi-k3',
+          name: 'MoonshotAI: Kimi K3',
+          description: 'Open frontier model.',
+          context_length: 1048576,
+          architecture: { input_modalities: ['text', 'image'] },
+          pricing: { prompt: '0.000003', completion: '0.000015' },
+        },
+      ],
+    })
+
+    const [model] = await provider.searchModels('kimi')
+
+    expect(model).toMatchObject({ id: 'moonshotai/kimi-k3', icon: 'kimi' })
+  })
+
   it('reports image-input support from advertised input modalities', async () => {
     stubFetch({
       data: [

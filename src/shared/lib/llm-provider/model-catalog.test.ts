@@ -83,6 +83,41 @@ describe('getProviderCatalog', () => {
     expect(getProviderCatalog('platform').some((m) => m.id === 'x-ai/grok-4.5')).toBe(false)
   })
 
+  it('offers the Kimi line on OpenRouter, K3 latest with the cheaper K2 versions pinnable', () => {
+    const catalog = getProviderCatalog('openrouter')
+    expect(catalog.find((m) => m.id === 'moonshotai/kimi-k3')).toMatchObject({
+      family: 'kimi',
+      isLatest: true,
+      icon: 'kimi',
+      supportsWebSearch: false,
+      pricing: { inputPerMtok: 3, outputPerMtok: 15 },
+      contextWindow: 1_048_576,
+    })
+    expect(catalog.find((m) => m.id === 'moonshotai/kimi-k2.7-code')).toMatchObject({
+      family: 'kimi',
+      icon: 'kimi',
+      pricing: { inputPerMtok: 0.73, outputPerMtok: 3.5 },
+      contextWindow: 262_144,
+    })
+    expect(catalog.find((m) => m.id === 'moonshotai/kimi-k2.6')).toMatchObject({
+      family: 'kimi',
+      icon: 'kimi',
+      pricing: { inputPerMtok: 0.646, outputPerMtok: 2.72 },
+      contextWindow: 262_144,
+    })
+    // Exactly one latest, or the bare `kimi` alias is ambiguous.
+    const kimiLatest = catalog.filter((m) => m.family === 'kimi' && m.isLatest)
+    expect(kimiLatest.map((m) => m.id)).toEqual(['moonshotai/kimi-k3'])
+    // OpenRouter ignores our speed header, so no entry may claim a speed knob.
+    for (const m of catalog.filter((m) => m.family === 'kimi')) {
+      expect(m.supportedSpeeds).toBeUndefined()
+    }
+    // The two catalogs keep their own ids — no cross-contamination.
+    expect(catalog.some((m) => m.id === 'kimi-k3')).toBe(false)
+    expect(getProviderCatalog('platform').some((m) => m.id === 'moonshotai/kimi-k3')).toBe(false)
+    expect(getProviderCatalog('anthropic').some((m) => m.family === 'kimi')).toBe(false)
+  })
+
   it('offers both GPT versions, with 5.5 the family latest and 5.4 a pinnable older version', () => {
     const catalog = getProviderCatalog('openrouter')
     const gpt54 = catalog.find((m) => m.id === 'openai/gpt-5.4')!
@@ -140,6 +175,16 @@ describe('getProviderCatalog', () => {
       supportsWebFetch: false,
       pricing: { inputPerMtok: 2, outputPerMtok: 6 },
       contextWindow: 500_000,
+    })
+    // Kimi rides Fireworks' Anthropic-compatible wire, which strips server tools.
+    expect(catalog.find((m) => m.id === 'kimi-k3')).toMatchObject({
+      family: 'kimi',
+      isLatest: true,
+      icon: 'kimi',
+      supportsWebSearch: false,
+      supportsWebFetch: false,
+      supportedSpeeds: ['normal', 'fast'],
+      pricing: { inputPerMtok: 3, outputPerMtok: 15, speedMultipliers: { fast: 1.5 } },
     })
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
@@ -433,6 +478,15 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('z-ai/glm-5.2', 'openrouter', 'agent')).toBe('z-ai/glm-5.2')
     expect(resolveModelForProvider('grok', 'openrouter', 'agent')).toBe('x-ai/grok-4.5')
     expect(resolveModelForProvider('x-ai/grok-4.5', 'openrouter', 'agent')).toBe('x-ai/grok-4.5')
+  })
+
+  it('resolves the kimi alias per provider, since the two catalogs use different ids', () => {
+    expect(resolveModelForProvider('kimi', 'openrouter', 'agent')).toBe('moonshotai/kimi-k3')
+    expect(resolveModelForProvider('kimi', 'platform', 'agent')).toBe('kimi-k3')
+    // Pinning an older version stays pinned rather than riding the alias.
+    expect(resolveModelForProvider('moonshotai/kimi-k2.6', 'openrouter', 'agent')).toBe(
+      'moonshotai/kimi-k2.6',
+    )
   })
 
   it('resolves Platform GPT/Grok models to bare ids and falls back for unsupported glm', () => {

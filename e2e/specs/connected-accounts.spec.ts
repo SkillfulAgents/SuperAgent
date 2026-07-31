@@ -390,10 +390,20 @@ test.describe('Remote MCP - Full Connection Flow', () => {
 
         // The provide endpoint refuses non-active servers outright — a grant
         // that resolves while the server is filtered out of REMOTE_MCPS would
-        // be a silent no-op the agent can't detect.
+        // be a silent no-op the agent can't detect. Probe with the REAL open
+        // request: the already-settled gate answers side-effect-free for
+        // unknown toolUseIds, so only an open request reaches this check.
+        const snapshotResponse = await request.get(`/api/agents/${agent.slug}/pending-requests`)
+        expect(snapshotResponse.ok()).toBeTruthy()
+        const snapshot = await snapshotResponse.json() as {
+          requests: Array<{ id: string; kind: string; scope: { sessionId?: string } }>
+        }
+        const openRequest = snapshot.requests.find((r) => r.kind === 'remote_mcp')
+        expect(openRequest, 'the remote MCP request should be open in the registry').toBeTruthy()
+
         const provideResponse = await request.post(
-          `/api/agents/${agent.slug}/sessions/e2e-stale-check/provide-remote-mcp`,
-          { data: { toolUseId: 'e2e-stale-check', remoteMcpIds: [mcp.id] } },
+          `/api/agents/${agent.slug}/sessions/${openRequest!.scope.sessionId}/provide-remote-mcp`,
+          { data: { toolUseId: openRequest!.id, remoteMcpIds: [mcp.id] } },
         )
         expect(provideResponse.status()).toBe(409)
         const provideBody = await provideResponse.json() as { needsReauth?: boolean }

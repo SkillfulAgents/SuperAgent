@@ -124,7 +124,13 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     subscribeToSession: vi.fn(),
     unsubscribeFromSession: vi.fn(),
     markSessionActive: vi.fn(),
+    markSessionInterrupted: vi.fn(),
     cancelAwaitingInput: vi.fn(),
+    completeInputRequest: vi.fn(),
+    completeCapabilityReview: vi.fn(),
+    clearPendingComputerUseRequest: vi.fn(),
+    grantSessionCapability: vi.fn(),
+    getSettledInputRequests: vi.fn(() => new Map()),
     broadcastSessionEvent: vi.fn(),
   },
 }))
@@ -252,6 +258,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true),
+  sessionIsKnown: vi.fn().mockResolvedValue(true),
   isSessionRegistered: vi.fn().mockResolvedValue(false),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   deleteSession: vi.fn(),
@@ -271,9 +278,18 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   listUserSecrets: vi.fn(),
   getSecret: vi.fn(),
   setSecret: vi.fn(),
+  updateSecret: vi.fn(),
   deleteSecret: vi.fn(),
-  keyToEnvVar: vi.fn(),
   getSecretEnvVars: vi.fn(),
+}))
+
+vi.mock('@shared/lib/utils/secrets', () => ({
+  keyToEnvVar: vi.fn(),
+}))
+
+vi.mock('@shared/lib/services/audit-log-service', () => ({
+  logAuditEvent: vi.fn(),
+  logAuditEventOrThrow: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
@@ -438,12 +454,39 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   CorruptFileError: class CorruptFileError extends Error {},
 }))
 
+const mockStoreUploadChunk = vi.fn()
+const mockMoveUploadedFile = vi.fn()
+vi.mock('@shared/lib/utils/chunked-upload', () => {
+  function formatUploadTooLargeMessage(size: number, maxBytes: number): string {
+    return `File too large (${(size / 1024 / 1024).toFixed(1)}MB, max ${maxBytes / 1024 / 1024}MB)`
+  }
+  class UploadTooLargeError extends Error {
+    size: number
+    maxBytes: number
+    constructor(size: number, maxBytes: number) {
+      super(formatUploadTooLargeMessage(size, maxBytes))
+      this.name = 'UploadTooLargeError'
+      this.size = size
+      this.maxBytes = maxBytes
+    }
+  }
+  return {
+    MAX_UPLOAD_TOTAL_SIZE: 2 * 1024 * 1024 * 1024,
+    formatUploadTooLargeMessage,
+    UploadTooLargeError,
+    storeUploadChunk: (...args: unknown[]) => mockStoreUploadChunk(...args),
+    moveUploadedFile: (...args: unknown[]) => mockMoveUploadedFile(...args),
+    cleanupStaleTempUploads: vi.fn(async () => undefined),
+  }
+})
+
 vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))
 const mockStreamSSE = vi.fn((..._args: unknown[]) => new Response(null, { status: 200 }))
 vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStreamSSE(...args) }))
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
+import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
   importAgentFromTemplate,
   hasOnboardingSkill,
@@ -454,14 +497,16 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, isSessionRegistered, deleteSession, getSession, readSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { listUserSecrets, setSecret, getSecret, keyToEnvVar, getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { keyToEnvVar } from '@shared/lib/utils/secrets'
+import { logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
@@ -955,10 +1000,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
   }
 
   it('accepts intermediate chunks and returns chunk_received', async () => {
-    // Simulate first of 2 chunks — readdir returns only 1 file
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
-    mockFsReaddir.mockResolvedValue(['chunk-0'])
+    mockStoreUploadChunk.mockResolvedValue({ status: 'received' })
 
     const form = buildChunkForm({
       chunk: 'data-part-0',
@@ -975,19 +1017,21 @@ describe('POST /api/agents/import-template (chunked)', () => {
     expect(body.status).toBe('chunk_received')
     expect(body.chunkIndex).toBe(0)
     expect(importAgentFromTemplate).not.toHaveBeenCalled()
+    expect(mockStoreUploadChunk).toHaveBeenCalledWith(
+      '11111111-1111-1111-1111-111111111111',
+      0,
+      2,
+      expect.any(Buffer),
+      500 * 1024 * 1024,
+    )
   })
 
   it('assembles and processes on final chunk', async () => {
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
-    // readdir returns both chunks → triggers assembly
-    mockFsReaddir.mockResolvedValue(['chunk-0', 'chunk-1'])
-    // readFile for each chunk during assembly
-    mockFsReadFile.mockImplementation((filePath: string) => {
-      if (filePath.endsWith('chunk-0')) return Promise.resolve(Buffer.from('part0'))
-      if (filePath.endsWith('chunk-1')) return Promise.resolve(Buffer.from('part1'))
-      return Promise.reject(new Error('unexpected read'))
-    })
+    const assembledPath = '/mock/tmp/uploads/22222222-2222-2222-2222-222222222222.assembled'
+    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
+    mockFsStat.mockResolvedValue({ size: 10 })
+    mockFsReadFile.mockResolvedValue(Buffer.from('part0part1'))
+    mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
       chunk: 'data-part-1',
@@ -1003,17 +1047,19 @@ describe('POST /api/agents/import-template (chunked)', () => {
     const body = await res.json()
     expect(body.slug).toBe('imported-agent')
     expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      Buffer.concat([Buffer.from('part0'), Buffer.from('part1')]),
+      Buffer.from('part0part1'),
       undefined,
       'full',
     )
+    expect(mockFsUnlink).toHaveBeenCalledWith(assembledPath)
   })
 
   it('passes name override on final chunk', async () => {
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
-    mockFsReaddir.mockResolvedValue(['chunk-0'])
+    const assembledPath = '/mock/tmp/uploads/33333333-3333-3333-3333-333333333333.assembled'
+    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
+    mockFsStat.mockResolvedValue({ size: 7 })
     mockFsReadFile.mockResolvedValue(Buffer.from('zipdata'))
+    mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
       chunk: 'zipdata',
@@ -1046,6 +1092,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
 
     const body = await res.json()
     expect(body.error).toContain('Invalid uploadId')
+    expect(mockStoreUploadChunk).not.toHaveBeenCalled()
   })
 
   it('rejects missing chunked upload fields', async () => {
@@ -1103,52 +1150,38 @@ describe('POST /api/agents/import-template (chunked)', () => {
 
   it('handles duplicate chunk index by overwriting and still assembles correctly', async () => {
     const uploadId = '66666666-6666-6666-6666-666666666666'
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
+    mockStoreUploadChunk
+      .mockResolvedValueOnce({ status: 'received' })
+      .mockResolvedValueOnce({
+        status: 'assembled',
+        filePath: `/mock/tmp/uploads/${uploadId}.assembled`,
+      })
+    mockFsStat.mockResolvedValue({ size: 12 })
+    mockFsReadFile.mockResolvedValue(Buffer.from('new-datapart1'))
+    mockFsUnlink.mockResolvedValue(undefined)
 
-    // First send of chunk 0 — not all chunks present yet
-    mockFsReaddir.mockResolvedValue(['chunk-0'])
     const form1 = buildChunkForm({ chunk: 'old-data', uploadId, chunkIndex: 0, totalChunks: 2 })
     const res1 = await postFormData(app, '/api/agents/import-template', form1)
     expect(res1.status).toBe(200)
     expect((await res1.json()).status).toBe('chunk_received')
 
-    // Re-send chunk 0 with different data (duplicate), then send chunk 1 as final
-    mockFsReaddir.mockResolvedValue(['chunk-0', 'chunk-1'])
-    mockFsReadFile.mockImplementation((filePath: string) => {
-      if (filePath.endsWith('chunk-0')) return Promise.resolve(Buffer.from('new-data'))
-      if (filePath.endsWith('chunk-1')) return Promise.resolve(Buffer.from('part1'))
-      return Promise.reject(new Error('unexpected read'))
-    })
-
     const form2 = buildChunkForm({ chunk: 'part1', uploadId, chunkIndex: 1, totalChunks: 2, mode: 'template' })
     const res2 = await postFormData(app, '/api/agents/import-template', form2)
     expect(res2.status).toBe(201)
     expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      Buffer.concat([Buffer.from('new-data'), Buffer.from('part1')]),
+      Buffer.from('new-datapart1'),
       undefined,
       'template',
     )
   })
 
   it('rejects when assembled compressed size exceeds limit', async () => {
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
-    // Simulate a single chunk that, once assembled, exceeds MAX_COMPRESSED_SIZE (500MB)
-    // We can't actually allocate 500MB+ in a test, so we verify the check is in processImport
-    // by creating a buffer just over the limit via mock readFile responses
     const uploadId = '77777777-7777-7777-7777-777777777777'
-    mockFsReaddir.mockResolvedValue(['chunk-0'])
-
-    // Create a buffer that's larger than 500MB limit
-    // Instead of allocating a huge buffer, mock readFile to return a large length indicator
-    const oversizedBuffer = Buffer.alloc(100)
-    // We can't easily test with real 500MB+ buffers in unit tests, but we can verify
-    // the route correctly rejects via the processImport guard by setting up a mock
-    // that returns a buffer larger than MAX_COMPRESSED_SIZE
+    const assembledPath = `/mock/tmp/uploads/${uploadId}.assembled`
     const MAX = 500 * 1024 * 1024
-    const mockBuf = { length: MAX + 1 } as Buffer
-    mockFsReadFile.mockResolvedValue(oversizedBuffer)
+    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
+    mockFsStat.mockResolvedValue({ size: MAX + 1 })
+    mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
       chunk: 'data',
@@ -1157,12 +1190,43 @@ describe('POST /api/agents/import-template (chunked)', () => {
       totalChunks: 1,
     })
 
-    // For this test, we directly verify that processImport would reject
-    // We can't easily simulate >500MB in a unit test, so this is a sanity check
-    // that the route handler calls through correctly for small payloads
     const res = await postFormData(app, '/api/agents/import-template', form)
-    // The small payload will succeed (pass size check) then fail at import (mock)
-    expect(res.status).toBe(201)
+    expect(res.status).toBe(413)
+    expect(importAgentFromTemplate).not.toHaveBeenCalled()
+    expect(mockFsReadFile).not.toHaveBeenCalled()
+    expect(mockFsUnlink).toHaveBeenCalledWith(assembledPath)
+  })
+
+  it('returns 413 when storeUploadChunk throws UploadTooLargeError', async () => {
+    mockStoreUploadChunk.mockRejectedValue(new UploadTooLargeError(600 * 1024 * 1024, 500 * 1024 * 1024))
+
+    const form = buildChunkForm({
+      chunk: 'data',
+      uploadId: '88888888-8888-8888-8888-888888888888',
+      chunkIndex: 0,
+      totalChunks: 1,
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(413)
+    const body = await res.json()
+    expect(body.error).toContain('File too large')
+  })
+
+  it('rejects single-request upload when file.size exceeds limit before arrayBuffer', async () => {
+    const file = new File(['x'], 'big.zip', { type: 'application/zip' })
+    const sizeSpy = vi.spyOn(File.prototype, 'size', 'get').mockReturnValue(500 * 1024 * 1024 + 1)
+    const form = new FormData()
+    form.append('file', file)
+    form.append('mode', 'template')
+
+    try {
+      const res = await postFormData(app, '/api/agents/import-template', form)
+      expect(res.status).toBe(413)
+      expect(importAgentFromTemplate).not.toHaveBeenCalled()
+    } finally {
+      sizeSpy.mockRestore()
+    }
   })
 })
 
@@ -2851,6 +2915,53 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     const body = await res.json()
     expect(body.error).toBe('No file provided')
   })
+
+  it('returns 413 when file.size exceeds MAX_UPLOAD_TOTAL_SIZE before reading', async () => {
+    const file = new File(['x'], 'huge.bin', { type: 'application/octet-stream' })
+    const sizeSpy = vi.spyOn(File.prototype, 'size', 'get').mockReturnValue(2 * 1024 * 1024 * 1024 + 1)
+    const formData = new FormData()
+    formData.append('file', file)
+
+    try {
+      const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+      expect(res.status).toBe(413)
+      expect(mockFsWriteFile).not.toHaveBeenCalled()
+    } finally {
+      sizeSpy.mockRestore()
+    }
+  })
+
+  it('moves assembled chunked upload via moveUploadedFile', async () => {
+    const assembledPath = '/mock/tmp/uploads/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.assembled'
+    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
+    mockMoveUploadedFile.mockResolvedValue(11)
+    mockFsUnlink.mockResolvedValue(undefined)
+
+    const form = new FormData()
+    form.append('chunk', new File(['final'], 'chunk.bin'))
+    form.append('uploadId', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+    form.append('chunkIndex', '0')
+    form.append('totalChunks', '1')
+    form.append('filename', 'report.pdf')
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', form)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.success).toBe(true)
+    expect(body.filename).toBe('report.pdf')
+    expect(body.size).toBe(11)
+    expect(mockMoveUploadedFile).toHaveBeenCalledWith(
+      assembledPath,
+      expect.stringContaining('/mock/workspace/uploads/'),
+    )
+    expect(mockStoreUploadChunk).toHaveBeenCalledWith(
+      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      0,
+      1,
+      expect.any(Buffer),
+      2 * 1024 * 1024 * 1024,
+    )
+  })
 })
 
 // ============================================================================
@@ -3226,6 +3337,415 @@ describe('DELETE /:id/sessions/:sessionId', () => {
 // Awaiting-input recovery from the persisted transcript
 // ============================================================================
 
+describe('decision routes settle their request immediately', () => {
+  // The transcript tool_result normally cleans up the stream store and
+  // registry, but parallel tool calls hold every sibling's result until the
+  // last one resolves. A successful decision must settle its own request NOW
+  // — otherwise the snapshot keeps serving it, a reload resurrects the card,
+  // and the stale card can act on a request that was already declined.
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    userInputRequestManager.reset()
+    mockContainerFetch.mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), { status: 200 }),
+    )
+  })
+
+  afterEach(() => {
+    userInputRequestManager.reset()
+  })
+
+  function parkOpen(id: string, kind: string) {
+    userInputRequestManager.register({
+      id,
+      kind,
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+  }
+
+  const CASES: Array<{
+    label: string
+    url: string
+    kind: string
+    body: Record<string, unknown>
+    outcome: 'answered' | 'declined'
+  }> = [
+    {
+      label: 'secret decline',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-secret',
+      kind: 'secret',
+      body: { toolUseId: 'tool-dec-1', secretName: 'K', decline: true },
+      outcome: 'declined',
+    },
+    {
+      label: 'question decline',
+      url: '/api/agents/test-agent/sessions/sess-1/answer-question',
+      kind: 'question',
+      body: { toolUseId: 'tool-dec-2', decline: true },
+      outcome: 'declined',
+    },
+    {
+      label: 'question answer',
+      url: '/api/agents/test-agent/sessions/sess-1/answer-question',
+      kind: 'question',
+      body: { toolUseId: 'tool-dec-3', answers: { 'Pick DB': 'sqlite' } },
+      outcome: 'answered',
+    },
+    {
+      label: 'browser input complete',
+      url: '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      kind: 'browser_input',
+      body: { toolUseId: 'tool-dec-4' },
+      outcome: 'answered',
+    },
+    {
+      label: 'browser input decline',
+      url: '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      kind: 'browser_input',
+      body: { toolUseId: 'tool-dec-5', decline: true },
+      outcome: 'declined',
+    },
+    {
+      label: 'script run deny',
+      url: '/api/agents/test-agent/sessions/sess-1/run-script',
+      kind: 'script_run',
+      body: { toolUseId: 'tool-dec-6', decline: true },
+      outcome: 'declined',
+    },
+    {
+      label: 'file decline',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-file',
+      kind: 'file',
+      body: { toolUseId: 'tool-dec-7', decline: true },
+      outcome: 'declined',
+    },
+    {
+      label: 'connected account decline',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-connected-account',
+      kind: 'connected_account',
+      body: { toolUseId: 'tool-dec-8', toolkit: 'github', decline: true },
+      outcome: 'declined',
+    },
+    {
+      label: 'remote MCP decline',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-remote-mcp',
+      kind: 'remote_mcp',
+      body: { toolUseId: 'tool-dec-9', decline: true },
+      outcome: 'declined',
+    },
+  ]
+
+  it.each(CASES)('$label settles as $outcome', async ({ url, kind, body, outcome }) => {
+    parkOpen(body.toolUseId as string, kind)
+    const res = await postJson(app, url, body)
+    expect(res.status).toBe(200)
+    expect(messagePersister.completeInputRequest).toHaveBeenCalledWith(
+      'sess-1',
+      body.toolUseId,
+      outcome,
+    )
+  })
+
+  it('a failed container reject does NOT settle the request', async () => {
+    parkOpen('tool-dec-10', 'secret')
+    mockContainerFetch.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'no pending' }), { status: 404 }),
+    )
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-dec-10',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(500)
+    expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+  })
+})
+
+describe('decision routes refuse to re-run side effects — the already-settled gate', () => {
+  // A decision can arrive for a request that is no longer open: a second tab,
+  // a double-click racing the first response, or a stale card revived from an
+  // old snapshot. Acting again is not merely redundant — run-script would
+  // re-execute on the host, computer-use would re-drive the machine, and a
+  // browser-input decline would re-interrupt the session. A decision proceeds
+  // only while the registry holds the request OPEN with the kind the route
+  // handles; anything else gets a stable, side-effect-free answer.
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    userInputRequestManager.reset()
+    mockContainerFetch.mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), { status: 200 }),
+    )
+  })
+
+  afterEach(() => {
+    userInputRequestManager.reset()
+  })
+
+  function parkOpen(
+    id: string,
+    kind: string,
+    sessionId: string | undefined = 'sess-1',
+    payload: Record<string, unknown> = {},
+    // null (not undefined — that would take the default) omits the agent.
+    agentSlug: string | null = 'test-agent',
+  ) {
+    userInputRequestManager.register({
+      id,
+      kind,
+      scope: { ...(agentSlug ? { agentSlug } : {}), ...(sessionId ? { sessionId } : {}) },
+      blocking: true,
+      autoApproved: false,
+      payload,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+  }
+
+  const GATE_CASES: Array<{
+    label: string
+    url: string
+    kind: string
+    body: Record<string, unknown>
+  }> = [
+    {
+      label: 'provide-secret',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-secret',
+      kind: 'secret',
+      body: { toolUseId: 'tool-gate-1', secretName: 'K', decline: true },
+    },
+    {
+      label: 'answer-question',
+      url: '/api/agents/test-agent/sessions/sess-1/answer-question',
+      kind: 'question',
+      body: { toolUseId: 'tool-gate-2', answers: { Q: 'A' } },
+    },
+    {
+      label: 'provide-connected-account',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-connected-account',
+      kind: 'connected_account',
+      body: { toolUseId: 'tool-gate-3', toolkit: 'github', decline: true },
+    },
+    {
+      label: 'capability-review',
+      url: '/api/agents/test-agent/sessions/sess-1/capability-review',
+      kind: 'capability_review',
+      body: { toolUseId: 'tool-gate-4', capability: 'subagents', decline: true },
+    },
+    {
+      label: 'complete-browser-input',
+      url: '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      kind: 'browser_input',
+      body: { toolUseId: 'tool-gate-5', decline: true },
+    },
+    {
+      label: 'run-script',
+      url: '/api/agents/test-agent/sessions/sess-1/run-script',
+      kind: 'script_run',
+      body: { toolUseId: 'tool-gate-6', decline: true },
+    },
+    {
+      label: 'provide-remote-mcp',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-remote-mcp',
+      kind: 'remote_mcp',
+      body: { toolUseId: 'tool-gate-7', decline: true },
+    },
+    {
+      label: 'provide-file',
+      url: '/api/agents/test-agent/sessions/sess-1/provide-file',
+      kind: 'file',
+      body: { toolUseId: 'tool-gate-8', decline: true },
+    },
+    {
+      label: 'computer-use',
+      url: '/api/agents/test-agent/sessions/sess-1/computer-use',
+      kind: 'computer_use',
+      body: { toolUseId: 'tool-gate-9', decline: true },
+    },
+  ]
+
+  it.each(GATE_CASES)(
+    '$label with no open request answers alreadySettled and touches nothing',
+    async ({ url, body }) => {
+      const res = await postJson(app, url, body)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ success: true, alreadySettled: true })
+      expect(mockContainerFetch).not.toHaveBeenCalled()
+      expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(GATE_CASES)('$label with an open request still proceeds', async ({ url, kind, body }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.mocked(getSession).mockResolvedValue({ id: 'sess-1' } as any)
+    parkOpen(body.toolUseId as string, kind)
+    const res = await postJson(app, url, body)
+    expect(res.status).toBe(200)
+    const json = (await res.json()) as Record<string, unknown>
+    expect(json.alreadySettled).toBeUndefined()
+    expect(mockContainerFetch).toHaveBeenCalled()
+  })
+
+  it('echoes the settled outcome when the resolution is still on record', async () => {
+    parkOpen('tool-gate-out', 'secret')
+    userInputRequestManager.resolve('tool-gate-out', 'declined')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-out',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      success: true,
+      alreadySettled: true,
+      outcome: 'declined',
+    })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('a toolUseId of a DIFFERENT kind cannot be settled through this route', async () => {
+    // A caller-supplied id must not settle someone else's parked wait — the
+    // same guard submitDecision grew for reviews in the registry migration.
+    parkOpen('tool-gate-kind', 'computer_use')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-kind',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+  })
+
+  it("a request parked in a DIFFERENT session is not decidable through this session's route", async () => {
+    parkOpen('tool-gate-sess', 'secret', 'sess-2')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-sess',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('the internal _auto session bypasses the session-scope check', async () => {
+    // Auto-execute paths post to /sessions/_auto/... while the request is
+    // scoped to the real session that streamed it.
+    parkOpen('tool-gate-auto', 'computer_use', 'sess-real')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/_auto/computer-use', {
+      toolUseId: 'tool-gate-auto',
+      decline: true,
+    })
+    expect(res.status).toBe(200)
+    const json = (await res.json()) as Record<string, unknown>
+    expect(json.alreadySettled).toBeUndefined()
+    expect(mockContainerFetch).toHaveBeenCalled()
+  })
+
+  it.each(GATE_CASES)(
+    "$label cannot decide a request parked for a DIFFERENT agent",
+    async ({ url, kind, body }) => {
+      // toolUseId is a caller-supplied pointer into one global, cross-agent
+      // registry. Without an agent-bound check, another agent's parked ask is
+      // decidable here — and these routes reach host side effects (run-script
+      // executes on the host, computer-use drives the machine).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.mocked(getSession).mockResolvedValue({ id: 'sess-1' } as any)
+      parkOpen(body.toolUseId as string, kind, 'sess-1', {}, 'victim-agent')
+      const res = await postJson(app, url, body)
+      expect(res.status).toBe(404)
+      expect(mockContainerFetch).not.toHaveBeenCalled()
+      expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+      // Still open — a rejected probe must not settle what it could not decide.
+      expect(userInputRequestManager.getOpenRequest(body.toolUseId as string)).not.toBeNull()
+    },
+  )
+
+  it('the internal _auto session waives the session check ONLY, never the agent check', async () => {
+    parkOpen('tool-gate-auto-x', 'computer_use', 'sess-real', {}, 'victim-agent')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/_auto/computer-use', {
+      toolUseId: 'tool-gate-auto-x',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('a request with no agent in scope is unattributable and decidable by nobody', async () => {
+    parkOpen('tool-gate-noagent', 'secret', 'sess-1', {}, null)
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-noagent',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it("does not disclose a settled outcome to another agent's route", async () => {
+    // Settling must not widen who may read the record: the same 404 an open
+    // cross-agent probe gets, not the outcome.
+    parkOpen('tool-gate-settled-agent', 'secret', 'sess-1', {}, 'victim-agent')
+    userInputRequestManager.resolve('tool-gate-settled-agent', 'answered')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-settled-agent',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Request not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('does not disclose a settled outcome through a route of another kind', async () => {
+    parkOpen('tool-gate-settled-kind', 'secret')
+    userInputRequestManager.resolve('tool-gate-settled-kind', 'answered')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/answer-question', {
+      toolUseId: 'tool-gate-settled-kind',
+      answers: { Q: 'A' },
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Request not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it("does not disclose a settled outcome through another session's route", async () => {
+    parkOpen('tool-gate-settled-sess', 'secret', 'sess-2')
+    userInputRequestManager.resolve('tool-gate-settled-sess', 'declined')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-settled-sess',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Request not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('an id that never existed still gets the outcome-less settled shape', async () => {
+    // Unknown and rotated-off-the-trail ids are indistinguishable, and a stale
+    // card must still be able to dismiss itself.
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
+      toolUseId: 'tool-gate-never',
+      secretName: 'K',
+      decline: true,
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, alreadySettled: true })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+})
+
 describe('pending-requests snapshot — GET /:id/pending-requests', () => {
   let app: ReturnType<typeof createApp>
 
@@ -3382,6 +3902,45 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
 
     await getReq(app, URL)
     expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+  })
+
+  it('a decision-settled request is stamped resolved and excluded from recovery', async () => {
+    // Parallel tool calls hold every sibling's transcript result until the
+    // last one settles — the declined call still looks unresolved here.
+    // Without the stamp, a reload resurrects its card (history fallback) and
+    // recovery re-asserts awaiting for a request nothing can answer anymore.
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
+      new Map([['tool-declined', 'declined']]),
+    )
+    mockTransformMessages.mockReturnValue([
+      {
+        id: 'm1',
+        type: 'assistant',
+        content: { text: '' },
+        createdAt: new Date(),
+        toolCalls: [
+          { id: 'tool-declined', name: 'mcp__user-input__request_secret', input: {} },
+          { id: 'tool-open', name: 'AskUserQuestion', input: {} },
+        ],
+      },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Array<{
+      toolCalls?: Array<{ id: string; result?: string }>
+    }>
+    const toolCalls = body[0].toolCalls ?? []
+    expect(toolCalls.find((t) => t.id === 'tool-declined')?.result).toBe(
+      'User declined the request',
+    )
+    expect(toolCalls.find((t) => t.id === 'tool-open')?.result).toBeUndefined()
+    expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+      'sess-1',
+      'test-agent',
+      [{ toolUseId: 'tool-open', toolName: 'AskUserQuestion' }],
+    )
   })
 
   it('does not recover for an inactive session', async () => {
@@ -4371,6 +4930,21 @@ describe('POST /api/agents/:id/skills/import-zip', () => {
     expect(body.error).toBe('No file provided')
   })
 
+  it('returns 413 when file.size exceeds SKILL_MAX_COMPRESSED_SIZE before reading', async () => {
+    const file = new File(['x'], 'skill.zip', { type: 'application/zip' })
+    const sizeSpy = vi.spyOn(File.prototype, 'size', 'get').mockReturnValue(100 * 1024 * 1024 + 1)
+    const form = new FormData()
+    form.append('file', file)
+
+    try {
+      const res = await postFormData(app, '/api/agents/my-agent/skills/import-zip', form)
+      expect(res.status).toBe(413)
+      expect(importSkillFromZip).not.toHaveBeenCalled()
+    } finally {
+      sizeSpy.mockRestore()
+    }
+  })
+
   it('returns 500 when service throws', async () => {
     vi.mocked(importSkillFromZip).mockRejectedValue(new Error('SKILL.md not found in package'))
 
@@ -4414,7 +4988,109 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
     })
   })
 
+  describe('GET /:id/secrets/:secretId/value', () => {
+    it('returns a raw value with cache prevention headers', async () => {
+      vi.mocked(getSecret).mockResolvedValue({
+        envVar: 'MY_API_KEY',
+        key: 'My API Key',
+        value: 'secret-value',
+      })
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets/MY_API_KEY/value')
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ value: 'secret-value' })
+      expect(res.headers.get('cache-control')).toBe('no-store')
+      expect(res.headers.get('pragma')).toBe('no-cache')
+      expect(logAuditEventOrThrow).toHaveBeenCalledWith({
+        userId: 'test-user-id',
+        object: 'secret',
+        objectId: 'my-agent/MY_API_KEY',
+        action: 'revealed',
+      })
+    })
+
+    it('fails closed when the reveal audit row cannot be written', async () => {
+      vi.mocked(getSecret).mockResolvedValue({
+        envVar: 'MY_API_KEY',
+        key: 'My API Key',
+        value: 'secret-value',
+      })
+      vi.mocked(logAuditEventOrThrow).mockRejectedValueOnce(new Error('audit unavailable'))
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets/MY_API_KEY/value')
+
+      expect(res.status).toBe(500)
+      expect(await res.json()).toEqual({ error: 'Failed to reveal secret' })
+    })
+
+    it('returns a retryable response when the audit database is busy', async () => {
+      vi.mocked(getSecret).mockResolvedValue({
+        envVar: 'MY_API_KEY',
+        key: 'My API Key',
+        value: 'secret-value',
+      })
+      vi.mocked(logAuditEventOrThrow).mockRejectedValueOnce(
+        Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }),
+      )
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets/MY_API_KEY/value')
+
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({
+        error: 'The audit log is temporarily busy. Please try revealing the secret again.',
+      })
+      expect(res.headers.get('retry-after')).toBe('1')
+    })
+
+    it('returns 404 when the requested user secret does not exist', async () => {
+      vi.mocked(getSecret).mockResolvedValue(null)
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets/MISSING/value')
+
+      expect(res.status).toBe(404)
+      expect(logAuditEventOrThrow).not.toHaveBeenCalled()
+    })
+
+    it('does not reveal reserved runtime variables', async () => {
+      const res = await getReq(app, '/api/agents/my-agent/secrets/CONNECTED_ACCOUNTS/value')
+
+      expect(res.status).toBe(404)
+      expect(getSecret).not.toHaveBeenCalled()
+    })
+  })
+
   describe('POST /:id/secrets (bug 2 — reject reserved names)', () => {
+    it('returns field-specific errors for missing required values', async () => {
+      const missingKey = await postJson(app, '/api/agents/my-agent/secrets', {
+        value: 'secret',
+      })
+      expect(missingKey.status).toBe(400)
+      expect(await missingKey.json()).toEqual({ error: 'Key is required' })
+
+      const missingValue = await postJson(app, '/api/agents/my-agent/secrets', {
+        key: 'My Key',
+      })
+      expect(missingValue.status).toBe(400)
+      expect(await missingValue.json()).toEqual({ error: 'Value is required' })
+      expect(setSecret).not.toHaveBeenCalled()
+    })
+
+    it('rejects a key that cannot produce an environment variable', async () => {
+      vi.mocked(keyToEnvVar).mockReturnValue('')
+
+      const res = await postJson(app, '/api/agents/my-agent/secrets', {
+        key: '!!!',
+        value: 'pwned',
+      })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({
+        error: 'Key must contain at least one letter or number',
+      })
+      expect(setSecret).not.toHaveBeenCalled()
+    })
+
     it('rejects a reserved env var (CONNECTED_ACCOUNTS) with 400 and never writes', async () => {
       vi.mocked(keyToEnvVar).mockReturnValue('CONNECTED_ACCOUNTS')
 
@@ -4462,9 +5138,37 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
   })
 
   describe('PUT /:id/secrets/:secretId (bug 2 — reject renaming onto reserved)', () => {
+    it('rejects non-string patch values at the request boundary', async () => {
+      const res = await app.request('http://localhost/api/agents/my-agent/secrets/MY_API_KEY', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: null }),
+      })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'Invalid request body' })
+      expect(updateSecret).not.toHaveBeenCalled()
+    })
+
+    it('rejects empty and no-op patches at the request boundary', async () => {
+      for (const body of [{}, { value: '' }]) {
+        const res = await app.request(
+          'http://localhost/api/agents/my-agent/secrets/MY_API_KEY',
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          },
+        )
+
+        expect(res.status).toBe(400)
+        expect(await res.json()).toEqual({ error: 'Invalid request body' })
+      }
+      expect(updateSecret).not.toHaveBeenCalled()
+    })
+
     it('rejects renaming a secret onto a reserved env var with 400 and never writes', async () => {
-      vi.mocked(getSecret).mockResolvedValue({ envVar: 'MY_API_KEY', value: 'k', key: 'My API Key' })
-      vi.mocked(keyToEnvVar).mockReturnValue('REMOTE_MCPS')
+      vi.mocked(updateSecret).mockResolvedValue({ status: 'reserved', envVar: 'REMOTE_MCPS' })
 
       const res = await app.request('http://localhost/api/agents/my-agent/secrets/MY_API_KEY', {
         method: 'PUT',
@@ -4475,7 +5179,21 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
       expect(res.status).toBe(400)
       const body = await res.json()
       expect(body.error).toContain('REMOTE_MCPS')
-      expect(setSecret).not.toHaveBeenCalled()
+    })
+
+    it('returns 409 rather than overwriting a rename destination', async () => {
+      vi.mocked(updateSecret).mockResolvedValue({ status: 'conflict', envVar: 'EXISTING' })
+
+      const res = await app.request('http://localhost/api/agents/my-agent/secrets/SOURCE', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'Existing' }),
+      })
+
+      expect(res.status).toBe(409)
+      expect(await res.json()).toEqual({
+        error: 'A secret with env var "EXISTING" already exists',
+      })
     })
   })
 })
@@ -4773,5 +5491,63 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
     const res = await getReq(app, `${NOTABLE_URL}&limit=zero`)
     const body = await res.json()
     expect(body).toHaveLength(25)
+  })
+})
+
+describe('session existence guards read metadata, not the transcript', () => {
+  let app: ReturnType<typeof createApp>
+
+  const SESSION_INFO = {
+    id: 'sess-1',
+    agentSlug: 'test-agent',
+    name: 'Renamed',
+    createdAt: new Date('2026-03-01T10:00:00.000Z'),
+    lastActivityAt: new Date('2026-03-01T10:05:00.000Z'),
+    messageCount: 7,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionIsKnown).mockResolvedValue(true)
+    vi.mocked(getSession).mockResolvedValue(SESSION_INFO)
+  })
+
+  it('renames a session with a single transcript read', async () => {
+    const res = await patchJson(app, '/api/agents/test-agent/sessions/sess-1', { name: 'Renamed' })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ id: 'sess-1', name: 'Renamed', messageCount: 7 })
+    expect(updateSessionName).toHaveBeenCalledWith('test-agent', 'sess-1', 'Renamed')
+    // Was two full passes over the transcript — one on each side of the rename.
+    expect(getSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('404s a rename for an unknown session without writing metadata', async () => {
+    vi.mocked(sessionIsKnown).mockResolvedValue(false)
+
+    const res = await patchJson(app, '/api/agents/test-agent/sessions/ghost', { name: 'Nope' })
+
+    expect(res.status).toBe(404)
+    // The guard has to run BEFORE the rename: updateSessionName would otherwise
+    // register metadata for a session that does not exist.
+    expect(updateSessionName).not.toHaveBeenCalled()
+    expect(getSession).not.toHaveBeenCalled()
+  })
+
+  it('guards computer-use revoke without reading the transcript', async () => {
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/computer-use/revoke', {})
+
+    expect(res.status).not.toBe(404)
+    expect(sessionIsKnown).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(getSession).not.toHaveBeenCalled()
+  })
+
+  it('404s computer-use revoke for an unknown session', async () => {
+    vi.mocked(sessionIsKnown).mockResolvedValue(false)
+
+    const res = await postJson(app, '/api/agents/test-agent/sessions/ghost/computer-use/revoke', {})
+
+    expect(res.status).toBe(404)
   })
 })

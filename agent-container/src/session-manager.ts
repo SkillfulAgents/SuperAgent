@@ -25,6 +25,13 @@ interface SessionData {
   // completion-wake window) — the only state a subprocess may be stopped in.
   settlement: SessionSettlementTracker;
   eviction: Promise<void> | null;
+  // Identity of the CLI process currently backing this session, re-minted on
+  // every replacement. The host mirrors our background-task bookkeeping and
+  // needs to know when its copy belongs to a process that no longer exists;
+  // identity (not a counter) because the only question is "same process as the
+  // one my snapshot came from?", and it must survive SessionData being rebuilt
+  // on a cold resume.
+  processInstanceId: string;
 }
 
 const DEFAULT_INTERACTIVE_IDLE_EVICTION_MINUTES = 5;
@@ -314,6 +321,11 @@ export class SessionManager extends EventEmitter {
         stateEventsAuthority: true,
       }),
       eviction: null,
+      // Seeded, not derived from query-start: this path starts the process
+      // before SessionData exists (see the await process.start() above), so the
+      // first query-start predates the listener registered below. Every later
+      // replacement re-mints, which is all the host needs to spot a change.
+      processInstanceId: uuidv4(),
     };
 
     // Set up event listeners
@@ -331,6 +343,7 @@ export class SessionManager extends EventEmitter {
     // initial snapshot — carried-over ids would pin the session forever.
     process.on('query-start', () => {
       sessionData.settlement.resetBackgroundTasks();
+      this.noteProcessRestart(sessionData, sessionId);
     });
 
     process.on('stderr', (error: string) => {
@@ -605,6 +618,7 @@ export class SessionManager extends EventEmitter {
           stateEventsAuthority: true,
         }),
         eviction: null,
+        processInstanceId: uuidv4(),
       };
 
       // Set up event listeners (same as createSession)
@@ -616,8 +630,12 @@ export class SessionManager extends EventEmitter {
         data.settlement.noteOutboundMessage(info);
       });
 
+      // Fires from the process.start() below — before `data` is published into
+      // this.sessions, so the broadcast is a no-op here. The id it stamps on
+      // `data` is the durable part; the handshake replays it.
       process.on('query-start', () => {
         data.settlement.resetBackgroundTasks();
+        this.noteProcessRestart(data, sessionId);
       });
 
       process.on('stderr', (error: string) => {
@@ -797,6 +815,37 @@ export class SessionManager extends EventEmitter {
         console.error(`Error in subscriber callback:`, error);
       }
     });
+  }
+
+  // The host keeps its own copy of the background-task level set and has no
+  // other way to learn the CLI was replaced: `query-start` is in-process, and
+  // the SDK deliberately emits no background_tasks_changed at startup. Mint a
+  // new process identity and relay it so the host can reset the same
+  // bookkeeping resetBackgroundTasks() just did — otherwise ids from the dead
+  // process pin its session "working" forever.
+  //
+  // The broadcast alone is NOT sufficient: on a cold resume, process.start()
+  // emits query-start before doResumeSession publishes the SessionData and long
+  // before a subscriber attaches, so it reaches nobody. Recording the id on
+  // `data` is what makes the restart durable — the WebSocket handshake replays
+  // it (see getProcessInstanceId), which is the path that actually covers
+  // eviction + --resume and container restarts.
+  private noteProcessRestart(data: SessionData, sessionId: string): void {
+    data.processInstanceId = uuidv4();
+    this.broadcast(sessionId, {
+      type: 'system',
+      subtype: 'process_restarted',
+      session_id: sessionId,
+      process_instance: data.processInstanceId,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // Identity of the CLI process backing this session right now. Sent in the
+  // WebSocket handshake so a client that reconnects after a restart it never
+  // saw can tell its cached process-local state is stale.
+  getProcessInstanceId(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.processInstanceId;
   }
 
   private handleMessage(sessionId: string, message: SDKMessage): void {

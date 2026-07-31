@@ -12,13 +12,16 @@ import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import {
   ChatClientConnector,
+  isMultiPartyChatType,
   type ChatConversationType,
   type ChatDirectoryChannel,
   type ChatDirectoryPage,
   type ChatDirectoryUser,
+  type ChatClassifyContext,
   type OutgoingMessage,
   type SystemPromptContext,
 } from './base-connector'
+import { buildSessionContextPrompt } from './chat-session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage, withSessionUrl, type AppLinkContext } from './utils'
 import { isUnrecoverableSlackError } from './slack-error'
 import { captureException } from '@shared/lib/error-reporting'
@@ -136,26 +139,20 @@ export function markdownToSlackMrkdwn(md: string): string {
  */
 export function buildSlackSystemPrompt(message: SystemPromptContext): string {
   const pipeIdx = message.chatId.indexOf('|')
-  const isThread = pipeIdx > 0
-  const baseChannelId = isThread ? message.chatId.slice(0, pipeIdx) : message.chatId
-  // Classify by conversation-id prefix (D* = DM, C*/G* = channel/group), NOT
-  // by whether chatName resolved: resolveChannelName returns undefined when
-  // conversations.info fails, and misclassifying a channel as a DM would drop
-  // the multi-user attribution guidance below.
-  const isDm = baseChannelId.startsWith('D')
-  const where = isThread
-    ? `a message thread in ${message.chatName || `channel ${baseChannelId}`}`
-    : isDm
-      ? `a direct message conversation with ${message.userName || 'a Slack user'}`
-      : message.chatName
-        ? `the channel ${message.chatName}`
-        : `a channel (id ${baseChannelId})`
-  const isGroupContext = !isDm
-  return `This session is a live Slack conversation: you are responding inside ${where} (chat id: ${message.chatId}). Follow these rules:
-- Everything you write is posted to this conversation as the bot. Your response text IS the Slack message participants read, delivered automatically — including interim text between tool calls. There is no private narration; write only what participants should see.
-- Never use send_chat_message to reply to this conversation — your reply is already delivered automatically, so that would post it twice. Only use send_chat_message to reach a DIFFERENT chat (for example, to DM a specific person or post to another channel).${isGroupContext ? `
-- Multiple people can take part. Incoming messages are prefixed with the sender's name (for example "[Jane Doe]: ..."); the prefix is added for attribution — the sender did not type it. Keep track of who is asking for what.` : ''}
-- Keep responses concise and conversational — this is a chat, not a document.`
+  const baseChannelId = pipeIdx > 0 ? message.chatId.slice(0, pipeIdx) : message.chatId
+  const kind = classifySlackChat(message)
+  const whereDetail = kind === 'thread'
+    ? `a message thread in channel ${baseChannelId}`
+    : kind === 'dm'
+      ? 'a direct message conversation'
+      : kind === 'channel' || kind === 'group'
+        ? `a channel (id ${baseChannelId})`
+        : 'a Slack conversation'
+  return buildSessionContextPrompt({
+    surface: 'chat',
+    where: `a live Slack conversation: you are responding inside ${whereDetail} (chat id: ${message.chatId})`,
+    multiParty: isMultiPartyChatType(kind),
+  })
 }
 
 // ── Chat id classification ──────────────────────────────────────────────
@@ -171,6 +168,10 @@ export function classifySlackChatId(chatId: string): ChatConversationType | unde
   if (chatId.startsWith('G')) return 'group'
   if (chatId.startsWith('C')) return 'channel'
   return undefined
+}
+
+export function classifySlackChat(chat: ChatClassifyContext): ChatConversationType | undefined {
+  return classifySlackChatId(chat.chatId)
 }
 
 // ── Message routing (exported for testing) ──────────────────────────────
@@ -314,7 +315,7 @@ export class SlackConnector extends ChatClientConnector {
 
   static generateSystemPrompt = buildSlackSystemPrompt
   static discoveryCapabilities = ['list_users', 'list_channels', 'dm_by_user_id'] as const
-  static classifyChatId = classifySlackChatId
+  static classifyChatId = classifySlackChat
 
   private app: SlackApp | null = null
   private receiver: SocketModeReceiver | null = null
@@ -402,6 +403,13 @@ export class SlackConnector extends ChatClientConnector {
       receiver,
       logLevel: 'warn' as any,
       clientOptions: { retryConfig: { retries: 2 }, timeout: 30_000 },
+      // Without this, Bolt's constructor kicks off its own auth.test on the bot
+      // token and parks the promise in a closure nothing awaits until the first
+      // inbound event. A revoked token rejects it (invalid_auth) with no handler
+      // attached, so it escapes every try/catch here and reaches the main
+      // process's unhandled-rejection handler — which quits the whole app.
+      // Deferring routes that same call through the awaited init() below.
+      deferInitialization: true,
     })
     this.receiver = receiver
     this.app = app
@@ -552,6 +560,17 @@ export class SlackConnector extends ChatClientConnector {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`Slack bot token invalid: ${msg}`)
+    }
+
+    // Deferred above, so it has to happen explicitly — and before start(),
+    // which throws AppInitializationError on an uninitialized app. It runs
+    // after the check above so a bad token still reports as "bot token
+    // invalid" rather than the vaguer initialization failure.
+    try {
+      await app.init()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(`Slack app failed to initialize: ${msg}`)
     }
 
     // Track the real socket state so isConnected() is honest — the manager's
@@ -852,7 +871,7 @@ export class SlackConnector extends ChatClientConnector {
     }
 
     switch (event.type) {
-      case 'user_question_request': {
+      case 'question_request': {
         let lastTs = ''
 
         // Track multi-question requests

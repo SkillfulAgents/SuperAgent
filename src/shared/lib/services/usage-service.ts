@@ -348,6 +348,17 @@ function isMissingPathError(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT'
 }
 
+const NEWLINE_BYTE = 0x0a
+const OPEN_BRACE_BYTE = 0x7b
+const CLOSE_BRACE_BYTE = 0x7d
+// Every `"…_tokens"` key processLine screens for ends in this sequence, so a
+// line without it can be skipped without decoding.
+const USAGE_MARKER = Buffer.from('_tokens"')
+
+function isAsciiWhitespaceByte(byte: number): boolean {
+  return byte === 0x20 || (byte >= 0x09 && byte <= 0x0d)
+}
+
 /**
  * Lightweight replacement for ccusage's loadDailyUsageData.
  * - Pre-filters files by mtime when `since` is set
@@ -508,22 +519,35 @@ export async function loadDailyUsageData(
         let fh: fs.promises.FileHandle | null = null
         try {
           fh = await fs.promises.open(file, 'r')
-          const stream = fh.createReadStream({ encoding: 'utf-8' })
-          let buffer = ''
+          const stream = fh.createReadStream()
+          // Split on newlines in the raw bytes and decode only the lines that
+          // could carry usage. Transcripts are dominated by large tool-result
+          // rows; decoding every byte to a JS string costs multiples of the
+          // actual work and is the bulk of the wall-clock on big sessions.
+          let pending: Buffer[] = []
 
           for await (const chunk of stream) {
-            buffer += chunk
-            const lines = buffer.split('\n')
-            // Keep last (potentially incomplete) line in buffer
-            buffer = lines.pop() || ''
-
-            for (const line of lines) {
-              processLine(line, countedByKey, unkeyedUsages, sinceDate)
+            let start = 0
+            let idx = chunk.indexOf(NEWLINE_BYTE)
+            while (idx !== -1) {
+              let line: Buffer
+              if (pending.length > 0) {
+                pending.push(chunk.subarray(start, idx))
+                line = Buffer.concat(pending)
+                pending = []
+              } else {
+                line = chunk.subarray(start, idx)
+              }
+              processLineBytes(line, countedByKey, unkeyedUsages, sinceDate)
+              start = idx + 1
+              idx = chunk.indexOf(NEWLINE_BYTE, start)
             }
+            // Keep the trailing (potentially incomplete) line for the next chunk
+            if (start < chunk.length) pending.push(chunk.subarray(start))
           }
           // Process any remaining content
-          if (buffer.trim()) {
-            processLine(buffer, countedByKey, unkeyedUsages, sinceDate)
+          if (pending.length > 0) {
+            processLineBytes(Buffer.concat(pending), countedByKey, unkeyedUsages, sinceDate)
           }
         } catch {
           // Skip unreadable files
@@ -534,6 +558,38 @@ export async function loadDailyUsageData(
       })
     )
   )
+
+  /**
+   * Byte-level gate in front of {@link processLine}: a line is decoded only
+   * when it survives the same emptiness/shape/token checks the string path
+   * applies, so behaviour is unchanged and non-usage rows are never decoded.
+   */
+  function processLineBytes(
+    line: Buffer,
+    countedEntries: Map<string, CountedUsage>,
+    unkeyedEntries: CountedUsage[],
+    sinceDateFilter: Date | null,
+  ) {
+    // Only ASCII whitespace is trimmed here; every such byte is < 0x80, so this
+    // can never slice a multi-byte UTF-8 sequence.
+    let start = 0
+    let end = line.length
+    while (start < end && isAsciiWhitespaceByte(line[start])) start++
+    while (end > start && isAsciiWhitespaceByte(line[end - 1])) end--
+    if (start === end) return
+
+    // Malformed rows are rare and must go through the string path so the
+    // incomplete-load reporting stays identical.
+    if (line[start] !== OPEN_BRACE_BYTE || line[end - 1] !== CLOSE_BRACE_BYTE) {
+      processLine(line.toString('utf-8'), countedEntries, unkeyedEntries, sinceDateFilter)
+      return
+    }
+
+    // Superset of the four `"…_tokens"` keys processLine looks for.
+    if (!line.includes(USAGE_MARKER, start)) return
+
+    processLine(line.toString('utf-8'), countedEntries, unkeyedEntries, sinceDateFilter)
+  }
 
   function processLine(
     line: string,

@@ -120,6 +120,10 @@ class OidcAuthProviderDefinition extends AuthProviderDefinition {
       requireIssuerValidation: true,
       overrideUserInfo: true,
       mapProfileToUser: (profile: Record<string, unknown>) => {
+        // Platform-only: require verified email before first-time link/provision.
+        if (this.config.id === 'platform' && profile.email_verified !== true) {
+          throw new Error('Platform email is not verified')
+        }
         // org-pinned deployment: id_token org_id must match; throw aborts
         // before Better Auth creates the user/account/session.
         const deploymentOrg = decodeOrgIdFromToken(process.env.PLATFORM_TOKEN ?? '')

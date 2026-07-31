@@ -79,14 +79,20 @@ vi.mock('@shared/lib/services/agent-preferences-service', () => ({
   readAgentPreferences: (...args: unknown[]) => mockReadAgentPreferences(...args),
 }))
 
-// Mock telegram connector to return our MockChatClientConnector
-vi.mock('./telegram-connector', () => ({
-  TelegramConnector: class {
-    constructor() {
-      return mockConnector
-    }
-  },
-}))
+// Mock telegram connector to return our MockChatClientConnector. Keep the REAL
+// classifyChatId static so classification lookups still exercise production.
+vi.mock('./telegram-connector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./telegram-connector')>()
+  return {
+    ...actual,
+    TelegramConnector: class {
+      static classifyChatId = actual.TelegramConnector.classifyChatId
+      constructor() {
+        return mockConnector
+      }
+    },
+  }
+})
 
 // ── Imports (after mocks) ──────────────────────────────────────────────
 

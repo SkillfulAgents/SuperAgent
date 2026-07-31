@@ -6,7 +6,15 @@ const { mockApiFetch } = vi.hoisted(() => ({ mockApiFetch: vi.fn() }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: mockApiFetch }))
 
 vi.mock('./request-item-shell', () => ({
-  RequestItemShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  // `title` is a prop, not a child, and it carries the prompt the permission
+  // wording tests below read. A mock that renders only children would drop it
+  // and pass them for the wrong reason.
+  RequestItemShell: ({ title, children }: { title?: string; children: React.ReactNode }) => (
+    <div>
+      <div>{title}</div>
+      {children}
+    </div>
+  ),
 }))
 vi.mock('./request-item-actions', () => ({
   RequestItemActions: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -26,13 +34,6 @@ import { render, screen, cleanup, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 import { ComputerUseRequestItem } from './computer-use-request-item'
-
-/**
- * The permission is needed on the machine that runs the agent; the deep link
- * opens System Settings on this one. Same machine locally — but against a cloud
- * workspace it sends you to grant Accessibility on a laptop nobody is
- * automating, and the request stays stuck either way.
- */
 
 const PROPS = {
   toolUseId: 't1',
@@ -72,6 +73,12 @@ afterEach(() => {
   _resetApiTargetForTest()
 })
 
+/**
+ * The permission is needed on the machine that runs the agent; the deep link
+ * opens System Settings on this one. Same machine locally — but against a cloud
+ * workspace it sends you to grant Accessibility on a laptop nobody is
+ * automating, and the request stays stuck either way.
+ */
 describe('missing computer-use permissions', () => {
   it('offers to open System Settings when this computer is the one being automated', async () => {
     render(<ComputerUseRequestItem {...PROPS} />)
@@ -95,5 +102,24 @@ describe('missing computer-use permissions', () => {
 
     expect(screen.getByText('Accessibility')).toBeInTheDocument()
     expect(screen.getByText('Screen Recording')).toBeInTheDocument()
+  })
+})
+
+describe('ComputerUseRequestItem permission labels', () => {
+  it('explains read-only access in both the prompt and permission badge', () => {
+    render(<ComputerUseRequestItem {...PROPS} method="apps" permissionLevel="list_apps_windows" />)
+
+    expect(
+      screen.getByText('Allow the agent to list apps & windows (read-only)?'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('List Apps & Windows (read-only)')).toBeInTheDocument()
+  })
+
+  it('uses the self-explanatory shell permission wording', () => {
+    render(<ComputerUseRequestItem {...PROPS} method="run" permissionLevel="use_host_shell" />)
+
+    expect(screen.getByText('Allow the agent to run shell commands & scripts?')).toBeInTheDocument()
+    expect(screen.getByText('Run Shell Commands & Scripts')).toBeInTheDocument()
+    expect(screen.queryByText('Host Shell')).not.toBeInTheDocument()
   })
 })
