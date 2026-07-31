@@ -212,10 +212,6 @@ function makeAgent(overrides = {}) {
     hasActiveSessions: false,
     hasSessionsAwaitingInput: false,
     lastActivityAt: null as Date | null,
-    scheduledTaskCount: 0,
-    nextScheduledTaskAt: null as Date | null,
-    dashboardCount: 0,
-    dashboardNames: [] as string[],
     dashboards: [] as Array<{ slug: string; name: string; hasScreenshot?: boolean }>,
     ...overrides,
   }
@@ -262,20 +258,9 @@ describe('HomePage AgentCard', () => {
     expect(screen.queryByText(/ago/)).not.toBeInTheDocument()
   })
 
-  it('does not render scheduled task details (removed from the compact card)', () => {
-    mockAgentsData.mockReturnValue({
-      data: [makeAgent({ scheduledTaskCount: 3, nextScheduledTaskAt: new Date('2026-03-27T12:00:00Z') })],
-      isLoading: false,
-    })
-    renderWithProviders(<HomePage />)
-    expect(screen.queryByText('3 tasks')).not.toBeInTheDocument()
-  })
-
   it('renders a dashboard card per dashboard alongside the agent card', () => {
     mockAgentsData.mockReturnValue({
       data: [makeAgent({
-        dashboardCount: 2,
-        dashboardNames: ['Sales', 'Metrics'],
         dashboards: [
           { slug: 'sales', name: 'Sales' },
           { slug: 'metrics', name: 'Metrics', hasScreenshot: true },
@@ -295,7 +280,6 @@ describe('HomePage AgentCard', () => {
   it('renders a screenshot img when hasScreenshot is true', () => {
     mockAgentsData.mockReturnValue({
       data: [makeAgent({
-        dashboardCount: 1,
         dashboards: [{ slug: 'sales', name: 'Sales', hasScreenshot: true }],
       })],
       isLoading: false,
@@ -308,7 +292,6 @@ describe('HomePage AgentCard', () => {
   it('shows a placeholder icon when a dashboard has no screenshot', () => {
     mockAgentsData.mockReturnValue({
       data: [makeAgent({
-        dashboardCount: 1,
         dashboards: [{ slug: 'sales', name: 'Sales' }],
       })],
       isLoading: false,
@@ -318,9 +301,9 @@ describe('HomePage AgentCard', () => {
     expect(img).toBeNull()
   })
 
-  it('renders no dashboard cards when count is 0', () => {
+  it('renders no dashboard cards when the dashboard list is empty', () => {
     mockAgentsData.mockReturnValue({
-      data: [makeAgent({ dashboardCount: 0, dashboards: [] })],
+      data: [makeAgent({ dashboards: [] })],
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
@@ -337,14 +320,10 @@ describe('HomePage AgentCard', () => {
     expect(screen.getByText('No agents yet')).toBeInTheDocument()
   })
 
-  it('renders all summary fields together', () => {
+  it('renders last activity with dashboard summaries', () => {
     mockAgentsData.mockReturnValue({
       data: [makeAgent({
         lastActivityAt: new Date('2026-03-26T11:00:00Z'),
-        scheduledTaskCount: 2,
-        nextScheduledTaskAt: new Date('2026-03-26T13:00:00Z'),
-        dashboardCount: 1,
-        dashboardNames: ['Overview'],
         dashboards: [{ slug: 'overview', name: 'Overview' }],
       })],
       isLoading: false,
@@ -434,7 +413,6 @@ describe('HomePage AgentCard', () => {
     mockAgentsData.mockReturnValue({
       data: [
         makeAgent({
-          dashboardCount: 1,
           dashboards: [{ slug: 'sales', name: 'Sales' }],
         }),
       ],
@@ -460,7 +438,7 @@ describe('HomePage AgentCard', () => {
       },
     })
     mockAgentsData.mockReturnValue({
-      data: [makeAgent({ dashboardCount: 0, dashboards: [] })],
+      data: [makeAgent({ dashboards: [] })],
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
@@ -499,7 +477,6 @@ describe('HomePage AgentCard', () => {
     mockAgentsData.mockReturnValue({
       data: [
         makeAgent({
-          dashboardCount: 1,
           dashboards: [{ slug: 'sales', name: 'Sales' }],
         }),
       ],

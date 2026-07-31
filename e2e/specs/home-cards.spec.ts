@@ -26,9 +26,9 @@ test.describe('home card arrangement', () => {
       .poll(async () => {
         const agents = (await (await request.get('/api/agents')).json()) as Array<{
           slug: string
-          dashboardCount?: number
+          dashboards?: Array<{ slug: string }>
         }>
-        return agents.find((candidate) => candidate.slug === agent.slug)?.dashboardCount
+        return agents.find((candidate) => candidate.slug === agent.slug)?.dashboards?.length
       })
       .toBe(1)
 
