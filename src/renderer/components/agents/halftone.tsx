@@ -64,7 +64,9 @@ export function LazyHalftone({ className, ...props }: HalftoneProps) {
     }
 
     const observer = new IntersectionObserver(
-      ([entry]) => setShouldMount(entry?.isIntersecting ?? false),
+      // Batched entries arrive oldest-first; only the last reflects the
+      // current state.
+      (entries) => setShouldMount(entries[entries.length - 1]?.isIntersecting ?? false),
       { rootMargin: LAZY_ROOT_MARGIN }
     )
     observer.observe(host)
@@ -237,8 +239,10 @@ export function Halftone({
     const io =
       typeof IntersectionObserver === 'undefined'
         ? null
-        : new IntersectionObserver(([entry]) => {
-            intersecting = entry?.isIntersecting ?? true
+        : new IntersectionObserver((entries) => {
+            // Batched entries arrive oldest-first; only the last reflects the
+            // current state.
+            intersecting = entries[entries.length - 1]?.isIntersecting ?? false
             if (reduce) {
               if (intersecting && ready) draw()
             } else {

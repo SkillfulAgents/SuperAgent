@@ -162,6 +162,70 @@ describe('Halftone animation lifecycle', () => {
     expect(disconnectObservers[1]).toHaveBeenCalled()
   })
 
+  it('settles on the newest entry when intersection transitions batch into one callback', () => {
+    const intersectionCallbacks: IntersectionObserverCallback[] = []
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        constructor(callback: IntersectionObserverCallback) {
+          intersectionCallbacks.push(callback)
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+        takeRecords() {
+          return []
+        }
+        root = null
+        rootMargin = '0px'
+        thresholds = [0]
+      }
+    )
+
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(240)
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(120)
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      setTransform: vi.fn(),
+    } as unknown as CanvasRenderingContext2D)
+    const requestAnimationFrame = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation(() => 1)
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+    const { container } = renderWithProviders(<LazyHalftone motif="flow_3d" />)
+
+    // A fast scroll across the lazy margin can deliver enter + exit together.
+    act(() => {
+      intersectionCallbacks[0](
+        [
+          { isIntersecting: true } as IntersectionObserverEntry,
+          { isIntersecting: false } as IntersectionObserverEntry,
+        ],
+        {} as IntersectionObserver
+      )
+    })
+    expect(container.querySelector('canvas')).not.toBeInTheDocument()
+
+    act(() => {
+      intersectionCallbacks[0](
+        [{ isIntersecting: true } as IntersectionObserverEntry],
+        {} as IntersectionObserver
+      )
+    })
+    expect(container.querySelector('canvas')).toBeInTheDocument()
+
+    act(() => {
+      intersectionCallbacks[1](
+        [
+          { isIntersecting: true } as IntersectionObserverEntry,
+          { isIntersecting: false } as IntersectionObserverEntry,
+        ],
+        {} as IntersectionObserver
+      )
+    })
+    expect(requestAnimationFrame).not.toHaveBeenCalled()
+  })
+
   it('recovers when its first measurement is zero-sized', () => {
     let resizeCallback: ResizeObserverCallback | undefined
     const observe = vi.fn()
