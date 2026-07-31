@@ -273,6 +273,14 @@ try {
   })
 
   await check('A8 the switcher shows cloud as the selected option', async () => {
+    // The switcher lives in the shell, and a workspace whose account has never
+    // been onboarded opens the wizard over it. Which of those you get depends on
+    // whether this deployment has been switched to before — true of the one a
+    // developer keeps around, false of the one CI stands up for a single run —
+    // so arrange the shell rather than depending on the answer. B1 arranges the
+    // opposite for itself, immediately after.
+    await setRemoteSetupCompleted(page, true)
+    await reload(page)
     await waitForSwitcher(page)
     expectEqual(
       await page.locator('[data-testid="target-option-cloud"]').getAttribute('aria-pressed'),
