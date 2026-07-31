@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
-import { fireEvent, screen } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
 
 // ============================================================================
@@ -11,14 +11,16 @@ import { renderWithProviders } from '@renderer/test/test-utils'
 
 const {
   mockUseNotableSessions,
-  mockUseAgentActivityStats,
+  mockApiFetch,
+  mockHomeCardHealthData,
   mockUserSettingsData,
   mockUpdateSettingsMutate,
   mockToastError,
   mockUseIsMobile,
 } = vi.hoisted(() => ({
   mockUseNotableSessions: vi.fn<() => { data: Array<Record<string, unknown>> }>(() => ({ data: [] })),
-  mockUseAgentActivityStats: vi.fn(() => ({ data: undefined, isPending: true })),
+  mockApiFetch: vi.fn(),
+  mockHomeCardHealthData: vi.fn<() => Record<string, unknown>>(),
   mockUserSettingsData: vi.fn<() => Record<string, unknown> | null>(() => null),
   mockUpdateSettingsMutate: vi.fn(),
   mockToastError: vi.fn(),
@@ -62,27 +64,8 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   useNotableSessions: mockUseNotableSessions,
 }))
 
-vi.mock('@renderer/hooks/use-activity-stats', () => ({
-  useAgentActivityStats: mockUseAgentActivityStats,
-}))
-
-// The home page fetches the /api/home-graph topology snapshot for the cards'
-// health carousels; return an empty topology so no carousel renders.
 vi.mock('@renderer/lib/api', () => ({
-  apiFetch: vi.fn(async () => ({
-    ok: true,
-    json: async () => ({
-      accountLinks: [],
-      mcpLinks: [],
-      chats: [],
-      webhooks: [],
-      crons: [],
-      permissions: [],
-      invocations: [],
-      accountUsage: {},
-      mcpUsage: {},
-    }),
-  })),
+  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
 const mockAgentsData = vi.fn()
@@ -222,6 +205,18 @@ describe('HomePage AgentCard', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-03-26T12:00:00Z'))
     vi.clearAllMocks()
+    mockHomeCardHealthData.mockReturnValue({
+      days: 14,
+      generatedAt: '2026-03-26T12:00:00.000Z',
+      crons: [],
+      webhooks: [],
+      cronByTaskId: {},
+      webhookByTriggerId: {},
+    })
+    mockApiFetch.mockImplementation(async () => ({
+      ok: true,
+      json: async () => mockHomeCardHealthData(),
+    }))
     mockUserSettingsData.mockReturnValue(null)
     mockUseIsMobile.mockReturnValue(false)
   })
@@ -382,11 +377,46 @@ describe('HomePage AgentCard', () => {
     })
   })
 
-  it('does not request activity statistics for agents without health slides', () => {
+  it('uses one card-health batch without fetching graph topology or per-agent activity', async () => {
+    vi.useRealTimers()
     mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
     renderWithProviders(<HomePage />)
 
-    expect(mockUseAgentActivityStats).toHaveBeenCalledWith(null, 14, { live: false })
+    await waitFor(() => expect(mockApiFetch).toHaveBeenCalled())
+    const urls = mockApiFetch.mock.calls.map(([url]) => url)
+    expect(urls).toEqual([
+      `/api/home-card-health?days=14&tz=${new Date().getTimezoneOffset()}`,
+    ])
+    expect(urls).not.toContain('/api/home-graph')
+    expect(urls.some((url) => String(url).startsWith('/api/activity/agents/'))).toBe(false)
+  })
+
+  it('renders cron activity from the shared card-health payload', async () => {
+    vi.useRealTimers()
+    mockHomeCardHealthData.mockReturnValue({
+      days: 14,
+      generatedAt: '2026-03-26T12:00:00.000Z',
+      crons: [{
+        id: 'cron-a',
+        agentSlug: 'test-agent',
+        name: 'Daily report',
+        scheduleExpression: '0 9 * * *',
+      }],
+      webhooks: [],
+      cronByTaskId: {
+        'cron-a': [{
+          scheduledAt: '2026-03-26T09:00:00.000Z',
+          status: 'succeeded',
+        }],
+      },
+      webhookByTriggerId: {},
+    })
+    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
+    renderWithProviders(<HomePage />)
+
+    expect(await screen.findByRole('img', {
+      name: 'Daily report: 1 planned run, 1 ran, 0 skipped, and 0 failed.',
+    })).toBeInTheDocument()
   })
 
   it('moves card options into the context menu and avoids nested native buttons', () => {

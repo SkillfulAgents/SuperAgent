@@ -5,25 +5,21 @@ import { WidgetBoard, WidgetSizePopover, type GridRect, type WidgetItem, type Wi
 import { useAgents, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
-import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
+import { useHomeCardHealth } from '@renderer/hooks/use-home-card-health'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useNotableSessions } from '@renderer/hooks/use-sessions'
-import { useQuery } from '@tanstack/react-query'
-import { apiFetch } from '@renderer/lib/api'
 import { Halftone } from '@renderer/components/agents/halftone'
 import {
   ActivitySparkChart,
-  ActivitySparkChartSkeleton,
   CronSparkChart,
   summarizeDailyActivity,
 } from '@renderer/components/activity/activity-spark-chart'
 import { DEFAULT_ACTIVITY_DAYS } from '@shared/lib/types/activity'
 import {
-  homeGraphSchema,
-  type HomeGraphCron,
-  type HomeGraphData,
-  type HomeGraphWebhook,
-} from '@shared/lib/types/home-graph-schema'
+  type HomeCardCron,
+  type HomeCardHealthData,
+  type HomeCardWebhook,
+} from '@shared/lib/types/home-card-health-schema'
 import { getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { WorkingDots, AwaitingDot, UnreadDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
@@ -397,10 +393,12 @@ function AgentHealthCarousel({
   agent,
   crons,
   webhooks,
+  health,
 }: {
   agent: ApiAgent
-  crons: HomeGraphCron[]
-  webhooks: HomeGraphWebhook[]
+  crons: HomeCardCron[]
+  webhooks: HomeCardWebhook[]
+  health?: HomeCardHealthData
 }) {
   const navigate = useNavigate()
   const slides = useMemo<HealthSlide[]>(
@@ -411,13 +409,6 @@ function AgentHealthCarousel({
     [crons, webhooks]
   )
   const count = slides.length
-  // Avoid one activity request per agent when there are no charts to render.
-  // live:false also prevents decorative cards from polling independently.
-  const { data: stats, isPending: statsPending } = useAgentActivityStats(
-    count > 0 ? agent.slug : null,
-    DEFAULT_ACTIVITY_DAYS,
-    { live: false }
-  )
   const [index, setIndex] = useState(0)
   const [hovered, setHovered] = useState(false)
   const [focusWithin, setFocusWithin] = useState(false)
@@ -444,18 +435,16 @@ function AgentHealthCarousel({
   const renderSlide = (s: HealthSlide) => {
     let chart: ReactNode
     let metric = ''
-    if (statsPending) {
-      chart = <ActivitySparkChartSkeleton className="h-5 w-24" />
-    } else if (s.kind === 'cron') {
-      const activity = stats?.cronByTaskId[s.id] ?? []
+    if (s.kind === 'cron') {
+      const activity = health?.cronByTaskId[s.id] ?? []
       const succeeded = activity.filter((p) => p.status === 'succeeded').length
       chart = <CronSparkChart label={s.name} data={activity} className="h-5 w-24" />
       metric = `${succeeded}/${activity.length}`
     } else {
-      const activity = stats?.webhookByTriggerId[s.id] ?? []
+      const activity = health?.webhookByTriggerId[s.id] ?? []
       const { total } = summarizeDailyActivity(activity)
       chart = <ActivitySparkChart label={s.name} data={activity} className="h-5 w-24" />
-      metric = `${total}/${DEFAULT_ACTIVITY_DAYS}d`
+      metric = `${total}/${health?.days ?? DEFAULT_ACTIVITY_DAYS}d`
     }
     return (
       <button
@@ -574,14 +563,16 @@ function AgentCard({
   disableTouchLongPress,
   crons = [],
   webhooks = [],
+  health,
 }: {
   agent: ApiAgent
   size?: WidgetSizeKey
   additionalOptions?: ReactNode
   onArrange?: () => void
   disableTouchLongPress?: boolean
-  crons?: HomeGraphCron[]
-  webhooks?: HomeGraphWebhook[]
+  crons?: HomeCardCron[]
+  webhooks?: HomeCardWebhook[]
+  health?: HomeCardHealthData
 }) {
   useRenderTracker('AgentCard')
   const lastWorked = agent.lastActivityAt ? formatDistanceToNow(new Date(agent.lastActivityAt), { addSuffix: true }) : null
@@ -690,7 +681,7 @@ function AgentCard({
               </div>
               {/* Rotating cron/webhook health carousel (renders nothing when
                   the agent has no triggers). */}
-              <AgentHealthCarousel agent={agent} crons={crons} webhooks={webhooks} />
+              <AgentHealthCarousel agent={agent} crons={crons} webhooks={webhooks} health={health} />
             </div>
             {titleOverlay}
           </>
@@ -756,6 +747,11 @@ export function HomePage() {
   const updateSettings = useUpdateUserSettings()
   const isMobile = useIsMobile()
   const layoutTarget = isMobile ? 'mobile' : 'desktop'
+  // Cards vs. graph view — URL-driven (`/?view=graph`) so back/forward
+  // navigation and reloads restore the selection; absent = cards.
+  const navigate = useNavigate()
+  const routeSearch = useRouteSearch({ strict: false }) as { view?: string }
+  const view: 'cards' | 'graph' = routeSearch.view === 'graph' ? 'graph' : 'cards'
 
   // agentOrder (sidebar drag order) drives the initial flow-pack order of
   // uncustomized boards; once the user drags/resizes here, the layout for the
@@ -812,35 +808,24 @@ export function HomePage() {
 
   const agentBySlug = useMemo(() => new Map(orderedAgents.map((a) => [a.slug, a])), [orderedAgents])
 
-  // Shared topology snapshot for the cards' health carousels (cron/webhook
-  // names per agent in one request). Same query key as the graph view, so
-  // cards⇄graph flips reuse the cache; parsed at the boundary like the graph.
-  const { data: topology } = useQuery<HomeGraphData>({
-    queryKey: ['home-graph'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/home-graph')
-      if (!res.ok) throw new Error('Failed to fetch home graph')
-      return homeGraphSchema.parse(await res.json())
-    },
-    staleTime: 60_000,
-  })
+  // Card view owns a compact automation+activity projection. The full graph
+  // topology is fetched only by the lazily mounted AgentGraph.
+  const { data: cardHealth } = useHomeCardHealth(view === 'cards' && orderedAgents.length > 0)
   const { cronsByAgent, webhooksByAgent } = useMemo(() => {
-    const cronsMap = new Map<string, HomeGraphCron[]>()
-    const webhooksMap = new Map<string, HomeGraphWebhook[]>()
-    for (const cron of topology?.crons ?? []) {
-      if (cron.status === 'cancelled') continue
+    const cronsMap = new Map<string, HomeCardCron[]>()
+    const webhooksMap = new Map<string, HomeCardWebhook[]>()
+    for (const cron of cardHealth?.crons ?? []) {
       const list = cronsMap.get(cron.agentSlug) ?? []
       list.push(cron)
       cronsMap.set(cron.agentSlug, list)
     }
-    for (const webhook of topology?.webhooks ?? []) {
-      if (webhook.status === 'cancelled') continue
+    for (const webhook of cardHealth?.webhooks ?? []) {
       const list = webhooksMap.get(webhook.agentSlug) ?? []
       list.push(webhook)
       webhooksMap.set(webhook.agentSlug, list)
     }
     return { cronsByAgent: cronsMap, webhooksByAgent: webhooksMap }
-  }, [topology])
+  }, [cardHealth])
 
   const commitLayout = (
     layout: Record<string, GridRect>,
@@ -903,11 +888,6 @@ export function HomePage() {
   const hasAgents = orderedAgents.length > 0
   const { openSearch } = useSearch()
   const isMac = getPlatform() === 'darwin'
-  // Cards vs. graph view — URL-driven (`/?view=graph`) so back/forward
-  // navigation and reloads restore the selection; absent = cards.
-  const navigate = useNavigate()
-  const routeSearch = useRouteSearch({ strict: false }) as { view?: string }
-  const view: 'cards' | 'graph' = routeSearch.view === 'graph' ? 'graph' : 'cards'
   const setView = (next: 'cards' | 'graph') => {
     if (next === view) return
     if (next === 'graph') {
@@ -1116,6 +1096,7 @@ export function HomePage() {
                       }
                       crons={cronsByAgent.get(agent.slug)}
                       webhooks={webhooksByAgent.get(agent.slug)}
+                      health={cardHealth}
                     />
                   )
                 }}
