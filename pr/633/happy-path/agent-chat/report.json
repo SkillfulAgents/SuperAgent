@@ -1,0 +1,17 @@
+{
+  "storyId": "agent-chat",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ith status showing \"Worked for 2s\" and agent status back to \"idle\"\n\n**Screenshot saved:** qa-test-response.png shows the complete conversation with:\n- User message: \"Hello! What is 2+2?\"\n- Agent response: \"4\"\n- Session: \"Basic Math Question Session\"\n- Agent: \"QA-20260731-214129-p6hc\"\n- Status: idle\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 70049,
+  "sessionId": "e11abe16-843d-4975-96f6-d531f7beecc9",
+  "cost": {
+    "inputTokens": 344,
+    "outputTokens": 10795,
+    "cacheCreationTokens": 115242,
+    "cacheReadTokens": 942238,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.292595
+  }
+}
