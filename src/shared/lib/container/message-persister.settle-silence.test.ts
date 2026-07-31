@@ -54,7 +54,12 @@ vi.mock('./container-manager', () => ({
   containerManager: { getClient: () => ({ fetch: vi.fn(() => Promise.resolve({ ok: true })) }) },
 }))
 
-import { messagePersister, STREAM_SILENCE_REATTACH_MS } from './message-persister'
+import {
+  messagePersister,
+  isReplayOfProcessedResult,
+  STREAM_SILENCE_REATTACH_MS,
+} from './message-persister'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
 
 const capabilitiesFrameSchema = z.object({
   type: z.literal('system'),
@@ -74,6 +79,9 @@ const resultFrameSchema = z.object({
   subtype: z.string(),
   result: z.string().optional(),
   is_error: z.boolean().optional(),
+  // Present on every real result frame (see the sdk206-* captures) and the only
+  // turn identity a replayed frame carries.
+  uuid: z.string().min(1),
   replayed: z.boolean().optional(),
 })
 
@@ -114,12 +122,26 @@ function sessionStateFrame(state: 'idle' | 'running', opts?: { replayed?: boolea
   })
 }
 
-function resultFrame(opts?: { replayed?: boolean }) {
+const TURN_RESULT_UUID = '97469a01-fc94-42a0-a9e0-4064206cfccb'
+
+// Replay leads with the finished turn's informationals, before its result.
+function informationalFrame(opts?: { replayed?: boolean }) {
+  return {
+    type: 'system' as const,
+    subtype: 'informational' as const,
+    message: 'Context low',
+    uuid: 'a1b2c3d4-0000-4000-8000-00000000000a',
+    ...(opts?.replayed ? { replayed: true } : {}),
+  }
+}
+
+function resultFrame(opts?: { replayed?: boolean; uuid?: string }) {
   return resultFrameSchema.parse({
     type: 'result',
     subtype: 'success',
     result: 'Updated files.',
     is_error: false,
+    uuid: opts?.uuid ?? TURN_RESULT_UUID,
     ...(opts?.replayed ? { replayed: true } : {}),
   })
 }
@@ -140,9 +162,15 @@ function createMockClient(): ContainerClient & {
   _sendMessage: (content: unknown) => void
   _flushCloses: () => void
   _failNextSubscribe: () => void
+  _setTurnSettled: (settled: boolean) => void
+  _armReplay: (frames: unknown[]) => void
 } {
   let messageCallback: ((message: StreamMessage) => void) | null = null
   let failNextSubscribe = false
+  let replayBatch: unknown[] = []
+  // What the container reports about its own turn. Default false = a turn is
+  // genuinely running, which is the healthy long-tool-call case.
+  let turnSettled = false
   const pendingCloses: Array<() => void> = []
   const connectionClosed = (callback: (message: StreamMessage) => void) =>
     callback({
@@ -167,6 +195,13 @@ function createMockClient(): ContainerClient & {
     _failNextSubscribe() {
       failNextSubscribe = true
     },
+    _setTurnSettled(settled: boolean) {
+      turnSettled = settled
+    },
+    /** Frames the container will replay to every subsequent attach. */
+    _armReplay(frames: unknown[]) {
+      replayBatch = frames
+    },
     start: vi.fn(),
     stop: vi.fn(),
     stopSync: vi.fn(),
@@ -177,7 +212,7 @@ function createMockClient(): ContainerClient & {
     isHealthy: vi.fn(),
     getStats: vi.fn(),
     createSession: vi.fn(),
-    getSession: vi.fn(() => Promise.resolve({ isRunning: true })),
+    getSession: vi.fn(() => Promise.resolve({ isRunning: true, turnSettled })),
     deleteSession: vi.fn(),
     sendMessage: vi.fn(),
     interruptSession: vi.fn(),
@@ -191,6 +226,13 @@ function createMockClient(): ContainerClient & {
         }
       }
       messageCallback = callback
+      // The container replays its last finished turn to EVERY late joiner, not
+      // just the first — so a reattach re-delivers the same batch. A double
+      // that replays only once cannot see a recovery that loops on its own
+      // replay.
+      for (const content of replayBatch) {
+        callback({ type: 'message', content, timestamp: new Date(), sessionId: 'settle-silence' })
+      }
       // Real half-open sockets deliver their close after the replacement is
       // installed. Keep each callback bound to the socket that owned it.
       const unsubscribe = vi.fn(() => {
@@ -206,8 +248,29 @@ function createMockClient(): ContainerClient & {
     _sendMessage: (content: unknown) => void
     _flushCloses: () => void
     _failNextSubscribe: () => void
+    _setTurnSettled: (settled: boolean) => void
+    _armReplay: (frames: unknown[]) => void
   }
 }
+
+describe('isReplayOfProcessedResult', () => {
+  const SEEN = '97469a01-fc94-42a0-a9e0-4064206cfccb'
+
+  it('a host with no result memory has nothing to be stale against', () => {
+    expect(isReplayOfProcessedResult(null, SEEN)).toBe(false)
+  })
+
+  it('an unidentifiable result counts as already processed, never as new', () => {
+    // Fail-safe direction: cannot prove new, so it must not be allowed to settle.
+    expect(isReplayOfProcessedResult(SEEN, undefined)).toBe(true)
+    expect(isReplayOfProcessedResult(SEEN, '')).toBe(true)
+  })
+
+  it('separates the turn already seen from the one that was missed', () => {
+    expect(isReplayOfProcessedResult(SEEN, SEEN)).toBe(true)
+    expect(isReplayOfProcessedResult(SEEN, 'b2f0a1c4-0000-4000-8000-000000000002')).toBe(false)
+  })
+})
 
 describe('settle silence / discarded settle memory', () => {
   const SESSION = 'settle-silence-session'
@@ -259,15 +322,33 @@ describe('settle silence / discarded settle memory', () => {
     expect(messagePersister.getSessionActivity(SESSION)).not.toBe('idle')
   })
 
-  it('a turn that starts on an already-quiet stream arms recovery', async () => {
+  it('a quiet stream on a turn the container is still running never touches the transport', async () => {
+    // The reason quiet alone must not trigger recovery: long builds, test runs
+    // and a session parked on a permission card are all silent for minutes. The
+    // stream is unbuffered fan-out, so a swap loses whatever is emitted in the
+    // close/open gap - permission requests included.
     messagePersister.markSessionActive(SESSION, AGENT)
+    client._setTurnSettled(false)
 
-    await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS)
+    await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS * 10)
 
-    expect(client.subscribeToStream).toHaveBeenCalledTimes(2)
+    expect(client.getSession).toHaveBeenCalledTimes(10)
+    expect(client.subscribeToStream).toHaveBeenCalledTimes(1)
+    expect(messagePersister.getSessionActivity(SESSION)).not.toBe('idle')
   })
 
-  it('stream silence while a turn is live reattaches and settles from late-join replay', async () => {
+  it('a container that cannot answer is not evidence the turn ended', async () => {
+    messagePersister.markSessionActive(SESSION, AGENT)
+    // A build older than turnSettled omits the field. Unknown is not "finished".
+    ;(client.getSession as ReturnType<typeof vi.fn>).mockResolvedValue({ isRunning: true })
+
+    await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS * 3)
+
+    expect(client.subscribeToStream).toHaveBeenCalledTimes(1)
+    expect(messagePersister.getSessionActivity(SESSION)).not.toBe('idle')
+  })
+
+  it('stream silence on a turn the container has finished reattaches and settles from replay', async () => {
     // Cause: half-open (or any lost terminal frames). Nothing detects the dead
     // peer; reattach is the recovery road close never reaches.
     messagePersister.markSessionActive(SESSION, AGENT)
@@ -275,6 +356,7 @@ describe('settle silence / discarded settle memory', () => {
     client._sendMessage(resultFrame())
     // Idle never arrives.
     expect(client.subscribeToStream).toHaveBeenCalledTimes(1)
+    client._setTurnSettled(true)
 
     await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS)
     client._flushCloses()
@@ -287,8 +369,9 @@ describe('settle silence / discarded settle memory', () => {
     // Exactly one replacement subscribe — not silence reattach PLUS a stacked
     // handleConnectionClosed resubscribe (that double-applied stream_deltas).
     expect(client.subscribeToStream).toHaveBeenCalledTimes(2)
-    expect(client.getSession).not.toHaveBeenCalled()
-    // Container late-join replay for a finished turn (result + idle).
+    // Container late-join replay for a finished turn (result + idle). The result
+    // is one the host already processed, so it is dropped; the idle behind it
+    // still settles, because a result WAS seen for this turn.
     client._sendMessage(resultFrame({ replayed: true }))
     client._sendMessage(sessionStateFrame('idle', { replayed: true }))
 
@@ -300,13 +383,116 @@ describe('settle silence / discarded settle memory', () => {
     client._sendMessage(capabilitiesFrame())
     client._sendMessage(resultFrame())
     client._failNextSubscribe()
+    client._setTurnSettled(true)
 
     await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS)
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(client.getSession).toHaveBeenCalledTimes(1)
     expect(client.subscribeToStream).toHaveBeenCalledTimes(3)
+  })
+
+  it('a replay of an already-finished turn never settles the turn waiting on it', async () => {
+    // A send that wedges leaves the session marked active while the container
+    // sits idle from the PREVIOUS turn. The probe finds a settled container,
+    // reattaches, and the container replays that earlier turn's terminal
+    // frames. Settling on them reports a completion - and persists a success -
+    // for a message that never reached the agent.
+    messagePersister.markSessionActive(SESSION, AGENT)
+    client._sendMessage(capabilitiesFrame())
+    client._sendMessage(resultFrame())
+    client._sendMessage(sessionStateFrame('idle'))
+    expect(messagePersister.getSessionActivity(SESSION)).toBe('idle')
+    ;(notificationManager.triggerSessionComplete as ReturnType<typeof vi.fn>).mockClear()
+
+    // Next turn: marked active, send never lands, container stays idle.
+    messagePersister.markSessionActive(SESSION, AGENT)
+    client._setTurnSettled(true)
+
+    await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS)
+    // Replay of the PREVIOUS turn - same result uuid the host already processed.
+    client._sendMessage(resultFrame({ replayed: true }))
+    client._sendMessage(sessionStateFrame('idle', { replayed: true }))
+
+    expect(messagePersister.getSessionActivity(SESSION)).not.toBe('idle')
+    expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+  })
+
+  it('a replay of a turn the host never saw end does settle it', async () => {
+    // The mirror of the case above, so the guard cannot pass by rejecting every
+    // replay: this is the genuine loss the recovery exists for.
+    messagePersister.markSessionActive(SESSION, AGENT)
+    client._sendMessage(capabilitiesFrame())
+    client._sendMessage(resultFrame())
+    client._sendMessage(sessionStateFrame('idle'))
+
+    messagePersister.markSessionActive(SESSION, AGENT)
+    client._setTurnSettled(true)
+
+    await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS)
+    // This turn's own ending, never delivered live - a different result uuid.
+    client._sendMessage(resultFrame({ replayed: true, uuid: 'b2f0a1c4-0000-4000-8000-000000000002' }))
+    client._sendMessage(sessionStateFrame('idle', { replayed: true }))
+
+    expect(messagePersister.getSessionActivity(SESSION)).toBe('idle')
+  })
+
+  it('a container that accepts the probe but never answers keeps the probe running', async () => {
+    // The half-open case this recovery exists for reaches the HTTP probe too.
+    // If the next probe were only scheduled after the answer came back, a hang
+    // would silently end the recovery for the rest of the session.
+    messagePersister.markSessionActive(SESSION, AGENT)
+    ;(client.getSession as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
+
+    await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS * 4)
+
+    expect(client.getSession).toHaveBeenCalledTimes(4)
+  })
+
+  it('a rejected replay does not strand the turn it was rejected for', async () => {
+    // The counterpart to the guard above: dropping the stale result stops the
+    // false completion, but leaves a turn nothing can settle. It must reach a
+    // terminal state rather than sit active forever.
+    messagePersister.markSessionActive(SESSION, AGENT)
+    client._sendMessage(capabilitiesFrame())
+    client._sendMessage(resultFrame())
+    client._sendMessage(sessionStateFrame('idle'))
+    ;(notificationManager.triggerSessionComplete as ReturnType<typeof vi.fn>).mockClear()
+
+    messagePersister.markSessionActive(SESSION, AGENT)
+    client._setTurnSettled(true)
+
+    // The container will replay this batch to every attach, in FIFO order. The
+    // leading informational must not be mistaken for live traffic: doing so
+    // clears the pending verdict, so each reattach triggers a replay that
+    // resets the recovery and it never ends.
+    client._armReplay([
+      informationalFrame({ replayed: true }),
+      resultFrame({ replayed: true }),
+      sessionStateFrame('idle', { replayed: true }),
+    ])
+
+    await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS * 4)
+
+    expect(messagePersister.isSessionActive(SESSION)).toBe(false)
+    expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+  })
+
+  it('a settled container with nothing left to replay is not reattached repeatedly', async () => {
+    // A container-side process replacement clears the replay, so the reattach
+    // has nothing to deliver. Repeating the swap would only re-run the frame
+    // loss without learning anything new.
+    messagePersister.markSessionActive(SESSION, AGENT)
+    client._setTurnSettled(true)
+
+    await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS)
+    expect(client.subscribeToStream).toHaveBeenCalledTimes(2)
+
+    await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS * 5)
+
+    expect(client.subscribeToStream).toHaveBeenCalledTimes(2)
+    // Not a completion: nothing here proved the work succeeded.
+    expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
   })
 
   it('late-join replay with an empty background snapshot unpins a lost task terminal', async () => {
@@ -321,6 +507,7 @@ describe('settle silence / discarded settle memory', () => {
     )
     client._sendMessage(sessionStateFrame('idle'))
     expect(messagePersister.getSessionActivity(SESSION)).not.toBe('idle')
+    client._setTurnSettled(true)
 
     await vi.advanceTimersByTimeAsync(STREAM_SILENCE_REATTACH_MS)
     expect(client.subscribeToStream).toHaveBeenCalledTimes(2)

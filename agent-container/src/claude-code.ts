@@ -1088,6 +1088,10 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.lastResultMessage = null;
     this.lastSessionState = null;
     this.lastBackgroundTasksChanged = null;
+    // Background tasks are process-local and die with the old process too; the
+    // SessionManager listens for this to reset its settlement bookkeeping —
+    // a task id carried across the replacement would pin the session
+    // unevictable forever (no terminal signal or snapshot ever comes).
     this.emit('query-start');
   }
 
