@@ -629,12 +629,26 @@ function AgentCard({
           draggable={false}
           data-widget-drag-surface=""
           aria-label={`Open ${agent.name}`}
+          onKeyDown={(event) => {
+            if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+            event.preventDefault()
+            const rect = event.currentTarget.getBoundingClientRect()
+            event.currentTarget.dispatchEvent(
+              new MouseEvent('contextmenu', {
+                bubbles: true,
+                cancelable: true,
+                clientX: rect.right,
+                clientY: rect.top,
+              })
+            )
+          }}
           className="absolute inset-0 z-20 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         />
 
-        {/* The card now has one menu surface: its context menu. Keep only the
-            status/power chip visible on the card itself. */}
-        <div className="absolute top-2 right-4 z-30 flex items-center gap-1.5">
+        {/* The card has one visible control row and one menu surface: its
+            right-click/long-press context menu. The focused card link also
+            opens that menu with the standard Shift+F10 keyboard gesture. */}
+        <div className="absolute top-2 right-4 z-30">
           <AgentCardPowerButton agent={agent} />
         </div>
 
@@ -787,6 +801,8 @@ export function HomePage() {
     () => localHidden ?? new Set(userSettings?.hiddenAppCards ?? []),
     [localHidden, userSettings?.hiddenAppCards]
   )
+  const [arrangeHiddenApps, setArrangeHiddenApps] = useState<Set<string> | null>(null)
+  const displayedHiddenApps = arrangeHiddenApps ?? hiddenApps
 
   const { widgetItems, dashboardsById, agentsWithApp } = useMemo(() => {
     const items: WidgetItem[] = []
@@ -796,7 +812,7 @@ export function HomePage() {
       items.push({ id: agent.slug, rect: displayedLayout?.[agent.slug], defaultSize: 'W' })
       const dashboards = Array.isArray(agent.dashboards) ? agent.dashboards : []
       if (dashboards.length > 0) withApp.add(agent.slug)
-      if (hiddenApps.has(agent.slug)) continue // app card toggled off — skip its dashboard tiles
+      if (displayedHiddenApps.has(agent.slug)) continue // app card toggled off — skip its dashboard tiles
       for (const d of dashboards) {
         const id = dashKey(agent.slug, d.slug)
         items.push({ id, rect: displayedLayout?.[id], defaultSize: 'S' })
@@ -804,7 +820,7 @@ export function HomePage() {
       }
     }
     return { widgetItems: items, dashboardsById: dashes, agentsWithApp: withApp }
-  }, [orderedAgents, displayedLayout, hiddenApps])
+  }, [orderedAgents, displayedLayout, displayedHiddenApps])
 
   const agentBySlug = useMemo(() => new Map(orderedAgents.map((a) => [a.slug, a])), [orderedAgents])
 
@@ -861,10 +877,7 @@ export function HomePage() {
     )
   }
 
-  const toggleAppCard = (agentSlug: string) => {
-    const next = new Set(hiddenApps)
-    if (next.has(agentSlug)) next.delete(agentSlug)
-    else next.add(agentSlug)
+  const commitHiddenApps = (next: Set<string>) => {
     const version = ++hiddenMutationVersion.current
     setLocalHidden(next)
     updateSettings.mutate(
@@ -878,6 +891,17 @@ export function HomePage() {
         },
       }
     )
+  }
+
+  const toggleAppCard = (agentSlug: string) => {
+    const next = new Set(displayedHiddenApps)
+    if (next.has(agentSlug)) next.delete(agentSlug)
+    else next.add(agentSlug)
+    if (isArranging) {
+      setArrangeHiddenApps(next)
+      return
+    }
+    commitHiddenApps(next)
   }
 
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
@@ -906,21 +930,32 @@ export function HomePage() {
   const beginArrange = () => {
     if (!hasAgents) return
     setArrangeLayout(null)
+    setArrangeHiddenApps(new Set(hiddenApps))
     setArrangeTarget(layoutTarget)
     setIsArranging(true)
   }
   const cancelArrange = () => {
     setArrangeLayout(null)
+    setArrangeHiddenApps(null)
     setArrangeTarget(null)
     setIsArranging(false)
   }
   const finishArrange = () => {
     const nextLayout = arrangeLayout
+    const nextHiddenApps = arrangeHiddenApps
     const target = arrangeTarget ?? layoutTarget
     setArrangeLayout(null)
+    setArrangeHiddenApps(null)
     setArrangeTarget(null)
     setIsArranging(false)
     if (nextLayout) commitLayout(nextLayout, target)
+    if (
+      nextHiddenApps &&
+      (nextHiddenApps.size !== hiddenApps.size ||
+        [...nextHiddenApps].some((agentSlug) => !hiddenApps.has(agentSlug)))
+    ) {
+      commitHiddenApps(nextHiddenApps)
+    }
   }
   const handleBoardCommit = (layout: Record<string, GridRect>) => {
     if (isArranging) {
@@ -929,6 +964,17 @@ export function HomePage() {
     }
     commitLayout(layout, layoutTarget)
   }
+
+  // A live breakpoint change repacks the board into a different coordinate
+  // system. End the transaction instead of allowing mobile geometry to be
+  // committed to the desktop setting (or vice versa).
+  useEffect(() => {
+    if (!isArranging || arrangeTarget === null || arrangeTarget === layoutTarget) return
+    setArrangeLayout(null)
+    setArrangeHiddenApps(null)
+    setArrangeTarget(null)
+    setIsArranging(false)
+  }, [arrangeTarget, isArranging, layoutTarget])
 
   return (
     <div className="h-full flex flex-col">
@@ -1084,7 +1130,7 @@ export function HomePage() {
                           </ContextMenuSwitchItem>
                           {agentsWithApp.has(agent.slug) && (
                             <ContextMenuSwitchItem
-                              checked={!hiddenApps.has(agent.slug)}
+                              checked={!displayedHiddenApps.has(agent.slug)}
                               onCheckedChange={() => {
                                 toggleAppCard(agent.slug)
                               }}

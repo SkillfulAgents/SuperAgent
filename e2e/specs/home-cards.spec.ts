@@ -49,6 +49,14 @@ test.describe('home card arrangement', () => {
     await expect(dashboardLink).toHaveAttribute('draggable', 'false')
     await expect(dashboardLink).toHaveAttribute('data-widget-drag-surface')
 
+    // The card keeps a single visible/menu affordance model. Keyboard users
+    // can invoke the same context menu from the focused link with Shift+F10.
+    await expect(widget.getByRole('button', { name: `Options for ${agent.name}` })).toHaveCount(0)
+    await widget.getByRole('link', { name: `Open ${agent.name}` }).focus()
+    await page.keyboard.press('Shift+F10')
+    await expect(page.getByRole('menuitemcheckbox', { name: 'Expanded' })).toBeVisible()
+    await page.keyboard.press('Escape')
+
     // Outside Arrange mode, desktop still supports direct pointer reordering.
     // The full-card anchor must not hand the gesture to native HTML link drag.
     await dashboardWidget.scrollIntoViewIfNeeded()
@@ -108,14 +116,10 @@ test.describe('home card arrangement', () => {
     await widget.click({ button: 'right', position: { x: 30, y: 30 } })
     const showApp = page.getByRole('menuitemcheckbox', { name: 'Show app' })
     await expect(showApp).toBeVisible()
-    const visibilitySaved = page.waitForResponse(
-      (response) =>
-        response.url().includes('/api/user-settings') &&
-        response.request().method() === 'PUT' &&
-        response.ok()
-    )
     await showApp.click({ force: true })
-    await visibilitySaved
+    // Arrange is transactional: this hides the tile locally, but must not PUT
+    // until Done commits both the layout and visibility changes.
+    await expect(dashboardWidget).not.toBeVisible()
     await page.keyboard.press('Escape')
     await expect(page.getByTestId('agent-settings-item')).not.toBeVisible()
 
@@ -128,14 +132,22 @@ test.describe('home card arrangement', () => {
     })
     await page.mouse.up()
 
-    const saved = page.waitForResponse(
+    const layoutSaved = page.waitForResponse(
       (response) =>
         response.url().includes('/api/user-settings') &&
         response.request().method() === 'PUT' &&
+        response.request().postData()?.includes('homeGridLayout') === true &&
+        response.ok()
+    )
+    const visibilitySaved = page.waitForResponse(
+      (response) =>
+        response.url().includes('/api/user-settings') &&
+        response.request().method() === 'PUT' &&
+        response.request().postData()?.includes('hiddenAppCards') === true &&
         response.ok()
     )
     await page.getByRole('button', { name: 'Done' }).click()
-    await saved
+    await Promise.all([layoutSaved, visibilitySaved])
 
     const settings = (await (await request.get('/api/user-settings')).json()) as {
       homeGridLayout?: Record<string, { x: number; y: number; w: number; h: number }>

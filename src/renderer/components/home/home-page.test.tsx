@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import { createPortal } from 'react-dom'
 
 // ============================================================================
 // AgentCard component tests (rendered via HomePage)
@@ -101,7 +102,7 @@ vi.mock('@renderer/components/agents/agent-context-menu', () => ({
       data-touch-long-press-disabled={disableTouchLongPress || undefined}
     >
       {children}
-      {additionalOptions}
+      {additionalOptions && createPortal(additionalOptions, document.body)}
       {onArrange && (
         <button type="button" data-testid="agent-menu-arrange" onClick={onArrange}>
           Arrange
@@ -419,13 +420,20 @@ describe('HomePage AgentCard', () => {
     })).toBeInTheDocument()
   })
 
-  it('moves card options into the context menu and avoids nested native buttons', () => {
+  it('opens the unified card menu from the focused link without a visible kebab', () => {
     mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
     renderWithProviders(<HomePage />)
 
-    expect(screen.queryByRole('button', { name: 'Card options' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Options for Test Agent' })).not.toBeInTheDocument()
     expect(screen.getByRole('switch', { name: 'Expanded' })).toBeInTheDocument()
     expect(document.querySelector('button button')).toBeNull()
+    const contextMenuEvent = vi.fn()
+    screen.getByTestId('agent-context-trigger').addEventListener('contextmenu', contextMenuEvent)
+    fireEvent.keyDown(screen.getByRole('link', { name: 'Open Test Agent' }), {
+      key: 'F10',
+      shiftKey: true,
+    })
+    expect(contextMenuEvent).toHaveBeenCalledTimes(1)
     const widget = document.querySelector('[data-widget-id="test-agent"]')
     expect(widget).toHaveClass('touch-pan-y')
     expect(widget).not.toHaveClass('touch-none')
@@ -570,6 +578,46 @@ describe('HomePage AgentCard', () => {
       expect.objectContaining({ homeGridLayout: expect.any(Object) }),
       expect.any(Object),
     )
+  })
+
+  it('stages app-card visibility until Done and restores it on Cancel', () => {
+    mockUserSettingsData.mockReturnValue({ hiddenAppCards: [] })
+    mockAgentsData.mockReturnValue({
+      data: [makeAgent({ dashboards: [{ slug: 'sales', name: 'Sales' }] })],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+
+    fireEvent.click(screen.getByTestId('home-arrange-action'))
+    fireEvent.click(screen.getByRole('switch', { name: 'Show app' }))
+    expect(screen.queryByText('Open app')).not.toBeInTheDocument()
+    expect(mockUpdateSettingsMutate).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByText('Open app')).toBeInTheDocument()
+    expect(mockUpdateSettingsMutate).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId('home-arrange-action'))
+    fireEvent.click(screen.getByRole('switch', { name: 'Show app' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(
+      { hiddenAppCards: ['test-agent'] },
+      expect.any(Object)
+    )
+  })
+
+  it('cancels Arrange when the mobile breakpoint changes', () => {
+    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
+    const { rerender } = renderWithProviders(<HomePage />)
+    fireEvent.click(screen.getByTestId('home-arrange-action'))
+    expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument()
+
+    mockUseIsMobile.mockReturnValue(true)
+    rerender(<HomePage />)
+
+    expect(screen.queryByRole('button', { name: 'Done' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New Agent' })).toBeInTheDocument()
+    expect(mockUpdateSettingsMutate).not.toHaveBeenCalled()
   })
 
   it('disables mobile dragging until explicit arrange mode', () => {

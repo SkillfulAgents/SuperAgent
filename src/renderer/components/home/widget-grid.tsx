@@ -92,8 +92,9 @@ export function placeOne(items: GridRect[], cols: number, w: number, h: number):
 }
 
 /** Repack a saved layout row-major when its coordinates no longer fit a
- * narrower responsive column count. The saved desktop geometry is not mutated,
- * so expanding the viewport restores it until the user explicitly commits. */
+ * narrower responsive column count. Rendering the responsive projection does
+ * not mutate the saved geometry; a later drag or resize may persist it through
+ * the board's normal `onCommit` contract. */
 export function repackLayout(items: Placed[], cols: number): Placed[] {
   const packed: Placed[] = []
   const ordered = [...items].sort((a, b) => (a.y === b.y ? a.x - b.x : a.y - b.y))
