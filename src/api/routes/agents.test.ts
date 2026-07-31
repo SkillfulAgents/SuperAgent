@@ -257,6 +257,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMessagesWithCompact: vi.fn(),
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
+  mutateSessionAutopilot: vi.fn(async () => false),
   sessionExists: vi.fn().mockResolvedValue(true),
   sessionIsKnown: vi.fn().mockResolvedValue(true),
   isSessionRegistered: vi.fn().mockResolvedValue(false),
@@ -497,7 +498,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, getSessionMetadata, mutateSessionAutopilot } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -5549,5 +5550,82 @@ describe('session existence guards read metadata, not the transcript', () => {
     const res = await postJson(app, '/api/agents/test-agent/sessions/ghost/computer-use/revoke', {})
 
     expect(res.status).toBe(404)
+  })
+})
+
+describe('autopilot transitions — POST /:id/sessions/:sessionId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+  // In-memory autopilot block driven through the mocked session-service, so
+  // the real autopilot-service transition guards run against it.
+  let autopilotBlock: { state: string; [key: string]: unknown } | undefined
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as never)
+    mockSendMessage.mockResolvedValue(undefined)
+    mockIsAuthMode.mockReturnValue(false)
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+    autopilotBlock = undefined
+    vi.mocked(getSessionMetadata).mockImplementation(async () => ({ autopilot: autopilotBlock }) as never)
+    vi.mocked(mutateSessionAutopilot).mockImplementation(async (_agent, _session, mutator) => {
+      const next = (mutator as (a: typeof autopilotBlock) => typeof autopilotBlock | false)(autopilotBlock)
+      if (next === false) return false
+      autopilotBlock = next
+      return true
+    })
+  })
+
+  it('fresh-turn message with the switch on drops an engaged session to requested (re-preflight)', async () => {
+    autopilotBlock = { state: 'engaged' }
+
+    const res = await postJson(app, URL, { content: 'also check the calendar', autopilot: true })
+
+    expect(res.status).toBe(201)
+    expect((await res.json()).queued).toBe(false)
+    expect(autopilotBlock?.state).toBe('requested')
+  })
+
+  it('QUEUED message with the switch on keeps an engaged session engaged', async () => {
+    // A mid-turn message is steering, not an interruption: demoting to
+    // `requested` here dead-ends (nothing after the stop re-runs the
+    // preflight, and `requested` is invisible to the watchdog).
+    autopilotBlock = { state: 'engaged' }
+    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(true)
+
+    const res = await postJson(app, URL, { content: 'also check the calendar', autopilot: true })
+
+    expect(res.status).toBe(201)
+    expect((await res.json()).queued).toBe(true)
+    expect(autopilotBlock?.state).toBe('engaged')
+  })
+
+  it('queued message with the switch on still moves paused to requested', async () => {
+    autopilotBlock = { state: 'paused', pausedReason: 'blocked' }
+    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(true)
+
+    const res = await postJson(app, URL, { content: 'try again please', autopilot: true })
+
+    expect(res.status).toBe(201)
+    expect(autopilotBlock?.state).toBe('requested')
+  })
+
+  it('message without the flag disengages an engaged session (autopilot-unaware surface)', async () => {
+    autopilotBlock = { state: 'engaged' }
+
+    const res = await postJson(app, URL, { content: 'plain message' })
+
+    expect(res.status).toBe(201)
+    expect(autopilotBlock?.state).toBe('off')
+  })
+
+  it('explicit autopilot:false turns an engaged session off', async () => {
+    autopilotBlock = { state: 'engaged' }
+
+    const res = await postJson(app, URL, { content: 'stop that', autopilot: false })
+
+    expect(res.status).toBe(201)
+    expect(autopilotBlock?.state).toBe('off')
   })
 })

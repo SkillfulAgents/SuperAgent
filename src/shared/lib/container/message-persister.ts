@@ -68,7 +68,7 @@ import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } f
 import { engageAutopilot, autopilotApprovalDeniedMessage } from '@shared/lib/autopilot/autopilot-service'
 import { DEFAULT_MAX_ITERATIONS, normalizeAutopilotState } from '@shared/lib/autopilot/autopilot-schema'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
-import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
+import { appendInformationalEntry, appendAutopilotReviewEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
@@ -4587,6 +4587,28 @@ ${continuation}`
     })
   }
 
+  /**
+   * Timeline card for an approval surface auto-denied while autopilot is
+   * engaged, so the refusal is visible in the transcript the same way the
+   * approval reviewer's decisions are. Best-effort: the denial stands even if
+   * the card cannot be written.
+   */
+  private recordAutopilotDenialCard(agentSlug: string, sessionId: string, action: string): void {
+    void appendAutopilotReviewEntry(agentSlug, sessionId, {
+      uuid: randomUUID(),
+      review: {
+        verdict: 'denied',
+        reasoning:
+          'Requires user approval, and autopilot is engaged — denied automatically with guidance to work around it or declare blocked.',
+        action,
+      },
+    })
+      .then(() => this.broadcastSessionEvent(sessionId, { type: 'messages_updated' }))
+      .catch((error) =>
+        console.error('[MessagePersister] Failed to record autopilot denial card:', error)
+      )
+  }
+
   // Handle script run request tool - broadcast to SSE clients or auto-reject
   private async handleScriptRunRequestTool(
     sessionId: string,
@@ -4640,6 +4662,7 @@ ${continuation}`
       // cached-grant auto-execution above is unaffected.
       if (!autoApproved && agentSlug && (await this.isSessionAutopilotEngaged(sessionId, agentSlug))) {
         this.autoRejectInput(agentSlug, toolUseId, autopilotApprovalDeniedMessage('Running this host script'))
+        this.recordAutopilotDenialCard(agentSlug, sessionId, `Host script run (${input.scriptType})`)
         return
       }
 
@@ -4736,6 +4759,11 @@ ${continuation}`
       // task and left — refuse with corrective guidance instead.
       if (agentSlug && (await this.isSessionAutopilotEngaged(sessionId, agentSlug))) {
         this.autoRejectInput(agentSlug, toolUseId, autopilotApprovalDeniedMessage('This computer-use action'))
+        this.recordAutopilotDenialCard(
+          agentSlug,
+          sessionId,
+          `Computer use: ${method}${appName ? ` (${appName})` : ''}`
+        )
         return
       }
 

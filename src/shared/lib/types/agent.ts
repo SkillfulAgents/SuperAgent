@@ -187,6 +187,9 @@ export interface JsonlMessageEntry {
   // Set on synthetic user entries derived from queued_command attachments
   // (messages delivered mid-turn) — see normalizeQueuedCommandEntry.
   isQueuedCommand?: boolean
+  // Set on subagent-conversation entries; a sidechain 'user' message is the
+  // agent's prompt to its subagent, not the user speaking.
+  isSidechain?: boolean
 }
 
 /**

@@ -15,7 +15,11 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     subscribeToSession: vi.fn(),
     markSessionActive: vi.fn(),
     markSessionIdle: vi.fn(),
+    isSessionActive: vi.fn(() => false),
   },
+}))
+vi.mock('@shared/lib/services/agent-service', () => ({
+  listAgents: vi.fn(async () => []),
 }))
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
@@ -25,6 +29,7 @@ vi.mock('@shared/lib/container/container-manager', () => ({
 vi.mock('@shared/lib/notifications/notification-manager', () => ({
   notificationManager: {
     triggerSessionWaitingInput: vi.fn(async () => {}),
+    triggerSessionComplete: vi.fn(async () => {}),
   },
 }))
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
@@ -48,6 +53,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { requestAutopilot, engageAutopilot } from './autopilot-service'
+import { listAgents } from '@shared/lib/services/agent-service'
 import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import { normalizeAutopilotState } from './autopilot-schema'
@@ -76,6 +82,10 @@ describe('autopilot-watchdog', () => {
     vi.mocked(containerManager.ensureRunning).mockResolvedValue(
       fakeClient as unknown as Awaited<ReturnType<typeof containerManager.ensureRunning>>
     )
+    // clearAllMocks keeps mockReturnValue overrides from earlier tests — pin
+    // the defaults these paths branch on.
+    vi.mocked(messagePersister.wasSessionInterrupted).mockReturnValue(false)
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
 
     autopilotWatchdog.start()
     const calls = vi.mocked(messagePersister.addGlobalNotificationClient).mock.calls
@@ -144,6 +154,21 @@ describe('autopilot-watchdog', () => {
     expect(reviews).toHaveLength(1)
     expect(reviews[0].verdict).toBe('done')
     expect(fakeClient.sendMessage).not.toHaveBeenCalled()
+    expect(notificationManager.triggerSessionWaitingInput).not.toHaveBeenCalled()
+  })
+
+  it('done verdict with explicit null nudge/missing still counts as done', async () => {
+    // The judge prompt marks nudge/missing "REQUIRED for continue", so on done
+    // models often emit them as nulls — that must not escalate a clean done.
+    await engage()
+    vi.mocked(createSummarizerText).mockResolvedValue(
+      JSON.stringify({ verdict: 'done', reasoning: 'All satisfied.', nudge: null, missing: null })
+    )
+    await emitIdleAndSettle()
+
+    expect(await currentState()).toBe('off')
+    const reviews = await readReviewEntries()
+    expect(reviews[reviews.length - 1].verdict).toBe('done')
     expect(notificationManager.triggerSessionWaitingInput).not.toHaveBeenCalled()
   })
 
@@ -273,6 +298,113 @@ describe('autopilot-watchdog', () => {
       AGENT,
       'autopilot'
     )
+  })
+
+  it('done verdict: announces completion once via session-complete', async () => {
+    // Per-stop "Session Complete" pings are suppressed while engaged, so the
+    // watchdog owns the single completion notification.
+    await engage()
+    vi.mocked(createSummarizerText).mockResolvedValue(
+      JSON.stringify({ verdict: 'done', reasoning: 'All criteria satisfied.' })
+    )
+    await emitIdleAndSettle()
+    expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(SESSION, AGENT)
+  })
+
+  it('two idle events for one stop run a single review', async () => {
+    // Double idle emission is real (state-event idle + a reconnect's
+    // finalizeIdle); the in-flight claim must happen before the first await
+    // or both events reach the judge — double-burned iteration, two nudges.
+    await engage()
+    let resolveJudge!: (v: string) => void
+    vi.mocked(createSummarizerText).mockImplementation(
+      () => new Promise<string>((resolve) => { resolveJudge = resolve })
+    )
+    emit({ type: 'session_idle', sessionId: SESSION, agentSlug: AGENT })
+    emit({ type: 'session_idle', sessionId: SESSION, agentSlug: AGENT })
+    await vi.waitFor(() => expect(createSummarizerText).toHaveBeenCalledTimes(1))
+    resolveJudge(
+      JSON.stringify({ verdict: 'continue', reasoning: 'r', nudge: 'keep going', missing: 'm' })
+    )
+    await vi.waitFor(() => {
+      const events = vi.mocked(messagePersister.broadcastSessionEvent).mock.calls.map((c) => c[1])
+      expect(events).toContainEqual({ type: 'autopilot_review', status: 'finished' })
+    })
+
+    expect(createSummarizerText).toHaveBeenCalledTimes(1)
+    expect(fakeClient.sendMessage).toHaveBeenCalledTimes(1)
+    expect((await getSessionMetadata(AGENT, SESSION))?.autopilot?.iteration).toBe(1)
+  })
+
+  it('nudge is aborted when the user takes the session over mid-dispatch', async () => {
+    // The continue verdict is applied under the metadata lock, but the
+    // container round-trip before the send is not — a user message in that
+    // window must not be followed by a stale autonomy-restarting nudge.
+    await engage()
+    vi.mocked(createSummarizerText).mockResolvedValue(
+      JSON.stringify({ verdict: 'continue', reasoning: 'r', nudge: 'n', missing: 'm' })
+    )
+    vi.mocked(containerManager.ensureRunning).mockImplementation(async () => {
+      await requestAutopilot(AGENT, SESSION) // user message with the switch on lands here
+      return fakeClient as unknown as Awaited<ReturnType<typeof containerManager.ensureRunning>>
+    })
+    await emitIdleAndSettle()
+
+    expect(fakeClient.sendMessage).not.toHaveBeenCalled()
+    expect(await currentState()).toBe('requested')
+  })
+
+  it('a done verdict landing after a user re-request leaves requested intact', async () => {
+    await engage()
+    vi.mocked(createSummarizerText).mockImplementation(async () => {
+      await requestAutopilot(AGENT, SESSION) // user intervenes while the judge runs
+      return JSON.stringify({ verdict: 'done', reasoning: 'All satisfied.' })
+    })
+    await emitIdleAndSettle()
+
+    expect(await currentState()).toBe('requested')
+    // No contradictory "goal complete" card, no completion ping.
+    expect(await readReviewEntries()).toHaveLength(0)
+    expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+  })
+
+  describe('restart reconciliation', () => {
+    function reconcile(): Promise<void> {
+      return (
+        autopilotWatchdog as unknown as { reconcileAfterRestart(): Promise<void> }
+      ).reconcileAfterRestart()
+    }
+
+    it('reviews sessions left engaged across a restart', async () => {
+      await engage()
+      vi.mocked(listAgents).mockResolvedValue([{ slug: AGENT }] as Awaited<ReturnType<typeof listAgents>>)
+      vi.mocked(createSummarizerText).mockResolvedValue(
+        JSON.stringify({ verdict: 'continue', reasoning: 'r', nudge: 'keep going', missing: 'm' })
+      )
+      await reconcile()
+
+      expect(fakeClient.sendMessage).toHaveBeenCalledTimes(1)
+      expect((await getSessionMetadata(AGENT, SESSION))?.autopilot?.iteration).toBe(1)
+    })
+
+    it('skips engaged sessions that are already streaming again', async () => {
+      await engage()
+      vi.mocked(listAgents).mockResolvedValue([{ slug: AGENT }] as Awaited<ReturnType<typeof listAgents>>)
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      await reconcile()
+
+      expect(createSummarizerText).not.toHaveBeenCalled()
+      expect(await currentState()).toBe('engaged')
+    })
+
+    it('leaves requested and off sessions alone', async () => {
+      await requestAutopilot(AGENT, SESSION)
+      vi.mocked(listAgents).mockResolvedValue([{ slug: AGENT }] as Awaited<ReturnType<typeof listAgents>>)
+      await reconcile()
+
+      expect(createSummarizerText).not.toHaveBeenCalled()
+      expect(await currentState()).toBe('requested')
+    })
   })
 })
 

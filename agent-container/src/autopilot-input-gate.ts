@@ -30,7 +30,8 @@ import type { AutopilotState } from './types';
  * scripts and auto-executes without any user involvement when the
  * use_host_shell permission is already granted (mirrors the host's
  * isBlockingUserInputToolName classification). When script approval IS needed,
- * the parked request trips the watchdog's awaiting-input backstop instead.
+ * the host auto-rejects it while engaged (with a transcript card) instead of
+ * parking a card the absent user cannot answer.
  */
 export const AUTOPILOT_GATED_INPUT_TOOLS_MATCHER =
   '^(AskUserQuestion|mcp__user-input__request_(?!script_run$).*)$';

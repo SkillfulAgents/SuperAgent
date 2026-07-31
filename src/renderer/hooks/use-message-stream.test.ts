@@ -141,6 +141,46 @@ describe('useMessageStream', () => {
     expect(result.current.isStreaming).toBe(false)
   })
 
+  it('tracks autopilot review progress and resyncs it from the connected snapshot', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false })
+    })
+    expect(result.current.autopilotReviewing).toBe(false)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'autopilot_review', status: 'started' })
+    })
+    expect(result.current.autopilotReviewing).toBe(true)
+
+    // A reconnect that missed the one-shot `finished` broadcast must not show
+    // "Reviewing progress…" forever — the snapshot is the truth.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false })
+    })
+    expect(result.current.autopilotReviewing).toBe(false)
+
+    // And a client connecting DURING a live review picks it up from the snapshot.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: false,
+        autopilotReviewing: true,
+      })
+    })
+    expect(result.current.autopilotReviewing).toBe(true)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'autopilot_review', status: 'finished' })
+    })
+    expect(result.current.autopilotReviewing).toBe(false)
+  })
+
   it('handles session_active event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(

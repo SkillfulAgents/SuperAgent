@@ -1,9 +1,12 @@
+import { randomUUID } from 'crypto'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { getSessionMessagesWithCompact, getSessionMetadata } from '@shared/lib/services/session-service'
+import { appendAutopilotReviewEntry } from '@shared/lib/services/session-transcript-append'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import type { JsonlMessageEntry, ContentBlock } from '@shared/lib/types/agent'
+import { X_AGENT_MESSAGE_PREFIX } from '@shared/lib/utils/x-agent-message'
 import {
   approvalReviewVerdictSchema,
   normalizeAutopilotState,
@@ -69,6 +72,12 @@ export function extractUserPrompts(entries: Array<{ type: string } & Partial<Jso
   const prompts: string[] = []
   for (const entry of entries) {
     if (entry.type !== 'user') continue
+    // The CLI persists some model/agent-authored text as `type: 'user'`:
+    // compaction summaries (and their transcript-only pairs) are written by
+    // the compacting model, and sidechain entries are the agent prompting its
+    // own subagents. None of that is the user speaking — letting it through
+    // would hand agent-influenced text to the judge as verbatim user intent.
+    if (entry.isCompactSummary || entry.isVisibleInTranscriptOnly || entry.isSidechain) continue
     const content = entry.message?.content
     let text = ''
     if (typeof content === 'string') {
@@ -82,6 +91,7 @@ export function extractUserPrompts(entries: Array<{ type: string } & Partial<Jso
     text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim()
     if (!text) continue
     if (text.startsWith('[SYSTEM]')) continue
+    if (text.startsWith(X_AGENT_MESSAGE_PREFIX)) continue
     if (/^<task-notification[\s>]/.test(text)) continue
     if (/^<command-name>/.test(text)) continue
     if (/^<local-command-stdout>/.test(text)) continue
@@ -93,15 +103,20 @@ export function extractUserPrompts(entries: Array<{ type: string } & Partial<Jso
 /**
  * User messages from every ACTIVE ENGAGED session of the agent, chronological
  * per session. Proxied calls are agent-scoped, so with several engaged
- * sessions live the intent context is their union.
+ * sessions live the intent context is their union. Also returns the engaged
+ * session ids so the decision can be recorded in those transcripts.
  */
-async function buildUserIntentExcerpt(agentSlug: string): Promise<string> {
+async function buildUserIntentExcerpt(
+  agentSlug: string
+): Promise<{ excerpt: string; engagedSessionIds: string[] }> {
   const sections: string[] = []
+  const engagedSessionIds: string[] = []
   for (const sessionId of messagePersister.getActiveSessionIdsForAgent(agentSlug)) {
     const state = normalizeAutopilotState(
       (await getSessionMetadata(agentSlug, sessionId))?.autopilot?.state
     )
     if (state !== 'engaged') continue
+    engagedSessionIds.push(sessionId)
     try {
       const entries = await getSessionMessagesWithCompact(agentSlug, sessionId)
       const prompts = extractUserPrompts(entries as Array<{ type: string } & Partial<JsonlMessageEntry>>)
@@ -116,15 +131,58 @@ async function buildUserIntentExcerpt(agentSlug: string): Promise<string> {
     const half = Math.floor(USER_INTENT_CHAR_BUDGET / 2)
     excerpt = `${excerpt.slice(0, half)}\n\n[…middle omitted…]\n\n${excerpt.slice(-half)}`
   }
-  return excerpt
+  return { excerpt, engagedSessionIds }
+}
+
+/**
+ * Persist the decision as an `autopilot_review` timeline card in every engaged
+ * session's transcript, so the user sees what was approved/denied on their
+ * behalf when they come back. Host-authored JSONL only — the CLI's own resume
+ * transcript lives container-side and never reads this file, so the entry is
+ * display-only and cannot perturb the model. Best-effort: a persistence
+ * failure must not change the route's answer (the audit log is the durable
+ * record either way).
+ */
+async function recordApprovalDecision(
+  request: ApprovalReviewRequest,
+  verdict: ApprovalReviewVerdict,
+  engagedSessionIds: string[]
+): Promise<void> {
+  for (const sessionId of engagedSessionIds) {
+    try {
+      await appendAutopilotReviewEntry(request.agentSlug, sessionId, {
+        uuid: randomUUID(),
+        review: {
+          verdict: verdict.decision === 'approve' ? 'approved' : 'denied',
+          reasoning: verdict.reason,
+          action: request.action,
+        },
+      })
+      messagePersister.broadcastSessionEvent(sessionId, { type: 'messages_updated' })
+    } catch (error) {
+      console.error(
+        `[AutopilotApprovalReviewer] Failed to record decision in session ${sessionId}:`,
+        error
+      )
+    }
+  }
 }
 
 export async function reviewAutopilotApproval(
   request: ApprovalReviewRequest
 ): Promise<ApprovalReviewVerdict> {
+  const { excerpt, engagedSessionIds } = await buildUserIntentExcerpt(request.agentSlug)
+  const verdict = await judgeApproval(request, excerpt)
+  await recordApprovalDecision(request, verdict, engagedSessionIds)
+  return verdict
+}
+
+async function judgeApproval(
+  request: ApprovalReviewRequest,
+  userIntent: string
+): Promise<ApprovalReviewVerdict> {
   const failClosed = (reason: string): ApprovalReviewVerdict => ({ decision: 'deny', reason })
 
-  const userIntent = await buildUserIntentExcerpt(request.agentSlug)
   if (!userIntent) {
     // No user text to judge against — nothing can be "plainly within scope".
     return failClosed('No user messages available to establish intent; denied by default.')

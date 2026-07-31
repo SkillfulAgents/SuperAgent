@@ -322,6 +322,11 @@ function getOrCreateEventSource(
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
         }
+        // Resync from the snapshot: the started/finished review broadcasts are
+        // one-shot, so a reconnect that missed `finished` would otherwise show
+        // "Reviewing progress…" forever on an idle session (and one that
+        // missed `started` would show nothing during a live review).
+        sessionAutopilotReviewing.set(sessionId, data.autopilotReviewing === true)
         // Initial connection - get isActive from server
         streamStates.set(sessionId, {
           isActive: data.isActive ?? false,

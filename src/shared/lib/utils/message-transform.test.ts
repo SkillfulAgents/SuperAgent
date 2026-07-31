@@ -1948,6 +1948,24 @@ describe('autopilot review entries', () => {
     expect(result.map((r) => r.type)).toEqual(['user', 'autopilot_review'])
   })
 
+  it('transforms an approval decision with its action line', () => {
+    const payload = JSON.stringify({
+      verdict: 'approved',
+      reasoning: 'Reading mail is required to summarize it.',
+      action: 'API request: GET https://gmail.googleapis.com/gmail/v1/users/me/messages',
+    })
+    const result = transformMessages([
+      createUserMessage('user-1', 'Summarize my email'),
+      review('rev-approval', payload),
+    ])
+    expect(result[1]).toMatchObject({
+      type: 'autopilot_review',
+      verdict: 'approved',
+      action: 'API request: GET https://gmail.googleapis.com/gmail/v1/users/me/messages',
+      reasoning: 'Reading mail is required to summarize it.',
+    })
+  })
+
   it('drops malformed review payloads instead of throwing', () => {
     const result = transformMessages([
       review('rev-bad', 'not json at all'),

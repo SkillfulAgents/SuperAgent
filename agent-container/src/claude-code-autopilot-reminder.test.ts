@@ -49,9 +49,15 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   }
 })
 
-// MCP server factories are invoked during createQuery; stub them to return empty servers.
+// MCP server factories are invoked during createQuery; stub them to return
+// empty servers. createUserInputMcpServer records its calls so the wiring of
+// the autopilotRequested force-load flag can be asserted.
+const userInputMcpServerCalls: Array<unknown[]> = []
 vi.mock('./mcp-server', () => ({
-  createUserInputMcpServer: () => ({}),
+  createUserInputMcpServer: (...args: unknown[]) => {
+    userInputMcpServerCalls.push(args)
+    return {}
+  },
   createBrowserMcpServer: () => ({}),
   createComputerUseMcpServer: () => ({}),
   createDashboardsMcpServer: () => ({}),
@@ -149,5 +155,37 @@ describe('autopilot preflight reminder on outbound messages', () => {
     const second = (await iter.next()).value as { message: { content: unknown[] } }
     expect(first.message.content).toHaveLength(1)
     expect(second.message.content).toHaveLength(1)
+  })
+})
+
+describe('engage_autopilot force-load wiring', () => {
+  // The factory's alwaysLoad option only matters if the query build actually
+  // passes it — this was once dead code (the options argument was dropped).
+  beforeEach(() => {
+    userInputMcpServerCalls.length = 0
+  })
+
+  it("passes autopilotRequested: true to the user-input server while 'requested'", async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'wiring-1',
+      workingDirectory: '/tmp',
+      autopilotState: 'requested',
+    })
+    await process.start()
+
+    expect(userInputMcpServerCalls).toHaveLength(1)
+    expect(userInputMcpServerCalls[0][1]).toEqual({ autopilotRequested: true })
+  })
+
+  it('passes autopilotRequested: false in every other state', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'wiring-2',
+      workingDirectory: '/tmp',
+      autopilotState: 'engaged',
+    })
+    await process.start()
+
+    expect(userInputMcpServerCalls).toHaveLength(1)
+    expect(userInputMcpServerCalls[0][1]).toEqual({ autopilotRequested: false })
   })
 })

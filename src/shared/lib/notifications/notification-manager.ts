@@ -16,6 +16,7 @@ import {
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgent } from '@shared/lib/services/agent-service'
+import { normalizeAutopilotState } from '@shared/lib/autopilot/autopilot-schema'
 import { getSessionMetadata } from '@shared/lib/services/session-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 
@@ -147,6 +148,14 @@ class NotificationManager {
   ): Promise<void> {
     const meta = await getSessionMetadata(agentSlug, sessionId)
     if (isHiddenAutomatedSession(meta)) {
+      return
+    }
+    // An engaged autopilot stop is usually not the end — the watchdog reviews
+    // it and typically restarts the session, so a per-stop ping here would
+    // fire on every continuation. The watchdog owns the engaged lifecycle's
+    // notifications: one completion ping on a done verdict (sent after it
+    // disengages, so this guard no longer applies), "waiting" on a pause.
+    if (normalizeAutopilotState(meta?.autopilot?.state) === 'engaged') {
       return
     }
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)

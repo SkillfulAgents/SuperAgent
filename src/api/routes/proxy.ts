@@ -233,12 +233,32 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       const scopeDetails = Object.entries(policyResult.scopeDescriptions ?? {})
         .map(([scope, description]) => `${scope}: ${description}`)
         .join('\n')
+      // The judge can only enforce "no destinations the user never mentioned"
+      // if it sees where the payload is going — method + URL alone hide the
+      // recipients of e.g. a send-email POST. Mirrors the MCP branch's capped
+      // args preview. Hono caches the arrayBuffer, so the forward at step 6
+      // reuses this same read.
+      let bodyPreview: string | undefined
+      if (method !== 'GET' && method !== 'HEAD') {
+        try {
+          const buffer = await c.req.arrayBuffer()
+          if (buffer.byteLength > 0) {
+            const text = new TextDecoder().decode(buffer.slice(0, 4000)).trim()
+            if (text) {
+              bodyPreview = `Request body (first 1500 chars): ${text.slice(0, 1500)}`
+            }
+          }
+        } catch {
+          // Unreadable body: the judge falls back to method + URL + scopes.
+        }
+      }
       const review = await reviewAutopilotApproval({
         agentSlug,
         action: `API request: ${method} https://${targetHost}/${targetPath}`,
         details: [
           policyResult.endpointDescription,
           scopeDetails,
+          bodyPreview,
         ].filter(Boolean).join('\n') || undefined,
       })
       if (review.decision === 'deny') {

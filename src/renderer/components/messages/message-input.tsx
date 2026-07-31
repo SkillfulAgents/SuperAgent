@@ -18,6 +18,7 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
 import { AgentDefaultFooter } from './agent-default-footer'
+import { buildMessageSendOptions } from './message-send-options'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
@@ -101,8 +102,10 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       const localId = crypto.randomUUID()
       // Mid-turn sends are queued by the agent loop (SDK streaming input) and
       // picked up after the current step. They must not carry model/effort —
-      // a parameter change would interrupt/restart the in-flight query.
-      // (The server also strips them when it sees the session is active.)
+      // a parameter change would interrupt/restart the in-flight query — but
+      // the autopilot flag rides along; see buildMessageSendOptions.
+      // (The server also strips the restart-triggering options when it sees
+      // the session is active.)
       const queued = isActive && !isWaitingBackground
       onMessageSent?.(content, localId, queued)
       try {
@@ -110,7 +113,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
           sessionId,
           agentSlug,
           content,
-          ...(queued ? {} : composerOptions.toRuntimeOptions()),
+          ...buildMessageSendOptions(queued, composerOptions.toRuntimeOptions()),
         })
         // Reconcile against the server's authoritative decision: our local
         // `queued` guess is derived from SSE state that can be stale (reconnect,

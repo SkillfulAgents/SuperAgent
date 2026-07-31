@@ -50,8 +50,19 @@ export type GoalContract = z.infer<typeof goalContractSchema>
 export const watchdogVerdictSchema = z.object({
   verdict: z.enum(['done', 'continue', 'blocked']),
   reasoning: z.string(),
-  nudge: z.string().optional(),
-  missing: z.string().optional(),
+  // The prompt marks these "REQUIRED for continue", so on done/blocked the
+  // judge often emits them as explicit nulls — accept and drop them rather
+  // than fail the whole verdict (which would wrongly escalate a clean done).
+  nudge: z
+    .string()
+    .nullable()
+    .transform((v) => v ?? undefined)
+    .optional(),
+  missing: z
+    .string()
+    .nullable()
+    .transform((v) => v ?? undefined)
+    .optional(),
 })
 
 export type WatchdogVerdict = z.infer<typeof watchdogVerdictSchema>
@@ -104,15 +115,20 @@ export const approvalReviewVerdictSchema = z.object({
 export type ApprovalReviewVerdict = z.infer<typeof approvalReviewVerdictSchema>
 
 /**
- * Timeline-entry payload for a watchdog decision (stored JSON-stringified in a
- * `type: 'system', subtype: 'autopilot_review'` JSONL entry; parsed with this
- * schema when the transcript is transformed for the API).
+ * Timeline-entry payload for an autopilot decision (stored JSON-stringified in
+ * a `type: 'system', subtype: 'autopilot_review'` JSONL entry; parsed with
+ * this schema when the transcript is transformed for the API). Two producers
+ * share the shape: the watchdog's stop reviews (done/continue/blocked/
+ * escalated, with nudge + iteration bookkeeping) and the approval reviewer's
+ * per-request decisions (approved/denied, with `action` naming the API/MCP
+ * call that was judged).
  */
 export const autopilotReviewEntrySchema = z
   .object({
-    verdict: z.enum(['done', 'continue', 'blocked', 'escalated']),
+    verdict: z.enum(['done', 'continue', 'blocked', 'escalated', 'approved', 'denied']),
     reasoning: z.string(),
     nudge: z.string().optional(),
+    action: z.string().optional(),
     iteration: z.number().optional(),
     maxIterations: z.number().optional(),
   })

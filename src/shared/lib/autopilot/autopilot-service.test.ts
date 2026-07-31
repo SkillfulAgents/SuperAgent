@@ -99,6 +99,36 @@ describe('autopilot-service state machine', () => {
     expect(await disengageAutopilot(AGENT, SESSION, 'user_toggle')).toBe(false)
   })
 
+  it('completed disengage only applies from engaged — a late done verdict must not kill a re-requested autopilot', async () => {
+    await requestAutopilot(AGENT, SESSION)
+    await engageAutopilot(AGENT, SESSION, CONTRACT)
+    // User message lands mid-review with the switch still on: engaged → requested…
+    await requestAutopilot(AGENT, SESSION)
+    // …then the in-flight review's done verdict arrives late.
+    expect(await disengageAutopilot(AGENT, SESSION, 'completed')).toBe(false)
+    expect(await state()).toBe('requested')
+  })
+
+  it('completed disengage is a no-op from paused', async () => {
+    await requestAutopilot(AGENT, SESSION)
+    await engageAutopilot(AGENT, SESSION, CONTRACT)
+    await pauseAutopilot(AGENT, SESSION, 'blocked on auth')
+    expect(await disengageAutopilot(AGENT, SESSION, 'completed')).toBe(false)
+    expect(await state()).toBe('paused')
+  })
+
+  it('user-driven disengage still applies from requested and paused', async () => {
+    await requestAutopilot(AGENT, SESSION)
+    expect(await disengageAutopilot(AGENT, SESSION, 'user_toggle')).toBe(true)
+    expect(await state()).toBe('off')
+
+    await requestAutopilot(AGENT, SESSION)
+    await engageAutopilot(AGENT, SESSION, CONTRACT)
+    await pauseAutopilot(AGENT, SESSION, 'blocked')
+    expect(await disengageAutopilot(AGENT, SESSION, 'user_toggle')).toBe(true)
+    expect(await state()).toBe('off')
+  })
+
   it('pause only applies to an engaged session', async () => {
     expect(await pauseAutopilot(AGENT, SESSION, 'nope')).toBe(false)
     await requestAutopilot(AGENT, SESSION)

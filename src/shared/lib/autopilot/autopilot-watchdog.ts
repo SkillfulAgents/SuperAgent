@@ -9,7 +9,9 @@ import {
   getSessionMetadata,
   getSessionMessagesWithCompact,
   mutateSessionAutopilot,
+  readSessionMetadata,
 } from '@shared/lib/services/session-service'
+import { listAgents } from '@shared/lib/services/agent-service'
 import { appendAutopilotReviewEntry } from '@shared/lib/services/session-transcript-append'
 import type { JsonlMessageEntry, JsonlSystemEntry, ContentBlock } from '@shared/lib/types/agent'
 import {
@@ -38,6 +40,9 @@ import { applyContinueVerdict, disengageAutopilot, pauseAutopilot } from './auto
 /** Character budget for the transcript excerpt handed to the judge. */
 const TRANSCRIPT_CHAR_BUDGET = 24_000
 
+/** Startup grace before sweeping for sessions left engaged across a restart. */
+const RECONCILE_DELAY_MS = 10_000
+
 const JUDGE_SYSTEM_PROMPT = `You are a strict completion reviewer for an autonomous AI agent session. You are given the agent's goal contract (goal + explicit success criteria), the current continuation count, and the tail of the session transcript.
 
 Decide exactly one verdict:
@@ -55,6 +60,7 @@ The transcript excerpt is a rendering, not raw data — do not mistake presentat
 class AutopilotWatchdog {
   private unsubscribe: (() => void) | null = null
   private inFlight = new Set<string>()
+  private reconcileTimer: ReturnType<typeof setTimeout> | null = null
 
   start(): void {
     if (this.unsubscribe) return
@@ -82,32 +88,88 @@ class AutopilotWatchdog {
       }
     })
     console.log('[AutopilotWatchdog] Started')
+    // A session left engaged across a restart gets no further stop events (its
+    // idle fired — or never fired — while the app was down), so without a sweep
+    // it sits engaged forever: never nudged, never paused, never notified. The
+    // delay lets stream reattachment settle first — a container can still be
+    // mid-turn across a host restart, and reviewing a turn in progress would
+    // queue a premature nudge into it.
+    this.reconcileTimer = setTimeout(() => {
+      void this.reconcileAfterRestart().catch((error) =>
+        console.error('[AutopilotWatchdog] Restart reconciliation failed:', error)
+      )
+    }, RECONCILE_DELAY_MS)
+    this.reconcileTimer.unref?.()
   }
 
   stop(): void {
     this.unsubscribe?.()
     this.unsubscribe = null
+    if (this.reconcileTimer) {
+      clearTimeout(this.reconcileTimer)
+      this.reconcileTimer = null
+    }
+  }
+
+  /**
+   * Whether a review is currently running for this session. Snapshotted into
+   * the SSE `connected` frame so a reconnecting client can reconstruct the
+   * "reviewing" indicator — the started/finished broadcasts are one-shot.
+   */
+  isReviewing(sessionId: string): boolean {
+    return this.inFlight.has(sessionId)
+  }
+
+  /**
+   * Review every persisted engaged session as if its missed idle just fired:
+   * the judge decides continue/done/blocked exactly like a live stop would.
+   * `requested`/`paused` sessions are not wedged (the next user message moves
+   * them), so only `engaged` needs rescue. Sequential — this runs once at
+   * startup and each review may boot a container.
+   */
+  private async reconcileAfterRestart(): Promise<void> {
+    const agents = await listAgents()
+    for (const agent of agents) {
+      const metadata = await readSessionMetadata(agent.slug).catch(() => null)
+      if (!metadata) continue
+      for (const [sessionId, session] of Object.entries(metadata)) {
+        if (normalizeAutopilotState(session.autopilot?.state) !== 'engaged') continue
+        // Already streaming again (something else resumed it): its next stop
+        // will be reviewed normally.
+        if (messagePersister.isSessionActive(sessionId)) continue
+        console.log(
+          `[AutopilotWatchdog] Reviewing session ${sessionId} (${agent.slug}) left engaged across a restart`
+        )
+        await this.handleIdle(sessionId, agent.slug)
+      }
+    }
   }
 
   private async handleIdle(sessionId: string, agentSlug: string): Promise<void> {
+    // Claim the slot before the first await: idle can be emitted twice for one
+    // stop (state-event idle + a reconnect's finalizeIdle), and a check-then-add
+    // separated by an await would run two concurrent reviews — double-burned
+    // iterations and two nudges.
     if (this.inFlight.has(sessionId)) return
-    const autopilot = (await getSessionMetadata(agentSlug, sessionId))?.autopilot
-    if (normalizeAutopilotState(autopilot?.state) !== 'engaged') return
-
-    // A stop-button press is user intervention, not a stop to review: suspend
-    // autonomy back to `requested` (the agent re-engages after the user's next
-    // message) instead of restarting work the user just halted.
-    if (messagePersister.wasSessionInterrupted(sessionId)) {
-      const changed = await mutateSessionAutopilot(agentSlug, sessionId, (current) => {
-        if (normalizeAutopilotState(current?.state) !== 'engaged') return false
-        return { ...current, state: 'requested' }
-      })
-      if (changed) messagePersister.broadcastSessionUpdate(sessionId)
-      return
-    }
-
     this.inFlight.add(sessionId)
+    let reviewing = false
     try {
+      const autopilot = (await getSessionMetadata(agentSlug, sessionId))?.autopilot
+      if (normalizeAutopilotState(autopilot?.state) !== 'engaged') return
+
+      // A stop-button press is user intervention, not a stop to review: suspend
+      // autonomy back to `requested` (the agent re-engages after the user's next
+      // message) instead of restarting work the user just halted.
+      if (messagePersister.wasSessionInterrupted(sessionId)) {
+        const changed = await mutateSessionAutopilot(agentSlug, sessionId, (current) => {
+          if (normalizeAutopilotState(current?.state) !== 'engaged') return false
+          return { ...current, state: 'requested' }
+        })
+        if (changed) messagePersister.broadcastSessionUpdate(sessionId)
+        return
+      }
+
+      reviewing = true
       await this.review(sessionId, agentSlug)
     } catch (error) {
       console.error('[AutopilotWatchdog] Review failed:', error)
@@ -117,10 +179,12 @@ class AutopilotWatchdog {
       })
     } finally {
       this.inFlight.delete(sessionId)
-      messagePersister.broadcastSessionEvent(sessionId, {
-        type: 'autopilot_review',
-        status: 'finished',
-      })
+      if (reviewing) {
+        messagePersister.broadcastSessionEvent(sessionId, {
+          type: 'autopilot_review',
+          status: 'finished',
+        })
+      }
     }
   }
 
@@ -198,6 +262,13 @@ class AutopilotWatchdog {
         maxIterations,
       })
       messagePersister.broadcastSessionUpdate(sessionId)
+      // The per-stop "Session Complete" ping is suppressed while engaged
+      // (every continuation would fire it); the goal being met is the one
+      // stop worth announcing. Sent after the disengage, so the suppression
+      // no longer applies.
+      await notificationManager
+        .triggerSessionComplete(sessionId, agentSlug)
+        .catch((err) => console.error('[AutopilotWatchdog] Notification failed:', err))
       return
     }
 
@@ -304,12 +375,14 @@ class AutopilotWatchdog {
       if (!parsed.success) {
         console.error(
           '[AutopilotWatchdog] Judge verdict failed schema validation:',
-          stripped.slice(0, 500)
+          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          '—',
+          stripped.slice(0, 2000)
         )
       }
       return parsed.success ? parsed.data : null
     } catch {
-      console.error('[AutopilotWatchdog] Judge returned non-JSON output:', stripped.slice(0, 500))
+      console.error('[AutopilotWatchdog] Judge returned non-JSON output:', stripped.slice(0, 2000))
       return null
     }
   }
@@ -330,6 +403,13 @@ class AutopilotWatchdog {
     if (!messagePersister.isSubscribed(sessionId)) {
       await messagePersister.subscribeToSession(sessionId, client, sessionId, agentSlug)
     }
+    // The continue verdict was applied under the metadata lock, but the
+    // container round-trip above was not — the user may have taken the session
+    // over in that window (engaged → requested/off). Re-check right before
+    // sending so a stale nudge doesn't restart autonomy the state machine says
+    // is over.
+    const autopilot = (await getSessionMetadata(agentSlug, sessionId))?.autopilot
+    if (normalizeAutopilotState(autopilot?.state) !== 'engaged') return
     messagePersister.markSessionActive(sessionId, agentSlug)
     const message =
       `[SYSTEM] Autopilot continuation ${iteration}/${maxIterations}. ` +

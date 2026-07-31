@@ -75,16 +75,19 @@ export interface TransformedInformational {
 }
 
 /**
- * Host-persisted autopilot watchdog decision. Written by the watchdog after it
- * reviews a stop; the payload lives JSON-stringified in the entry's `content`
- * and is parsed (leniently — malformed entries are dropped, not thrown) here.
+ * Host-persisted autopilot decision: a watchdog stop review (done/continue/
+ * blocked/escalated) or an approval-reviewer request decision (approved/
+ * denied, `action` names the judged call). The payload lives JSON-stringified
+ * in the entry's `content` and is parsed (leniently — malformed entries are
+ * dropped, not thrown) here.
  */
 export interface TransformedAutopilotReview {
   id: string
   type: 'autopilot_review'
-  verdict: 'done' | 'continue' | 'blocked' | 'escalated'
+  verdict: 'done' | 'continue' | 'blocked' | 'escalated' | 'approved' | 'denied'
   reasoning: string
   nudge?: string
+  action?: string
   iteration?: number
   maxIterations?: number
   createdAt: Date
@@ -521,6 +524,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       verdict: parsed.data.verdict,
       reasoning: parsed.data.reasoning,
       nudge: parsed.data.nudge,
+      action: parsed.data.action,
       iteration: parsed.data.iteration,
       maxIterations: parsed.data.maxIterations,
       createdAt: new Date(sysEntry.timestamp),

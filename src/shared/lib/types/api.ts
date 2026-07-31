@@ -226,16 +226,17 @@ export interface ApiInformational {
 }
 
 /**
- * Autopilot watchdog decision in API response: rendered as a timeline card
- * showing whether the reviewer let the session rest, restarted it with a
- * nudge, or escalated to the user.
+ * Autopilot decision in API response: rendered as a timeline card showing
+ * either a watchdog stop review (rest / nudge / escalate) or an approval
+ * reviewer's decision on a request the agent made (`action` names the call).
  */
 export interface ApiAutopilotReview {
   id: string
   type: 'autopilot_review'
-  verdict: 'done' | 'continue' | 'blocked' | 'escalated'
+  verdict: 'done' | 'continue' | 'blocked' | 'escalated' | 'approved' | 'denied'
   reasoning: string
   nudge?: string
+  action?: string
   iteration?: number
   maxIterations?: number
   createdAt: Date

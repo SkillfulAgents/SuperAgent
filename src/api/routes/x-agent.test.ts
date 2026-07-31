@@ -695,9 +695,11 @@ describe('/invoke', () => {
     })
 
     expect(res.status).toBe(200)
+    // Prompts into an existing session are framed with the caller's identity
+    // (agent-authored text must not read as the session user's own message).
     expect(mockSendMessage).toHaveBeenCalledWith(
       'existing-sess',
-      'follow-up',
+      expect.stringMatching(/^\[Message from agent "[^"]+"\]\n\nfollow-up$/),
       expect.any(String),
     )
     const sentMessageUuid = mockSendMessage.mock.calls[0][2]
@@ -942,8 +944,44 @@ describe('/invoke', () => {
       sessionId: 'existing-sess',
     })
     expect(res.status).toBe(200)
-    expect(mockSendMessage).toHaveBeenCalledWith('existing-sess', 'follow-up')
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      'existing-sess',
+      expect.stringMatching(/^\[Message from agent "[^"]+"\]\n\nfollow-up$/),
+    )
     expect(mockCreateSession).not.toHaveBeenCalled()
+  })
+
+  it('rejects continuing a session that is running in autopilot mode', async () => {
+    // An engaged session is autonomous, not idle — a foreign agent's message
+    // must not ride its autonomous privileges or derail the delegated goal.
+    reviewDecisions.push('allow')
+    mockIsSessionActive.mockReturnValue(false)
+    mockGetSessionMetadata.mockImplementation(async (_slug: unknown, sessionId: unknown) =>
+      sessionId === 'existing-sess' ? { autopilot: { state: 'engaged' } } : null
+    )
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'hi',
+      sessionId: 'existing-sess',
+    })
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toMatch(/autopilot/i)
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('continues a paused-autopilot session normally (only engaged refuses)', async () => {
+    reviewDecisions.push('allow')
+    mockIsSessionActive.mockReturnValue(false)
+    mockGetSessionMetadata.mockImplementation(async (_slug: unknown, sessionId: unknown) =>
+      sessionId === 'existing-sess' ? { autopilot: { state: 'paused' } } : null
+    )
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'hi',
+      sessionId: 'existing-sess',
+    })
+    expect(res.status).toBe(200)
+    expect(mockSendMessage).toHaveBeenCalled()
   })
 
   it('blocks in auth mode when caller owner lacks user role on target', async () => {

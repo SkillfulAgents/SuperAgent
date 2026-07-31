@@ -58,6 +58,7 @@ import {
 } from '@shared/lib/services/session-service'
 import { requestAutopilot, disengageAutopilot } from '@shared/lib/autopilot/autopilot-service'
 import { normalizeAutopilotState } from '@shared/lib/autopilot/autopilot-schema'
+import { autopilotWatchdog } from '@shared/lib/autopilot/autopilot-watchdog'
 import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
@@ -1978,19 +1979,30 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     // Autopilot transitions driven by this message. The composer sends
-    // `autopilot: true` while its switch is on (request; a user message while
-    // engaged also drops back to requested — autonomy is interrupted until the
-    // agent re-engages), `false` on an explicit toggle-off, and nothing from
-    // surfaces that don't know about autopilot — where a genuine user message
-    // mid-engagement disengages entirely (day-one guardrail). Applied BEFORE
-    // the send for fresh turns so the container picks the new state up with
-    // this message, but AFTER the send for queued ones — the state change
-    // restarts the in-flight query, which is exactly what queued sends strip
-    // model/effort/speed to avoid.
+    // `autopilot: true` while its switch is on (request; a fresh-turn user
+    // message while engaged also drops back to requested — autonomy is
+    // interrupted until the agent re-engages), `false` on an explicit
+    // toggle-off, and nothing from surfaces that don't know about autopilot —
+    // where a genuine user message mid-engagement disengages entirely
+    // (day-one guardrail). Applied BEFORE the send for fresh turns so the
+    // container picks the new state up with this message, but AFTER the send
+    // for queued ones — the state change restarts the in-flight query, which
+    // is exactly what queued sends strip model/effort/speed to avoid.
     const applyAutopilotTransition = async (): Promise<void> => {
       let changed = false
       if (runtimeOptions.autopilot === true) {
-        changed = await requestAutopilot(agentSlug, sessionId)
+        // A QUEUED message with the switch on is steering, not an
+        // interruption: it joins the in-flight autonomous turn, so an engaged
+        // session stays engaged and the watchdog reviews the stop as usual.
+        // Demoting to `requested` here would dead-end — the turn's messages
+        // carry no preflight reminder, so nothing after the stop would ever
+        // re-run the preflight, and `requested` is invisible to the watchdog.
+        const state = normalizeAutopilotState(
+          (await getSessionMetadata(agentSlug, sessionId))?.autopilot?.state
+        )
+        if (!(wasQueued && state === 'engaged')) {
+          changed = await requestAutopilot(agentSlug, sessionId)
+        }
       } else if (runtimeOptions.autopilot === false) {
         changed = await disengageAutopilot(agentSlug, sessionId, 'user_toggle')
       } else {
@@ -2266,6 +2278,10 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
           isActive,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
           backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
+          // Reviews broadcast one-shot started/finished events; a client
+          // connecting between them needs the current truth or its
+          // "Reviewing progress…" indicator wedges/misses.
+          autopilotReviewing: autopilotWatchdog.isReviewing(sessionId) || undefined,
         }),
         event: 'message',
       })

@@ -19,7 +19,7 @@ import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { InformationalItem } from './informational-item'
-import { AutopilotReviewItem } from './autopilot-review-item'
+import { AutopilotReviewItem, AutopilotApprovalGroup, isAutopilotApprovalItem } from './autopilot-review-item'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
@@ -320,14 +320,50 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     })
   }, [messages])
 
-  // The trailing slice we actually render. The other derived values below still
-  // compute over the FULL message list, so turn boundaries / elapsed times / etc.
-  // stay correct even when their anchor message is outside the rendered window.
-  const windowedMessages = useMemo(
-    () => visibleMessages.slice(-windowSize),
-    [visibleMessages, windowSize]
+  // Collapse runs of consecutive approval-reviewer decisions into one render
+  // unit ("Autopilot approved N requests"); everything else passes through.
+  // Watchdog verdict cards break a run and render individually. Grouping runs
+  // over the FULL visible list, BEFORE windowing: a group's key is its first
+  // item's id and its count is the whole run, so neither changes when the
+  // trailing render window slides past the run's start (a window-scoped group
+  // would remount — collapsing a user-expanded panel — and under-count).
+  const allUnits = useMemo(() => {
+    type ApprovalGroupUnit = { type: 'autopilot_approval_group'; id: string; items: ApiAutopilotReview[] }
+    const units: (typeof visibleMessages[number] | ApprovalGroupUnit)[] = []
+    for (const item of visibleMessages) {
+      if (item.type === 'autopilot_review' && isAutopilotApprovalItem(item as ApiAutopilotReview)) {
+        const last = units[units.length - 1]
+        if (last && last.type === 'autopilot_approval_group') {
+          ;(last as ApprovalGroupUnit).items.push(item as ApiAutopilotReview)
+        } else {
+          units.push({ type: 'autopilot_approval_group', id: item.id, items: [item as ApiAutopilotReview] })
+        }
+        continue
+      }
+      units.push(item)
+    }
+    return units
+  }, [visibleMessages])
+
+  // The trailing slice we actually render (in units — a whole approval group
+  // costs one slot). The other derived values below still compute over the
+  // FULL message list, so turn boundaries / elapsed times / etc. stay correct
+  // even when their anchor message is outside the rendered window.
+  const renderUnits = useMemo(
+    () => allUnits.slice(-windowSize),
+    [allUnits, windowSize]
   )
-  const hiddenCount = visibleMessages.length - windowedMessages.length
+  // Counted in messages (not units) so the "N earlier messages hidden" label
+  // stays accurate when a hidden unit is a multi-item group.
+  const hiddenCount = useMemo(
+    () =>
+      visibleMessages.length -
+      renderUnits.reduce(
+        (n, unit) => n + (unit.type === 'autopilot_approval_group' ? unit.items.length : 1),
+        0
+      ),
+    [visibleMessages, renderUnits]
+  )
 
   // Keep the rendered range anchored at the top while the user is scrolled up.
   // The window is a trailing slice, so when new messages are persisted it would
@@ -786,9 +822,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             {hiddenCount} earlier {hiddenCount === 1 ? 'message' : 'messages'} hidden — scroll up to load
           </div>
         )}
-        {windowedMessages.map((item) => (
+        {renderUnits.map((item) => (
           <Fragment key={item.id}>
-            {item.type === 'memory_recall' ? (
+            {item.type === 'autopilot_approval_group' ? (
+              // Same width as the assistant content column (MessageItem's
+              // max-w-[80%]) so these rows line up with the tool-call rows
+              // they sit between.
+              <div className="max-w-[80%]">
+                <AutopilotApprovalGroup items={item.items} />
+              </div>
+            ) : item.type === 'memory_recall' ? (
               <MemoryRecallItem recall={item as ApiMemoryRecall} />
             ) : item.type === 'compact_boundary' ? (
               <CompactBoundaryItem boundary={item as ApiCompactBoundary} />

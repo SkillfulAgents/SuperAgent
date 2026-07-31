@@ -810,7 +810,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
       }), this.speed),
       mcpServers: {
-        'user-input': createUserInputMcpServer(() => this),
+        // The autopilotRequested flag force-loads engage_autopilot during the
+        // preflight window. Evaluated per query build, which is exactly when
+        // it can change: any autopilot state change interrupts and re-queries.
+        'user-input': createUserInputMcpServer(() => this, {
+          autopilotRequested: this.autopilotState === 'requested',
+        }),
         'browser': createBrowserMcpServer(browserMcpTools),
         'dashboards': createDashboardsMcpServer(),
         'agents': createAgentsMcpServer(() => this.sessionId),

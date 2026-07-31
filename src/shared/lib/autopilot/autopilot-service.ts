@@ -63,6 +63,11 @@ export async function disengageAutopilot(
   return mutateSessionAutopilot(agentSlug, sessionId, (autopilot) => {
     const state = normalizeAutopilotState(autopilot?.state)
     if (state === 'off') return false
+    // A `done` verdict can land after the user already intervened (a mid-review
+    // message flips engaged → requested). Completion only means anything for
+    // the engaged session the watchdog reviewed — from any other state it
+    // would silently kill an autopilot the user just re-requested.
+    if (reason === 'completed' && state !== 'engaged') return false
     return {
       ...autopilot,
       state: 'off',

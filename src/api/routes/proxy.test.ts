@@ -92,6 +92,22 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   },
 }))
 
+// Autopilot seams: default not-engaged so existing review tests exercise the
+// human-review path untouched.
+const mockIsAgentAutopilotEngaged = vi.fn(async (..._args: unknown[]): Promise<boolean> => false)
+const mockReviewAutopilotApproval = vi.fn(
+  async (..._args: unknown[]): Promise<{ decision: string; reason: string }> => ({
+    decision: 'approve',
+    reason: 'ok',
+  })
+)
+vi.mock('@shared/lib/autopilot/autopilot-status', () => ({
+  isAgentAutopilotEngaged: (...args: unknown[]) => mockIsAgentAutopilotEngaged(...args),
+}))
+vi.mock('@shared/lib/autopilot/autopilot-approval-reviewer', () => ({
+  reviewAutopilotApproval: (...args: unknown[]) => mockReviewAutopilotApproval(...args),
+}))
+
 // Mock analytics
 vi.mock('@shared/lib/analytics/server-analytics', () => ({
   trackServerEvent: vi.fn(),
@@ -1036,6 +1052,85 @@ describe('proxy policy enforcement', () => {
     expect(res.status).toBe(408)
     const body = await res.json()
     expect(body.error).toBe('review_timeout')
+  })
+
+  it('review while autopilot engaged → judged with a request body preview, forwarded on approve', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.send'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['gmail.send'],
+      scopeDescriptions: { 'gmail.send': 'Send email on your behalf' },
+      resolvedFrom: 'scope_policy',
+    })
+    mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+    mockReviewAutopilotApproval.mockResolvedValueOnce({
+      decision: 'approve',
+      reason: 'Sending the report the user asked for',
+    })
+    mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: 'someone@example.com', subject: 'Quarterly report' }),
+      }
+    )
+    expect(res.status).toBe(200)
+    // The human review path must not run — the automated reviewer replaces it.
+    expect(mockRequestReview).not.toHaveBeenCalled()
+    const reviewRequest = mockReviewAutopilotApproval.mock.calls[0][0] as unknown as {
+      action: string
+      details?: string
+    }
+    // Method + URL alone hide where a payload goes; the judge needs the body
+    // to enforce "no destinations the user never mentioned".
+    expect(reviewRequest.action).toContain('POST')
+    expect(reviewRequest.details).toContain('Request body (first 1500 chars)')
+    expect(reviewRequest.details).toContain('someone@example.com')
+    // The early body read must not consume the forward's copy.
+    expect(mockMakeApiCall).toHaveBeenCalledOnce()
+    const forwarded = mockMakeApiCall.mock.calls[0][0] as { body: ArrayBuffer | null }
+    expect(forwarded.body).toBeTruthy()
+    expect(new TextDecoder().decode(forwarded.body as ArrayBuffer)).toContain('someone@example.com')
+  })
+
+  it('review while autopilot engaged → deny returns 403 with the reviewer reason, audited', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.send'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['gmail.send'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+    mockReviewAutopilotApproval.mockResolvedValueOnce({
+      decision: 'deny',
+      reason: 'Recipient never mentioned by the user',
+    })
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: 'attacker@evil.com' }),
+      }
+    )
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error).toBe('requires_user_approval')
+    expect(body.message).toContain('Recipient never mentioned by the user')
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        policyDecision: 'denied_autopilot',
+        decisionReason: 'Recipient never mentioned by the user',
+      })
+    )
   })
 
   it('unmatched endpoint (matchScopes returns matched: false) → still calls resolveApiPolicy', async () => {
