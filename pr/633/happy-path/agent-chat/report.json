@@ -1,17 +1,24 @@
 {
   "storyId": "agent-chat",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ith status showing \"Worked for 2s\" and agent status back to \"idle\"\n\n**Screenshot saved:** qa-test-response.png shows the complete conversation with:\n- User message: \"Hello! What is 2+2?\"\n- Agent response: \"4\"\n- Session: \"Basic Math Question Session\"\n- Agent: \"QA-20260731-214129-p6hc\"\n- Status: idle\n",
-  "steps": [],
+  "passed": true,
+  "reason": "All QA steps executed successfully. Agent \"QA-20260731-215127-gmad\" responded with \"4\" to the math question within 2 seconds.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut app homepage showing agent list in sidebar.",
+    "Step 2: Found and clicked \"QA-20260731-215127-gmad\" agent in sidebar — Successfully navigated to the agent's home page.",
+    "Step 3: Verified agent status is \"running\" or \"idle\" — Confirmed agent status is \"idle\", which meets requirement.",
+    "Step 4: Typed and sent message \"Hello! What is 2+2?\" — Message successfully entered in input field and sent by clicking Send button. Chat session created with title \"Math Question with QA Agent\".",
+    "Step 5: Waited up to 3 minutes for response — Agent responded within 2 seconds. Activity indicator showed \"Working...\" then cleared when response arrived.",
+    "Step 6: Verified response mentions \"4\" and took screenshot — Agent's response clearly displays \"4\". Screenshot captured showing user message, agent response \"4\", and status \"Worked for 2s\"."
+  ],
   "bugs": [],
-  "durationMs": 70049,
-  "sessionId": "e11abe16-843d-4975-96f6-d531f7beecc9",
+  "durationMs": 252202,
+  "sessionId": "87bc2e04-34a1-4ac9-87e6-242ed828b19b",
   "cost": {
     "inputTokens": 344,
-    "outputTokens": 10795,
-    "cacheCreationTokens": 115242,
-    "cacheReadTokens": 942238,
+    "outputTokens": 11196,
+    "cacheCreationTokens": 107570,
+    "cacheReadTokens": 895637,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.292595
+    "totalCostUsd": 0.28035
   }
 }
