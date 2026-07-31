@@ -754,12 +754,18 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   // replace once then retry. No pre-create GetMicrovm — ensureRunning's health
   // probe covers the common path; dead gens are rare after terminate-on-stop.
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
+    // Snapshot before super.createSession: getPortOrThrow → getInfoFromRuntime
+    // CAS-drops a terminal generation, so observeDeadGeneration would see nothing.
+    const installedId = agentStates.get(this.config.agentId)?.microvmId ?? null
     try {
       return await super.createSession(options)
     } catch (error) {
       if (!isUnreachableCreateSessionError(error)) throw error
-      const deadId = await this.observeDeadGeneration()
-      // Alive, unknown, or no local state — do not resurrect a stopped agent.
+      let deadId = await this.observeDeadGeneration()
+      if (deadId === null && installedId !== null && !agentStates.has(this.config.agentId)) {
+        deadId = installedId
+      }
+      // Alive, unknown, or never had a generation — do not resurrect a stopped agent.
       if (deadId === null) throw error
       await this.replaceGeneration('post_create_unreachable', deadId)
       return await super.createSession(options)

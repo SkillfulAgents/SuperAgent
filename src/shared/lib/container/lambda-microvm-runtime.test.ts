@@ -539,6 +539,43 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     superCreate.mockRestore()
   })
 
+  // getPortOrThrow → getInfoFromRuntime CAS-drops TERMINATING before the catch;
+  // without the installedId snapshot, observeDeadGeneration sees nothing and we
+  // never replace — the primary scenario this PR exists to fix.
+  it('createSession replaces when getPortOrThrow wiped a TERMINATING generation', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+
+    let runCount = 0
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') {
+        runCount++
+        responses.getState = 'RUNNING'
+        return { microvmId: `mvm-wipe-${runCount}`, endpoint: 'ep.lambda-microvm.aws' }
+      }
+      if (cmd.type === 'Get') return { state: responses.getState ?? 'RUNNING' }
+      if (cmd.type === 'Terminate') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+
+    responses.getState = 'TERMINATING'
+    const superCreate = vi.spyOn(BaseContainerClient.prototype, 'createSession')
+    superCreate.mockImplementation(async function (this: LambdaMicroVmRuntimeClient) {
+      const info = await this.getInfoFromRuntime()
+      if (info.status !== 'running' || !info.port) throw new Error('Container is not running')
+      return { id: 'sess-real' } as never
+    })
+
+    await expect(client.createSession({ initialMessage: 'hi' })).resolves.toEqual({ id: 'sess-real' })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(true)
+    expect(runCount).toBe(1)
+    expect(superCreate).toHaveBeenCalledTimes(2)
+    superCreate.mockRestore()
+  })
+
   it('createSession replaces after connect-refused when the generation is TERMINATED', async () => {
     const { BaseContainerClient } = await import('./base-container-client')
     const client = newClient()
