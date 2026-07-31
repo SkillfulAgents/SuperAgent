@@ -4125,6 +4125,13 @@ describe('MessagePersister', () => {
 
     it('auto-rejects with a transcript card while autopilot is engaged', async () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
+      // The handler rejects for unsupported platforms BEFORE it consults
+      // autopilot metadata — on Linux CI that rejection satisfies the reject
+      // waitFor while the denial card can never be written. The E2E_MOCK
+      // bypass skips the platform guard so the autopilot branch is exercised
+      // on every platform.
+      const originalE2eMock = process.env.E2E_MOCK
+      process.env.E2E_MOCK = 'true'
       // Persistent, not Once — see the script-run twin of this test.
       vi.mocked(getSessionMetadata).mockResolvedValue({ autopilot: { state: 'engaged' } })
       mockAppendAutopilotReviewEntry.mockClear()
@@ -4156,6 +4163,11 @@ describe('MessagePersister', () => {
         })
       } finally {
         vi.mocked(getSessionMetadata).mockImplementation(() => Promise.resolve(null))
+        if (originalE2eMock === undefined) {
+          delete process.env.E2E_MOCK
+        } else {
+          process.env.E2E_MOCK = originalE2eMock
+        }
       }
     })
 

@@ -1659,6 +1659,28 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     })
     const sessionId = containerSession.id
 
+    // Persist only what the user explicitly chose. The server-side fallback is
+    // applied at session creation but should not masquerade as a user choice in
+    // metadata — otherwise a later change to the global default wouldn't be
+    // reflected when the composer reloads.
+    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
+    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
+    if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
+    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
+    if (runtimeOptions.autopilot) {
+      initialMetadata.autopilot = { state: 'requested', requestedAt: autopilotRequestedAt }
+    }
+    if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
+    if (Object.keys(initialMetadata).length > 0) {
+      // Awaited, and BEFORE the stream attaches below: the first turn can call
+      // engage_autopilot as soon as events flow, and the host-authoritative
+      // guard must find the persisted 'requested' era when that event is
+      // handled. A fire-and-forget write after the subscribe raced the
+      // container's first tool call and rejected autopilot on the primary
+      // new-session flow.
+      await updateSessionMetadata(slug, sessionId, initialMetadata)
+    }
+
     // Attach lifecycle state and the stream before slower metadata/DB work. The
     // first turn can start emitting shortly after createSession returns, and a
     // blocking input emitted during that window must not be missed or reset.
@@ -1687,21 +1709,6 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         messagePersister.unsubscribeFromSession(sessionId)
       }
       throw error
-    }
-    // Persist only what the user explicitly chose. The server-side fallback is
-    // applied at session creation but should not masquerade as a user choice in
-    // metadata — otherwise a later change to the global default wouldn't be
-    // reflected when the composer reloads.
-    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
-    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
-    if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
-    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
-    if (runtimeOptions.autopilot) {
-      initialMetadata.autopilot = { state: 'requested', requestedAt: autopilotRequestedAt }
-    }
-    if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
-    if (Object.keys(initialMetadata).length > 0) {
-      updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)
     }
     // Store slash commands from container's init event (captured during session creation)
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {

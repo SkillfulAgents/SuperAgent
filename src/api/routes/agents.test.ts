@@ -5415,19 +5415,16 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
 
     expect(res.status).toBe(201)
     expect(mockCreateSession.mock.calls[0][0].autopilotState).toBe('requested')
-    // The metadata write is fire-and-forget — settle it.
-    await vi.waitFor(() => {
-      expect(vi.mocked(updateSessionMetadata)).toHaveBeenCalledWith(
-        'test-agent',
-        'session-123',
-        expect.objectContaining({
-          autopilot: expect.objectContaining({
-            state: 'requested',
-            requestedAt: expect.any(String),
-          }),
-        })
-      )
-    })
+    expect(vi.mocked(updateSessionMetadata)).toHaveBeenCalledWith(
+      'test-agent',
+      'session-123',
+      expect.objectContaining({
+        autopilot: expect.objectContaining({
+          state: 'requested',
+          requestedAt: expect.any(String),
+        }),
+      })
+    )
     const write = vi
       .mocked(updateSessionMetadata)
       .mock.calls.find((call) => (call[2] as { autopilot?: unknown }).autopilot)!
@@ -5436,6 +5433,24 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     )
     expect(stamped).toBeGreaterThanOrEqual(before)
     expect(stamped).toBeLessThanOrEqual(atCreate)
+  })
+
+  it('persists the requested state BEFORE the stream attaches', async () => {
+    // engage_autopilot can arrive with the first stream events; the
+    // host-authoritative guard reads this metadata, so a write that races the
+    // subscribe rejects autopilot on the primary new-session flow.
+    const res = await postJson(app, SESSIONS_URL, { message: 'do the thing', autopilot: true })
+
+    expect(res.status).toBe(201)
+    const writeCall = vi
+      .mocked(updateSessionMetadata)
+      .mock.calls.findIndex((call) => (call[2] as { autopilot?: unknown }).autopilot)
+    expect(writeCall).toBeGreaterThanOrEqual(0)
+    const writeOrder = vi.mocked(updateSessionMetadata).mock.invocationCallOrder[writeCall]
+    const subscribeOrder = vi.mocked(messagePersister.subscribeToSession).mock
+      .invocationCallOrder[0]
+    expect(subscribeOrder).toBeDefined()
+    expect(writeOrder).toBeLessThan(subscribeOrder)
   })
 })
 

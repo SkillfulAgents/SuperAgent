@@ -3,7 +3,10 @@ import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { resolveMcpPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
-import { isAgentAutopilotEngaged } from '@shared/lib/autopilot/autopilot-status'
+import {
+  getAutopilotAuthorization,
+  isAutopilotAuthorizationCurrent,
+} from '@shared/lib/autopilot/autopilot-status'
 import { reviewAutopilotApproval } from '@shared/lib/autopilot/autopilot-approval-reviewer'
 import { autopilotApprovalDeniedMessage } from '@shared/lib/autopilot/autopilot-service'
 import { db } from '@shared/lib/db'
@@ -291,7 +294,8 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       // answer, an automated reviewer decides on their behalf — it sees ONLY
       // the user's own messages plus this request (never the agent
       // trajectory). See the API proxy's mirror branch.
-      if (await isAgentAutopilotEngaged(agentSlug)) {
+      const autopilotAuthorization = await getAutopilotAuthorization(agentSlug)
+      if (autopilotAuthorization) {
         // The judge must see the request EXACTLY as it will be forwarded: one
         // canonical JSON-RPC request (batched, malformed, or non-UTF-8 bodies
         // could carry tool calls the judge never saw — refused outright), the
@@ -316,7 +320,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         if (!unreviewable && headersBlock.length > REVIEWABLE_BODY_CHAR_CAP) {
           unreviewable = `Forwarded request headers total ${headersBlock.length} characters — beyond the ${REVIEWABLE_BODY_CHAR_CAP}-character automated-review limit, so the request cannot be inspected in full. Denied by default.`
         }
-        const review = unreviewable
+        let review = unreviewable
           ? { decision: 'deny' as const, reason: unreviewable }
           : await reviewAutopilotApproval({
               agentSlug,
@@ -333,6 +337,25 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
                   .filter(Boolean)
                   .join('\n') || undefined,
             })
+        // An approval only stands while the authorization it was judged under
+        // does. The user can switch autopilot off, or interrupt (opening a
+        // new era), while the model review is in flight — revalidate the
+        // captured session/era set immediately before promoting the approval,
+        // and drop requests the caller has already abandoned.
+        if (review.decision !== 'deny') {
+          if (c.req.raw.signal.aborted) {
+            review = {
+              decision: 'deny',
+              reason: 'The request was cancelled while automated review was in flight.',
+            }
+          } else if (!(await isAutopilotAuthorizationCurrent(agentSlug, autopilotAuthorization))) {
+            review = {
+              decision: 'deny',
+              reason:
+                'Autopilot was switched off or interrupted while automated review was in flight, so the approval no longer applies.',
+            }
+          }
+        }
         if (review.decision === 'deny') {
           await logMcpAuditEntry({
             agentSlug,

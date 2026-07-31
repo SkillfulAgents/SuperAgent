@@ -414,8 +414,12 @@ describe('autopilot-watchdog', () => {
     expect(createSummarizerText).not.toHaveBeenCalled()
     // The input request's own "Action Required" notification covers the user.
     expect(notificationManager.triggerSessionWaitingInput).not.toHaveBeenCalled()
-    const reviews = await readReviewEntries()
-    expect(reviews[0].verdict).toBe('blocked')
+    // The paused state is persisted BEFORE the review entry is appended, so
+    // reaching 'paused' above does not mean the entry is on disk yet.
+    await vi.waitFor(async () => {
+      const reviews = await readReviewEntries()
+      expect(reviews[0]?.verdict).toBe('blocked')
+    })
   })
 
   it('session error while engaged: pauses AND notifies', async () => {

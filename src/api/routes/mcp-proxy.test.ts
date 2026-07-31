@@ -65,8 +65,17 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
 }))
 
 // Autopilot seams: default not-engaged so existing review tests exercise the
-// human-review path untouched.
-const mockIsAgentAutopilotEngaged = vi.fn(async (..._args: unknown[]): Promise<boolean> => false)
+// human-review path untouched. The authorization stays current by default so
+// approvals promote; the revocation test flips it.
+const AUTOPILOT_AUTHORIZATION = {
+  sessions: [{ sessionId: 'session-1', requestedAt: '2026-01-01T00:00:00.000Z' }],
+}
+const mockGetAutopilotAuthorization = vi.fn(
+  async (..._args: unknown[]): Promise<unknown> => null
+)
+const mockIsAutopilotAuthorizationCurrent = vi.fn(
+  async (..._args: unknown[]): Promise<boolean> => true
+)
 const mockReviewAutopilotApproval = vi.fn(
   async (..._args: unknown[]): Promise<{ decision: string; reason: string }> => ({
     decision: 'approve',
@@ -74,7 +83,9 @@ const mockReviewAutopilotApproval = vi.fn(
   })
 )
 vi.mock('@shared/lib/autopilot/autopilot-status', () => ({
-  isAgentAutopilotEngaged: (...args: unknown[]) => mockIsAgentAutopilotEngaged(...args),
+  getAutopilotAuthorization: (...args: unknown[]) => mockGetAutopilotAuthorization(...args),
+  isAutopilotAuthorizationCurrent: (...args: unknown[]) =>
+    mockIsAutopilotAuthorizationCurrent(...args),
 }))
 vi.mock('@shared/lib/autopilot/autopilot-approval-reviewer', () => ({
   reviewAutopilotApproval: (...args: unknown[]) => mockReviewAutopilotApproval(...args),
@@ -961,7 +972,7 @@ describe('mcp-proxy route', () => {
     it('judges the COMPLETE request — target with query, forwarded headers, full body', async () => {
       setupSuccessPath()
       reviewPolicy()
-      mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+      mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
       mockReviewAutopilotApproval.mockResolvedValueOnce({ decision: 'approve', reason: 'ok' })
 
       const body = toolsCall({ to: 'someone@example.com', note: 'x'.repeat(3000) })
@@ -999,7 +1010,7 @@ describe('mcp-proxy route', () => {
     it('fails closed without the judge when the body exceeds the reviewable cap', async () => {
       setupSuccessPath()
       reviewPolicy()
-      mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+      mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
         method: 'POST',
@@ -1019,7 +1030,7 @@ describe('mcp-proxy route', () => {
     it('denies a batched JSON-RPC body without consulting the judge', async () => {
       setupSuccessPath()
       reviewPolicy()
-      mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+      mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
 
       // A batch array parses as JSON but is not ONE canonical request — the
       // judge would review nothing while both calls get forwarded.
@@ -1043,7 +1054,7 @@ describe('mcp-proxy route', () => {
     it('denies a body that does not parse as JSON-RPC without consulting the judge', async () => {
       setupSuccessPath()
       reviewPolicy()
-      mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+      mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
         method: 'POST',
@@ -1057,6 +1068,34 @@ describe('mcp-proxy route', () => {
       expect(body.message).toContain('single well-formed JSON-RPC request')
       expect(mockReviewAutopilotApproval).not.toHaveBeenCalled()
       expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('approval does NOT forward once autopilot is revoked mid-review', async () => {
+      setupSuccessPath()
+      reviewPolicy()
+      mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
+      // The user switches autopilot off (or interrupts, opening a new era)
+      // while the model review is in flight: the judge still approves, but
+      // the authorization the approval was judged under no longer stands.
+      mockReviewAutopilotApproval.mockResolvedValueOnce({ decision: 'approve', reason: 'ok' })
+      mockIsAutopilotAuthorizationCurrent.mockResolvedValueOnce(false)
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: toolsCall({ to: 'someone@example.com' }),
+      })
+
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.error).toBe('requires_user_approval')
+      expect(body.message).toContain('no longer applies')
+      expect(mockFetch).not.toHaveBeenCalled()
+      // Revalidation compares against the SAME snapshot captured pre-review.
+      expect(mockIsAutopilotAuthorizationCurrent).toHaveBeenCalledWith(
+        'my-agent',
+        AUTOPILOT_AUTHORIZATION
+      )
     })
   })
 

@@ -93,8 +93,17 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
 }))
 
 // Autopilot seams: default not-engaged so existing review tests exercise the
-// human-review path untouched.
-const mockIsAgentAutopilotEngaged = vi.fn(async (..._args: unknown[]): Promise<boolean> => false)
+// human-review path untouched. The authorization stays current by default so
+// approvals promote; the revocation test flips it.
+const AUTOPILOT_AUTHORIZATION = {
+  sessions: [{ sessionId: 'session-1', requestedAt: '2026-01-01T00:00:00.000Z' }],
+}
+const mockGetAutopilotAuthorization = vi.fn(
+  async (..._args: unknown[]): Promise<unknown> => null
+)
+const mockIsAutopilotAuthorizationCurrent = vi.fn(
+  async (..._args: unknown[]): Promise<boolean> => true
+)
 const mockReviewAutopilotApproval = vi.fn(
   async (..._args: unknown[]): Promise<{ decision: string; reason: string }> => ({
     decision: 'approve',
@@ -102,7 +111,9 @@ const mockReviewAutopilotApproval = vi.fn(
   })
 )
 vi.mock('@shared/lib/autopilot/autopilot-status', () => ({
-  isAgentAutopilotEngaged: (...args: unknown[]) => mockIsAgentAutopilotEngaged(...args),
+  getAutopilotAuthorization: (...args: unknown[]) => mockGetAutopilotAuthorization(...args),
+  isAutopilotAuthorizationCurrent: (...args: unknown[]) =>
+    mockIsAutopilotAuthorizationCurrent(...args),
 }))
 vi.mock('@shared/lib/autopilot/autopilot-approval-reviewer', () => ({
   reviewAutopilotApproval: (...args: unknown[]) => mockReviewAutopilotApproval(...args),
@@ -1063,7 +1074,7 @@ describe('proxy policy enforcement', () => {
       scopeDescriptions: { 'gmail.send': 'Send email on your behalf' },
       resolvedFrom: 'scope_policy',
     })
-    mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+    mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
     mockReviewAutopilotApproval.mockResolvedValueOnce({
       decision: 'approve',
       reason: 'Sending the report the user asked for',
@@ -1119,7 +1130,7 @@ describe('proxy policy enforcement', () => {
       scopeDescriptions: {},
       resolvedFrom: 'scope_policy',
     })
-    mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+    mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
 
     const res = await makeRequest(
       '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send',
@@ -1150,7 +1161,7 @@ describe('proxy policy enforcement', () => {
       scopeDescriptions: {},
       resolvedFrom: 'scope_policy',
     })
-    mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+    mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
 
     const res = await makeRequest(
       '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send',
@@ -1185,7 +1196,7 @@ describe('proxy policy enforcement', () => {
       scopeDescriptions: {},
       resolvedFrom: 'scope_policy',
     })
-    mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+    mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
     mockReviewAutopilotApproval.mockResolvedValueOnce({
       decision: 'deny',
       reason: 'Recipient never mentioned by the user',
@@ -1209,6 +1220,77 @@ describe('proxy policy enforcement', () => {
         policyDecision: 'denied_autopilot',
         decisionReason: 'Recipient never mentioned by the user',
       })
+    )
+  })
+
+  it('review while autopilot engaged → approval does NOT forward once autopilot is revoked mid-review', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.send'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['gmail.send'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
+    // The user switches autopilot off (or interrupts, opening a new era)
+    // while the model review is in flight: the judge still approves, but the
+    // authorization the approval was judged under no longer stands.
+    mockReviewAutopilotApproval.mockResolvedValueOnce({ decision: 'approve', reason: 'ok' })
+    mockIsAutopilotAuthorizationCurrent.mockResolvedValueOnce(false)
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: 'someone@example.com' }),
+      }
+    )
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error).toBe('requires_user_approval')
+    expect(body.message).toContain('no longer applies')
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ policyDecision: 'denied_autopilot' })
+    )
+    // Revalidation compares against the SAME snapshot captured pre-review.
+    expect(mockIsAutopilotAuthorizationCurrent).toHaveBeenCalledWith(
+      'my-agent',
+      AUTOPILOT_AUTHORIZATION
+    )
+  })
+
+  it('review while autopilot engaged → a non-UTF-8 body fails closed without the judge', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.send'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['gmail.send'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/octet-stream' },
+        // 0xC3 0x28 is an invalid UTF-8 sequence: a lenient decode would show
+        // the judge replacement characters while the raw bytes forward.
+        body: new Uint8Array([0xc3, 0x28, 0x01, 0xff]),
+      }
+    )
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error).toBe('requires_user_approval')
+    expect(body.message).toContain('not valid UTF-8')
+    expect(mockReviewAutopilotApproval).not.toHaveBeenCalled()
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ policyDecision: 'denied_autopilot' })
     )
   })
 

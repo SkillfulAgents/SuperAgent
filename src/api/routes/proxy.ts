@@ -6,7 +6,10 @@ import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { PROXY_SKIP_REQUEST_HEADERS } from '@shared/lib/proxy/composio-envelope'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
-import { isAgentAutopilotEngaged } from '@shared/lib/autopilot/autopilot-status'
+import {
+  getAutopilotAuthorization,
+  isAutopilotAuthorizationCurrent,
+} from '@shared/lib/autopilot/autopilot-status'
 import { reviewAutopilotApproval } from '@shared/lib/autopilot/autopilot-approval-reviewer'
 import { autopilotApprovalDeniedMessage } from '@shared/lib/autopilot/autopilot-service'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
@@ -238,7 +241,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     // sees ONLY the user's own messages plus this request (never the agent
     // trajectory, so injected instructions can't reach it). Block policy never
     // gets here; a deny keeps the pre-reviewer corrective guidance.
-    if (await isAgentAutopilotEngaged(agentSlug)) {
+    const autopilotAuthorization = await getAutopilotAuthorization(agentSlug)
+    if (autopilotAuthorization) {
       const scopeDetails = Object.entries(policyResult.scopeDescriptions ?? {})
         .map(([scope, description]) => `${scope}: ${description}`)
         .join('\n')
@@ -271,21 +275,33 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       }
       let bodyText: string | undefined
       if (!unreviewable && method !== 'GET' && method !== 'HEAD') {
+        let buffer: ArrayBuffer | undefined
         try {
-          const buffer = await c.req.arrayBuffer()
-          if (buffer.byteLength > 0) {
-            const text = new TextDecoder().decode(buffer).trim()
-            if (text.length > REVIEWABLE_BODY_CHAR_CAP) {
-              unreviewable = `Request body is ${text.length} characters — beyond the ${REVIEWABLE_BODY_CHAR_CAP}-character automated-review limit, so it cannot be inspected in full. Denied by default.`
-            } else if (text) {
-              bodyText = `Request body (complete): ${text}`
-            }
-          }
+          buffer = await c.req.arrayBuffer()
         } catch {
           unreviewable = 'Request body could not be read for review. Denied by default.'
         }
+        if (buffer && buffer.byteLength > 0) {
+          // Fatal decode, no trimming: the forward at step 6 sends the raw
+          // bytes, so the judge must see exactly those bytes as text. A
+          // lenient decode would substitute replacement characters and a trim
+          // would drop bytes — either way the judge approves a different
+          // representation than what executes. Non-UTF-8 bodies cannot be
+          // represented completely and fail closed.
+          try {
+            const text = new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+            if (text.length > REVIEWABLE_BODY_CHAR_CAP) {
+              unreviewable = `Request body is ${text.length} characters — beyond the ${REVIEWABLE_BODY_CHAR_CAP}-character automated-review limit, so it cannot be inspected in full. Denied by default.`
+            } else {
+              bodyText = `Request body (complete): ${text}`
+            }
+          } catch {
+            unreviewable =
+              'Request body is not valid UTF-8 text, so it cannot be inspected as it will be forwarded. Denied by default.'
+          }
+        }
       }
-      const review = unreviewable
+      let review = unreviewable
         ? { decision: 'deny' as const, reason: unreviewable }
         : await reviewAutopilotApproval({
             agentSlug,
@@ -297,6 +313,25 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
               bodyText,
             ].filter(Boolean).join('\n') || undefined,
           })
+      // An approval only stands while the authorization it was judged under
+      // does. The user can switch autopilot off, or interrupt (opening a new
+      // era), while the model review is in flight — revalidate the captured
+      // session/era set immediately before promoting the approval, and drop
+      // requests the caller has already abandoned.
+      if (review.decision !== 'deny') {
+        if (c.req.raw.signal.aborted) {
+          review = {
+            decision: 'deny',
+            reason: 'The request was cancelled while automated review was in flight.',
+          }
+        } else if (!(await isAutopilotAuthorizationCurrent(agentSlug, autopilotAuthorization))) {
+          review = {
+            decision: 'deny',
+            reason:
+              'Autopilot was switched off or interrupted while automated review was in flight, so the approval no longer applies.',
+          }
+        }
+      }
       if (review.decision === 'deny') {
         await logAuditEntry({
           agentSlug,
