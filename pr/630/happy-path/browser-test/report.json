@@ -1,0 +1,27 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser-use feature successfully executed - agent opened browser, navigated to example.com, and response included \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 - Page loaded successfully with title \"Gamut\"",
+    "Found and clicked the \"QA-20260731-015950-ujx3\" agent in the sidebar - Agent page opened showing settings interface",
+    "Looked for message input area and discovered it required clicking the submit button (not just Enter) - Found contenteditable message input in agent settings form",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message entered into contenteditable input field",
+    "Clicked the form submit button - Message was submitted and created a new session at URL /agents/.../sessions/951345d6-b088-49f7-b631-fc608fbef7d2",
+    "Agent status changed from \"idle\" to \"working\" - Session became active with agent processing the request",
+    "Waited for response (completed in ~13 seconds) - Agent executed browser tools: \"Open Browser\" and \"browser_get_state\" for https://example.com",
+    "Verified response includes \"Example Domain\" - Response successfully displayed browser preview content with \"Example Domain\" text visible in the page",
+    "Took screenshot at /tmp/test-success.png - Final state captured showing:"
+  ],
+  "bugs": [],
+  "durationMs": 632539,
+  "sessionId": "9edd8230-f415-4756-89b8-b98aaae795c1",
+  "cost": {
+    "inputTokens": 1814,
+    "outputTokens": 73486,
+    "cacheCreationTokens": 229432,
+    "cacheReadTokens": 8125127,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 1.468547
+  }
+}
