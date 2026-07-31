@@ -289,10 +289,10 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
           : (activeItem?.activeForm || 'Working...')
 
   return (
-    <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
+    <div className="mx-auto -mb-5 w-full max-w-[740px] px-4">
       {/* Capped and scrolled in place: a long action list must not grow the
           card until it pushes the chat history off screen. */}
-      <div className="max-h-[30vh] overflow-y-auto rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
+      <div className="max-h-[30vh] overflow-y-auto rounded-t-2xl border border-b-0 bg-muted/50 px-3 pt-3 pb-8" data-testid="activity-indicator">
         {/* Header with pulsing indicator */}
         <div className="flex items-center gap-2">
           <span className="relative flex h-3 w-3">
