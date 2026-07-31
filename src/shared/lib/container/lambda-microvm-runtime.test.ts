@@ -74,7 +74,7 @@ const FULL_ENV = { ...REQUIRED_ENV, HOST_PUBLIC_URL: 'https://host.example' }
 const TOUCHED = [
   ...Object.keys(FULL_ENV),
   'AWS_REGION', 'AWS_DEFAULT_REGION', 'MICROVM_AGENT_IMAGE_VERSION', 'MICROVM_INGRESS_CONNECTOR_ARN',
-  'MICROVM_AGENT_PORT', 'MICROVM_MAX_DURATION_SECONDS', 'MICROVM_SUSPENDED_SECONDS', 'MICROVM_LOG_GROUP',
+  'MICROVM_AGENT_PORT', 'MICROVM_MAX_DURATION_SECONDS', 'MICROVM_LOG_GROUP',
   'MICROVM_FS_ID', 'MICROVM_ACCESS_POINT', 'MICROVM_MOUNT_TARGET_IP', 'ECS_CONTAINER_METADATA_URI_V4', 'PORT',
   'MICROVM_PROXY_URL', 'MICROVM_PROXY_TOKEN',
 ]
@@ -121,10 +121,8 @@ describe('microvm runtime config', () => {
     expect(config.region).toBe('us-east-2')
     expect(config.imageArn).toBe('arn:img')
     expect(config.agentPort).toBe(3000)
-    // Lifetime + suspend default to the AWS 8h cap: a suspended VM survives
-    // "until killed" and only the ceiling force-terminates an untouched one.
+    // Lifetime defaults to the AWS 8h cap.
     expect(config.maxDurationSeconds).toBe(28_800)
-    expect(config.suspendedSeconds).toBe(28_800)
   })
 
   it('defaults the ingress connector to the AWS well-known ALL_INGRESS for the region', () => {
@@ -149,12 +147,10 @@ describe('microvm runtime config', () => {
   it('coerces numeric overrides from strings', () => {
     Object.assign(process.env, REQUIRED_ENV, {
       MICROVM_AGENT_PORT: '8080',
-      MICROVM_SUSPENDED_SECONDS: '120',
       MICROVM_MAX_DURATION_SECONDS: '600',
     })
     const config = getMicrovmRuntimeConfig()
     expect(config.agentPort).toBe(8080)
-    expect(config.suspendedSeconds).toBe(120)
     expect(config.maxDurationSeconds).toBe(600)
   })
 
@@ -258,10 +254,10 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(input.imageIdentifier).toBe('arn:img')
     expect(input.executionRoleArn).toBe('arn:exec')
     expect(input.egressNetworkConnectors).toEqual(['arn:egress'])
-    expect(input.idlePolicy.autoResumeEnabled).toBe(true)
-    // idle tracks the app auto-sleep setting (30m); suspend/lifetime hit the 8h cap.
-    expect(input.idlePolicy.maxIdleDurationSeconds).toBe(1_800)
-    expect(input.idlePolicy.suspendedDurationSeconds).toBe(28_800)
+    expect(input.idlePolicy.autoResumeEnabled).toBe(false)
+    // AWS idle capped at lifetime — host auto-sleep terminates; no suspend path.
+    expect(input.idlePolicy.maxIdleDurationSeconds).toBe(28_800)
+    expect(input.idlePolicy.suspendedDurationSeconds).toBe(1)
     expect(input.maximumDurationInSeconds).toBe(28_800)
     expect(typeof input.clientToken).toBe('string')
     expect(input.clientToken.length).toBeGreaterThan(0)
@@ -408,11 +404,13 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(await newClient().getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
   })
 
-  it('getInfoFromRuntime treats SUSPENDED as running (auto-resume on request)', async () => {
+  it('getInfoFromRuntime treats SUSPENDED as stopped and terminates the leftover VM', async () => {
     const client = newClient()
     await client.start()
     responses.getState = 'SUSPENDED'
-    expect((await client.getInfoFromRuntime()).status).toBe('running')
+    sendMock.mockClear()
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(true)
   })
 
   it('getInfoFromRuntime reports stopped when the VM is TERMINATED and cleans up local state', async () => {
@@ -466,16 +464,16 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     stopSpy.mockRestore()
   })
 
-  it('background auto-sleep (escalateToForceStop:false) is a no-op — idlePolicy owns idle', async () => {
+  it('background auto-sleep (escalateToForceStop:false) terminates like other runners', async () => {
     const client = newClient()
     await client.start()
     sendMock.mockClear()
     await client.stop({ escalateToForceStop: false })
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Suspend')).toBe(false)
-    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(true)
   })
 
-  it('a plain stop() suspends (preserves state for warm resume), not terminate', async () => {
+  it('a plain stop() terminates (no suspend / warm resume)', async () => {
     const client = newClient()
     await client.start()
     sendMock.mockClear()
@@ -483,24 +481,27 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     const result = await client.stop()
 
     expect(result).toEqual({ forceStopUsed: false, stopped: true })
-    const suspendCall = sendMock.mock.calls.find((c) => c[0].type === 'Suspend')
-    expect(suspendCall![0].input).toEqual({ microvmIdentifier: 'mvm-1' })
-    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+    const terminateCall = sendMock.mock.calls.find((c) => c[0].type === 'Terminate')
+    expect(terminateCall![0].input).toEqual({ microvmIdentifier: 'mvm-1' })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Suspend')).toBe(false)
 
-    // State is preserved: a subsequent start() short-circuits (no new RunMicrovm).
+    // State is cleared: a subsequent start() runs a fresh MicroVM.
     sendMock.mockClear()
-    responses.getState = 'SUSPENDED'
+    responses.getState = 'RUNNING'
     await client.start()
-    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(true)
   })
 
-  it('a plain stop() is a no-op suspend when already SUSPENDED', async () => {
+  it('a plain stop() is a no-op terminate when already gone', async () => {
     const client = newClient()
     await client.start()
-    responses.getState = 'SUSPENDED'
+    responses.getState = 'TERMINATED'
+    // Drop local state as if getInfo already cleaned up.
+    await client.getInfoFromRuntime()
     sendMock.mockClear()
     await client.stop()
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Suspend')).toBe(false)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
   })
 
   it('start is a no-op when the agent is already running', async () => {
