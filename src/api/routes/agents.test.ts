@@ -498,7 +498,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, getSessionMetadata, mutateSessionAutopilot } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, getSessionMetadata, mutateSessionAutopilot, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -5397,6 +5397,45 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('global-agent-model')
     expect(args.effort).toBeUndefined()
+  })
+
+  it('opens the autopilot era BEFORE the session exists and persists it', async () => {
+    // The approval/completion judges bound their windows to requestedAt: a
+    // stamp taken after createSession could postdate the initial prompt's
+    // transcript timestamp, excluding the task statement itself — the judge
+    // would see no user intent on the primary new-session flow.
+    let atCreate = 0
+    mockCreateSession.mockImplementation(async () => {
+      atCreate = Date.now()
+      return { id: 'session-123' }
+    })
+    const before = Date.now()
+
+    const res = await postJson(app, SESSIONS_URL, { message: 'do the thing', autopilot: true })
+
+    expect(res.status).toBe(201)
+    expect(mockCreateSession.mock.calls[0][0].autopilotState).toBe('requested')
+    // The metadata write is fire-and-forget — settle it.
+    await vi.waitFor(() => {
+      expect(vi.mocked(updateSessionMetadata)).toHaveBeenCalledWith(
+        'test-agent',
+        'session-123',
+        expect.objectContaining({
+          autopilot: expect.objectContaining({
+            state: 'requested',
+            requestedAt: expect.any(String),
+          }),
+        })
+      )
+    })
+    const write = vi
+      .mocked(updateSessionMetadata)
+      .mock.calls.find((call) => (call[2] as { autopilot?: unknown }).autopilot)!
+    const stamped = Date.parse(
+      (write[2] as { autopilot: { requestedAt: string } }).autopilot.requestedAt
+    )
+    expect(stamped).toBeGreaterThanOrEqual(before)
+    expect(stamped).toBeLessThanOrEqual(atCreate)
   })
 })
 

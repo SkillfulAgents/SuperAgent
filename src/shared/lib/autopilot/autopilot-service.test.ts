@@ -229,6 +229,46 @@ describe('autopilot-service state machine', () => {
       expect(await state()).toBe('paused')
     })
 
+    it('does NOT escalate on an unchanged criterion set when the judge affirms progress', async () => {
+      // A multi-step criterion legitimately stays incomplete across reviews;
+      // identity of the missing set alone must not read as a stall.
+      const first = await applyContinueVerdict(AGENT, SESSION, {
+        verdict: 'continue',
+        reasoning: 'tests written, not yet passing',
+        missing_criteria: [2],
+      })
+      expect(first.action).toBe('continue')
+      const second = await applyContinueVerdict(AGENT, SESSION, {
+        verdict: 'continue',
+        reasoning: 'more tests passing, two remain',
+        missing_criteria: [2],
+        made_progress: true,
+      })
+      expect(second).toEqual({ action: 'continue', iteration: 2, maxIterations: 2 })
+      expect(await state()).toBe('engaged')
+    })
+
+    it('escalates on an unchanged criterion set when the judge reports no progress', async () => {
+      await applyContinueVerdict(AGENT, SESSION, {
+        verdict: 'continue',
+        reasoning: 'r',
+        missing_criteria: [2],
+      })
+      const second = await applyContinueVerdict(AGENT, SESSION, {
+        verdict: 'continue',
+        reasoning: 'r',
+        missing_criteria: [2],
+        made_progress: false,
+      })
+      expect(second).toEqual({
+        action: 'escalate',
+        reason: 'no-progress',
+        iteration: 2,
+        maxIterations: 2,
+      })
+      expect(await state()).toBe('paused')
+    })
+
     it('reports not-engaged when the user intervened mid-review', async () => {
       await disengageAutopilot(AGENT, SESSION, 'user_message')
       const decision = await applyContinueVerdict(AGENT, SESSION, {

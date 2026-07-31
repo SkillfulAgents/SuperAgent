@@ -60,6 +60,16 @@ export const watchdogVerdictSchema = z.object({
     .nullable()
     .transform((v) => v ?? undefined)
     .optional(),
+  // Whether the transcript shows material new progress since the previous
+  // review. An unchanged missing-criteria set is NOT evidence of a stall — a
+  // multi-step criterion legitimately stays incomplete across reviews — so the
+  // no-progress guardrail only escalates when the judge does not affirm
+  // progress (see applyContinueVerdict).
+  made_progress: z
+    .boolean()
+    .nullable()
+    .transform((v) => v ?? undefined)
+    .optional(),
   // Free-form judge text (display-only: the timeline card). The prompt marks
   // fields "REQUIRED for continue", so on done/blocked the judge often emits
   // them as explicit nulls — accept and drop them rather than fail the whole

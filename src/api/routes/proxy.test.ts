@@ -1074,7 +1074,11 @@ describe('proxy policy enforcement', () => {
       '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send?forwardTo=hidden@evil.com',
       {
         method: 'POST',
-        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+          'Dropbox-API-Arg': '{"path":"/reports/final.pdf","mode":"overwrite"}',
+        },
         body: JSON.stringify({ to: 'someone@example.com', subject: 'Quarterly report' }),
       }
     )
@@ -1086,12 +1090,19 @@ describe('proxy policy enforcement', () => {
       details?: string
     }
     // The judge must see the request as it will be forwarded: the full URL
-    // INCLUDING the query string, and the complete body — a destination in
-    // either would otherwise ride an approval for a different-looking request.
+    // INCLUDING the query string, the forwarded headers, and the complete
+    // body — a destination in any of them would otherwise ride an approval
+    // for a different-looking request.
     expect(reviewRequest.action).toContain('POST')
     expect(reviewRequest.action).toContain('forwardTo=hidden@evil.com')
     expect(reviewRequest.details).toContain('Request body (complete)')
     expect(reviewRequest.details).toContain('someone@example.com')
+    // Headers carry action-defining parameters (e.g. Dropbox upload path +
+    // overwrite mode); the judge sees the same set the provider forwards —
+    // with credentials stripped by the shared skip-set.
+    expect(reviewRequest.details).toContain('Request headers (complete, as forwarded)')
+    expect(reviewRequest.details).toContain('"mode":"overwrite"')
+    expect(reviewRequest.details).not.toContain('synth_valid')
     // The early body read must not consume the forward's copy.
     expect(mockMakeApiCall).toHaveBeenCalledOnce()
     const forwarded = mockMakeApiCall.mock.calls[0][0] as { body: ArrayBuffer | null }
@@ -1123,6 +1134,41 @@ describe('proxy policy enforcement', () => {
     expect(body.error).toBe('requires_user_approval')
     expect(body.message).toContain('cannot be inspected in full')
     // An approval judged on a partial body is no approval — the judge never runs.
+    expect(mockReviewAutopilotApproval).not.toHaveBeenCalled()
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ policyDecision: 'denied_autopilot' })
+    )
+  })
+
+  it('review while autopilot engaged → headers too large to inspect fail closed without the judge', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.send'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['gmail.send'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+          // Forwarded to the upstream API, so it must be reviewable in full.
+          'X-Huge-Header': 'y'.repeat(20_000),
+        },
+        body: JSON.stringify({ to: 'someone@example.com' }),
+      }
+    )
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error).toBe('requires_user_approval')
+    expect(body.message).toContain('cannot be inspected in full')
     expect(mockReviewAutopilotApproval).not.toHaveBeenCalled()
     expect(mockMakeApiCall).not.toHaveBeenCalled()
     expect(mockInsertValues).toHaveBeenCalledWith(

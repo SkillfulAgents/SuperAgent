@@ -135,10 +135,11 @@ export type ContinueDecision =
   | { action: 'not-engaged' }
 
 /**
- * Apply a `continue` verdict under the lock: record it, run the two mechanical
- * guardrails (iteration cap, identical `missing` fingerprint twice in a row =
- * no progress), and either burn an iteration or flip to paused. Returning the
- * decision from inside the mutator keeps the guard + write atomic.
+ * Apply a `continue` verdict under the lock: record it, run the two guardrails
+ * (iteration cap; identical `missing` fingerprint twice in a row WITHOUT the
+ * judge affirming progress = stall), and either burn an iteration or flip to
+ * paused. Returning the decision from inside the mutator keeps the guard +
+ * write atomic.
  */
 export async function applyContinueVerdict(
   agentSlug: string,
@@ -170,11 +171,17 @@ export async function applyContinueVerdict(
       return { ...autopilot, state: 'paused', pausedReason: 'Iteration cap reached', lastVerdict }
     }
 
+    // No-progress escalation needs BOTH signals: the same criteria are still
+    // missing AND the judge — who saw the work done since the previous review —
+    // did not affirm progress. Criterion identity alone is not a stall: a
+    // multi-step criterion legitimately stays incomplete across several
+    // reviews while real progress is made toward it.
     const previousMissing = autopilot.lastVerdict?.missing
     if (
       fingerprint &&
       previousMissing &&
-      fingerprint === previousMissing.trim().toLowerCase()
+      fingerprint === previousMissing.trim().toLowerCase() &&
+      verdict.made_progress !== true
     ) {
       decision = { action: 'escalate', reason: 'no-progress', iteration, maxIterations }
       return {

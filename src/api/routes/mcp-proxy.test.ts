@@ -958,16 +958,21 @@ describe('mcp-proxy route', () => {
         id: 3,
       })
 
-    it('judges the COMPLETE tool arguments while engaged', async () => {
+    it('judges the COMPLETE request — target with query, forwarded headers, full body', async () => {
       setupSuccessPath()
       reviewPolicy()
       mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
       mockReviewAutopilotApproval.mockResolvedValueOnce({ decision: 'approve', reason: 'ok' })
 
-      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
+      const body = toolsCall({ to: 'someone@example.com', note: 'x'.repeat(3000) })
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp?mode=overwrite', {
         method: 'POST',
-        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
-        body: toolsCall({ to: 'someone@example.com', note: 'x'.repeat(3000) }),
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+          'X-Upload-Dest': '/reports/final.pdf',
+        },
+        body,
       })
 
       expect(res.status).toBe(200)
@@ -977,14 +982,21 @@ describe('mcp-proxy route', () => {
         details?: string
       }
       expect(reviewRequest.action).toContain('send_email')
-      // Complete, not truncated: a destination past an old 1,500-char cutoff
-      // must still be visible to the judge.
-      expect(reviewRequest.details).toContain('Arguments (complete)')
+      // The real destination, including the query string.
+      expect(reviewRequest.action).toContain('?mode=overwrite')
+      // The complete JSON-RPC body, not just extracted arguments — a
+      // destination past an old cutoff must still be visible to the judge.
+      expect(reviewRequest.details).toContain('JSON-RPC request body (complete)')
       expect(reviewRequest.details).toContain('someone@example.com')
       expect(reviewRequest.details).toContain('x'.repeat(3000))
+      // Headers can carry action-defining parameters; the judge sees the same
+      // set the forward sends — with credentials stripped.
+      expect(reviewRequest.details).toContain('Request headers (complete, as forwarded)')
+      expect(reviewRequest.details).toContain('/reports/final.pdf')
+      expect(reviewRequest.details).not.toContain('synth_valid')
     })
 
-    it('fails closed without the judge when arguments exceed the reviewable cap', async () => {
+    it('fails closed without the judge when the body exceeds the reviewable cap', async () => {
       setupSuccessPath()
       reviewPolicy()
       mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
@@ -999,7 +1011,50 @@ describe('mcp-proxy route', () => {
       const body = await res.json()
       expect(body.error).toBe('requires_user_approval')
       expect(body.message).toContain('cannot be inspected in full')
-      // An approval judged on partial arguments is no approval.
+      // An approval judged on a partial request is no approval.
+      expect(mockReviewAutopilotApproval).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('denies a batched JSON-RPC body without consulting the judge', async () => {
+      setupSuccessPath()
+      reviewPolicy()
+      mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+
+      // A batch array parses as JSON but is not ONE canonical request — the
+      // judge would review nothing while both calls get forwarded.
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify([
+          JSON.parse(toolsCall({ to: 'attacker@evil.com' })),
+          { jsonrpc: '2.0', method: 'tools/call', params: { name: 'delete_all' }, id: 4 },
+        ]),
+      })
+
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.error).toBe('requires_user_approval')
+      expect(body.message).toContain('single well-formed JSON-RPC request')
+      expect(mockReviewAutopilotApproval).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('denies a body that does not parse as JSON-RPC without consulting the judge', async () => {
+      setupSuccessPath()
+      reviewPolicy()
+      mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: '{"method": "tools/call", "params": {"name": "send_email"}', // truncated JSON
+      })
+
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.error).toBe('requires_user_approval')
+      expect(body.message).toContain('single well-formed JSON-RPC request')
       expect(mockReviewAutopilotApproval).not.toHaveBeenCalled()
       expect(mockFetch).not.toHaveBeenCalled()
     })

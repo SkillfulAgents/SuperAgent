@@ -19,6 +19,7 @@ import {
   autopilotEpochStartMs,
   normalizeAutopilotState,
   watchdogVerdictSchema,
+  type AutopilotMetadata,
   type AutopilotReviewEntry,
   type GoalContract,
   type WatchdogVerdict,
@@ -52,7 +53,9 @@ Decide exactly one verdict:
 - "blocked": the agent genuinely needs the user (expired/missing credentials, a decision only the user can make, an irreversible action needing approval, repeated failures with no path forward).
 
 Respond with ONLY a JSON object, no markdown fences, no prose:
-{"verdict": "done" | "continue" | "blocked", "reasoning": "<1-3 sentences>", "missing_criteria": [<REQUIRED for continue: the 1-based numbers of the success criteria not yet satisfied, e.g. [2, 4]>], "nudge": "<optional, shown to the human user on the review card: one sentence on what remains>"}
+{"verdict": "done" | "continue" | "blocked", "reasoning": "<1-3 sentences>", "missing_criteria": [<REQUIRED for continue: the 1-based numbers of the success criteria not yet satisfied, e.g. [2, 4]>], "made_progress": <REQUIRED for continue when a PREVIOUS REVIEW section is present: true if the transcript shows material new work advancing the outstanding criteria since that review, false if the agent has been spinning without advancing>, "nudge": "<optional, shown to the human user on the review card: one sentence on what remains>"}
+
+A criterion can stay unsatisfied across several reviews while real progress is made toward it — judge made_progress on the work actually done since the previous review, not on whether the missing-criteria list changed.
 
 Judge only against the declared success criteria — not what you would have done differently. Unverifiable claims of completion count as not done.
 
@@ -166,7 +169,11 @@ class AutopilotWatchdog {
       if (messagePersister.wasSessionInterrupted(sessionId)) {
         const changed = await mutateSessionAutopilot(agentSlug, sessionId, (current) => {
           if (normalizeAutopilotState(current?.state) !== 'engaged') return false
-          return { ...current, state: 'requested' }
+          // Fresh era marker: the interrupt ends the halted task, and the next
+          // switch-on message will see `requested` and NOT restamp (it's a
+          // no-op transition) — without this, the halted task's prompts and
+          // evidence would keep authorizing and completing the next task.
+          return { ...current, state: 'requested', requestedAt: new Date().toISOString() }
         })
         if (changed) messagePersister.broadcastSessionUpdate(sessionId)
         return
@@ -252,7 +259,13 @@ class AutopilotWatchdog {
             return Number.isFinite(at) && at >= epochStartMs
           })
     const transcript = buildTranscriptExcerpt(entries)
-    const verdict = await this.judge(goal, transcript, iteration, maxIterations)
+    const verdict = await this.judge(
+      goal,
+      transcript,
+      iteration,
+      maxIterations,
+      describePreviousReview(autopilot?.lastVerdict, goal)
+    )
 
     // Judge unusable (provider down, unparseable output): pause rather than
     // loop blind or silently drop autonomy.
@@ -350,7 +363,8 @@ class AutopilotWatchdog {
     goal: GoalContract,
     transcript: string,
     iteration: number,
-    maxIterations: number
+    maxIterations: number,
+    previousReview?: string
   ): Promise<WatchdogVerdict | null> {
     let text: string | null
     try {
@@ -368,6 +382,7 @@ class AutopilotWatchdog {
               ...goal.success_criteria.map((c, i) => `${i + 1}. ${c}`),
               '',
               `Continuations used so far: ${iteration}/${maxIterations}`,
+              ...(previousReview ? ['', 'PREVIOUS REVIEW:', previousReview] : []),
               '',
               'TRANSCRIPT (tail):',
               transcript,
@@ -485,6 +500,36 @@ class AutopilotWatchdog {
 }
 
 export const autopilotWatchdog = new AutopilotWatchdog()
+
+/**
+ * The judge's PREVIOUS REVIEW section: what the last continue verdict found
+ * still missing, so made_progress is judged against the work done since. Built
+ * ONLY from trusted text — the `criteria:1,3` fingerprint is decoded back to
+ * the contract's own criterion text, and the free-form fallback fingerprint
+ * (judge free text, transcript-derived) is deliberately NOT echoed into the
+ * prompt's trusted section.
+ */
+export function describePreviousReview(
+  lastVerdict: AutopilotMetadata['lastVerdict'],
+  goal: GoalContract
+): string | undefined {
+  if (!lastVerdict || lastVerdict.verdict !== 'continue') return undefined
+  const missing = lastVerdict.missing
+  let missingText: string | undefined
+  if (missing?.startsWith('criteria:')) {
+    const lines = missing
+      .slice('criteria:'.length)
+      .split(',')
+      .map((raw) => Number.parseInt(raw, 10))
+      .filter((n) => Number.isInteger(n) && n >= 1 && n <= goal.success_criteria.length)
+      .map((n) => `${n}. ${goal.success_criteria[n - 1]}`)
+    if (lines.length > 0) missingText = lines.join('\n')
+  }
+  return [
+    `An earlier review${lastVerdict.at ? ` at ${lastVerdict.at}` : ''} judged "continue".`,
+    ...(missingText ? ['It found these success criteria not yet satisfied:', missingText] : []),
+  ].join('\n')
+}
 
 /**
  * The [SYSTEM] continuation for a continue verdict. Built ONLY from the

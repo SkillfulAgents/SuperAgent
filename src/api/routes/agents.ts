@@ -1624,6 +1624,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const agentPrefs = await readAgentPreferences(slug)
     const sessionModel = runtimeOptions.model ?? agentPrefs.defaultModel ?? getEffectiveModels().agentModel
 
+    // The autopilot era must open BEFORE the initial prompt exists: the
+    // approval/completion judges bound their windows to requestedAt, and a
+    // stamp taken after createSession could postdate the prompt's transcript
+    // timestamp — excluding the task statement itself from the user-intent
+    // window and leaving the approval reviewer with nothing to authorize.
+    const autopilotRequestedAt = runtimeOptions.autopilot ? new Date().toISOString() : undefined
+
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
@@ -1689,7 +1696,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
     if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
     if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
-    if (runtimeOptions.autopilot) initialMetadata.autopilot = { state: 'requested' }
+    if (runtimeOptions.autopilot) {
+      initialMetadata.autopilot = { state: 'requested', requestedAt: autopilotRequestedAt }
+    }
     if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
     if (Object.keys(initialMetadata).length > 0) {
       updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)

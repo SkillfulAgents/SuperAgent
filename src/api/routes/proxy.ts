@@ -4,6 +4,7 @@ import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
+import { PROXY_SKIP_REQUEST_HEADERS } from '@shared/lib/proxy/composio-envelope'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { isAgentAutopilotEngaged } from '@shared/lib/autopilot/autopilot-status'
 import { reviewAutopilotApproval } from '@shared/lib/autopilot/autopilot-approval-reviewer'
@@ -20,10 +21,10 @@ import {
 import { eq, and } from 'drizzle-orm'
 
 /**
- * The most request-body text the autopilot approval judge will inspect. The
- * judge must see the body COMPLETELY or not at all — a partial view can hide
- * a recipient or destructive flag past the cutoff — so anything larger is
- * unreviewable and fails closed.
+ * The most text (request body, and separately the forwarded-header block) the
+ * autopilot approval judge will inspect. The judge must see each COMPLETELY or
+ * not at all — a partial view can hide a recipient or destructive flag past
+ * the cutoff — so anything larger is unreviewable and fails closed.
  */
 export const REVIEWABLE_BODY_CHAR_CAP = 16_000
 
@@ -242,39 +243,57 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         .map(([scope, description]) => `${scope}: ${description}`)
         .join('\n')
       // The judge must see the request EXACTLY as it will be forwarded: the
-      // full URL including the query string, and the complete body — a
-      // recipient, destination, or destructive flag in an omitted query param
-      // or past a body cutoff would otherwise ride an approval granted for a
-      // different-looking request. A body too large to inspect in full fails
-      // closed. Hono caches the arrayBuffer, so the forward at step 6 reuses
-      // this same read.
+      // full URL including the query string, the complete forwarded header set
+      // (headers can carry action-defining parameters — a destination path or
+      // an overwrite flag — and every non-hop-by-hop header is forwarded at
+      // step 6), and the complete body. A recipient, destination, or
+      // destructive flag in an omitted part would otherwise ride an approval
+      // granted for a different-looking request; anything too large to inspect
+      // in full fails closed. The skip-set is the same one both account
+      // providers apply when forwarding, and it strips Authorization — the
+      // judge never sees credentials. Hono caches the arrayBuffer, so the
+      // forward at step 6 reuses this same read.
       // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
       const queryString = new URL(c.req.url).search
+      let unreviewable: string | undefined
+      const headerLines: string[] = []
+      c.req.raw.headers.forEach((value, key) => {
+        if (!PROXY_SKIP_REQUEST_HEADERS.has(key.toLowerCase())) {
+          headerLines.push(`${key}: ${value}`)
+        }
+      })
+      const headersBlock = headerLines.join('\n')
+      let headersText: string | undefined
+      if (headersBlock.length > REVIEWABLE_BODY_CHAR_CAP) {
+        unreviewable = `Forwarded request headers total ${headersBlock.length} characters — beyond the ${REVIEWABLE_BODY_CHAR_CAP}-character automated-review limit, so the request cannot be inspected in full. Denied by default.`
+      } else if (headersBlock) {
+        headersText = `Request headers (complete, as forwarded):\n${headersBlock}`
+      }
       let bodyText: string | undefined
-      let bodyUnreviewable: string | undefined
-      if (method !== 'GET' && method !== 'HEAD') {
+      if (!unreviewable && method !== 'GET' && method !== 'HEAD') {
         try {
           const buffer = await c.req.arrayBuffer()
           if (buffer.byteLength > 0) {
             const text = new TextDecoder().decode(buffer).trim()
             if (text.length > REVIEWABLE_BODY_CHAR_CAP) {
-              bodyUnreviewable = `Request body is ${text.length} characters — beyond the ${REVIEWABLE_BODY_CHAR_CAP}-character automated-review limit, so it cannot be inspected in full. Denied by default.`
+              unreviewable = `Request body is ${text.length} characters — beyond the ${REVIEWABLE_BODY_CHAR_CAP}-character automated-review limit, so it cannot be inspected in full. Denied by default.`
             } else if (text) {
               bodyText = `Request body (complete): ${text}`
             }
           }
         } catch {
-          bodyUnreviewable = 'Request body could not be read for review. Denied by default.'
+          unreviewable = 'Request body could not be read for review. Denied by default.'
         }
       }
-      const review = bodyUnreviewable
-        ? { decision: 'deny' as const, reason: bodyUnreviewable }
+      const review = unreviewable
+        ? { decision: 'deny' as const, reason: unreviewable }
         : await reviewAutopilotApproval({
             agentSlug,
             action: `API request: ${method} https://${targetHost}/${targetPath}${queryString}`,
             details: [
               policyResult.endpointDescription,
               scopeDetails,
+              headersText,
               bodyText,
             ].filter(Boolean).join('\n') || undefined,
           })

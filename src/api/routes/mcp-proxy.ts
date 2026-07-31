@@ -16,12 +16,28 @@ import { eq, and } from 'drizzle-orm'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 
 /**
- * The most tool-call argument text the autopilot approval judge will inspect.
- * The judge must see arguments COMPLETELY or not at all — anything larger is
- * unreviewable and fails closed. Generous enough for real tool calls; a
- * payload past it is almost certainly bulk content, not scoping information.
+ * The most text (JSON-RPC request body, and separately the forwarded-header
+ * block) the autopilot approval judge will inspect. The judge must see each
+ * COMPLETELY or not at all — anything larger is unreviewable and fails closed.
+ * Generous enough for real tool calls; a payload past it is almost certainly
+ * bulk content, not scoping information.
  */
-export const REVIEWABLE_ARGS_CHAR_CAP = 16_000
+export const REVIEWABLE_BODY_CHAR_CAP = 16_000
+
+/**
+ * Request headers NOT forwarded to the MCP server (hop-by-hop + credentials —
+ * the real Authorization is injected after filtering). The autopilot approval
+ * review shows the judge exactly the headers that survive this filter, so the
+ * forward path and the review must share this one set.
+ */
+const SKIP_REQUEST_HEADERS = new Set([
+  'host',
+  'authorization',
+  'connection',
+  'content-length',
+  'transfer-encoding',
+  'accept-encoding',
+])
 
 async function logMcpAuditEntry(entry: {
   agentSlug: string
@@ -167,44 +183,51 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   const mcp = mappings[0].mcp
   const method = c.req.method
 
-  // 2.5 Parse JSON-RPC body early for policy enforcement and audit logging
+  // 2.5 Parse JSON-RPC body early for policy enforcement and audit logging.
+  // `canonicalRequest` records whether the body is exactly one well-formed
+  // JSON-RPC object — the autopilot approval review refuses anything else
+  // (a batch array or a body our parser can't read could otherwise carry
+  // tool calls the judge never saw).
   let bodyBuffer: ArrayBuffer | undefined
   let mcpMethodInfo = rest || '/'
   let toolName: string | null = null
-  let toolArgs: string | undefined
-  let toolArgsTooLarge = false
+  let requestBodyText: string | undefined
+  let canonicalRequest = false
   if (method !== 'GET' && method !== 'HEAD') {
     bodyBuffer = await c.req.arrayBuffer()
     try {
-      const text = new TextDecoder().decode(bodyBuffer)
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(bodyBuffer)
       const jsonRpc = JSON.parse(text) as {
-        method?: string
-        params?: { name?: string; arguments?: unknown }
+        method?: unknown
+        params?: { name?: unknown }
       }
-      if (jsonRpc.method) {
+      if (
+        jsonRpc !== null &&
+        typeof jsonRpc === 'object' &&
+        !Array.isArray(jsonRpc) &&
+        typeof jsonRpc.method === 'string'
+      ) {
+        canonicalRequest = true
+        requestBodyText = text
         mcpMethodInfo = jsonRpc.method
-        if (jsonRpc.method === 'tools/call' && jsonRpc.params?.name) {
+        if (jsonRpc.method === 'tools/call' && typeof jsonRpc.params?.name === 'string') {
           toolName = jsonRpc.params.name
           mcpMethodInfo = `tools/call: ${toolName}`
-          if (jsonRpc.params.arguments !== undefined) {
-            // For the autopilot approval reviewer: the args ARE the action
-            // being judged, so the judge must see them COMPLETELY — a
-            // truncated view lets a destination or destructive flag hide past
-            // the cutoff. Args too large to represent losslessly make the
-            // call unreviewable (the reviewer fails closed on that flag).
-            const serialized = JSON.stringify(jsonRpc.params.arguments)
-            if (serialized.length > REVIEWABLE_ARGS_CHAR_CAP) {
-              toolArgsTooLarge = true
-            } else {
-              toolArgs = serialized
-            }
-          }
         }
       }
     } catch {
-      // Not JSON or not JSON-RPC — keep the HTTP path
+      // Not UTF-8 JSON — keep the HTTP path (and fail the canonical check)
     }
   }
+
+  // 2.55 Build target URL (needed by the autopilot review below, which must
+  // judge the request's real destination including the query string).
+  // The MCP server URL is the base; append the rest path if any.
+  const baseUrl = mcp.url.replace(/\/$/, '')
+  const targetPath = rest ? `/${rest}` : ''
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
+  const queryString = new URL(c.req.url).search
+  const targetUrl = `${baseUrl}${targetPath}${queryString}`
 
   // 2.6 Policy enforcement
   // Skip review for MCP protocol-level methods (handshake, discovery, pings).
@@ -269,17 +292,46 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       // the user's own messages plus this request (never the agent
       // trajectory). See the API proxy's mirror branch.
       if (await isAgentAutopilotEngaged(agentSlug)) {
-        // Fail closed when the arguments cannot be shown to the judge in
-        // full — an approval based on a partial view is no approval.
-        const review = toolArgsTooLarge
-          ? {
-              decision: 'deny' as const,
-              reason: `Tool arguments exceed the ${REVIEWABLE_ARGS_CHAR_CAP}-character automated-review limit and cannot be inspected in full. Denied by default.`,
-            }
+        // The judge must see the request EXACTLY as it will be forwarded: one
+        // canonical JSON-RPC request (batched, malformed, or non-UTF-8 bodies
+        // could carry tool calls the judge never saw — refused outright), the
+        // real target URL including the query string, the complete forwarded
+        // header set (same skip-set as the forward at step 5; Authorization is
+        // stripped, so the judge never sees credentials), and the complete
+        // body. Anything too large to inspect in full fails closed.
+        let unreviewable: string | undefined
+        if (bodyBuffer && bodyBuffer.byteLength > 0 && !canonicalRequest) {
+          unreviewable =
+            'Request body is not a single well-formed JSON-RPC request (batched, malformed, or non-UTF-8), so it cannot be inspected in full. Denied by default.'
+        } else if (requestBodyText && requestBodyText.length > REVIEWABLE_BODY_CHAR_CAP) {
+          unreviewable = `Request body is ${requestBodyText.length} characters — beyond the ${REVIEWABLE_BODY_CHAR_CAP}-character automated-review limit, so it cannot be inspected in full. Denied by default.`
+        }
+        const headerLines: string[] = []
+        c.req.raw.headers.forEach((value, key) => {
+          if (!SKIP_REQUEST_HEADERS.has(key.toLowerCase())) {
+            headerLines.push(`${key}: ${value}`)
+          }
+        })
+        const headersBlock = headerLines.join('\n')
+        if (!unreviewable && headersBlock.length > REVIEWABLE_BODY_CHAR_CAP) {
+          unreviewable = `Forwarded request headers total ${headersBlock.length} characters — beyond the ${REVIEWABLE_BODY_CHAR_CAP}-character automated-review limit, so the request cannot be inspected in full. Denied by default.`
+        }
+        const review = unreviewable
+          ? { decision: 'deny' as const, reason: unreviewable }
           : await reviewAutopilotApproval({
               agentSlug,
-              action: `MCP tool call: ${toolName ?? mcpMethodInfo} on server "${mcp.name}"`,
-              details: toolArgs ? `Arguments (complete): ${toolArgs}` : undefined,
+              action: `MCP tool call: ${toolName ?? mcpMethodInfo} on server "${mcp.name}" (${method} ${targetUrl})`,
+              details:
+                [
+                  headersBlock
+                    ? `Request headers (complete, as forwarded):\n${headersBlock}`
+                    : undefined,
+                  requestBodyText
+                    ? `JSON-RPC request body (complete): ${requestBodyText}`
+                    : undefined,
+                ]
+                  .filter(Boolean)
+                  .join('\n') || undefined,
             })
         if (review.decision === 'deny') {
           await logMcpAuditEntry({
@@ -383,27 +435,10 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     }
   }
 
-  // 4. Build target URL
-  // The MCP server URL is the base; append the rest path if any
-  const baseUrl = mcp.url.replace(/\/$/, '')
-  const targetPath = rest ? `/${rest}` : ''
-  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
-  const queryString = new URL(c.req.url).search
-  const targetUrl = `${baseUrl}${targetPath}${queryString}`
-
-  // 5. Forward request
+  // 4. Forward request (target URL built at step 2.55)
   const forwardHeaders = new Headers()
-  const skipHeaders = new Set([
-    'host',
-    'authorization',
-    'connection',
-    'content-length',
-    'transfer-encoding',
-    'accept-encoding',
-  ])
-
   c.req.raw.headers.forEach((value, key) => {
-    if (!skipHeaders.has(key.toLowerCase())) {
+    if (!SKIP_REQUEST_HEADERS.has(key.toLowerCase())) {
       forwardHeaders.set(key, value)
     }
   })
