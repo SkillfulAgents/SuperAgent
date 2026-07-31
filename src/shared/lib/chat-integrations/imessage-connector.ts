@@ -758,7 +758,7 @@ function guessMimeType(filename: string): string {
     webp: 'image/webp', svg: 'image/svg+xml', pdf: 'application/pdf',
     mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', ogg: 'audio/ogg',
     mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm',
-    txt: 'text/plain', json: 'application/json', csv: 'text/csv',
+    txt: 'text/plain', json: 'application/json', csv: 'text/csv', vcf: 'text/vcard',
     zip: 'application/zip',
   }
   return (ext && map[ext]) || 'application/octet-stream'

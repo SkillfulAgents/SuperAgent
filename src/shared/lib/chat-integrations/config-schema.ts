@@ -27,6 +27,13 @@ export const slackConfigSchema = z.object({
 
 export const IMESSAGE_GATEWAY_URL = 'https://imsgw.com'
 
+/**
+ * The single Gamut iMessage line every agent is reached on. Shared because setup
+ * texts it and the contact card lists it as the agent's number: if they ever
+ * disagree, the card ships a dead `TEL` while setup keeps working.
+ */
+export const IMESSAGE_PHONE_E164 = '+12053967934'
+
 export const imessageConfigSchema = z.object({
   gatewayUrl: z.string().url('Gateway URL is required').refine(
     (url) => url.startsWith('http://') || url.startsWith('https://'),

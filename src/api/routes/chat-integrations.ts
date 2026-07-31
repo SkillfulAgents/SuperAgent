@@ -239,6 +239,11 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
       updateChatIntegrationStatus(id, 'error', errMsg)
     }
 
+    // Outside the connect try/catch: a contact-card failure is cosmetic and must
+    // never surface as a connect error. Not awaited either — the upload has its
+    // own 30s timeout and setup must not block on it.
+    void chatIntegrationManager.sendContactCard(id)
+
     const integration = getChatIntegration(id)
     if (!integration) throw new Error('Chat integration disappeared after creation')
     logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
