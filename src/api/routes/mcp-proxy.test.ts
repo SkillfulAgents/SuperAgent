@@ -124,7 +124,8 @@ function setupSuccessPath(
   const {
     mcpOverrides = {},
     upstreamStatus = 200,
-    upstreamHeaders = { 'content-type': 'application/json' },
+    // Default GET-friendly: non-SSE application/json on GET is rewritten to 405 (SUP-525).
+    upstreamHeaders = { 'content-type': 'text/event-stream' },
     upstreamBody = '{"ok":true}',
   } = overrides
 
@@ -273,7 +274,7 @@ describe('mcp-proxy route', () => {
         .mockResolvedValueOnce(
           new Response('{"ok":true}', {
             status: 200,
-            headers: { 'content-type': 'application/json' },
+            headers: { 'content-type': 'text/event-stream' },
           })
         )
 
@@ -324,7 +325,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -350,7 +351,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -376,7 +377,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -402,7 +403,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -466,7 +467,7 @@ describe('mcp-proxy route', () => {
       setupDbMocks(mcp)
 
       mockFetch.mockResolvedValueOnce(
-        new Response('{"ok":true}', { status: 200 })
+        new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'text/event-stream' } })
       )
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
@@ -493,7 +494,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -521,7 +522,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -552,7 +553,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -623,7 +624,7 @@ describe('mcp-proxy route', () => {
       setupDbMocks(mcp)
 
       mockFetch.mockResolvedValueOnce(
-        new Response('{"ok":true}', { status: 200 })
+        new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'text/event-stream' } })
       )
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
@@ -643,7 +644,7 @@ describe('mcp-proxy route', () => {
       setupDbMocks(mcp)
 
       mockFetch.mockResolvedValueOnce(
-        new Response('{"ok":true}', { status: 200 })
+        new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'text/event-stream' } })
       )
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
@@ -774,7 +775,7 @@ describe('mcp-proxy route', () => {
       setupSuccessPath({
         upstreamHeaders: {
           'transfer-encoding': 'chunked',
-          'content-type': 'application/json',
+          'content-type': 'text/event-stream',
         },
       })
 
@@ -789,7 +790,7 @@ describe('mcp-proxy route', () => {
       setupSuccessPath({
         upstreamHeaders: {
           'content-encoding': 'gzip',
-          'content-type': 'application/json',
+          'content-type': 'text/event-stream',
         },
       })
 
@@ -804,7 +805,7 @@ describe('mcp-proxy route', () => {
       setupSuccessPath({
         upstreamHeaders: {
           'content-length': '123',
-          'content-type': 'application/json',
+          'content-type': 'text/event-stream',
         },
       })
 
@@ -825,8 +826,14 @@ describe('mcp-proxy route', () => {
         },
       })
 
+      // POST: non-SSE content-type must not be rewritten (rewrite is GET-only).
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
-        headers: { Authorization: 'Bearer synth_valid' },
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
       })
 
       expect(res.headers.get('content-type')).toBe('application/json')
@@ -1554,11 +1561,11 @@ describe('mcp-proxy route', () => {
 
       // First request setup
       mockDbFrom.mockReturnValueOnce({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ mcp: mcp1 }]) }) }) })
-      mockFetch.mockResolvedValueOnce(new Response('{"server":"one"}', { status: 200 }))
+      mockFetch.mockResolvedValueOnce(new Response('{"server":"one"}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       // Second request setup
       mockDbFrom.mockReturnValueOnce({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ mcp: mcp2 }]) }) }) })
-      mockFetch.mockResolvedValueOnce(new Response('{"server":"two"}', { status: 200 }))
+      mockFetch.mockResolvedValueOnce(new Response('{"server":"two"}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       const [res1, res2] = await Promise.all([
         makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
@@ -1795,6 +1802,95 @@ describe('mcp-proxy route', () => {
       expect(res.status).toBe(200)
       // The key assertion: reviewManager was called because fallback is 'review'
       expect(mockRequestReview).toHaveBeenCalledOnce()
+    })
+  })
+
+  // Non-SSE GET rewrite (SUP-525 / Attio reconnect storm)
+  describe('non-SSE GET rewrite', () => {
+    it('rewrites GET 200 text/html to 405 so Streamable HTTP clients stop reconnecting', async () => {
+      setupSuccessPath({
+        upstreamStatus: 200,
+        upstreamHeaders: { 'content-type': 'text/html; charset=utf-8' },
+        upstreamBody: '<!DOCTYPE html><title>MCP Server</title>',
+      })
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          Accept: 'text/event-stream',
+        },
+      })
+
+      expect(res.status).toBe(405)
+      expect(res.headers.get('Allow')).toBe('POST')
+      expect(mockInsertValues).toHaveBeenCalled()
+      const entry = mockInsertValues.mock.calls[0][0]
+      expect(entry.statusCode).toBe(405)
+      expect(entry.method).toBe('GET')
+      expect(entry.errorMessage).toContain('rewrote non-SSE GET 200')
+      expect(entry.errorMessage).toContain('text/html')
+    })
+
+    it('passes through GET 200 text/event-stream unchanged', async () => {
+      setupSuccessPath({
+        upstreamStatus: 200,
+        upstreamHeaders: { 'content-type': 'text/event-stream' },
+        upstreamBody: 'event: ping\ndata: {}\n\n',
+      })
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          Accept: 'text/event-stream',
+        },
+      })
+
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toContain('text/event-stream')
+      expect(await res.text()).toContain('event: ping')
+      const entry = mockInsertValues.mock.calls[0][0]
+      expect(entry.statusCode).toBe(200)
+      expect(entry.errorMessage).toBeNull()
+    })
+
+    it('passes through upstream GET 405 unchanged', async () => {
+      setupSuccessPath({
+        upstreamStatus: 405,
+        upstreamHeaders: { allow: 'POST' },
+        upstreamBody: '',
+      })
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer synth_valid', Accept: 'text/event-stream' },
+      })
+
+      expect(res.status).toBe(405)
+      const entry = mockInsertValues.mock.calls[0][0]
+      expect(entry.statusCode).toBe(405)
+      expect(entry.errorMessage).toBeNull()
+    })
+
+    it('does not rewrite POST 200 text/html', async () => {
+      setupSuccessPath({
+        upstreamStatus: 200,
+        upstreamHeaders: { 'content-type': 'text/html' },
+        upstreamBody: '<html>nope</html>',
+      })
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.text()).toContain('<html>')
     })
   })
 })
