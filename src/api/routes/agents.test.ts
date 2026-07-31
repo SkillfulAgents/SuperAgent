@@ -61,6 +61,17 @@ vi.mock('stream', () => ({
   },
 }))
 
+// child_process — the run-script route executes approved scripts via
+// promisify(exec)/promisify(execFile); the callback-style mocks below resolve
+// through promisify. Also covers the fire-and-forget execFile in the
+// open-workspace-directory route.
+const mockExec = vi.fn()
+const mockExecFile = vi.fn()
+vi.mock('child_process', () => ({
+  exec: (...args: unknown[]) => mockExec(...args),
+  execFile: (...args: unknown[]) => mockExecFile(...args),
+}))
+
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
 const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
 let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
@@ -411,7 +422,13 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAgentLimits: () => ({}),
   getCustomEnvVars: () => ({}),
   getSettings: () => ({ container: {}, skillsets: [] }),
+  mutateSettings: vi.fn(),
   getModelCatalogSettings: () => ({}),
+  VALID_SCRIPT_TYPES: {
+    darwin: ['applescript', 'shell'],
+    linux: ['shell'],
+    win32: ['powershell'],
+  },
 }))
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
@@ -501,6 +518,7 @@ import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-servi
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
@@ -5498,5 +5516,88 @@ describe('session existence guards read metadata, not the transcript', () => {
     const res = await postJson(app, '/api/agents/test-agent/sessions/ghost/computer-use/revoke', {})
 
     expect(res.status).toBe(404)
+  })
+})
+
+describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-use', () => {
+  // "Allow once" posts grantType:'once', which the route records as a
+  // use_host_shell grant before executing. checkPermission treats ANY live
+  // grant as granted, and the persister auto-executes the agent's next
+  // request_script_run on that basis — so if the route never consumes the
+  // once-grant after the run it authorized, "Allow once" silently behaves
+  // like "always allow" for the rest of the process lifetime.
+  let app: ReturnType<typeof createApp>
+
+  function parkScriptRun(toolUseId: string) {
+    userInputRequestManager.register({
+      id: toolUseId,
+      kind: 'script_run',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+  }
+
+  async function approveScript(toolUseId: string, grantType: 'once' | 'timed') {
+    parkScriptRun(toolUseId)
+    return postJson(app, '/api/agents/test-agent/sessions/sess-1/run-script', {
+      toolUseId,
+      script: 'echo ok',
+      scriptType: 'shell',
+      grantType,
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    mockAgentExists.mockResolvedValue(true)
+    userInputRequestManager.reset()
+    mockContainerFetch.mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), { status: 200 }),
+    )
+    // Callback-style exec resolving through promisify(exec) in the route.
+    mockExec.mockImplementation((_cmd: unknown, _opts: unknown, cb: unknown) => {
+      ;(cb as (err: null, result: { stdout: string; stderr: string }) => void)(
+        null,
+        { stdout: 'ok', stderr: '' },
+      )
+    })
+  })
+
+  afterEach(() => {
+    computerUsePermissionManager.revokeAllForAgent('test-agent')
+    userInputRequestManager.reset()
+  })
+
+  it('an approved once-grant is consumed by the run it authorized', async () => {
+    expect(
+      computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
+    ).toBe('prompt_needed')
+
+    const res = await approveScript('tool-once-1', 'once')
+
+    expect(res.status).toBe(200)
+    expect(mockExec).toHaveBeenCalledTimes(1)
+    expect(messagePersister.completeInputRequest).toHaveBeenCalledWith(
+      'sess-1', 'tool-once-1', 'answered',
+    )
+
+    // The next request_script_run must prompt again, not auto-execute.
+    expect(
+      computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
+    ).toBe('prompt_needed')
+  })
+
+  it('a timed grant survives the run that created it', async () => {
+    const res = await approveScript('tool-timed-1', 'timed')
+
+    expect(res.status).toBe(200)
+    expect(
+      computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
+    ).toBe('granted')
   })
 })
