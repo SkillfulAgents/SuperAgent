@@ -38,6 +38,49 @@ The command exits unsuccessfully when an applicable decision gate fails:
 - headed eight-card p95 is 16.7 ms or higher;
 - headless/software median or p95 regresses by more than 10%.
 
+### Full-renderer benchmark
+
+The batching benchmark deliberately isolates Canvas submission. To measure the
+complete production path—including motif sampling, hover influence, vignette,
+alpha bucketing, and Canvas drawing—run:
+
+```sh
+npm run benchmark:halftone:runtime
+```
+
+The runtime benchmark bundles the production `HalftoneFrameRenderer` into
+Chromium and exercises one-card and eight-card flow fixtures, an eight-card
+board with one hovered card, and one-card/eight-card pending-input pulse
+fixtures. A same-size `resize()` fixture covers layout churn separately from
+steady-state drawing, and a batched pointer-dispatch microcase compares one
+global listener with the eight-listener card-board case. The command accepts
+the same `--mode`, `--warmups`, `--samples`, and `--output` options as the
+batching benchmark, plus `--label` for naming optimization iterations.
+
+The initial runtime optimization pass used the same Chromium 145 / M2 Max
+environment as the batching reference, with 60 warmups and 180 samples:
+
+| Mode / fixture | Baseline median / p95 | Optimized median / p95 |
+| --- | --- | --- |
+| Headed, one flow card | 1.00 / 1.10 ms | 0.90 / 1.00 ms |
+| Headed, eight flow cards | 8.70 / 9.00 ms | 8.10 / 8.40 ms |
+| Headed, eight flow cards, one hovered | 8.60 / 8.90 ms | 8.10 / 8.40 ms |
+| Headed, one pending-input pulse card | 1.20 / 1.50 ms | 1.10 / 1.30 ms |
+| Headed, eight pending-input pulse cards | 10.30 / 10.90 ms | 8.80 / 9.40 ms |
+| Software, eight flow cards | 8.50 / 8.90 ms | 8.10 / 8.40 ms |
+| Software, eight pending-input pulse cards | 10.40 / 11.10 ms | 8.90 / 9.60 ms |
+
+The retained changes precompute resize-stable grid/vignette values, calculate
+pulse ring constants once per frame, and avoid same-size canvas/renderer
+reinitialization. Same-size renderer resize dropped from 0.10 ms median /
+0.20 ms p95 to below Chromium's timer resolution.
+
+Two renderer experiments were reverted because they did not improve both
+headed and software results: skipping inactive hover bookkeeping and caching
+three pulse-distance arrays. A shared pointer listener was also rejected:
+dispatching to eight listeners cost 1.40 µs/event versus 0.215 µs/event for
+one—only about 0.15 ms total per second at 120 pointer events/second.
+
 The headed run requests GPU rasterization and records Chromium's reported GPU
 feature state. Confirm that `rasterization` is enabled in the JSON before
 using a run as release evidence.

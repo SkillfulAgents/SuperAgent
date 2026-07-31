@@ -25,6 +25,13 @@ interface DensitySample {
   radius: number
 }
 
+interface PulseFrame {
+  radius0: number
+  radius1: number
+  weight0: number
+  weight1: number
+}
+
 export interface HalftoneDotScratch {
   readonly capacity: number
   readonly bandCount: number
@@ -191,21 +198,23 @@ function rotatedFlowHeight(
   )
 }
 
-function pulseHeight(u: number, v: number, time: number): number {
+function updatePulseFrame(time: number, frame: PulseFrame): void {
+  const phase = (time * 0.0024) % 1
+  const age0 = phase
+  const age1 = (phase + 0.5) % 1
+  frame.radius0 = age0 * 0.8
+  frame.radius1 = age1 * 0.8
+  frame.weight0 = 1 - age0
+  frame.weight1 = 1 - age1
+}
+
+function pulseHeight(u: number, v: number, frame: PulseFrame): number {
   const dx = u - 0.5
   const dy = v - 0.5
   const distance = Math.sqrt(dx * dx + dy * dy)
-  const phase = (time * 0.0024) % 1
-  let height = 0
-
-  for (let ring = 0; ring < 2; ring++) {
-    const age = (phase + ring * 0.5) % 1
-    const ringRadius = age * 0.8
-    const band = Math.exp(-Math.pow((distance - ringRadius) * 5.5, 2))
-    height += band * (1 - age)
-  }
-
-  return height
+  const band0 = Math.exp(-Math.pow((distance - frame.radius0) * 5.5, 2))
+  const band1 = Math.exp(-Math.pow((distance - frame.radius1) * 5.5, 2))
+  return band0 * frame.weight0 + band1 * frame.weight1
 }
 
 function shadeInto(
@@ -234,18 +243,14 @@ function shadeInto(
 }
 
 function flowSampleInto(
-  column: number,
-  row: number,
-  columns: number,
-  rows: number,
+  u: number,
+  v: number,
+  epsilon: number,
   time: number,
   rotationCos: number,
   rotationSin: number,
   sample: DensitySample
 ): void {
-  const u = column / columns
-  const v = row / rows
-  const epsilon = 0.5 / columns
   shadeInto(
     rotatedFlowHeight(u, v, time, rotationCos, rotationSin) + 0.65,
     rotatedFlowHeight(u + epsilon, v, time, rotationCos, rotationSin) + 0.65,
@@ -260,17 +265,13 @@ function flowSampleInto(
 }
 
 function pulseSampleInto(
-  column: number,
-  row: number,
-  columns: number,
-  rows: number,
-  time: number,
+  u: number,
+  v: number,
+  epsilon: number,
+  frame: PulseFrame,
   sample: DensitySample
 ): void {
-  const u = column / columns
-  const v = row / rows
-  const epsilon = 0.5 / columns
-  const height = pulseHeight(u, v, time)
+  const height = pulseHeight(u, v, frame)
   if (height < 0.05) {
     sample.alpha = 0
     sample.radius = 0
@@ -279,8 +280,8 @@ function pulseSampleInto(
 
   shadeInto(
     height * 0.6 + 0.05,
-    pulseHeight(u + epsilon, v, time) * 0.6 + 0.05,
-    pulseHeight(u, v + epsilon, time) * 0.6 + 0.05,
+    pulseHeight(u + epsilon, v, frame) * 0.6 + 0.05,
+    pulseHeight(u, v + epsilon, frame) * 0.6 + 0.05,
     epsilon,
     0.12,
     0.85,
@@ -304,6 +305,12 @@ export class HalftoneFrameRenderer {
   private readonly rotationSin: number
   private readonly alphaBands: number
   private readonly sample: DensitySample = { alpha: 0, radius: 0 }
+  private readonly pulseFrame: PulseFrame = {
+    radius0: 0,
+    radius1: 0,
+    weight0: 0,
+    weight1: 0,
+  }
 
   private width = 0
   private height = 0
@@ -313,6 +320,14 @@ export class HalftoneFrameRenderer {
   private offsetY = 0
   private centerColumn = 0
   private centerRow = 0
+  private epsilon = 0
+  private columnX = new Float64Array(0)
+  private columnU = new Float64Array(0)
+  private rowY = new Float64Array(0)
+  private rowV = new Float64Array(0)
+  private cellVignette = new Float64Array(0)
+  private cellAlphaScale = new Float64Array(0)
+  private cellRadiusScale = new Float64Array(0)
   private scratch: HalftoneDotScratch | null = null
 
   constructor(options: HalftoneRendererOptions) {
@@ -332,11 +347,22 @@ export class HalftoneFrameRenderer {
   }
 
   resize(width: number, height: number): boolean {
+    if (width === this.width && height === this.height) {
+      return this.scratch !== null
+    }
     this.width = width
     this.height = height
     if (width <= 0 || height <= 0) {
       this.columns = 0
       this.rows = 0
+      this.epsilon = 0
+      this.columnX = new Float64Array(0)
+      this.columnU = new Float64Array(0)
+      this.rowY = new Float64Array(0)
+      this.rowV = new Float64Array(0)
+      this.cellVignette = new Float64Array(0)
+      this.cellAlphaScale = new Float64Array(0)
+      this.cellRadiusScale = new Float64Array(0)
       this.scratch = null
       return false
     }
@@ -347,8 +373,41 @@ export class HalftoneFrameRenderer {
     this.offsetY = (height - (this.rows - 1) * this.spacing) / 2
     this.centerColumn = (this.columns - 1) / 2
     this.centerRow = (this.rows - 1) / 2
+    this.epsilon = 0.5 / this.columns
+    this.columnX = new Float64Array(this.columns)
+    this.columnU = new Float64Array(this.columns)
+    this.rowY = new Float64Array(this.rows)
+    this.rowV = new Float64Array(this.rows)
+    for (let column = 0; column < this.columns; column++) {
+      this.columnX[column] = this.offsetX + column * this.spacing
+      this.columnU[column] = column / this.columns
+    }
+    for (let row = 0; row < this.rows; row++) {
+      this.rowY[row] = this.offsetY + row * this.spacing
+      this.rowV[row] = row / this.rows
+    }
+
+    const capacity = this.columns * this.rows
+    this.cellVignette = new Float64Array(capacity)
+    this.cellAlphaScale = new Float64Array(capacity)
+    this.cellRadiusScale = new Float64Array(capacity)
+    for (let row = 0; row < this.rows; row++) {
+      const normalizedY =
+        this.centerRow === 0 ? 0 : (row - this.centerRow) / this.centerRow
+      for (let column = 0; column < this.columns; column++) {
+        const normalizedX =
+          this.centerColumn === 0
+            ? 0
+            : (column - this.centerColumn) / this.centerColumn
+        const cell = row * this.columns + column
+        const vignette = this.vignetteAt(normalizedX, normalizedY)
+        this.cellVignette[cell] = vignette
+        this.cellAlphaScale[cell] = vignette * this.dim
+        this.cellRadiusScale[cell] = 0.35 + 0.65 * vignette
+      }
+    }
     this.scratch = createHalftoneDotScratch(
-      this.columns * this.rows,
+      capacity,
       this.alphaBands
     )
     return true
@@ -382,25 +441,29 @@ export class HalftoneFrameRenderer {
 
     const influenceRadiusSquared = CURSOR_INFLUENCE * CURSOR_INFLUENCE
     const fieldTime = time + this.seedTime
+    if (this.motif === 'pulse') updatePulseFrame(fieldTime, this.pulseFrame)
     let dotCount = 0
 
     for (let row = 0; row < this.rows; row++) {
+      const y = this.rowY[row]
+      const v = this.rowV[row]
       for (let column = 0; column < this.columns; column++) {
+        const x = this.columnX[column]
+        const u = this.columnU[column]
+        const cell = row * this.columns + column
         if (this.motif === 'pulse') {
           pulseSampleInto(
-            column,
-            row,
-            this.columns,
-            this.rows,
-            fieldTime,
+            u,
+            v,
+            this.epsilon,
+            this.pulseFrame,
             this.sample
           )
         } else {
           flowSampleInto(
-            column,
-            row,
-            this.columns,
-            this.rows,
+            u,
+            v,
+            this.epsilon,
             fieldTime,
             this.rotationCos,
             this.rotationSin,
@@ -410,9 +473,6 @@ export class HalftoneFrameRenderer {
 
         let alpha = Math.min(1, this.sample.alpha * this.contrast * 0.9)
         let radius = this.sample.radius * (this.maxRadius / 2.4)
-        const x = this.offsetX + column * this.spacing
-        const y = this.offsetY + row * this.spacing
-        const cell = row * this.columns + column
         let target = 0
         if (pointerActive) {
           const deltaX = x - pointerX
@@ -432,17 +492,13 @@ export class HalftoneFrameRenderer {
         scratch.influence[cell] = influence
         if (influence > 0.003) radius += influence * CURSOR_R
 
-        const normalizedX =
-          this.centerColumn === 0 ? 0 : (column - this.centerColumn) / this.centerColumn
-        const normalizedY =
-          this.centerRow === 0 ? 0 : (row - this.centerRow) / this.centerRow
-        const vignette = this.vignetteAt(normalizedX, normalizedY)
+        const vignette = this.cellVignette[cell]
         if (vignette <= 0) continue
 
-        alpha *= vignette * this.dim
+        alpha *= this.cellAlphaScale[cell]
         if (influence > 0.003) alpha += influence * vignette * CURSOR_A
         alpha = Math.min(1, alpha)
-        radius *= 0.35 + 0.65 * vignette
+        radius *= this.cellRadiusScale[cell]
         if (alpha < 0.02 || radius < 0.2) continue
 
         scratch.x[dotCount] = x

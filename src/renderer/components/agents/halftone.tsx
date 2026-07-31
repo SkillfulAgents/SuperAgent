@@ -86,6 +86,7 @@ export function Halftone({
     let lastDrawTime = 0
     let t = 0
     let W = 0, H = 0
+    let pixelRatio = 0
     let pointerX = 0, pointerY = 0, pointerSeen = false
     const onPointerMove = (e: PointerEvent) => {
       pointerX = e.clientX
@@ -94,16 +95,27 @@ export function Halftone({
     }
 
     function setup(): boolean {
-      W = wrap!.clientWidth
-      H = wrap!.clientHeight
-      if (W <= 0 || H <= 0) {
+      const nextWidth = wrap!.clientWidth
+      const nextHeight = wrap!.clientHeight
+      if (nextWidth <= 0 || nextHeight <= 0) {
         ready = false
         return false
       }
-      const dpr = window.devicePixelRatio || 1
-      canvas!.width = Math.round(W * dpr)
-      canvas!.height = Math.round(H * dpr)
-      ctx!.setTransform(dpr, 0, 0, dpr, 0, 0)
+      const nextPixelRatio = window.devicePixelRatio || 1
+      if (
+        ready &&
+        nextWidth === W &&
+        nextHeight === H &&
+        nextPixelRatio === pixelRatio
+      ) {
+        return true
+      }
+      W = nextWidth
+      H = nextHeight
+      pixelRatio = nextPixelRatio
+      canvas!.width = Math.round(W * pixelRatio)
+      canvas!.height = Math.round(H * pixelRatio)
+      ctx!.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
       renderer.resize(W, H)
       ready = true
       lastDrawTime = 0

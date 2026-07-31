@@ -121,6 +121,50 @@ describe('Halftone animation lifecycle', () => {
     expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
   })
 
+  it('does not reset the canvas when ResizeObserver reports the same size', () => {
+    let resizeCallback: ResizeObserverCallback | undefined
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          resizeCallback = callback
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    )
+
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(240)
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(120)
+    let pixelRatio = 1
+    vi.spyOn(window, 'devicePixelRatio', 'get').mockImplementation(
+      () => pixelRatio
+    )
+    const setTransform = vi.fn()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      setTransform,
+    } as unknown as CanvasRenderingContext2D)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
+
+    renderWithProviders(<Halftone motif="flow_3d" />)
+    expect(setTransform).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      resizeCallback?.([], {} as ResizeObserver)
+    })
+
+    expect(setTransform).toHaveBeenCalledTimes(1)
+
+    pixelRatio = 2
+    act(() => {
+      resizeCallback?.([], {} as ResizeObserver)
+    })
+
+    expect(setTransform).toHaveBeenCalledTimes(2)
+    expect(setTransform).toHaveBeenLastCalledWith(2, 0, 0, 2, 0, 0)
+  })
+
   it('renders a static frame for reduced motion without pointer tracking', () => {
     vi.spyOn(window, 'matchMedia').mockReturnValue({
       matches: true,
