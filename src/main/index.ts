@@ -123,6 +123,8 @@ import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-pro
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
 import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer } from './api-target'
+import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
+import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
@@ -490,6 +492,23 @@ ipcMain.handle('get-api-target', () => activeApiTarget())
 
 ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
   applyPreferredApiTarget(target)
+})
+
+// The switch animation, which cannot live in the document the switch reloads.
+// Awaited by the renderer so the band is up before it reloads itself; lifted
+// when the reloaded renderer says it has painted. Both are no-ops when there is
+// nothing on screen, so the renderer never has to track whether it is switching.
+ipcMain.handle('begin-target-switch', async () => {
+  if (mainWindow) await showTargetSwitchOverlay(mainWindow)
+})
+
+// Only the covered window's own paint counts. Every renderer with our preload
+// sends this, and a second one opening mid-switch (a quick-dispatch composer, a
+// popout) would otherwise report a paint the user cannot see and take the band
+// off the window that is still blank.
+ipcMain.on('renderer-painted', (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return
+  void finishTargetSwitchOverlay()
 })
 
 // IPC handler for opening URLs in system browser. Renderer-supplied strings are
@@ -1470,6 +1489,11 @@ async function startApp() {
   // Wait for app to be ready, then create window. Window/menu/tray creation is
   // deferred until here so they're never built against a port that never bound.
   await app.whenReady()
+
+  // A cold start into a cloud workspace faces the same wait as a switch: the
+  // renderer cannot ask for anything until it has loaded. Start those calls
+  // alongside the window rather than after it (no-op without a workspace).
+  if (activeApiTarget().target === 'cloud') startCloudBootPrefetch()
 
   createWindow()
 

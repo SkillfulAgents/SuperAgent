@@ -7,6 +7,10 @@ import {
   resolveCloudProxyTarget,
   type CloudProxyTarget,
 } from '@shared/lib/services/cloud-proxy-target'
+import {
+  takeCloudBootPrefetch,
+  type PrefetchedResponse,
+} from '@shared/lib/services/cloud-boot-prefetch'
 
 /**
  * Cloud proxy — the desktop app's path to its organization's cloud deployment.
@@ -175,7 +179,7 @@ function buildUpstreamHeaders(request: Request, token: string): Headers {
   return headers
 }
 
-function buildClientHeaders(upstream: Response): Headers {
+function buildClientHeaders(upstream: { headers: Headers }): Headers {
   const headers = new Headers()
   upstream.headers.forEach((value, name) => {
     const lower = name.toLowerCase()
@@ -184,6 +188,31 @@ function buildClientHeaders(upstream: Response): Headers {
     headers.set(name, value)
   })
   return headers
+}
+
+/**
+ * Request headers that make this GET a different question from the one main
+ * asked on the app's behalf. A conditional or ranged request expects a 304 or a
+ * partial body; `last-event-id` is a stream resuming from where it broke. None
+ * of those can be answered by a recording of a plain GET.
+ */
+const PREFETCH_DISQUALIFYING_HEADERS = [
+  'if-none-match',
+  'if-modified-since',
+  'range',
+  'last-event-id',
+]
+
+function canUsePrefetch(request: Request): boolean {
+  if (request.method !== 'GET') return false
+  return PREFETCH_DISQUALIFYING_HEADERS.every((name) => request.headers.get(name) === null)
+}
+
+function fromPrefetch(prefetched: PrefetchedResponse): Response {
+  return new Response(prefetched.body, {
+    status: prefetched.status,
+    headers: buildClientHeaders({ headers: new Headers(prefetched.headers) }),
+  })
 }
 
 const cloudProxy = new Hono()
@@ -232,7 +261,18 @@ cloudProxy.all('/*', async (c) => {
     )
   }
 
-  return forwardRequest(c.req.raw, target, upstreamPath + requestUrl.search)
+  const pathAndQuery = upstreamPath + requestUrl.search
+
+  // A request main already started on this renderer's behalf is answered from
+  // that flight rather than a second one — see cloud-boot-prefetch.ts. A null
+  // result (it failed, or it was started for a token that has since changed)
+  // falls through to the request that would have been made anyway.
+  if (canUsePrefetch(request)) {
+    const prefetched = await takeCloudBootPrefetch(pathAndQuery, target)
+    if (prefetched) return fromPrefetch(prefetched)
+  }
+
+  return forwardRequest(c.req.raw, target, pathAndQuery)
 })
 
 async function forwardRequest(

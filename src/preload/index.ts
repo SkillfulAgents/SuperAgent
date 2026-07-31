@@ -197,6 +197,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('focus-window')
   },
 
+  // Cover the window before a target switch reloads it, and uncover it once the
+  // reloaded renderer has something on screen. The animation lives outside the
+  // document because the document is what the switch destroys — see
+  // main/target-switch-overlay.ts. Awaited: the band has to be up first.
+  beginTargetSwitch: (): Promise<void> => {
+    return ipcRenderer.invoke('begin-target-switch')
+  },
+  signalRendererPainted: () => {
+    ipcRenderer.send('renderer-painted')
+  },
+
   // Tray visibility control
   setTrayVisible: (visible: boolean): Promise<void> => {
     return ipcRenderer.invoke('set-tray-visible', visible)
@@ -482,6 +493,8 @@ declare global {
       removeOpenCreateAgent: () => void
       onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => () => void
       removeHistoryNavigationCommand: () => void
+      beginTargetSwitch: () => Promise<void>
+      signalRendererPainted: () => void
       setTrayVisible: (visible: boolean) => Promise<void>
       showNotification: (
         title: string,

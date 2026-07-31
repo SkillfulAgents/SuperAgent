@@ -93,6 +93,8 @@ import { SortableAgentMenuItem } from './sortable-agent-item'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
+import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
 import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
@@ -737,8 +739,22 @@ export function AppSidebar() {
     if (isMobile) setOpenMobile(false)
   }, [locationHref, isMobile, setOpenMobile])
   const { data: agents, isLoading, error } = useAgents()
+  // Whether to offer Explore is two round trips deep — skillsets, and only then
+  // the discoverable agents they contain — so the item arrives after the rest of
+  // the nav and pushes it down on the way in. Remember the last answer for this
+  // Superagent and show that until the real one lands; `null` means "still
+  // asking", which is not the same as "no" and must not render as one.
+  const { data: skillsets } = useSkillsets()
   const { data: discoverableAgents } = useDiscoverableAgents()
-  const hasMarketplace = !!(discoverableAgents && discoverableAgents.length > 0)
+  const marketplaceAnswer =
+    skillsets === undefined
+      ? null
+      : skillsets.length === 0
+        ? false // no skillsets, so the discoverable query never runs at all
+        : discoverableAgents === undefined
+          ? null
+          : discoverableAgents.length > 0
+  const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
   const [marketplaceOpen, setMarketplaceOpen] = useState(false)
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()

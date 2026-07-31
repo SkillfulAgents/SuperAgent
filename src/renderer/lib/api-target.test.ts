@@ -148,4 +148,34 @@ describe('switching target', () => {
 
     expect(setPreferredApiTarget).toHaveBeenCalledWith('local')
   })
+
+  it('raises the switch overlay before reloading, not after', async () => {
+    // Order is the whole feature: the band exists to cover the reload, so one
+    // raised afterwards is a band over the blank it was meant to hide.
+    vi.stubGlobal('__WEB__', false)
+    const order: string[] = []
+    vi.stubGlobal('window', {
+      location: { assign, reload: () => order.push('reload'), hash: '#/' },
+      electronAPI: {
+        setPreferredApiTarget: vi.fn().mockResolvedValue(undefined),
+        beginTargetSwitch: vi.fn(async () => {
+          order.push('overlay')
+        }),
+      },
+    })
+
+    await switchTarget('cloud')
+
+    expect(order).toEqual(['overlay', 'reload'])
+  })
+
+  it('still switches in a window with no overlay to raise', async () => {
+    // Web has no main process, and an older main has no handler for it.
+    vi.stubGlobal('__WEB__', true)
+    stubLocation('')
+
+    await switchTarget('cloud')
+
+    expect(assign).toHaveBeenCalledWith('/')
+  })
 })

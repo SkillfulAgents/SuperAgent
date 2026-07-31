@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { render } from '@testing-library/react'
+import { act, render } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Mirror auth-page.test.tsx's api mock: hoist a vi.fn so the module factory can
@@ -215,5 +216,109 @@ describe('which recovery AuthGate offers when there is no session', () => {
 
     expect(getByText('Loading...')).toBeInTheDocument()
     expect(queryByTestId('workspace-reconnect')).not.toBeInTheDocument()
+  })
+})
+
+describe('telling main the window has painted', () => {
+  // Main covers a target switch with an overlay it cannot lift on its own. This
+  // is the signal that lifts it; without it the band sits there until a timeout.
+  const signalRendererPainted = vi.fn()
+  const settled = {
+    isAuthMode: false,
+    isAuthenticated: true,
+    isPending: false,
+    mustChangePassword: false,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    _resetApiTargetForTest()
+    vi.stubGlobal('__AUTH_MODE__', false)
+    Object.defineProperty(window, 'electronAPI', {
+      value: { signalRendererPainted },
+      configurable: true,
+      writable: true,
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    _resetApiTargetForTest()
+  })
+
+  /** Two animation frames, the way the hook waits for them. */
+  async function paintFrames() {
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    })
+  }
+
+  it('signals once the gate has settled on something to show', async () => {
+    setActiveTarget('local', null)
+    setUser(settled)
+
+    render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+    await paintFrames()
+
+    expect(signalRendererPainted).toHaveBeenCalled()
+  })
+
+  it('survives a mount that is torn down and repeated before the frames arrive', async () => {
+    // StrictMode mounts, cleans up, and mounts again. The cleanup cancels the
+    // frames the signal is waiting on, so a latch closed at schedule time leaves
+    // the second mount with nothing to do — and the overlay with nothing to lift.
+    // Only a boot that is never pending gets here, which is to say a local one.
+    setActiveTarget('local', null)
+    setUser(settled)
+
+    render(
+      <StrictMode>
+        <AuthGate>
+          <div>app</div>
+        </AuthGate>
+      </StrictMode>,
+    )
+    await paintFrames()
+
+    expect(signalRendererPainted).toHaveBeenCalled()
+  })
+
+  it('waits for the session while the gate is still loading', async () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+    setUser({ ...settled, isAuthMode: true, isPending: true })
+
+    render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+    await paintFrames()
+
+    expect(signalRendererPainted).not.toHaveBeenCalled()
+  })
+
+  it('signals only once for a boot', async () => {
+    setActiveTarget('local', null)
+    setUser(settled)
+
+    const { rerender } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+    await paintFrames()
+    rerender(
+      <AuthGate>
+        <div>app again</div>
+      </AuthGate>,
+    )
+    await paintFrames()
+
+    expect(signalRendererPainted).toHaveBeenCalledTimes(1)
   })
 })

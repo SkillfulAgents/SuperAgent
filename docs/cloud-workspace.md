@@ -196,6 +196,54 @@ Two things it does differently from the sibling `browser-stream-proxy.ts`:
 It also declines any upgrade outside its prefix, so the local browser stream
 keeps working exactly as before.
 
+### The boot round trips start before the renderer does
+
+Switching targets reloads the window, and nothing remote begins until that
+reload has finished, React has mounted and `UserProvider` has reached
+`get-session`. The reload and the network wait were strictly serial, so a switch
+cost one before the other.
+
+Main does not have to wait. It is told the new target *before* the reload starts
+(`applyPreferredApiTarget`) and it already holds the deployment token, so
+`cloud-boot-prefetch.ts` makes the boot calls itself — the session the auth gate
+blocks on, the two settings reads, the agent list — and the proxy answers the
+renderer from them. The same thing runs on a cold start into a cloud workspace,
+where the wait is identical.
+
+What is saved is the head start, not a cached response. A renderer arriving
+mid-flight waits on the *same* request instead of opening a second one, and it
+also finds the TLS connection warm, since the pool belongs to this process and
+outlives the reload.
+
+It is deliberately not a cache, and the rules are what keep it from becoming
+one:
+
+- **One request per entry.** A refetch a second later is someone asking for
+  fresh data; this must never be why they get stale data.
+- **Only a 200 is replayed.** A 401 needs the proxy's refresh-and-retry, and
+  handing over this copy would skip it.
+- **The token and deployment are compared at use.** An entry started under a
+  token that has since been refreshed is worthless, and comparing here rather
+  than clearing from the refresh path keeps the module a leaf.
+- **Exact path match, GET only, no conditional or range headers.** A 304 or a
+  partial body is a different question from the one main asked. A miss costs
+  nothing but the request that would have happened anyway.
+- **Entries leave on their own, and the flights are bounded by the same clock.**
+  A boot that lands somewhere unpredicted — a login screen, a workspace needing
+  reconnection — claims none of them, and responses fetched under a credential
+  that may since have been replaced must not sit in memory for the life of the
+  process. Bounding the flight matters for the opposite reason: a renderer that
+  claims an entry *awaits* it, so an unbounded request would hold up the very
+  call it was meant to accelerate.
+
+Two of the prefetched paths are not on the critical path but are *chained*:
+Explore appears only once skillsets have loaded and then the agents they make
+discoverable, so it arrives two round trips after the nav around it and pushes it
+down on the way in. `useRememberedFlag` covers the same gap from the other side,
+showing this target's previous answer until the real one lands — the two are
+belt and braces, and neither is enough alone (the memory is empty on a first
+visit; the prefetch does nothing for a local boot).
+
 ### How the renderer opts in
 
 One question — local or cloud — is answered once, at boot, by the **main
@@ -336,6 +384,32 @@ past the right edge while open.
   that screen.
 - Recording the preference also tears down the quick-dispatch launcher (main does
   that), so the control only owns *this* window.
+
+**The switch is animated from outside the document.** The reload is what makes
+the switch safe — every module-scoped cache, open stream and memoized client
+dies with the page, so nothing has to remember to reset itself — which also means
+nothing rendered by the page can survive to animate it. So main layers a
+`WebContentsView` over the window (`main/target-switch-overlay.ts`): its own
+document, in its own process, untouched by the reload underneath. Under the band
+sits a `capturePage` still of the outgoing view, because for a moment during the
+reload there is genuinely nothing to show.
+
+The still dissolves the moment the new view exists underneath it, which is
+usually part-way through the crossing — so the change of contents happens *during*
+the wave rather than as a cut when it leaves. The band goes on travelling over
+the new view until its pass is done.
+
+The band is held for one full crossing even when the new view arrives sooner:
+the fastest leg — back to this computer, where nothing is fetched from anywhere —
+was over before the animation was legible, and a transition that flickers past
+reads as a glitch.
+
+The renderer awaits the overlay before reloading (a band raised afterwards covers
+the blank it was meant to hide) and signals from `AuthGate` once the boot has
+settled on something to display — the reconnect screen and the login form count,
+not just the shell. **It fails open**: a watchdog removes the overlay regardless,
+because it swallows input while it is up, and one stuck on screen is an app that
+looks frozen.
 
 ### How a window says which Superagent it is driving
 
@@ -565,8 +639,10 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `services/cloud-workspace-service.ts` | `getCloudWorkspace()` — the discover→ensure-token algorithm + SSRF gate |
 | `services/cloud-proxy-key.ts` | The per-boot secret in the proxy URL prefix |
 | `services/cloud-proxy-target.ts` | What the proxy forwards to; single-flight, rate-limited re-mint |
+| `services/cloud-boot-prefetch.ts` | The boot round trips, started before the reloading renderer can ask |
 | `api/routes/cloud-proxy.ts` | `/cloud/{key}/api/*` → the deployment (HTTP + SSE) |
 | `main/cloud-stream-proxy.ts` | The same, for WebSocket upgrades |
+| `main/target-switch-overlay.ts` | The band over the window while a switch reloads it |
 | `shared/lib/api-target.ts` | The target types + pure resolution; fails closed to local |
 | `services/api-target-preference.ts` | The stored preference (main-owned, so all renderers agree) |
 | `main/api-target.ts` | Settles the target per renderer; tears down the launcher on a switch |

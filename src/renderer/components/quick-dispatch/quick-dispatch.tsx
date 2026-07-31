@@ -338,9 +338,8 @@ export function QuickDispatch() {
   // The launcher resolves the same target as the main window, so a global-
   // shortcut dispatch can create a session on the organization's Superagent from
   // a panel that otherwise looks exactly like the local one. It needs its own
-  // marker: the main window's CloudModeIndicator is a full-screen portal mounted
-  // by the router, and this renderer has no router — and a screen-sized overlay
-  // would be wrong here anyway, where the window *is* the panel.
+  // marker: the main window says which Superagent it is driving through the
+  // switcher in its title bar, and this panel has no title bar to put one in.
   const cloudMode = targetIsRemote()
 
   return (

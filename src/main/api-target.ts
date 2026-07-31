@@ -3,6 +3,7 @@ import {
   readPreferredApiTarget,
   writePreferredApiTarget,
 } from '@shared/lib/services/api-target-preference'
+import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { closeQuickDispatchWindow } from './quick-dispatch-window'
 import { closeAllDashboardWindows } from './dashboard-window'
 
@@ -48,9 +49,15 @@ export function resolveApiTargetForRenderer(
  * - Dashboard popouts have already loaded a URL built from the old base. They
  *   would sit there showing the previous deployment's dashboard, under chrome
  *   identical to the new one's.
+ *
+ * It is also the earliest moment anyone knows a cloud boot is coming — the
+ * reload has not started yet — so it is where the workspace's first round trips
+ * begin. See `cloud-boot-prefetch.ts`.
  */
 export function applyPreferredApiTarget(target: unknown): void {
-  writePreferredApiTarget(coerceApiTarget(target))
+  const next = coerceApiTarget(target)
+  writePreferredApiTarget(next)
   closeQuickDispatchWindow()
   closeAllDashboardWindows()
+  if (next === 'cloud') startCloudBootPrefetch()
 }

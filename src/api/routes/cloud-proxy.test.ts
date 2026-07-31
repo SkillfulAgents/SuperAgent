@@ -26,6 +26,10 @@ const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
 import cloudProxy, { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from './cloud-proxy'
+import {
+  startCloudBootPrefetch,
+  _resetCloudBootPrefetchForTest,
+} from '@shared/lib/services/cloud-boot-prefetch'
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
 
 const app = new Hono()
@@ -377,5 +381,77 @@ describe('cloud proxy token refresh', () => {
     expect(res.status).toBe(401)
     expect(mockFetch).toHaveBeenCalledTimes(1)
     expect(mockRefreshTarget).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('cloud proxy boot prefetch', () => {
+  // Main starts a switch's first calls before the reloading renderer can ask for
+  // them; the proxy's job is to hand that flight over instead of opening a
+  // second one. See cloud-boot-prefetch.ts.
+  beforeEach(() => {
+    _resetCloudBootPrefetchForTest()
+  })
+
+  it('answers from the request main already started', async () => {
+    mockFetch.mockImplementation(async () => new Response('{"user":{"id":"u1"}}', { status: 200 }))
+    startCloudBootPrefetch()
+    const prefetchCalls = mockFetch.mock.calls.length
+
+    const res = await call('/api/auth/get-session')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ user: { id: 'u1' } })
+    // No second trip: the response came from the flight main opened.
+    expect(mockFetch).toHaveBeenCalledTimes(prefetchCalls)
+  })
+
+  it('serves it once, so a refetch reaches the deployment', async () => {
+    startCloudBootPrefetch()
+    const prefetchCalls = mockFetch.mock.calls.length
+
+    await call('/api/auth/get-session')
+    await call('/api/auth/get-session')
+
+    expect(mockFetch).toHaveBeenCalledTimes(prefetchCalls + 1)
+  })
+
+  it('ignores it for a conditional request, which is asking something else', async () => {
+    startCloudBootPrefetch()
+    const prefetchCalls = mockFetch.mock.calls.length
+
+    await call('/api/agents', { headers: { 'if-none-match': 'W/"abc"' } })
+
+    expect(mockFetch).toHaveBeenCalledTimes(prefetchCalls + 1)
+    expect(forwardedUrl(prefetchCalls)).toBe(`${TARGET.deploymentUrl}/api/agents`)
+  })
+
+  it('ignores it for a write to the same path', async () => {
+    startCloudBootPrefetch()
+    const prefetchCalls = mockFetch.mock.calls.length
+
+    await call('/api/agents', { method: 'POST' })
+
+    expect(mockFetch).toHaveBeenCalledTimes(prefetchCalls + 1)
+    expect(forwardedInit(prefetchCalls).method).toBe('POST')
+  })
+
+  it('strips the deployment\'s session cookies from a prefetched response too', async () => {
+    mockFetch.mockImplementation(
+      async () =>
+        new Response('{}', {
+          status: 200,
+          headers: { 'set-cookie': 'session=secret', 'set-auth-token': 'token' },
+        }),
+    )
+    startCloudBootPrefetch()
+    const prefetchCalls = mockFetch.mock.calls.length
+
+    const res = await call('/api/auth/get-session')
+
+    // Assert the response came from the prefetch, or this passes for the wrong
+    // reason: a forwarded response strips these headers too.
+    expect(mockFetch).toHaveBeenCalledTimes(prefetchCalls)
+    expect(res.headers.get('set-cookie')).toBeNull()
+    expect(res.headers.get('set-auth-token')).toBeNull()
   })
 })

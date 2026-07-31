@@ -115,6 +115,12 @@ function reloadAtRoot(): void {
  */
 export async function switchTarget(target: ApiTarget): Promise<void> {
   await writePreferredTarget(target)
+  // Cover the window before reloading it. The animation belongs to main, not to
+  // this document: a reload is what makes the switch safe (every cache, stream
+  // and memoized client dies with the page), so nothing rendered here can
+  // survive to animate it. Awaited, or the band would go up over the blank the
+  // reload already left. See main/target-switch-overlay.ts.
+  await window.electronAPI?.beginTargetSwitch?.()
   reloadAtRoot()
 }
 

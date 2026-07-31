@@ -9,14 +9,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { applyPreferredApiTarget, resolveApiTargetForRenderer } from './api-target'
 
-const { closeQuickDispatchWindow, closeAllDashboardWindows, settings } = vi.hoisted(() => ({
-  closeQuickDispatchWindow: vi.fn(),
-  closeAllDashboardWindows: vi.fn(),
-  settings: { value: {} as Record<string, unknown> },
-}))
+const { closeQuickDispatchWindow, closeAllDashboardWindows, startCloudBootPrefetch, settings } =
+  vi.hoisted(() => ({
+    closeQuickDispatchWindow: vi.fn(),
+    closeAllDashboardWindows: vi.fn(),
+    startCloudBootPrefetch: vi.fn(),
+    settings: { value: {} as Record<string, unknown> },
+  }))
 
 vi.mock('./quick-dispatch-window', () => ({ closeQuickDispatchWindow }))
 vi.mock('./dashboard-window', () => ({ closeAllDashboardWindows }))
+vi.mock('@shared/lib/services/cloud-boot-prefetch', () => ({ startCloudBootPrefetch }))
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => settings.value,
@@ -33,6 +36,7 @@ beforeEach(() => {
   settings.value = {}
   closeQuickDispatchWindow.mockClear()
   closeAllDashboardWindows.mockClear()
+  startCloudBootPrefetch.mockClear()
 })
 
 describe('resolveApiTargetForRenderer', () => {
@@ -107,5 +111,23 @@ describe('applyPreferredApiTarget', () => {
   it('refuses to store an unrecognized target', () => {
     applyPreferredApiTarget('somewhere-else')
     expect(settings.value.apiTarget).toBe('local')
+  })
+
+  it('starts the workspace round trips here, before the reload', () => {
+    // This is the earliest anyone knows a cloud boot is coming. Waiting for the
+    // renderer to mount and ask would put the reload and the network in series.
+    applyPreferredApiTarget('cloud')
+    expect(startCloudBootPrefetch).toHaveBeenCalled()
+  })
+
+  it('does not call out to a workspace when switching to this computer', () => {
+    settings.value.apiTarget = 'cloud'
+    applyPreferredApiTarget('local')
+    expect(startCloudBootPrefetch).not.toHaveBeenCalled()
+  })
+
+  it('does not call out for a target it refused to store', () => {
+    applyPreferredApiTarget('somewhere-else')
+    expect(startCloudBootPrefetch).not.toHaveBeenCalled()
   })
 })
