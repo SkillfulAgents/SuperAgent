@@ -18,14 +18,21 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   }) as unknown as MediaQueryList
 }
 
-// jsdom has no ResizeObserver; Radix primitives (Switch, and others) construct
-// one on mount. No-op stub — layout observation is meaningless in jsdom.
-if (typeof window !== 'undefined' && !window.ResizeObserver) {
-  window.ResizeObserver = class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  } as unknown as typeof ResizeObserver
+// jsdom has no ResizeObserver; Radix primitives (Switch, and others) and
+// recharts' ResponsiveContainer (home page usage sparklines) construct one on
+// mount. No-op stub — layout observation is meaningless in jsdom.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+}
+
+// jsdom logs a "Not implemented" error whenever an otherwise unrelated
+// component probes canvas. Focused canvas tests spy on top of this default.
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = () => null
 }
 
 const signIn = {

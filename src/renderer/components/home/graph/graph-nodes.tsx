@@ -20,7 +20,6 @@ import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-ind
 import { useNotableSessions } from '@renderer/hooks/use-sessions'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
-import { useUsageData } from '@renderer/hooks/use-usage'
 import { useUser } from '@renderer/context/user-context'
 import {
   ActivitySparkChart,
@@ -241,13 +240,6 @@ const agentBorder: Record<AgentActivityStatus, string> = {
   sleeping: 'border-border/60 dark:border-white/10',
 }
 
-// Same abbreviation the home-page card details row uses.
-function formatTokenCount(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(0)}k`
-  return String(tokens)
-}
-
 export function AgentGraphNode({ data, selected }: NodeProps<Node<AgentNodeData, 'agent'>>) {
   const { agent } = data
   // Ports draw new connections AND act as drop targets; both link routes
@@ -275,16 +267,6 @@ export function AgentGraphNode({ data, selected }: NodeProps<Node<AgentNodeData,
   const lastWorked = agent.lastActivityAt
     ? formatDistanceToNow(new Date(agent.lastActivityAt), { addSuffix: true })
     : null
-  // 7-day token total, matching the home-page card. One global usage query —
-  // react-query dedupes the fetch across every agent node.
-  const { data: usageData } = useUsageData(7)
-  const tokens7d = useMemo(() => {
-    let sum = 0
-    for (const day of usageData?.daily ?? []) {
-      sum += day.byAgent.find((a) => a.agentSlug === agent.slug)?.totalTokens ?? 0
-    }
-    return sum
-  }, [usageData, agent.slug])
   return (
     <div
       role="button"
@@ -317,7 +299,7 @@ export function AgentGraphNode({ data, selected }: NodeProps<Node<AgentNodeData,
           className="mt-0.5 shrink-0"
         />
       </div>
-      {/* Details row pinned to the card bottom: last worked + 7-day tokens */}
+      {/* Details row pinned to the card bottom. */}
       <div className="mt-auto flex w-full items-center justify-between gap-2 text-2xs text-muted-foreground">
         {lastWorked && (
           <span className="flex min-w-0 items-center gap-1">
@@ -325,7 +307,6 @@ export function AgentGraphNode({ data, selected }: NodeProps<Node<AgentNodeData,
             <span className="truncate">{lastWorked}</span>
           </span>
         )}
-        {tokens7d > 0 && <span className="ml-auto shrink-0">{formatTokenCount(tokens7d)} tok/7d</span>}
       </div>
       <CenterHandles />
     </div>

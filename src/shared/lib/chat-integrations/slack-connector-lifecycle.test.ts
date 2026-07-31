@@ -77,6 +77,7 @@ vi.mock('@slack/bolt', async () => {
       this.receiver = opts.receiver as SocketModeReceiver
       hoisted.apps.push(this)
     }
+    async init(): Promise<void> {}
     event(): void {}
     message(): void {}
     action(): void {}

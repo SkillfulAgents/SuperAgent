@@ -403,6 +403,13 @@ export class SlackConnector extends ChatClientConnector {
       receiver,
       logLevel: 'warn' as any,
       clientOptions: { retryConfig: { retries: 2 }, timeout: 30_000 },
+      // Without this, Bolt's constructor kicks off its own auth.test on the bot
+      // token and parks the promise in a closure nothing awaits until the first
+      // inbound event. A revoked token rejects it (invalid_auth) with no handler
+      // attached, so it escapes every try/catch here and reaches the main
+      // process's unhandled-rejection handler — which quits the whole app.
+      // Deferring routes that same call through the awaited init() below.
+      deferInitialization: true,
     })
     this.receiver = receiver
     this.app = app
@@ -553,6 +560,17 @@ export class SlackConnector extends ChatClientConnector {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`Slack bot token invalid: ${msg}`)
+    }
+
+    // Deferred above, so it has to happen explicitly — and before start(),
+    // which throws AppInitializationError on an uninitialized app. It runs
+    // after the check above so a bad token still reports as "bot token
+    // invalid" rather than the vaguer initialization failure.
+    try {
+      await app.init()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(`Slack app failed to initialize: ${msg}`)
     }
 
     // Track the real socket state so isConnected() is honest — the manager's

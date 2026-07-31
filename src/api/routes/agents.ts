@@ -27,7 +27,7 @@ import {
 import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
-import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
+import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
@@ -84,7 +84,6 @@ import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import {
   listScheduledTasks,
   listPendingScheduledTasks,
-  listPendingScheduledTasksByAgents,
   listCancelledScheduledTasks,
   cancelPendingWakeForSession,
   getPendingWakeForSession,
@@ -387,34 +386,25 @@ function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'pro
 
 /**
  * Enrich an array of ApiAgent objects with summary fields:
- * active/awaiting sessions, last activity, scheduled tasks, dashboards.
- * Batch DB queries upfront, then parallelize per-agent FS operations.
+ * active/awaiting sessions, last activity, and dashboards.
+ * Batch notification lookup upfront, then parallelize per-agent FS operations.
  */
 async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> {
   const slugs = agents.map(a => a.slug)
 
-  // Batch DB queries: 2 queries instead of 2*N individual queries
-  const [unreadByAgent, tasksByAgent, chatIntegrationsByAgent] = await Promise.all([
-    getUnreadNotificationsByAgents(slugs),
-    listPendingScheduledTasksByAgents(slugs),
-    Promise.resolve(listChatIntegrationsByAgents(slugs)),
-  ])
+  const unreadByAgent = await getUnreadNotificationsByAgents(slugs)
 
   const limit = pLimit(5)
   return Promise.all(
     agents.map((agent) => limit(async () => {
       // Only FS operations remain per-agent (parallelized)
-      const [sessionSummary, artifacts, agentPrefs, sessionMetadata] = await Promise.all([
+      const [sessionSummary, artifacts, sessionMetadata] = await Promise.all([
         getSessionSummary(agent.slug),
         listArtifactsFromFilesystem(agent.slug),
-        readAgentPreferences(agent.slug),
         readSessionMetadata(agent.slug),
       ])
 
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
-      // Session wakes are excluded from the agent-level automation summary —
-      // they belong to a session, not the agent's schedule.
-      const pendingTasks = (tasksByAgent.get(agent.slug) ?? []).filter((t) => !t.resumeSessionId)
 
       // Compute session flags from in-memory state (no I/O needed).
       // `unreadByAgent` is already filtered to user-actionable notification types
@@ -455,18 +445,6 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         hasSessionsAwaitingInput = true
       }
 
-      // Compute scheduled task summary
-      const scheduledTaskCount = pendingTasks.length
-      let nextScheduledTaskAt: Date | null = null
-      for (const task of pendingTasks) {
-        if (task.nextExecutionAt) {
-          const ts = new Date(task.nextExecutionAt)
-          if (!nextScheduledTaskAt || ts < nextScheduledTaskAt) {
-            nextScheduledTaskAt = ts
-          }
-        }
-      }
-
       return {
         ...agent,
         hasActiveSessions,
@@ -474,18 +452,11 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         hasUnreadNotifications,
         sessionCount: sessionSummary.sessionCount,
         lastActivityAt: sessionSummary.lastActivityAt,
-        scheduledTaskCount,
-        nextScheduledTaskAt,
-        chatIntegrationCount: (chatIntegrationsByAgent.get(agent.slug) ?? []).length,
-        dashboardCount: artifacts.length,
-        dashboardNames: artifacts.map((a) => a.name || a.slug),
-        dashboardSlugs: artifacts.map((a) => a.slug),
         dashboards: artifacts.map((a) => ({
           slug: a.slug,
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
-        autoDeleteInactiveDays: agentPrefs.autoDeleteInactiveDays,
       }
     }))
   )
@@ -959,7 +930,7 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
 }
 
 // GET /api/agents - List agents with status (filtered by ACL in auth mode)
-// Response includes pre-aggregated summary: active sessions, scheduled tasks, dashboards.
+// Response includes pre-aggregated summary: session activity and dashboards.
 agents.get('/', async (c) => {
   try {
     // In auth mode, only return agents the user has explicit ACL entries for.

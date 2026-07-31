@@ -35,14 +35,7 @@ export interface ApiAgent {
   hasUnreadNotifications?: boolean
   sessionCount?: number
   lastActivityAt?: Date | null
-  scheduledTaskCount?: number
-  nextScheduledTaskAt?: Date | null
-  chatIntegrationCount?: number
-  dashboardCount?: number
-  dashboardNames?: string[]
-  dashboardSlugs?: string[]
   dashboards?: ApiAgentDashboard[]
-  autoDeleteInactiveDays?: number
 }
 
 export interface ApiAgentDashboard {

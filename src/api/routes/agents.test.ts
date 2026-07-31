@@ -296,7 +296,6 @@ vi.mock('@shared/lib/services/audit-log-service', () => ({
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listScheduledTasks: vi.fn(),
   listPendingScheduledTasks: vi.fn(),
-  listPendingScheduledTasksByAgents: vi.fn(() => Promise.resolve(new Map())),
   listCancelledScheduledTasks: vi.fn(),
   listPendingWakesByAgent: vi.fn(() => Promise.resolve([])),
   getPendingWakeForSession: vi.fn(() => Promise.resolve(null)),
@@ -329,7 +328,6 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
 
 vi.mock('@shared/lib/services/chat-integration-service', () => ({
   listChatIntegrations: vi.fn(() => []),
-  listChatIntegrationsByAgents: vi.fn(() => new Map()),
 }))
 
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
@@ -499,7 +497,7 @@ import {
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
 import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, getSessionMetadata, mutateSessionAutopilot, updateSessionMetadata } from '@shared/lib/services/session-service'
-import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
+import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -4100,7 +4098,7 @@ describe('GET /api/agents (enriched summary)', () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
-    // Default: no sessions, no tasks, no artifacts
+    // Default: no sessions or artifacts
     vi.mocked(getSessionSummary).mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null })
     vi.mocked(listSessions).mockResolvedValue([])
     vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
@@ -4124,10 +4122,10 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0].hasActiveSessions).toBe(false)
     expect(body[0].hasSessionsAwaitingInput).toBe(false)
     expect(body[0].lastActivityAt).toBe('2026-01-01T12:00:00.000Z')
-    expect(body[0].scheduledTaskCount).toBe(0)
-    expect(body[0].nextScheduledTaskAt).toBeNull()
-    expect(body[0].dashboardCount).toBe(0)
-    expect(body[0].dashboardNames).toEqual([])
+    expect(body[0].dashboards).toEqual([])
+    expect(body[0]).not.toHaveProperty('scheduledTaskCount')
+    expect(body[0]).not.toHaveProperty('chatIntegrationCount')
+    expect(body[0]).not.toHaveProperty('autoDeleteInactiveDays')
   })
 
   it('detects active sessions via messagePersister', async () => {
@@ -4271,57 +4269,7 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0].lastActivityAt).toBe('2026-01-01T15:00:00.000Z')
   })
 
-  it('returns scheduled task count and nearest next execution', async () => {
-    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    const tasks = [
-      {
-        id: 'task-1',
-        agentSlug: 'agent-1',
-        scheduleType: 'cron',
-        scheduleExpression: '0 9 * * *',
-        prompt: 'do stuff',
-        name: 'Morning task',
-        status: 'pending',
-        nextExecutionAt: new Date('2026-01-02T09:00:00Z'),
-        lastExecutedAt: null,
-        isRecurring: true,
-        executionCount: 0,
-        lastSessionId: null,
-        createdBySessionId: null,
-        timezone: null,
-        createdAt: new Date('2026-01-01'),
-        cancelledAt: null,
-      },
-      {
-        id: 'task-2',
-        agentSlug: 'agent-1',
-        scheduleType: 'cron',
-        scheduleExpression: '0 */2 * * *',
-        prompt: 'check stuff',
-        name: 'Frequent check',
-        status: 'pending',
-        nextExecutionAt: new Date('2026-01-01T14:00:00Z'),
-        lastExecutedAt: null,
-        isRecurring: true,
-        executionCount: 0,
-        lastSessionId: null,
-        createdBySessionId: null,
-        timezone: null,
-        createdAt: new Date('2026-01-01'),
-        cancelledAt: null,
-      },
-    ]
-    vi.mocked(listPendingScheduledTasksByAgents).mockResolvedValue(new Map([['agent-1', tasks]]) as any)
-
-    const res = await getReq(app, '/api/agents')
-    const body = await res.json()
-
-    expect(body[0].scheduledTaskCount).toBe(2)
-    // Should pick the earlier of the two next execution times
-    expect(body[0].nextScheduledTaskAt).toBe('2026-01-01T14:00:00.000Z')
-  })
-
-  it('returns dashboard count and names from artifacts', async () => {
+  it('returns dashboard summaries from artifacts', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([
       { slug: 'dash-1', name: 'Sales Dashboard', description: '', status: 'running', port: 5000 },
@@ -4331,8 +4279,10 @@ describe('GET /api/agents (enriched summary)', () => {
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
 
-    expect(body[0].dashboardCount).toBe(2)
-    expect(body[0].dashboardNames).toEqual(['Sales Dashboard', 'Metrics'])
+    expect(body[0].dashboards).toEqual([
+      { slug: 'dash-1', name: 'Sales Dashboard' },
+      { slug: 'dash-2', name: 'Metrics' },
+    ])
   })
 
   it('uses artifact slug as fallback name when name is empty', async () => {
@@ -4344,7 +4294,7 @@ describe('GET /api/agents (enriched summary)', () => {
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
 
-    expect(body[0].dashboardNames).toEqual(['unnamed-dash'])
+    expect(body[0].dashboards).toEqual([{ slug: 'unnamed-dash', name: 'unnamed-dash' }])
   })
 
   it('enriches agents in auth mode', async () => {
@@ -4363,8 +4313,7 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body).toHaveLength(1)
     // Summary fields should be present even in auth mode
     expect(body[0]).toHaveProperty('hasActiveSessions')
-    expect(body[0]).toHaveProperty('scheduledTaskCount')
-    expect(body[0]).toHaveProperty('dashboardCount')
+    expect(body[0]).toHaveProperty('dashboards')
   })
 
   it('sorts the auth-mode list newest-first', async () => {
@@ -4417,8 +4366,8 @@ describe('GET /api/agents (enriched summary)', () => {
 
     expect(body).toHaveLength(2)
     // Both agents should have summary fields
-    expect(body[0]).toHaveProperty('dashboardCount', 0)
-    expect(body[1]).toHaveProperty('dashboardCount', 0)
+    expect(body[0]).toHaveProperty('dashboards')
+    expect(body[1]).toHaveProperty('dashboards')
     // getSessionSummary called once per agent
     expect(getSessionSummary).toHaveBeenCalledTimes(2)
     expect(getSessionSummary).toHaveBeenCalledWith('agent-1')

@@ -21,7 +21,7 @@ import { LambdaMicroVmRuntimeClient } from './lambda-microvm-runtime'
 const enabled = process.env.RUN_MICROVM_E2E === '1'
 
 describe.skipIf(!enabled)('LambdaMicroVmRuntimeClient e2e (real AWS)', () => {
-  it('runs a real MicroVM, serves /health through the proxy, then suspends', async () => {
+  it('runs a real MicroVM, serves /health through the proxy, then terminates', async () => {
     const client = new LambdaMicroVmRuntimeClient({ agentId: `e2e-${Date.now()}` })
     try {
       await client.start()
@@ -63,26 +63,23 @@ describe.skipIf(!enabled)('LambdaMicroVmRuntimeClient e2e (real AWS)', () => {
     expect(max).toBeLessThan(30_000)
   }, 600_000)
 
-  // Stop means suspend; the next plain request resumes the same VM warmly.
-  it('auto-sleep suspends, then a plain request transparently auto-resumes (warm)', async () => {
-    const client = new LambdaMicroVmRuntimeClient({ agentId: `e2e-resume-${Date.now()}` })
+  // Stop means terminate; the next start is a cold boot (no warm resume).
+  it('stop terminates; a later start is a cold boot', async () => {
+    const client = new LambdaMicroVmRuntimeClient({ agentId: `e2e-terminate-${Date.now()}` })
     try {
       await client.start()
       expect((await client.getInfoFromRuntime()).status).toBe('running')
 
-      await client.stop() // plain stop -> suspend (default)
-      // Let the suspend settle (SuspendMicrovm completes in ~1s); the client maps
-      // SUSPENDED/SUSPENDING to 'running' since the VM auto-resumes on demand.
-      await new Promise((r) => setTimeout(r, 10_000))
-      expect((await client.getInfoFromRuntime()).status).toBe('running')
+      await client.stop()
+      expect((await client.getInfoFromRuntime()).status).toBe('stopped')
 
-      // No waitForHealthy kick: a normal request resumes + succeeds via the proxy.
       const t0 = Date.now()
+      await client.start()
+      const coldMs = Date.now() - t0
       const res = await client.fetch('/health')
-      const resumeMs = Date.now() - t0
       expect(res.ok).toBe(true)
-      console.log(`[E2E-RESUME] suspend -> /health ok (transparent auto-resume): ${resumeMs}ms`)
-      expect(resumeMs).toBeLessThan(15_000)
+      console.log(`[E2E-TERMINATE] stop -> cold start -> /health ok: ${coldMs}ms`)
+      expect(coldMs).toBeLessThan(60_000)
     } finally {
       await client.stop()
     }

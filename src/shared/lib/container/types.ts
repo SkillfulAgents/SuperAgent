@@ -25,6 +25,8 @@ export interface ContainerConfig {
   envVars?: Record<string, string>
   /** Called when a connection error is detected (ECONNREFUSED, etc.) */
   onConnectionError?: () => void
+  /** Manager-owned restart: single-flight doStartContainer (fresh env + status cache). */
+  restartAgent?: () => Promise<void>
 }
 
 export interface SlashCommandInfo {

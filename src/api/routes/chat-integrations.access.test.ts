@@ -88,6 +88,7 @@ const mockTearDownChatSession = vi.fn().mockResolvedValue(undefined)
 const mockReconcileAccess = vi.fn().mockResolvedValue(undefined)
 const mockClearChatSessionById = vi.fn()
 const mockRemoveIntegration = vi.fn().mockResolvedValue(undefined)
+const mockSendContactCard = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
   chatIntegrationManager: {
@@ -97,6 +98,7 @@ vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
     reconcileAccess: (...args: unknown[]) => mockReconcileAccess(...args),
     isIntegrationConnected: vi.fn(() => false),
     addIntegration: vi.fn(),
+    sendContactCard: (...args: unknown[]) => mockSendContactCard(...args),
     removeIntegration: (...args: unknown[]) => mockRemoveIntegration(...args),
     pauseIntegration: vi.fn(),
     resumeIntegration: vi.fn(),
@@ -631,6 +633,7 @@ describe('chat-integrations access routes', () => {
       // default (true). Making a bot public is owner-only via PATCH /require-approval.
       expect(vi.mocked(createChatIntegration)).toHaveBeenCalledTimes(1)
       expect(vi.mocked(createChatIntegration).mock.calls[0][0]).not.toHaveProperty('requireApproval')
+      expect(mockSendContactCard).toHaveBeenCalledWith('new-int')
     })
 
     it('returns 500 instead of a null success body when the created row cannot be read back', async () => {

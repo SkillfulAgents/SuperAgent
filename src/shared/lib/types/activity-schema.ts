@@ -11,13 +11,13 @@ import type {
 // deliberately-lenient persisted-file schemas, these are strict: client and
 // server ship in the same build, so a mismatch here is drift worth surfacing.
 
-const dailyActivityPointSchema = z.object({
+export const dailyActivityPointSchema = z.object({
   date: z.string(),
   succeeded: z.number(),
   failed: z.number(),
 }) satisfies z.ZodType<DailyActivityPoint>
 
-const cronActivityPointSchema = z.object({
+export const cronActivityPointSchema = z.object({
   scheduledAt: z.string(),
   status: z.enum(['succeeded', 'running', 'skipped', 'failed']),
 }) satisfies z.ZodType<CronActivityPoint>
