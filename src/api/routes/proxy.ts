@@ -19,6 +19,14 @@ import {
 } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
 
+/**
+ * The most request-body text the autopilot approval judge will inspect. The
+ * judge must see the body COMPLETELY or not at all — a partial view can hide
+ * a recipient or destructive flag past the cutoff — so anything larger is
+ * unreviewable and fails closed.
+ */
+export const REVIEWABLE_BODY_CHAR_CAP = 16_000
+
 interface ProxyAuditEntry {
   agentSlug: string
   accountId: string
@@ -233,34 +241,43 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       const scopeDetails = Object.entries(policyResult.scopeDescriptions ?? {})
         .map(([scope, description]) => `${scope}: ${description}`)
         .join('\n')
-      // The judge can only enforce "no destinations the user never mentioned"
-      // if it sees where the payload is going — method + URL alone hide the
-      // recipients of e.g. a send-email POST. Mirrors the MCP branch's capped
-      // args preview. Hono caches the arrayBuffer, so the forward at step 6
-      // reuses this same read.
-      let bodyPreview: string | undefined
+      // The judge must see the request EXACTLY as it will be forwarded: the
+      // full URL including the query string, and the complete body — a
+      // recipient, destination, or destructive flag in an omitted query param
+      // or past a body cutoff would otherwise ride an approval granted for a
+      // different-looking request. A body too large to inspect in full fails
+      // closed. Hono caches the arrayBuffer, so the forward at step 6 reuses
+      // this same read.
+      // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
+      const queryString = new URL(c.req.url).search
+      let bodyText: string | undefined
+      let bodyUnreviewable: string | undefined
       if (method !== 'GET' && method !== 'HEAD') {
         try {
           const buffer = await c.req.arrayBuffer()
           if (buffer.byteLength > 0) {
-            const text = new TextDecoder().decode(buffer.slice(0, 4000)).trim()
-            if (text) {
-              bodyPreview = `Request body (first 1500 chars): ${text.slice(0, 1500)}`
+            const text = new TextDecoder().decode(buffer).trim()
+            if (text.length > REVIEWABLE_BODY_CHAR_CAP) {
+              bodyUnreviewable = `Request body is ${text.length} characters — beyond the ${REVIEWABLE_BODY_CHAR_CAP}-character automated-review limit, so it cannot be inspected in full. Denied by default.`
+            } else if (text) {
+              bodyText = `Request body (complete): ${text}`
             }
           }
         } catch {
-          // Unreadable body: the judge falls back to method + URL + scopes.
+          bodyUnreviewable = 'Request body could not be read for review. Denied by default.'
         }
       }
-      const review = await reviewAutopilotApproval({
-        agentSlug,
-        action: `API request: ${method} https://${targetHost}/${targetPath}`,
-        details: [
-          policyResult.endpointDescription,
-          scopeDetails,
-          bodyPreview,
-        ].filter(Boolean).join('\n') || undefined,
-      })
+      const review = bodyUnreviewable
+        ? { decision: 'deny' as const, reason: bodyUnreviewable }
+        : await reviewAutopilotApproval({
+            agentSlug,
+            action: `API request: ${method} https://${targetHost}/${targetPath}${queryString}`,
+            details: [
+              policyResult.endpointDescription,
+              scopeDetails,
+              bodyText,
+            ].filter(Boolean).join('\n') || undefined,
+          })
       if (review.decision === 'deny') {
         await logAuditEntry({
           agentSlug,

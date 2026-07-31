@@ -1984,15 +1984,19 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // interrupted until the agent re-engages), `false` on an explicit
     // toggle-off, and nothing from surfaces that don't know about autopilot —
     // where a genuine user message mid-engagement disengages entirely
-    // (day-one guardrail). Applied BEFORE the send for fresh turns so the
-    // container picks the new state up with this message, but AFTER the send
-    // for queued ones — the state change restarts the in-flight query, which
-    // is exactly what queued sends strip model/effort/speed to avoid.
-    const applyAutopilotTransition = async (): Promise<void> => {
+    // (day-one guardrail). Applied BEFORE the send, always: the container
+    // reads the state with this message, so a post-send transition would
+    // leave its prompt and gates on the OLD state with nothing to sync them
+    // until some later message. The one queued send that must not restart
+    // the in-flight query — switch on while already engaged — is exactly the
+    // case with no state change; the remaining queued transitions (explicit
+    // toggle-off, paused→requested, foreign-surface disengage) are deliberate
+    // state changes where the interrupt/restart IS the correct behavior.
+    {
       let changed = false
       if (runtimeOptions.autopilot === true) {
-        // A QUEUED message with the switch on is steering, not an
-        // interruption: it joins the in-flight autonomous turn, so an engaged
+        // A QUEUED message with the switch on while engaged is steering, not
+        // an interruption: it joins the in-flight autonomous turn, so the
         // session stays engaged and the watchdog reviews the stop as usual.
         // Demoting to `requested` here would dead-end — the turn's messages
         // carry no preflight reminder, so nothing after the stop would ever
@@ -2015,7 +2019,6 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       }
       if (changed) messagePersister.broadcastSessionUpdate(sessionId)
     }
-    if (!wasQueued) await applyAutopilotTransition()
 
     // Server-generated message uuid (never client-supplied — the uuid keys the
     // messageAuthor attribution row, so a client-chosen value could collide
@@ -2048,7 +2051,6 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     await client.sendMessage(sessionId, content.trim(), messageUuid, runtimeOptions)
-    if (wasQueued) await applyAutopilotTransition()
     const updates: Parameters<typeof updateSessionMetadata>[2] = {}
     if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
     if (runtimeOptions.speed) updates.speed = runtimeOptions.speed

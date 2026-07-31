@@ -1054,7 +1054,7 @@ describe('proxy policy enforcement', () => {
     expect(body.error).toBe('review_timeout')
   })
 
-  it('review while autopilot engaged → judged with a request body preview, forwarded on approve', async () => {
+  it('review while autopilot engaged → judged on the complete request, forwarded on approve', async () => {
     setupThroughHostValidation()
     mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.send'], descriptions: {} })
     mockResolveApiPolicy.mockResolvedValue({
@@ -1071,7 +1071,7 @@ describe('proxy policy enforcement', () => {
     mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
 
     const res = await makeRequest(
-      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send',
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send?forwardTo=hidden@evil.com',
       {
         method: 'POST',
         headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
@@ -1085,16 +1085,49 @@ describe('proxy policy enforcement', () => {
       action: string
       details?: string
     }
-    // Method + URL alone hide where a payload goes; the judge needs the body
-    // to enforce "no destinations the user never mentioned".
+    // The judge must see the request as it will be forwarded: the full URL
+    // INCLUDING the query string, and the complete body — a destination in
+    // either would otherwise ride an approval for a different-looking request.
     expect(reviewRequest.action).toContain('POST')
-    expect(reviewRequest.details).toContain('Request body (first 1500 chars)')
+    expect(reviewRequest.action).toContain('forwardTo=hidden@evil.com')
+    expect(reviewRequest.details).toContain('Request body (complete)')
     expect(reviewRequest.details).toContain('someone@example.com')
     // The early body read must not consume the forward's copy.
     expect(mockMakeApiCall).toHaveBeenCalledOnce()
     const forwarded = mockMakeApiCall.mock.calls[0][0] as { body: ArrayBuffer | null }
     expect(forwarded.body).toBeTruthy()
     expect(new TextDecoder().decode(forwarded.body as ArrayBuffer)).toContain('someone@example.com')
+  })
+
+  it('review while autopilot engaged → a body too large to inspect fails closed without the judge', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.send'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['gmail.send'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ padding: 'x'.repeat(20_000), to: 'attacker@evil.com' }),
+      }
+    )
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error).toBe('requires_user_approval')
+    expect(body.message).toContain('cannot be inspected in full')
+    // An approval judged on a partial body is no approval — the judge never runs.
+    expect(mockReviewAutopilotApproval).not.toHaveBeenCalled()
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ policyDecision: 'denied_autopilot' })
+    )
   })
 
   it('review while autopilot engaged → deny returns 403 with the reviewer reason, audited', async () => {

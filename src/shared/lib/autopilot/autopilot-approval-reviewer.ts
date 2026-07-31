@@ -9,6 +9,7 @@ import type { JsonlMessageEntry, ContentBlock } from '@shared/lib/types/agent'
 import { X_AGENT_MESSAGE_PREFIX } from '@shared/lib/utils/x-agent-message'
 import {
   approvalReviewVerdictSchema,
+  autopilotEpochStartMs,
   normalizeAutopilotState,
   type ApprovalReviewVerdict,
 } from './autopilot-schema'
@@ -68,10 +69,20 @@ export interface ApprovalReviewRequest {
  * task notifications, slash-command XML, system-reminder riders) and
  * tool-result carriers. Exported for tests.
  */
-export function extractUserPrompts(entries: Array<{ type: string } & Partial<JsonlMessageEntry>>): string[] {
+export function extractUserPrompts(
+  entries: Array<{ type: string } & Partial<JsonlMessageEntry>>,
+  sinceMs?: number
+): string[] {
   const prompts: string[] = []
   for (const entry of entries) {
     if (entry.type !== 'user') continue
+    // Era bound: only messages from the current autopilot request onward may
+    // establish intent. Entries with no parseable timestamp are excluded when
+    // a bound is active — an unattributable message cannot authorize anything.
+    if (sinceMs !== undefined) {
+      const at = entry.timestamp ? Date.parse(entry.timestamp) : NaN
+      if (!Number.isFinite(at) || at < sinceMs) continue
+    }
     // The CLI persists some model/agent-authored text as `type: 'user'`:
     // compaction summaries (and their transcript-only pairs) are written by
     // the compacting model, and sidechain entries are the agent prompting its
@@ -101,37 +112,49 @@ export function extractUserPrompts(entries: Array<{ type: string } & Partial<Jso
 }
 
 /**
- * User messages from every ACTIVE ENGAGED session of the agent, chronological
- * per session. Proxied calls are agent-scoped, so with several engaged
- * sessions live the intent context is their union. Also returns the engaged
- * session ids so the decision can be recorded in those transcripts.
+ * User messages establishing the intent an approval is judged against.
+ *
+ * One session, one era: proxied calls are agent-scoped (the request carries
+ * no session identity), so intent can only be bound when exactly ONE active
+ * session is engaged — with several, a request from session B could be
+ * approved because session A asked for something similar, which crosses an
+ * authorization boundary. `ambiguous: true` tells the caller to deny without
+ * consulting the judge. Within the single session, only messages from the
+ * current autopilot era (requestedAt onward) count — older tasks in a reused
+ * session must not authorize this one's actions.
  */
 async function buildUserIntentExcerpt(
   agentSlug: string
-): Promise<{ excerpt: string; engagedSessionIds: string[] }> {
-  const sections: string[] = []
-  const engagedSessionIds: string[] = []
+): Promise<{ excerpt: string; engagedSessionIds: string[]; ambiguous: boolean }> {
+  const engaged: Array<{ sessionId: string; epochStartMs: number | undefined }> = []
   for (const sessionId of messagePersister.getActiveSessionIdsForAgent(agentSlug)) {
-    const state = normalizeAutopilotState(
-      (await getSessionMetadata(agentSlug, sessionId))?.autopilot?.state
-    )
-    if (state !== 'engaged') continue
-    engagedSessionIds.push(sessionId)
-    try {
-      const entries = await getSessionMessagesWithCompact(agentSlug, sessionId)
-      const prompts = extractUserPrompts(entries as Array<{ type: string } & Partial<JsonlMessageEntry>>)
-      if (prompts.length > 0) sections.push(prompts.map((p) => `USER: ${p}`).join('\n\n'))
-    } catch (error) {
-      console.error(`[AutopilotApprovalReviewer] Failed to read session ${sessionId}:`, error)
-    }
+    const autopilot = (await getSessionMetadata(agentSlug, sessionId))?.autopilot
+    if (normalizeAutopilotState(autopilot?.state) !== 'engaged') continue
+    engaged.push({ sessionId, epochStartMs: autopilotEpochStartMs(autopilot) })
   }
-  let excerpt = sections.join('\n\n---\n\n')
+  const engagedSessionIds = engaged.map((e) => e.sessionId)
+  if (engaged.length !== 1) {
+    return { excerpt: '', engagedSessionIds, ambiguous: engaged.length > 1 }
+  }
+
+  const { sessionId, epochStartMs } = engaged[0]
+  let excerpt = ''
+  try {
+    const entries = await getSessionMessagesWithCompact(agentSlug, sessionId)
+    const prompts = extractUserPrompts(
+      entries as Array<{ type: string } & Partial<JsonlMessageEntry>>,
+      epochStartMs
+    )
+    excerpt = prompts.map((p) => `USER: ${p}`).join('\n\n')
+  } catch (error) {
+    console.error(`[AutopilotApprovalReviewer] Failed to read session ${sessionId}:`, error)
+  }
   if (excerpt.length > USER_INTENT_CHAR_BUDGET) {
     // Keep the head (the original ask) and the tail (latest clarifications).
     const half = Math.floor(USER_INTENT_CHAR_BUDGET / 2)
     excerpt = `${excerpt.slice(0, half)}\n\n[…middle omitted…]\n\n${excerpt.slice(-half)}`
   }
-  return { excerpt, engagedSessionIds }
+  return { excerpt, engagedSessionIds, ambiguous: false }
 }
 
 /**
@@ -171,8 +194,18 @@ async function recordApprovalDecision(
 export async function reviewAutopilotApproval(
   request: ApprovalReviewRequest
 ): Promise<ApprovalReviewVerdict> {
-  const { excerpt, engagedSessionIds } = await buildUserIntentExcerpt(request.agentSlug)
-  const verdict = await judgeApproval(request, excerpt)
+  const { excerpt, engagedSessionIds, ambiguous } = await buildUserIntentExcerpt(request.agentSlug)
+  // Several engaged sessions: the request cannot be attributed to a single
+  // user instruction, so no instruction can authorize it. Fail closed without
+  // consulting the judge; the denial card lands in every engaged session so
+  // whichever one made the request sees why.
+  const verdict: ApprovalReviewVerdict = ambiguous
+    ? {
+        decision: 'deny',
+        reason:
+          'Multiple sessions are running in autopilot, so this request cannot be attributed to a single delegated task. Denied by default.',
+      }
+    : await judgeApproval(request, excerpt)
   await recordApprovalDecision(request, verdict, engagedSessionIds)
   return verdict
 }

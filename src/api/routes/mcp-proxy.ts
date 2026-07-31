@@ -15,6 +15,14 @@ import {
 import { eq, and } from 'drizzle-orm'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 
+/**
+ * The most tool-call argument text the autopilot approval judge will inspect.
+ * The judge must see arguments COMPLETELY or not at all — anything larger is
+ * unreviewable and fails closed. Generous enough for real tool calls; a
+ * payload past it is almost certainly bulk content, not scoping information.
+ */
+export const REVIEWABLE_ARGS_CHAR_CAP = 16_000
+
 async function logMcpAuditEntry(entry: {
   agentSlug: string
   remoteMcpId: string
@@ -163,7 +171,8 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   let bodyBuffer: ArrayBuffer | undefined
   let mcpMethodInfo = rest || '/'
   let toolName: string | null = null
-  let toolArgsPreview: string | undefined
+  let toolArgs: string | undefined
+  let toolArgsTooLarge = false
   if (method !== 'GET' && method !== 'HEAD') {
     bodyBuffer = await c.req.arrayBuffer()
     try {
@@ -179,8 +188,16 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
           mcpMethodInfo = `tools/call: ${toolName}`
           if (jsonRpc.params.arguments !== undefined) {
             // For the autopilot approval reviewer: the args ARE the action
-            // being judged. Capped — a huge payload adds nothing to scoping.
-            toolArgsPreview = JSON.stringify(jsonRpc.params.arguments).slice(0, 1500)
+            // being judged, so the judge must see them COMPLETELY — a
+            // truncated view lets a destination or destructive flag hide past
+            // the cutoff. Args too large to represent losslessly make the
+            // call unreviewable (the reviewer fails closed on that flag).
+            const serialized = JSON.stringify(jsonRpc.params.arguments)
+            if (serialized.length > REVIEWABLE_ARGS_CHAR_CAP) {
+              toolArgsTooLarge = true
+            } else {
+              toolArgs = serialized
+            }
           }
         }
       }
@@ -252,11 +269,18 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       // the user's own messages plus this request (never the agent
       // trajectory). See the API proxy's mirror branch.
       if (await isAgentAutopilotEngaged(agentSlug)) {
-        const review = await reviewAutopilotApproval({
-          agentSlug,
-          action: `MCP tool call: ${toolName ?? mcpMethodInfo} on server "${mcp.name}"`,
-          details: toolArgsPreview ? `Arguments: ${toolArgsPreview}` : undefined,
-        })
+        // Fail closed when the arguments cannot be shown to the judge in
+        // full — an approval based on a partial view is no approval.
+        const review = toolArgsTooLarge
+          ? {
+              decision: 'deny' as const,
+              reason: `Tool arguments exceed the ${REVIEWABLE_ARGS_CHAR_CAP}-character automated-review limit and cannot be inspected in full. Denied by default.`,
+            }
+          : await reviewAutopilotApproval({
+              agentSlug,
+              action: `MCP tool call: ${toolName ?? mcpMethodInfo} on server "${mcp.name}"`,
+              details: toolArgs ? `Arguments (complete): ${toolArgs}` : undefined,
+            })
         if (review.decision === 'deny') {
           await logMcpAuditEntry({
             agentSlug,

@@ -10,7 +10,7 @@ import {
   applyContinueVerdict,
 } from './autopilot-service'
 import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
-import { normalizeAutopilotState } from './autopilot-schema'
+import { autopilotEpochStartMs, normalizeAutopilotState } from './autopilot-schema'
 
 const AGENT = 'autopilot-test-agent'
 const SESSION = 'session-1'
@@ -88,6 +88,19 @@ describe('autopilot-service state machine', () => {
     expect(meta?.engagedAt).toBeTruthy()
     // double engage rejected
     expect(await engageAutopilot(AGENT, SESSION, CONTRACT)).toBe('not-requested')
+  })
+
+  it('request stamps the era marker and engage preserves it', async () => {
+    await requestAutopilot(AGENT, SESSION)
+    const requestedAt = (await getSessionMetadata(AGENT, SESSION))?.autopilot?.requestedAt
+    expect(requestedAt).toBeTruthy()
+
+    await engageAutopilot(AGENT, SESSION, CONTRACT)
+    const meta = (await getSessionMetadata(AGENT, SESSION))?.autopilot
+    // The user's task statement precedes engagement — the judges' evidence
+    // and intent windows must start at the request, not the engagement.
+    expect(meta?.requestedAt).toBe(requestedAt)
+    expect(autopilotEpochStartMs(meta)).toBe(Date.parse(requestedAt as string))
   })
 
   it('user message while engaged disengages', async () => {
@@ -185,6 +198,27 @@ describe('autopilot-service state machine', () => {
         verdict: 'continue',
         reasoning: 'r',
         missing: '  Criterion 2: EMAIL ', // whitespace/case-insensitive compare
+      })
+      expect(second).toEqual({
+        action: 'escalate',
+        reason: 'no-progress',
+        iteration: 2,
+        maxIterations: 2,
+      })
+      expect(await state()).toBe('paused')
+    })
+
+    it('keys the no-progress guardrail on the criterion-index set, order-insensitive', async () => {
+      const first = await applyContinueVerdict(AGENT, SESSION, {
+        verdict: 'continue',
+        reasoning: 'r',
+        missing_criteria: [2, 1],
+      })
+      expect(first.action).toBe('continue')
+      const second = await applyContinueVerdict(AGENT, SESSION, {
+        verdict: 'continue',
+        reasoning: 'different words entirely',
+        missing_criteria: [1, 2],
       })
       expect(second).toEqual({
         action: 'escalate',

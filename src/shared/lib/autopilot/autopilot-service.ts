@@ -45,7 +45,14 @@ export async function requestAutopilot(agentSlug: string, sessionId: string): Pr
   return mutateSessionAutopilot(agentSlug, sessionId, (autopilot) => {
     const state = normalizeAutopilotState(autopilot?.state)
     if (state === 'requested') return false
-    return { ...autopilot, state: 'requested', pausedReason: undefined }
+    // requestedAt marks the start of the autopilot era — the judges bound
+    // their evidence/intent windows to it (see autopilotEpochStartMs).
+    return {
+      ...autopilot,
+      state: 'requested',
+      pausedReason: undefined,
+      requestedAt: new Date().toISOString(),
+    }
   })
 }
 
@@ -101,6 +108,9 @@ export async function engageAutopilot(
       state: 'engaged',
       goal: contract,
       iteration: 0,
+      // Preserve the era marker: the user's task statement precedes
+      // engagement, and the judges' windows must include it.
+      requestedAt: autopilot?.requestedAt,
       engagedAt: new Date().toISOString(),
     }
   })
@@ -141,10 +151,17 @@ export async function applyContinueVerdict(
 
     const iteration = (autopilot.iteration ?? 0) + 1
     const maxIterations = autopilot.goal?.max_iterations ?? DEFAULT_MAX_ITERATIONS
+    // No-progress fingerprint: prefer the validated criterion-index set (a
+    // deterministic identity for "what is still missing"); fall back to the
+    // judge's free-form `missing` string for verdicts without indexes.
+    const fingerprint =
+      verdict.missing_criteria && verdict.missing_criteria.length > 0
+        ? `criteria:${[...new Set(verdict.missing_criteria)].sort((a, b) => a - b).join(',')}`
+        : verdict.missing?.trim().toLowerCase()
     const lastVerdict = {
       verdict: verdict.verdict,
       reasoning: verdict.reasoning,
-      missing: verdict.missing,
+      missing: fingerprint,
       at: new Date().toISOString(),
     }
 
@@ -155,9 +172,9 @@ export async function applyContinueVerdict(
 
     const previousMissing = autopilot.lastVerdict?.missing
     if (
-      verdict.missing &&
+      fingerprint &&
       previousMissing &&
-      verdict.missing.trim().toLowerCase() === previousMissing.trim().toLowerCase()
+      fingerprint === previousMissing.trim().toLowerCase()
     ) {
       decision = { action: 'escalate', reason: 'no-progress', iteration, maxIterations }
       return {

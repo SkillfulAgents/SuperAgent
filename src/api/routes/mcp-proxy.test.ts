@@ -64,6 +64,22 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   },
 }))
 
+// Autopilot seams: default not-engaged so existing review tests exercise the
+// human-review path untouched.
+const mockIsAgentAutopilotEngaged = vi.fn(async (..._args: unknown[]): Promise<boolean> => false)
+const mockReviewAutopilotApproval = vi.fn(
+  async (..._args: unknown[]): Promise<{ decision: string; reason: string }> => ({
+    decision: 'approve',
+    reason: 'ok',
+  })
+)
+vi.mock('@shared/lib/autopilot/autopilot-status', () => ({
+  isAgentAutopilotEngaged: (...args: unknown[]) => mockIsAgentAutopilotEngaged(...args),
+}))
+vi.mock('@shared/lib/autopilot/autopilot-approval-reviewer', () => ({
+  reviewAutopilotApproval: (...args: unknown[]) => mockReviewAutopilotApproval(...args),
+}))
+
 // Mock fetch for forwarded requests
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
@@ -925,6 +941,70 @@ describe('mcp-proxy route', () => {
   // =========================================================================
   // 6. JSON-RPC body parsing for audit logging
   // =========================================================================
+  describe('autopilot approval review', () => {
+    function reviewPolicy() {
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'review',
+        matchedScopes: [],
+        scopeDescriptions: {},
+        resolvedFrom: 'global_default',
+      })
+    }
+    const toolsCall = (args: unknown) =>
+      JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'send_email', arguments: args },
+        id: 3,
+      })
+
+    it('judges the COMPLETE tool arguments while engaged', async () => {
+      setupSuccessPath()
+      reviewPolicy()
+      mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+      mockReviewAutopilotApproval.mockResolvedValueOnce({ decision: 'approve', reason: 'ok' })
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: toolsCall({ to: 'someone@example.com', note: 'x'.repeat(3000) }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockRequestReview).not.toHaveBeenCalled()
+      const reviewRequest = mockReviewAutopilotApproval.mock.calls[0][0] as unknown as {
+        action: string
+        details?: string
+      }
+      expect(reviewRequest.action).toContain('send_email')
+      // Complete, not truncated: a destination past an old 1,500-char cutoff
+      // must still be visible to the judge.
+      expect(reviewRequest.details).toContain('Arguments (complete)')
+      expect(reviewRequest.details).toContain('someone@example.com')
+      expect(reviewRequest.details).toContain('x'.repeat(3000))
+    })
+
+    it('fails closed without the judge when arguments exceed the reviewable cap', async () => {
+      setupSuccessPath()
+      reviewPolicy()
+      mockIsAgentAutopilotEngaged.mockResolvedValueOnce(true)
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: toolsCall({ padding: 'x'.repeat(20_000), to: 'attacker@evil.com' }),
+      })
+
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.error).toBe('requires_user_approval')
+      expect(body.message).toContain('cannot be inspected in full')
+      // An approval judged on partial arguments is no approval.
+      expect(mockReviewAutopilotApproval).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+  })
+
   describe('JSON-RPC body parsing for audit logging', () => {
     it('extracts method from valid JSON-RPC body', async () => {
       setupSuccessPath()

@@ -12,7 +12,7 @@ vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendAutopilotReviewEntry: vi.fn(async () => {}),
 }))
 
-const sessionMetadata = new Map<string, { autopilot?: { state: string } }>()
+const sessionMetadata = new Map<string, { autopilot?: { state: string; requestedAt?: string } }>()
 const sessionMessages = new Map<string, unknown[]>()
 vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: vi.fn(async (_agent: string, sessionId: string) => sessionMetadata.get(sessionId)),
@@ -229,5 +229,45 @@ describe('reviewAutopilotApproval', () => {
     }
     expect(call.messages[0].content).toContain('Engaged-session ask')
     expect(call.messages[0].content).not.toContain('Interactive-session ask')
+  })
+
+  it('denies without consulting the judge when several sessions are engaged', async () => {
+    // Proxied calls carry no session identity: with two engaged sessions the
+    // request cannot be attributed to a single delegated task, and session
+    // A's intent must never authorize session B's action.
+    seedEngagedSession('s1', [userEntry('Task A: summarize my email')])
+    seedEngagedSession('s2', [userEntry('Task B: reorganize my calendar')])
+
+    const verdict = await reviewAutopilotApproval({ agentSlug: AGENT, action: 'X' })
+
+    expect(verdict.decision).toBe('deny')
+    expect(verdict.reason).toMatch(/multiple sessions/i)
+    expect(createSummarizerText).not.toHaveBeenCalled()
+    // The denial card lands in BOTH sessions so whichever made the request sees why.
+    expect(appendAutopilotReviewEntry).toHaveBeenCalledTimes(2)
+  })
+
+  it('excludes user messages from before the current autopilot era', async () => {
+    // Reused session: an old task's instructions must not authorize the
+    // current engagement's actions.
+    activeSessions.push('s1')
+    sessionMetadata.set('s1', {
+      autopilot: { state: 'engaged', requestedAt: '2025-06-01T00:00:00Z' },
+    })
+    sessionMessages.set('s1', [
+      { ...userEntry('OLD TASK: wire the deposit to Bob'), timestamp: '2025-01-01T00:00:00Z' },
+      { ...userEntry('NEW TASK: summarize my unread email'), timestamp: '2025-06-01T00:00:05Z' },
+    ])
+    vi.mocked(createSummarizerText).mockResolvedValue(
+      JSON.stringify({ decision: 'approve', reason: 'ok' })
+    )
+
+    await reviewAutopilotApproval({ agentSlug: AGENT, action: 'X' })
+
+    const call = vi.mocked(createSummarizerText).mock.calls[0][1] as {
+      messages: Array<{ content: string }>
+    }
+    expect(call.messages[0].content).toContain('NEW TASK')
+    expect(call.messages[0].content).not.toContain('OLD TASK')
   })
 })

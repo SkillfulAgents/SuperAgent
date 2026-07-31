@@ -5629,3 +5629,45 @@ describe('autopilot transitions — POST /:id/sessions/:sessionId/messages', () 
     expect(autopilotBlock?.state).toBe('off')
   })
 })
+
+describe('autopilot transition ordering — POST /:id/sessions/:sessionId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+  let autopilotBlock: { state: string; [key: string]: unknown } | undefined
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as never)
+    mockIsAuthMode.mockReturnValue(false)
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+    autopilotBlock = undefined
+    vi.mocked(getSessionMetadata).mockImplementation(async () => ({ autopilot: autopilotBlock }) as never)
+  })
+
+  it('applies a QUEUED explicit toggle-off BEFORE the send, so the container gets the new state', async () => {
+    // The container reads autopilot state from metadata with each message; a
+    // post-send transition would leave its prompt and gates engaged with
+    // nothing to sync them until some later message.
+    autopilotBlock = { state: 'engaged' }
+    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(true)
+    const order: string[] = []
+    vi.mocked(mutateSessionAutopilot).mockImplementation(async (_agent, _session, mutator) => {
+      order.push('transition')
+      const next = (mutator as (a: typeof autopilotBlock) => typeof autopilotBlock | false)(autopilotBlock)
+      if (next === false) return false
+      autopilotBlock = next
+      return true
+    })
+    mockSendMessage.mockImplementation(async () => {
+      order.push('send')
+    })
+
+    const res = await postJson(app, URL, { content: 'stop that', autopilot: false })
+
+    expect(res.status).toBe(201)
+    expect((await res.json()).queued).toBe(true)
+    expect(autopilotBlock?.state).toBe('off')
+    expect(order).toEqual(['transition', 'send'])
+  })
+})

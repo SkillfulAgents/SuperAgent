@@ -50,9 +50,20 @@ export type GoalContract = z.infer<typeof goalContractSchema>
 export const watchdogVerdictSchema = z.object({
   verdict: z.enum(['done', 'continue', 'blocked']),
   reasoning: z.string(),
-  // The prompt marks these "REQUIRED for continue", so on done/blocked the
-  // judge often emits them as explicit nulls — accept and drop them rather
-  // than fail the whole verdict (which would wrongly escalate a clean done).
+  // 1-based indexes into the contract's success_criteria. This is the ONLY
+  // judge output that shapes the agent-facing continuation message — indexes
+  // are validated against the stored contract and the criteria TEXT comes
+  // from the contract itself, so transcript-derived free text can never be
+  // laundered into trusted [SYSTEM] traffic.
+  missing_criteria: z
+    .array(z.number().int())
+    .nullable()
+    .transform((v) => v ?? undefined)
+    .optional(),
+  // Free-form judge text (display-only: the timeline card). The prompt marks
+  // fields "REQUIRED for continue", so on done/blocked the judge often emits
+  // them as explicit nulls — accept and drop them rather than fail the whole
+  // verdict (which would wrongly escalate a clean done).
   nudge: z
     .string()
     .nullable()
@@ -78,6 +89,11 @@ export const autopilotMetadataSchema = z
     state: z.string(),
     goal: goalContractSchema.optional(),
     iteration: z.number().optional(),
+    /** Stamped on every entry into `requested` — the start of the current
+     * autopilot era. Judges bound their evidence/intent windows to it so a
+     * reused session's older tasks can neither satisfy completion criteria
+     * nor authorize new actions. */
+    requestedAt: z.string().optional(),
     engagedAt: z.string().optional(),
     pausedReason: z.string().optional(),
     lastVerdict: z
@@ -98,6 +114,22 @@ export function normalizeAutopilotState(value: string | undefined | null): Autop
   return (AUTOPILOT_STATES as readonly string[]).includes(value ?? '')
     ? (value as AutopilotState)
     : 'off'
+}
+
+/**
+ * Start of the current autopilot era in epoch millis: the last `requested`
+ * transition (stamped alongside the user message that carried the switch, so
+ * the task statement itself is inside the window), falling back to engagedAt
+ * for blocks written before requestedAt existed. Undefined when neither is
+ * present or parseable.
+ */
+export function autopilotEpochStartMs(
+  autopilot: Pick<AutopilotMetadata, 'requestedAt' | 'engagedAt'> | undefined
+): number | undefined {
+  const raw = autopilot?.requestedAt ?? autopilot?.engagedAt
+  if (!raw) return undefined
+  const parsed = Date.parse(raw)
+  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 /**
