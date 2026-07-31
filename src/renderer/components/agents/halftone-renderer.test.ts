@@ -3,11 +3,13 @@ import {
   HALFTONE_ALPHA_BANDS,
   HALFTONE_MAX_ALPHA_ERROR,
   HalftoneFrameRenderer,
+  type HalftoneDotScratch,
   alphaBandMidpoint,
   alphaToBand,
   countingSortDotIndices,
   createHalftoneDotScratch,
   drawAlphaBuckets,
+  scaleHalftoneEasingRate,
 } from './halftone-renderer'
 
 function createContextMock() {
@@ -106,5 +108,45 @@ describe('HalftoneFrameRenderer edge sizes', () => {
     for (const call of vi.mocked(context.arc).mock.calls) {
       expect(call.slice(0, 3).every(Number.isFinite)).toBe(true)
     }
+  })
+
+  it('reuses typed-array buffers until the grid outgrows their capacity', () => {
+    const renderer = new HalftoneFrameRenderer({
+      motif: 'flow_3d',
+      color: '#111827',
+      spacing: 6,
+    })
+    const internals = renderer as unknown as {
+      scratch: HalftoneDotScratch | null
+      cellVignette: Float32Array
+    }
+    const { context } = createContextMock()
+
+    expect(renderer.resize(240, 120)).toBe(true)
+    const initialScratch = internals.scratch
+    const initialVignette = internals.cellVignette
+    renderer.draw(context, 0, 'alpha-buckets', 120, 60, true)
+    expect(initialScratch?.influence.some((value) => value > 0)).toBe(true)
+
+    expect(renderer.resize(180, 90)).toBe(true)
+    expect(internals.scratch).toBe(initialScratch)
+    expect(internals.cellVignette).toBe(initialVignette)
+    expect(internals.scratch?.influence.slice(0, 450).every((value) => value === 0)).toBe(true)
+
+    expect(renderer.resize(300, 150)).toBe(true)
+    expect(internals.scratch).not.toBe(initialScratch)
+    expect(internals.cellVignette).not.toBe(initialVignette)
+  })
+})
+
+describe('halftone cursor easing', () => {
+  it('preserves the 60 Hz easing response when a draw spans multiple frames', () => {
+    const attack = 0.18
+    const oneFrame = scaleHalftoneEasingRate(attack, 1)
+    const twoFrames = scaleHalftoneEasingRate(attack, 2)
+    const appliedTwice = oneFrame + (1 - oneFrame) * oneFrame
+
+    expect(twoFrames).toBeCloseTo(appliedTwice)
+    expect(scaleHalftoneEasingRate(attack, 0)).toBe(0)
   })
 })

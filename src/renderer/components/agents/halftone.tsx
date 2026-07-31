@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import {
+  HALFTONE_CURSOR_INFLUENCE,
   HalftoneFrameRenderer,
   type HalftoneState,
 } from './halftone-renderer'
@@ -122,7 +123,7 @@ export function Halftone({
       return true
     }
 
-    function draw() {
+    function draw(frameScale = 1) {
       // Pointer position relative to this canvas (recomputed once per frame).
       let mActive = false, mx = 0, my = 0
       if (pointerSeen) {
@@ -130,12 +131,12 @@ export function Halftone({
         mx = pointerX - rect.left
         my = pointerY - rect.top
         mActive =
-          mx >= -90 &&
-          mx <= W + 90 &&
-          my >= -90 &&
-          my <= H + 90
+          mx >= -HALFTONE_CURSOR_INFLUENCE &&
+          mx <= W + HALFTONE_CURSOR_INFLUENCE &&
+          my >= -HALFTONE_CURSOR_INFLUENCE &&
+          my <= H + HALFTONE_CURSOR_INFLUENCE
       }
-      renderer.draw(ctx!, t, 'alpha-buckets', mx, my, mActive)
+      renderer.draw(ctx!, t, 'alpha-buckets', mx, my, mActive, frameScale)
     }
 
     let intersecting = true
@@ -153,15 +154,17 @@ export function Halftone({
     }
 
     const frameInterval = 1000 / 30
+    const frameTolerance = 4
     function frame(now: number) {
       raf = 0
       if (stopped || !ready || !intersecting || document.hidden) return
       const elapsed = lastDrawTime === 0 ? frameInterval : now - lastDrawTime
-      if (elapsed >= frameInterval) {
-        draw()
+      if (elapsed >= frameInterval - frameTolerance) {
+        const frameScale = elapsed / (1000 / 60)
+        draw(frameScale)
         // Preserve the original 60fps phase velocity while drawing half as
         // often, substantially reducing per-card field math and Canvas2D paths.
-        t += speed * (elapsed / (1000 / 60))
+        t += speed * frameScale
         lastDrawTime = now
       }
       raf = requestAnimationFrame(frame)

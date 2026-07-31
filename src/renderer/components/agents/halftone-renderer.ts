@@ -2,7 +2,7 @@ export const HALFTONE_ALPHA_BANDS = 32
 export const HALFTONE_MAX_ALPHA_ERROR = 1 / (HALFTONE_ALPHA_BANDS * 2)
 
 const TAU = Math.PI * 2
-const CURSOR_INFLUENCE = 90
+export const HALFTONE_CURSOR_INFLUENCE = 90
 const CURSOR_ATTACK = 0.18
 const CURSOR_RELEASE = 0.04
 const CURSOR_R = 1.6
@@ -58,6 +58,15 @@ export interface HalftoneRendererOptions {
   dim?: number
   seed?: number
   alphaBands?: number
+}
+
+/** Convert a 60 Hz per-frame easing rate into an equivalent wall-clock rate. */
+export function scaleHalftoneEasingRate(rate: number, frameScale: number): number {
+  return 1 - Math.pow(1 - rate, Math.max(0, frameScale))
+}
+
+function ensureFloat32Capacity(buffer: Float32Array, capacity: number): Float32Array {
+  return buffer.length >= capacity ? buffer : new Float32Array(capacity)
 }
 
 export function createHalftoneDotScratch(
@@ -321,13 +330,13 @@ export class HalftoneFrameRenderer {
   private centerColumn = 0
   private centerRow = 0
   private epsilon = 0
-  private columnX = new Float64Array(0)
-  private columnU = new Float64Array(0)
-  private rowY = new Float64Array(0)
-  private rowV = new Float64Array(0)
-  private cellVignette = new Float64Array(0)
-  private cellAlphaScale = new Float64Array(0)
-  private cellRadiusScale = new Float64Array(0)
+  private columnX: Float32Array = new Float32Array(0)
+  private columnU: Float32Array = new Float32Array(0)
+  private rowY: Float32Array = new Float32Array(0)
+  private rowV: Float32Array = new Float32Array(0)
+  private cellVignette: Float32Array = new Float32Array(0)
+  private cellAlphaScale: Float32Array = new Float32Array(0)
+  private cellRadiusScale: Float32Array = new Float32Array(0)
   private scratch: HalftoneDotScratch | null = null
 
   constructor(options: HalftoneRendererOptions) {
@@ -348,7 +357,7 @@ export class HalftoneFrameRenderer {
 
   resize(width: number, height: number): boolean {
     if (width === this.width && height === this.height) {
-      return this.scratch !== null
+      return width > 0 && height > 0 && this.scratch !== null
     }
     this.width = width
     this.height = height
@@ -356,14 +365,6 @@ export class HalftoneFrameRenderer {
       this.columns = 0
       this.rows = 0
       this.epsilon = 0
-      this.columnX = new Float64Array(0)
-      this.columnU = new Float64Array(0)
-      this.rowY = new Float64Array(0)
-      this.rowV = new Float64Array(0)
-      this.cellVignette = new Float64Array(0)
-      this.cellAlphaScale = new Float64Array(0)
-      this.cellRadiusScale = new Float64Array(0)
-      this.scratch = null
       return false
     }
 
@@ -374,10 +375,10 @@ export class HalftoneFrameRenderer {
     this.centerColumn = (this.columns - 1) / 2
     this.centerRow = (this.rows - 1) / 2
     this.epsilon = 0.5 / this.columns
-    this.columnX = new Float64Array(this.columns)
-    this.columnU = new Float64Array(this.columns)
-    this.rowY = new Float64Array(this.rows)
-    this.rowV = new Float64Array(this.rows)
+    this.columnX = ensureFloat32Capacity(this.columnX, this.columns)
+    this.columnU = ensureFloat32Capacity(this.columnU, this.columns)
+    this.rowY = ensureFloat32Capacity(this.rowY, this.rows)
+    this.rowV = ensureFloat32Capacity(this.rowV, this.rows)
     for (let column = 0; column < this.columns; column++) {
       this.columnX[column] = this.offsetX + column * this.spacing
       this.columnU[column] = column / this.columns
@@ -388,9 +389,9 @@ export class HalftoneFrameRenderer {
     }
 
     const capacity = this.columns * this.rows
-    this.cellVignette = new Float64Array(capacity)
-    this.cellAlphaScale = new Float64Array(capacity)
-    this.cellRadiusScale = new Float64Array(capacity)
+    this.cellVignette = ensureFloat32Capacity(this.cellVignette, capacity)
+    this.cellAlphaScale = ensureFloat32Capacity(this.cellAlphaScale, capacity)
+    this.cellRadiusScale = ensureFloat32Capacity(this.cellRadiusScale, capacity)
     for (let row = 0; row < this.rows; row++) {
       const normalizedY =
         this.centerRow === 0 ? 0 : (row - this.centerRow) / this.centerRow
@@ -406,10 +407,18 @@ export class HalftoneFrameRenderer {
         this.cellRadiusScale[cell] = 0.35 + 0.65 * vignette
       }
     }
-    this.scratch = createHalftoneDotScratch(
-      capacity,
-      this.alphaBands
-    )
+    if (
+      this.scratch === null ||
+      this.scratch.capacity < capacity ||
+      this.scratch.bandCount !== this.alphaBands
+    ) {
+      this.scratch = createHalftoneDotScratch(capacity, this.alphaBands)
+    } else {
+      // Grid coordinates may map to different cells after a resize. Retain the
+      // allocation but reset temporal cursor state rather than smearing it into
+      // the new geometry.
+      this.scratch.influence.fill(0, 0, capacity)
+    }
     return true
   }
 
@@ -431,7 +440,8 @@ export class HalftoneFrameRenderer {
     strategy: HalftoneDrawStrategy = 'alpha-buckets',
     pointerX = 0,
     pointerY = 0,
-    pointerActive = false
+    pointerActive = false,
+    frameScale = 1
   ): number {
     const scratch = this.scratch
     if (!scratch) return 0
@@ -439,7 +449,9 @@ export class HalftoneFrameRenderer {
     ctx.clearRect(0, 0, this.width, this.height)
     ctx.fillStyle = this.color
 
-    const influenceRadiusSquared = CURSOR_INFLUENCE * CURSOR_INFLUENCE
+    const influenceRadiusSquared = HALFTONE_CURSOR_INFLUENCE * HALFTONE_CURSOR_INFLUENCE
+    const cursorAttack = scaleHalftoneEasingRate(CURSOR_ATTACK, frameScale)
+    const cursorRelease = scaleHalftoneEasingRate(CURSOR_RELEASE, frameScale)
     const fieldTime = time + this.seedTime
     if (this.motif === 'pulse') updatePulseFrame(fieldTime, this.pulseFrame)
     let dotCount = 0
@@ -479,7 +491,7 @@ export class HalftoneFrameRenderer {
           const deltaY = y - pointerY
           const distanceSquared = deltaX * deltaX + deltaY * deltaY
           if (distanceSquared < influenceRadiusSquared) {
-            const falloff = 1 - Math.sqrt(distanceSquared) / CURSOR_INFLUENCE
+            const falloff = 1 - Math.sqrt(distanceSquared) / HALFTONE_CURSOR_INFLUENCE
             target = falloff * falloff
           }
         }
@@ -488,7 +500,7 @@ export class HalftoneFrameRenderer {
         const influence =
           currentInfluence +
           (target - currentInfluence) *
-            (target > currentInfluence ? CURSOR_ATTACK : CURSOR_RELEASE)
+            (target > currentInfluence ? cursorAttack : cursorRelease)
         scratch.influence[cell] = influence
         if (influence > 0.003) radius += influence * CURSOR_R
 

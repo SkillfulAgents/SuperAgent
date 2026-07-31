@@ -189,7 +189,7 @@ describe('Halftone animation lifecycle', () => {
     )
   })
 
-  it('caps draws at 30fps while advancing from elapsed wall-clock time', () => {
+  it('caps draws near 30fps despite vsync jitter and advances from wall-clock time', () => {
     vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(240)
     vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(120)
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(createCanvasContext())
@@ -204,13 +204,16 @@ describe('Halftone animation lifecycle', () => {
 
     act(() => callbacks.shift()?.(100))
     act(() => callbacks.shift()?.(116))
-    act(() => callbacks.shift()?.(134))
-    act(() => callbacks.shift()?.(168))
+    act(() => callbacks.shift()?.(130))
+    act(() => callbacks.shift()?.(160))
 
     expect(draw).toHaveBeenCalledTimes(3)
     expect(draw.mock.calls[0][1]).toBe(0)
     expect(draw.mock.calls[1][1]).toBeCloseTo(1.5)
-    expect(draw.mock.calls[2][1]).toBeCloseTo(1.5 + 0.75 * (34 / (1000 / 60)))
+    expect(draw.mock.calls[2][1]).toBeCloseTo(1.5 + 0.75 * (30 / (1000 / 60)))
+    expect(draw.mock.calls[0][6]).toBeCloseTo(2)
+    expect(draw.mock.calls[1][6]).toBeCloseTo(30 / (1000 / 60))
+    expect(draw.mock.calls[2][6]).toBeCloseTo(30 / (1000 / 60))
   })
 
   it('suspends for background tabs and cleans up listeners and observers on unmount', () => {
