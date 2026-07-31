@@ -36,9 +36,15 @@ class FakeWebSocket {
   readyState = FakeWebSocket.CONNECTING
   onopen: (() => void) | null = null
   onclose: (() => void) | null = null
+  onmessage: ((e: { data: string }) => void) | null = null
+  sent: string[] = []
 
   constructor(public url: string) {
     FakeWebSocket.instances.push(this)
+  }
+
+  send(data: string) {
+    this.sent.push(data)
   }
 
   completeHandshake() {
@@ -178,5 +184,114 @@ describe('useBrowserStream reconnect', () => {
     await advanceOneSecondAndOpenNewSockets()
 
     expect(FakeWebSocket.instances).toHaveLength(3)
+  })
+})
+
+describe('useBrowserStream width toggle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    mockApiFetch.mockResolvedValue({
+      json: () => Promise.resolve({ active: true, sessionId: 's' }),
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  // The next click derives from the local value, so if only the container's
+  // report could move it, one dropped or late report would latch the toggle:
+  // every later click re-sends the value that is already in effect.
+  it('asks for the opposite mode on the second click even with no report back', async () => {
+    const canvasRef = createRef<HTMLCanvasElement | null>()
+    const { result } = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    act(() => {
+      FakeWebSocket.instances[0].completeHandshake()
+    })
+    await settle()
+    const ws = FakeWebSocket.instances[0]
+
+    act(() => result.current.toggleDesktopWidth())
+    await settle()
+    act(() => result.current.toggleDesktopWidth())
+    await settle()
+
+    const widthAsks = ws.sent
+      .map((s) => JSON.parse(s))
+      .filter((m) => m.type === 'set_desktop_width')
+    expect(widthAsks).toEqual([
+      { type: 'set_desktop_width', enabled: true },
+      { type: 'set_desktop_width', enabled: false },
+    ])
+  })
+
+  // Two clicks in one frame share a render closure. Deriving the next mode from
+  // state would send `true` twice and the second click would do nothing.
+  it('alternates when two clicks land before a re-render', async () => {
+    const canvasRef = createRef<HTMLCanvasElement | null>()
+    const { result } = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    act(() => {
+      FakeWebSocket.instances[0].completeHandshake()
+    })
+    await settle()
+    const ws = FakeWebSocket.instances[0]
+
+    act(() => {
+      result.current.toggleDesktopWidth()
+      result.current.toggleDesktopWidth()
+    })
+    await settle()
+
+    const widthAsks = ws.sent
+      .map((s) => JSON.parse(s))
+      .filter((m) => m.type === 'set_desktop_width')
+      .map((m) => m.enabled)
+    expect(widthAsks).toEqual([true, false])
+  })
+
+  // A click can land in the window between the socket closing and the button
+  // re-rendering as disabled. Showing a mode we never managed to ask for is worse
+  // than ignoring the click.
+  it('does not move the toggle when the socket is not open', async () => {
+    const canvasRef = createRef<HTMLCanvasElement | null>()
+    const { result } = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    act(() => {
+      FakeWebSocket.instances[0].completeHandshake()
+    })
+    await settle()
+
+    FakeWebSocket.instances[0].readyState = FakeWebSocket.CLOSED
+    act(() => result.current.toggleDesktopWidth())
+    await settle()
+
+    expect(result.current.desktopWidth).toBe(false)
+  })
+
+  it('takes the container report as authoritative over the local guess', async () => {
+    const canvasRef = createRef<HTMLCanvasElement | null>()
+    const { result } = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    act(() => {
+      FakeWebSocket.instances[0].completeHandshake()
+    })
+    await settle()
+
+    act(() => result.current.toggleDesktopWidth())
+    await settle()
+    expect(result.current.desktopWidth).toBe(true)
+
+    act(() => {
+      FakeWebSocket.instances[0].onmessage?.({
+        data: JSON.stringify({ type: 'viewport_mode', desktopWidth: false }),
+      })
+    })
+    await settle()
+
+    expect(result.current.desktopWidth).toBe(false)
   })
 })
