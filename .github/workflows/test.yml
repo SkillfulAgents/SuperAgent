@@ -231,6 +231,17 @@ jobs:
       - name: Install Electron's system dependencies
         run: npx playwright install-deps chromium
 
+      # `npm ci` unpacks chrome-sandbox owned by the runner user, and Chromium
+      # aborts on startup rather than run unsandboxed — SIGTRAP before the app
+      # exists, which reaches the harness only as "the API server never bound".
+      # Fixed here rather than with --no-sandbox because this suite exists to
+      # drive the real desktop app, and it should not be the one running it in a
+      # weaker configuration than anybody's actual machine.
+      - name: Let Electron use its sandbox
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+
       # NOT `build:web` — that is `vite build`, whose outDir is dist/renderer,
       # the same directory the desktop renderer lives in. The deployment is used
       # purely as an API here, so only the server bundle is needed.
