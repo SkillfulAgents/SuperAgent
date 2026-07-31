@@ -132,6 +132,14 @@ class ContainerManager {
     }
 
     this.markAsStopped(agentId)
+    // Dead generation had live sessions; clear isActive before the new start
+    // (same as stopContainer — replace does not go through stopContainer).
+    messagePersister.markAllSessionsInactiveForAgent(agentId)
+    messagePersister.broadcastGlobal({
+      type: 'agent_status_changed',
+      agentSlug: agentId,
+      status: 'stopped',
+    })
     const client = this.getClient(agentId)
     const startPromise = this.doStartContainer(agentId, client)
     this.startingAgents.set(agentId, startPromise)

@@ -27,7 +27,6 @@ import type {
   StopOptions,
   StopResult,
 } from './types'
-import { getSettings } from '@shared/lib/config/settings'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { setBootstrapEnv, clearBootstrapEnv } from './agent-bootstrap-env-store'
 
@@ -197,14 +196,6 @@ async function resolveHostApiBaseUrlForMicrovm(): Promise<string> {
 
   const port = hostAppPortSchema.parse(process.env.PORT)
   return `http://${privateIp}:${port}`
-}
-
-// Kept for tests/callers that mirror auto-sleep into seconds. Idle stop is
-// host-owned (terminate); AWS idlePolicy no longer suspends on this window.
-export function resolveIdleSeconds(config: MicrovmRuntimeConfig): number {
-  const minutes = getSettings().app?.autoSleepTimeoutMinutes ?? 30
-  if (minutes <= 0) return config.maxDurationSeconds
-  return Math.min(minutes * 60, config.maxDurationSeconds)
 }
 
 // ---------------------------------------------------------------------------
@@ -546,6 +537,8 @@ async function runMicrovm(
 ): Promise<{ microvmId: string; endpoint: string }> {
   // No suspend: match other runners (stop = terminate). Cap AWS idle at the
   // lifetime so the control plane never auto-suspends; host auto-sleep terminates.
+  // suspendedDurationSeconds is required by the API; 1 is the floor placeholder
+  // (autoResumeEnabled is false so it is never used). Staging canary accepted it.
   const idlePolicy = {
     maxIdleDurationSeconds: config.maxDurationSeconds,
     suspendedDurationSeconds: 1,
@@ -757,17 +750,17 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     }
   }
 
-  // When the generation is already TERMINATING/TERMINATED (lifetime-cap / race),
-  // replace once then retry createSession — callers must not branch on provider type.
+  // On connect-refused against a dead generation (lifetime-cap / stop race),
+  // replace once then retry. No pre-create GetMicrovm — ensureRunning's health
+  // probe covers the common path; dead gens are rare after terminate-on-stop.
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
-    await this.ensureAliveGeneration()
     try {
       return await super.createSession(options)
     } catch (error) {
       if (!isUnreachableCreateSessionError(error)) throw error
       const deadId = await this.observeDeadGeneration()
-      // Live generation still installed — connection blip, not a dead MicroVM.
-      if (deadId === null && agentStates.has(this.config.agentId)) throw error
+      // Alive, unknown, or no local state — do not resurrect a stopped agent.
+      if (deadId === null) throw error
       await this.replaceGeneration('post_create_unreachable', deadId)
       return await super.createSession(options)
     }
@@ -802,7 +795,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
         }
         return { status: 'running', port: state.proxyPort }
       }
-      // Pre-policy SUSPENDED leftovers: terminate that generation (CAS) and drop local state.
+      // One-time migration for pre-terminate-on-stop SUSPENDED leftovers (CAS).
       if (mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') {
         if (agentStates.get(this.config.agentId)?.microvmId === observedId) {
           await this.terminateObserved(observedId)
@@ -851,13 +844,6 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     return createMicrovmAuthToken(config.region, microvmId, [config.agentPort], AUTH_TOKEN_EXPIRATION_MINUTES)
   }
 
-  private async ensureAliveGeneration(): Promise<void> {
-    const deadId = await this.observeDeadGeneration()
-    if (deadId !== null) {
-      await this.replaceGeneration('pre_create_dead', deadId)
-    }
-  }
-
   // Returns the observed microvmId when that generation is terminal/missing; null if alive or unknown.
   private async observeDeadGeneration(): Promise<string | null> {
     const state = agentStates.get(this.config.agentId)
@@ -894,28 +880,29 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
     this.terminateWebSocketConnections()
 
+    if (!observedId) {
+      throw new Error(`Cannot replace MicroVM generation for ${this.config.agentId}: no observed id`)
+    }
+
     const current = agentStates.get(this.config.agentId)
-    if (observedId && current?.microvmId === observedId) {
-      // Terminate then CAS-cleanup — never teardown(): awaiting Terminate can
-      // race a newer generation into agentStates, and teardown always wipes local.
+    if (current?.microvmId === observedId) {
       await this.terminateObserved(observedId)
       this.cleanupLocalIf(observedId)
-    } else if (observedId && !current) {
+    } else if (!current) {
       // Local state already dropped (e.g. getInfo CAS); still terminate the observed id.
       await this.terminateObserved(observedId)
-    } else if (!observedId) {
-      this.cleanupLocal()
     }
     // CAS miss (current is a different generation): leave it installed.
 
     if (agentStates.has(this.config.agentId)) return
 
+    if (!this.config.restartAgent) {
+      throw new Error(
+        `Cannot replace MicroVM generation for ${this.config.agentId}: restartAgent is required`,
+      )
+    }
     try {
-      if (this.config.restartAgent) {
-        await this.config.restartAgent()
-      } else {
-        await this.start()
-      }
+      await this.config.restartAgent()
     } catch (error) {
       captureException(error, {
         tags: { area: 'container', op: 'microvm.replace' },
@@ -951,17 +938,22 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   private async teardown(): Promise<void> {
     const state = agentStates.get(this.config.agentId)
-    if (state) {
-      const config = getMicrovmRuntimeConfig()
-      try {
-        await terminateMicrovm(config.region, state.microvmId)
-      } catch (error) {
-        if (!isNotFound(error)) {
-          captureException(error, { tags: { area: 'container', op: 'microvm.terminate' }, extra: { microvmId: state.microvmId } })
-        }
+    if (!state) {
+      this.cleanupLocal()
+      return
+    }
+    const observedId = state.microvmId
+    const config = getMicrovmRuntimeConfig()
+    try {
+      await terminateMicrovm(config.region, observedId)
+    } catch (error) {
+      if (!isNotFound(error)) {
+        captureException(error, { tags: { area: 'container', op: 'microvm.terminate' }, extra: { microvmId: observedId } })
       }
     }
-    this.cleanupLocal()
+    // CAS: a newer generation may have been installed while Terminate was in
+    // flight — wiping it here would leak that live VM.
+    this.cleanupLocalIf(observedId)
   }
 
   private cleanupLocal(): void {
