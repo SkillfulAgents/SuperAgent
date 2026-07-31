@@ -543,7 +543,7 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     superCreate.mockRestore()
   })
 
-  it('createSession replaces after an unreachable create failure when the generation is TERMINATED', async () => {
+  it('createSession replaces after connect-refused when the generation is TERMINATED', async () => {
     const { BaseContainerClient } = await import('./base-container-client')
     const client = newClient()
     await client.start()
@@ -566,13 +566,44 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     superCreate
       .mockImplementationOnce(async () => {
         responses.getState = 'TERMINATED'
-        throw new Error('Failed to start session - unable to connect to the agent')
+        throw new Error('Failed to start session - unable to connect to the agent', {
+          cause: new Error('connect ECONNREFUSED 127.0.0.1:4000'),
+        })
       })
       .mockResolvedValueOnce({ id: 'sess-2' } as never)
 
     await expect(client.createSession({ initialMessage: 'hi' })).resolves.toEqual({ id: 'sess-2' })
     expect(runCount).toBe(1)
     expect(superCreate).toHaveBeenCalledTimes(2)
+    superCreate.mockRestore()
+  })
+
+  it('createSession does not replace on reset/timeout-shaped unable-to-connect (ambiguous delivery)', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+    responses.getState = 'RUNNING'
+
+    const superCreate = vi.spyOn(BaseContainerClient.prototype, 'createSession')
+    for (const cause of [
+      new Error('read ECONNRESET'),
+      new Error('connect ETIMEDOUT 10.0.0.1:3000'),
+      new Error('fetch failed'),
+    ]) {
+      // Keep generation RUNNING so ensureAlive does not replace; only the
+      // post-create classifier under test can decide to retry.
+      responses.getState = 'RUNNING'
+      superCreate.mockReset()
+      superCreate.mockRejectedValueOnce(
+        new Error('Failed to start session - unable to connect to the agent', { cause }),
+      )
+      await expect(client.createSession({ initialMessage: 'hi' })).rejects.toThrow(/unable to connect/)
+      expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+      expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+      expect(superCreate).toHaveBeenCalledTimes(1)
+      sendMock.mockClear()
+    }
     superCreate.mockRestore()
   })
 
@@ -646,6 +677,67 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     ])
     expect(runCount).toBe(1)
     expect(superCreate).toHaveBeenCalledTimes(2)
+    superCreate.mockRestore()
+  })
+
+  it('replace Terminate await does not wipe a newer generation installed mid-flight', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    let releaseTerminate: (() => void) | undefined
+    const terminateGate = new Promise<void>((resolve) => {
+      releaseTerminate = resolve
+    })
+    let terminateStarted!: () => void
+    const terminateStartedP = new Promise<void>((resolve) => {
+      terminateStarted = resolve
+    })
+
+    const client = newClient()
+    await client.start()
+    const oldId = 'mvm-1'
+    sendMock.mockClear()
+
+    const terminateIds: string[] = []
+    let runCount = 0
+    sendMock.mockImplementation(async (cmd: { type: string; input?: { microvmIdentifier?: string } }) => {
+      if (cmd.type === 'Get') return { state: responses.getState ?? 'RUNNING' }
+      if (cmd.type === 'Run') {
+        runCount++
+        responses.getState = 'RUNNING'
+        return { microvmId: `mvm-cas-${runCount}`, endpoint: 'ep.lambda-microvm.aws' }
+      }
+      if (cmd.type === 'Terminate') {
+        const id = String(cmd.input?.microvmIdentifier ?? '')
+        terminateIds.push(id)
+        if (id === oldId) {
+          terminateStarted()
+          await terminateGate
+        }
+        return {}
+      }
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    responses.getState = 'TERMINATING'
+
+    const superCreate = vi
+      .spyOn(BaseContainerClient.prototype, 'createSession')
+      .mockResolvedValue({ id: 'sess-cas-teardown' } as never)
+
+    const createPromise = client.createSession({ initialMessage: 'hi' })
+    await terminateStartedP
+    // Install a healthy generation while Terminate(old) is still awaiting.
+    client.stopSync()
+    responses.getState = 'RUNNING'
+    await client.start()
+    const freshId = `mvm-cas-${runCount}`
+    releaseTerminate?.()
+    await createPromise
+
+    expect(terminateIds).toContain(oldId)
+    expect(terminateIds).not.toContain(freshId)
+    const info = await client.getInfoFromRuntime()
+    expect(info.status).toBe('running')
+    expect(runCount).toBe(1)
     superCreate.mockRestore()
   })
 

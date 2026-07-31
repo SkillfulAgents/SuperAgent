@@ -636,16 +636,24 @@ async function createMicrovmAuthToken(
 
 const TERMINAL_MICROVM_STATES = new Set(['TERMINATED', 'TERMINATING'])
 
-// Only retry createSession when the request clearly never reached the container.
-// Abort/timeout and mid-response resets are ambiguous (prompt may already be running).
+// True only when the create never left the host TCP stack (connect refused).
+// BaseContainerClient maps ECONNRESET/ETIMEDOUT/fetch failed to the same
+// "unable to connect" string — those are ambiguous (prompt may already run).
+function causeChainIncludes(error: Error, needle: string): boolean {
+  let cur: unknown = error
+  for (let i = 0; i < 5 && cur instanceof Error; i++) {
+    if (cur.message.includes(needle)) return true
+    cur = cur.cause
+  }
+  return false
+}
+
 function isUnreachableCreateSessionError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   const msg = error.message
-  return (
-    msg.includes('unable to connect to the agent') ||
-    msg.includes('Container is not running') ||
-    msg.includes('ECONNREFUSED')
-  )
+  if (msg.includes('Container is not running')) return true
+  if (msg.includes('ECONNREFUSED') || causeChainIncludes(error, 'ECONNREFUSED')) return true
+  return false
 }
 
 export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
@@ -888,7 +896,10 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
     const current = agentStates.get(this.config.agentId)
     if (observedId && current?.microvmId === observedId) {
-      await this.teardown()
+      // Terminate then CAS-cleanup — never teardown(): awaiting Terminate can
+      // race a newer generation into agentStates, and teardown always wipes local.
+      await this.terminateObserved(observedId)
+      this.cleanupLocalIf(observedId)
     } else if (observedId && !current) {
       // Local state already dropped (e.g. getInfo CAS); still terminate the observed id.
       await this.terminateObserved(observedId)

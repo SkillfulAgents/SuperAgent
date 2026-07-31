@@ -1202,11 +1202,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         )
       }
 
-      // Handle network errors with user-friendly messages
+      // Handle network errors with user-friendly messages.
+      // Keep the original as cause so callers can distinguish refused (never
+      // delivered) from reset/timeout (prompt may already be running).
       if (this.isConnectionError(err)) {
         this.handleConnectionError()
         throw new Error(
-          'Failed to start session - unable to connect to the agent. Please check that the agent is running and try again.'
+          'Failed to start session - unable to connect to the agent. Please check that the agent is running and try again.',
+          { cause: err },
         )
       }
 
