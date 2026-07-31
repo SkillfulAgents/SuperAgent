@@ -5,8 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // This file tests the real module, not the global stub from test/setup.ts.
 vi.unmock('@renderer/lib/auth-client')
 
-const { createAuthClient, baseUrl } = vi.hoisted(() => ({
-  createAuthClient: vi.fn((_options: { baseURL?: string }) => ({
+const { createAuthClient, baseUrl, remote } = vi.hoisted(() => ({
+  remote: { value: false },
+  createAuthClient: vi.fn((_options: { baseURL?: string; fetchOptions?: { credentials?: string } }) => ({
     signIn: { email: vi.fn() },
     signUp: { email: vi.fn() },
     signOut: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock('better-auth/client/plugins', () => ({
   genericOAuthClient: () => ({ id: 'oauth' }),
 }))
 vi.mock('./env', () => ({ getApiBaseUrl: () => baseUrl.value }))
+vi.mock('./api-target', () => ({ targetIsRemote: () => remote.value }))
 
 import { _resetAuthClientForTest, authClient, signOut, useSession } from './auth-client'
 
@@ -44,6 +46,7 @@ beforeEach(() => {
   createAuthClient.mockClear()
   _resetAuthClientForTest()
   baseUrl.value = ''
+  remote.value = false
 })
 
 afterEach(() => {
@@ -93,6 +96,46 @@ describe('construction timing', () => {
  * and it has to hold for every mode rather than only the one that used to work
  * by accident.
  */
+/**
+ * A credentialed cross-origin request forbids the server answering with a
+ * wildcard `Access-Control-Allow-Origin`, and the local API answers exactly
+ * that (its CORS is `*` — there is no TRUSTED_ORIGINS on a desktop install). So
+ * in cloud mode `credentials: 'include'` gets `get-session` blocked by the
+ * browser before it is sent, `isAuthenticated` goes false, and `AuthGate` shows
+ * "can't reach your cloud workspace" over a workspace that is answering fine.
+ *
+ * Omitting them costs nothing there: the session belongs to the deployment and
+ * is injected by the proxy from the main process, and this renderer holds no
+ * cookie scoped to the deployment's origin.
+ *
+ * Only a renderer with a real HTTP origin is subject to this — `electron-vite
+ * dev` serves one from `http://localhost:5173`, a packaged renderer is
+ * `file://` — which is why it presents as "cloud mode works in the built app
+ * and not in dev".
+ */
+describe('credentials', () => {
+  it('omits them in cloud mode, so the wildcard CORS header stays legal', () => {
+    remote.value = true
+    baseUrl.value = 'http://localhost:31337/cloud/KEY123'
+    useSession()
+    expect(createAuthClient.mock.calls[0][0]).toMatchObject({
+      fetchOptions: { credentials: 'omit' },
+    })
+  })
+
+  it.each([
+    ['local Electron', 'http://localhost:31337'],
+    ['the web app, same-origin', ''],
+  ])('includes them for %s, whose session IS a cookie on that origin', (_label, base) => {
+    remote.value = false
+    baseUrl.value = base
+    useSession()
+    expect(createAuthClient.mock.calls[0][0]).toMatchObject({
+      fetchOptions: { credentials: 'include' },
+    })
+  })
+})
+
 describe('base URL resolution', () => {
   it('appends the auth path to the cloud proxy prefix', () => {
     baseUrl.value = 'http://localhost:3000/cloud/KEY123'

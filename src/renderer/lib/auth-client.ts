@@ -1,6 +1,7 @@
 import { createAuthClient } from 'better-auth/react'
 import { adminClient, genericOAuthClient } from 'better-auth/client/plugins'
 import { getApiBaseUrl } from './env'
+import { targetIsRemote } from './api-target'
 
 /**
  * The Better Auth client, pointed at whichever API this renderer drives.
@@ -43,11 +44,35 @@ function resolveBaseUrl(): string | undefined {
     : undefined
 }
 
+/**
+ * Whether to attach the renderer's own credentials to auth calls.
+ *
+ * Cloud mode is the one target where they are pure cost. The session belongs to
+ * the *deployment*, and the renderer never holds it: `cloud-proxy.ts` drops any
+ * inbound `Authorization` and injects the deployment token from the main
+ * process, and no cookie of this renderer's is scoped to the deployment's
+ * origin anyway. So `include` sends nothing usable — and makes the request
+ * credentialed, which forbids the local API's wildcard `Access-Control-Allow-
+ * Origin` and gets `get-session` blocked before it is ever sent.
+ *
+ * That only bites where the renderer has a real HTTP origin — `electron-vite
+ * dev` serves it from `http://localhost:5173`, while a packaged renderer is
+ * `file://` and is not subject to it. The symptom is the reconnect screen over
+ * a workspace that is answering perfectly well, so cloud mode looks broken in
+ * dev and healthy once packaged.
+ *
+ * Local and web keep `include`: their session IS a cookie on the API's origin.
+ */
+function credentialsMode(): RequestCredentials {
+  return targetIsRemote() ? 'omit' : 'include'
+}
+
 type AuthClient = ReturnType<typeof buildClient>
 
 function buildClient() {
   return createAuthClient({
     baseURL: resolveBaseUrl(),
+    fetchOptions: { credentials: credentialsMode() },
     plugins: [adminClient(), genericOAuthClient()],
   })
 }
