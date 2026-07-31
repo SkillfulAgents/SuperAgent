@@ -24,17 +24,26 @@ import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from './agent-settings-dialog'
 import { apiFetch } from '@renderer/lib/api'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
-import { Settings, FolderOpen, Copy, Trash2, LogOut } from 'lucide-react'
+import { Settings, FolderOpen, Copy, Trash2, LogOut, Move } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 
 interface AgentContextMenuProps {
   agent: ApiAgent
   children: React.ReactNode
+  /** Homepage-only controls that should share the agent's single menu surface. */
+  additionalOptions?: React.ReactNode
+  /** Enables the homepage grid's explicit arrange mode from any agent card. */
+  onArrange?: () => void
+  /** Let an explicit mobile arrange gesture own touch holds. */
+  disableTouchLongPress?: boolean
 }
 
 export function AgentContextMenu({
   agent,
   children,
+  additionalOptions,
+  onArrange,
+  disableTouchLongPress,
 }: AgentContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showLeaveDialog, setShowLeaveDialog] = useState(false)
@@ -118,10 +127,23 @@ export function AgentContextMenu({
   return (
     <>
       <ContextMenu>
-        <ContextMenuTrigger asChild>
+        <ContextMenuTrigger asChild disableTouchLongPress={disableTouchLongPress}>
           {children}
         </ContextMenuTrigger>
         <ContextMenuContent>
+          {onArrange && (
+            <ContextMenuItem
+              onClick={() => {
+                onArrange()
+              }}
+              data-testid="arrange-agent-cards-item"
+            >
+              <Move className="h-4 w-4 mr-2" />
+              Arrange
+            </ContextMenuItem>
+          )}
+          {additionalOptions}
+          {(onArrange || additionalOptions) && <ContextMenuSeparator />}
           <ContextMenuItem
             onClick={() => setShowSettingsDialog(true)}
             data-testid="agent-settings-item"

@@ -402,7 +402,7 @@ export const AgentMenuItem = React.forwardRef<
   // would just be visual noise.
   const hasInitialContent =
     (agent.sessionCount ?? 0) > 0 ||
-    (agent.dashboardCount ?? 0) > 0
+    (agent.dashboards?.length ?? 0) > 0
   const [isOpen, setIsOpen] = useState(isSelected && hasInitialContent)
 
   // Once the user navigates into a sub-item (session / task / webhook / chat /
@@ -438,7 +438,7 @@ export const AgentMenuItem = React.forwardRef<
   const hasExpandableContent =
     isOpen ||
     (agent.sessionCount ?? 0) > 0 ||
-    (agent.dashboardCount ?? 0) > 0
+    (agent.dashboards?.length ?? 0) > 0
 
   // Show skeleton after 100ms if sessions haven't loaded yet
   useEffect(() => {

@@ -30,6 +30,23 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   }) as unknown as MediaQueryList
 }
 
+// jsdom has no ResizeObserver; recharts' ResponsiveContainer (used by the home
+// page usage sparklines) needs it. Stub it as a no-op so chart-rendering
+// components can mount in tests.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+}
+
+// jsdom logs a "Not implemented" error whenever an otherwise unrelated
+// component probes canvas. Focused canvas tests spy on top of this default.
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = () => null
+}
+
 const signIn = {
   email: vi.fn(),
   oauth2: vi.fn(),

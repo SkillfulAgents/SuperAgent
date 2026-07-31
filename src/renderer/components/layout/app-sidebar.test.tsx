@@ -294,8 +294,7 @@ function makeAgent(overrides: Record<string, any> = {}) {
     hasSessionsAwaitingInput: false,
     hasUnreadNotifications: false,
     sessionCount: 1,
-    chatIntegrationCount: 0,
-    dashboardCount: 0,
+    dashboards: [],
     ...overrides,
   }
 }
@@ -525,11 +524,9 @@ describe('AppSidebar — agent rows', () => {
     expect(dots.length).toBeGreaterThanOrEqual(1)
   })
 
-  it('agent with only chat integrations does not render an expand chevron', () => {
-    // After removing chatIntegrationCount from the expand predicate, an agent
-    // whose only expandable children were chat integrations must NOT show a chevron.
+  it('agent with no sessions or dashboards does not render an expand chevron', () => {
     mockUseAgents.mockReturnValue({
-      data: [makeAgent({ sessionCount: 0, dashboardCount: 0, chatIntegrationCount: 1 })],
+      data: [makeAgent({ sessionCount: 0, dashboards: [] })],
       isLoading: false,
       error: null,
     })

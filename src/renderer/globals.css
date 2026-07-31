@@ -345,6 +345,43 @@ html[data-keyboard-open] [data-composer-footer] {
   -webkit-app-region: no-drag;
 }
 
+@keyframes home-card-jiggle {
+  from {
+    transform: rotate(-0.35deg) translateY(0);
+  }
+  to {
+    transform: rotate(0.35deg) translateY(-0.4px);
+  }
+}
+
+.home-card-jiggle {
+  transform-origin: 50% 55%;
+  animation: home-card-jiggle 160ms ease-in-out infinite alternate;
+}
+
+@keyframes home-title-ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.home-title-ticker {
+  animation: home-title-ticker 14s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-card-jiggle {
+    animation: none;
+  }
+
+  .home-title-ticker {
+    animation: none;
+  }
+}
+
 /* Windows: pad right side of main content headers to avoid overlapping with the custom
    window controls (144px wide at right-2, so 152px total reserved). */
 .electron-vibrancy-win main > div > header,
