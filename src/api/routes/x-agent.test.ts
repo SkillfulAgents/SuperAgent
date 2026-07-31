@@ -78,12 +78,14 @@ const mockGetTranscript = vi.fn((..._args: unknown[]): unknown => undefined)
 const mockRegisterSession = vi.fn(async (..._args: unknown[]) => {})
 const mockUpdateSessionMetadata = vi.fn(async (..._args: unknown[]) => {})
 const mockGetSessionMetadata = vi.fn(async (..._args: unknown[]): Promise<unknown> => null)
+const mockSessionIsKnown = vi.fn(async (..._args: unknown[]) => true)
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: (...args: unknown[]) => mockListSessions(...args),
   getSessionMessagesWithCompact: (...args: unknown[]) => mockGetTranscript(...args),
   registerSession: (...args: unknown[]) => mockRegisterSession(...args),
   updateSessionMetadata: (...args: unknown[]) => mockUpdateSessionMetadata(...args),
   getSessionMetadata: (...args: unknown[]) => mockGetSessionMetadata(...args),
+  sessionIsKnown: (...args: unknown[]) => mockSessionIsKnown(...args),
 }))
 
 // Container manager
@@ -105,15 +107,17 @@ vi.mock('@shared/lib/container/container-manager', () => ({
 const mockIsSessionActive = vi.fn((_sessionId?: string): boolean => false)
 const mockIsSessionAwaitingInput = vi.fn((_sessionId?: string): boolean => false)
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
+const mockSubscribeToSession = vi.fn()
+const mockMarkSessionActive = vi.fn()
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
     isSessionActive: (sessionId?: string) => mockIsSessionActive(sessionId),
     isSessionAwaitingInput: (sessionId?: string) => mockIsSessionAwaitingInput(sessionId),
     waitForIdle: (...args: unknown[]) => mockWaitForIdle(...args),
-    isSubscribed: vi.fn(() => true),
-    subscribeToSession: vi.fn(),
+    isSubscribed: vi.fn(() => false),
+    subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
     unsubscribeFromSession: vi.fn(),
-    markSessionActive: vi.fn(),
+    markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
     setSlashCommands: vi.fn(),
   },
 }))
@@ -233,6 +237,7 @@ beforeEach(async () => {
   mockIsSessionActive.mockReturnValue(false)
   mockIsSessionAwaitingInput.mockReturnValue(false)
   mockWaitForIdle.mockResolvedValue(undefined)
+  mockSessionIsKnown.mockResolvedValue(true)
   mockReadAgentPreferences.mockResolvedValue({})
   mockGetSessionMetadata.mockResolvedValue(null)
   mockEnsureRunning.mockClear()
@@ -712,6 +717,30 @@ describe('/invoke', () => {
         userId: OTHER_USER_ID,
       }),
     ])
+  })
+
+  it('404s when the continued session belongs to some other agent', async () => {
+    // Invoke rights on the target say nothing about the session id passed with
+    // them. Without an ownership check, a caller allowed to invoke the target
+    // could name a THIRD agent's session and have the persister re-point it at
+    // the target's container — and the target's transcript written under it.
+    reviewDecisions.push('allow')
+    await grantCallerOwnerTargetAccess()
+    mockSessionIsKnown.mockResolvedValue(false)
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'follow-up',
+      sessionId: 'third-agent-session',
+    })
+
+    expect(res.status).toBe(404)
+    // Checked against the TARGET, whose container the session would be driven
+    // on — not the caller, who never owns it either way.
+    expect(mockSessionIsKnown).toHaveBeenCalledWith(TARGET_SLUG, 'third-agent-session')
+    expect(mockSubscribeToSession).not.toHaveBeenCalled()
+    expect(mockMarkSessionActive).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
   })
 
   it('removes continued-session attribution when sendMessage fails', async () => {

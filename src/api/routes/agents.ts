@@ -1901,6 +1901,14 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
 
     const runtimeOptions = parseRuntimeOptions(body)
 
+    // cancelAwaitingInput / markSessionActive / broadcastSessionEvent below are
+    // all keyed by session id alone: an unowned id would cancel another agent's
+    // pending input request, re-bind its session to this agent, and inject a
+    // spoofed user message into every client watching it.
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
     const agent = await getAgent(agentSlug)
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
@@ -2018,6 +2026,12 @@ agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
   const sessionId = c.req.param('sessionId')
   const user = c.get('user' as never) as { id: string; name: string }
 
+  // Otherwise this puts the caller's name in the typing indicator of a session
+  // in someone else's agent.
+  if (!(await sessionIsKnown(getAgentId(c), sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
   messagePersister.broadcastSessionEvent(sessionId, {
     type: 'user_typing',
     sender: { id: user.id, name: user.name },
@@ -2121,6 +2135,17 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
+    // Ownership first: unsubscribeFromSession below is keyed by session id
+    // alone, so on a foreign id it would tear down another agent's live message
+    // subscription on the way to a 404. This costs no deletability — it accepts
+    // exactly the "transcript OR metadata entry exists" condition that
+    // deleteSession itself reports success for.
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
+    // Before the delete, so an in-flight append can't recreate the transcript
+    // just after it is unlinked.
     messagePersister.unsubscribeFromSession(sessionId)
 
     // deleteSession is the authority for existence here: it removes the JSONL
@@ -2247,11 +2272,18 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
 
 // POST /api/agents/:id/sessions/:sessionId/interrupt - Interrupt an active session
 agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.param('sessionId')
+
+  // Outside the try on purpose. Every path below — including the catch — ends in
+  // markSessionInterrupted, which is keyed by session id alone across all agents,
+  // so an unowned id reaching any of them wipes another agent's live session
+  // state and tells its viewers it went idle.
+  if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
   try {
-    const agentSlug = getAgentId(c)
-    const sessionId = c.req.param('sessionId')
-
-
     const client = containerManager.getClient(agentSlug)
     // Use cached status to avoid spawning docker process
     const info = containerManager.getCachedInfo(agentSlug)
@@ -2280,12 +2312,11 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to interrupt session:', error)
-    // Even on error, try to mark session as interrupted to fix UI state
+    // Even on error, try to mark session as interrupted to fix UI state.
+    // Ownership was established above, so this reaches only the caller's session.
     try {
-      const sessionId = c.req.param('sessionId')
-      const agentSlugFallback = getAgentId(c)
       await messagePersister.markSessionInterrupted(sessionId)
-      reviewManager.denyAllForAgent(agentSlugFallback)
+      reviewManager.denyAllForAgent(agentSlug)
       return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
     } catch {
       return c.json({ error: 'Failed to interrupt session' }, 500)

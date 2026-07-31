@@ -168,7 +168,9 @@ export async function getSessionMetadata(
   sessionId: string
 ): Promise<SessionMetadata | null> {
   const metadata = await readSessionMetadata(agentSlug)
-  return metadata[sessionId] || null
+  // Own-property check for the same reason as isSessionRegistered: a bare index
+  // read returns an inherited Object.prototype member for ids like 'constructor'.
+  return Object.hasOwn(metadata, sessionId) ? metadata[sessionId] : null
 }
 
 /**
@@ -192,13 +194,17 @@ export async function registerSession(
 
 /**
  * Check if a session is registered (exists in metadata)
+ *
+ * `Object.hasOwn`, not `in` / a bare index read: the metadata map is an ordinary
+ * object, so every `Object.prototype` name ('constructor', 'toString', …) would
+ * otherwise answer "registered" and walk straight through any gate built on this.
  */
 export async function isSessionRegistered(
   agentSlug: string,
   sessionId: string
 ): Promise<boolean> {
   const metadata = await readSessionMetadata(agentSlug)
-  return sessionId in metadata
+  return Object.hasOwn(metadata, sessionId)
 }
 
 // ============================================================================
@@ -661,7 +667,7 @@ export async function deleteSession(
   // being rewritten without this entry's siblings.
   let hadMetadata = false
   await mutateSessionMetadata(agentSlug, (metadata) => {
-    hadMetadata = metadata[sessionId] !== undefined
+    hadMetadata = Object.hasOwn(metadata, sessionId)
     if (!hadMetadata) return false // nothing to delete — skip the write
     delete metadata[sessionId]
     return true
@@ -704,7 +710,7 @@ export async function deleteSessionsBatch(
     await mutateSessionMetadata(agentSlug, (metadata) => {
       let changed = false
       for (const sessionId of deleted) {
-        if (metadata[sessionId] !== undefined) {
+        if (Object.hasOwn(metadata, sessionId)) {
           delete metadata[sessionId]
           changed = true
         }
@@ -739,17 +745,37 @@ export async function sessionExists(
 }
 
 /**
- * Whether a session exists at all — a written transcript, or a registration for
- * one whose agent hasn't streamed its first message yet. This is exactly the
- * rule getSession returns non-null on, but it costs a stat and a metadata read
- * instead of a full transcript pass. Use it for 404 guards that don't go on to
- * read any SessionInfo field.
+ * Whether `sessionId` names a session OF THIS AGENT — a written transcript, or a
+ * registration for one whose agent hasn't streamed its first message yet. This
+ * is exactly the rule getSession returns non-null on, but it costs a stat and a
+ * metadata read instead of a full transcript pass. Use it for 404 guards that
+ * don't go on to read any SessionInfo field.
+ *
+ * Both halves are needed: the transcript lands only once the first turn writes,
+ * and the metadata entry covers the window from `registerSession` up to then.
+ *
+ * It is also the ownership gate for every route that reaches a registry keyed by
+ * session id ALONE — above all the message persister, which is process-global
+ * and has no agent dimension. Authorizing the agent in the URL says nothing
+ * about the session id in it, so without this a caller with a role on their own
+ * agent drives a stranger's live session.
+ *
+ * Never throws. `getSessionJsonlPath` rejects ids that escape the agent's
+ * session directory, and an id that cannot even name a file under this agent
+ * cannot be one of its sessions. Letting that throw escape would hand the
+ * request to the caller's `catch`, and interrupt's deliberately marks the
+ * session interrupted on the error path — the exact thing the gate exists to
+ * stop.
  */
 export async function sessionIsKnown(
   agentSlug: string,
   sessionId: string
 ): Promise<boolean> {
-  if (await sessionExists(agentSlug, sessionId)) return true
+  try {
+    if (await sessionExists(agentSlug, sessionId)) return true
+  } catch {
+    return false
+  }
   const metadata = await getSessionMetadata(agentSlug, sessionId)
   return Boolean(metadata?.createdAt)
 }

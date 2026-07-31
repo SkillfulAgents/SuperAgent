@@ -33,6 +33,7 @@ import {
   getSessionMetadata,
   registerSession,
   updateSessionMetadata,
+  sessionIsKnown,
 } from '@shared/lib/services/session-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -621,6 +622,13 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     let stage = 'ensure_running'
     try {
       if (existingSessionId) {
+        // Invoke rights on the target say nothing about the session id sent
+        // with them. The persister is keyed by session id alone, so a third
+        // agent's id would get re-pointed at the target's container here — and
+        // the target's transcript written under it.
+        if (!(await sessionIsKnown(targetSlug, existingSessionId))) {
+          return c.json({ error: 'Session not found' }, 404)
+        }
         if (messagePersister.isSessionActive(existingSessionId)) {
           return c.json({ error: 'Target session is currently running' }, 409)
         }

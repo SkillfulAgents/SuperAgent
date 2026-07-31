@@ -102,17 +102,20 @@ const mockContainerFetch = vi.fn()
 const mockSendMessage = vi.fn()
 const mockCancelQueuedMessage = vi.fn()
 const mockKeepAlive = vi.fn()
+const mockInterruptSession = vi.fn()
+const mockGetCachedInfo = vi.fn(() => ({ status: 'running', port: 8080 }))
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     getClient: () => ({
       fetch: (...args: unknown[]) => mockContainerFetch(...args),
       sendMessage: (...args: unknown[]) => mockSendMessage(...args),
       cancelQueuedMessage: (...args: unknown[]) => mockCancelQueuedMessage(...args),
+      interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
       start: vi.fn(),
       stop: vi.fn(),
     }),
     ensureRunning: vi.fn(),
-    getCachedInfo: () => ({ status: 'running', port: 8080 }),
+    getCachedInfo: () => mockGetCachedInfo(),
     removeClient: vi.fn(),
     keepAlive: (...args: unknown[]) => mockKeepAlive(...args),
   },
@@ -361,6 +364,7 @@ const mockGetPendingReviewsForAgent = vi.fn((_slug: string) => [] as any[])
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
     getPendingReviewsForAgent: (slug: string) => mockGetPendingReviewsForAgent(slug),
+    denyAllForAgent: vi.fn(),
     submitDecision: vi.fn(),
     resolveMatchingPending: vi.fn(),
     resolveMatchingPendingByLabel: vi.fn(),
@@ -5599,5 +5603,216 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
     expect(
       computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
     ).toBe('granted')
+  })
+})
+
+// ============================================================================
+// Cross-agent session scoping
+// ============================================================================
+
+/**
+ * Session-scoped routes authorize the AGENT in the URL, never the session id in
+ * it. Most siblings are safe by construction because they build a filesystem
+ * path from `agentSlug + sessionId`, so a foreign id is simply a miss — but the
+ * routes that reach the message persister are not: it is a process-global
+ * registry keyed by session id ALONE, with no agent dimension. Without an
+ * explicit ownership gate, a caller holding a role on agent A can pass agent B's
+ * session id and drive B's live session: wipe its streaming state, broadcast a
+ * bogus `session_idle` to everyone watching it, spoof messages into its
+ * transcript view, or grant it a capability.
+ *
+ * Each test below asserts BOTH halves — the 404, and that the global side effect
+ * never fired. The status code alone would pass even if the mutation happened
+ * first and the route merely reported failure afterwards.
+ */
+describe('cross-agent session scoping', () => {
+  const ATTACKER = 'attacker-agent'
+  const OWN_SESSION = 'own-session-id'
+  const VICTIM_SESSION = 'victim-session-id'
+
+  let app: Hono
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockAgentExists.mockResolvedValue(true)
+    mockIsAuthMode.mockReturnValue(true)
+    mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 })
+    mockInterruptSession.mockResolvedValue(true)
+    mockSendMessage.mockResolvedValue(undefined)
+    mockContainerFetch.mockResolvedValue({ ok: true, json: async () => ({}) })
+
+    // The attacker owns exactly one session; the victim's id belongs to another
+    // agent, so it resolves to neither a transcript nor a metadata entry here.
+    vi.mocked(sessionIsKnown).mockImplementation(
+      async (agentSlug: string, sessionId: string) =>
+        agentSlug === ATTACKER && sessionId === OWN_SESSION,
+    )
+    vi.mocked(sessionExists).mockImplementation(
+      async (agentSlug: string, sessionId: string) =>
+        agentSlug === ATTACKER && sessionId === OWN_SESSION,
+    )
+    vi.mocked(getSession).mockImplementation(async (agentSlug: string, sessionId: string) =>
+      agentSlug === ATTACKER && sessionId === OWN_SESSION
+        ? ({ id: sessionId, agentSlug, name: 'Own', createdAt: new Date(), lastActivityAt: new Date(), messageCount: 1 } as any)
+        : null,
+    )
+    vi.mocked(deleteSession).mockResolvedValue(false)
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Attacker' } } as any)
+  })
+
+  afterEach(() => {
+    mockIsAuthMode.mockReturnValue(false)
+    mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 })
+  })
+
+  function url(sessionId: string, suffix = ''): string {
+    return `/api/agents/${ATTACKER}/sessions/${sessionId}${suffix}`
+  }
+
+  describe('POST /sessions/:sessionId/interrupt', () => {
+    it('404s on a foreign session and never marks it interrupted', async () => {
+      const res = await postJson(app, url(VICTIM_SESSION, '/interrupt'), {})
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+      expect(mockInterruptSession).not.toHaveBeenCalled()
+    })
+
+    it('404s on a foreign session even when the container is not running', async () => {
+      // The stopped-container path marks the session interrupted directly,
+      // without going through the container at all.
+      mockGetCachedInfo.mockReturnValue({ status: 'stopped', port: 0 })
+
+      const res = await postJson(app, url(VICTIM_SESSION, '/interrupt'), {})
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+    })
+
+    it('404s on a foreign session even when the container call throws', async () => {
+      // The handler's catch deliberately marks the session interrupted anyway
+      // (to unstick a stale UI). The gate has to run BEFORE that try, or the
+      // error path becomes a second way in.
+      mockInterruptSession.mockRejectedValue(new Error('container exploded'))
+
+      const res = await postJson(app, url(VICTIM_SESSION, '/interrupt'), {})
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+    })
+
+    it('404s on a session id that escapes the agent’s session directory', async () => {
+      const res = await postJson(app, url('..%2F..%2Fvictim', '/interrupt'), {})
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+    })
+
+    it('still interrupts the caller’s own session', async () => {
+      const res = await postJson(app, url(OWN_SESSION, '/interrupt'), {})
+
+      expect(res.status).toBe(200)
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(OWN_SESSION)
+    })
+
+    it('still marks the caller’s own session interrupted when the container throws', async () => {
+      mockInterruptSession.mockRejectedValue(new Error('container exploded'))
+
+      const res = await postJson(app, url(OWN_SESSION, '/interrupt'), {})
+
+      expect(res.status).toBe(200)
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(OWN_SESSION)
+    })
+  })
+
+  // GET …/stream is gated too, but by its own inline check with dedicated
+  // coverage above ('session stream access') — not repeated here.
+
+  describe('POST /sessions/:sessionId/messages', () => {
+    it('404s on a foreign session and never touches its live state', async () => {
+      const res = await postJson(app, url(VICTIM_SESSION, '/messages'), { content: 'hi' })
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.cancelAwaitingInput).not.toHaveBeenCalled()
+      expect(messagePersister.markSessionActive).not.toHaveBeenCalled()
+      expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
+      expect(messagePersister.subscribeToSession).not.toHaveBeenCalled()
+      expect(mockSendMessage).not.toHaveBeenCalled()
+    })
+
+    it('still sends to the caller’s own session', async () => {
+      const res = await postJson(app, url(OWN_SESSION, '/messages'), { content: 'hi' })
+
+      expect(res.status).toBe(201)
+      expect(mockSendMessage).toHaveBeenCalled()
+    })
+  })
+
+  describe('POST /sessions/:sessionId/typing', () => {
+    it('404s on a foreign session and never broadcasts into it', async () => {
+      const res = await postJson(app, url(VICTIM_SESSION, '/typing'), {})
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
+    })
+
+    it('still broadcasts typing for the caller’s own session', async () => {
+      const res = await postJson(app, url(OWN_SESSION, '/typing'), {})
+
+      expect(res.status).toBe(200)
+      expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith(
+        OWN_SESSION,
+        expect.objectContaining({ type: 'user_typing' }),
+      )
+    })
+  })
+
+  // The decision routes reach the same session-id-keyed registries, but they are
+  // already closed by gateRequestDecision, which binds the toolUseId to the
+  // route's agent AND session. It answers an unknown id with 200
+  // {alreadySettled} rather than a 404 — deliberately, so a stale card dismisses
+  // itself — so these assert the side effect, not the status.
+  describe('POST /sessions/:sessionId/capability-review', () => {
+    it('never grants a capability in a foreign session', async () => {
+      await postJson(app, url(VICTIM_SESSION, '/capability-review'), {
+        toolUseId: 'tool-1',
+        capability: 'subagents',
+        scope: 'session',
+      })
+
+      expect(messagePersister.grantSessionCapability).not.toHaveBeenCalled()
+      expect(messagePersister.completeCapabilityReview).not.toHaveBeenCalled()
+    })
+
+    it('never resolves a foreign session’s review card when declining', async () => {
+      await postJson(app, url(VICTIM_SESSION, '/capability-review'), {
+        toolUseId: 'tool-1',
+        capability: 'subagents',
+        decline: true,
+      })
+
+      expect(messagePersister.completeCapabilityReview).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('POST /sessions/:sessionId/complete-browser-input', () => {
+    it('never marks a foreign session interrupted', async () => {
+      await postJson(app, url(VICTIM_SESSION, '/complete-browser-input'), {
+        toolUseId: 'tool-1',
+        decline: true,
+      })
+
+      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('DELETE /sessions/:sessionId', () => {
+    it('404s on a foreign session without unsubscribing its persister', async () => {
+      const res = await deleteReq(app, url(VICTIM_SESSION))
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.unsubscribeFromSession).not.toHaveBeenCalled()
+    })
   })
 })
