@@ -1,46 +1,47 @@
 
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
-import { WidgetBoard, WidgetSizePopover, WidgetToggleRow, type GridRect, type WidgetItem, type WidgetSizeKey } from './widget-grid'
+import { WidgetBoard, WidgetSizePopover, type GridRect, type WidgetItem, type WidgetSizeKey } from './widget-grid'
 import { useAgents, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
-import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
+import { useHomeCardHealth } from '@renderer/hooks/use-home-card-health'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
-import { useSessions } from '@renderer/hooks/use-sessions'
-import { useQuery } from '@tanstack/react-query'
-import { apiFetch } from '@renderer/lib/api'
+import { useNotableSessions } from '@renderer/hooks/use-sessions'
 import { Halftone } from '@renderer/components/agents/halftone'
 import {
   ActivitySparkChart,
-  ActivitySparkChartSkeleton,
   CronSparkChart,
   summarizeDailyActivity,
 } from '@renderer/components/activity/activity-spark-chart'
 import { DEFAULT_ACTIVITY_DAYS } from '@shared/lib/types/activity'
 import {
-  homeGraphSchema,
-  type HomeGraphCron,
-  type HomeGraphData,
-  type HomeGraphWebhook,
-} from '@shared/lib/types/home-graph-schema'
+  type HomeCardCron,
+  type HomeCardHealthData,
+  type HomeCardWebhook,
+} from '@shared/lib/types/home-card-health-schema'
 import { getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { WorkingDots, AwaitingDot, UnreadDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
+import { AppLink } from '@renderer/components/ui/app-link'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { ContextMenuSwitchItem } from '@renderer/components/ui/context-menu'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
+import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { DashboardCard } from './dashboard-card'
 import { PwaInstallBanner } from './pwa-install-banner'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { Plus, Bot, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints } from 'lucide-react'
+import { Plus, Bot, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints, MoreVertical, Move } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { formatDistanceToNow } from 'date-fns'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { toast } from 'sonner'
 
 // Code-split: the graph pulls in @xyflow/react + d3-force, which nobody
 // should pay for on a cards-only page load.
@@ -64,6 +65,23 @@ function hashSlug(s: string): number {
     h = (h * 16777619) >>> 0
   }
   return h
+}
+
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+  )
+
+  useEffect(() => {
+    const media = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+    if (!media) return
+    const update = () => setReduced(media.matches)
+    update()
+    media.addEventListener?.('change', update)
+    return () => media.removeEventListener?.('change', update)
+  }, [])
+
+  return reduced
 }
 
 // State label for the top-right status/control chip.
@@ -104,23 +122,17 @@ function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
     // with it natively.
     <div className="flex items-center gap-1.5 rounded-md border border-border/50 bg-white/10 py-0.5 pl-1.5 pr-1 text-xs backdrop-blur-sm">
       <span className="leading-none text-muted-foreground">{label}</span>
-      <span
-        role="button"
-        tabIndex={0}
+      <button
+        type="button"
+        disabled={isPending}
         aria-label={isRunning ? 'Stop agent' : 'Wake up agent'}
         title={isRunning ? 'Stop agent' : 'Wake up agent'}
         onClick={activate}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault()
-            activate(e)
-          }
-        }}
         className={cn(
           'flex h-5 w-5 shrink-0 items-center justify-center rounded border bg-background text-foreground shadow-sm',
           'cursor-pointer transition-colors hover:bg-muted',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-          isPending && 'pointer-events-none opacity-60'
+          'disabled:cursor-wait disabled:opacity-60'
         )}
       >
         {isPending ? (
@@ -130,7 +142,7 @@ function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
         ) : (
           <Power className="h-2.5 w-2.5" />
         )}
-      </span>
+      </button>
     </div>
   )
 }
@@ -165,8 +177,7 @@ function AgentCardMatrix({
   const stateTweak = activityStatus === 'awaiting_input' ? undefined : HALFTONE_STATE[activityStatus]
   return (
     <div
-      role="img"
-      aria-label={activityStatus}
+      aria-hidden="true"
       className={cn('w-full overflow-hidden', className ?? 'aspect-[32/9]', HALFTONE_INK[activityStatus])}
     >
       <Halftone
@@ -253,25 +264,6 @@ function SessionStateDot({ state }: { state: SessionState }) {
   return <span className="flex h-3 w-3 shrink-0 items-center justify-center">{dot}</span>
 }
 
-/** Keyboard-activatable span — cards are <button>s, so inner controls can't be native buttons. */
-function rowButtonProps(onActivate: (e: React.SyntheticEvent) => void) {
-  return {
-    role: 'button' as const,
-    tabIndex: 0,
-    onClick: (e: React.MouseEvent) => {
-      e.stopPropagation()
-      onActivate(e)
-    },
-    onKeyDown: (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
-        e.stopPropagation()
-        onActivate(e)
-      }
-    },
-  }
-}
-
 /**
  * Notifications section: a frosted panel (matching the title pill / health
  * chips) of hairline-divided rows — state dot, name, and a right-aligned
@@ -305,7 +297,7 @@ function AgentCardSessions({
   const moreCount = notable.length - visible.length
 
   return (
-    <div className="flex max-h-full min-h-0 flex-col overflow-hidden rounded-md border border-border/50 bg-white/10 backdrop-blur-sm">
+    <div className="pointer-events-auto flex max-h-full min-h-0 flex-col overflow-hidden rounded-md border border-border/50 bg-white/10 backdrop-blur-sm">
       <div className="min-h-0 overflow-y-auto px-2 py-1">
         {visible.map((s) => {
           const st = sessionState(s)
@@ -315,37 +307,50 @@ function AgentCardSessions({
               key={s.id}
               className="group/row flex h-6 w-full items-center gap-2.5 text-xs"
             >
-              <span {...rowButtonProps(() => open(s.id))} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  open(s.id)
+                }}
+                className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
                 <SessionStateDot state={st} />
                 <span className="truncate text-foreground">
                   <span className="text-muted-foreground">{SESSION_STATE_PREFIX[st]}: </span>
                   {stripAgentPrefix(s.name, agentName)}
                 </span>
-              </span>
+              </button>
               {st === 'unread' || st === 'awaiting' ? (
                 <>
-                  {/* The timestamp swaps for actions on hover: unread gets
-                      clear + open; needs-input has nothing to clear, just open. */}
-                  <span className="shrink-0 text-muted-foreground tabular-nums group-hover/row:hidden">{right}</span>
-                  <span className="hidden shrink-0 items-center gap-0.5 group-hover/row:flex">
+                  <span className="shrink-0 text-muted-foreground tabular-nums">{right}</span>
+                  <span className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100">
                     {st === 'unread' && (
-                      <span
-                        {...rowButtonProps(() => markRead.mutate(s.id))}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          markRead.mutate(s.id)
+                        }}
                         aria-label="Mark as read"
                         title="Mark as read"
-                        className="inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         <Check className="h-3.5 w-3.5" />
-                      </span>
+                      </button>
                     )}
-                    <span
-                      {...rowButtonProps(() => open(s.id))}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        open(s.id)
+                      }}
                       aria-label="Open session"
                       title="Open session"
-                      className="inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <ArrowRight className="h-3.5 w-3.5" />
-                    </span>
+                    </button>
                   </span>
                 </>
               ) : (
@@ -355,17 +360,19 @@ function AgentCardSessions({
           )
         })}
         {moreCount > 0 && (
-          <span
-            {...rowButtonProps(() => {
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
               void navigate({ to: '/agents/$slug', params: { slug: agentDisplaySlug } })
-            })}
+            }}
             className="group/row flex h-6 w-full cursor-pointer items-center justify-end gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
             <span>{moreCount} more</span>
-            <span className="hidden h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground group-hover/row:inline-flex">
+            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-60 transition-all group-hover/row:opacity-100">
               <ArrowRight className="h-3.5 w-3.5" />
             </span>
-          </span>
+          </button>
         )}
       </div>
     </div>
@@ -386,18 +393,14 @@ function AgentHealthCarousel({
   agent,
   crons,
   webhooks,
+  health,
 }: {
   agent: ApiAgent
-  crons: HomeGraphCron[]
-  webhooks: HomeGraphWebhook[]
+  crons: HomeCardCron[]
+  webhooks: HomeCardWebhook[]
+  health?: HomeCardHealthData
 }) {
   const navigate = useNavigate()
-  // live:false — many cards mount at once; same reasoning as the graph's
-  // hover cards (no poll, refetch only when stale).
-  const { data: stats, isPending: statsPending } = useAgentActivityStats(agent.slug, DEFAULT_ACTIVITY_DAYS, {
-    live: false,
-  })
-
   const slides = useMemo<HealthSlide[]>(
     () => [
       ...crons.map((c) => ({ kind: 'cron' as const, id: c.id, name: c.name ?? c.scheduleExpression })),
@@ -407,7 +410,10 @@ function AgentHealthCarousel({
   )
   const count = slides.length
   const [index, setIndex] = useState(0)
-  const [paused, setPaused] = useState(false)
+  const [hovered, setHovered] = useState(false)
+  const [focusWithin, setFocusWithin] = useState(false)
+  const reduceMotion = usePrefersReducedMotion()
+  const paused = hovered || focusWithin || reduceMotion
 
   useEffect(() => {
     if (paused || count < 2) return
@@ -429,22 +435,24 @@ function AgentHealthCarousel({
   const renderSlide = (s: HealthSlide) => {
     let chart: ReactNode
     let metric = ''
-    if (statsPending) {
-      chart = <ActivitySparkChartSkeleton className="h-5 w-24" />
-    } else if (s.kind === 'cron') {
-      const activity = stats?.cronByTaskId[s.id] ?? []
+    if (s.kind === 'cron') {
+      const activity = health?.cronByTaskId[s.id] ?? []
       const succeeded = activity.filter((p) => p.status === 'succeeded').length
       chart = <CronSparkChart label={s.name} data={activity} className="h-5 w-24" />
       metric = `${succeeded}/${activity.length}`
     } else {
-      const activity = stats?.webhookByTriggerId[s.id] ?? []
+      const activity = health?.webhookByTriggerId[s.id] ?? []
       const { total } = summarizeDailyActivity(activity)
       chart = <ActivitySparkChart label={s.name} data={activity} className="h-5 w-24" />
-      metric = `${total}/${DEFAULT_ACTIVITY_DAYS}d`
+      metric = `${total}/${health?.days ?? DEFAULT_ACTIVITY_DAYS}d`
     }
     return (
-      <span
-        {...rowButtonProps(() => openSlide(s))}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          openSlide(s)
+        }}
         className="flex w-full cursor-pointer items-center gap-2 text-xs"
       >
         <span className="min-w-0 flex-1 truncate">
@@ -453,15 +461,19 @@ function AgentHealthCarousel({
         </span>
         <span className="shrink-0">{chart}</span>
         <span className="shrink-0 tabular-nums text-muted-foreground">{metric}</span>
-      </span>
+      </button>
     )
   }
 
   return (
     <div
-      className="mt-auto flex shrink-0 items-center gap-1.5"
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
+      className="pointer-events-auto mt-auto flex shrink-0 items-center gap-1.5"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setFocusWithin(true)}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusWithin(false)
+      }}
     >
       {/* The frosted panel (title's bg-white/10 + backdrop-blur) lives on the
           container so the halftone reads softly through it and never flashes.
@@ -470,24 +482,33 @@ function AgentHealthCarousel({
       <div className="relative min-w-0 flex-1 overflow-hidden rounded-md border border-border/50 bg-white/10 backdrop-blur-sm">
         <div
           key={active.id}
-          className="px-2 py-1.5 animate-in slide-in-from-bottom-full duration-300"
+          className={cn('px-2 py-1.5', !reduceMotion && 'animate-in slide-in-from-bottom-full duration-300')}
         >
           {renderSlide(active)}
         </div>
       </div>
       {/* Vertical position dots, outside the chip to the right */}
       {count > 1 && (
-        <span className="flex shrink-0 flex-col items-center gap-1">
+        <span className="flex shrink-0 items-center">
           {slides.map((s, i) => (
-            <span
+            <button
+              type="button"
               key={s.id}
-              {...rowButtonProps(() => setIndex(i))}
+              onClick={(e) => {
+                e.stopPropagation()
+                setIndex(i)
+              }}
               aria-label={`Show health row ${i + 1} of ${count}`}
-              className={cn(
-                'h-[3px] w-[3px] cursor-pointer rounded-full transition-colors',
-                i === index % count ? 'bg-foreground/70' : 'bg-muted-foreground/30 hover:bg-muted-foreground/60'
-              )}
-            />
+              aria-pressed={i === index % count}
+              className="group inline-flex h-6 w-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span
+                className={cn(
+                  'h-[3px] w-[3px] rounded-full transition-colors',
+                  i === index % count ? 'bg-foreground/70' : 'bg-muted-foreground/30 group-hover:bg-muted-foreground/60'
+                )}
+              />
+            </button>
           ))}
         </span>
       )}
@@ -520,11 +541,7 @@ function TickerTitleMeta({
   )
   return (
     <div className="relative h-4 overflow-hidden text-xs">
-      <style>{'@keyframes title-ticker{from{transform:translateX(0)}to{transform:translateX(-50%)}}'}</style>
-      <div
-        className="flex w-max items-center whitespace-nowrap"
-        style={{ animation: 'title-ticker 14s linear infinite' }}
-      >
+      <div className="home-title-ticker flex w-max items-center whitespace-nowrap group-hover/widget:[animation-play-state:paused] group-focus-within/widget:[animation-play-state:paused]">
         {run}
         {run}
       </div>
@@ -541,18 +558,23 @@ function TickerTitleMeta({
 function AgentCard({
   agent,
   size = 'W',
-  sizeControl,
+  additionalOptions,
+  onArrange,
+  disableTouchLongPress,
   crons = [],
   webhooks = [],
+  health,
 }: {
   agent: ApiAgent
   size?: WidgetSizeKey
-  sizeControl?: ReactNode
-  crons?: HomeGraphCron[]
-  webhooks?: HomeGraphWebhook[]
+  additionalOptions?: ReactNode
+  onArrange?: () => void
+  disableTouchLongPress?: boolean
+  crons?: HomeCardCron[]
+  webhooks?: HomeCardWebhook[]
+  health?: HomeCardHealthData
 }) {
   useRenderTracker('AgentCard')
-  const navigate = useNavigate()
   const lastWorked = agent.lastActivityAt ? formatDistanceToNow(new Date(agent.lastActivityAt), { addSuffix: true }) : null
 
   const isSmall = size === 'S'
@@ -560,7 +582,10 @@ function AgentCard({
   // Fetch sessions whenever there are notable ones — the Wide card lists them,
   // the Small card rotates a count into the title.
   const hasNotable = agent.hasActiveSessions || agent.hasSessionsAwaitingInput || agent.hasUnreadNotifications
-  const { data: sessions } = useSessions(hasNotable ? agent.slug : null, { staleTime: 30_000 })
+  const { data: sessions } = useNotableSessions(hasNotable ? agent.slug : null, {
+    limit: 100,
+    staleTime: 30_000,
+  })
 
   // Notification summary for the Small card's rotating title meta. Orange
   // (needs input) always wins over blue (unread).
@@ -575,7 +600,7 @@ function AgentCard({
       : null
 
   const titleOverlay = (
-    <div className="absolute bottom-2 left-4 max-w-[calc(100%-2rem)] rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">
+    <div className="pointer-events-none absolute bottom-2 left-4 z-10 max-w-[calc(100%-2rem)] rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">
       <div className="truncate text-sm font-normal text-foreground">{agent.name}</div>
       {isSmall && notifState ? (
         <TickerTitleMeta lastWorked={lastWorked} notifCount={notifSessions.length} notifState={notifState} />
@@ -586,19 +611,45 @@ function AgentCard({
   )
 
   return (
-    <AgentContextMenu agent={agent}>
-      <button
-        onClick={() => {
-          void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
-        }}
+    <AgentContextMenu
+      agent={agent}
+      additionalOptions={additionalOptions}
+      onArrange={onArrange}
+      disableTouchLongPress={disableTouchLongPress}
+    >
+      <div
         className="relative flex h-full w-full flex-col gap-3 overflow-hidden rounded-lg border bg-card p-4 text-left shadow-sm transition-[box-shadow,transform,border-color] duration-150 hover:border-accent-foreground/20 group-hover/widget:-translate-y-0.5 group-hover/widget:shadow-md"
       >
-        {/* Control row: status chip + size kebab share one flex row, so
-            items-center vertically centers the kebab against the chip, and the
-            kebab simply appears to its right on hover (right-anchored row). */}
-        <div className="absolute top-2 right-4 z-30 flex items-center gap-1.5">
+        {/* Keep navigation as a sibling of the card controls so the DOM never
+            nests buttons inside a button. Interactive rows sit above this
+            transparent hit target and handle their own actions. */}
+        <AppLink
+          to="/agents/$slug"
+          params={{ slug: agent.displaySlug }}
+          draggable={false}
+          data-widget-drag-surface=""
+          aria-label={`Open ${agent.name}`}
+          onKeyDown={(event) => {
+            if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+            event.preventDefault()
+            const rect = event.currentTarget.getBoundingClientRect()
+            event.currentTarget.dispatchEvent(
+              new MouseEvent('contextmenu', {
+                bubbles: true,
+                cancelable: true,
+                clientX: rect.right,
+                clientY: rect.top,
+              })
+            )
+          }}
+          className="absolute inset-0 z-20 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        />
+
+        {/* The card has one visible control row and one menu surface: its
+            right-click/long-press context menu. The focused card link also
+            opens that menu with the standard Shift+F10 keyboard gesture. */}
+        <div className="absolute top-2 right-4 z-30">
           <AgentCardPowerButton agent={agent} />
-          {sizeControl}
         </div>
 
         {isSmall ? (
@@ -630,7 +681,7 @@ function AgentCard({
                 className="h-full"
               />
             </div>
-            <div className="relative z-10 flex min-h-0 flex-1 flex-col gap-1.5 pb-11">
+            <div className="pointer-events-none relative z-30 flex min-h-0 flex-1 flex-col gap-1.5 pb-11">
               {/* Notifications sit directly above the cron/webhook carousel
                   (bottom-aligned); any slack opens up above them. Scrolls when
                   the list overflows. */}
@@ -644,12 +695,12 @@ function AgentCard({
               </div>
               {/* Rotating cron/webhook health carousel (renders nothing when
                   the agent has no triggers). */}
-              <AgentHealthCarousel agent={agent} crons={crons} webhooks={webhooks} />
+              <AgentHealthCarousel agent={agent} crons={crons} webhooks={webhooks} health={health} />
             </div>
             {titleOverlay}
           </>
         )}
-      </button>
+      </div>
     </AgentContextMenu>
   )
 }
@@ -657,93 +708,200 @@ function AgentCard({
 /** Widget-grid key for a dashboard tile. Agents use their bare slug. */
 const dashKey = (agentSlug: string, dashSlug: string) => `dash::${agentSlug}::${dashSlug}`
 
+function dashboardAgentSlugFromKey(id: string): string | null {
+  if (!id.startsWith('dash::')) return null
+  const rest = id.slice('dash::'.length)
+  const separator = rest.indexOf('::')
+  return separator === -1 ? null : rest.slice(0, separator)
+}
+
+function HomeArrangeMenu({
+  onArrange,
+  disabled,
+}: {
+  onArrange: () => void
+  disabled: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label="Agent layout options"
+          title="Agent layout options"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <MoreVertical className="h-4 w-4" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-40 p-1">
+        <button
+          type="button"
+          data-testid="home-arrange-action"
+          disabled={disabled}
+          onClick={() => {
+            setOpen(false)
+            onArrange()
+          }}
+          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+        >
+          <Move className="h-4 w-4" />
+          Arrange
+        </button>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 export function HomePage() {
   useRenderTracker('HomePage')
   const { data: agents, isLoading: agentsLoading } = useAgents()
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
+  const isMobile = useIsMobile()
+  const layoutTarget = isMobile ? 'mobile' : 'desktop'
+  // Cards vs. graph view — URL-driven (`/?view=graph`) so back/forward
+  // navigation and reloads restore the selection; absent = cards.
+  const navigate = useNavigate()
+  const routeSearch = useRouteSearch({ strict: false }) as { view?: string }
+  const view: 'cards' | 'graph' = routeSearch.view === 'graph' ? 'graph' : 'cards'
 
   // agentOrder (sidebar drag order) drives the initial flow-pack order of
-  // uncustomized boards; once the user drags/resizes here, homeGridLayout wins.
+  // uncustomized boards; once the user drags/resizes here, the layout for the
+  // current breakpoint wins.
   const orderedAgents = useMemo(
     () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
     [agents, userSettings?.agentOrder]
   )
 
-  // Optimistic local layout while the homeGridLayout mutation is in flight.
-  const [localLayout, setLocalLayout] = useState<Record<string, GridRect> | null>(null)
-  const savedLayout = localLayout ?? userSettings?.homeGridLayout
+  // Desktop and phone layouts are intentionally independent. A phone without a
+  // customized layout starts from the desktop map and is responsively re-packed
+  // by WidgetBoard, but its first save forks into homeGridMobileLayout.
+  const [localDesktopLayout, setLocalDesktopLayout] = useState<Record<string, GridRect> | null>(null)
+  const [localMobileLayout, setLocalMobileLayout] = useState<Record<string, GridRect> | null>(null)
+  const layoutMutationVersion = useRef({ desktop: 0, mobile: 0 })
+  const savedDesktopLayout = localDesktopLayout ?? userSettings?.homeGridLayout
+  const savedMobileLayout =
+    localMobileLayout ?? userSettings?.homeGridMobileLayout ?? savedDesktopLayout
+  const savedLayout = isMobile ? savedMobileLayout : savedDesktopLayout
+  // Arrange mode stages its layout locally. Done persists the staged map once;
+  // Cancel drops it and restores the last saved geometry.
+  const [isArranging, setIsArranging] = useState(false)
+  const [arrangeLayout, setArrangeLayout] = useState<Record<string, GridRect> | null>(null)
+  const [arrangeTarget, setArrangeTarget] = useState<'desktop' | 'mobile' | null>(null)
+  const displayedLayout = arrangeLayout ?? savedLayout
 
   // Agents whose associated app/dashboard card is toggled off. localHidden is a
   // session override that wins over the server value, so the toggle takes effect
   // immediately and isn't clobbered by the post-save refetch.
   const [localHidden, setLocalHidden] = useState<Set<string> | null>(null)
+  const hiddenMutationVersion = useRef(0)
   const hiddenApps = useMemo(
     () => localHidden ?? new Set(userSettings?.hiddenAppCards ?? []),
     [localHidden, userSettings?.hiddenAppCards]
   )
+  const [arrangeHiddenApps, setArrangeHiddenApps] = useState<Set<string> | null>(null)
+  const displayedHiddenApps = arrangeHiddenApps ?? hiddenApps
 
   const { widgetItems, dashboardsById, agentsWithApp } = useMemo(() => {
     const items: WidgetItem[] = []
     const dashes = new Map<string, { agentSlug: string; dashboard: { slug: string; name: string } }>()
     const withApp = new Set<string>()
     for (const agent of orderedAgents) {
-      items.push({ id: agent.slug, rect: savedLayout?.[agent.slug], defaultSize: 'W' })
+      items.push({ id: agent.slug, rect: displayedLayout?.[agent.slug], defaultSize: 'W' })
       const dashboards = Array.isArray(agent.dashboards) ? agent.dashboards : []
       if (dashboards.length > 0) withApp.add(agent.slug)
-      if (hiddenApps.has(agent.slug)) continue // app card toggled off — skip its dashboard tiles
+      if (displayedHiddenApps.has(agent.slug)) continue // app card toggled off — skip its dashboard tiles
       for (const d of dashboards) {
         const id = dashKey(agent.slug, d.slug)
-        items.push({ id, rect: savedLayout?.[id], defaultSize: 'S' })
+        items.push({ id, rect: displayedLayout?.[id], defaultSize: 'S' })
         dashes.set(id, { agentSlug: agent.slug, dashboard: d })
       }
     }
     return { widgetItems: items, dashboardsById: dashes, agentsWithApp: withApp }
-  }, [orderedAgents, savedLayout, hiddenApps])
+  }, [orderedAgents, displayedLayout, displayedHiddenApps])
 
   const agentBySlug = useMemo(() => new Map(orderedAgents.map((a) => [a.slug, a])), [orderedAgents])
 
-  // Shared topology snapshot for the cards' health carousels (cron/webhook
-  // names per agent in one request). Same query key as the graph view, so
-  // cards⇄graph flips reuse the cache; parsed at the boundary like the graph.
-  const { data: topology } = useQuery<HomeGraphData>({
-    queryKey: ['home-graph'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/home-graph')
-      if (!res.ok) throw new Error('Failed to fetch home graph')
-      return homeGraphSchema.parse(await res.json())
-    },
-    staleTime: 60_000,
-  })
+  // Card view owns a compact automation+activity projection. The full graph
+  // topology is fetched only by the lazily mounted AgentGraph.
+  const { data: cardHealth } = useHomeCardHealth(view === 'cards' && orderedAgents.length > 0)
   const { cronsByAgent, webhooksByAgent } = useMemo(() => {
-    const cronsMap = new Map<string, HomeGraphCron[]>()
-    const webhooksMap = new Map<string, HomeGraphWebhook[]>()
-    for (const cron of topology?.crons ?? []) {
-      if (cron.status === 'cancelled') continue
+    const cronsMap = new Map<string, HomeCardCron[]>()
+    const webhooksMap = new Map<string, HomeCardWebhook[]>()
+    for (const cron of cardHealth?.crons ?? []) {
       const list = cronsMap.get(cron.agentSlug) ?? []
       list.push(cron)
       cronsMap.set(cron.agentSlug, list)
     }
-    for (const webhook of topology?.webhooks ?? []) {
-      if (webhook.status === 'cancelled') continue
+    for (const webhook of cardHealth?.webhooks ?? []) {
       const list = webhooksMap.get(webhook.agentSlug) ?? []
       list.push(webhook)
       webhooksMap.set(webhook.agentSlug, list)
     }
     return { cronsByAgent: cronsMap, webhooksByAgent: webhooksMap }
-  }, [topology])
+  }, [cardHealth])
 
-  const commitLayout = (layout: Record<string, GridRect>) => {
-    setLocalLayout(layout)
-    updateSettings.mutate({ homeGridLayout: layout }, { onSettled: () => setLocalLayout(null) })
+  const commitLayout = (
+    layout: Record<string, GridRect>,
+    target: 'desktop' | 'mobile' = layoutTarget
+  ) => {
+    // WidgetBoard only knows about currently rendered items. Preserve saved
+    // geometry for any missing item whose owning agent still exists. This
+    // covers intentionally hidden cards and transiently incomplete dashboard
+    // inventories without retaining entries for agents that were deleted.
+    const nextLayout = { ...layout }
+    const targetSavedLayout = target === 'mobile' ? savedMobileLayout : savedDesktopLayout
+    for (const [id, rect] of Object.entries(targetSavedLayout ?? {})) {
+      if (id in nextLayout) continue
+      const ownerSlug = dashboardAgentSlugFromKey(id) ?? id
+      if (agentBySlug.has(ownerSlug)) nextLayout[id] = rect
+    }
+
+    const version = ++layoutMutationVersion.current[target]
+    const setLocalLayout = target === 'mobile' ? setLocalMobileLayout : setLocalDesktopLayout
+    setLocalLayout(nextLayout)
+    updateSettings.mutate(
+      target === 'mobile'
+        ? { homeGridMobileLayout: nextLayout }
+        : { homeGridLayout: nextLayout },
+      {
+        onError: (error) => {
+          toast.error('Failed to save the home layout', { description: error.message })
+        },
+        onSettled: () => {
+          if (version === layoutMutationVersion.current[target]) setLocalLayout(null)
+        },
+      }
+    )
+  }
+
+  const commitHiddenApps = (next: Set<string>) => {
+    const version = ++hiddenMutationVersion.current
+    setLocalHidden(next)
+    updateSettings.mutate(
+      { hiddenAppCards: [...next] },
+      {
+        onError: (error) => {
+          toast.error('Failed to update app-card visibility', { description: error.message })
+        },
+        onSettled: () => {
+          if (version === hiddenMutationVersion.current) setLocalHidden(null)
+        },
+      }
+    )
   }
 
   const toggleAppCard = (agentSlug: string) => {
-    const next = new Set(hiddenApps)
+    const next = new Set(displayedHiddenApps)
     if (next.has(agentSlug)) next.delete(agentSlug)
     else next.add(agentSlug)
-    setLocalHidden(next)
-    updateSettings.mutate({ hiddenAppCards: [...next] })
+    if (isArranging) {
+      setArrangeHiddenApps(next)
+      return
+    }
+    commitHiddenApps(next)
   }
 
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
@@ -754,13 +912,13 @@ export function HomePage() {
   const hasAgents = orderedAgents.length > 0
   const { openSearch } = useSearch()
   const isMac = getPlatform() === 'darwin'
-  // Cards vs. graph view — URL-driven (`/?view=graph`) so back/forward
-  // navigation and reloads restore the selection; absent = cards.
-  const navigate = useNavigate()
-  const routeSearch = useRouteSearch({ strict: false }) as { view?: string }
-  const view: 'cards' | 'graph' = routeSearch.view === 'graph' ? 'graph' : 'cards'
   const setView = (next: 'cards' | 'graph') => {
     if (next === view) return
+    if (next === 'graph') {
+      setArrangeLayout(null)
+      setArrangeTarget(null)
+      setIsArranging(false)
+    }
     void navigate({
       to: '/',
       search: (prev: Record<string, unknown>) => ({
@@ -769,6 +927,54 @@ export function HomePage() {
       }),
     })
   }
+  const beginArrange = () => {
+    if (!hasAgents) return
+    setArrangeLayout(null)
+    setArrangeHiddenApps(new Set(hiddenApps))
+    setArrangeTarget(layoutTarget)
+    setIsArranging(true)
+  }
+  const cancelArrange = () => {
+    setArrangeLayout(null)
+    setArrangeHiddenApps(null)
+    setArrangeTarget(null)
+    setIsArranging(false)
+  }
+  const finishArrange = () => {
+    const nextLayout = arrangeLayout
+    const nextHiddenApps = arrangeHiddenApps
+    const target = arrangeTarget ?? layoutTarget
+    setArrangeLayout(null)
+    setArrangeHiddenApps(null)
+    setArrangeTarget(null)
+    setIsArranging(false)
+    if (nextLayout) commitLayout(nextLayout, target)
+    if (
+      nextHiddenApps &&
+      (nextHiddenApps.size !== hiddenApps.size ||
+        [...nextHiddenApps].some((agentSlug) => !hiddenApps.has(agentSlug)))
+    ) {
+      commitHiddenApps(nextHiddenApps)
+    }
+  }
+  const handleBoardCommit = (layout: Record<string, GridRect>) => {
+    if (isArranging) {
+      setArrangeLayout(layout)
+      return
+    }
+    commitLayout(layout, layoutTarget)
+  }
+
+  // A live breakpoint change repacks the board into a different coordinate
+  // system. End the transaction instead of allowing mobile geometry to be
+  // committed to the desktop setting (or vice versa).
+  useEffect(() => {
+    if (!isArranging || arrangeTarget === null || arrangeTarget === layoutTarget) return
+    setArrangeLayout(null)
+    setArrangeHiddenApps(null)
+    setArrangeTarget(null)
+    setIsArranging(false)
+  }, [arrangeTarget, isArranging, layoutTarget])
 
   return (
     <div className="h-full flex flex-col">
@@ -855,16 +1061,30 @@ export function HomePage() {
           {/* Agents Section */}
           <section>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-medium">Your Agents</h2>
-              <Button
-                size="sm"
-                onClick={() => { void createUntitledAgent() }}
-                className="app-no-drag"
-                disabled={isCreatingAgent}
-              >
-                <Plus className="h-4 w-4 mr-1" />
-                New Agent
-              </Button>
+              <div className="flex items-center gap-1">
+                <h2 className="text-lg font-medium">Your Agents</h2>
+                {!isArranging && <HomeArrangeMenu onArrange={beginArrange} disabled={!hasAgents} />}
+              </div>
+              {isArranging ? (
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={cancelArrange}>
+                    Cancel
+                  </Button>
+                  <Button size="sm" onClick={finishArrange}>
+                    Done
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={() => { void createUntitledAgent() }}
+                  className="app-no-drag"
+                  disabled={isCreatingAgent}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  New Agent
+                </Button>
+              )}
             </div>
 
             {agentsLoading ? (
@@ -874,7 +1094,10 @@ export function HomePage() {
             ) : hasAgents ? (
               <WidgetBoard
                 items={widgetItems}
-                onCommit={commitLayout}
+                onCommit={handleBoardCommit}
+                arranging={isArranging}
+                dragEnabled={!isMobile || isArranging}
+                disableContextMenu={isMobile && isArranging}
                 renderItem={(id, size, onResize) => {
                   const dash = dashboardsById.get(id)
                   if (dash) {
@@ -889,31 +1112,37 @@ export function HomePage() {
                   }
                   const agent = agentBySlug.get(id)
                   if (!agent) return null
-                  const sizeControl = (
-                    <WidgetSizePopover
-                      size={size}
-                      onPick={onResize}
-                      extra={(close) =>
-                        agentsWithApp.has(agent.slug) ? (
-                          <WidgetToggleRow
-                            label="Show app"
-                            checked={!hiddenApps.has(agent.slug)}
-                            onToggle={() => {
-                              close()
-                              toggleAppCard(agent.slug)
-                            }}
-                          />
-                        ) : null
-                      }
-                    />
-                  )
                   return (
                     <AgentCard
                       agent={agent}
                       size={size}
-                      sizeControl={sizeControl}
+                      onArrange={beginArrange}
+                      disableTouchLongPress={isMobile && isArranging}
+                      additionalOptions={
+                        <>
+                          <ContextMenuSwitchItem
+                            checked={size === 'W'}
+                            onCheckedChange={() => {
+                              onResize(size === 'W' ? 'S' : 'W')
+                            }}
+                          >
+                            Expanded
+                          </ContextMenuSwitchItem>
+                          {agentsWithApp.has(agent.slug) && (
+                            <ContextMenuSwitchItem
+                              checked={!displayedHiddenApps.has(agent.slug)}
+                              onCheckedChange={() => {
+                                toggleAppCard(agent.slug)
+                              }}
+                            >
+                              Show app
+                            </ContextMenuSwitchItem>
+                          )}
+                        </>
+                      }
                       crons={cronsByAgent.get(agent.slug)}
                       webhooks={webhooksByAgent.get(agent.slug)}
+                      health={cardHealth}
                     />
                   )
                 }}

@@ -163,6 +163,8 @@ export function Halftone({
 
     let raf = 0
     let stopped = false
+    let ready = false
+    let lastDrawTime = 0
     let t = seed % 1000 // phase offset so cards animate out of sync
     let W = 0, H = 0, COLS = 0, ROWS = 0, offsetX = 0, offsetY = 0, cx = 0, cy = 0
     let infl = new Float32Array(0) // per-cell eased cursor boost (0..1)
@@ -176,7 +178,10 @@ export function Halftone({
     function setup(): boolean {
       W = wrap!.clientWidth
       H = wrap!.clientHeight
-      if (W === 0 || H === 0) return false
+      if (W <= 0 || H <= 0) {
+        ready = false
+        return false
+      }
       const dpr = window.devicePixelRatio || 1
       canvas!.width = Math.round(W * dpr)
       canvas!.height = Math.round(H * dpr)
@@ -188,6 +193,8 @@ export function Halftone({
       cx = (COLS - 1) / 2
       cy = (ROWS - 1) / 2
       infl = new Float32Array(COLS * ROWS)
+      ready = true
+      lastDrawTime = 0
       return true
     }
 
@@ -243,7 +250,7 @@ export function Halftone({
           const cur = infl[idx]
           const h = (infl[idx] = cur + (target - cur) * (target > cur ? CURSOR_ATTACK : CURSOR_RELEASE))
           if (h > 0.003) r += h * CURSOR_R
-          const v = vignetteAt((i - cx) / cx, (j - cy) / cy)
+          const v = vignetteAt(cx === 0 ? 0 : (i - cx) / cx, cy === 0 ? 0 : (j - cy) / cy)
           if (v <= 0) continue
           // Cursor darkening is added on top of the state-dimmed alpha, so dots
           // read clearly darker near the pointer even in faint states.
@@ -260,28 +267,88 @@ export function Halftone({
       }
     }
 
-    function frame() {
-      if (stopped) return
-      draw()
-      t += speed
+    let intersecting = true
+    let pointerListening = false
+
+    const setPointerListening = (next: boolean) => {
+      if (next === pointerListening) return
+      pointerListening = next
+      if (next) {
+        window.addEventListener('pointermove', onPointerMove, { passive: true })
+      } else {
+        window.removeEventListener('pointermove', onPointerMove)
+        pointerSeen = false
+      }
+    }
+
+    const frameInterval = 1000 / 30
+    function frame(now: number) {
+      raf = 0
+      if (stopped || !ready || !intersecting || document.hidden) return
+      const elapsed = lastDrawTime === 0 ? frameInterval : now - lastDrawTime
+      if (elapsed >= frameInterval) {
+        draw()
+        // Preserve the original 60fps phase velocity while drawing half as
+        // often, substantially reducing per-card field math and Canvas2D paths.
+        t += speed * (elapsed / (1000 / 60))
+        lastDrawTime = now
+      }
       raf = requestAnimationFrame(frame)
     }
 
-    if (!setup()) return
-    if (reduce) draw()
-    else frame()
+    const syncAnimation = () => {
+      const active = ready && !reduce && intersecting && !document.hidden && !stopped
+      setPointerListening(active)
+      if (active && raf === 0) {
+        lastDrawTime = 0
+        raf = requestAnimationFrame(frame)
+      } else if (!active && raf !== 0) {
+        cancelAnimationFrame(raf)
+        raf = 0
+      }
+    }
 
     const ro = new ResizeObserver(() => {
-      if (setup() && reduce) draw()
+      const measured = setup()
+      if (measured && reduce) draw()
+      syncAnimation()
     })
     ro.observe(wrap)
-    if (!reduce) window.addEventListener('pointermove', onPointerMove, { passive: true })
+
+    if (setup()) {
+      if (reduce) draw()
+      else syncAnimation()
+    }
+
+    const io =
+      typeof IntersectionObserver === 'undefined'
+        ? null
+        : new IntersectionObserver(([entry]) => {
+            intersecting = entry?.isIntersecting ?? true
+            if (reduce) {
+              if (intersecting && ready) draw()
+            } else {
+              syncAnimation()
+            }
+          })
+    io?.observe(wrap)
+
+    const onVisibilityChange = () => {
+      if (reduce) {
+        if (!document.hidden && intersecting && ready) draw()
+      } else {
+        syncAnimation()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     return () => {
       stopped = true
       cancelAnimationFrame(raf)
       ro.disconnect()
-      window.removeEventListener('pointermove', onPointerMove)
+      io?.disconnect()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      setPointerListening(false)
     }
   }, [motif, state, speedProp, color, spacing, maxRadius, vignette, contrast, speedScale, dim, seed])
 

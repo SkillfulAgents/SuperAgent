@@ -29,13 +29,6 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
   }
 }
 
-// jsdom doesn't implement canvas; the Halftone banner calls getContext('2d').
-// Stub it to null so the component takes its no-context bail path quietly
-// (instead of jsdom logging "Not implemented" for every card it renders).
-if (typeof HTMLCanvasElement !== 'undefined') {
-  HTMLCanvasElement.prototype.getContext = () => null
-}
-
 const signIn = {
   email: vi.fn(),
   oauth2: vi.fn(),

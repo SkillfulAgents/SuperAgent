@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { MoreVertical } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
@@ -9,8 +9,8 @@ import { cn } from '@shared/lib/utils/cn'
  * Cards live on a board of square cells (responsive 2–6 columns). Each card
  * occupies a rect {x, y, w, h} in cell units and comes in two footprints:
  * Small 1×1 and Wide 2×1. Cards are dragged anywhere on the
- * board with a snapped drop-ghost and live reflow of the other cards; a hover
- * pencil opens a popover with the size picker. The parent owns persistence —
+ * board with a snapped drop-ghost and live reflow of the other cards; a card
+ * options control opens a popover with the size picker. The parent owns persistence —
  * the board calls onCommit with the full layout map after a drag or resize.
  *
  * Ported from the Claude Design handoff (Agent Homepage prototype): the
@@ -40,7 +40,7 @@ export function widgetSizeKey(w: number, h: number): WidgetSizeKey {
 const GAP = 16 // px between cells
 const TARGET_CELL = 232 // desired cell+gap size — drives the column count
 
-interface Placed extends GridRect {
+export interface Placed extends GridRect {
   id: string
 }
 
@@ -91,6 +91,21 @@ export function placeOne(items: GridRect[], cols: number, w: number, h: number):
   return { x: 0, y: 0 }
 }
 
+/** Repack a saved layout row-major when its coordinates no longer fit a
+ * narrower responsive column count. Rendering the responsive projection does
+ * not mutate the saved geometry; a later drag or resize may persist it through
+ * the board's normal `onCommit` contract. */
+export function repackLayout(items: Placed[], cols: number): Placed[] {
+  const packed: Placed[] = []
+  const ordered = [...items].sort((a, b) => (a.y === b.y ? a.x - b.x : a.y - b.y))
+  for (const item of ordered) {
+    const w = Math.min(item.w, cols)
+    const spot = placeOne(packed, cols, w, item.h)
+    packed.push({ ...item, ...spot, w })
+  }
+  return packed
+}
+
 export interface WidgetItem {
   id: string
   /** Saved rect, if the user has customized the layout. */
@@ -106,6 +121,13 @@ interface WidgetBoardProps {
   renderItem: (id: string, size: WidgetSizeKey, onResize: (size: WidgetSizeKey) => void) => ReactNode
   /** Called with the full layout map after any user drag or resize. */
   onCommit: (layout: Record<string, GridRect>) => void
+  /** Whether pointer gestures may reorder cards. Mobile disables this outside
+   *  explicit arrange mode; desktop leaves it enabled. */
+  dragEnabled?: boolean
+  /** Applies the edit-mode treatment and makes the whole card a drag target. */
+  arranging?: boolean
+  /** Suppress native/synthetic context menus while touch arrange mode is active. */
+  disableContextMenu?: boolean
 }
 
 interface DragState {
@@ -118,7 +140,14 @@ interface DragState {
   preview: Placed[]
 }
 
-export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
+export function WidgetBoard({
+  items,
+  renderItem,
+  onCommit,
+  dragEnabled = true,
+  arranging = false,
+  disableContextMenu = false,
+}: WidgetBoardProps) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const [cols, setCols] = useState(4)
   const [cellW, setCellW] = useState(216)
@@ -128,6 +157,7 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
     if (!el) return
     const measure = () => {
       const wpx = el.clientWidth
+      if (wpx <= 0) return
       const c = Math.max(2, Math.min(6, Math.round((wpx + GAP) / TARGET_CELL)))
       setCols(c)
       setCellW((wpx - (c - 1) * GAP) / c)
@@ -142,15 +172,18 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
   // flow-packed placement for items without one. Recomputes on resize, so
   // uncustomized boards stay responsively packed.
   const placed = useMemo<Placed[]>(() => {
-    const out: Placed[] = []
+    const saved: Placed[] = []
     for (const it of items) {
       if (!it.rect) continue
       const w = Math.min(it.rect.w, cols)
       // Clamp to 1-tall: layouts saved before the Tall/Large sizes were removed
       // may still carry h:2 rects.
-      out.push({ id: it.id, w, h: Math.min(it.rect.h, 1), x: Math.min(it.rect.x, cols - w), y: it.rect.y })
+      saved.push({ id: it.id, w, h: Math.min(it.rect.h, 1), x: it.rect.x, y: it.rect.y })
     }
-    let resolved = resolveLayout(out, null)
+    const needsResponsiveRepack = saved.some((it) => it.x < 0 || it.x + it.w > cols)
+    let resolved = needsResponsiveRepack
+      ? repackLayout(saved, cols)
+      : resolveLayout(saved.map((it) => ({ ...it, x: Math.min(it.x, cols - it.w) })), null)
     for (const it of items) {
       if (it.rect) continue
       const def = WIDGET_SIZES.find((s) => s.key === it.defaultSize) ?? WIDGET_SIZES[WIDGET_SIZES.length - 1]
@@ -177,6 +210,17 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
   // Suppresses the click that follows a drag release, so dragging a card
   // doesn't also open the agent.
   const didDragRef = useRef(false)
+  const activeDragCleanupRef = useRef<(() => void) | null>(null)
+
+  useEffect(
+    () => () => {
+      activeDragCleanupRef.current?.()
+      activeDragCleanupRef.current = null
+      dragRef.current = null
+      didDragRef.current = false
+    },
+    []
+  )
 
   const commitFromPlaced = (grids: Placed[]) => {
     const layout: Record<string, GridRect> = {}
@@ -185,14 +229,17 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
   }
 
   function onPointerDown(e: React.PointerEvent, item: Placed) {
+    if (!dragEnabled) return
     if (e.button !== 0) return
-    // Drag can start anywhere on the card — our cards are themselves <button>s,
-    // so we can't exclude interactive elements generically. Inner controls keep
-    // working because a drag only arms after 5px of movement (a plain click
-    // never moves) and only an actual drag swallows the following click.
-    // data-widget-no-drag opts out the pencil/popover explicitly.
+    // Native controls opt out of direct desktop dragging so a small pointer slip
+    // cannot swallow their click. The full-card AppLink is the intentional drag
+    // surface and opts back in with data-widget-drag-surface. In Arrange mode
+    // the board always owns the gesture (with an extra touch shield on mobile).
     const target = e.target as HTMLElement
-    if (target.closest('[data-widget-no-drag]')) return
+    const interactive = target.closest<HTMLElement>(
+      'button, a, input, select, textarea, [role="button"], [data-widget-no-drag]'
+    )
+    if (!arranging && interactive && !interactive.hasAttribute('data-widget-drag-surface')) return
     const board = wrapRef.current
     if (!board) return
     const boardRect = board.getBoundingClientRect()
@@ -218,9 +265,14 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
       const preview = resolveLayout(moved, item.id)
       setDrag({ id: item.id, left, top, w: item.w, h: item.h, target: { x: tx, y: ty }, preview })
     }
-    const up = () => {
+    const cleanup = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', cancel)
+      if (activeDragCleanupRef.current === cleanup) activeDragCleanupRef.current = null
+    }
+    const up = () => {
+      cleanup()
       const d = dragRef.current
       if (d?.preview) commitFromPlaced(d.preview)
       setDrag(null)
@@ -229,8 +281,16 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
         didDragRef.current = false
       }, 0)
     }
+    const cancel = () => {
+      cleanup()
+      setDrag(null)
+      didDragRef.current = false
+    }
+    activeDragCleanupRef.current?.()
+    activeDragCleanupRef.current = cleanup
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
   }
 
   function setSize(item: Placed, size: WidgetSizeKey) {
@@ -273,7 +333,7 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
         />
       )}
 
-      {placed.map((item) => {
+      {placed.map((item, index) => {
         const isDragging = drag?.id === item.id
         const g = previewMap.get(item.id) ?? item
         const p = pos(g)
@@ -284,8 +344,16 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
           <div
             key={item.id}
             data-widget-id={item.id}
+            data-arranging={arranging || undefined}
             className={cn(
-              'group/widget absolute touch-none',
+              // Keep vertical touch panning available. If the browser claims a
+              // gesture for scrolling it sends pointercancel, which tears down
+              // the tentative drag above without committing it. Explicit
+              // arrange mode owns the gesture instead, so touch scrolling is
+              // disabled until the card is dropped.
+              'group/widget absolute',
+              arranging ? 'touch-none' : 'touch-pan-y',
+              dragEnabled && (isDragging ? 'cursor-grabbing' : 'cursor-grab'),
               // Tiles glide to new positions (reflow, drop-settle) but snap
               // their size in one frame — tweening width/height fights the
               // card's contents (instant inner-layout swap + the halftone
@@ -297,16 +365,34 @@ export function WidgetBoard({ items, renderItem, onCommit }: WidgetBoardProps) {
             )}
             style={style}
             onPointerDown={(e) => onPointerDown(e, item)}
+            onContextMenu={(e) => {
+              if (disableContextMenu) e.preventDefault()
+            }}
             onClickCapture={(e) => {
-              if (didDragRef.current) {
+              // Radix context-menu content is portaled outside this widget's
+              // DOM but still bubbles through its React tree. Only shield
+              // clicks that physically originated on the card; otherwise
+              // Arrange mode would cancel its own menu items.
+              const originatedOnCard = e.currentTarget.contains(e.target as Node)
+              if (originatedOnCard && (arranging || didDragRef.current)) {
                 e.preventDefault()
                 e.stopPropagation()
               }
             }}
           >
-            <div className="h-full w-full">
+            <div
+              className={cn('h-full w-full', arranging && !isDragging && 'home-card-jiggle')}
+              style={arranging ? { animationDelay: `${-(index % 5) * 37}ms` } : undefined}
+            >
               {renderItem(item.id, widgetSizeKey(item.w, item.h), (s) => setSize(item, s))}
             </div>
+            {/* Mobile Arrange gets a full-card overlay so a touch hold cannot
+                reach Radix's long-press menu. Desktop uses the board's bubbling
+                pointer handler instead, leaving the real card under right-click
+                so its unified context menu remains available. */}
+            {arranging && disableContextMenu && (
+              <div className="absolute inset-0 z-[60] cursor-grab active:cursor-grabbing" />
+            )}
           </div>
         )
       })}
@@ -368,6 +454,7 @@ export function WidgetSizePopover({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
+          type="button"
           data-widget-no-drag
           aria-label="Card options"
           title="Card options"
@@ -376,9 +463,11 @@ export function WidgetSizePopover({
           className={cn(
             // Same size as the status chip's stop button (h-5 w-5). The caller
             // places it in an items-center row so it centers against the chip.
-            // Hidden until the card is hovered.
-            'hidden h-5 w-5 items-center justify-center rounded border bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground group-hover/widget:flex',
-            open && 'flex bg-muted text-foreground'
+            // Keep the control in the focus order and available on coarse
+            // pointers; reducing opacity preserves the quiet default treatment
+            // without making it hover-only.
+            'flex h-5 w-5 items-center justify-center rounded border bg-background text-muted-foreground opacity-60 shadow-sm transition-[color,background-color,opacity] hover:bg-muted hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+            open && 'bg-muted text-foreground opacity-100'
           )}
         >
           <MoreVertical className="h-3.5 w-3.5" />

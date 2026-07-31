@@ -39,3 +39,29 @@ describe('userSettingsSchema agentOrder', () => {
     expect(result.agentOrder).toEqual(['c', 'a'])
   })
 })
+
+describe('userSettingsSchema home grid layouts', () => {
+  it('keeps desktop and mobile geometry as independent optional maps', () => {
+    const result = userSettingsSchema.parse({
+      homeGridLayout: {
+        agent: { x: 4, y: 0, w: 2, h: 1 },
+      },
+      homeGridMobileLayout: {
+        agent: { x: 1, y: 3, w: 1, h: 1 },
+      },
+    })
+
+    expect(result.homeGridLayout?.agent).toEqual({ x: 4, y: 0, w: 2, h: 1 })
+    expect(result.homeGridMobileLayout?.agent).toEqual({ x: 1, y: 3, w: 1, h: 1 })
+  })
+
+  it('leaves the mobile layout absent for migration-safe desktop fallback', () => {
+    const result = userSettingsSchema.parse({
+      homeGridLayout: {
+        agent: { x: 0, y: 0, w: 2, h: 1 },
+      },
+    })
+
+    expect(result.homeGridMobileLayout).toBeUndefined()
+  })
+})

@@ -23,8 +23,11 @@ const ContextMenu = ContextMenuPrimitive.Root
 // trigger it).
 const ContextMenuTrigger = React.forwardRef<
   React.ElementRef<typeof ContextMenuPrimitive.Trigger>,
-  React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.Trigger>
->(({ className, style, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onClick, ...props }, ref) => {
+  React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.Trigger> & {
+    /** Prevent the touch/pen long-press menu without affecting mouse right-click. */
+    disableTouchLongPress?: boolean
+  }
+>(({ className, style, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onClick, disableTouchLongPress, ...props }, ref) => {
   const pressStart = React.useRef<{ x: number; y: number } | null>(null)
   const longPressTimer = React.useRef<number>()
 
@@ -41,6 +44,16 @@ const ContextMenuTrigger = React.forwardRef<
 
   const handlePointerDown = (e: React.PointerEvent<HTMLElement>) => {
     if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+      if (disableTouchLongPress) {
+        pressStart.current = null
+        setPressing(e.currentTarget, false)
+        clearLongPress()
+        // Radix composes this handler before its built-in long-press handler
+        // and respects defaultPrevented, leaving the gesture to the grid.
+        e.preventDefault()
+        onPointerDown?.(e)
+        return
+      }
       pressStart.current = { x: e.clientX, y: e.clientY }
       setPressing(e.currentTarget, true)
       // Open the menu sooner than Radix's built-in ~700ms long-press: after a
@@ -227,6 +240,38 @@ const ContextMenuCheckboxItem = React.forwardRef<
 ContextMenuCheckboxItem.displayName =
   ContextMenuPrimitive.CheckboxItem.displayName
 
+const ContextMenuSwitchItem = React.forwardRef<
+  React.ElementRef<typeof ContextMenuPrimitive.CheckboxItem>,
+  React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.CheckboxItem>
+>(({ className, children, checked, ...props }, ref) => (
+  <ContextMenuPrimitive.CheckboxItem
+    ref={ref}
+    className={cn(
+      "relative flex cursor-default select-none items-center justify-between gap-3 rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      className
+    )}
+    checked={checked}
+    {...props}
+  >
+    <span>{children}</span>
+    <span
+      aria-hidden="true"
+      className={cn(
+        "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors",
+        checked ? "bg-primary" : "bg-input"
+      )}
+    >
+      <span
+        className={cn(
+          "block h-3 w-3 rounded-full bg-background shadow transition-transform",
+          checked ? "translate-x-3.5" : "translate-x-0.5"
+        )}
+      />
+    </span>
+  </ContextMenuPrimitive.CheckboxItem>
+))
+ContextMenuSwitchItem.displayName = "ContextMenuSwitchItem"
+
 const ContextMenuRadioItem = React.forwardRef<
   React.ElementRef<typeof ContextMenuPrimitive.RadioItem>,
   React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.RadioItem>
@@ -301,6 +346,7 @@ export {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuCheckboxItem,
+  ContextMenuSwitchItem,
   ContextMenuRadioItem,
   ContextMenuLabel,
   ContextMenuSeparator,

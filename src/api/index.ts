@@ -22,6 +22,7 @@ import remoteMcps from './routes/remote-mcps'
 import commonMcpServers from './routes/common-mcp-servers'
 import userSettingsRouter from './routes/user-settings'
 import homeGraph from './routes/home-graph'
+import homeCardHealth from './routes/home-card-health'
 import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
 import firewallRouter from './routes/firewall'
@@ -218,6 +219,7 @@ app.route('/api/remote-mcps', remoteMcps)
 app.route('/api/common-mcp-servers', commonMcpServers)
 app.route('/api/user-settings', userSettingsRouter)
 app.route('/api/home-graph', homeGraph)
+app.route('/api/home-card-health', homeCardHealth)
 app.route('/api/policies', policies)
 app.route('/api/runtime-status', runtimeStatusRouter)
 app.route('/api/firewall', firewallRouter)
