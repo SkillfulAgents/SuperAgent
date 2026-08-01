@@ -30,9 +30,9 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   }) as unknown as MediaQueryList
 }
 
-// jsdom has no ResizeObserver; recharts' ResponsiveContainer (used by the home
-// page usage sparklines) needs it. Stub it as a no-op so chart-rendering
-// components can mount in tests.
+// jsdom has no ResizeObserver; Radix primitives (Switch, and others) and
+// recharts' ResponsiveContainer (home page usage sparklines) construct one on
+// mount. No-op stub — layout observation is meaningless in jsdom.
 if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = class {
     observe() {}

@@ -46,6 +46,8 @@ import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { captureException } from '@shared/lib/error-reporting'
 import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+import { formatXAgentMessage } from '@shared/lib/utils/x-agent-message'
+import { normalizeAutopilotState } from '@shared/lib/autopilot/autopilot-schema'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 
@@ -624,6 +626,20 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (messagePersister.isSessionActive(existingSessionId)) {
           return c.json({ error: 'Target session is currently running' }, 409)
         }
+        // An engaged autopilot session is autonomous, not idle — it is between
+        // watchdog continuations. A foreign agent's message must not ride its
+        // autonomous privileges (auto-approved requests, suppressed ask-user
+        // tools) or derail the goal the user delegated. Same refusal shape as
+        // the running-session check above; the caller can open a new session.
+        const targetAutopilot = normalizeAutopilotState(
+          (await getSessionMetadata(targetSlug, existingSessionId))?.autopilot?.state
+        )
+        if (targetAutopilot === 'engaged') {
+          return c.json(
+            { error: 'Target session is running in autopilot mode and cannot accept cross-agent messages. Invoke the agent without a sessionId to start a new session instead.' },
+            409,
+          )
+        }
         stage = 'ensure_running'
         const client = await containerManager.ensureRunning(targetSlug)
         stage = 'subscribe'
@@ -632,6 +648,14 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         }
         messagePersister.markSessionActive(existingSessionId, targetSlug)
         stage = 'send_message'
+        // Frame the prompt with its true author: the target model (and the
+        // session's user, in the timeline) sees another agent is speaking, and
+        // autopilot intent extraction excludes the prefix — agent-authored
+        // text must never read as something the session's user typed.
+        const framedPrompt = formatXAgentMessage(
+          await getAgentDisplayNameBestEffort(callerSlug),
+          prompt,
+        )
         let messageUuid: string | undefined
         if (isAuthMode() && attributedUserId) {
           const candidateUuid = randomUUID()
@@ -645,9 +669,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         }
         try {
           if (messageUuid) {
-            await client.sendMessage(existingSessionId, prompt, messageUuid)
+            await client.sendMessage(existingSessionId, framedPrompt, messageUuid)
           } else {
-            await client.sendMessage(existingSessionId, prompt)
+            await client.sendMessage(existingSessionId, framedPrompt)
           }
         } catch (sendError) {
           if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)

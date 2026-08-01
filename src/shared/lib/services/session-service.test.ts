@@ -156,6 +156,32 @@ describe('session-service', () => {
       })
       expect(metadata?.createdAt).toBeDefined()
     })
+
+    it('REPLACES an existing entry — seeded state must ride the registration, not precede it', async () => {
+      await fs.promises.mkdir(
+        path.join(testDir, 'agents', 'test-agent', 'workspace'),
+        { recursive: true }
+      )
+
+      // The create-session route once seeded autopilot via a separate write and
+      // registered afterwards; registration wiped the era and the first-turn
+      // engage was rejected. Pin the replace semantics that make the ordering
+      // load-bearing.
+      await updateSessionMetadata('test-agent', 'session-123', {
+        autopilot: { state: 'requested', requestedAt: '2026-01-01T00:00:00.000Z' },
+      })
+      await registerSession('test-agent', 'session-123', 'New Session')
+      expect((await getSessionMetadata('test-agent', 'session-123'))?.autopilot).toBeUndefined()
+
+      // Carried IN the registration, the seeded state survives.
+      await registerSession('test-agent', 'session-456', 'New Session', {
+        autopilot: { state: 'requested', requestedAt: '2026-01-01T00:00:00.000Z' },
+      })
+      expect((await getSessionMetadata('test-agent', 'session-456'))?.autopilot).toMatchObject({
+        state: 'requested',
+        requestedAt: '2026-01-01T00:00:00.000Z',
+      })
+    })
   })
 
   describe('isSessionRegistered', () => {

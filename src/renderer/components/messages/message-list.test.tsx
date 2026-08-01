@@ -1995,4 +1995,118 @@ describe('MessageList', () => {
       expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
     })
   })
+
+  describe('autopilot approval grouping', () => {
+    const approval = (id: string, verdict: 'approved' | 'denied', action: string) => ({
+      id,
+      type: 'autopilot_review' as const,
+      verdict,
+      reasoning: `reason for ${id}`,
+      action,
+      createdAt: new Date('2025-01-01T00:00:01Z'),
+    })
+
+    it('collapses consecutive approvals into one expandable row', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Summarize my email' } }),
+        approval('ap-1', 'approved', 'API request: GET https://gmail.test/a'),
+        approval('ap-2', 'approved', 'API request: GET https://gmail.test/b'),
+        approval('ap-3', 'approved', 'API request: POST https://gmail.test/c'),
+      ]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      const groups = screen.getAllByTestId('autopilot-approval-group')
+      expect(groups).toHaveLength(1)
+      expect(screen.getByText('Autopilot approved 3 requests')).toBeInTheDocument()
+      // Collapsed: individual reasons hidden until expanded.
+      expect(screen.queryByText('reason for ap-1')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByText('Autopilot approved 3 requests'))
+      expect(screen.getByText('API request: GET https://gmail.test/a')).toBeInTheDocument()
+      expect(screen.getByText('reason for ap-3')).toBeInTheDocument()
+    })
+
+    it('renders a single approval with its action inline', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Do it' } }),
+        approval('ap-1', 'denied', 'API request: DELETE https://gmail.test/x'),
+      ]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByText('Autopilot denied a request')).toBeInTheDocument()
+      expect(screen.getByText('API request: DELETE https://gmail.test/x')).toBeInTheDocument()
+    })
+
+    it('a watchdog verdict card breaks the run and renders as its own card', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Do it' } }),
+        approval('ap-1', 'approved', 'API request: GET https://gmail.test/a'),
+        {
+          id: 'rev-1',
+          type: 'autopilot_review' as const,
+          verdict: 'done' as const,
+          reasoning: 'All satisfied.',
+          createdAt: new Date('2025-01-01T00:00:02Z'),
+        },
+        approval('ap-2', 'approved', 'API request: GET https://gmail.test/b'),
+      ]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getAllByTestId('autopilot-approval-group')).toHaveLength(2)
+      expect(screen.getByTestId('autopilot-review-item')).toBeInTheDocument()
+      expect(screen.getByText('Autopilot complete')).toBeInTheDocument()
+    })
+
+    it('an expanded group stays expanded and updates when a new approval streams in', () => {
+      const base = [
+        createUserMessage({ content: { text: 'Do the rounds' } }),
+        approval('ap-1', 'approved', 'API request: GET https://gmail.test/a'),
+        approval('ap-2', 'approved', 'API request: GET https://gmail.test/b'),
+        approval('ap-3', 'approved', 'API request: GET https://gmail.test/c'),
+      ]
+      mockMessagesData.data = base
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      fireEvent.click(screen.getByText('Autopilot approved 3 requests'))
+      expect(screen.getByText('reason for ap-1')).toBeInTheDocument()
+
+      // A fourth approval lands mid-turn: same group (key = first item), so the
+      // panel must not remount closed.
+      mockMessagesData.data = [...base, approval('ap-4', 'approved', 'API request: GET https://gmail.test/d')]
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getByText('Autopilot approved 4 requests')).toBeInTheDocument()
+      expect(screen.getByText('reason for ap-1')).toBeInTheDocument()
+      expect(screen.getByText('reason for ap-4')).toBeInTheDocument()
+    })
+
+    it('a group at the window boundary keeps its full count (grouping precedes windowing)', () => {
+      // 3 approvals + 299 messages = 302 raw messages but only 300 render
+      // units — a message-scoped window would slice the run to 2 and re-key
+      // the group; the unit-scoped window keeps it whole.
+      mockMessagesData.data = [
+        approval('ap-1', 'approved', 'API request: GET https://gmail.test/a'),
+        approval('ap-2', 'approved', 'API request: GET https://gmail.test/b'),
+        approval('ap-3', 'approved', 'API request: GET https://gmail.test/c'),
+        ...Array.from({ length: 299 }, (_, i) => createUserMessage({ content: { text: `m${i}` } })),
+      ]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getByText('Autopilot approved 3 requests')).toBeInTheDocument()
+      expect(screen.queryByText(/earlier messages? hidden/)).not.toBeInTheDocument()
+    })
+
+    it('a group sliding fully out of the window counts its members as hidden messages', () => {
+      // 1 unit over the window: the group (the oldest unit) drops as a whole,
+      // and the hidden label counts its 5 members, not 1 unit.
+      mockMessagesData.data = [
+        ...['a', 'b', 'c', 'd', 'e'].map((s) =>
+          approval(`ap-${s}`, 'approved', `API request: GET https://gmail.test/${s}`)
+        ),
+        ...Array.from({ length: 300 }, (_, i) => createUserMessage({ content: { text: `m${i}` } })),
+      ]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.queryByTestId('autopilot-approval-group')).not.toBeInTheDocument()
+      expect(screen.getByText(/5 earlier messages hidden/)).toBeInTheDocument()
+    })
+  })
 })

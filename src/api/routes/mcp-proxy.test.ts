@@ -64,6 +64,38 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   },
 }))
 
+// Autopilot seams: default not-engaged so existing review tests exercise the
+// human-review path untouched. The authorization stays current by default so
+// approvals promote; the revocation test flips it.
+const AUTOPILOT_AUTHORIZATION = {
+  sessions: [{ sessionId: 'session-1', requestedAt: '2026-01-01T00:00:00.000Z' }],
+}
+const mockGetAutopilotAuthorization = vi.fn(
+  async (..._args: unknown[]): Promise<unknown> => null
+)
+const mockIsAutopilotAuthorizationCurrent = vi.fn(
+  async (..._args: unknown[]): Promise<boolean> => true
+)
+// The reviewer returns a deferred-recording handle: approvals are recorded as
+// the route's FINAL decision at the outbound boundary, not at verdict time.
+const mockRecordFinalDecision = vi.fn(async (..._args: unknown[]): Promise<void> => {})
+const approvalResult = (decision: string, reason: string) => ({
+  decision,
+  reason,
+  recordFinalDecision: mockRecordFinalDecision,
+})
+const mockReviewAutopilotApproval = vi.fn(async (..._args: unknown[]) =>
+  approvalResult('approve', 'ok')
+)
+vi.mock('@shared/lib/autopilot/autopilot-status', () => ({
+  getAutopilotAuthorization: (...args: unknown[]) => mockGetAutopilotAuthorization(...args),
+  isAutopilotAuthorizationCurrent: (...args: unknown[]) =>
+    mockIsAutopilotAuthorizationCurrent(...args),
+}))
+vi.mock('@shared/lib/autopilot/autopilot-approval-reviewer', () => ({
+  reviewAutopilotApproval: (...args: unknown[]) => mockReviewAutopilotApproval(...args),
+}))
+
 // Mock fetch for forwarded requests
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
@@ -932,6 +964,180 @@ describe('mcp-proxy route', () => {
   // =========================================================================
   // 6. JSON-RPC body parsing for audit logging
   // =========================================================================
+  describe('autopilot approval review', () => {
+    function reviewPolicy() {
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'review',
+        matchedScopes: [],
+        scopeDescriptions: {},
+        resolvedFrom: 'global_default',
+      })
+    }
+    const toolsCall = (args: unknown) =>
+      JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'send_email', arguments: args },
+        id: 3,
+      })
+
+    it('judges the COMPLETE request — target with query, forwarded headers, full body', async () => {
+      setupSuccessPath()
+      reviewPolicy()
+      mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
+      mockReviewAutopilotApproval.mockResolvedValueOnce(approvalResult('approve', 'ok'))
+
+      const body = toolsCall({ to: 'someone@example.com', note: 'x'.repeat(3000) })
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp?mode=overwrite', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+          'X-Upload-Dest': '/reports/final.pdf',
+        },
+        body,
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockRequestReview).not.toHaveBeenCalled()
+      const reviewRequest = mockReviewAutopilotApproval.mock.calls[0][0] as unknown as {
+        action: string
+        details?: string
+      }
+      expect(reviewRequest.action).toContain('send_email')
+      // The real destination, including the query string.
+      expect(reviewRequest.action).toContain('?mode=overwrite')
+      // The complete JSON-RPC body, not just extracted arguments — a
+      // destination past an old cutoff must still be visible to the judge.
+      expect(reviewRequest.details).toContain('JSON-RPC request body (complete)')
+      expect(reviewRequest.details).toContain('someone@example.com')
+      expect(reviewRequest.details).toContain('x'.repeat(3000))
+      // Headers can carry action-defining parameters; the judge sees the same
+      // set the forward sends — with credentials stripped.
+      expect(reviewRequest.details).toContain('Request headers (complete, as forwarded)')
+      expect(reviewRequest.details).toContain('/reports/final.pdf')
+      expect(reviewRequest.details).not.toContain('synth_valid')
+    })
+
+    it('fails closed without the judge when the body exceeds the reviewable cap', async () => {
+      setupSuccessPath()
+      reviewPolicy()
+      mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: toolsCall({ padding: 'x'.repeat(20_000), to: 'attacker@evil.com' }),
+      })
+
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.error).toBe('requires_user_approval')
+      expect(body.message).toContain('cannot be inspected in full')
+      // An approval judged on a partial request is no approval.
+      expect(mockReviewAutopilotApproval).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('denies a batched JSON-RPC body without consulting the judge', async () => {
+      setupSuccessPath()
+      reviewPolicy()
+      mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
+
+      // A batch array parses as JSON but is not ONE canonical request — the
+      // judge would review nothing while both calls get forwarded.
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify([
+          JSON.parse(toolsCall({ to: 'attacker@evil.com' })),
+          { jsonrpc: '2.0', method: 'tools/call', params: { name: 'delete_all' }, id: 4 },
+        ]),
+      })
+
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.error).toBe('requires_user_approval')
+      expect(body.message).toContain('single well-formed JSON-RPC request')
+      expect(mockReviewAutopilotApproval).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('denies a body that does not parse as JSON-RPC without consulting the judge', async () => {
+      setupSuccessPath()
+      reviewPolicy()
+      mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: '{"method": "tools/call", "params": {"name": "send_email"}', // truncated JSON
+      })
+
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.error).toBe('requires_user_approval')
+      expect(body.message).toContain('single well-formed JSON-RPC request')
+      expect(mockReviewAutopilotApproval).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('approval does NOT forward once autopilot is revoked before the outbound call', async () => {
+      setupSuccessPath()
+      reviewPolicy()
+      mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
+      // The user switches autopilot off (or interrupts, opening a new era) in
+      // the window between the judge's approval and the outbound call (token
+      // refresh, DB work). The revalidation runs at the boundary, immediately
+      // before mcpSafeFetch.
+      mockReviewAutopilotApproval.mockResolvedValueOnce(approvalResult('approve', 'ok'))
+      mockIsAutopilotAuthorizationCurrent.mockResolvedValueOnce(false)
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: toolsCall({ to: 'someone@example.com' }),
+      })
+
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.error).toBe('requires_user_approval')
+      expect(body.message).toContain('no longer applies')
+      expect(mockFetch).not.toHaveBeenCalled()
+      // Revalidation compares against the SAME snapshot captured pre-review.
+      expect(mockIsAutopilotAuthorizationCurrent).toHaveBeenCalledWith(
+        'my-agent',
+        AUTOPILOT_AUTHORIZATION
+      )
+      // The timeline card records the route's FINAL decision — the deny that
+      // replaced the judge's provisional approval.
+      expect(mockRecordFinalDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ decision: 'deny' })
+      )
+      expect(mockRecordFinalDecision).not.toHaveBeenCalledWith(
+        expect.objectContaining({ decision: 'approve' })
+      )
+    })
+
+    it('a surviving approval is recorded as the final decision at the outbound boundary', async () => {
+      setupSuccessPath()
+      reviewPolicy()
+      mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
+      mockReviewAutopilotApproval.mockResolvedValueOnce(approvalResult('approve', 'ok'))
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: toolsCall({ to: 'someone@example.com' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockRecordFinalDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ decision: 'approve' })
+      )
+    })
+  })
+
   describe('JSON-RPC body parsing for audit logging', () => {
     it('extracts method from valid JSON-RPC body', async () => {
       setupSuccessPath()

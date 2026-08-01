@@ -16,6 +16,7 @@ import {
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgent } from '@shared/lib/services/agent-service'
+import { normalizeAutopilotState } from '@shared/lib/autopilot/autopilot-schema'
 import { getSessionMetadata } from '@shared/lib/services/session-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 
@@ -149,6 +150,14 @@ class NotificationManager {
     if (isHiddenAutomatedSession(meta)) {
       return
     }
+    // An engaged autopilot stop is usually not the end — the watchdog reviews
+    // it and typically restarts the session, so a per-stop ping here would
+    // fire on every continuation. The watchdog owns the engaged lifecycle's
+    // notifications: one completion ping on a done verdict (sent after it
+    // disengages, so this guard no longer applies), "waiting" on a pause.
+    if (normalizeAutopilotState(meta?.autopilot?.state) === 'engaged') {
+      return
+    }
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
     await this.triggerNotification({
       type: 'session_complete',
@@ -165,7 +174,7 @@ class NotificationManager {
   async triggerSessionWaitingInput(
     sessionId: string,
     agentSlug: string,
-    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run' | 'computer_use' | 'capability_review_subagents' | 'capability_review_workflows',
+    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run' | 'computer_use' | 'capability_review_subagents' | 'capability_review_workflows' | 'autopilot',
     agentName?: string
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
@@ -203,6 +212,9 @@ class NotificationManager {
         break
       case 'capability_review_workflows':
         waitingMessage = 'wants to run a workflow'
+        break
+      case 'autopilot':
+        waitingMessage = 'paused autopilot and needs you'
         break
     }
 

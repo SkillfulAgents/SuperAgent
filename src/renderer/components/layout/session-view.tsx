@@ -143,6 +143,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
               effort={session?.effort}
               speed={session?.speed}
               model={session?.model}
+              autopilot={session?.autopilot}
               onPendingMessageAppeared={onPendingMessageAppeared}
               onMessageSent={onMessageSent}
               onMessageUuidAssigned={onMessageUuidAssigned}

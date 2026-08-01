@@ -45,7 +45,7 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
 
 export function useSendMessage() {
   return useMutation({
-    mutationFn: async (data: { sessionId: string; agentSlug: string; content: string; effort?: EffortLevel; speed?: SpeedLevel; model?: string }) => {
+    mutationFn: async (data: { sessionId: string; agentSlug: string; content: string; effort?: EffortLevel; speed?: SpeedLevel; model?: string; autopilot?: boolean }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions/${data.sessionId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -54,6 +54,8 @@ export function useSendMessage() {
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
+          // Boolean, not truthy-spread: an explicit `false` is a disengage.
+          ...(data.autopilot !== undefined ? { autopilot: data.autopilot } : {}),
         }),
       })
       if (!res.ok) throw new Error('Failed to send message')

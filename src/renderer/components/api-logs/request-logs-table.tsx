@@ -72,15 +72,19 @@ function PolicyBadge({ decision }: { decision: string | null }) {
   const styles: Record<string, string> = {
     allow: 'text-green-700 bg-green-100 dark:text-green-300 dark:bg-green-900/40',
     approved_by_user: 'text-blue-700 bg-blue-100 dark:text-blue-300 dark:bg-blue-900/40',
+    approved_autopilot: 'text-purple-700 bg-purple-100 dark:text-purple-300 dark:bg-purple-900/40',
     block: 'text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-900/40',
     denied_by_user: 'text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-900/40',
+    denied_autopilot: 'text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-900/40',
     review_timeout: 'text-orange-700 bg-orange-100 dark:text-orange-300 dark:bg-orange-900/40',
   }
   const labels: Record<string, string> = {
     allow: 'auto-allowed',
     approved_by_user: 'user-approved',
+    approved_autopilot: 'autopilot-approved',
     block: 'auto-blocked',
     denied_by_user: 'user-denied',
+    denied_autopilot: 'autopilot-denied',
     review_timeout: 'timeout',
   }
   return (
@@ -128,6 +132,7 @@ function EntryDetails({
       <DetailRow label="Method" value={entry.method} />
       <DetailRow label="Status" value={entry.statusCode ?? '—'} />
       {entry.policyDecision && <DetailRow label="Policy" value={<PolicyBadge decision={entry.policyDecision} />} />}
+      {entry.decisionReason && <DetailRow label="Reason" value={entry.decisionReason} />}
       {scopes.length > 0 && (
         <DetailRow
           label="Scopes"

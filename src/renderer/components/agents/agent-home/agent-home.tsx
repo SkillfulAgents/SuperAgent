@@ -27,6 +27,7 @@ import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
 import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
+import { AutopilotToggle } from '@renderer/components/messages/autopilot-toggle'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
@@ -413,6 +414,12 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                             agentHomeLink={false}
                           />
                         }
+                      />
+                      <AutopilotToggle
+                        checked={composerOptions.autopilot}
+                        onCheckedChange={composerOptions.setAutopilot}
+                        engaged={false}
+                        disabled={isDisabled}
                       />
                     </>
                   )}

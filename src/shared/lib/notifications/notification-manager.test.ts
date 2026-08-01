@@ -97,6 +97,27 @@ describe('triggerSessionComplete — automated-session gating', () => {
     expect(mockCreateNotification).not.toHaveBeenCalled()
   })
 
+  it('skips creation while autopilot is engaged — the watchdog owns that lifecycle', async () => {
+    // An engaged stop is usually just a continuation boundary; a per-stop ping
+    // would fire on every watchdog restart.
+    mockGetSessionMetadata.mockResolvedValue({ autopilot: { state: 'engaged' } })
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+    expect(mockBroadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  it('creates a notification once autopilot has disengaged (done verdict path)', async () => {
+    mockGetSessionMetadata.mockResolvedValue({ autopilot: { state: 'off' } })
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
+    expect(mockCreateNotification).toHaveBeenCalledTimes(1)
+  })
+
+  it('creates a notification for a paused-autopilot session', async () => {
+    mockGetSessionMetadata.mockResolvedValue({ autopilot: { state: 'paused' } })
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
+    expect(mockCreateNotification).toHaveBeenCalledTimes(1)
+  })
+
   it('creates notification for a promoted scheduled session', async () => {
     mockGetSessionMetadata.mockResolvedValue({
       isScheduledExecution: true,

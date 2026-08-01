@@ -11,6 +11,8 @@ import { isTurnStartingUserMessage } from './pending-message'
 import { cn } from '@shared/lib/utils'
 import { AlertTriangle, Monitor, X } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
+import { useSession } from '@renderer/hooks/use-sessions'
+import { normalizeAutopilotState } from '@shared/lib/autopilot/autopilot-schema'
 
 import { deriveTaskList, Todo } from '@shared/lib/utils/derive-task-list'
 
@@ -51,9 +53,11 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   const {
     isActive, error, apiErrorCode, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
-    isThinking,
+    isThinking, autopilotReviewing,
   } = useMessageStream(sessionId, agentSlug)
   const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
+  const { data: session } = useSession(sessionId, agentSlug)
+  const autopilotState = normalizeAutopilotState(session?.autopilot?.state)
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
@@ -273,20 +277,26 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     )
   }
 
-  // Don't render if not active
-  if (!isActive) {
+  // Don't render if not active — except while the autopilot watchdog reviews a
+  // stop, when the session must still read as working (the review decides
+  // whether it rests or restarts).
+  if (!isActive && !autopilotReviewing) {
     return null
   }
 
-  const statusText = isAwaitingInput
-    ? 'Waiting for input...'
-    : isCompacting
-      ? 'Compacting...'
-      : apiRetry
-        ? `Retrying... (attempt ${apiRetry.attempt}${apiRetry.maxRetries ? `/${apiRetry.maxRetries}` : ''})`
-        : isThinking
-          ? 'Thinking...'
-          : (activeItem?.activeForm || 'Working...')
+  const statusText = !isActive && autopilotReviewing
+    ? 'Reviewing progress...'
+    : isAwaitingInput
+      ? 'Waiting for input...'
+      : isCompacting
+        ? 'Compacting...'
+        : apiRetry
+          ? `Retrying... (attempt ${apiRetry.attempt}${apiRetry.maxRetries ? `/${apiRetry.maxRetries}` : ''})`
+          : isThinking
+            ? 'Thinking...'
+            : (activeItem?.activeForm || 'Working...')
+
+  const autopilotActive = autopilotState === 'engaged' || autopilotReviewing
 
   return (
     <div className="mx-auto -mb-5 w-full max-w-[740px] px-4">
@@ -298,11 +308,11 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
           <span className="relative flex h-3 w-3">
             <span className={cn(
               "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
-              (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
+              (isAwaitingInput || apiRetry) ? "bg-orange-500" : autopilotActive ? "bg-purple-500" : "bg-primary"
             )}></span>
             <span className={cn(
               "relative inline-flex rounded-full h-3 w-3",
-              (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
+              (isAwaitingInput || apiRetry) ? "bg-orange-500" : autopilotActive ? "bg-purple-500" : "bg-primary"
             )}></span>
           </span>
           <span className="text-sm font-medium">{statusText}</span>
@@ -330,6 +340,21 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
           {elapsed && (
             <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>
           )}
+          {autopilotActive ? (
+            <span
+              className="ml-auto inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300"
+              data-testid="autopilot-tag"
+            >
+              Autopilot ON
+            </span>
+          ) : autopilotState === 'requested' ? (
+            <span
+              className="ml-auto inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium bg-muted text-muted-foreground"
+              data-testid="autopilot-tag"
+            >
+              Getting Ready for Autopilot
+            </span>
+          ) : null}
         </div>
 
         {/* Streamed reasoning renders as a thinking card in the transcript

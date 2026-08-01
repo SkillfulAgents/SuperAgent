@@ -29,8 +29,10 @@ vi.mock('@shared/lib/services/session-service', () => ({
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
 const mockAppendInformationalEntry = vi.fn((..._args: unknown[]) => Promise.resolve())
+const mockAppendAutopilotReviewEntry = vi.fn((..._args: unknown[]) => Promise.resolve())
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: (...args: unknown[]) => mockAppendInformationalEntry(...args),
+  appendAutopilotReviewEntry: (...args: unknown[]) => mockAppendAutopilotReviewEntry(...args),
 }))
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
   resolveTimezoneForAgent: vi.fn(() => 'UTC'),
@@ -3260,6 +3262,8 @@ describe('MessagePersister', () => {
         try {
           messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
           simulateToolUse('mcp__computer-use__computer_click', 'cu-1', { ref: 'win:1' })
+          // Settle the handler's async autopilot-metadata check before the park lands.
+          await new Promise((r) => setImmediate(r))
           expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
           expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(1)
           mockContainerClientFetch.mockClear()
@@ -3908,7 +3912,7 @@ describe('MessagePersister', () => {
       })
     }
 
-    it('registers a script_run with autoApproved:false when permission needed', () => {
+    it('registers a script_run with autoApproved:false when permission needed', async () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
@@ -3917,6 +3921,9 @@ describe('MessagePersister', () => {
         explanation: 'Check macOS version',
         scriptType: 'shell',
       })
+      // The handler consults session autopilot metadata (async) before
+      // parking/broadcasting — settle it before asserting.
+      await new Promise((r) => setImmediate(r))
 
       const scriptEvents = requestCards('script_run')
       expect(scriptEvents).toHaveLength(1)
@@ -3930,6 +3937,48 @@ describe('MessagePersister', () => {
           scriptType: 'shell',
         },
       })
+    })
+
+    it('auto-rejects with a transcript card while autopilot is engaged', async () => {
+      mockCheckPermission.mockReturnValue('prompt_needed')
+      // Persistent, not Once: a stray async consumer left over from an earlier
+      // test can steal a queued once-value under slow CI timing, silently
+      // downgrading this test to the not-engaged path.
+      vi.mocked(getSessionMetadata).mockResolvedValue({ autopilot: { state: 'engaged' } })
+      mockAppendAutopilotReviewEntry.mockClear()
+      sseEvents.length = 0
+      try {
+        simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-autopilot', {
+          script: 'sw_vers',
+          explanation: 'Check macOS version',
+          scriptType: 'shell',
+        })
+
+        await vi.waitFor(() => {
+          expect(
+            mockContainerClientFetch.mock.calls.find(
+              (c) => c[0] === '/inputs/tool-sr-autopilot/reject'
+            )
+          ).toBeTruthy()
+        })
+        // No card parked for the absent user…
+        expect(requestCards('script_run')).toHaveLength(0)
+        // …and the refusal is recorded in the transcript like reviewer decisions.
+        await vi.waitFor(() => {
+          expect(mockAppendAutopilotReviewEntry).toHaveBeenCalledWith(
+            AGENT_SLUG,
+            SESSION_ID,
+            expect.objectContaining({
+              review: expect.objectContaining({
+                verdict: 'denied',
+                action: 'Host script run (shell)',
+              }),
+            })
+          )
+        })
+      } finally {
+        vi.mocked(getSessionMetadata).mockImplementation(() => Promise.resolve(null))
+      }
     })
 
     it('auto-executes AND registers with autoApproved:true when use_host_shell granted', async () => {
@@ -3973,7 +4022,7 @@ describe('MessagePersister', () => {
       vi.unstubAllGlobals()
     })
 
-    it('registers a script_run even without prior permission (prompts user)', () => {
+    it('registers a script_run even without prior permission (prompts user)', async () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
@@ -3982,6 +4031,9 @@ describe('MessagePersister', () => {
         explanation: 'Check version',
         scriptType: 'shell',
       })
+      // The handler consults session autopilot metadata (async) before
+      // parking/broadcasting — settle it before asserting.
+      await new Promise((r) => setImmediate(r))
 
       // Should reach the client for approval (no cached permission → prompt user)
       const scriptEvents = requestCards('script_run')
@@ -4014,7 +4066,7 @@ describe('MessagePersister', () => {
       expect(scriptEvents).toHaveLength(0)
     })
 
-    it('sets isAwaitingInput after request_script_run tool fires (prompt path)', () => {
+    it('sets isAwaitingInput after request_script_run tool fires (prompt path)', async () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
 
       simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-6', {
@@ -4022,6 +4074,8 @@ describe('MessagePersister', () => {
         explanation: 'Check version',
         scriptType: 'shell',
       })
+      // Settle the handler's async autopilot-metadata check.
+      await new Promise((r) => setImmediate(r))
 
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
     })
@@ -4068,6 +4122,54 @@ describe('MessagePersister', () => {
         event: { type: 'content_block_stop' },
       })
     }
+
+    it('auto-rejects with a transcript card while autopilot is engaged', async () => {
+      mockCheckPermission.mockReturnValue('prompt_needed')
+      // The handler rejects for unsupported platforms BEFORE it consults
+      // autopilot metadata — on Linux CI that rejection satisfies the reject
+      // waitFor while the denial card can never be written. The E2E_MOCK
+      // bypass skips the platform guard so the autopilot branch is exercised
+      // on every platform.
+      const originalE2eMock = process.env.E2E_MOCK
+      process.env.E2E_MOCK = 'true'
+      // Persistent, not Once — see the script-run twin of this test.
+      vi.mocked(getSessionMetadata).mockResolvedValue({ autopilot: { state: 'engaged' } })
+      mockAppendAutopilotReviewEntry.mockClear()
+      sseEvents.length = 0
+      try {
+        simulateToolUse('mcp__computer-use__computer_apps', 'tool-cu-autopilot', {
+          includeHidden: false,
+        })
+
+        await vi.waitFor(() => {
+          expect(
+            mockContainerClientFetch.mock.calls.find(
+              (c) => c[0] === '/inputs/tool-cu-autopilot/reject'
+            )
+          ).toBeTruthy()
+        })
+        expect(requestCards('computer_use')).toHaveLength(0)
+        await vi.waitFor(() => {
+          expect(mockAppendAutopilotReviewEntry).toHaveBeenCalledWith(
+            AGENT_SLUG,
+            SESSION_ID,
+            expect.objectContaining({
+              review: expect.objectContaining({
+                verdict: 'denied',
+                action: 'Computer use: apps',
+              }),
+            })
+          )
+        })
+      } finally {
+        vi.mocked(getSessionMetadata).mockImplementation(() => Promise.resolve(null))
+        if (originalE2eMock === undefined) {
+          delete process.env.E2E_MOCK
+        } else {
+          process.env.E2E_MOCK = originalE2eMock
+        }
+      }
+    })
 
     it('auto-executes AND registers with autoApproved:true when computer-use permission is granted', async () => {
       const { notificationManager } = await import('@shared/lib/notifications/notification-manager')

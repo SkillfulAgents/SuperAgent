@@ -5,7 +5,7 @@ import { serve } from '@hono/node-server';
 import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
 import { SessionManager } from './session-manager';
 import { CreateSessionRequest, SendMessageRequest } from './types';
-import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { agentCapabilityPoliciesSchema, autopilotStateSchema, speedLevelSchema } from './capability-policies';
 import type { UUID } from 'crypto';
 import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -183,6 +183,7 @@ app.post('/sessions/:id/messages', async (c) => {
       model: body.model,
       shouldQuery: body.shouldQuery,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
+      autopilotState: autopilotStateSchema.parse(body.autopilotState),
     });
 
     return c.json({ success: true }, 201);
@@ -1949,6 +1950,7 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
         speed: speedLevelSchema.parse(payload.speed),
         model: payload.model,
         capabilityPolicies: agentCapabilityPoliciesSchema.parse(payload.capabilityPolicies),
+        autopilotState: autopilotStateSchema.parse(payload.autopilotState),
       });
     } catch (error: any) {
       console.error('Error handling WebSocket message:', error);

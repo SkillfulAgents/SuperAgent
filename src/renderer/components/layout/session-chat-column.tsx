@@ -15,6 +15,7 @@ import { DonutChart } from '@renderer/components/ui/donut-chart'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 import type { SessionUsage } from '@shared/lib/types/agent'
+import type { AutopilotMetadata } from '@shared/lib/autopilot/autopilot-schema'
 
 interface SessionChatColumnProps {
   sessionId: string
@@ -28,6 +29,7 @@ interface SessionChatColumnProps {
   effort?: EffortLevel
   speed?: SpeedLevel
   model?: string
+  autopilot?: AutopilotMetadata
   onPendingMessageAppeared: (localId: string) => void
   onMessageSent: (content: string, localId: string, queued: boolean) => void
   onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
@@ -50,6 +52,7 @@ export function SessionChatColumn({
   effort,
   speed,
   model,
+  autopilot,
   onPendingMessageAppeared,
   onMessageSent,
   onMessageUuidAssigned,
@@ -141,6 +144,7 @@ export function SessionChatColumn({
               initialEffort={effort}
               initialSpeed={speed}
               initialModel={model}
+              autopilot={autopilot}
               registerSnapshot={staleSession.registerSnapshot}
             />
             <div className="flex justify-between items-center gap-1.5 px-6 py-3">

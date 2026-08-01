@@ -1861,3 +1861,128 @@ describe('replayed duplicate entries (resume history replay)', () => {
     expect(result).toHaveLength(2)
   })
 })
+
+describe('user-message system-reminder stripping', () => {
+  const reminder =
+    '<system-reminder>\nAutopilot has been requested for this session. Run your preflight.\n</system-reminder>'
+
+  it('drops a reminder content block from a user message, keeping the typed text', () => {
+    const result = transformMessages([
+      createUserMessage('user-1', [
+        { type: 'text', text: 'Summarize my unread emails' },
+        { type: 'text', text: reminder },
+      ] as ContentBlock[]),
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({ type: 'user', content: { text: 'Summarize my unread emails' } })
+  })
+
+  it('strips an embedded reminder from string user content (queued flattening)', () => {
+    const result = transformMessages([
+      createUserMessage('user-1', `Do the thing${reminder}`),
+    ])
+    expect(result[0]).toMatchObject({ type: 'user', content: { text: 'Do the thing' } })
+  })
+
+  it('leaves assistant text mentioning system-reminder untouched', () => {
+    const result = transformMessages([
+      createUserMessage('user-1', 'hi'),
+      {
+        type: 'assistant',
+        uuid: 'a-1',
+        timestamp: '2026-01-24T10:01:00.000Z',
+        sessionId: 'test-session',
+        parentUuid: null,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'The <system-reminder> tag is used for...' }],
+        },
+      } as JsonlMessageEntry,
+    ])
+    expect(result[1]).toMatchObject({
+      content: { text: 'The <system-reminder> tag is used for...' },
+    })
+  })
+})
+
+describe('autopilot review entries', () => {
+  const review = (uuid: string, content: string): JsonlSystemEntry => ({
+    uuid,
+    type: 'system',
+    subtype: 'autopilot_review',
+    content,
+    isMeta: false,
+    timestamp: '2026-01-24T10:00:00.000Z',
+  })
+
+  it('transforms a watchdog decision into an autopilot_review item before the next message', () => {
+    const payload = JSON.stringify({
+      verdict: 'continue',
+      reasoning: 'Criterion 2 not met.',
+      nudge: 'Send the email.',
+      iteration: 1,
+      maxIterations: 10,
+    })
+    const result = transformMessages([
+      createUserMessage('user-1', 'Do it', '2026-01-24T09:00:00.000Z'),
+      review('rev-1', payload),
+      createUserMessage('user-2', '[SYSTEM] Autopilot continuation 1/10.', '2026-01-24T11:00:00.000Z'),
+    ])
+    expect(result.map((r) => r.type)).toEqual(['user', 'autopilot_review', 'user'])
+    expect(result[1]).toMatchObject({
+      id: 'rev-1',
+      verdict: 'continue',
+      reasoning: 'Criterion 2 not met.',
+      nudge: 'Send the email.',
+      iteration: 1,
+      maxIterations: 10,
+    })
+  })
+
+  it('emits a trailing review after the last message', () => {
+    const payload = JSON.stringify({ verdict: 'done', reasoning: 'All satisfied.' })
+    const result = transformMessages([
+      createUserMessage('user-1', 'Do it'),
+      review('rev-1', payload),
+    ])
+    expect(result.map((r) => r.type)).toEqual(['user', 'autopilot_review'])
+  })
+
+  it('transforms an approval decision with its action line', () => {
+    const payload = JSON.stringify({
+      verdict: 'approved',
+      reasoning: 'Reading mail is required to summarize it.',
+      action: 'API request: GET https://gmail.googleapis.com/gmail/v1/users/me/messages',
+    })
+    const result = transformMessages([
+      createUserMessage('user-1', 'Summarize my email'),
+      review('rev-approval', payload),
+    ])
+    expect(result[1]).toMatchObject({
+      type: 'autopilot_review',
+      verdict: 'approved',
+      action: 'API request: GET https://gmail.googleapis.com/gmail/v1/users/me/messages',
+      reasoning: 'Reading mail is required to summarize it.',
+    })
+  })
+
+  it('drops malformed review payloads instead of throwing', () => {
+    const result = transformMessages([
+      review('rev-bad', 'not json at all'),
+      review('rev-bad-2', JSON.stringify({ verdict: 'nonsense', reasoning: 'x' })),
+      createUserMessage('user-1', 'Hello'),
+    ])
+    expect(result.map((r) => r.type)).toEqual(['user'])
+  })
+
+  it('dedupes a replayed review by uuid', () => {
+    const payload = JSON.stringify({ verdict: 'done', reasoning: 'All satisfied.' })
+    const result = transformMessages([
+      review('rev-1', payload),
+      createUserMessage('user-1', 'Hello'),
+      review('rev-1', payload),
+      createUserMessage('user-1', 'Hello'),
+    ])
+    expect(result.filter((r) => r.type === 'autopilot_review')).toHaveLength(1)
+  })
+})

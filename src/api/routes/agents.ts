@@ -56,6 +56,9 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
+import { requestAutopilot, disengageAutopilot } from '@shared/lib/autopilot/autopilot-service'
+import { normalizeAutopilotState } from '@shared/lib/autopilot/autopilot-schema'
+import { autopilotWatchdog } from '@shared/lib/autopilot/autopilot-watchdog'
 import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
@@ -1592,6 +1595,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const agentPrefs = await readAgentPreferences(slug)
     const sessionModel = runtimeOptions.model ?? agentPrefs.defaultModel ?? getEffectiveModels().agentModel
 
+    // The autopilot era must open BEFORE the initial prompt exists: the
+    // approval/completion judges bound their windows to requestedAt, and a
+    // stamp taken after createSession could postdate the prompt's transcript
+    // timestamp — excluding the task statement itself from the user-intent
+    // window and leaving the approval reviewer with nothing to authorize.
+    const autopilotRequestedAt = runtimeOptions.autopilot ? new Date().toISOString() : undefined
+
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
@@ -1616,14 +1626,35 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         effort: agentPrefs.defaultEffort,
         speed: agentPrefs.defaultSpeed,
       },
+      autopilotState: runtimeOptions.autopilot ? 'requested' : undefined,
     })
     const sessionId = containerSession.id
 
-    // Attach lifecycle state and the stream before slower metadata/DB work. The
-    // first turn can start emitting shortly after createSession returns, and a
+    // Persist only what the user explicitly chose. The server-side fallback is
+    // applied at session creation but should not masquerade as a user choice in
+    // metadata — otherwise a later change to the global default wouldn't be
+    // reflected when the composer reloads.
+    const initialMetadata: NonNullable<Parameters<typeof registerSession>[3]> = {}
+    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
+    if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
+    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
+    if (runtimeOptions.autopilot) {
+      initialMetadata.autopilot = { state: 'requested', requestedAt: autopilotRequestedAt }
+    }
+    if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
+
+    // Registration is the ONE initial metadata write, and it happens BEFORE the
+    // stream attaches: registerSession REPLACES the session's metadata entry,
+    // so seeding via a separate write before or after it would be erased. The
+    // first turn can call engage_autopilot as soon as events flow, and the
+    // host-authoritative guard must find the persisted 'requested' era when
+    // that event is handled.
+    await registerSession(slug, sessionId, 'New Session', initialMetadata)
+
+    // Attach lifecycle state and the stream before slower DB work. The first
+    // turn can start emitting shortly after createSession returns, and a
     // blocking input emitted during that window must not be missed or reset.
     let lifecycleStarted = false
-    let sessionRegistered = false
     try {
       messagePersister.markSessionActive(sessionId, slug)
       lifecycleStarted = true
@@ -1639,26 +1670,11 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
           userId,
         })
       }
-
-      await registerSession(slug, sessionId, 'New Session')
-      sessionRegistered = true
     } catch (error) {
-      if (lifecycleStarted && !sessionRegistered) {
+      if (lifecycleStarted) {
         messagePersister.unsubscribeFromSession(sessionId)
       }
       throw error
-    }
-    // Persist only what the user explicitly chose. The server-side fallback is
-    // applied at session creation but should not masquerade as a user choice in
-    // metadata — otherwise a later change to the global default wouldn't be
-    // reflected when the composer reloads.
-    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
-    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
-    if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
-    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
-    if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
-    if (Object.keys(initialMetadata).length > 0) {
-      updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)
     }
     // Store slash commands from container's init event (captured during session creation)
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
@@ -1944,6 +1960,48 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       delete runtimeOptions.model
     }
 
+    // Autopilot transitions driven by this message. The composer sends
+    // `autopilot: true` while its switch is on (request; a fresh-turn user
+    // message while engaged also drops back to requested — autonomy is
+    // interrupted until the agent re-engages), `false` on an explicit
+    // toggle-off, and nothing from surfaces that don't know about autopilot —
+    // where a genuine user message mid-engagement disengages entirely
+    // (day-one guardrail). Applied BEFORE the send, always: the container
+    // reads the state with this message, so a post-send transition would
+    // leave its prompt and gates on the OLD state with nothing to sync them
+    // until some later message. The one queued send that must not restart
+    // the in-flight query — switch on while already engaged — is exactly the
+    // case with no state change; the remaining queued transitions (explicit
+    // toggle-off, paused→requested, foreign-surface disengage) are deliberate
+    // state changes where the interrupt/restart IS the correct behavior.
+    {
+      let changed = false
+      if (runtimeOptions.autopilot === true) {
+        // A QUEUED message with the switch on while engaged is steering, not
+        // an interruption: it joins the in-flight autonomous turn, so the
+        // session stays engaged and the watchdog reviews the stop as usual.
+        // Demoting to `requested` here would dead-end — the turn's messages
+        // carry no preflight reminder, so nothing after the stop would ever
+        // re-run the preflight, and `requested` is invisible to the watchdog.
+        const state = normalizeAutopilotState(
+          (await getSessionMetadata(agentSlug, sessionId))?.autopilot?.state
+        )
+        if (!(wasQueued && state === 'engaged')) {
+          changed = await requestAutopilot(agentSlug, sessionId)
+        }
+      } else if (runtimeOptions.autopilot === false) {
+        changed = await disengageAutopilot(agentSlug, sessionId, 'user_toggle')
+      } else {
+        const state = normalizeAutopilotState(
+          (await getSessionMetadata(agentSlug, sessionId))?.autopilot?.state
+        )
+        if (state === 'engaged') {
+          changed = await disengageAutopilot(agentSlug, sessionId, 'user_message')
+        }
+      }
+      if (changed) messagePersister.broadcastSessionUpdate(sessionId)
+    }
+
     // Server-generated message uuid (never client-supplied — the uuid keys the
     // messageAuthor attribution row, so a client-chosen value could collide
     // with another user's message and misattribute it). It is forwarded to the
@@ -2059,6 +2117,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       effort: metadata?.effort,
       speed: metadata?.speed,
       model: metadata?.model,
+      autopilot: metadata?.autopilot,
       ...(pendingWake
         ? {
             pendingWakeAt: pendingWake.nextExecutionAt.toISOString(),
@@ -2203,6 +2262,10 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
           isActive,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
           backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
+          // Reviews broadcast one-shot started/finished events; a client
+          // connecting between them needs the current truth or its
+          // "Reviewing progress…" indicator wedges/misses.
+          autopilotReviewing: autopilotWatchdog.isReviewing(sessionId) || undefined,
         }),
         event: 'message',
       })

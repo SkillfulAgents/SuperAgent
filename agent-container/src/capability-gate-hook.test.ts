@@ -127,3 +127,41 @@ describe('createCapabilityGateHook', () => {
     expect(CAPABILITY_REVIEW_HOOK_TIMEOUT_S * 1000).toBeGreaterThan(HUMAN_INPUT_TTL_MS)
   })
 })
+
+describe('autopilot interplay', () => {
+  it('refuses a review-tier launch with guidance while autopilot is engaged (no parked card)', async () => {
+    const { ctx } = makeContext({ getAutopilotState: () => 'engaged' })
+    const result = await invoke(ctx, 'Task', 'gate-autopilot-1')
+    expect(result).toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'deny' },
+    })
+    const reason = (result as { hookSpecificOutput: { permissionDecisionReason: string } })
+      .hookSpecificOutput.permissionDecisionReason
+    expect(reason).toContain('autopilot')
+    expect(reason).toContain('user approval')
+    expect(inputManager.hasPending('gate-autopilot-1')).toBe(false)
+  })
+
+  it('still parks a review normally in every non-engaged state', async () => {
+    for (const state of ['off', 'requested', 'paused', undefined] as const) {
+      const toolUseId = `gate-autopilot-park-${state}`
+      const { ctx } = makeContext({ getAutopilotState: () => state })
+      const promise = invoke(ctx, 'Workflow', toolUseId)
+      expect(inputManager.hasPending(toolUseId)).toBe(true)
+      inputManager.resolve(toolUseId, { scope: 'once' })
+      await expect(promise).resolves.toEqual({})
+    }
+  })
+
+  it('block policy still wins over the autopilot message (block, not review, semantics)', async () => {
+    const { ctx } = makeContext({
+      getPolicies: () => ({ workflows: 'block' }),
+      getAutopilotState: () => 'engaged',
+    })
+    const result = await invoke(ctx, 'Workflow', 'gate-autopilot-block-1')
+    const reason = (result as { hookSpecificOutput: { permissionDecisionReason: string } })
+      .hookSpecificOutput.permissionDecisionReason
+    expect(reason).not.toContain('autopilot')
+    expect(inputManager.hasPending('gate-autopilot-block-1')).toBe(false)
+  })
+})

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { autopilotMetadataSchema } from '../autopilot/autopilot-schema'
 
 /**
  * Zod schema for the per-agent `session-metadata.json` map, validated at the
@@ -65,6 +66,7 @@ export const sessionMetadataSchema = z
     speed: z.string().optional(),
     model: z.string().optional(),
     invokedByAgentSlug: z.string().optional(),
+    autopilot: autopilotMetadataSchema.optional(),
   })
   .loose()
 

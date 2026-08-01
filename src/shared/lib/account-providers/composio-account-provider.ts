@@ -67,6 +67,7 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     method: string
     headers: Headers
     body: ArrayBuffer | null
+    beforeForward?: () => Promise<void>
   }): Promise<Response> {
     const mode = await this.resolveConnectionMode(params.providerConnectionId)
 
@@ -135,6 +136,7 @@ export class ComposioAccountProvider extends BaseAccountProvider {
       method: string
       headers: Headers
       body: ArrayBuffer | null
+      beforeForward?: () => Promise<void>
     },
   ): Promise<Response> {
     const forwardHeaders = new Headers()
@@ -149,6 +151,10 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     if (params.method !== 'GET' && params.method !== 'HEAD' && params.body) {
       init.body = params.body
     }
+
+    // Contract: the caller's guard runs after credential resolution,
+    // immediately before the outbound request. Throwing aborts the forward.
+    if (params.beforeForward) await params.beforeForward()
 
     const response = await fetch(params.targetUrl, init)
 
@@ -171,6 +177,7 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     method: string
     headers: Headers
     body: ArrayBuffer | null
+    beforeForward?: () => Promise<void>
   }): Promise<Response> {
     const parameters = buildProxyParameters(params.headers)
 
@@ -184,6 +191,10 @@ export class ComposioAccountProvider extends BaseAccountProvider {
         { status: translation.status, headers: { 'Content-Type': 'application/json' } },
       )
     }
+
+    // Contract: the caller's guard runs immediately before the outbound proxy
+    // execution. Throwing aborts the forward.
+    if (params.beforeForward) await params.beforeForward()
 
     const result = await proxyExecute({
       endpoint: params.targetUrl,

@@ -254,8 +254,9 @@ export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   statusCode: integer('status_code'),
   errorMessage: text('error_message'),
   durationMs: integer('duration_ms'),
-  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
+  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout, approved_autopilot, denied_autopilot
   matchedScopes: text('matched_scopes'), // JSON array string of matched scope names
+  decisionReason: text('decision_reason'), // reviewer-supplied reason (autopilot approvals/denials)
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   agentSlugCreatedAtIdx: index('proxy_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),
@@ -317,8 +318,9 @@ export const mcpAuditLog = sqliteTable('mcp_audit_log', {
   statusCode: integer('status_code'),
   errorMessage: text('error_message'),
   durationMs: integer('duration_ms'),
-  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
+  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout, approved_autopilot, denied_autopilot
   matchedTool: text('matched_tool'), // tool name for tools/call requests
+  decisionReason: text('decision_reason'), // reviewer-supplied reason (autopilot approvals/denials)
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   agentSlugCreatedAtIdx: index('mcp_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),

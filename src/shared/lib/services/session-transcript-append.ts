@@ -2,6 +2,10 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import type { JsonlSystemEntry } from '@shared/lib/types/agent'
+import {
+  autopilotReviewEntrySchema,
+  type AutopilotReviewEntry,
+} from '@shared/lib/autopilot/autopilot-schema'
 
 /**
  * Append a host-authored `system`/`informational` entry to a session's JSONL
@@ -31,6 +35,32 @@ export async function appendInformationalEntry(
     subtype: 'informational',
     content: entry.content,
     level: entry.level,
+    isMeta: false,
+    timestamp: new Date().toISOString(),
+  }
+  await fs.promises.mkdir(path.dirname(jsonlPath), { recursive: true })
+  await fs.promises.appendFile(jsonlPath, JSON.stringify(jsonlEntry) + '\n', 'utf-8')
+}
+
+/**
+ * Append a watchdog decision to a session's transcript as a
+ * `system`/`autopilot_review` entry. The payload is JSON-stringified into
+ * `content` (parsed back with autopilotReviewEntrySchema at the transform
+ * boundary). Idempotent by uuid, same as informational entries.
+ */
+export async function appendAutopilotReviewEntry(
+  agentSlug: string,
+  sessionId: string,
+  entry: { uuid: string; review: AutopilotReviewEntry }
+): Promise<void> {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const existing = await fs.promises.readFile(jsonlPath, 'utf-8').catch(() => null)
+  if (existing?.includes(`"${entry.uuid}"`)) return
+  const jsonlEntry: JsonlSystemEntry = {
+    uuid: entry.uuid,
+    type: 'system',
+    subtype: 'autopilot_review',
+    content: JSON.stringify(autopilotReviewEntrySchema.parse(entry.review)),
     isMeta: false,
     timestamp: new Date().toISOString(),
   }

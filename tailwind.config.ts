@@ -117,10 +117,31 @@ const config: Config = {
 					opacity: '1',
 				},
 			},
+			// Lucide's Rocket points up-right at 45°, so it flies along its own
+			// nose. Out the top-right, then (while invisible) wraps to the
+			// bottom-left and flies back into its seat — a fly-through, not a reset.
+			'rocket-launch': {
+				'0%': { transform: 'translate(0, 0)', opacity: '1', animationTimingFunction: 'ease-in' },
+				'35%': { opacity: '1' },
+				'50%': { transform: 'translate(2.5rem, -2.5rem)', opacity: '0' },
+				'50.01%': { transform: 'translate(-2.5rem, 2.5rem)', opacity: '0', animationTimingFunction: 'ease-out' },
+				'65%': { opacity: '1' },
+				'100%': { transform: 'translate(0, 0)', opacity: '1' },
+			},
+			// Own-width-relative percentages would undershoot on wide boxes, so
+			// the sweep uses fixed distances sized to the composer toggle.
+			// Right-to-left: stars streak opposite the rocket's direction of travel.
+			'warp-line': {
+				'0%': { transform: 'translateX(8rem)', opacity: '0' },
+				'20%': { opacity: '1' },
+				'100%': { transform: 'translateX(-2.5rem)', opacity: '0' },
+			},
 		},
 		animation: {
 			'cobalt-glow': 'cobalt-glow 4s ease-in-out infinite',
 			'dot-wave': 'dot-wave 2s ease-in-out infinite',
+			'rocket-launch': 'rocket-launch 1s linear',
+			'warp-line': 'warp-line 0.45s linear infinite',
 		}
 	}
   },

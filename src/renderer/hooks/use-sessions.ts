@@ -84,7 +84,7 @@ export function useCreateSession() {
   const { track } = useAnalyticsTracking()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; message: string; effort?: EffortLevel; speed?: SpeedLevel; model?: string }) => {
+    mutationFn: async (data: { agentSlug: string; message: string; effort?: EffortLevel; speed?: SpeedLevel; model?: string; autopilot?: boolean }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -93,6 +93,7 @@ export function useCreateSession() {
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
+          ...(data.autopilot ? { autopilot: true } : {}),
         }),
       })
       if (!res.ok) throw new Error('Failed to create session')

@@ -2,17 +2,12 @@ import { BaseAccountProvider } from './base-account-provider'
 import type { InitiateConnectionResult, ProviderConnection, ProviderConnectionListItem } from './base-account-provider'
 import { resolveDisplayName } from './display-name-helpers'
 import { getProviderSlug, getToolkitSlugFromProviderSlug } from './service-catalog'
+// The shared set, not a local copy: the proxy's autopilot approval review
+// shows the judge exactly the headers that survive this filter, so the two
+// must never drift.
+import { PROXY_SKIP_REQUEST_HEADERS as SKIP_REQUEST_HEADERS } from '@shared/lib/proxy/composio-envelope'
 
 const NANGO_API_BASE = 'https://api.nango.dev'
-
-const SKIP_REQUEST_HEADERS = new Set([
-  'host',
-  'authorization',
-  'connection',
-  'content-length',
-  'transfer-encoding',
-  'accept-encoding',
-])
 
 const SKIP_RESPONSE_HEADERS = new Set([
   'transfer-encoding',
@@ -167,6 +162,7 @@ export class NangoAccountProvider extends BaseAccountProvider {
     method: string
     headers: Headers
     body: ArrayBuffer | null
+    beforeForward?: () => Promise<void>
   }): Promise<Response> {
     const { accessToken } = await this.resolveToken(params.providerConnectionId, params.toolkitSlug)
 
@@ -182,6 +178,10 @@ export class NangoAccountProvider extends BaseAccountProvider {
     if (params.method !== 'GET' && params.method !== 'HEAD' && params.body) {
       init.body = params.body
     }
+
+    // Contract: the caller's guard runs after token resolution, immediately
+    // before the outbound request. Throwing aborts the forward.
+    if (params.beforeForward) await params.beforeForward()
 
     const response = await fetch(params.targetUrl, init)
 

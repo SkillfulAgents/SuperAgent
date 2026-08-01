@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
-import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies } from './types';
-import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies, AutopilotState } from './types';
+import { agentCapabilityPoliciesSchema, autopilotStateSchema, speedLevelSchema } from './capability-policies';
 import { ClaudeCodeProcess } from './claude-code';
 import { SessionPersistence } from './session-persistence';
 import { EventEmitter } from 'events';
@@ -212,6 +212,7 @@ export class SessionManager extends EventEmitter {
     // interpolated into the ANTHROPIC_CUSTOM_HEADERS string.
     const capabilityPolicies = agentCapabilityPoliciesSchema.parse(request.capabilityPolicies);
     const speed = speedLevelSchema.parse(request.speed);
+    const autopilotState = autopilotStateSchema.parse(request.autopilotState);
 
     // Ensure working directory exists
     if (!fs.existsSync(workingDirectory)) {
@@ -226,8 +227,13 @@ export class SessionManager extends EventEmitter {
     const normalized = { ...request, speed, capabilityPolicies, workingDirectory };
     const sessionProfile = sessionProfileFromRequest(normalized);
     const nextProfile = nextWarmProfileFromRequest(normalized);
+    // Pre-warmed processes are built for the default interactive shape — no
+    // autopilotState, so no preflight fragment in their baked system prompt.
+    // An autopilot session must build cold rather than claim one.
     const process =
-      (await this.claimPrewarmed(sessionProfile)) ??
+      (autopilotState === undefined || autopilotState === 'off'
+        ? await this.claimPrewarmed(sessionProfile)
+        : null) ??
       new ClaudeCodeProcess({
         sessionId: tempSessionId,
         workingDirectory,
@@ -247,6 +253,7 @@ export class SessionManager extends EventEmitter {
         effort: request.effort,
         speed,
         capabilityPolicies,
+        autopilotState,
       });
 
     // Promise to capture Claude's session ID and slash commands (emitted after first message is sent)
@@ -359,6 +366,10 @@ export class SessionManager extends EventEmitter {
       this.persistence.addSessionCapabilityGrant(sessionId, capability);
     });
 
+    process.on('autopilot-state', ({ autopilotState: nextState }: { autopilotState: AutopilotState }) => {
+      this.persistence.updateAutopilotState(sessionId, nextState);
+    });
+
     // Persist the session
     this.persistence.saveSession({
       sessionId,
@@ -382,6 +393,7 @@ export class SessionManager extends EventEmitter {
       effort: request.effort,
       speed,
       capabilityPolicies,
+      autopilotState,
       metadata: request.metadata,
     });
 
@@ -589,6 +601,7 @@ export class SessionManager extends EventEmitter {
         effort: persisted.effort,
         speed: persisted.speed,
         capabilityPolicies: persisted.capabilityPolicies,
+        autopilotState: persisted.autopilotState,
         sessionCapabilityGrants: persisted.sessionCapabilityGrants,
       });
 
@@ -648,6 +661,10 @@ export class SessionManager extends EventEmitter {
 
       process.on('capability-grant', ({ capability }: { capability: 'subagents' | 'workflows' }) => {
         this.persistence.addSessionCapabilityGrant(sessionId, capability);
+      });
+
+      process.on('autopilot-state', ({ autopilotState: nextState }: { autopilotState: AutopilotState }) => {
+        this.persistence.updateAutopilotState(sessionId, nextState);
       });
 
       // Start the process (which will resume the Claude session)
@@ -723,7 +740,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
+    options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies; autopilotState?: AutopilotState }
   ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
@@ -772,6 +789,9 @@ export class SessionManager extends EventEmitter {
     }
     if (options?.capabilityPolicies !== undefined) {
       this.persistence.updateCapabilityPolicies(sessionId, options.capabilityPolicies);
+    }
+    if (options?.autopilotState !== undefined) {
+      this.persistence.updateAutopilotState(sessionId, options.autopilotState);
     }
 
     // Send to Claude Code process (messages are stored via handleMessage)

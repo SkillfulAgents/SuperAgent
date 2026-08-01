@@ -23,6 +23,8 @@ function makeState(overrides: Partial<ComposerOptionsState>): ComposerOptionsSta
     setSpeed: vi.fn(),
     model: 'claude-sonnet-4-6',
     setModel: vi.fn(),
+    autopilot: false,
+    setAutopilot: vi.fn(),
     catalog: CATALOG,
     toRuntimeOptions: () => ({}),
     ...overrides,

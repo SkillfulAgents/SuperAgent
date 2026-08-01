@@ -31,6 +31,13 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
 }))
 
+// Mock useSession (React Query) — these tests render without a QueryClientProvider.
+// The autopilot block is absent by default: sessions without autopilot must
+// behave exactly as before.
+vi.mock('@renderer/hooks/use-sessions', () => ({
+  useSession: () => ({ data: undefined }),
+}))
+
 // Mock useMessages
 const mockMessages: any[] = []
 vi.mock('@renderer/hooks/use-messages', () => ({

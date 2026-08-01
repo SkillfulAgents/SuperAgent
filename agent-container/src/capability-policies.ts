@@ -26,6 +26,11 @@ export const agentCapabilityPoliciesSchema = z
 // instead of reaching header composition.
 export const speedLevelSchema = z.enum(['slow', 'normal', 'fast']).optional()
 
+// Boundary schema for the session autopilot state arriving over HTTP (create-
+// session / send-message bodies). Closed enum: a malformed value must fail the
+// request, not silently render the wrong prompt fragment.
+export const autopilotStateSchema = z.enum(['off', 'requested', 'engaged', 'paused']).optional()
+
 // Boundary schema for the resolve payload of a capability review (host answers
 // via POST /inputs/:toolUseId/resolve). Unknown shapes count as a plain
 // one-time approval — the approval itself was explicit, only the scope is soft.

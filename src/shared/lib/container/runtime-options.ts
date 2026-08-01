@@ -15,6 +15,10 @@ export const RuntimeOptionsSchema = z
     speed: z.enum(SPEED_LEVELS).optional(),
     model: z.string().optional(),
     shouldQuery: z.boolean().optional(),
+    // Composer intent flag: true = the user wants this session to run
+    // autonomously (sets autopilot state to `requested`; the agent engages via
+    // the engage_autopilot tool). False = explicit disengage.
+    autopilot: z.boolean().optional(),
   })
   .strict()
 
@@ -56,6 +60,10 @@ export function parseRuntimeOptions(raw: unknown): RuntimeOptions {
 
   if (typeof obj.shouldQuery === 'boolean') {
     result.shouldQuery = obj.shouldQuery
+  }
+
+  if (typeof obj.autopilot === 'boolean') {
+    result.autopilot = obj.autopilot
   }
 
   return result

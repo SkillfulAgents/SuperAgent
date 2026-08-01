@@ -48,6 +48,8 @@ function stateWith(overrides: Partial<ComposerOptionsState> = {}): ComposerOptio
     setSpeed: vi.fn(),
     model: 'claude-opus-4-8',
     setModel: vi.fn(),
+    autopilot: false,
+    setAutopilot: vi.fn(),
     catalog: CATALOG as ComposerOptionsState['catalog'],
     webProvider: undefined,
     toRuntimeOptions: () => ({}),
