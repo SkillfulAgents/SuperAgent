@@ -63,13 +63,20 @@ export async function deleteBrowserProfile(agentId: string): Promise<void> {
   await fs.promises.rm(profileDir, { recursive: true, force: true })
 }
 
-export interface CleanupOptions {
-  /**
-   * Returns true when the agent's browser is currently running (or launching).
-   * The sweep leaves such profiles alone — deleting caches under a live Chrome
-   * invites corruption; they're picked up on a later sweep instead.
-   */
-  isProfileInUse?: (agentId: string) => boolean
+// Profiles currently claimed by a browser launch. ChromeProvider marks the
+// profile BEFORE it awaits the in-flight sweep (and only unmarks after the
+// browser is fully stopped), so the sweep and Chrome can never touch a profile
+// concurrently: either the sweep sees the mark and skips the profile, or the
+// launch sees the sweep's promise and waits for it. A mark leaked by a crash
+// only makes the sweep skip that profile — the safe direction.
+const profilesInUse = new Set<string>()
+
+export function markProfileInUse(agentId: string): void {
+  profilesInUse.add(agentId)
+}
+
+export function unmarkProfileInUse(agentId: string): void {
+  profilesInUse.delete(agentId)
 }
 
 /**
@@ -82,17 +89,10 @@ export interface CleanupOptions {
  *     directory can never silently grow to GB scale again.
  *
  * Runs shortly after startup (delayed so it doesn't pile onto launch work).
- * Profiles reported in-use by `isProfileInUse` are skipped, and browser
- * launches await the in-flight sweep, so sweep and Chrome never touch a
- * profile at the same time. (A launch that starts in the instant before the
- * sweep fires can slip past the in-use check; that window is seconds wide and
- * Chrome recreates missing cache dirs lazily, so the worst case is a dropped
- * cache write.)
+ * Profiles marked in-use by a launch are skipped — they're picked up on a
+ * later restart's sweep instead.
  */
-export async function cleanupBrowserProfiles(
-  agentIds: string[],
-  options: CleanupOptions = {},
-): Promise<void> {
+export async function cleanupBrowserProfiles(agentIds: string[]): Promise<void> {
   await removeLegacyProfileDir()
 
   const root = getBrowserProfilesRoot()
@@ -107,7 +107,7 @@ export async function cleanupBrowserProfiles(
   const known = new Set(agentIds)
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
-    if (options.isProfileInUse?.(entry.name)) continue
+    if (profilesInUse.has(entry.name)) continue
     const profileDir = path.join(root, entry.name)
     if (!known.has(entry.name)) {
       // Orphaned: the agent this profile belonged to no longer exists.
@@ -188,18 +188,24 @@ let pendingSweep: NodeJS.Timeout | null = null
  * Schedule the sweep to run once, shortly after startup. Never blocks or fails
  * service initialization. Browser launches await {@link waitForBrowserProfileCleanup}
  * so a launch cannot race an in-flight sweep's deletions.
+ *
+ * `getAgentIds` is a supplier, not a snapshot: it resolves when the timer
+ * fires, so an agent created during the delay is never misclassified as an
+ * orphan (which would recursively delete its cookies and session state).
  */
 export function startBrowserProfileCleanup(
-  agentIds: string[],
-  options: CleanupOptions & { delayMs?: number } = {},
+  getAgentIds: () => Promise<string[]> | string[],
+  options: { delayMs?: number } = {},
 ): void {
   stopBrowserProfileCleanup()
   pendingSweep = setTimeout(() => {
     pendingSweep = null
-    cleanupInFlight = cleanupBrowserProfiles(agentIds, options).catch((error) => {
-      console.error('[BrowserProfiles] Profile cleanup sweep failed:', error)
-      captureException(error, { tags: { component: 'browser', operation: 'profile-cleanup' } })
-    })
+    cleanupInFlight = Promise.resolve()
+      .then(async () => cleanupBrowserProfiles(await getAgentIds()))
+      .catch((error) => {
+        console.error('[BrowserProfiles] Profile cleanup sweep failed:', error)
+        captureException(error, { tags: { component: 'browser', operation: 'profile-cleanup' } })
+      })
   }, options.delayMs ?? STARTUP_SWEEP_DELAY_MS)
   // Never hold the process open just for a pending sweep (matters for the web
   // server, whose event loop must drain on shutdown).

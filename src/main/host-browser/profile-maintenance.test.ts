@@ -21,6 +21,8 @@ vi.mock('@shared/lib/error-reporting', () => ({
 import {
   cleanupBrowserProfiles,
   deleteBrowserProfile,
+  markProfileInUse,
+  unmarkProfileInUse,
   startBrowserProfileCleanup,
   stopBrowserProfileCleanup,
   waitForBrowserProfileCleanup,
@@ -105,18 +107,25 @@ describe('browser profile maintenance', () => {
     expect(fs.existsSync(path.join(dir, 'Default', 'Local Storage', 'data'))).toBe(true)
   })
 
-  it('leaves profiles reported in-use completely alone', async () => {
+  it('leaves profiles marked in-use completely alone until unmarked', async () => {
     const busy = makeProfile('agent-busy', ['component_crx_cache'])
     const idle = makeProfile('agent-idle', ['component_crx_cache'])
 
-    await cleanupBrowserProfiles(['agent-idle'], {
-      isProfileInUse: (id) => id === 'agent-busy',
-    })
+    markProfileInUse('agent-busy')
+    try {
+      await cleanupBrowserProfiles(['agent-idle'])
+    } finally {
+      unmarkProfileInUse('agent-busy')
+    }
 
     // agent-busy is not in the agent list (would be orphan-deleted) AND has
-    // strippable caches — in-use must win over both.
+    // strippable caches — the in-use mark must win over both.
     expect(fs.existsSync(path.join(busy, 'component_crx_cache'))).toBe(true)
     expect(fs.existsSync(path.join(idle, 'component_crx_cache'))).toBe(false)
+
+    // After unmarking, the next sweep reclaims it.
+    await cleanupBrowserProfiles(['agent-idle'])
+    expect(fs.existsSync(busy)).toBe(false)
   })
 
   it('is a no-op when the profiles directory does not exist', async () => {
@@ -177,16 +186,32 @@ describe('browser profile maintenance', () => {
 
     it('runs the sweep after the configured delay and exposes it to waitForBrowserProfileCleanup', async () => {
       const orphaned = makeProfile('agent-deleted')
-      startBrowserProfileCleanup(['agent-alive'], { delayMs: 0 })
+      startBrowserProfileCleanup(() => ['agent-alive'], { delayMs: 0 })
       // waitForBrowserProfileCleanup resolves immediately until the timer
       // fires (launches proceed pre-sweep by design), so wait for the effect.
       await vi.waitFor(() => expect(fs.existsSync(orphaned)).toBe(false))
       await waitForBrowserProfileCleanup()
     })
 
+    it('resolves the agent list when the timer fires, not when scheduled', async () => {
+      // An agent created AFTER scheduling but before the sweep fires must not
+      // be classified as an orphan — that would delete its cookies/session.
+      const agents = ['agent-old']
+      makeProfile('agent-old')
+      startBrowserProfileCleanup(async () => [...agents], { delayMs: 30 })
+
+      agents.push('agent-created-during-delay')
+      const created = makeProfile('agent-created-during-delay')
+      const orphaned = makeProfile('agent-deleted')
+
+      await vi.waitFor(() => expect(fs.existsSync(orphaned)).toBe(false))
+      await waitForBrowserProfileCleanup()
+      expect(fs.existsSync(path.join(created, 'Default', 'Cookies'))).toBe(true)
+    })
+
     it('does not sweep before the delay elapses, and stop cancels a pending sweep', async () => {
       const orphaned = makeProfile('agent-deleted')
-      startBrowserProfileCleanup(['agent-alive'], { delayMs: 60_000 })
+      startBrowserProfileCleanup(() => ['agent-alive'], { delayMs: 60_000 })
       stopBrowserProfileCleanup()
       await new Promise((r) => setTimeout(r, 25))
       expect(fs.existsSync(orphaned)).toBe(true)
@@ -199,9 +224,21 @@ describe('browser profile maintenance', () => {
       fs.writeFileSync(file, '')
       h.dataDir = file
 
-      startBrowserProfileCleanup(['agent1'], { delayMs: 0 })
+      startBrowserProfileCleanup(() => ['agent1'], { delayMs: 0 })
       await vi.waitFor(() => expect(captureException).toHaveBeenCalledTimes(1))
       await waitForBrowserProfileCleanup()
+    })
+
+    it('captures a failing agent-list supplier instead of rejecting', async () => {
+      const orphaned = makeProfile('agent-deleted')
+      startBrowserProfileCleanup(
+        async () => { throw new Error('agent listing failed') },
+        { delayMs: 0 },
+      )
+      await vi.waitFor(() => expect(captureException).toHaveBeenCalledTimes(1))
+      await waitForBrowserProfileCleanup()
+      // A failed listing must never be treated as "no agents exist".
+      expect(fs.existsSync(orphaned)).toBe(true)
     })
   })
 })

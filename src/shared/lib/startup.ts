@@ -97,10 +97,10 @@ export async function initializeServices() {
 
   // Reclaim host-browser profile storage (orphaned/legacy dirs, regenerable
   // Chrome caches). Scheduled a few minutes out so it doesn't pile onto the
-  // startup burst; profiles whose browser is running by then are skipped.
-  startBrowserProfileCleanup(slugs, {
-    isProfileInUse: (agentId) => getActiveProvider()?.isRunning(agentId) ?? false,
-  })
+  // startup burst. The agent list is a supplier resolved when the sweep fires,
+  // not a snapshot — an agent created during the delay must not be treated as
+  // an orphan. Profiles claimed by a browser launch are skipped internally.
+  startBrowserProfileCleanup(async () => (await listAgents()).map((a) => a.slug))
 
   // Stop the host browser for an agent before its container is torn down,
   // so the browser closes gracefully instead of getting a "socket hang up".

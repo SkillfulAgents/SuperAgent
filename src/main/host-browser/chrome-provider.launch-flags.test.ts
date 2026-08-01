@@ -66,6 +66,13 @@ const h = vi.hoisted(() => {
   return { netMock, spawnMock, execSyncMock }
 })
 
+const pm = vi.hoisted(() => ({
+  markProfileInUse: vi.fn(),
+  unmarkProfileInUse: vi.fn(),
+  waitForBrowserProfileCleanup: vi.fn(async () => {}),
+}))
+vi.mock('./profile-maintenance', () => pm)
+
 vi.mock('child_process', () => ({ spawn: h.spawnMock, execSync: h.execSyncMock }))
 vi.mock('net', () => ({ default: h.netMock, ...h.netMock }))
 
@@ -135,6 +142,9 @@ describe('ChromeProvider launch flags (profile disk growth)', () => {
   beforeEach(async () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
     h.spawnMock.mockClear()
+    pm.markProfileInUse.mockClear()
+    pm.unmarkProfileInUse.mockClear()
+    pm.waitForBrowserProfileCleanup.mockClear()
     provider = new ChromeProvider()
     await provider.launch('agent1')
     const call = h.spawnMock.mock.calls.find((c) =>
@@ -165,5 +175,23 @@ describe('ChromeProvider launch flags (profile disk growth)', () => {
 
   it('disables the component updater', () => {
     expect(args).toContain('--disable-component-update')
+  })
+
+  it('claims the profile before waiting on the cleanup sweep, which precedes the spawn', () => {
+    // Mark BEFORE wait: a sweep firing between the two would see the claim and
+    // skip this profile; marking after the wait leaves a window where the
+    // sweep deletes directories under a spawning Chrome.
+    expect(pm.markProfileInUse).toHaveBeenCalledWith('agent1')
+    const markOrder = pm.markProfileInUse.mock.invocationCallOrder[0]
+    const waitOrder = pm.waitForBrowserProfileCleanup.mock.invocationCallOrder[0]
+    const spawnOrder = h.spawnMock.mock.invocationCallOrder[0]
+    expect(markOrder).toBeLessThan(waitOrder)
+    expect(waitOrder).toBeLessThan(spawnOrder)
+  })
+
+  it('releases the profile claim on stop', async () => {
+    expect(pm.unmarkProfileInUse).not.toHaveBeenCalledWith('agent1')
+    await provider.stop('agent1')
+    expect(pm.unmarkProfileInUse).toHaveBeenCalledWith('agent1')
   })
 })

@@ -9,7 +9,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { readJsonFileStrictSync, writeFileAtomicSync, CorruptFileError } from '@shared/lib/utils/file-storage'
-import { waitForBrowserProfileCleanup } from './profile-maintenance'
+import { waitForBrowserProfileCleanup, markProfileInUse, unmarkProfileInUse } from './profile-maintenance'
 import { z } from 'zod'
 
 // Chrome's DevTools Protocol has no auth token: any host/process that can reach
@@ -268,8 +268,13 @@ export class ChromeProvider implements HostBrowserProvider {
       throw err
     }
 
-    // If the startup profile-storage sweep is still running, let it finish
-    // before touching (or launching Chrome onto) this profile dir.
+    // Claim this profile BEFORE waiting on the sweep: if the sweep hasn't
+    // started yet, the mark makes it skip this profile; if it's already
+    // running, the await keeps us out of its way. Marking after the await
+    // would leave a window where a sweep firing right now could delete
+    // directories under a spawning Chrome. The mark is released in stop() /
+    // handleExit, or below on launch-failure paths that bypass stop().
+    markProfileInUse(instanceId)
     await waitForBrowserProfileCleanup()
 
     const port = await this.findFreePort()
@@ -429,6 +434,7 @@ export class ChromeProvider implements HostBrowserProvider {
           tags: { component: 'browser', operation: 'launch' },
           extra: { instanceId, platform: 'darwin', stage: 'open-dispatch' },
         })
+        unmarkProfileInUse(instanceId)
         throw err
       }
 
@@ -440,6 +446,7 @@ export class ChromeProvider implements HostBrowserProvider {
           tags: { component: 'browser', operation: 'launch' },
           extra: { instanceId, platform: 'darwin', stage: 'pid-lookup', userDataDir },
         })
+        unmarkProfileInUse(instanceId)
         throw err
       }
       chromePid = foundPid
@@ -470,6 +477,7 @@ export class ChromeProvider implements HostBrowserProvider {
           tags: { component: 'browser', operation: 'launch' },
           extra: { instanceId, platform: process.platform },
         })
+        unmarkProfileInUse(instanceId)
         throw err
       }
       chromePid = browserProcess.pid
@@ -540,6 +548,7 @@ export class ChromeProvider implements HostBrowserProvider {
         earlyExitPromise.catch(() => {})
         proxyServer?.close()
         this.killSpawnedChrome(browserProcess, chromePid)
+        unmarkProfileInUse(instanceId)
         throw new Error(
           `Failed to bind host-browser CDP proxy on ${bridgeIp}: ${err instanceof Error ? err.message : String(err)}`
         )
@@ -570,6 +579,7 @@ export class ChromeProvider implements HostBrowserProvider {
         instance.externalCloseWatcher = null
       }
       this.instances.delete(instanceId)
+      unmarkProfileInUse(instanceId)
       if (!wasIntentional) {
         console.log(`[ChromeProvider] Browser for instance ${instanceId} closed externally, notifying listeners`)
         Promise.resolve(this.onExternalClose?.(instanceId)).catch((err) => {
@@ -709,6 +719,7 @@ export class ChromeProvider implements HostBrowserProvider {
       }
     }
     this.instances.delete(instanceId)
+    unmarkProfileInUse(instanceId)
   }
 
   async stopAll(): Promise<void> {
