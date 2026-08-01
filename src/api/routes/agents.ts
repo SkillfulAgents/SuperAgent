@@ -161,6 +161,7 @@ import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/ut
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
+import { deleteBrowserProfile } from '../../main/host-browser/profile-maintenance'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { captureException } from '@shared/lib/error-reporting'
@@ -1072,6 +1073,15 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     const deleted = await deleteAgent(slug)
     if (!deleted) {
       return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    // Remove the agent's dedicated host-browser Chrome profile. The container
+    // (and with it any host browser) is already stopped by deleteAgent.
+    // Best-effort: a leftover dir is reclaimed by the next startup sweep.
+    try {
+      await deleteBrowserProfile(slug)
+    } catch (error) {
+      console.error('Failed to delete host-browser profile:', error)
     }
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'deleted', details: { name: agentBeforeDelete.frontmatter.name } })

@@ -9,6 +9,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { readJsonFileStrictSync, writeFileAtomicSync, CorruptFileError } from '@shared/lib/utils/file-storage'
+import { waitForBrowserProfileCleanup } from './profile-maintenance'
 import { z } from 'zod'
 
 // Chrome's DevTools Protocol has no auth token: any host/process that can reach
@@ -267,6 +268,10 @@ export class ChromeProvider implements HostBrowserProvider {
       throw err
     }
 
+    // If the startup profile-storage sweep is still running, let it finish
+    // before touching (or launching Chrome onto) this profile dir.
+    await waitForBrowserProfileCleanup()
+
     const port = await this.findFreePort()
     const profileId = options?.chromeProfileId
 
@@ -342,7 +347,18 @@ export class ChromeProvider implements HostBrowserProvider {
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
       '--disable-background-timer-throttling',
-      '--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion',
+      // Chrome honors only the LAST --disable-features occurrence, so every
+      // disabled feature must live in this single flag.
+      // CalculateNativeWinOcclusion/WebContentsOcclusion: occlusion throttling
+      // (see above). The optimization-guide features stop Chrome from
+      // downloading the on-device Gemini Nano model (4 GB per profile) and
+      // per-page optimization hints into these automation profiles.
+      '--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion,OptimizationGuideOnDeviceModel,OptimizationGuideModelDownloading,OptimizationHints,TextSafetyClassifier',
+      // Component updater re-downloads browser-level components (safe-browsing
+      // lists, TTS engines, CRX caches, optimization-guide model store —
+      // ~130 MB) into every per-agent user-data-dir. None of it is needed for
+      // automation; disabling it keeps each profile at just its session state.
+      '--disable-component-update',
       // Start with about:blank instead of chrome://newtab so agent-browser's
       // target discovery sees a trackable page and reuses it rather than
       // creating an extra tab (it filters out chrome:// URLs).

@@ -13,6 +13,7 @@ import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monito
 import { accountSyncService } from './scheduler/account-sync-service'
 import { platformService } from './services/platform-service'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
+import { startBrowserProfileCleanup, stopBrowserProfileCleanup } from '../../main/host-browser/profile-maintenance'
 import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
 import { validateAuthModeStartup } from './auth/startup-validation'
@@ -93,6 +94,13 @@ export async function initializeServices() {
   const agents = await listAgents()
   const slugs = agents.map((a) => a.slug)
   await containerManager.initializeAgents(slugs)
+
+  // Reclaim host-browser profile storage (orphaned/legacy dirs, regenerable
+  // Chrome caches). Scheduled a few minutes out so it doesn't pile onto the
+  // startup burst; profiles whose browser is running by then are skipped.
+  startBrowserProfileCleanup(slugs, {
+    isProfileInUse: (agentId) => getActiveProvider()?.isRunning(agentId) ?? false,
+  })
 
   // Stop the host browser for an agent before its container is torn down,
   // so the browser closes gracefully instead of getting a "socket hang up".
@@ -184,6 +192,7 @@ export function setupServerHandlers(server: ServerType): void {
  */
 export async function shutdownServices() {
   reviewManager.rejectAll()
+  stopBrowserProfileCleanup()
   chatIntegrationManager.stop()
   await stopAllProviders()
   taskScheduler.stop()

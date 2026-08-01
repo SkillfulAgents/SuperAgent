@@ -196,6 +196,7 @@ vi.mock('@shared/lib/browser/chrome-profile', () => ({
 
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: () => {},
+  captureMessage: () => {},
   addErrorBreadcrumb: () => {},
 }))
 
