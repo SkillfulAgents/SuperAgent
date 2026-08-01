@@ -2995,6 +2995,11 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
       exitCode = execError.code ?? 1
     }
 
+    // Consume "once" grant after use
+    if (body.grantType === 'once') {
+      computerUsePermissionManager.consumeOnceGrant(agentSlug, 'use_host_shell')
+    }
+
     // Format output for the agent
     const output = [
       `Exit code: ${exitCode}`,

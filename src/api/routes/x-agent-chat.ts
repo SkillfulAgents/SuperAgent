@@ -161,6 +161,10 @@ xAgentChat.post('/add', async (c) => {
       updateChatIntegrationStatus(id, 'error', errMsg)
     }
 
+    // Outside the connect try/catch: a contact-card failure is cosmetic and must
+    // never surface as a connect error.
+    void chatIntegrationManager.sendContactCard(id)
+
     const created = getChatIntegration(id)
     if (!created) {
       return c.json({ error: 'Integration created but could not be retrieved' }, 500)

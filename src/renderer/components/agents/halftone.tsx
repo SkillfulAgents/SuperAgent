@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import {
   HALFTONE_CURSOR_INFLUENCE,
@@ -40,6 +40,44 @@ interface HalftoneProps {
   /** Per-card phase offset so cards aren't all animating in sync. */
   seed?: number
   className?: string
+}
+
+const LAZY_ROOT_MARGIN = '320px 0px'
+
+/**
+ * Keep the decorative canvas out of the DOM until its card is near the
+ * viewport. The lightweight wrapper preserves the widget's geometry while
+ * avoiding canvas backing stores and renderer buffers for distant cards.
+ */
+export function LazyHalftone({ className, ...props }: HalftoneProps) {
+  const hostRef = useRef<HTMLDivElement>(null)
+  const [shouldMount, setShouldMount] = useState(
+    () => typeof IntersectionObserver === 'undefined'
+  )
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    if (typeof IntersectionObserver === 'undefined') {
+      setShouldMount(true)
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      // Batched entries arrive oldest-first; only the last reflects the
+      // current state.
+      (entries) => setShouldMount(entries[entries.length - 1]?.isIntersecting ?? false),
+      { rootMargin: LAZY_ROOT_MARGIN }
+    )
+    observer.observe(host)
+    return () => observer.disconnect()
+  }, [])
+
+  return (
+    <div ref={hostRef} className={cn('h-full w-full', className)} aria-hidden>
+      {shouldMount && <Halftone {...props} />}
+    </div>
+  )
 }
 
 export function Halftone({
@@ -139,7 +177,11 @@ export function Halftone({
       renderer.draw(ctx!, t, 'alpha-buckets', mx, my, mActive, frameScale)
     }
 
-    let intersecting = true
+    // IntersectionObserver callbacks are asynchronous. Starting as visible
+    // lets every offscreen card enter its RAF loop before the observer can
+    // classify it, which can starve those callbacks on large home boards.
+    // Browsers without IntersectionObserver retain the eager fallback.
+    let intersecting = typeof IntersectionObserver === 'undefined'
     let pointerListening = false
 
     const setPointerListening = (next: boolean) => {
@@ -184,21 +226,23 @@ export function Halftone({
 
     const ro = new ResizeObserver(() => {
       const measured = setup()
-      if (measured && reduce) draw()
+      if (measured && reduce && intersecting) draw()
       syncAnimation()
     })
     ro.observe(wrap)
 
     if (setup()) {
-      if (reduce) draw()
+      if (reduce && intersecting) draw()
       else syncAnimation()
     }
 
     const io =
       typeof IntersectionObserver === 'undefined'
         ? null
-        : new IntersectionObserver(([entry]) => {
-            intersecting = entry?.isIntersecting ?? true
+        : new IntersectionObserver((entries) => {
+            // Batched entries arrive oldest-first; only the last reflects the
+            // current state.
+            intersecting = entries[entries.length - 1]?.isIntersecting ?? false
             if (reduce) {
               if (intersecting && ready) draw()
             } else {
