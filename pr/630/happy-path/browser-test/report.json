@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature successfully executed browser navigation and page title retrieval through the agent interface.",
+  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report it back in the chat interface.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page showing agent sidebar with \"QA-20260731-221031-ccmr\" agent listed.",
-    "Clicked on \"QA-20260731-221031-ccmr\" agent in sidebar — Successfully opened the agent chat interface with message input field visible.",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully submitted the message, agent status changed to \"working\".",
-    "Waited up to 3 minutes for response — Agent completed the task in 13 seconds. Response successfully displayed with \"Example Domain\" mentioned in the final message.",
-    "Verified response mentions \"Example Domain\" and took screenshot — Screenshot captured showing:"
+    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page showing \"Your Agents\" list.",
+    "Step 2 - Found and clicked the \"QA-20260801-002945-uaok\" agent in the sidebar — Successfully clicked the agent and navigated to its chat interface (URL changed to /agents/qa-20260801-002945-uaok-v6n5yggv2y).",
+    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully typed into the input field and sent by clicking the send button.",
+    "Step 4 - Waited up to 3 minutes for response — Agent completed the task in 12 seconds (well within the timeout), indicating \"Worked for 12s\".",
+    "Step 5 - Verified response mentions \"Example Domain\" and took screenshot — The agent's response clearly states: \"The page title is 'Example Domain' — the page contains that heading plus a short note that the domain is for use in documentation examples. Browser is closed.\" The response is visible in the screenshot along with the three tool calls (Open Browser, Browser Get State, Close Browser) all marked with green checkmarks."
   ],
   "bugs": [],
-  "durationMs": 91331,
-  "sessionId": "12db2da4-aef9-48e1-a851-9286c5dc2db0",
+  "durationMs": 153906,
+  "sessionId": "da4bb0b7-9006-41d4-a729-8eb552b001fa",
   "cost": {
-    "inputTokens": 350,
-    "outputTokens": 9155,
-    "cacheCreationTokens": 65363,
-    "cacheReadTokens": 918138,
+    "inputTokens": 434,
+    "outputTokens": 13949,
+    "cacheCreationTokens": 61474,
+    "cacheReadTokens": 1153484,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.219643
+    "totalCostUsd": 0.26237
   }
 }
