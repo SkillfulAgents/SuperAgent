@@ -164,6 +164,20 @@ describe('browser profile maintenance', () => {
       await expect(deleteBrowserProfile('never-launched')).resolves.toBeUndefined()
     })
 
+    it('refuses to delete a profile claimed by a launching or running browser', async () => {
+      const dir = makeProfile('agent1')
+      markProfileInUse('agent1')
+      try {
+        await expect(deleteBrowserProfile('agent1')).rejects.toThrow(/claimed/)
+        expect(fs.existsSync(path.join(dir, 'Default', 'Cookies'))).toBe(true)
+      } finally {
+        unmarkProfileInUse('agent1')
+      }
+      // Once released, deletion proceeds.
+      await deleteBrowserProfile('agent1')
+      expect(fs.existsSync(dir)).toBe(false)
+    })
+
     it('refuses ids that escape the profiles root', async () => {
       const outside = path.join(h.dataDir, 'victim')
       fs.mkdirSync(outside)

@@ -63,7 +63,11 @@ const h = vi.hoisted(() => {
   const spawnMock = vi.fn((_cmd: string, _args: string[]) => makeChild(4321))
   const execSyncMock = vi.fn(() => '')
 
-  return { netMock, spawnMock, execSyncMock }
+  // When set, fs.mkdirSync throws ENOSPC — simulates disk pressure failing a
+  // launch before Chrome is spawned or the instance registered.
+  const state = { failMkdir: false }
+
+  return { netMock, spawnMock, execSyncMock, state }
 })
 
 const pm = vi.hoisted(() => ({
@@ -79,7 +83,12 @@ vi.mock('net', () => ({ default: h.netMock, ...h.netMock }))
 vi.mock('fs', () => {
   const m = {
     existsSync: () => true,
-    mkdirSync: () => undefined,
+    mkdirSync: () => {
+      if (h.state.failMkdir) {
+        throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })
+      }
+      return undefined
+    },
     rmSync: () => undefined,
     readFileSync: () => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
@@ -193,5 +202,20 @@ describe('ChromeProvider launch flags (profile disk growth)', () => {
     expect(pm.unmarkProfileInUse).not.toHaveBeenCalledWith('agent1')
     await provider.stop('agent1')
     expect(pm.unmarkProfileInUse).toHaveBeenCalledWith('agent1')
+  })
+
+  it('releases the claim when a pre-registration launch step fails (disk pressure)', async () => {
+    // mkdirSync throws before Chrome is spawned or the instance registered —
+    // none of the stop()-based paths run, so only the centralized catch in
+    // launch() can release the claim. A leaked claim here would make the
+    // sweep skip exactly the profile that filled the disk.
+    h.state.failMkdir = true
+    try {
+      await expect(provider.launch('agent-diskfull')).rejects.toThrow(/ENOSPC/)
+    } finally {
+      h.state.failMkdir = false
+    }
+    expect(pm.markProfileInUse).toHaveBeenCalledWith('agent-diskfull')
+    expect(pm.unmarkProfileInUse).toHaveBeenCalledWith('agent-diskfull')
   })
 })

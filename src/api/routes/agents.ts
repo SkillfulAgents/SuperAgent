@@ -161,6 +161,7 @@ import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/ut
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
+import { stopInstanceOnAllProviders } from '../../main/host-browser'
 import { deleteBrowserProfile } from '../../main/host-browser/profile-maintenance'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { loadSessionUsageTotals } from '@shared/lib/services/usage-service'
@@ -1076,9 +1077,13 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     }
 
     // Remove the agent's dedicated host-browser Chrome profile. The container
-    // (and with it any host browser) is already stopped by deleteAgent.
-    // Best-effort: a leftover dir is reclaimed by the next startup sweep.
+    // teardown above only stops the browser on the ACTIVE provider — a Chrome
+    // launched before the user switched providers survives it — so stop this
+    // agent's browser on every provider first. deleteBrowserProfile itself
+    // refuses profiles claimed by an in-flight launch. Best-effort throughout:
+    // a leftover dir is reclaimed by a later startup sweep.
     try {
+      await stopInstanceOnAllProviders(slug)
       await deleteBrowserProfile(slug)
     } catch (error) {
       console.error('Failed to delete host-browser profile:', error)

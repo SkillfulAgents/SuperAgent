@@ -272,9 +272,28 @@ export class ChromeProvider implements HostBrowserProvider {
     // started yet, the mark makes it skip this profile; if it's already
     // running, the await keeps us out of its way. Marking after the await
     // would leave a window where a sweep firing right now could delete
-    // directories under a spawning Chrome. The mark is released in stop() /
-    // handleExit, or below on launch-failure paths that bypass stop().
+    // directories under a spawning Chrome. On success the claim is held until
+    // stop()/handleExit; on ANY launch failure it's released here, so no
+    // throw site inside the claimed phase can leak it (a leaked claim would
+    // make the sweep skip this profile until the next restart — the exact
+    // wrong outcome when the failure was disk pressure).
     markProfileInUse(instanceId)
+    try {
+      return await this.launchClaimed(instanceId, options)
+    } catch (err) {
+      // Idempotent with the release in stop() for failure paths that got far
+      // enough to call it.
+      unmarkProfileInUse(instanceId)
+      throw err
+    }
+  }
+
+  /** The launch phase that runs with the profile claim held. The caller owns
+   *  the claim: it is released there if this throws, and by stop()/handleExit
+   *  once the instance is registered and running. */
+  private async launchClaimed(instanceId: string, options?: Record<string, string>): Promise<BrowserConnectionInfo> {
+    // If the startup profile-storage sweep is still running, let it finish
+    // before touching (or launching Chrome onto) this profile dir.
     await waitForBrowserProfileCleanup()
 
     const port = await this.findFreePort()
@@ -434,7 +453,6 @@ export class ChromeProvider implements HostBrowserProvider {
           tags: { component: 'browser', operation: 'launch' },
           extra: { instanceId, platform: 'darwin', stage: 'open-dispatch' },
         })
-        unmarkProfileInUse(instanceId)
         throw err
       }
 
@@ -446,7 +464,6 @@ export class ChromeProvider implements HostBrowserProvider {
           tags: { component: 'browser', operation: 'launch' },
           extra: { instanceId, platform: 'darwin', stage: 'pid-lookup', userDataDir },
         })
-        unmarkProfileInUse(instanceId)
         throw err
       }
       chromePid = foundPid
@@ -477,7 +494,6 @@ export class ChromeProvider implements HostBrowserProvider {
           tags: { component: 'browser', operation: 'launch' },
           extra: { instanceId, platform: process.platform },
         })
-        unmarkProfileInUse(instanceId)
         throw err
       }
       chromePid = browserProcess.pid
@@ -548,7 +564,6 @@ export class ChromeProvider implements HostBrowserProvider {
         earlyExitPromise.catch(() => {})
         proxyServer?.close()
         this.killSpawnedChrome(browserProcess, chromePid)
-        unmarkProfileInUse(instanceId)
         throw new Error(
           `Failed to bind host-browser CDP proxy on ${bridgeIp}: ${err instanceof Error ? err.message : String(err)}`
         )

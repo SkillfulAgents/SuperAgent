@@ -47,10 +47,16 @@ export function getBrowserProfilesRoot(): string {
 
 /**
  * Delete an agent's dedicated Chrome user-data-dir. Called when the agent is
- * deleted, after its container (and therefore its host browser) has been
- * stopped. Best-effort: a leftover dir is reclaimed by the next startup sweep.
+ * deleted, after its browser has been stopped on every provider. Refuses to
+ * delete while the profile is claimed by an in-flight launch (a spawning
+ * Chrome isn't registered anywhere yet, so no stop call can reach it — the
+ * claim is the only signal it exists). Best-effort either way: a leftover dir
+ * is reclaimed by a later startup sweep once the agent no longer exists.
  */
 export async function deleteBrowserProfile(agentId: string): Promise<void> {
+  if (profilesInUse.has(agentId)) {
+    throw new Error(`Browser profile for "${agentId}" is claimed by a launching or running browser; skipping deletion`)
+  }
   const root = getBrowserProfilesRoot()
   const profileDir = path.join(root, agentId)
   // agentId is a validated slug by the time we're called, but this deletes
