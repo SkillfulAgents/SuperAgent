@@ -1,10 +1,13 @@
+import type { BrowserRuntimeLocation } from './browser-location'
+
 export interface BrowserState {
   active: boolean;
   sessionId: string | null;
   cdpUrl: string | null;
+  location: BrowserRuntimeLocation | null;
 }
 
-const initialState: BrowserState = { active: false, sessionId: null, cdpUrl: null };
+const initialState: BrowserState = { active: false, sessionId: null, cdpUrl: null, location: null };
 
 let browserState: BrowserState = { ...initialState };
 
@@ -40,7 +43,7 @@ export function validateBrowserSession(requestSessionId: string): string | null 
  */
 export function releaseBrowserLock(sessionId: string): boolean {
   if (browserState.active && browserState.sessionId === sessionId) {
-    browserState = { active: false, sessionId: null, cdpUrl: null };
+    browserState = { ...browserState, active: false, sessionId: null };
     return true;
   }
   return false;

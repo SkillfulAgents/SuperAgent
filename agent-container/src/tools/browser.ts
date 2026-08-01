@@ -10,6 +10,11 @@ import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { readFile } from 'fs/promises'
 import { z } from 'zod'
 import { resizeScreenshot } from '../image-utils'
+import {
+  BROWSER_OPEN_LOCATIONS,
+  isLoopbackBrowserUrl,
+  resolveBrowserRuntimeLocation,
+} from '../browser-location'
 import { hostAuthHeaders } from '../host-auth'
 import { tabManager } from '../tab-manager'
 import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
@@ -88,19 +93,25 @@ export function createBrowserTools(getSessionId: () => string | null) {
   'browser_open',
   `Open a headless browser and navigate to a URL. The user can see the browser live in their interface and interact with it directly.
 
-Use this to start browsing a website. The browser preserves cookies/sessions via a persistent profile, so the user only needs to log in once.`,
+Use this to start browsing a website. The browser preserves cookies/sessions via a persistent profile, so the user only needs to log in once.
+
+By default, the browser uses the provider selected in the user's settings. Set location="container" for dashboards, development servers, and other URLs served inside the agent container. Changing location closes the current browser before opening the requested one.`,
   {
     url: z.string().describe('The URL to navigate to'),
+    location: z
+      .enum(BROWSER_OPEN_LOCATIONS)
+      .optional()
+      .default('configured')
+      .describe('Where to run the browser. "configured" uses the provider selected in settings (default); "container" forces bundled Chromium so it can reach private container ports.'),
   },
   async (args) => {
-    // Warn if the agent is trying to open a localhost URL — the browser runs outside
-    // the container and cannot reach servers running inside it (e.g. dashboards).
-    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(args.url)
-    const localhostWarning = isLocalhost
-      ? '\n\nWARNING: This is a localhost URL. The browser runs outside the container and cannot access servers running inside it. If you are trying to view a dashboard, stop — the user can already see dashboards through the Gamut UI. Use get_dashboard_logs to debug any issues instead.'
+    const requestedLocation = args.location || 'configured'
+    const runtimeLocation = resolveBrowserRuntimeLocation(requestedLocation)
+    const localhostWarning = isLoopbackBrowserUrl(args.url) && runtimeLocation === 'host'
+      ? '\n\nWARNING: This is a container-local URL, but the configured browser runs outside the container. Reopen it with location="container" to use bundled Chromium.'
       : ''
 
-    const result = await browserFetch('open', { url: args.url })
+    const result = await browserFetch('open', { url: args.url, location: requestedLocation })
     if (!result.success) {
       return {
         content: [{ type: 'text' as const, text: `Error: ${result.error}${localhostWarning}` }],
@@ -108,13 +119,20 @@ Use this to start browsing a website. The browser preserves cookies/sessions via
       }
     }
     const data = result.data as Record<string, unknown> | undefined
+    const activeLocation = data?.location === 'container' ? 'container' : 'host'
+    const locationText = activeLocation === 'container'
+      ? 'bundled Chromium inside the agent container'
+      : 'the configured browser provider'
+    const switchText = data?.switchedFrom
+      ? ` The previous ${data.switchedFrom} browser was closed before switching locations.`
+      : ''
 
     if (data?.switchedToExisting) {
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Switched to existing tab ${data.tabId} which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}`,
+            text: `Switched to existing tab ${data.tabId} in ${locationText}, which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}`,
           },
         ],
       }
@@ -124,7 +142,7 @@ Use this to start browsing a website. The browser preserves cookies/sessions via
       content: [
         {
           type: 'text' as const,
-          text: `Browser opened and navigating to ${args.url}. The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}`,
+          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}`,
         },
       ],
     }

@@ -29,7 +29,7 @@ The dashboard must exist at /workspace/artifacts/<slug>/ with a valid package.js
       if (info.status === 'running') {
         text += '\n\nThe dashboard is accessible to the user through the Gamut UI.'
         text +=
-          '\n\nDo NOT use the browser tool to view this dashboard. The browser runs outside the container and cannot access localhost URLs served inside it. The user can already see it through the Gamut UI — use get_dashboard_logs to debug any issues.'
+          `\n\nFor interactive validation, open http://localhost:${info.port} with browser_open using location="container". This forces the bundled Chromium that can reach the dashboard's private container port.`
 
         // Await screenshot so the agent can sanity-check rendering in the same
         // tool result. Best-effort: if capture fails we still return success.

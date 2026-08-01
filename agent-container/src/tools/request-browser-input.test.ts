@@ -38,7 +38,7 @@ describe('requestBrowserInputTool browser-lifecycle guard', () => {
   })
 
   it('creates a pending normally while the browser is active', async () => {
-    setBrowserState({ active: true, sessionId: 'sess-1', cdpUrl: 'ws://127.0.0.1:9222' })
+    setBrowserState({ active: true, sessionId: 'sess-1', cdpUrl: 'ws://127.0.0.1:9222', location: 'host' })
     const toolUseId = `guard-live-${Date.now()}`
     inputManager.setCurrentToolUseId(toolUseId)
 

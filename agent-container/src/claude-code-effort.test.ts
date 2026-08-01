@@ -83,7 +83,13 @@ vi.mock('./mcp-server', () => ({
 }))
 
 vi.mock('./tools/browser', () => ({
-  createBrowserTools: () => [],
+  createBrowserTools: () => [
+    { name: 'browser_open' },
+    { name: 'browser_get_state' },
+    { name: 'browser_snapshot' },
+    { name: 'browser_click' },
+    { name: 'browser_close' },
+  ],
 }))
 
 vi.mock('./tools/computer-use', () => ({
@@ -441,5 +447,26 @@ describe('ClaudeCodeProcess static tool bans', () => {
     expect(calls).toHaveLength(1)
     const disallowed = calls[0].options.disallowedTools as string[]
     expect(disallowed).toContain('DesignSync')
+  })
+})
+
+describe('ClaudeCodeProcess dashboard browser tools', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('lets the dashboard builder open and validate container-local dashboards', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-dashboard-browser-tools',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const agents = calls[0].options.agents as Record<string, { tools: string[] }>
+    const tools = agents['dashboard-builder'].tools
+    expect(tools).toContain('mcp__browser__browser_open')
+    expect(tools).toContain('mcp__browser__browser_get_state')
+    expect(tools).toContain('mcp__browser__browser_click')
+    expect(tools).toContain('mcp__browser__browser_close')
   })
 })

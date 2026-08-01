@@ -111,3 +111,19 @@ describe('macEditingCommands inlined', () => {
     expect(source).not.toMatch(/from\s+['"]playwright/)
   })
 })
+
+describe('container-local browser guidance', () => {
+  it('teaches dashboard agents to use bundled Chromium instead of forbidding browser validation', () => {
+    const files = [
+      'system-prompt.md',
+      'dashboard-builder-agent-prompt.md',
+      'tools/start-dashboard.ts',
+      'tools/browser.ts',
+    ]
+    for (const file of files) {
+      const source = fs.readFileSync(path.resolve(__dirname, file), 'utf-8')
+      expect(source, `${file} does not document container browser selection`).toContain('location="container"')
+      expect(source, `${file} still forbids dashboard browser validation`).not.toMatch(/NEVER use the browser tool|Do NOT use the browser tool/)
+    }
+  })
+})
