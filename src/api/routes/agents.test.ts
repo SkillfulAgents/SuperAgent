@@ -272,6 +272,8 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true),
+  sessionBelongsToAgent: vi.fn().mockResolvedValue(true),
+  reserveSessionOwnership: vi.fn().mockResolvedValue(undefined),
   sessionIsKnown: vi.fn().mockResolvedValue(true),
   isSessionRegistered: vi.fn().mockResolvedValue(false),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
@@ -516,7 +518,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -543,6 +545,8 @@ function createApp() {
 
 beforeEach(() => {
   mockAuthorizedAgentRole = 'owner'
+  vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+  vi.mocked(sessionIsKnown).mockResolvedValue(true)
 })
 
 async function patchJson(app: Hono, url: string, body: unknown): Promise<Response> {
@@ -901,23 +905,22 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
   })
 
   it('rejects a session that does not belong to the authorized agent', async () => {
-    vi.mocked(sessionExists).mockResolvedValueOnce(false)
+    vi.mocked(sessionIsKnown).mockResolvedValueOnce(false)
 
     const res = await getReq(app, '/api/agents/authorized-agent/sessions/foreign-session/stream')
 
     expect(res.status).toBe(404)
-    expect(sessionExists).toHaveBeenCalledWith('authorized-agent', 'foreign-session')
+    expect(sessionIsKnown).toHaveBeenCalledWith('authorized-agent', 'foreign-session')
     expect(mockStreamSSE).not.toHaveBeenCalled()
   })
 
   it('allows a newly registered session before its transcript exists', async () => {
-    vi.mocked(sessionExists).mockResolvedValueOnce(false)
-    vi.mocked(isSessionRegistered).mockResolvedValueOnce(true)
+    vi.mocked(sessionIsKnown).mockResolvedValueOnce(true)
 
     const res = await getReq(app, '/api/agents/authorized-agent/sessions/new-session/stream')
 
     expect(res.status).toBe(200)
-    expect(isSessionRegistered).toHaveBeenCalledWith('authorized-agent', 'new-session')
+    expect(sessionIsKnown).toHaveBeenCalledWith('authorized-agent', 'new-session')
     expect(mockStreamSSE).toHaveBeenCalledOnce()
   })
 })
@@ -5340,6 +5343,16 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     expect(args.effort).toBe('high')
   })
 
+  it('reserves ownership before publishing global lifecycle state', async () => {
+    const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
+
+    expect(res.status).toBe(201)
+    expect(reserveSessionOwnership).toHaveBeenCalledWith('test-agent', 'session-123')
+    expect(vi.mocked(reserveSessionOwnership).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(messagePersister.markSessionActive).mock.invocationCallOrder[0],
+    )
+  })
+
   it('explicit per-session model/effort win over agent preference defaults', async () => {
     vi.mocked(readJsonFileStrict).mockResolvedValue({
       defaultModel: 'haiku',
@@ -5648,6 +5661,10 @@ describe('cross-agent session scoping', () => {
       async (agentSlug: string, sessionId: string) =>
         agentSlug === ATTACKER && sessionId === OWN_SESSION,
     )
+    vi.mocked(sessionBelongsToAgent).mockImplementation(
+      async (agentSlug: string, sessionId: string) =>
+        agentSlug === ATTACKER && sessionId === OWN_SESSION,
+    )
     vi.mocked(sessionExists).mockImplementation(
       async (agentSlug: string, sessionId: string) =>
         agentSlug === ATTACKER && sessionId === OWN_SESSION,
@@ -5669,6 +5686,18 @@ describe('cross-agent session scoping', () => {
   function url(sessionId: string, suffix = ''): string {
     return `/api/agents/${ATTACKER}/sessions/${sessionId}${suffix}`
   }
+
+  describe('GET /sessions/:sessionId/messages', () => {
+    it('rejects a foreign id even if a same-named transcript exists locally', async () => {
+      vi.mocked(sessionExists).mockResolvedValue(true)
+
+      const res = await app.request(url(VICTIM_SESSION, '/messages'))
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.getSettledInputRequests).not.toHaveBeenCalled()
+      expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+    })
+  })
 
   describe('POST /sessions/:sessionId/interrupt', () => {
     it('404s on a foreign session and never marks it interrupted', async () => {
@@ -5813,6 +5842,18 @@ describe('cross-agent session scoping', () => {
 
       expect(res.status).toBe(404)
       expect(messagePersister.unsubscribeFromSession).not.toHaveBeenCalled()
+    })
+
+    it('still deletes an owned metadata-only entry without createdAt', async () => {
+      vi.mocked(sessionExists).mockResolvedValue(false)
+      vi.mocked(isSessionRegistered).mockResolvedValue(true)
+      vi.mocked(deleteSession).mockResolvedValue(true)
+
+      const res = await deleteReq(app, url(OWN_SESSION))
+
+      expect(res.status).toBe(204)
+      expect(messagePersister.unsubscribeFromSession).toHaveBeenCalledWith(OWN_SESSION)
+      expect(deleteSession).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
     })
   })
 })

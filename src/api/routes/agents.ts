@@ -49,6 +49,8 @@ import {
   getSession,
   getSessionMetadata,
   sessionExists,
+  sessionBelongsToAgent,
+  reserveSessionOwnership,
   sessionIsKnown,
   isSessionRegistered,
   updateSessionMetadata,
@@ -1619,6 +1621,11 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     })
     const sessionId = containerSession.id
 
+    // Claim the globally keyed id before any lifecycle state becomes visible.
+    // Metadata registration below is intentionally later so stream attachment
+    // still wins the race with early container output.
+    await reserveSessionOwnership(slug, sessionId)
+
     // Attach lifecycle state and the stream before slower metadata/DB work. The
     // first turn can start emitting shortly after createSession returns, and a
     // blocking input emitted during that window must not be missed or reset.
@@ -1701,7 +1708,10 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     // No JSONL transcript on disk — e.g. it was deleted by the CLI's retention
     // cleanup while the metadata entry lingers in the nav. Signal this distinctly
     // from an empty (but present) transcript so the UI can show a clear message.
-    if (!(await sessionExists(agentSlug, sessionId))) {
+    if (
+      !(await sessionBelongsToAgent(agentSlug, sessionId)) ||
+      !(await sessionExists(agentSlug, sessionId))
+    ) {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
 
@@ -2140,7 +2150,11 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     // subscription on the way to a 404. This costs no deletability — it accepts
     // exactly the "transcript OR metadata entry exists" condition that
     // deleteSession itself reports success for.
-    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    if (
+      !(await sessionBelongsToAgent(agentSlug, sessionId)) ||
+      (!(await sessionExists(agentSlug, sessionId)) &&
+        !(await isSessionRegistered(agentSlug, sessionId)))
+    ) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
@@ -2186,10 +2200,7 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
 agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
-  if (
-    !(await sessionExists(agentSlug, sessionId)) &&
-    !(await isSessionRegistered(agentSlug, sessionId))
-  ) {
+  if (!(await sessionIsKnown(agentSlug, sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 

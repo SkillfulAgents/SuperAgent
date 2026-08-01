@@ -929,7 +929,9 @@ describe('session-service', () => {
 
       try {
         expect(await sessionIsKnown('test-agent', 'test-session')).toBe(true)
-        expect(openSpy).not.toHaveBeenCalled()
+        expect(
+          openSpy.mock.calls.some(([file]) => String(file).endsWith('test-session.jsonl')),
+        ).toBe(false)
       } finally {
         openSpy.mockRestore()
       }

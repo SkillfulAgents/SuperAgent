@@ -79,10 +79,12 @@ const mockRegisterSession = vi.fn(async (..._args: unknown[]) => {})
 const mockUpdateSessionMetadata = vi.fn(async (..._args: unknown[]) => {})
 const mockGetSessionMetadata = vi.fn(async (..._args: unknown[]): Promise<unknown> => null)
 const mockSessionIsKnown = vi.fn(async (..._args: unknown[]) => true)
+const mockReserveSessionOwnership = vi.fn(async (..._args: unknown[]) => {})
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: (...args: unknown[]) => mockListSessions(...args),
   getSessionMessagesWithCompact: (...args: unknown[]) => mockGetTranscript(...args),
   registerSession: (...args: unknown[]) => mockRegisterSession(...args),
+  reserveSessionOwnership: (...args: unknown[]) => mockReserveSessionOwnership(...args),
   updateSessionMetadata: (...args: unknown[]) => mockUpdateSessionMetadata(...args),
   getSessionMetadata: (...args: unknown[]) => mockGetSessionMetadata(...args),
   sessionIsKnown: (...args: unknown[]) => mockSessionIsKnown(...args),
@@ -476,6 +478,10 @@ describe('/invoke', () => {
       expect.objectContaining({ initialMessage: 'hello' }),
     )
     expect(mockCreateSession.mock.calls[0][0]).not.toHaveProperty('initialMessageUuid')
+    expect(mockReserveSessionOwnership).toHaveBeenCalledWith(TARGET_SLUG, 'new-sess-id')
+    expect(mockReserveSessionOwnership.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMarkSessionActive.mock.invocationCallOrder[0],
+    )
     expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
@@ -1167,6 +1173,24 @@ describe('/get-transcript', () => {
       content: 'hi\n[tool_use: Bash]',
       toolName: 'Bash',
     })
+  })
+
+  it('404s before consulting global status for a session outside the target', async () => {
+    reviewDecisions.push('allow')
+    mockSessionIsKnown.mockResolvedValue(false)
+
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'third-agent-session',
+      sync: true,
+    })
+
+    expect(res.status).toBe(404)
+    expect(mockSessionIsKnown).toHaveBeenCalledWith(TARGET_SLUG, 'third-agent-session')
+    expect(mockIsSessionActive).not.toHaveBeenCalled()
+    expect(mockIsSessionAwaitingInput).not.toHaveBeenCalled()
+    expect(mockWaitForIdle).not.toHaveBeenCalled()
+    expect(mockGetTranscript).not.toHaveBeenCalled()
   })
 
   it('reports running / awaiting_input status', async () => {

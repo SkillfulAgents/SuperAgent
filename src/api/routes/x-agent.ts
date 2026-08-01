@@ -32,6 +32,7 @@ import {
   getSessionMessagesWithCompact,
   getSessionMetadata,
   registerSession,
+  reserveSessionOwnership,
   updateSessionMetadata,
   sessionIsKnown,
 } from '@shared/lib/services/session-service'
@@ -508,6 +509,13 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
+  // Status and wait state live in the process-global persister. Validate the
+  // target/session pair before consulting it, not only before reading the
+  // target-scoped transcript below.
+  if (!(await sessionIsKnown(targetSlug, sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
   if (sync && messagePersister.isSessionActive(sessionId)) {
     try {
       await messagePersister.waitForIdle(sessionId)
@@ -712,6 +720,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         maxBrowserTabs: getSettings().app?.maxBrowserTabs,
       })
       const newSessionId = containerSession.id
+      await reserveSessionOwnership(targetSlug, newSessionId)
       // Mark active before any await so waitForIdle sees state if result arrives early.
       messagePersister.markSessionActive(newSessionId, targetSlug)
 

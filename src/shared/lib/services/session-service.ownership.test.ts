@@ -31,6 +31,12 @@ function makeAgent(slug: string): void {
 function writeTranscript(slug: string, sessionId: string): void {
   fs.writeFileSync(path.join(sessionsDir(slug), `${sessionId}.jsonl`), '{}\n')
 }
+function writeMetadata(slug: string, metadata: Record<string, unknown>): void {
+  fs.writeFileSync(
+    path.join(workspaceDir(slug), 'session-metadata.json'),
+    JSON.stringify(metadata),
+  )
+}
 
 beforeEach(() => {
   tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'session-own-')))
@@ -125,6 +131,74 @@ describe('sessionIsKnown', () => {
 
     expect(await sessionIsKnown('agent-a', 'b-on-disk')).toBe(false)
     expect(await sessionIsKnown('agent-a', 'b-registered')).toBe(false)
+  })
+
+  it('rejects a forged duplicate transcript in an agent-writable workspace', async () => {
+    const { sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    writeTranscript('agent-b', 'victim-session')
+
+    // Initialize and persist the host-owned owner before the attacker writes a
+    // same-named file into its own bind-mounted workspace.
+    expect(await sessionIsKnown('agent-b', 'victim-session')).toBe(true)
+    writeTranscript('agent-a', 'victim-session')
+
+    expect(await sessionIsKnown('agent-a', 'victim-session')).toBe(false)
+    expect(await sessionIsKnown('agent-b', 'victim-session')).toBe(true)
+    expect(
+      JSON.parse(fs.readFileSync(path.join(tmpDir, 'session-ownership.json'), 'utf-8')),
+    ).toEqual({ 'victim-session': 'agent-b' })
+  })
+
+  it('fails closed when duplicate transcripts predate ownership migration', async () => {
+    const { sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    writeTranscript('agent-a', 'duplicate-session')
+    writeTranscript('agent-b', 'duplicate-session')
+
+    expect(await sessionIsKnown('agent-a', 'duplicate-session')).toBe(false)
+    expect(await sessionIsKnown('agent-b', 'duplicate-session')).toBe(false)
+    expect(
+      JSON.parse(fs.readFileSync(path.join(tmpDir, 'session-ownership.json'), 'utf-8')),
+    ).toEqual({ 'duplicate-session': null })
+  })
+
+  it('rejects forged metadata for a session registered to another agent', async () => {
+    const { registerSession, sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    await registerSession('agent-b', 'victim-session', 'Victim')
+    writeMetadata('agent-a', {
+      'victim-session': { name: 'Forged', createdAt: new Date().toISOString() },
+    })
+
+    expect(await sessionIsKnown('agent-a', 'victim-session')).toBe(false)
+    expect(await sessionIsKnown('agent-b', 'victim-session')).toBe(true)
+  })
+
+  it('does not discover forged ids after the one-time legacy migration', async () => {
+    const { sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+
+    expect(await sessionIsKnown('agent-a', 'missing-before-migration')).toBe(false)
+    writeTranscript('agent-a', 'forged-after-migration')
+
+    expect(await sessionIsKnown('agent-a', 'forged-after-migration')).toBe(false)
+  })
+
+  it('reserves a new id before either workspace contains its transcript', async () => {
+    const { reserveSessionOwnership, sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+
+    await reserveSessionOwnership('agent-b', 'future-session')
+    writeTranscript('agent-a', 'future-session')
+    writeTranscript('agent-b', 'future-session')
+
+    expect(await sessionIsKnown('agent-a', 'future-session')).toBe(false)
+    expect(await sessionIsKnown('agent-b', 'future-session')).toBe(true)
   })
 
   it('rejects an unknown session id', async () => {
