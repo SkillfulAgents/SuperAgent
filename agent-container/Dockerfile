@@ -95,11 +95,11 @@ RUN npm install -g agent-browser@0.27.2 && \
 
 # Create a stable symlink to whatever chromium binary got installed, so our
 # runtime code can point at a fixed path rather than globbing. Playwright's
-# layout (chrome-linux vs chrome-linux64 vs chrome-headless-shell-linux64) has
-# shifted between versions, so we use find to locate the binary regardless.
-# Prefer headless_shell (smaller); fall back to full chrome. Build fails loudly
-# if neither is present.
-RUN bin=$(find /opt/playwright-browsers -type f -name headless_shell -perm -u+x 2>/dev/null | head -n 1); \
+# layout AND binary name shift across versions and arches: arm64 unpacks to
+# chrome-linux/headless_shell while amd64 unpacks to
+# chrome-headless-shell-linux64/chrome-headless-shell. Find either headless
+# binary name; fall back to full chrome. Build fails loudly if none is present.
+RUN bin=$(find /opt/playwright-browsers -type f \( -name headless_shell -o -name chrome-headless-shell \) -perm -u+x 2>/dev/null | head -n 1); \
     if [ -z "$bin" ]; then \
       bin=$(find /opt/playwright-browsers -type f -name chrome -perm -u+x 2>/dev/null | head -n 1); \
     fi; \
