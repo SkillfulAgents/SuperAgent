@@ -49,6 +49,8 @@ import {
   getSession,
   getSessionMetadata,
   sessionExists,
+  sessionBelongsToAgent,
+  reserveSessionOwnership,
   sessionIsKnown,
   isSessionRegistered,
   updateSessionMetadata,
@@ -1619,6 +1621,11 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     })
     const sessionId = containerSession.id
 
+    // Claim the globally keyed id before any lifecycle state becomes visible.
+    // Metadata registration below is intentionally later so stream attachment
+    // still wins the race with early container output.
+    await reserveSessionOwnership(slug, sessionId)
+
     // Attach lifecycle state and the stream before slower metadata/DB work. The
     // first turn can start emitting shortly after createSession returns, and a
     // blocking input emitted during that window must not be missed or reset.
@@ -1701,7 +1708,10 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     // No JSONL transcript on disk — e.g. it was deleted by the CLI's retention
     // cleanup while the metadata entry lingers in the nav. Signal this distinctly
     // from an empty (but present) transcript so the UI can show a clear message.
-    if (!(await sessionExists(agentSlug, sessionId))) {
+    if (
+      !(await sessionBelongsToAgent(agentSlug, sessionId)) ||
+      !(await sessionExists(agentSlug, sessionId))
+    ) {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
 
@@ -1901,6 +1911,14 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
 
     const runtimeOptions = parseRuntimeOptions(body)
 
+    // cancelAwaitingInput / markSessionActive / broadcastSessionEvent below are
+    // all keyed by session id alone: an unowned id would cancel another agent's
+    // pending input request, re-bind its session to this agent, and inject a
+    // spoofed user message into every client watching it.
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
     const agent = await getAgent(agentSlug)
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
@@ -2018,6 +2036,12 @@ agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
   const sessionId = c.req.param('sessionId')
   const user = c.get('user' as never) as { id: string; name: string }
 
+  // Otherwise this puts the caller's name in the typing indicator of a session
+  // in someone else's agent.
+  if (!(await sessionIsKnown(getAgentId(c), sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
   messagePersister.broadcastSessionEvent(sessionId, {
     type: 'user_typing',
     sender: { id: user.id, name: user.name },
@@ -2121,6 +2145,21 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
+    // Ownership first: unsubscribeFromSession below is keyed by session id
+    // alone, so on a foreign id it would tear down another agent's live message
+    // subscription on the way to a 404. This costs no deletability — it accepts
+    // exactly the "transcript OR metadata entry exists" condition that
+    // deleteSession itself reports success for.
+    if (
+      !(await sessionBelongsToAgent(agentSlug, sessionId)) ||
+      (!(await sessionExists(agentSlug, sessionId)) &&
+        !(await isSessionRegistered(agentSlug, sessionId)))
+    ) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
+    // Before the delete, so an in-flight append can't recreate the transcript
+    // just after it is unlinked.
     messagePersister.unsubscribeFromSession(sessionId)
 
     // deleteSession is the authority for existence here: it removes the JSONL
@@ -2161,10 +2200,7 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
 agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
-  if (
-    !(await sessionExists(agentSlug, sessionId)) &&
-    !(await isSessionRegistered(agentSlug, sessionId))
-  ) {
+  if (!(await sessionIsKnown(agentSlug, sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
@@ -2247,11 +2283,18 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
 
 // POST /api/agents/:id/sessions/:sessionId/interrupt - Interrupt an active session
 agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.param('sessionId')
+
+  // Outside the try on purpose. Every path below — including the catch — ends in
+  // markSessionInterrupted, which is keyed by session id alone across all agents,
+  // so an unowned id reaching any of them wipes another agent's live session
+  // state and tells its viewers it went idle.
+  if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
   try {
-    const agentSlug = getAgentId(c)
-    const sessionId = c.req.param('sessionId')
-
-
     const client = containerManager.getClient(agentSlug)
     // Use cached status to avoid spawning docker process
     const info = containerManager.getCachedInfo(agentSlug)
@@ -2280,12 +2323,11 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to interrupt session:', error)
-    // Even on error, try to mark session as interrupted to fix UI state
+    // Even on error, try to mark session as interrupted to fix UI state.
+    // Ownership was established above, so this reaches only the caller's session.
     try {
-      const sessionId = c.req.param('sessionId')
-      const agentSlugFallback = getAgentId(c)
       await messagePersister.markSessionInterrupted(sessionId)
-      reviewManager.denyAllForAgent(agentSlugFallback)
+      reviewManager.denyAllForAgent(agentSlug)
       return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
     } catch {
       return c.json({ error: 'Failed to interrupt session' }, 500)

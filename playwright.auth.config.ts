@@ -47,6 +47,13 @@ const authProjects = [
     dataDir: path.join(e2eDataDir, 'models'),
     viteCacheDir: path.join(e2eDataDir, '.vite', 'models'),
   },
+  {
+    name: 'auth-session-scope',
+    testMatch: '**/session-scope-roles.spec.ts',
+    port: e2ePort + 5,
+    dataDir: path.join(e2eDataDir, 'session-scope'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'session-scope'),
+  },
 ].map((project, index) => ({
   ...project,
   baseURL: index === 0 && process.env.E2E_BASE_URL

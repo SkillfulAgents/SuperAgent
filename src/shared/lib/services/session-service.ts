@@ -8,6 +8,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import pLimit from 'p-limit'
+import { z } from 'zod'
 import {
   getAgentsDir,
   getAgentSessionsDir,
@@ -38,6 +39,167 @@ import {
   ContentBlock,
 } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
+
+// Session transcripts and metadata live inside the agent workspace, which is
+// bind-mounted read/write into its container. They are therefore evidence that
+// a session exists, but NOT authoritative proof of which agent owns a globally
+// keyed session id: an agent can create arbitrary files in its own workspace.
+//
+// Keep the ownership index one directory above all workspaces so containers
+// cannot forge it. `null` is a fail-closed tombstone for a duplicate id found
+// during legacy migration; it must never be claimed implicitly by either agent.
+const sessionOwnershipMapSchema = z.record(z.string(), z.string().nullable())
+type SessionOwnershipMap = z.infer<typeof sessionOwnershipMapSchema>
+const sessionOwnershipByPath = new Map<string, Promise<SessionOwnershipMap>>()
+
+function getSessionOwnershipPath(): string {
+  return path.join(path.dirname(getAgentsDir()), 'session-ownership.json')
+}
+
+async function candidateSessionIdsForAgent(agentSlug: string): Promise<Set<string>> {
+  const ids = new Set(Object.keys(await readSessionMetadata(agentSlug)))
+  const sessionsDir = getAgentSessionsDir(agentSlug)
+  try {
+    const files = await fs.promises.readdir(sessionsDir)
+    for (const file of files) {
+      if (file.endsWith('.jsonl')) ids.add(file.slice(0, -'.jsonl'.length))
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  return new Set([...ids].filter((sessionId) => {
+    try {
+      getSessionJsonlPath(agentSlug, sessionId)
+      return true
+    } catch {
+      return false
+    }
+  }))
+}
+
+async function discoverSessionOwners(): Promise<SessionOwnershipMap> {
+  const discovered = Object.create(null) as SessionOwnershipMap
+  for (const agentSlug of await listDirectories(getAgentsDir())) {
+    const ids = await candidateSessionIdsForAgent(agentSlug)
+    for (const id of ids) {
+      if (!Object.hasOwn(discovered, id)) {
+        discovered[id] = agentSlug
+      } else if (discovered[id] !== agentSlug) {
+        discovered[id] = null
+      }
+    }
+  }
+  return discovered
+}
+
+async function loadSessionOwnershipMap(): Promise<SessionOwnershipMap> {
+  const ownershipPath = getSessionOwnershipPath()
+  const cached = sessionOwnershipByPath.get(ownershipPath)
+  if (cached) return cached
+
+  const loading = withFileLock(ownershipPath, async () => {
+    const existed = await fileExists(ownershipPath)
+    const stored = await readJsonFileStrict(ownershipPath, sessionOwnershipMapSchema, {})
+    if (existed) {
+      return Object.assign(Object.create(null) as SessionOwnershipMap, stored)
+    }
+
+    const migrated = await discoverSessionOwners()
+    await ensureDirectory(path.dirname(ownershipPath))
+    await writeJsonFileAtomic(ownershipPath, migrated)
+    return migrated
+  })
+  sessionOwnershipByPath.set(ownershipPath, loading)
+  try {
+    return await loading
+  } catch (error) {
+    if (sessionOwnershipByPath.get(ownershipPath) === loading) {
+      sessionOwnershipByPath.delete(ownershipPath)
+    }
+    throw error
+  }
+}
+
+async function mutateSessionOwnership(
+  mutator: (owners: SessionOwnershipMap) => boolean,
+): Promise<void> {
+  const ownershipPath = getSessionOwnershipPath()
+  const owners = await loadSessionOwnershipMap()
+  await withFileLock(ownershipPath, async () => {
+    const next = Object.assign(Object.create(null) as SessionOwnershipMap, owners)
+    if (!mutator(next)) return
+    await writeJsonFileAtomic(ownershipPath, next)
+    for (const sessionId of Object.keys(owners)) delete owners[sessionId]
+    Object.assign(owners, next)
+  })
+}
+
+async function claimSessionOwnership(agentSlug: string, sessionId: string): Promise<boolean> {
+  // Apply the same containment check used by transcript operations before an
+  // externally produced id can become a durable registry key.
+  getSessionJsonlPath(agentSlug, sessionId)
+  let newlyClaimed = false
+  await mutateSessionOwnership((owners) => {
+    if (!Object.hasOwn(owners, sessionId)) {
+      owners[sessionId] = agentSlug
+      newlyClaimed = true
+      return true
+    }
+    if (owners[sessionId] !== agentSlug) {
+      throw new Error(`Session ${sessionId} is already owned by another agent`)
+    }
+    return false
+  })
+  return newlyClaimed
+}
+
+async function releaseSessionOwnership(agentSlug: string, sessionIds: string[]): Promise<void> {
+  await mutateSessionOwnership((owners) => {
+    let changed = false
+    for (const sessionId of sessionIds) {
+      if (owners[sessionId] === agentSlug) {
+        delete owners[sessionId]
+        changed = true
+      }
+    }
+    return changed
+  })
+}
+
+async function resolveSessionOwner(sessionId: string): Promise<string | null | undefined> {
+  const owners = await loadSessionOwnershipMap()
+  return Object.hasOwn(owners, sessionId) ? owners[sessionId] : undefined
+}
+
+/**
+ * Reserve a newly allocated session id before exposing it through any
+ * process-global lifecycle registry. Registration calls this again
+ * idempotently when it persists the display metadata.
+ */
+export async function reserveSessionOwnership(
+  agentSlug: string,
+  sessionId: string,
+): Promise<void> {
+  await claimSessionOwnership(agentSlug, sessionId)
+}
+
+/**
+ * Authoritative ownership check for registries keyed by session id alone.
+ * Unlike transcript/metadata existence, this cannot be forged from inside an
+ * agent container because the ownership file is outside its mounted workspace.
+ */
+export async function sessionBelongsToAgent(
+  agentSlug: string,
+  sessionId: string,
+): Promise<boolean> {
+  // Validate the externally supplied id before considering a registry entry.
+  try {
+    getSessionJsonlPath(agentSlug, sessionId)
+  } catch {
+    return false
+  }
+  return (await resolveSessionOwner(sessionId)) === agentSlug
+}
 
 // ============================================================================
 // Session Metadata (custom names, starred status)
@@ -168,7 +330,9 @@ export async function getSessionMetadata(
   sessionId: string
 ): Promise<SessionMetadata | null> {
   const metadata = await readSessionMetadata(agentSlug)
-  return metadata[sessionId] || null
+  // Own-property check for the same reason as isSessionRegistered: a bare index
+  // read returns an inherited Object.prototype member for ids like 'constructor'.
+  return Object.hasOwn(metadata, sessionId) ? metadata[sessionId] : null
 }
 
 /**
@@ -181,24 +345,34 @@ export async function registerSession(
   name?: string,
   initialMetadata?: Partial<SessionMetadata>,
 ): Promise<void> {
-  await mutateSessionMetadata(agentSlug, (metadata) => {
-    metadata[sessionId] = {
-      ...initialMetadata,
-      name: name || 'New Session',
-      createdAt: new Date().toISOString(),
-    }
-  })
+  const newlyClaimed = await claimSessionOwnership(agentSlug, sessionId)
+  try {
+    await mutateSessionMetadata(agentSlug, (metadata) => {
+      metadata[sessionId] = {
+        ...initialMetadata,
+        name: name || 'New Session',
+        createdAt: new Date().toISOString(),
+      }
+    })
+  } catch (error) {
+    if (newlyClaimed) await releaseSessionOwnership(agentSlug, [sessionId]).catch(() => {})
+    throw error
+  }
 }
 
 /**
  * Check if a session is registered (exists in metadata)
+ *
+ * `Object.hasOwn`, not `in` / a bare index read: the metadata map is an ordinary
+ * object, so every `Object.prototype` name ('constructor', 'toString', …) would
+ * otherwise answer "registered" and walk straight through any gate built on this.
  */
 export async function isSessionRegistered(
   agentSlug: string,
   sessionId: string
 ): Promise<boolean> {
   const metadata = await readSessionMetadata(agentSlug)
-  return sessionId in metadata
+  return Object.hasOwn(metadata, sessionId)
 }
 
 // ============================================================================
@@ -397,20 +571,24 @@ export async function getSessionSummary(agentSlug: string): Promise<{
   const stats = await Promise.all(
     jsonlFiles.map((file) => limit(async () => {
       const stat = await fs.promises.stat(path.join(sessionsDir, file))
-      return { sessionId: path.basename(file, '.jsonl'), mtimeMs: stat.mtimeMs }
+      const sessionId = path.basename(file, '.jsonl')
+      if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return null
+      return { sessionId, mtimeMs: stat.mtimeMs }
     }))
   )
 
   let lastActivityAt: Date | null = null
   const sessionIds: string[] = []
-  for (const { sessionId, mtimeMs } of stats) {
+  for (const entry of stats) {
+    if (!entry) continue
+    const { sessionId, mtimeMs } = entry
     sessionIds.push(sessionId)
     if (!lastActivityAt || mtimeMs > lastActivityAt.getTime()) {
       lastActivityAt = new Date(mtimeMs)
     }
   }
 
-  return { sessionIds, sessionCount: jsonlFiles.length, lastActivityAt }
+  return { sessionIds, sessionCount: sessionIds.length, lastActivityAt }
 }
 
 /**
@@ -457,6 +635,8 @@ export async function listSessions(
       const { sessionId, stat } = result
       processedSessionIds.add(sessionId)
 
+      if (!(await sessionBelongsToAgent(agentSlug, sessionId))) continue
+
       // Skip empty JSONL files that aren't registered in metadata
       // These are typically created by Claude SDK for subagent directories
       if (stat.size === 0 && !metadata[sessionId]) {
@@ -483,6 +663,7 @@ export async function listSessions(
   // (newly created sessions where the agent hasn't streamed yet)
   for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
     if (!processedSessionIds.has(sessionId) && sessionMeta.createdAt) {
+      if (!(await sessionBelongsToAgent(agentSlug, sessionId))) continue
       // Skip scheduled/webhook sessions when requested
       if (options?.excludeAutomated && isAutomated(sessionId)) {
         continue
@@ -518,6 +699,7 @@ export async function listSessionsByIds(
   const sessions = await Promise.all(
     [...new Set(sessionIds)].map((sessionId) =>
       limit(async (): Promise<SessionInfo | null> => {
+        if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return null
         if (options?.excludeAutomated && isAutomated(sessionId)) return null
         const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
         try {
@@ -551,6 +733,7 @@ export async function getSession(
   agentSlug: string,
   sessionId: string
 ): Promise<SessionInfo | null> {
+  if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return null
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   const metadata = await getSessionMetadata(agentSlug, sessionId)
 
@@ -661,13 +844,15 @@ export async function deleteSession(
   // being rewritten without this entry's siblings.
   let hadMetadata = false
   await mutateSessionMetadata(agentSlug, (metadata) => {
-    hadMetadata = metadata[sessionId] !== undefined
+    hadMetadata = Object.hasOwn(metadata, sessionId)
     if (!hadMetadata) return false // nothing to delete — skip the write
     delete metadata[sessionId]
     return true
   })
 
-  return jsonlExisted || hadMetadata
+  const deleted = jsonlExisted || hadMetadata
+  if (deleted) await releaseSessionOwnership(agentSlug, [sessionId])
+  return deleted
 }
 
 /**
@@ -704,13 +889,14 @@ export async function deleteSessionsBatch(
     await mutateSessionMetadata(agentSlug, (metadata) => {
       let changed = false
       for (const sessionId of deleted) {
-        if (metadata[sessionId] !== undefined) {
+        if (Object.hasOwn(metadata, sessionId)) {
           delete metadata[sessionId]
           changed = true
         }
       }
       return changed
     })
+    await releaseSessionOwnership(agentSlug, deleted)
   }
 
   return deleted
@@ -739,19 +925,40 @@ export async function sessionExists(
 }
 
 /**
- * Whether a session exists at all — a written transcript, or a registration for
- * one whose agent hasn't streamed its first message yet. This is exactly the
- * rule getSession returns non-null on, but it costs a stat and a metadata read
- * instead of a full transcript pass. Use it for 404 guards that don't go on to
- * read any SessionInfo field.
+ * Whether `sessionId` names a session OF THIS AGENT — a written transcript, or a
+ * registration for one whose agent hasn't streamed its first message yet. This
+ * is exactly the rule getSession returns non-null on, but it costs a stat and a
+ * metadata read instead of a full transcript pass. Use it for 404 guards that
+ * don't go on to read any SessionInfo field.
+ *
+ * Both halves are needed: the transcript lands only once the first turn writes,
+ * and the metadata entry covers the window from `registerSession` up to then.
+ *
+ * It is also the ownership gate for every route that reaches a registry keyed by
+ * session id ALONE — above all the message persister, which is process-global
+ * and has no agent dimension. Authorizing the agent in the URL says nothing
+ * about the session id in it, so without this a caller with a role on their own
+ * agent drives a stranger's live session.
+ *
+ * Never throws. `getSessionJsonlPath` rejects ids that escape the agent's
+ * session directory, and an id that cannot even name a file under this agent
+ * cannot be one of its sessions. Letting that throw escape would hand the
+ * request to the caller's `catch`, and interrupt's deliberately marks the
+ * session interrupted on the error path — the exact thing the gate exists to
+ * stop.
  */
 export async function sessionIsKnown(
   agentSlug: string,
   sessionId: string
 ): Promise<boolean> {
-  if (await sessionExists(agentSlug, sessionId)) return true
-  const metadata = await getSessionMetadata(agentSlug, sessionId)
-  return Boolean(metadata?.createdAt)
+  if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return false
+  try {
+    if (await sessionExists(agentSlug, sessionId)) return true
+    const metadata = await getSessionMetadata(agentSlug, sessionId)
+    return Boolean(metadata?.createdAt)
+  } catch {
+    return false
+  }
 }
 
 // ============================================================================
