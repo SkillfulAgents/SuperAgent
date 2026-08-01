@@ -19,6 +19,12 @@ export function buildDashboardViewPath(agentSlug: string, dashboardSlug: string)
   return `${buildDashboardArtifactPath(agentSlug, dashboardSlug)}view`
 }
 
-export function buildDashboardViewUrl(port: number, agentSlug: string, dashboardSlug: string): string {
-  return `http://localhost:${port}${buildDashboardViewPath(agentSlug, dashboardSlug)}`
+/**
+ * `apiBaseUrl` is an origin, and in cloud mode also the proxy prefix that
+ * routes to the deployment — it is not always `http://localhost:<port>`. A
+ * popout must be built from whichever Superagent the app is currently driving,
+ * or it opens a same-named agent's dashboard on the wrong one.
+ */
+export function buildDashboardViewUrl(apiBaseUrl: string, agentSlug: string, dashboardSlug: string): string {
+  return `${apiBaseUrl}${buildDashboardViewPath(agentSlug, dashboardSlug)}`
 }

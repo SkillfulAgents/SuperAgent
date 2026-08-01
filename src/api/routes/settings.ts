@@ -592,6 +592,12 @@ settings.put('/', async (c) => {
       // Preserve the maintained cloud-workspace deployment token across global
       // settings writes; it's owned by the platform-auth flow, not this route.
       cloudWorkspace: currentSettings.cloudWorkspace,
+      // Likewise owned elsewhere: the desktop's local-or-cloud target (main
+      // process) and the OS-notification dedup watermark. `updateSettings`
+      // REPLACES the whole object, so anything omitted here is deleted — and
+      // every field of AppSettings is optional, so omissions typecheck.
+      apiTarget: currentSettings.apiTarget,
+      platformNotifications: currentSettings.platformNotifications,
       auth: body.auth !== undefined ? { ...currentSettings.auth, ...body.auth } : currentSettings.auth,
       voice: body.voice !== undefined ? { ...currentSettings.voice, ...body.voice } : currentSettings.voice,
       shareAnalytics: body.shareAnalytics !== undefined ? body.shareAnalytics : currentSettings.shareAnalytics,

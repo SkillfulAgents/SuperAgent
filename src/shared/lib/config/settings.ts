@@ -10,6 +10,7 @@ import {
 } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
+import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
@@ -269,6 +270,12 @@ export interface AppSettings {
   enableToolSearch?: boolean
   /** Launch policies for subagents (Task/Agent) and workflows (Workflow tool). */
   agentCapabilities?: AgentCapabilitySettings
+  /**
+   * Desktop-only: whether the UI drives this machine or the org's cloud
+   * workspace. Main-owned rather than per-renderer so the main window and the
+   * quick-dispatch launcher can never disagree — see `api-target-preference.ts`.
+   */
+  apiTarget?: ApiTarget
 }
 
 export interface PlatformNotificationsSettings {
@@ -538,6 +545,10 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     shareErrorReports: loaded.shareErrorReports,
     platformAuth: loaded.platformAuth,
     cloudWorkspace: loaded.cloudWorkspace,
+    // Narrowed on read: an unrecognized value (hand-edited file, a future
+    // version's target) must resolve to local rather than to something that
+    // routes work off this machine.
+    apiTarget: coerceApiTarget(loaded.apiTarget),
     platformNotifications: loaded.platformNotifications,
     enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
     // Sanitize per-field: an unknown tier (hand-edited file, future version)

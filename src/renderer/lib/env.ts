@@ -1,16 +1,53 @@
 import { buildDashboardViewPath } from '@shared/lib/dashboard-url'
+import { setActiveTarget } from './api-target'
 
 // Cache for the API base URL (fetched once from Electron main process)
 let cachedApiBaseUrl: string | null = null
-let apiUrlPromise: Promise<string> | null = null
 
 /**
- * Initialize the API base URL (call this at app startup in Electron)
+ * Initialize the API base URL (call this at app startup in Electron).
+ *
+ * Also settles which Superagent this renderer is driving — see `api-target.ts`.
+ * In cloud mode the base URL is the local server's keyed proxy prefix, so every
+ * call site keeps targeting loopback and simply arrives at the deployment.
+ * Nothing may read the target before this resolves.
+ *
+ * Every renderer calls this, including the quick-dispatch launcher, and they all
+ * get the same answer from main.
  */
 export async function initApiBaseUrl(): Promise<void> {
-  if (isElectron() && window.electronAPI?.getApiUrl) {
+  try {
+    if (!isElectron() || !window.electronAPI?.getApiUrl) {
+      // Web: same-origin, and no cloud target to choose.
+      setActiveTarget('local', null)
+      return
+    }
+
+    // Main settles this: it owns the stored preference, the deployment token
+    // and the proxy key, and it must give every window the same answer. A
+    // missing handler is an older main process, not a failure — carry on
+    // locally.
+    const resolved = await window.electronAPI.getApiTarget?.().catch(() => null)
+    if (resolved) {
+      cachedApiBaseUrl = resolved.baseUrl
+      setActiveTarget(resolved.target, resolved.fallback)
+      return
+    }
+
     cachedApiBaseUrl = await window.electronAPI.getApiUrl()
+    setActiveTarget('local', null)
+  } catch (error) {
+    // The target must end up settled whatever happens. The getters throw rather
+    // than guess, so leaving it unset would turn one failed IPC call into a
+    // renderer that cannot answer "which Superagent am I?" at all.
+    setActiveTarget('local', null)
+    throw error
   }
+}
+
+/** Test seam: forgets the resolved base URL so a fresh boot can be simulated. */
+export function _resetApiBaseUrlForTest(): void {
+  cachedApiBaseUrl = null
 }
 
 /**
@@ -24,28 +61,6 @@ export function getApiBaseUrl(): string {
     return cachedApiBaseUrl
   }
   // Web uses same-origin (Vite dev server proxies to API)
-  return ''
-}
-
-/**
- * Get the API base URL, fetching it if not yet cached.
- * Use this for the first API call if initApiBaseUrl hasn't been called yet.
- */
-export async function getApiBaseUrlAsync(): Promise<string> {
-  if (cachedApiBaseUrl) {
-    return cachedApiBaseUrl
-  }
-
-  if (isElectron() && window.electronAPI?.getApiUrl) {
-    if (!apiUrlPromise) {
-      apiUrlPromise = window.electronAPI.getApiUrl().then((url) => {
-        cachedApiBaseUrl = url
-        return url
-      })
-    }
-    return apiUrlPromise
-  }
-
   return ''
 }
 

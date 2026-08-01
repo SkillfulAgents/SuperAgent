@@ -9,7 +9,7 @@
  * the issued access token authenticates through Authenticated() via the
  * bearer plugin.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -246,6 +246,45 @@ describe('grant verification', () => {
     const res = await exchangeRequest(await signGrant({ audience: 'https://other.example' }))
     expect(res.status).toBe(400)
     expect((await res.json()).error).toBe('invalid_grant')
+  })
+
+  // A real deployment sits behind TLS on 443 and, with no TRUSTED_ORIGINS, its
+  // base URL comes from `${protocol}://${HOST}:${PORT}` — so it carries `:443`
+  // while the platform mints `aud` from the portless origin it advertises.
+  // Byte-for-byte comparison rejects every grant such a deployment is sent, and
+  // the only symptom is `invalid_grant`.
+  describe('default ports in the deployment base URL', () => {
+    const DEPLOYMENT = 'https://dep.example.com'
+
+    afterEach(() => {
+      delete process.env.TRUSTED_ORIGINS
+    })
+
+    it('accepts the portless audience when the base URL spells out :443', async () => {
+      process.env.TRUSTED_ORIGINS = `${DEPLOYMENT}:443`
+      const res = await exchangeRequest(await signGrant({ audience: DEPLOYMENT }))
+      expect(res.status).toBe(200)
+    })
+
+    it('accepts an audience spelling out :443 when the base URL is portless', async () => {
+      process.env.TRUSTED_ORIGINS = DEPLOYMENT
+      const res = await exchangeRequest(await signGrant({ audience: `${DEPLOYMENT}:443` }))
+      expect(res.status).toBe(200)
+    })
+
+    it('still requires a non-default port to match', async () => {
+      process.env.TRUSTED_ORIGINS = `${DEPLOYMENT}:8899`
+      const res = await exchangeRequest(await signGrant({ audience: DEPLOYMENT }))
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toBe('invalid_grant')
+    })
+
+    it('still requires the host to match', async () => {
+      process.env.TRUSTED_ORIGINS = `${DEPLOYMENT}:443`
+      const res = await exchangeRequest(await signGrant({ audience: 'https://other.example.com' }))
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toBe('invalid_grant')
+    })
   })
 
   it('rejects a grant with the wrong issuer', async () => {

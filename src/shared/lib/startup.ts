@@ -22,6 +22,7 @@ import {
 } from './platform-attribution'
 import { getPlatformAccessToken } from './services/platform-auth-service'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
+import { setupCloudStreamProxy } from '../../main/cloud-stream-proxy'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
 import { shutdownAC } from './computer-use/executor'
@@ -172,6 +173,8 @@ export async function initializeServices() {
  */
 export function setupServerHandlers(server: ServerType): void {
   setupBrowserStreamProxy(server)
+  // Self-gated to Electron main outside auth mode; a no-op everywhere else.
+  setupCloudStreamProxy(server)
 }
 
 /**

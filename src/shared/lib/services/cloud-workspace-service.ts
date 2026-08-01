@@ -133,6 +133,28 @@ function deploymentHostPolicy(): DiscoveryHostPolicy {
 }
 
 /**
+ * Scheme/host check for a deployment URL we are about to send a credential to.
+ *
+ * This is the *synchronous* half of the gate below, split out so per-request
+ * consumers (the cloud proxy) can re-check the target they read back from
+ * settings without paying for a DNS lookup on every call. It deliberately does
+ * NOT re-run the DNS-resolved private-range policy: that closes the rebind axis
+ * on a URL freshly off the wire, which is a mint-time concern. What it does
+ * enforce is the part that must hold on every single request — the bearer never
+ * travels in cleartext, and a shipped build never talks to loopback.
+ */
+export function isDeploymentUrlAllowed(rawUrl: string): boolean {
+  let parsed: URL
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    return false
+  }
+  if (isLocalhostHost(parsed.hostname)) return deploymentHostPolicy().allowLocalhost === true
+  return parsed.protocol === 'https:'
+}
+
+/**
  * Defense-in-depth before the app POSTs a single-use grant to a platform-
  * supplied URL. The grant's `aud` is bound to `authorization_server`, so:
  *  - `deployment_url` must equal `authorization_server` (else we'd leak a grant
@@ -259,12 +281,19 @@ function isRecordValidFor(
  * exchanging it only when the stored token is missing, bound to a different
  * deployment, or within the refresh buffer of expiry. Returns whether a valid
  * token is held afterward. Never throws — failures are reported and swallowed.
+ *
+ * `forceRefresh` mints unconditionally. It exists for the case the expiry clock
+ * cannot see: a token the deployment has already rejected (revoked session,
+ * server-side eviction, a clock skew that makes a dead token look live). The
+ * stored record is left untouched until the replacement is in hand, so a failed
+ * re-mint degrades to "the token we had" rather than to nothing.
  */
 async function ensureDeploymentToken(
   account: CloudWorkspaceAccount,
   entry: DeploymentDiscoveryEntry,
+  forceRefresh = false,
 ): Promise<boolean> {
-  if (isRecordValidFor(readCloudWorkspaceRecord(), entry, account)) return true
+  if (!forceRefresh && isRecordValidFor(readCloudWorkspaceRecord(), entry, account)) return true
   // Nothing to attribute a new token to — don't mint one we couldn't safely
   // reuse anyway. (Unreachable via getCloudWorkspace, which snapshots a
   // connected account to get this far; belt-and-braces for any other caller.)
@@ -314,8 +343,15 @@ async function ensureDeploymentToken(
  * Note the difference between the two "no workspace" outcomes: a *successful*
  * discovery that lists none is `found: false`, while a discovery that failed is
  * additionally `discoveryFailed: true` — absence we couldn't confirm.
+ *
+ * `forceTokenRefresh` re-mints even when the stored token still looks live —
+ * see {@link ensureDeploymentToken}. Everything else about the cycle (discovery,
+ * org filtering, the SSRF gate) runs exactly as normal, so a forced refresh can
+ * never reach a target the ordinary path wouldn't.
  */
-export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
+export async function getCloudWorkspace(
+  options: { forceTokenRefresh?: boolean } = {},
+): Promise<CloudWorkspaceStatus> {
   if (!isElectronMain()) return NOT_AVAILABLE
 
   // One snapshot drives the whole cycle: the bearer we present, the org we
@@ -373,7 +409,11 @@ export async function getCloudWorkspace(): Promise<CloudWorkspaceStatus> {
     return DISCOVERY_FAILED
   }
 
-  const hasValidToken = await ensureDeploymentToken(account, deployed)
+  const hasValidToken = await ensureDeploymentToken(
+    account,
+    deployed,
+    options.forceTokenRefresh,
+  )
   return {
     available: true,
     found: true,

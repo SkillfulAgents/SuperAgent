@@ -6,7 +6,7 @@ import { UpdateToastNotifier } from '@renderer/components/update-toast-notifier'
 import { AppSidebar } from '@renderer/components/layout/app-sidebar'
 import { WindowControls } from '@renderer/components/layout/window-controls'
 import { ContainerSetupHandler } from '@renderer/components/settings/container-setup-handler'
-import { SidebarProvider, SidebarInset, useSidebar } from '@renderer/components/ui/sidebar'
+import { SidebarProvider, SidebarInset } from '@renderer/components/ui/sidebar'
 import { CmdHintProvider } from '@renderer/context/cmd-hint-context'
 import { MenuCommandHandler } from '@renderer/components/menu-command-handler'
 import { PackageImportHandler } from '@renderer/components/package-import-handler'
@@ -19,12 +19,10 @@ import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { useTheme } from '@renderer/hooks/use-theme'
 import { useInsetRadius } from '@renderer/hooks/use-inset-radius'
 import { useKeyboardViewport } from '@renderer/hooks/use-keyboard-viewport'
-import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useDocumentTitle } from '@renderer/hooks/use-document-title'
-import { isElectron, getPlatform } from '@renderer/lib/env'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
 
 /**
@@ -120,21 +118,6 @@ export function RootLayout() {
 }
 
 /**
- * Keeps Electron's traffic-light position synced to the sidebar collapsed state.
- * Must live inside SidebarProvider, and at the shell level so it runs for every
- * shell route, not just agent views.
- */
-function SidebarCollapsedSync() {
-  const { state: sidebarState } = useSidebar()
-  const isFullScreen = useFullScreen()
-  useEffect(() => {
-    if (!isElectron() || getPlatform() !== 'darwin') return
-    window.electronAPI?.setSidebarCollapsed(sidebarState === 'collapsed' && !isFullScreen)
-  }, [sidebarState, isFullScreen])
-  return null
-}
-
-/**
  * App shell (pathless layout, mount-survival anchor #1): the sidebar + inset
  * that stays mounted as the `<Outlet/>` swaps between home, notifications, and an
  * agent. Settings is a top-level route, a sibling of this shell, so it replaces
@@ -144,7 +127,6 @@ export function AppShellLayout() {
   return (
     <CmdHintProvider>
       <SidebarProvider className="h-screen">
-        <SidebarCollapsedSync />
         <AppSidebar />
         <SidebarInset className="min-w-0">
           <Outlet />

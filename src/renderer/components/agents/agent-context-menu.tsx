@@ -23,7 +23,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from './agent-settings-dialog'
 import { apiFetch } from '@renderer/lib/api'
-import { isElectron } from '@renderer/lib/env'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { Settings, FolderOpen, Copy, Trash2, LogOut, Move } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -62,13 +62,20 @@ export function AgentContextMenu({
   const queryClient = useQueryClient()
   const isOwner = canAdminAgent(agent.slug)
 
+  // `open: true` makes the API run the file manager on ITS OWN host. That is
+  // what you want when the API is this computer; against a cloud workspace it
+  // asks the deployment to launch `open`/`explorer`/`xdg-open` somewhere nobody
+  // is looking. Remotely this becomes the copy-the-path action the web build
+  // already uses, which is the part that still works.
+  const canShowDirectory = canUseHostFeatures()
+
   const handleDirectoryAction = useCallback(async () => {
     const res = await apiFetch(`/api/agents/${agent.slug}/open-directory`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ open: isElectron() }),
+      body: JSON.stringify({ open: canShowDirectory }),
     })
-    if (!isElectron() && res.ok) {
+    if (!canShowDirectory && res.ok) {
       const { path } = await res.json()
       try {
         await navigator.clipboard.writeText(path)
@@ -77,7 +84,7 @@ export function AgentContextMenu({
         setShowPathDialog(true)
       }
     }
-  }, [agent.slug])
+  }, [agent.slug, canShowDirectory])
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -149,7 +156,7 @@ export function AgentContextMenu({
               onClick={handleDirectoryAction}
               data-testid="open-agent-directory-item"
             >
-              {isElectron() ? (
+              {canShowDirectory ? (
                 <>
                   <FolderOpen className="h-4 w-4 mr-2" />
                   Show Agent Directory

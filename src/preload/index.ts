@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 // Type-only (erased at build — the preload bundle has no @shared alias).
 import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extensions'
+import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -8,6 +9,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // API configuration - get URL via IPC since port may vary
   getApiUrl: (): Promise<string> => {
     return ipcRenderer.invoke('get-api-url')
+  },
+  // Which Superagent this renderer drives, plus the finished base URL for it.
+  // Resolved in main so every window agrees, and because the cloud URL carries
+  // the per-boot proxy key — a secret that is fetched, never assembled here.
+  getApiTarget: (): Promise<ResolvedApiTarget> => {
+    return ipcRenderer.invoke('get-api-target')
+  },
+  // Records the choice for subsequent boots; the caller reloads.
+  setPreferredApiTarget: (target: ApiTarget): Promise<void> => {
+    return ipcRenderer.invoke('set-preferred-api-target', target)
   },
   platform: process.platform,
   osVersion: process.getSystemVersion(),
@@ -186,9 +197,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('focus-window')
   },
 
-  // Notify main of sidebar collapsed state so it can reposition macOS traffic lights
-  setSidebarCollapsed: (collapsed: boolean) => {
-    ipcRenderer.send('set-sidebar-collapsed', collapsed)
+  // Cover the window before a target switch reloads it, and uncover it once the
+  // reloaded renderer has something on screen. The animation lives outside the
+  // document because the document is what the switch destroys — see
+  // main/target-switch-overlay.ts. Awaited: the band has to be up first.
+  beginTargetSwitch: (): Promise<void> => {
+    return ipcRenderer.invoke('begin-target-switch')
+  },
+  signalRendererPainted: () => {
+    ipcRenderer.send('renderer-painted')
   },
 
   // Tray visibility control
@@ -446,6 +463,9 @@ declare global {
   interface Window {
     electronAPI?: {
       getApiUrl: () => Promise<string>
+      // Optional: an older main process has no such handler (see env.ts).
+      getApiTarget?: () => Promise<ResolvedApiTarget>
+      setPreferredApiTarget?: (target: ApiTarget) => Promise<void>
       platform: string
       osVersion: string
       onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => () => void
@@ -473,7 +493,8 @@ declare global {
       removeOpenCreateAgent: () => void
       onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => () => void
       removeHistoryNavigationCommand: () => void
-      setSidebarCollapsed: (collapsed: boolean) => void
+      beginTargetSwitch: () => Promise<void>
+      signalRendererPainted: () => void
       setTrayVisible: (visible: boolean) => Promise<void>
       showNotification: (
         title: string,
