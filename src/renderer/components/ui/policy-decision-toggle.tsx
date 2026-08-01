@@ -132,10 +132,17 @@ export function PolicyDecisionDropdown({
   value,
   onChange,
   className,
+  includeDefault = true,
 }: {
   value: PolicyDecision
   onChange: (value: PolicyDecision) => void
   className?: string
+  /**
+   * When false, the "Default" (inherit) menu item is omitted — for strict
+   * three-way policies with no inherit tier, mirroring the toggle's
+   * `allowDeselect={false}`.
+   */
+  includeDefault?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const current = options.find((o) => o.value === value)
@@ -184,22 +191,24 @@ export function PolicyDecisionDropdown({
             </button>
           )
         })}
-        <button
-          type="button"
-          data-testid="policy-menu-default"
-          data-active={value === 'default'}
-          onClick={() => {
-            onChange('default')
-            setOpen(false)
-          }}
-          className={cn(
-            'flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted',
-            value === 'default' && 'bg-muted',
-          )}
-        >
-          <CircleDashed className="h-3.5 w-3.5 text-muted-foreground" />
-          Default
-        </button>
+        {includeDefault && (
+          <button
+            type="button"
+            data-testid="policy-menu-default"
+            data-active={value === 'default'}
+            onClick={() => {
+              onChange('default')
+              setOpen(false)
+            }}
+            className={cn(
+              'flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted',
+              value === 'default' && 'bg-muted',
+            )}
+          >
+            <CircleDashed className="h-3.5 w-3.5 text-muted-foreground" />
+            Default
+          </button>
+        )}
       </PopoverContent>
     </Popover>
   )
