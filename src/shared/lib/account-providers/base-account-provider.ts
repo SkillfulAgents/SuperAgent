@@ -36,6 +36,12 @@ export abstract class BaseAccountProvider {
   /**
    * Forward an API call through this provider's auth. Handles token
    * retrieval or proxy routing internally. Returns a streaming Response.
+   *
+   * `beforeForward`, when provided, MUST be awaited immediately before the
+   * actual outbound request is issued — after all provider-internal
+   * credential/mode resolution. It throwing aborts the forward; the error
+   * propagates to the caller. The proxy route uses it to revalidate an
+   * autopilot approval at the last moment before the side effect executes.
    */
   abstract makeApiCall(params: {
     providerConnectionId: string
@@ -44,6 +50,7 @@ export abstract class BaseAccountProvider {
     method: string
     headers: Headers
     body: ArrayBuffer | null
+    beforeForward?: () => Promise<void>
   }): Promise<Response>
 
   abstract getAccountDisplayName(

@@ -496,7 +496,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, getSessionMetadata, mutateSessionAutopilot, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, registerSession, deleteSession, getSession, updateSessionName, readSessionMetadata, getSessionMetadata, mutateSessionAutopilot, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -5364,9 +5364,12 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
 
     expect(res.status).toBe(201)
     expect(mockCreateSession.mock.calls[0][0].autopilotState).toBe('requested')
-    expect(vi.mocked(updateSessionMetadata)).toHaveBeenCalledWith(
+    // The era rides the registration itself — registerSession REPLACES the
+    // metadata entry, so a separate seeding write would be erased by it.
+    expect(vi.mocked(registerSession)).toHaveBeenCalledWith(
       'test-agent',
       'session-123',
+      'New Session',
       expect.objectContaining({
         autopilot: expect.objectContaining({
           state: 'requested',
@@ -5375,27 +5378,33 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
       })
     )
     const write = vi
-      .mocked(updateSessionMetadata)
-      .mock.calls.find((call) => (call[2] as { autopilot?: unknown }).autopilot)!
+      .mocked(registerSession)
+      .mock.calls.find((call) => (call[3] as { autopilot?: unknown } | undefined)?.autopilot)!
     const stamped = Date.parse(
-      (write[2] as { autopilot: { requestedAt: string } }).autopilot.requestedAt
+      (write[3] as { autopilot: { requestedAt: string } }).autopilot.requestedAt
     )
     expect(stamped).toBeGreaterThanOrEqual(before)
     expect(stamped).toBeLessThanOrEqual(atCreate)
+    // No second metadata write may follow that could clobber the seeded era.
+    expect(
+      vi.mocked(updateSessionMetadata).mock.calls.filter(
+        (call) => (call[2] as { autopilot?: unknown }).autopilot
+      )
+    ).toHaveLength(0)
   })
 
   it('persists the requested state BEFORE the stream attaches', async () => {
     // engage_autopilot can arrive with the first stream events; the
-    // host-authoritative guard reads this metadata, so a write that races the
-    // subscribe rejects autopilot on the primary new-session flow.
+    // host-authoritative guard reads this metadata, so a registration that
+    // races the subscribe rejects autopilot on the primary new-session flow.
     const res = await postJson(app, SESSIONS_URL, { message: 'do the thing', autopilot: true })
 
     expect(res.status).toBe(201)
     const writeCall = vi
-      .mocked(updateSessionMetadata)
-      .mock.calls.findIndex((call) => (call[2] as { autopilot?: unknown }).autopilot)
+      .mocked(registerSession)
+      .mock.calls.findIndex((call) => (call[3] as { autopilot?: unknown } | undefined)?.autopilot)
     expect(writeCall).toBeGreaterThanOrEqual(0)
-    const writeOrder = vi.mocked(updateSessionMetadata).mock.invocationCallOrder[writeCall]
+    const writeOrder = vi.mocked(registerSession).mock.invocationCallOrder[writeCall]
     const subscribeOrder = vi.mocked(messagePersister.subscribeToSession).mock
       .invocationCallOrder[0]
     expect(subscribeOrder).toBeDefined()

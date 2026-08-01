@@ -118,7 +118,7 @@ describe('reviewAutopilotApproval', () => {
       action: 'API request: GET https://gmail.googleapis.com/gmail/v1/users/me/messages',
     })
 
-    expect(verdict).toEqual({
+    expect(verdict).toMatchObject({
       decision: 'approve',
       reason: 'Reading Gmail messages is required to summarize unread email.',
     })
@@ -176,13 +176,20 @@ describe('reviewAutopilotApproval', () => {
     expect(createSummarizerText).not.toHaveBeenCalled()
   })
 
-  it('records the decision as a transcript card in every engaged session', async () => {
+  it('an approval is recorded ONLY when the route reports its final decision', async () => {
+    // The route revalidates the authorization at the outbound boundary, so the
+    // judge's approval is provisional — recording it at verdict time would
+    // leave an "approved" card for a request a later revocation turned into a
+    // 403.
     seedEngagedSession('s1', [userEntry('Summarize my unread emails')])
     vi.mocked(createSummarizerText).mockResolvedValue(
       JSON.stringify({ decision: 'approve', reason: 'In scope.' })
     )
     const action = 'API request: GET https://gmail.googleapis.com/gmail/v1/users/me/messages'
-    await reviewAutopilotApproval({ agentSlug: AGENT, action })
+    const result = await reviewAutopilotApproval({ agentSlug: AGENT, action })
+    expect(appendAutopilotReviewEntry).not.toHaveBeenCalled()
+
+    await result.recordFinalDecision({ decision: 'approve', reason: 'In scope.' })
     expect(appendAutopilotReviewEntry).toHaveBeenCalledWith(
       AGENT,
       's1',
@@ -192,10 +199,13 @@ describe('reviewAutopilotApproval', () => {
     )
   })
 
-  it('records fail-closed denials in the transcript too', async () => {
-    seedEngagedSession('s1', [userEntry('Do the thing')])
-    vi.mocked(createSummarizerText).mockResolvedValue('sure, go ahead!')
-    await reviewAutopilotApproval({ agentSlug: AGENT, action: 'X' })
+  it('a boundary revocation records the substituted deny, not the stale approval', async () => {
+    seedEngagedSession('s1', [userEntry('Summarize my unread emails')])
+    vi.mocked(createSummarizerText).mockResolvedValue(
+      JSON.stringify({ decision: 'approve', reason: 'In scope.' })
+    )
+    const result = await reviewAutopilotApproval({ agentSlug: AGENT, action: 'X' })
+    await result.recordFinalDecision({ decision: 'deny', reason: 'Autopilot was switched off.' })
     expect(appendAutopilotReviewEntry).toHaveBeenCalledWith(
       AGENT,
       's1',
@@ -205,14 +215,30 @@ describe('reviewAutopilotApproval', () => {
     )
   })
 
+  it('records fail-closed denials in the transcript immediately, exactly once', async () => {
+    seedEngagedSession('s1', [userEntry('Do the thing')])
+    vi.mocked(createSummarizerText).mockResolvedValue('sure, go ahead!')
+    const result = await reviewAutopilotApproval({ agentSlug: AGENT, action: 'X' })
+    expect(appendAutopilotReviewEntry).toHaveBeenCalledWith(
+      AGENT,
+      's1',
+      expect.objectContaining({
+        review: expect.objectContaining({ verdict: 'denied', action: 'X' }),
+      })
+    )
+    // A denial is final at review time — a route calling recordFinalDecision
+    // afterwards must not produce a second card.
+    await result.recordFinalDecision({ decision: 'deny', reason: 'again' })
+    expect(appendAutopilotReviewEntry).toHaveBeenCalledTimes(1)
+  })
+
   it('a transcript-append failure does not change the verdict', async () => {
     seedEngagedSession('s1', [userEntry('Do the thing')])
     vi.mocked(appendAutopilotReviewEntry).mockRejectedValueOnce(new Error('disk full'))
-    vi.mocked(createSummarizerText).mockResolvedValue(
-      JSON.stringify({ decision: 'approve', reason: 'ok' })
-    )
+    vi.mocked(createSummarizerText).mockResolvedValue('sure, go ahead!')
     const verdict = await reviewAutopilotApproval({ agentSlug: AGENT, action: 'X' })
-    expect(verdict.decision).toBe('approve')
+    expect(verdict.decision).toBe('deny')
+    expect(verdict.reason).toBeTruthy()
   })
 
   it('gathers intent only from engaged sessions, not interactive ones', async () => {

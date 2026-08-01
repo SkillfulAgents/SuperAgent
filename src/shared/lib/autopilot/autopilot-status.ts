@@ -65,3 +65,12 @@ export async function isAutopilotAuthorizationCurrent(
 export async function isAgentAutopilotEngaged(agentSlug: string): Promise<boolean> {
   return (await getAutopilotAuthorization(agentSlug)) !== null
 }
+
+/**
+ * Thrown by the outbound-boundary guard when an autopilot approval no longer
+ * authorizes the forward (revocation, era change, or request cancellation
+ * during the awaits between the verdict and the actual outbound call). The
+ * message is the user-facing reason; routes translate it into the standard
+ * 403 `requires_user_approval` response and a `denied_autopilot` audit entry.
+ */
+export class AutopilotAuthorizationError extends Error {}

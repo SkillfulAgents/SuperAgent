@@ -405,6 +405,61 @@ describe('autopilot-watchdog', () => {
     )
   })
 
+  it('a stale done verdict cannot complete a task re-engaged during the review', async () => {
+    await engage()
+    let resolveJudge!: (v: string) => void
+    vi.mocked(createSummarizerText).mockImplementation(
+      () => new Promise<string>((resolve) => { resolveJudge = resolve })
+    )
+    emit({ type: 'session_idle', sessionId: SESSION, agentSlug: AGENT })
+    await vi.waitFor(() => expect(createSummarizerText).toHaveBeenCalledTimes(1))
+
+    // While the judge is thinking, the user interrupts and the session
+    // re-engages the NEXT task: engaged again, but in a NEW era. The old
+    // verdict was computed against the old goal and must not touch this one.
+    const current = (await getSessionMetadata(AGENT, SESSION))?.autopilot
+    await updateSessionMetadata(AGENT, SESSION, {
+      autopilot: { ...current!, requestedAt: '2030-01-01T00:00:00.000Z' },
+    })
+
+    resolveJudge(JSON.stringify({ verdict: 'done', reasoning: 'Old task complete.' }))
+    await vi.waitFor(() => {
+      const events = vi.mocked(messagePersister.broadcastSessionEvent).mock.calls.map((c) => c[1])
+      expect(events).toContainEqual({ type: 'autopilot_review', status: 'finished' })
+    })
+
+    expect(await currentState()).toBe('engaged')
+    expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+  })
+
+  it('a stale continue verdict cannot advance or nudge a task re-engaged during the review', async () => {
+    await engage()
+    let resolveJudge!: (v: string) => void
+    vi.mocked(createSummarizerText).mockImplementation(
+      () => new Promise<string>((resolve) => { resolveJudge = resolve })
+    )
+    emit({ type: 'session_idle', sessionId: SESSION, agentSlug: AGENT })
+    await vi.waitFor(() => expect(createSummarizerText).toHaveBeenCalledTimes(1))
+
+    const current = (await getSessionMetadata(AGENT, SESSION))?.autopilot
+    await updateSessionMetadata(AGENT, SESSION, {
+      autopilot: { ...current!, requestedAt: '2030-01-01T00:00:00.000Z' },
+    })
+
+    resolveJudge(
+      JSON.stringify({ verdict: 'continue', reasoning: 'r', nudge: 'n', missing_criteria: [1] })
+    )
+    await vi.waitFor(() => {
+      const events = vi.mocked(messagePersister.broadcastSessionEvent).mock.calls.map((c) => c[1])
+      expect(events).toContainEqual({ type: 'autopilot_review', status: 'finished' })
+    })
+
+    // The new task's iteration budget is untouched and no stale nudge lands.
+    expect((await getSessionMetadata(AGENT, SESSION))?.autopilot?.iteration).toBe(0)
+    expect(fakeClient.sendMessage).not.toHaveBeenCalled()
+    expect(await currentState()).toBe('engaged')
+  })
+
   it('input request while engaged: mechanical pause without judge or duplicate notification', async () => {
     await engage()
     emit({ type: 'session_awaiting_input', sessionId: SESSION, agentSlug: AGENT })

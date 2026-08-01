@@ -24,7 +24,12 @@ import {
   type GoalContract,
   type WatchdogVerdict,
 } from './autopilot-schema'
-import { applyContinueVerdict, disengageAutopilot, pauseAutopilot } from './autopilot-service'
+import {
+  applyContinueVerdict,
+  disengageAutopilot,
+  pauseAutopilot,
+  type VerdictEraGuard,
+} from './autopilot-service'
 
 /**
  * The autopilot watchdog: reviews every stop of an engaged session against the
@@ -159,8 +164,12 @@ class AutopilotWatchdog {
     if (this.inFlight.has(sessionId)) return
     this.inFlight.add(sessionId)
     let reviewing = false
+    // Era the review targets — a failure-path escalation must not pause a task
+    // that replaced this one while the review was in flight.
+    let eraGuard: VerdictEraGuard | undefined
     try {
       const autopilot = (await getSessionMetadata(agentSlug, sessionId))?.autopilot
+      eraGuard = { expectedRequestedAt: autopilot?.requestedAt }
       if (normalizeAutopilotState(autopilot?.state) !== 'engaged') return
 
       // A stop-button press is user intervention, not a stop to review: suspend
@@ -186,7 +195,7 @@ class AutopilotWatchdog {
       await this.escalate(sessionId, agentSlug, {
         verdict: 'escalated',
         reasoning: 'Autopilot review failed; pausing so nothing runs unsupervised.',
-      })
+      }, eraGuard)
     } finally {
       this.inFlight.delete(sessionId)
       if (reviewing) {
@@ -208,7 +217,9 @@ class AutopilotWatchdog {
     const autopilot = (await getSessionMetadata(agentSlug, sessionId))?.autopilot
     if (normalizeAutopilotState(autopilot?.state) !== 'engaged') return
 
-    const paused = await pauseAutopilot(agentSlug, sessionId, reason)
+    const paused = await pauseAutopilot(agentSlug, sessionId, reason, {
+      expectedRequestedAt: autopilot?.requestedAt,
+    })
     if (!paused) return
 
     await this.appendReview(sessionId, agentSlug, {
@@ -229,13 +240,18 @@ class AutopilotWatchdog {
     const meta = await getSessionMetadata(agentSlug, sessionId)
     const autopilot = meta?.autopilot
     const goal = autopilot?.goal
+    // Everything below judges against THIS snapshot across a long model await.
+    // If the user interrupts and re-engages a new task meanwhile (new
+    // requestedAt era), the verdict is stale — every transition and the nudge
+    // carry this guard so the stale verdict cannot touch the new task.
+    const eraGuard: VerdictEraGuard = { expectedRequestedAt: autopilot?.requestedAt }
     if (!goal) {
       // Engaged without a contract should be impossible (engagement validates
       // it) — treat as corrupt state and hand control back to the user.
       await this.escalate(sessionId, agentSlug, {
         verdict: 'escalated',
         reasoning: 'Autopilot is engaged but no goal contract is stored.',
-      })
+      }, eraGuard)
       return
     }
 
@@ -275,13 +291,13 @@ class AutopilotWatchdog {
         reasoning: 'Autopilot reviewer returned no usable verdict.',
         iteration,
         maxIterations,
-      })
+      }, eraGuard)
       return
     }
 
     if (verdict.verdict === 'done') {
-      const changed = await disengageAutopilot(agentSlug, sessionId, 'completed')
-      if (!changed) return // user intervened mid-review
+      const changed = await disengageAutopilot(agentSlug, sessionId, 'completed', eraGuard)
+      if (!changed) return // user intervened mid-review (or a new era replaced this task)
       await this.appendReview(sessionId, agentSlug, {
         verdict: 'done',
         reasoning: verdict.reasoning,
@@ -300,7 +316,7 @@ class AutopilotWatchdog {
     }
 
     if (verdict.verdict === 'blocked') {
-      const paused = await pauseAutopilot(agentSlug, sessionId, verdict.reasoning)
+      const paused = await pauseAutopilot(agentSlug, sessionId, verdict.reasoning, eraGuard)
       if (!paused) return
       await this.appendReview(sessionId, agentSlug, {
         verdict: 'blocked',
@@ -317,7 +333,7 @@ class AutopilotWatchdog {
 
     // continue: the iteration cap and no-progress guardrails are applied
     // atomically with the verdict record inside the metadata lock.
-    const decision = await applyContinueVerdict(agentSlug, sessionId, verdict)
+    const decision = await applyContinueVerdict(agentSlug, sessionId, verdict, eraGuard)
     if (decision.action === 'not-engaged') return
     if (decision.action === 'escalate') {
       await this.appendReview(sessionId, agentSlug, {
@@ -355,7 +371,8 @@ class AutopilotWatchdog {
       agentSlug,
       buildContinuationMessage(goal, verdict, decision.iteration, decision.maxIterations),
       decision.iteration,
-      decision.maxIterations
+      decision.maxIterations,
+      eraGuard
     )
   }
 
@@ -432,7 +449,8 @@ class AutopilotWatchdog {
     agentSlug: string,
     message: string,
     iteration: number,
-    maxIterations: number
+    maxIterations: number,
+    eraGuard: VerdictEraGuard
   ): Promise<void> {
     // Same delivery discipline as scheduled session wakes: ensure the
     // container, attach the stream, mark active BEFORE sending (harness rule),
@@ -447,11 +465,12 @@ class AutopilotWatchdog {
     }
     // The continue verdict was applied under the metadata lock, but the
     // container round-trip above was not — the user may have taken the session
-    // over in that window (engaged → requested/off). Re-check right before
-    // sending so a stale nudge doesn't restart autonomy the state machine says
-    // is over.
+    // over in that window (engaged → requested/off), or a new era may have
+    // replaced this verdict's task. Re-check both right before sending so a
+    // stale nudge doesn't restart autonomy the state machine says is over.
     const autopilot = (await getSessionMetadata(agentSlug, sessionId))?.autopilot
     if (normalizeAutopilotState(autopilot?.state) !== 'engaged') return
+    if (autopilot?.requestedAt !== eraGuard.expectedRequestedAt) return
     messagePersister.markSessionActive(sessionId, agentSlug)
     try {
       await client.sendMessage(sessionId, message, randomUUID(), { shouldQuery: true })
@@ -463,7 +482,7 @@ class AutopilotWatchdog {
         reasoning: 'Failed to restart the session for the next autopilot continuation.',
         iteration,
         maxIterations,
-      })
+      }, eraGuard)
     }
   }
 
@@ -471,9 +490,10 @@ class AutopilotWatchdog {
   private async escalate(
     sessionId: string,
     agentSlug: string,
-    review: AutopilotReviewEntry
+    review: AutopilotReviewEntry,
+    eraGuard?: VerdictEraGuard
   ): Promise<void> {
-    const paused = await pauseAutopilot(agentSlug, sessionId, review.reasoning)
+    const paused = await pauseAutopilot(agentSlug, sessionId, review.reasoning, eraGuard)
     if (!paused) return
     await this.appendReview(sessionId, agentSlug, review)
     messagePersister.broadcastSessionUpdate(sessionId)

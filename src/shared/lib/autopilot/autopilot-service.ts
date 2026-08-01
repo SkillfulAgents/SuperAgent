@@ -59,13 +59,35 @@ export async function requestAutopilot(agentSlug: string, sessionId: string): Pr
 export type DisengageReason = 'user_toggle' | 'user_message' | 'completed'
 
 /**
+ * Era guard for verdict-driven transitions. The watchdog computes its verdict
+ * from state captured before a long judge await, and the session can be
+ * interrupted and re-engaged on a NEW task (a new requestedAt era) inside
+ * that window. A transition carrying this guard no-ops unless the current era
+ * still matches the one the verdict was computed under — a stale verdict must
+ * never complete, pause, advance, or nudge the task that replaced its target.
+ * `expectedRequestedAt` may legitimately be undefined (pre-era sessions); the
+ * guard then requires the current marker to also be absent.
+ */
+export interface VerdictEraGuard {
+  expectedRequestedAt: string | undefined
+}
+
+function eraMatches(
+  currentRequestedAt: string | undefined,
+  guard: VerdictEraGuard | undefined
+): boolean {
+  return !guard || currentRequestedAt === guard.expectedRequestedAt
+}
+
+/**
  * Drop back to interactive: any state → off. The goal contract is preserved
  * for provenance; iteration/pausedReason reset so a re-engage starts clean.
  */
 export async function disengageAutopilot(
   agentSlug: string,
   sessionId: string,
-  reason: DisengageReason
+  reason: DisengageReason,
+  eraGuard?: VerdictEraGuard
 ): Promise<boolean> {
   return mutateSessionAutopilot(agentSlug, sessionId, (autopilot) => {
     const state = normalizeAutopilotState(autopilot?.state)
@@ -75,6 +97,7 @@ export async function disengageAutopilot(
     // the engaged session the watchdog reviewed — from any other state it
     // would silently kill an autopilot the user just re-requested.
     if (reason === 'completed' && state !== 'engaged') return false
+    if (!eraMatches(autopilot?.requestedAt, eraGuard)) return false
     return {
       ...autopilot,
       state: 'off',
@@ -121,10 +144,12 @@ export async function engageAutopilot(
 export async function pauseAutopilot(
   agentSlug: string,
   sessionId: string,
-  reason: string
+  reason: string,
+  eraGuard?: VerdictEraGuard
 ): Promise<boolean> {
   return mutateSessionAutopilot(agentSlug, sessionId, (autopilot) => {
     if (normalizeAutopilotState(autopilot?.state) !== 'engaged') return false
+    if (!eraMatches(autopilot?.requestedAt, eraGuard)) return false
     return { ...autopilot, state: 'paused', pausedReason: reason }
   })
 }
@@ -144,11 +169,13 @@ export type ContinueDecision =
 export async function applyContinueVerdict(
   agentSlug: string,
   sessionId: string,
-  verdict: WatchdogVerdict
+  verdict: WatchdogVerdict,
+  eraGuard?: VerdictEraGuard
 ): Promise<ContinueDecision> {
   let decision: ContinueDecision = { action: 'not-engaged' }
   await mutateSessionAutopilot(agentSlug, sessionId, (autopilot) => {
     if (!autopilot || normalizeAutopilotState(autopilot.state) !== 'engaged') return false
+    if (!eraMatches(autopilot.requestedAt, eraGuard)) return false
 
     const iteration = (autopilot.iteration ?? 0) + 1
     const maxIterations = autopilot.goal?.max_iterations ?? DEFAULT_MAX_ITERATIONS

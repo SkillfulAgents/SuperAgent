@@ -7,9 +7,12 @@ import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { PROXY_SKIP_REQUEST_HEADERS } from '@shared/lib/proxy/composio-envelope'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import {
+  AutopilotAuthorizationError,
   getAutopilotAuthorization,
   isAutopilotAuthorizationCurrent,
+  type AutopilotAuthorization,
 } from '@shared/lib/autopilot/autopilot-status'
+import type { ApprovalReviewVerdict } from '@shared/lib/autopilot/autopilot-schema'
 import { reviewAutopilotApproval } from '@shared/lib/autopilot/autopilot-approval-reviewer'
 import { autopilotApprovalDeniedMessage } from '@shared/lib/autopilot/autopilot-service'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
@@ -235,6 +238,18 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   // audit entry for approvals.
   let autopilotDecisionReason: string | undefined
 
+  // Set when the autopilot reviewer approved this request. The approval is
+  // provisional: it is revalidated at the outbound boundary (immediately
+  // before the provider issues the request, via beforeForward) and the
+  // timeline card records the FINAL outcome — the approval that executed, or
+  // the deny substituted at the boundary.
+  let autopilotBoundary:
+    | {
+        authorization: AutopilotAuthorization
+        recordFinalDecision: (finalVerdict: ApprovalReviewVerdict) => Promise<void>
+      }
+    | undefined
+
   if (policyResult.decision === 'review') {
     // Autopilot: a review card would park on a user who delegated the task and
     // left. Instead, an automated reviewer decides on the user's behalf — it
@@ -301,7 +316,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
           }
         }
       }
-      let review = unreviewable
+      const review = unreviewable
         ? { decision: 'deny' as const, reason: unreviewable }
         : await reviewAutopilotApproval({
             agentSlug,
@@ -313,25 +328,6 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
               bodyText,
             ].filter(Boolean).join('\n') || undefined,
           })
-      // An approval only stands while the authorization it was judged under
-      // does. The user can switch autopilot off, or interrupt (opening a new
-      // era), while the model review is in flight — revalidate the captured
-      // session/era set immediately before promoting the approval, and drop
-      // requests the caller has already abandoned.
-      if (review.decision !== 'deny') {
-        if (c.req.raw.signal.aborted) {
-          review = {
-            decision: 'deny',
-            reason: 'The request was cancelled while automated review was in flight.',
-          }
-        } else if (!(await isAutopilotAuthorizationCurrent(agentSlug, autopilotAuthorization))) {
-          review = {
-            decision: 'deny',
-            reason:
-              'Autopilot was switched off or interrupted while automated review was in flight, so the approval no longer applies.',
-          }
-        }
-      }
       if (review.decision === 'deny') {
         await logAuditEntry({
           agentSlug,
@@ -356,6 +352,10 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       }
       resolvedPolicyDecision = 'approved_autopilot'
       autopilotDecisionReason = review.reason
+      autopilotBoundary = {
+        authorization: autopilotAuthorization,
+        recordFinalDecision: review.recordFinalDecision,
+      }
     } else {
       try {
         const decision = await reviewManager.requestReview({
@@ -455,6 +455,33 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     ? null
     : await c.req.arrayBuffer()
 
+  // An autopilot approval is revalidated at the outbound boundary: the awaits
+  // between the verdict and the forward (connection check, body read,
+  // provider-internal token retrieval) leave time for the user to revoke, and
+  // an approval must not execute under an authorization that no longer
+  // stands. The provider awaits this guard immediately before issuing its
+  // outbound request; once it passes, the forward is committed and the
+  // executed approval is recorded as the final timeline decision.
+  const boundary = autopilotBoundary
+  const beforeForward = boundary
+    ? async () => {
+        if (c.req.raw.signal.aborted) {
+          throw new AutopilotAuthorizationError(
+            'The request was cancelled before it was forwarded.'
+          )
+        }
+        if (!(await isAutopilotAuthorizationCurrent(agentSlug, boundary.authorization))) {
+          throw new AutopilotAuthorizationError(
+            'Autopilot was switched off or interrupted before the request was forwarded, so the approval no longer applies.'
+          )
+        }
+        void boundary.recordFinalDecision({
+          decision: 'approve',
+          reason: autopilotDecisionReason ?? 'Approved by the autopilot reviewer.',
+        })
+      }
+    : undefined
+
   let response: Response
   try {
     response = await runWithAttribution(
@@ -466,9 +493,25 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         method,
         headers: c.req.raw.headers,
         body: requestBody,
+        beforeForward,
       }),
     )
   } catch (error) {
+    if (error instanceof AutopilotAuthorizationError) {
+      void boundary?.recordFinalDecision({ decision: 'deny', reason: error.message })
+      resolvedPolicyDecision = 'denied_autopilot'
+      autopilotDecisionReason = error.message
+      await audit({})
+      return c.json(
+        {
+          error: 'requires_user_approval',
+          message: `${autopilotApprovalDeniedMessage('This API request')} ${error.message}`,
+          scopes: policyResult.matchedScopes,
+          toolkit: account.toolkitSlug,
+        },
+        403
+      )
+    }
     const isTokenError = String(error).includes('token') || String(error).includes('Token')
     const errorLabel = isTokenError ? 'Failed to fetch access token' : 'Proxy request failed'
 

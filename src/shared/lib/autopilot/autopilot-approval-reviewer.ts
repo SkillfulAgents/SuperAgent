@@ -191,9 +191,25 @@ async function recordApprovalDecision(
   }
 }
 
+export interface ApprovalReviewResult {
+  decision: ApprovalReviewVerdict['decision']
+  reason: string
+  /**
+   * An approve verdict is PROVISIONAL: the route revalidates the autopilot
+   * authorization at the outbound boundary, and the user can revoke in the
+   * window between the verdict and the forward. So the timeline card must
+   * record the route's FINAL decision, not the judge's — the route calls this
+   * once, with either the approval it actually executed or the deny it
+   * substituted at the boundary. Denials decided here are final and recorded
+   * immediately; their recorder is an idempotent no-op. Best-effort like all
+   * card recording — never changes the route's answer.
+   */
+  recordFinalDecision: (finalVerdict: ApprovalReviewVerdict) => Promise<void>
+}
+
 export async function reviewAutopilotApproval(
   request: ApprovalReviewRequest
-): Promise<ApprovalReviewVerdict> {
+): Promise<ApprovalReviewResult> {
   const { excerpt, engagedSessionIds, ambiguous } = await buildUserIntentExcerpt(request.agentSlug)
   // Several engaged sessions: the request cannot be attributed to a single
   // user instruction, so no instruction can authorize it. Fail closed without
@@ -206,8 +222,16 @@ export async function reviewAutopilotApproval(
           'Multiple sessions are running in autopilot, so this request cannot be attributed to a single delegated task. Denied by default.',
       }
     : await judgeApproval(request, excerpt)
-  await recordApprovalDecision(request, verdict, engagedSessionIds)
-  return verdict
+  let recorded = false
+  const recordFinalDecision = async (finalVerdict: ApprovalReviewVerdict): Promise<void> => {
+    if (recorded) return
+    recorded = true
+    await recordApprovalDecision(request, finalVerdict, engagedSessionIds)
+  }
+  if (verdict.decision === 'deny') {
+    await recordFinalDecision(verdict)
+  }
+  return { ...verdict, recordFinalDecision }
 }
 
 async function judgeApproval(

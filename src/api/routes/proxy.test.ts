@@ -104,16 +104,26 @@ const mockGetAutopilotAuthorization = vi.fn(
 const mockIsAutopilotAuthorizationCurrent = vi.fn(
   async (..._args: unknown[]): Promise<boolean> => true
 )
-const mockReviewAutopilotApproval = vi.fn(
-  async (..._args: unknown[]): Promise<{ decision: string; reason: string }> => ({
-    decision: 'approve',
-    reason: 'ok',
-  })
+// The reviewer returns a deferred-recording handle: approvals are recorded as
+// the route's FINAL decision at the outbound boundary, not at verdict time.
+const mockRecordFinalDecision = vi.fn(async (..._args: unknown[]): Promise<void> => {})
+const approvalResult = (decision: string, reason: string) => ({
+  decision,
+  reason,
+  recordFinalDecision: mockRecordFinalDecision,
+})
+const mockReviewAutopilotApproval = vi.fn(async (..._args: unknown[]) =>
+  approvalResult('approve', 'ok')
 )
+const { MockAutopilotAuthorizationError } = vi.hoisted(() => {
+  class MockAutopilotAuthorizationError extends Error {}
+  return { MockAutopilotAuthorizationError }
+})
 vi.mock('@shared/lib/autopilot/autopilot-status', () => ({
   getAutopilotAuthorization: (...args: unknown[]) => mockGetAutopilotAuthorization(...args),
   isAutopilotAuthorizationCurrent: (...args: unknown[]) =>
     mockIsAutopilotAuthorizationCurrent(...args),
+  AutopilotAuthorizationError: MockAutopilotAuthorizationError,
 }))
 vi.mock('@shared/lib/autopilot/autopilot-approval-reviewer', () => ({
   reviewAutopilotApproval: (...args: unknown[]) => mockReviewAutopilotApproval(...args),
@@ -1075,11 +1085,17 @@ describe('proxy policy enforcement', () => {
       resolvedFrom: 'scope_policy',
     })
     mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
-    mockReviewAutopilotApproval.mockResolvedValueOnce({
-      decision: 'approve',
-      reason: 'Sending the report the user asked for',
-    })
-    mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    mockReviewAutopilotApproval.mockResolvedValueOnce(approvalResult('approve', 'Sending the report the user asked for'))
+    // Mirror the makeApiCall contract: beforeForward is awaited immediately
+    // before the outbound call. The approved card must not be recorded before
+    // that guard passes.
+    mockMakeApiCall.mockImplementation(
+      async (params: { beforeForward?: () => Promise<void> }) => {
+        expect(mockRecordFinalDecision).not.toHaveBeenCalled()
+        await params.beforeForward?.()
+        return new Response('{"ok":true}', { status: 200 })
+      }
+    )
 
     const res = await makeRequest(
       '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send?forwardTo=hidden@evil.com',
@@ -1119,6 +1135,11 @@ describe('proxy policy enforcement', () => {
     const forwarded = mockMakeApiCall.mock.calls[0][0] as { body: ArrayBuffer | null }
     expect(forwarded.body).toBeTruthy()
     expect(new TextDecoder().decode(forwarded.body as ArrayBuffer)).toContain('someone@example.com')
+    // The executed approval is the FINAL decision recorded to the timeline.
+    expect(mockRecordFinalDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: 'approve' })
+    )
+    mockMakeApiCall.mockReset()
   })
 
   it('review while autopilot engaged → a body too large to inspect fails closed without the judge', async () => {
@@ -1197,10 +1218,7 @@ describe('proxy policy enforcement', () => {
       resolvedFrom: 'scope_policy',
     })
     mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
-    mockReviewAutopilotApproval.mockResolvedValueOnce({
-      decision: 'deny',
-      reason: 'Recipient never mentioned by the user',
-    })
+    mockReviewAutopilotApproval.mockResolvedValueOnce(approvalResult('deny', 'Recipient never mentioned by the user'))
 
     const res = await makeRequest(
       '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send',
@@ -1223,7 +1241,7 @@ describe('proxy policy enforcement', () => {
     )
   })
 
-  it('review while autopilot engaged → approval does NOT forward once autopilot is revoked mid-review', async () => {
+  it('review while autopilot engaged → approval does NOT execute once autopilot is revoked before the outbound call', async () => {
     setupThroughHostValidation()
     mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.send'], descriptions: {} })
     mockResolveApiPolicy.mockResolvedValue({
@@ -1233,33 +1251,57 @@ describe('proxy policy enforcement', () => {
       resolvedFrom: 'scope_policy',
     })
     mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
-    // The user switches autopilot off (or interrupts, opening a new era)
-    // while the model review is in flight: the judge still approves, but the
-    // authorization the approval was judged under no longer stands.
-    mockReviewAutopilotApproval.mockResolvedValueOnce({ decision: 'approve', reason: 'ok' })
+    // The user switches autopilot off (or interrupts, opening a new era) in
+    // the window between the judge's approval and the provider's outbound
+    // call (connection check, token retrieval). The revalidation runs at the
+    // outbound boundary — the provider awaits beforeForward immediately
+    // before its fetch, per the makeApiCall contract this mock mirrors.
+    mockReviewAutopilotApproval.mockResolvedValueOnce(approvalResult('approve', 'ok'))
     mockIsAutopilotAuthorizationCurrent.mockResolvedValueOnce(false)
-
-    const res = await makeRequest(
-      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send',
-      {
-        method: 'POST',
-        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: 'someone@example.com' }),
+    let reachedOutboundCall = false
+    mockMakeApiCall.mockImplementation(
+      async (params: { beforeForward?: () => Promise<void> }) => {
+        await params.beforeForward?.()
+        reachedOutboundCall = true
+        return new Response('{"ok":true}', { status: 200 })
       }
     )
-    expect(res.status).toBe(403)
-    const body = await res.json()
-    expect(body.error).toBe('requires_user_approval')
-    expect(body.message).toContain('no longer applies')
-    expect(mockMakeApiCall).not.toHaveBeenCalled()
-    expect(mockInsertValues).toHaveBeenCalledWith(
-      expect.objectContaining({ policyDecision: 'denied_autopilot' })
-    )
-    // Revalidation compares against the SAME snapshot captured pre-review.
-    expect(mockIsAutopilotAuthorizationCurrent).toHaveBeenCalledWith(
-      'my-agent',
-      AUTOPILOT_AUTHORIZATION
-    )
+
+    try {
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages/send',
+        {
+          method: 'POST',
+          headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: 'someone@example.com' }),
+        }
+      )
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.error).toBe('requires_user_approval')
+      expect(body.message).toContain('no longer applies')
+      expect(reachedOutboundCall).toBe(false)
+      expect(mockInsertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ policyDecision: 'denied_autopilot' })
+      )
+      // Revalidation compares against the SAME snapshot captured pre-review.
+      expect(mockIsAutopilotAuthorizationCurrent).toHaveBeenCalledWith(
+        'my-agent',
+        AUTOPILOT_AUTHORIZATION
+      )
+      // The timeline card records the route's FINAL decision — the deny that
+      // replaced the judge's provisional approval.
+      expect(mockRecordFinalDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ decision: 'deny' })
+      )
+      expect(mockRecordFinalDecision).not.toHaveBeenCalledWith(
+        expect.objectContaining({ decision: 'approve' })
+      )
+    } finally {
+      // clearAllMocks does not remove implementations — reset so the
+      // beforeForward-aware mock cannot leak into later tests.
+      mockMakeApiCall.mockReset()
+    }
   })
 
   it('review while autopilot engaged → a non-UTF-8 body fails closed without the judge', async () => {

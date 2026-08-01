@@ -278,4 +278,60 @@ describe('autopilot-service state machine', () => {
       expect(decision).toEqual({ action: 'not-engaged' })
     })
   })
+
+  describe('era guard on verdict transitions', () => {
+    // The watchdog computes verdicts across a long judge await. If the user
+    // interrupts and the session re-engages a NEW task in that window, the
+    // session is engaged again — but in a new requestedAt era. A stale verdict
+    // carrying the old era must not touch it.
+    async function engageNewEraAfter(): Promise<string> {
+      const staleEra = (await getSessionMetadata(AGENT, SESSION))?.autopilot?.requestedAt as string
+      // Interrupt (engaged → requested restamps) then re-engage the next task.
+      await new Promise((r) => setTimeout(r, 2)) // ensure a distinct timestamp
+      await requestAutopilot(AGENT, SESSION)
+      await engageAutopilot(AGENT, SESSION, { goal: 'Next task', success_criteria: ['done'] })
+      return staleEra
+    }
+
+    beforeEach(async () => {
+      await requestAutopilot(AGENT, SESSION)
+      await engageAutopilot(AGENT, SESSION, CONTRACT)
+    })
+
+    it('a stale done verdict cannot complete the new task', async () => {
+      const staleEra = await engageNewEraAfter()
+      expect(
+        await disengageAutopilot(AGENT, SESSION, 'completed', { expectedRequestedAt: staleEra })
+      ).toBe(false)
+      expect(await state()).toBe('engaged')
+    })
+
+    it('a stale blocked/escalated verdict cannot pause the new task', async () => {
+      const staleEra = await engageNewEraAfter()
+      expect(
+        await pauseAutopilot(AGENT, SESSION, 'stale reason', { expectedRequestedAt: staleEra })
+      ).toBe(false)
+      expect(await state()).toBe('engaged')
+    })
+
+    it('a stale continue verdict cannot advance the new task', async () => {
+      const staleEra = await engageNewEraAfter()
+      const decision = await applyContinueVerdict(
+        AGENT,
+        SESSION,
+        { verdict: 'continue', reasoning: 'r', missing: 'm' },
+        { expectedRequestedAt: staleEra }
+      )
+      expect(decision).toEqual({ action: 'not-engaged' })
+      expect((await getSessionMetadata(AGENT, SESSION))?.autopilot?.iteration).toBe(0)
+    })
+
+    it('a matching era proceeds normally', async () => {
+      const era = (await getSessionMetadata(AGENT, SESSION))?.autopilot?.requestedAt
+      expect(
+        await disengageAutopilot(AGENT, SESSION, 'completed', { expectedRequestedAt: era })
+      ).toBe(true)
+      expect(await state()).toBe('off')
+    })
+  })
 })

@@ -76,11 +76,16 @@ const mockGetAutopilotAuthorization = vi.fn(
 const mockIsAutopilotAuthorizationCurrent = vi.fn(
   async (..._args: unknown[]): Promise<boolean> => true
 )
-const mockReviewAutopilotApproval = vi.fn(
-  async (..._args: unknown[]): Promise<{ decision: string; reason: string }> => ({
-    decision: 'approve',
-    reason: 'ok',
-  })
+// The reviewer returns a deferred-recording handle: approvals are recorded as
+// the route's FINAL decision at the outbound boundary, not at verdict time.
+const mockRecordFinalDecision = vi.fn(async (..._args: unknown[]): Promise<void> => {})
+const approvalResult = (decision: string, reason: string) => ({
+  decision,
+  reason,
+  recordFinalDecision: mockRecordFinalDecision,
+})
+const mockReviewAutopilotApproval = vi.fn(async (..._args: unknown[]) =>
+  approvalResult('approve', 'ok')
 )
 vi.mock('@shared/lib/autopilot/autopilot-status', () => ({
   getAutopilotAuthorization: (...args: unknown[]) => mockGetAutopilotAuthorization(...args),
@@ -973,7 +978,7 @@ describe('mcp-proxy route', () => {
       setupSuccessPath()
       reviewPolicy()
       mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
-      mockReviewAutopilotApproval.mockResolvedValueOnce({ decision: 'approve', reason: 'ok' })
+      mockReviewAutopilotApproval.mockResolvedValueOnce(approvalResult('approve', 'ok'))
 
       const body = toolsCall({ to: 'someone@example.com', note: 'x'.repeat(3000) })
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp?mode=overwrite', {
@@ -1070,14 +1075,15 @@ describe('mcp-proxy route', () => {
       expect(mockFetch).not.toHaveBeenCalled()
     })
 
-    it('approval does NOT forward once autopilot is revoked mid-review', async () => {
+    it('approval does NOT forward once autopilot is revoked before the outbound call', async () => {
       setupSuccessPath()
       reviewPolicy()
       mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
-      // The user switches autopilot off (or interrupts, opening a new era)
-      // while the model review is in flight: the judge still approves, but
-      // the authorization the approval was judged under no longer stands.
-      mockReviewAutopilotApproval.mockResolvedValueOnce({ decision: 'approve', reason: 'ok' })
+      // The user switches autopilot off (or interrupts, opening a new era) in
+      // the window between the judge's approval and the outbound call (token
+      // refresh, DB work). The revalidation runs at the boundary, immediately
+      // before mcpSafeFetch.
+      mockReviewAutopilotApproval.mockResolvedValueOnce(approvalResult('approve', 'ok'))
       mockIsAutopilotAuthorizationCurrent.mockResolvedValueOnce(false)
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
@@ -1095,6 +1101,32 @@ describe('mcp-proxy route', () => {
       expect(mockIsAutopilotAuthorizationCurrent).toHaveBeenCalledWith(
         'my-agent',
         AUTOPILOT_AUTHORIZATION
+      )
+      // The timeline card records the route's FINAL decision — the deny that
+      // replaced the judge's provisional approval.
+      expect(mockRecordFinalDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ decision: 'deny' })
+      )
+      expect(mockRecordFinalDecision).not.toHaveBeenCalledWith(
+        expect.objectContaining({ decision: 'approve' })
+      )
+    })
+
+    it('a surviving approval is recorded as the final decision at the outbound boundary', async () => {
+      setupSuccessPath()
+      reviewPolicy()
+      mockGetAutopilotAuthorization.mockResolvedValueOnce(AUTOPILOT_AUTHORIZATION)
+      mockReviewAutopilotApproval.mockResolvedValueOnce(approvalResult('approve', 'ok'))
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/mcp', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: toolsCall({ to: 'someone@example.com' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockRecordFinalDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ decision: 'approve' })
       )
     })
   })

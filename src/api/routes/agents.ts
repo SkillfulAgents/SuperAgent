@@ -1634,7 +1634,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // applied at session creation but should not masquerade as a user choice in
     // metadata — otherwise a later change to the global default wouldn't be
     // reflected when the composer reloads.
-    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
+    const initialMetadata: NonNullable<Parameters<typeof registerSession>[3]> = {}
     if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
     if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
     if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
@@ -1642,21 +1642,19 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       initialMetadata.autopilot = { state: 'requested', requestedAt: autopilotRequestedAt }
     }
     if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
-    if (Object.keys(initialMetadata).length > 0) {
-      // Awaited, and BEFORE the stream attaches below: the first turn can call
-      // engage_autopilot as soon as events flow, and the host-authoritative
-      // guard must find the persisted 'requested' era when that event is
-      // handled. A fire-and-forget write after the subscribe raced the
-      // container's first tool call and rejected autopilot on the primary
-      // new-session flow.
-      await updateSessionMetadata(slug, sessionId, initialMetadata)
-    }
 
-    // Attach lifecycle state and the stream before slower metadata/DB work. The
-    // first turn can start emitting shortly after createSession returns, and a
+    // Registration is the ONE initial metadata write, and it happens BEFORE the
+    // stream attaches: registerSession REPLACES the session's metadata entry,
+    // so seeding via a separate write before or after it would be erased. The
+    // first turn can call engage_autopilot as soon as events flow, and the
+    // host-authoritative guard must find the persisted 'requested' era when
+    // that event is handled.
+    await registerSession(slug, sessionId, 'New Session', initialMetadata)
+
+    // Attach lifecycle state and the stream before slower DB work. The first
+    // turn can start emitting shortly after createSession returns, and a
     // blocking input emitted during that window must not be missed or reset.
     let lifecycleStarted = false
-    let sessionRegistered = false
     try {
       messagePersister.markSessionActive(sessionId, slug)
       lifecycleStarted = true
@@ -1672,11 +1670,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
           userId,
         })
       }
-
-      await registerSession(slug, sessionId, 'New Session')
-      sessionRegistered = true
     } catch (error) {
-      if (lifecycleStarted && !sessionRegistered) {
+      if (lifecycleStarted) {
         messagePersister.unsubscribeFromSession(sessionId)
       }
       throw error

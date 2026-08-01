@@ -6,7 +6,9 @@ import { reviewManager } from '@shared/lib/proxy/review-manager'
 import {
   getAutopilotAuthorization,
   isAutopilotAuthorizationCurrent,
+  type AutopilotAuthorization,
 } from '@shared/lib/autopilot/autopilot-status'
+import type { ApprovalReviewVerdict } from '@shared/lib/autopilot/autopilot-schema'
 import { reviewAutopilotApproval } from '@shared/lib/autopilot/autopilot-approval-reviewer'
 import { autopilotApprovalDeniedMessage } from '@shared/lib/autopilot/autopilot-service'
 import { db } from '@shared/lib/db'
@@ -260,6 +262,17 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   // audit entry for approvals.
   let autopilotDecisionReason: string | undefined
 
+  // Set when the autopilot reviewer approved this request. The approval is
+  // provisional: it is revalidated at the outbound boundary (immediately
+  // before mcpSafeFetch at step 4) and the timeline card records the FINAL
+  // outcome — the approval that executed, or the deny substituted there.
+  let autopilotBoundary:
+    | {
+        authorization: AutopilotAuthorization
+        recordFinalDecision: (finalVerdict: ApprovalReviewVerdict) => Promise<void>
+      }
+    | undefined
+
   if (!isProtocolMethod) {
     let policyResult
     try {
@@ -320,7 +333,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         if (!unreviewable && headersBlock.length > REVIEWABLE_BODY_CHAR_CAP) {
           unreviewable = `Forwarded request headers total ${headersBlock.length} characters — beyond the ${REVIEWABLE_BODY_CHAR_CAP}-character automated-review limit, so the request cannot be inspected in full. Denied by default.`
         }
-        let review = unreviewable
+        const review = unreviewable
           ? { decision: 'deny' as const, reason: unreviewable }
           : await reviewAutopilotApproval({
               agentSlug,
@@ -337,25 +350,6 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
                   .filter(Boolean)
                   .join('\n') || undefined,
             })
-        // An approval only stands while the authorization it was judged under
-        // does. The user can switch autopilot off, or interrupt (opening a
-        // new era), while the model review is in flight — revalidate the
-        // captured session/era set immediately before promoting the approval,
-        // and drop requests the caller has already abandoned.
-        if (review.decision !== 'deny') {
-          if (c.req.raw.signal.aborted) {
-            review = {
-              decision: 'deny',
-              reason: 'The request was cancelled while automated review was in flight.',
-            }
-          } else if (!(await isAutopilotAuthorizationCurrent(agentSlug, autopilotAuthorization))) {
-            review = {
-              decision: 'deny',
-              reason:
-                'Autopilot was switched off or interrupted while automated review was in flight, so the approval no longer applies.',
-            }
-          }
-        }
         if (review.decision === 'deny') {
           await logMcpAuditEntry({
             agentSlug,
@@ -378,6 +372,10 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         }
         resolvedPolicyDecision = 'approved_autopilot'
         autopilotDecisionReason = review.reason
+        autopilotBoundary = {
+          authorization: autopilotAuthorization,
+          recordFinalDecision: review.recordFinalDecision,
+        }
       } else {
         try {
           const decision = await reviewManager.requestReview({
@@ -474,6 +472,45 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   const init: RequestInit = { method, headers: forwardHeaders }
   if (bodyBuffer) {
     init.body = bodyBuffer
+  }
+
+  // An autopilot approval is revalidated at the outbound boundary: the awaits
+  // between the verdict and this point (token refresh, DB status writes)
+  // leave time for the user to revoke, and an approval must not execute under
+  // an authorization that no longer stands. Once the guard passes, the
+  // forward is committed and the executed approval is recorded as the final
+  // timeline decision.
+  if (autopilotBoundary) {
+    const revokedReason = c.req.raw.signal.aborted
+      ? 'The request was cancelled before it was forwarded.'
+      : !(await isAutopilotAuthorizationCurrent(agentSlug, autopilotBoundary.authorization))
+        ? 'Autopilot was switched off or interrupted before the request was forwarded, so the approval no longer applies.'
+        : undefined
+    if (revokedReason) {
+      void autopilotBoundary.recordFinalDecision({ decision: 'deny', reason: revokedReason })
+      await logMcpAuditEntry({
+        agentSlug,
+        remoteMcpId: mcp.id,
+        remoteMcpName: mcp.name,
+        method,
+        requestPath: mcpMethodInfo,
+        policyDecision: 'denied_autopilot',
+        matchedTool: toolName ?? undefined,
+        decisionReason: revokedReason,
+      })
+      return c.json(
+        {
+          error: 'requires_user_approval',
+          message: `${autopilotApprovalDeniedMessage('This MCP tool call')} ${revokedReason}`,
+          tool: toolName,
+        },
+        403
+      )
+    }
+    void autopilotBoundary.recordFinalDecision({
+      decision: 'approve',
+      reason: autopilotDecisionReason ?? 'Approved by the autopilot reviewer.',
+    })
   }
 
   try {

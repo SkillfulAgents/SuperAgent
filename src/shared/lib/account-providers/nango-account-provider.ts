@@ -162,6 +162,7 @@ export class NangoAccountProvider extends BaseAccountProvider {
     method: string
     headers: Headers
     body: ArrayBuffer | null
+    beforeForward?: () => Promise<void>
   }): Promise<Response> {
     const { accessToken } = await this.resolveToken(params.providerConnectionId, params.toolkitSlug)
 
@@ -177,6 +178,10 @@ export class NangoAccountProvider extends BaseAccountProvider {
     if (params.method !== 'GET' && params.method !== 'HEAD' && params.body) {
       init.body = params.body
     }
+
+    // Contract: the caller's guard runs after token resolution, immediately
+    // before the outbound request. Throwing aborts the forward.
+    if (params.beforeForward) await params.beforeForward()
 
     const response = await fetch(params.targetUrl, init)
 
