@@ -8,7 +8,7 @@ import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notificatio
 import { useHomeCardHealth } from '@renderer/hooks/use-home-card-health'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useNotableSessions } from '@renderer/hooks/use-sessions'
-import { Halftone } from '@renderer/components/agents/halftone'
+import { LazyHalftone } from '@renderer/components/agents/halftone'
 import {
   ActivitySparkChart,
   CronSparkChart,
@@ -180,7 +180,7 @@ function AgentCardMatrix({
       aria-hidden="true"
       className={cn('w-full overflow-hidden', className ?? 'aspect-[32/9]', HALFTONE_INK[activityStatus])}
     >
-      <Halftone
+      <LazyHalftone
         motif={activityStatus === 'awaiting_input' ? 'pulse' : 'flow_3d'}
         state={activityStatus === 'working' ? 'working' : activityStatus === 'awaiting_input' ? 'alert' : 'idle'}
         speed={stateTweak?.speed}

@@ -1,4 +1,19 @@
 import { zip } from 'fflate'
+import { canUseHostFeatures } from './host-features'
+
+/**
+ * A dropped or picked file's absolute path on this computer, or null when that
+ * path is of no use.
+ *
+ * Everything downstream uses it to have the machine running the agent read or
+ * mount that path directly, so it means something only while that machine is
+ * this one. Against a cloud workspace, returning null takes the web route
+ * (enumerate and upload the bytes), which is the only thing that can work.
+ */
+function hostPathOf(file: File): string | null {
+  if (!canUseHostFeatures()) return null
+  return window.electronAPI?.getPathForFile(file) ?? null
+}
 
 export interface FileWithPath {
   file: File
@@ -77,7 +92,7 @@ export async function getItemsFromDataTransfer(
   const dtFiles = Array.from(dataTransfer.files)
   const folderPathMap = new Map<string, string>()
   for (const f of dtFiles) {
-    const fp = window.electronAPI?.getPathForFile(f)
+    const fp = hostPathOf(f)
     if (fp) {
       folderPathMap.set(f.name, fp)
     }
@@ -121,7 +136,7 @@ export async function getItemsFromDataTransfer(
  */
 function getElectronFolderPath(firstFile: File, relativePath?: string): string | null {
   const rel = relativePath ?? firstFile.webkitRelativePath
-  const absPath = window.electronAPI?.getPathForFile(firstFile)
+  const absPath = hostPathOf(firstFile)
   if (!absPath || !rel) return null
 
   const relParts = rel.split('/')

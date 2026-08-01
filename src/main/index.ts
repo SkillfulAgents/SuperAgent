@@ -119,6 +119,12 @@ import { initializeServices, shutdownServices } from '@shared/lib/startup'
 import { setupServerHandlers } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
+import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
+import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
+import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
+import { applyPreferredApiTarget, resolveApiTargetForRenderer } from './api-target'
+import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
+import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
@@ -316,7 +322,11 @@ function createWindow() {
     },
     ...(process.platform === 'darwin' && {
       titleBarStyle: 'hiddenInset' as const,
-      trafficLightPosition: { x: 16, y: 16 },
+      // Centered in the sidebar's 48px title bar row, which is now the only
+      // thing the lights ever sit beside — the renderer used to push a second
+      // position over IPC whenever the sidebar collapsed, back when an expanded
+      // sidebar had a taller header to align with.
+      trafficLightPosition: { x: 21, y: 23 },
       vibrancy: 'sidebar' as const,
       visualEffectState: 'active' as const,
     }),
@@ -458,18 +468,47 @@ ipcMain.handle('get-window-maximized-state', () => {
   return mainWindow?.isMaximized() ?? false
 })
 
-// Reposition macOS traffic-light buttons to vertically center them in the
-// 48px top bar when the sidebar is collapsed (no sidebar header to align with).
-ipcMain.on('set-sidebar-collapsed', (_event, collapsed: boolean) => {
-  if (process.platform !== 'darwin' || !mainWindow) return
-  const y = collapsed ? 23 : 16
-  const x = collapsed ? 21 : 16
-  mainWindow.setWindowButtonPosition({ x, y })
-})
-
 // IPC handler for getting the API URL (port may vary)
 ipcMain.handle('get-api-url', () => {
   return `http://localhost:${actualApiPort}`
+})
+
+/** The cloud proxy's base URL, or null when there is no workspace to drive. */
+function cloudApiBaseUrl(): string | null {
+  if (!isCloudProxyEnabled() || !resolveCloudProxyTarget()) return null
+  return `http://localhost:${actualApiPort}${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}`
+}
+
+/** Which Superagent this app is driving, and the base URL that reaches it. */
+function activeApiTarget() {
+  return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, cloudApiBaseUrl())
+}
+
+// Which Superagent this renderer drives, settled in main rather than in the
+// renderer — see api-target.ts. The renderer is handed a finished base URL
+// rather than assembling one, because half of the cloud prefix is the per-boot
+// proxy key, a secret owned by main (see cloud-proxy-key.ts).
+ipcMain.handle('get-api-target', () => activeApiTarget())
+
+ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
+  applyPreferredApiTarget(target)
+})
+
+// The switch animation, which cannot live in the document the switch reloads.
+// Awaited by the renderer so the band is up before it reloads itself; lifted
+// when the reloaded renderer says it has painted. Both are no-ops when there is
+// nothing on screen, so the renderer never has to track whether it is switching.
+ipcMain.handle('begin-target-switch', async () => {
+  if (mainWindow) await showTargetSwitchOverlay(mainWindow)
+})
+
+// Only the covered window's own paint counts. Every renderer with our preload
+// sends this, and a second one opening mid-switch (a quick-dispatch composer, a
+// popout) would otherwise report a paint the user cannot see and take the band
+// off the window that is still blank.
+ipcMain.on('renderer-painted', (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return
+  void finishTargetSwitchOverlay()
 })
 
 // IPC handler for opening URLs in system browser. Renderer-supplied strings are
@@ -866,7 +905,7 @@ ipcMain.handle('show-emoji-panel', () => {
 
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
-  openDashboardWindow(agentSlug, dashboardSlug, actualApiPort)
+  openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
 })
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
@@ -1079,7 +1118,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const agentSlug = decodeURIComponent(parts[0])
       const dashboardSlug = decodeURIComponent(parts[1])
       if (apiReady) {
-        openDashboardWindow(agentSlug, dashboardSlug, actualApiPort)
+        openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
       } else {
         pendingDashboardLinks.push({ agentSlug, dashboardSlug })
       }
@@ -1448,7 +1487,7 @@ async function startApp() {
   // Mark API as ready and process any queued dashboard deep links
   apiReady = true
   for (const link of pendingDashboardLinks) {
-    openDashboardWindow(link.agentSlug, link.dashboardSlug, actualApiPort)
+    openDashboardWindow(link.agentSlug, link.dashboardSlug, activeApiTarget().baseUrl)
   }
   pendingDashboardLinks.length = 0
   processPendingProtocolUrls()
@@ -1456,6 +1495,11 @@ async function startApp() {
   // Wait for app to be ready, then create window. Window/menu/tray creation is
   // deferred until here so they're never built against a port that never bound.
   await app.whenReady()
+
+  // A cold start into a cloud workspace faces the same wait as a switch: the
+  // renderer cannot ask for anything until it has loaded. Start those calls
+  // alongside the window rather than after it (no-op without a workspace).
+  if (activeApiTarget().target === 'cloud') startCloudBootPrefetch()
 
   createWindow()
 

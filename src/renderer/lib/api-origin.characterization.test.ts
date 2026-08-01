@@ -126,6 +126,8 @@ const EXTERNAL_ENDPOINT_MODULES = [
  */
 const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'lib/api.ts': 'the wrapper itself',
+  'lib/auth-client.ts':
+    "better-auth composes its own request URLs from a baseURL it is constructed with — it never sees apiFetch. Read lazily so cloud mode's prefix is known by then.",
   'lib/env.ts': 'defines it; openDashboardExternal() builds a window.open() URL',
   'components/ui/model-icon.tsx': '<img src> — model icon asset',
   'components/home/dashboard-card.tsx': '<img src> — dashboard screenshot',

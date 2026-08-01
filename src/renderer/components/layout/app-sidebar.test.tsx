@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { cloneElement, isValidElement, type ReactElement } from 'react'
 import { act, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppSidebar } from './app-sidebar'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 
 // AppLink (the sidebar item links) is stubbed globally in test/setup.ts — no
 // file-level mock needed. DialogContext is mocked below to control settings.
@@ -212,8 +213,10 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
   Sidebar: ({ children, ...props }: any) => <aside {...props}>{children}</aside>,
   SidebarContent: ({ children }: any) => <div>{children}</div>,
   SidebarFooter: ({ children, className }: any) => <div data-testid="sidebar-footer" className={className}>{children}</div>,
-  SidebarHeader: ({ children, className }: any) => (
-    <div data-testid="sidebar-header" className={className}>{children}</div>
+  // Forwards `style` as well: the traffic-light reservation is an inline
+  // paddingLeft, so a mock that dropped it would make that assertion vacuous.
+  SidebarHeader: ({ children, className, style }: any) => (
+    <div data-testid="sidebar-header" className={className} style={style}>{children}</div>
   ),
   SidebarGroup: ({ children, className }: any) => <div className={className}>{children}</div>,
   SidebarGroupContent: ({ children }: any) => <div>{children}</div>,
@@ -342,9 +345,15 @@ beforeEach(() => {
 })
 
 describe('AppSidebar — layout & top nav', () => {
-  it('renders the Gamut wordmark', () => {
+  it('does not name the app in the sidebar', () => {
+    // The wordmark cost a whole row to repeat what the window already says.
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByText('Gamut')).toBeInTheDocument()
+    expect(screen.queryByText('Gamut')).not.toBeInTheDocument()
+  })
+
+  it('puts the window-level controls in the title bar row', () => {
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('sidebar-header')).toContainElement(screen.getByTestId('search-button'))
   })
 
   it('renders Home, Notifications, and New Agent in the top nav', () => {
@@ -395,12 +404,13 @@ describe('AppSidebar — layout & top nav', () => {
     expect(mockCreateUntitledAgent).toHaveBeenCalled()
   })
 
-  it('does not render a header bar in non-Electron mode (no traffic-light spacer)', () => {
+  it('keeps the title bar row in non-Electron mode, minus the traffic-light spacer', () => {
     renderWithProviders(<AppSidebar />)
-    // Header is always mounted, but collapses to h-0 / no border when not needed.
+    // The row holds the controls now, so it exists everywhere; only the space
+    // reserved for macOS traffic lights is conditional.
     const header = screen.getByTestId('sidebar-header')
-    expect(header.className).toMatch(/h-0/)
-    expect(header.className).not.toMatch(/h-12\b/)
+    expect(header.className).toMatch(/h-12\b/)
+    expect(header.style.paddingLeft).toBe('')
   })
 
   it('does not render history navigation controls in web mode', () => {
@@ -643,5 +653,84 @@ describe('AppSidebar — agent row indicator', () => {
     const status = screen.getByTestId('agent-status-running')
     expect(status).toHaveAttribute('data-awaiting', 'true')
     expect(screen.queryByLabelText('unread notifications')).not.toBeInTheDocument()
+  })
+})
+
+describe('UserMenu action for the current target', () => {
+  // Cloud mode reports isAuthMode=true, which is what makes this menu appear at
+  // all. "Sign out" there would revoke the deployment session the desktop's
+  // grant is bound to — disruptive, and pointless since main still holds the
+  // platform connection and would mint another.
+  beforeEach(() => {
+    mockUserContext.isAuthMode = true
+    mockUserContext.user = { name: 'Ada' } as never
+    _resetApiTargetForTest()
+  })
+
+  afterEach(() => {
+    mockUserContext.isAuthMode = false
+    mockUserContext.user = null
+    vi.unstubAllGlobals()
+    _resetApiTargetForTest()
+  })
+
+  async function openUserMenu() {
+    renderWithProviders(<AppSidebar />)
+    await userEvent.click(screen.getByTestId('user-menu-trigger'))
+  }
+
+  it('offers sign out for a web deployment', async () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+
+    await openUserMenu()
+
+    expect(screen.getByTestId('sign-out-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('switch-to-local-button')).not.toBeInTheDocument()
+  })
+
+  it('offers a return to local for a cloud workspace, never sign out', async () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    setActiveTarget('cloud', null)
+
+    await openUserMenu()
+
+    expect(screen.getByTestId('switch-to-local-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('sign-out-button')).not.toBeInTheDocument()
+  })
+
+  it('does not revoke the deployment session when that action is used', async () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    setActiveTarget('cloud', null)
+
+    await openUserMenu()
+    await userEvent.click(screen.getByTestId('switch-to-local-button'))
+
+    expect(mockUserContext.signOut).not.toHaveBeenCalled()
+  })
+})
+
+describe('TargetSwitcher placement', () => {
+  // It scopes everything below it, so it belongs at the head of the sidebar's
+  // title bar row — not in the footer among the per-window actions.
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    _resetApiTargetForTest()
+  })
+
+  it('sits above the Home item, not below the agent list', () => {
+    renderWithProviders(<AppSidebar />)
+
+    const switcher = screen.queryByTestId('target-switcher')
+    if (!switcher) return // hidden without a cloud workspace, covered elsewhere
+
+    const home = screen.getByTestId('home-button')
+    // DOCUMENT_POSITION_FOLLOWING: home comes after the switcher.
+    expect(switcher.compareDocumentPosition(home) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('leaves no padded gap when there is no cloud workspace to switch to', () => {
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByTestId('target-switcher')).not.toBeInTheDocument()
   })
 })

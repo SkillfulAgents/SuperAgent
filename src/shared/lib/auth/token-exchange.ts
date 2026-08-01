@@ -49,6 +49,34 @@ function isUniqueConstraintError(error: unknown): boolean {
 }
 
 /**
+ * Canonical form for comparing a deployment audience: the URL's origin — which
+ * drops an explicit *default* port — plus any path, with no trailing slash.
+ *
+ * `https://dep.example.com` and `https://dep.example.com:443` name the same
+ * deployment, and the two sides of this comparison routinely disagree on which
+ * to write. The platform mints `aud` from the origin it advertises (and strips
+ * an explicit `:443` if asked for one), while a deployment with no
+ * TRUSTED_ORIGINS falls back to `${protocol}://${HOST}:${PORT}` and so holds
+ * the port verbatim. Comparing raw strings rejects every grant such a
+ * deployment is ever sent, and the only symptom is `invalid_grant`.
+ *
+ * Non-default ports are preserved — `:8899` still has to match — as are host,
+ * scheme and path, so this widens nothing but the redundant spelling.
+ */
+function canonicalAudience(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, '')
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  } catch {
+    // Not a URL at all: compare what we were given rather than inventing a
+    // canonical form for it.
+    return trimmed
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+}
+
+/**
  * Verify the platform-signed JWT authorization grant: signature via the
  * platform JWKS, issuer, audience (this deployment's configured base URL —
  * never derived from request headers), explicit typ, and payload shape.
@@ -60,15 +88,21 @@ async function verifyGrant(assertion: string): Promise<DeploymentGrantClaims> {
   if (!issuer || !isAuthProviderEnabled(PLATFORM_AUTH_PROVIDER_ID)) {
     throw new TokenExchangeError('invalid_grant')
   }
-  // Same canonical form the platform signs (origin + path, no trailing
-  // slash), so an operator-supplied trailing slash can't break verification.
-  const audience = getAppBaseUrl().replace(/\/+$/, '')
+  // Same canonical form the platform signs (origin + path, no trailing slash),
+  // so neither an operator-supplied trailing slash nor an explicit default port
+  // can break verification.
+  const audience = canonicalAudience(getAppBaseUrl())
 
   let payload: unknown
   try {
     const result = await verifyOidcJwt(assertion, {
       issuer,
-      audience,
+      // Audience is deliberately not delegated to jose: its check is
+      // byte-for-byte (so `:443` fails against a portless base URL) and it
+      // accepts any member of a multi-valued `aud`. Both rules are wrong here,
+      // and two comparisons would mean the stricter one never runs. The single
+      // authority is the canonical, single-valued check below — which every
+      // path out of this function goes through.
       algorithms: ['RS256'],
       typ: DEPLOYMENT_ASSERTION_TYP,
     })
@@ -99,9 +133,12 @@ async function verifyGrant(assertion: string): Promise<DeploymentGrantClaims> {
   if (claims.exp > nowSec + MAX_GRANT_LIFETIME_SEC + CLOCK_SKEW_SEC) {
     throw new TokenExchangeError('invalid_grant')
   }
-  // Exactly this deployment as the sole audience: jose accepts any array
-  // containing the value, but a grant is minted for one deployment only.
-  if (claims.aud !== audience) {
+  // Exactly this deployment as the sole audience. This is the ONLY audience
+  // check in the chain (see the note where jose is called), so it carries both
+  // rules: `aud` must be a single string — a grant is minted for one deployment
+  // only, and jose would have accepted any array containing us — and it must
+  // name this deployment once spelling differences are normalized away.
+  if (typeof claims.aud !== 'string' || canonicalAudience(claims.aud) !== audience) {
     throw new TokenExchangeError('invalid_grant')
   }
 

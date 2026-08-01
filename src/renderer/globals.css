@@ -287,6 +287,15 @@ html[data-keyboard-open] [data-composer-footer] {
   background: transparent !important;
 }
 
+/* The pre-app screens (session check, boot) cover the whole window, so an opaque
+   background there replaces the native material with a flat sheet — and since
+   the theme class is applied further down the tree, that sheet is light even in
+   dark mode. Keeping them transparent turns a switch into a pause rather than a
+   flash. */
+.electron-vibrancy [data-boot-surface] {
+  background: transparent !important;
+}
+
 /* Windows acrylic alone is too low-contrast against the app's palette, so lay a light
    tint over the entire vibrancy surface (rail + inset gutters). The opaque inset panel
    covers the tint over the main content area, so only the translucent regions see it. */
