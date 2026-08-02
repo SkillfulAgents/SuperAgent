@@ -77,12 +77,13 @@ export const settingsSearchSchema = z
     message: 'a connection subview requires detail',
   })
 
-// The 18 GLOBAL settings tabs (settings/global-settings-page.tsx user/admin/auth
+// The 21 GLOBAL settings tabs (settings/global-settings-page.tsx user/admin/auth
 // sections, flattened in display order). NOTE: `system-prompt` (agent-scoped
 // local dialog) and `secrets` (agent-scoped page, /agents/$slug/secrets) are
 // deliberately absent — they are not global settings routes.
 export const SETTINGS_TABS = [
   'profile',
+  'mobile',
   'general',
   'notifications',
   'platform',
