@@ -91,6 +91,14 @@ function createAuthInstance() {
           required: false,
           input: false,
         },
+        // Label for mobile-paired sessions ("Iddo's iPhone"), surfaced in the
+        // paired-devices list. Written server-side by the mobile pairing
+        // service only — never settable by a client.
+        deviceName: {
+          type: 'string',
+          required: false,
+          input: false,
+        },
       },
     },
     user: {

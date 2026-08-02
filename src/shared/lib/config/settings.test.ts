@@ -1361,6 +1361,7 @@ describe('DEFAULT_AUTH_SETTINGS', () => {
       sessionMaxLifetimeHrs: 24,
       sessionIdleTimeoutMin: 60,
       maxConcurrentSessions: 5,
+      mobileSessionLifetimeDays: 90,
       accountLockoutThreshold: 10,
       accountLockoutDurationMin: 30,
     })

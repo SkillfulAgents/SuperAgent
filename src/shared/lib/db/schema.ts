@@ -52,6 +52,12 @@ export const authSession = sqliteTable('session', {
    * would be a claim we cannot make about them.
    */
   creationMethod: text('creation_method'),
+  /**
+   * User-facing label for sessions minted through the mobile pairing flow
+   * ("Iddo's iPhone"), shown in the paired-devices list. Null for every other
+   * kind of session.
+   */
+  deviceName: text('device_name'),
 }, (table) => ({
   userIdIdx: index('session_userId_idx').on(table.userId),
 }))
@@ -91,6 +97,22 @@ export const tokenExchangeJti = sqliteTable('token_exchange_jti', {
   expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   expiresAtIdx: index('token_exchange_jti_expires_at_idx').on(table.expiresAt),
+}))
+
+// Single-use pairing tokens for the mobile app connect flow. Only the sha256
+// hex of the token is stored — the plaintext (`mp_…`) exists solely in the QR
+// code / deep link handed to the phone. Redemption is an atomic
+// DELETE … RETURNING on the hash, so a token can mint at most one session.
+// Rows are short-lived (5-minute TTL) and swept opportunistically on mint.
+export const mobilePairingToken = sqliteTable('mobile_pairing_token', {
+  tokenHash: text('token_hash').primaryKey(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  expiresAtIdx: index('mobile_pairing_token_expires_at_idx').on(table.expiresAt),
 }))
 
 export const verification = sqliteTable('verification', {
@@ -576,6 +598,8 @@ export type UserSettingsRow = typeof userSettings.$inferSelect
 export type NewUserSettingsRow = typeof userSettings.$inferInsert
 export type User = typeof user.$inferSelect
 export type AuthSession = typeof authSession.$inferSelect
+export type MobilePairingToken = typeof mobilePairingToken.$inferSelect
+export type NewMobilePairingToken = typeof mobilePairingToken.$inferInsert
 export type AuthAccount = typeof authAccount.$inferSelect
 export type Verification = typeof verification.$inferSelect
 export type ApiScopePolicy = typeof apiScopePolicies.$inferSelect
