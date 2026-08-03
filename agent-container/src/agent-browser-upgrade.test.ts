@@ -119,6 +119,7 @@ describe('container-local browser guidance', () => {
       'dashboard-builder-agent-prompt.md',
       'tools/start-dashboard.ts',
       'tools/browser.ts',
+      '../skills/dashboards/SKILL.md',
     ]
     for (const file of files) {
       const source = fs.readFileSync(path.resolve(__dirname, file), 'utf-8')
