@@ -77,8 +77,8 @@ function createAuthInstance() {
       },
     },
     session: {
-      expiresIn: (authSettings.sessionMaxLifetimeHrs ?? 24) * 3600,
-      updateAge: (authSettings.sessionIdleTimeoutMin ?? 60) * 60,
+      expiresIn: (authSettings.sessionMaxLifetimeHrs ?? 168) * 3600,
+      updateAge: (authSettings.sessionIdleTimeoutMin ?? 1440) * 60,
       additionalFields: {
         // Persisted so the answer survives the request that created the
         // session: the concurrent-session cap has to recognize an installed

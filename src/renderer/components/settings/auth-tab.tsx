@@ -282,7 +282,7 @@ export function AuthTab() {
               id="session-idle-timeout"
               type="number"
               min={5}
-              value={auth.sessionIdleTimeoutMin ?? 60}
+              value={auth.sessionIdleTimeoutMin ?? 1440}
               onChange={(e) => {
                 const val = parseInt(e.target.value, 10)
                 if (!isNaN(val) && val >= 5) updateAuth({ sessionIdleTimeoutMin: val })
@@ -299,7 +299,7 @@ export function AuthTab() {
               id="session-max-lifetime"
               type="number"
               min={1}
-              value={auth.sessionMaxLifetimeHrs ?? 24}
+              value={auth.sessionMaxLifetimeHrs ?? 168}
               onChange={(e) => {
                 const val = parseInt(e.target.value, 10)
                 if (!isNaN(val) && val >= 1) updateAuth({ sessionMaxLifetimeHrs: val })

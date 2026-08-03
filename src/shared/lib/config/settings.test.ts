@@ -315,8 +315,8 @@ describe('loadSettings', () => {
       expect(result.auth?.allowSocialAuth).toBe(false)
       expect(result.auth?.passwordMaxLength).toBe(128)
       expect(result.auth?.passwordRequireComplexity).toBe(true)
-      expect(result.auth?.sessionMaxLifetimeHrs).toBe(24)
-      expect(result.auth?.sessionIdleTimeoutMin).toBe(60)
+      expect(result.auth?.sessionMaxLifetimeHrs).toBe(168)
+      expect(result.auth?.sessionIdleTimeoutMin).toBe(1440)
       expect(result.auth?.maxConcurrentSessions).toBe(5)
       expect(result.auth?.accountLockoutThreshold).toBe(10)
       expect(result.auth?.accountLockoutDurationMin).toBe(30)
@@ -332,6 +332,15 @@ describe('loadSettings', () => {
       expect(result.auth).toEqual({
         ...DEFAULT_AUTH_SETTINGS,
       })
+    })
+
+    it('defaults shareAnalytics and shareErrorReports to true when omitted', () => {
+      mockSettingsFile(JSON.stringify({ container: { containerRunner: 'docker' } }))
+
+      const result = loadSettings()
+
+      expect(result.shareAnalytics).toBe(true)
+      expect(result.shareErrorReports).toBe(true)
     })
 
     it('preserves apiKeys as-is (no default merging)', () => {
@@ -1358,8 +1367,8 @@ describe('DEFAULT_AUTH_SETTINGS', () => {
       passwordMinLength: 12,
       passwordMaxLength: 128,
       passwordRequireComplexity: true,
-      sessionMaxLifetimeHrs: 24,
-      sessionIdleTimeoutMin: 60,
+      sessionMaxLifetimeHrs: 168,
+      sessionIdleTimeoutMin: 1440,
       maxConcurrentSessions: 5,
       accountLockoutThreshold: 10,
       accountLockoutDurationMin: 30,
