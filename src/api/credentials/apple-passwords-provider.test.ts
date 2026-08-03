@@ -21,6 +21,7 @@ describe('ApplePasswordsProvider', () => {
     await expect(new ApplePasswordsProvider(runtime()).connectionStatus()).resolves.toEqual({
       provider: 'apple-passwords',
       providerLabel: 'Apple Passwords',
+      installable: true,
       status: 'connected',
     })
     await expect(new ApplePasswordsProvider(runtime({
@@ -77,6 +78,7 @@ describe('ApplePasswordsProvider', () => {
     })
     await expect(provider.connectionStatus()).resolves.toMatchObject({
       status: 'unavailable',
+      installable: true,
       remediation: {
         code: 'extension_not_found',
         action: {
@@ -85,6 +87,20 @@ describe('ApplePasswordsProvider', () => {
         },
       },
     })
+  })
+
+  it('marks an unsupported host as not installable without starting pairing', async () => {
+    const backend = runtime({
+      state: vi.fn().mockRejectedValue(
+        new ApplePasswordsRuntimeError('unsupported_platform', 'Apple Passwords is available only on macOS'),
+      ),
+    })
+
+    await expect(new ApplePasswordsProvider(backend).connectionStatus()).resolves.toMatchObject({
+      status: 'unavailable',
+      installable: false,
+    })
+    expect(backend.beginPairing).not.toHaveBeenCalled()
   })
 
   it('retrieves a password only on demand', async () => {

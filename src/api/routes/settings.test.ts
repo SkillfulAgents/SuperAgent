@@ -287,6 +287,7 @@ function setupDefaults() {
   mockCredentialConnectionStatuses.mockResolvedValue([{
     provider: 'apple-passwords',
     providerLabel: 'Apple Passwords',
+    installable: true,
     status: 'disconnected',
   }])
 }
@@ -321,6 +322,7 @@ describe('settings route', () => {
       mockCredentialConnectionStatuses.mockResolvedValueOnce([{
         provider: 'apple-passwords',
         providerLabel: 'Apple Passwords',
+        installable: true,
         status: 'disconnected',
         message: 'Connect to use passwords saved on this Mac',
       }])
@@ -332,6 +334,7 @@ describe('settings route', () => {
         providers: [{
           provider: 'apple-passwords',
           providerLabel: 'Apple Passwords',
+          installable: true,
           status: 'disconnected',
           message: 'Connect to use passwords saved on this Mac',
           configured: false,
@@ -373,6 +376,7 @@ describe('settings route', () => {
       mockCredentialConnectionStatuses.mockResolvedValueOnce([{
         provider: 'apple-passwords',
         providerLabel: 'Apple Passwords',
+        installable: true,
         status: 'unavailable',
         message: 'Install the iCloud Passwords extension in Chrome',
         remediation: {

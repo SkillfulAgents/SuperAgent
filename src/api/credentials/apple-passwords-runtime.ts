@@ -264,6 +264,20 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+export function applePasswordsChromeArguments(profileDir: string, port: number): string[] {
+  return [
+    `--user-data-dir=${profileDir}`,
+    `--remote-debugging-port=${port}`,
+    '--remote-debugging-address=127.0.0.1',
+    '--enable-unsafe-extension-debugging',
+    '--headless=new',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+  ]
+}
+
 export interface ApplePasswordsRuntimeLike {
   state(): Promise<{ state: string | null; nativeReady: boolean }>
   beginPairing(): Promise<{ status: 'ready' | 'pin_required' }>
@@ -271,6 +285,20 @@ export interface ApplePasswordsRuntimeLike {
   list(url: string): Promise<unknown>
   retrieve(url: string, username: string): Promise<unknown>
   shutdown(): Promise<void>
+}
+
+export interface ApplePasswordsRuntimeDependencies {
+  platform(): NodeJS.Platform
+  findExtension(): InstalledApplePasswordsExtension | null
+  pathExists(candidatePath: string): boolean
+  spawnChrome(command: string, args: string[], options: { stdio: 'ignore' }): ChildProcess
+}
+
+const DEFAULT_RUNTIME_DEPENDENCIES: ApplePasswordsRuntimeDependencies = {
+  platform: () => process.platform,
+  findExtension: () => findInstalledApplePasswordsExtension(),
+  pathExists: (candidatePath) => fs.existsSync(candidatePath),
+  spawnChrome: (command, args, options) => spawn(command, args, options),
 }
 
 /** Host-managed Apple Passwords session backed by an unmodified local extension copy. */
@@ -283,6 +311,10 @@ export class ApplePasswordsRuntime implements ApplePasswordsRuntimeLike {
   private serviceWorkerGlobalObjectId: string | null = null
   private startPromise: Promise<void> | null = null
   private operationChain: Promise<unknown> = Promise.resolve()
+
+  constructor(
+    private readonly dependencies: ApplePasswordsRuntimeDependencies = DEFAULT_RUNTIME_DEPENDENCIES,
+  ) {}
 
   // Electron installs SUPERAGENT_DATA_DIR during startup, after modules have
   // loaded. Resolve these paths lazily so dev and packaged runtimes use the
@@ -300,7 +332,14 @@ export class ApplePasswordsRuntime implements ApplePasswordsRuntimeLike {
   }
 
   async state(): Promise<{ state: string | null; nativeReady: boolean }> {
-    await this.ensureStarted()
+    // Status checks are deliberately side-effect-free. Settings and an
+    // unconfigured request card may probe prerequisites, but only an explicit
+    // pairing action is allowed to launch the broker Chrome.
+    this.validatePrerequisites()
+    if (this.startPromise) await this.startPromise
+    if (!this.child || !this.cdp || !this.extension) {
+      return { state: null, nativeReady: false }
+    }
     return await this.callServiceWorker(READ_STATE_FUNCTION, []) as { state: string | null; nativeReady: boolean }
   }
 
@@ -406,37 +445,15 @@ export class ApplePasswordsRuntime implements ApplePasswordsRuntimeLike {
   }
 
   private async start(): Promise<void> {
-    if (process.platform !== 'darwin') {
-      throw new ApplePasswordsRuntimeError('unsupported_platform', 'Apple Passwords is available only on macOS')
-    }
-    const extension = findInstalledApplePasswordsExtension()
-    if (!extension) {
-      throw new ApplePasswordsRuntimeError(
-        'extension_not_found',
-        'Install the iCloud Passwords extension in Chrome to enable saved logins',
-      )
-    }
-    if (!fs.existsSync(CHROME_PATH)) {
-      throw new ApplePasswordsRuntimeError('chrome_missing', 'Google Chrome is required for Apple Passwords')
-    }
-    if (!fs.existsSync(NATIVE_MANIFEST_PATH)) {
-      throw new ApplePasswordsRuntimeError('native_host_missing', 'The Apple Passwords native helper is unavailable')
-    }
+    const extension = this.validatePrerequisites()
 
     this.prepareRuntime(extension)
     const port = await unusedLoopbackPort()
-    const child = spawn(CHROME_PATH, [
-      `--user-data-dir=${this.profileDir}`,
-      `--remote-debugging-port=${port}`,
-      '--remote-debugging-address=127.0.0.1',
-      '--remote-allow-origins=*',
-      '--enable-unsafe-extension-debugging',
-      '--headless=new',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-    ], { stdio: 'ignore' })
+    const child = this.dependencies.spawnChrome(
+      CHROME_PATH,
+      applePasswordsChromeArguments(this.profileDir, port),
+      { stdio: 'ignore' },
+    )
     this.child = child
     child.once('exit', () => {
       if (this.child !== child) return
@@ -463,6 +480,27 @@ export class ApplePasswordsRuntime implements ApplePasswordsRuntimeLike {
       if (error instanceof ApplePasswordsRuntimeError) throw error
       throw new ApplePasswordsRuntimeError('browser_start_failed', 'Could not start the Apple Passwords broker')
     }
+  }
+
+  /** Pure filesystem/platform validation; never prepares a profile or launches Chrome. */
+  private validatePrerequisites(): InstalledApplePasswordsExtension {
+    if (this.dependencies.platform() !== 'darwin') {
+      throw new ApplePasswordsRuntimeError('unsupported_platform', 'Apple Passwords is available only on macOS')
+    }
+    const extension = this.dependencies.findExtension()
+    if (!extension) {
+      throw new ApplePasswordsRuntimeError(
+        'extension_not_found',
+        'Install the iCloud Passwords extension in Chrome to enable saved logins',
+      )
+    }
+    if (!this.dependencies.pathExists(CHROME_PATH)) {
+      throw new ApplePasswordsRuntimeError('chrome_missing', 'Google Chrome is required for Apple Passwords')
+    }
+    if (!this.dependencies.pathExists(NATIVE_MANIFEST_PATH)) {
+      throw new ApplePasswordsRuntimeError('native_host_missing', 'The Apple Passwords native helper is unavailable')
+    }
+    return extension
   }
 
   private prepareRuntime(extension: InstalledApplePasswordsExtension): void {

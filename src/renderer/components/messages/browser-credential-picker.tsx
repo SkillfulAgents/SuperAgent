@@ -4,6 +4,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { useDialogs } from '@renderer/context/dialog-context'
+import { useUser } from '@renderer/context/user-context'
 
 interface CredentialSuggestion {
   id: string
@@ -16,6 +17,7 @@ interface CredentialSuggestionsResponse {
   provider: string
   providerLabel: string
   status: 'unconfigured' | 'ready' | 'unavailable' | 'locked' | 'error'
+  installable: boolean
   origin: string
   message?: string
   suggestions: CredentialSuggestion[]
@@ -41,6 +43,8 @@ export function BrowserCredentialPicker({
   disabled,
 }: BrowserCredentialPickerProps) {
   const { openSettings } = useDialogs()
+  const { isAuthMode, isAdmin } = useUser()
+  const canUsePasswordManagers = !isAuthMode || isAdmin
   const [data, setData] = useState<CredentialSuggestionsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [fillingId, setFillingId] = useState<string | null>(null)
@@ -52,16 +56,22 @@ export function BrowserCredentialPicker({
   const [code, setCode] = useState('')
 
   useEffect(() => {
+    if (!canUsePasswordManagers) {
+      setLoading(false)
+      return
+    }
     const controller = new AbortController()
     setLoading(true)
     setError(null)
+    const refreshQuery = reload > 0 ? '&refresh=true' : ''
     void apiFetch(
       `/api/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}` +
-        `/browser-credentials?toolUseId=${encodeURIComponent(toolUseId)}`,
+        `/browser-credentials?toolUseId=${encodeURIComponent(toolUseId)}${refreshQuery}`,
       { signal: controller.signal },
     ).then(async (response) => {
-      if (!response.ok) throw new Error('Could not load saved credentials')
-      setData(await response.json() as CredentialSuggestionsResponse)
+      const result = await response.json() as CredentialSuggestionsResponse & { error?: string }
+      if (!response.ok) throw new Error(result.error || 'Could not load saved credentials')
+      setData(result)
     }).catch((reason: unknown) => {
       if (!controller.signal.aborted) {
         setError(reason instanceof Error ? reason.message : 'Could not load saved credentials')
@@ -70,7 +80,7 @@ export function BrowserCredentialPicker({
       if (!controller.signal.aborted) setLoading(false)
     })
     return () => controller.abort()
-  }, [agentSlug, sessionId, toolUseId, reload])
+  }, [agentSlug, canUsePasswordManagers, sessionId, toolUseId, reload])
 
   const fill = useCallback(async (credentialId: string) => {
     setFillingId(credentialId)
@@ -156,7 +166,9 @@ export function BrowserCredentialPicker({
     }
   }, [agentSlug, code, data, sessionId, toolUseId, verification])
 
+  if (!canUsePasswordManagers) return null
   if (!loading && data?.status === 'ready' && data.suggestions.length === 0 && !error) return null
+  if (!loading && data?.status === 'unconfigured' && !data.installable) return null
   if (loading) {
     return (
       <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground" data-testid="credential-picker-loading">
@@ -173,7 +185,7 @@ export function BrowserCredentialPicker({
           <KeyRound className="h-3.5 w-3.5 text-green-600" />
           Credentials filled
         </div>
-        <p className="mt-1 text-muted-foreground">Finish signing in, then click Done.</p>
+        <p className="mt-1 text-muted-foreground">Continue signing in in the browser.</p>
       </div>
     )
   }
@@ -312,7 +324,15 @@ export function BrowserCredentialPicker({
   }
 
   if (!data || (error && data.suggestions.length === 0)) {
-    return error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null
+    return error ? (
+      <div className="mt-2 flex items-center gap-2 text-xs">
+        <p className="text-destructive">{error}</p>
+        <Button type="button" size="xs" variant="ghost" onClick={() => setReload((value) => value + 1)}>
+          <RefreshCw className="mr-1 h-3 w-3" />
+          Retry
+        </Button>
+      </div>
+    ) : null
   }
 
   return (
@@ -345,7 +365,15 @@ export function BrowserCredentialPicker({
           </button>
         ))}
       </div>
-      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+      {error && (
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <p className="text-xs text-destructive">{error}</p>
+          <Button type="button" size="xs" variant="ghost" onClick={() => setReload((value) => value + 1)}>
+            <RefreshCw className="mr-1 h-3 w-3" />
+            Refresh
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

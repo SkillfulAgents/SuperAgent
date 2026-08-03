@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile, execSync } from 'child_process';
 import { promisify } from 'util';
+import { z } from 'zod';
 
 import { inputManager } from './input-manager';
 import { resolveCdpIp } from './cdp-host';
@@ -2261,6 +2262,20 @@ function autofillCredentialViaCdp(
 
 // Host-only credential endpoints. The global host-token middleware prevents
 // the agent's own shell from discovering metadata or injecting secrets.
+const credentialAutofillRequestSchema = z.object({
+  sessionId: z.string().min(1).max(1024),
+  username: z.string().max(4096),
+  password: z.string().min(1).max(65536),
+  expectedOrigin: z.string().max(2048).refine((value) => {
+    try {
+      const parsed = new URL(value);
+      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.origin === value;
+    } catch {
+      return false;
+    }
+  }),
+}).strict();
+
 app.get('/browser/credential-context', async (c) => {
   if (!hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503);
   const sessionId = c.req.query('sessionId');
@@ -2277,18 +2292,11 @@ app.get('/browser/credential-context', async (c) => {
 app.post('/browser/fill-credential', async (c) => {
   try {
     if (!hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503);
-    const body = await c.req.json<{
-      sessionId: string;
-      username: string;
-      password: string;
-      expectedOrigin: string;
-    }>();
-    if (!body.sessionId || typeof body.username !== 'string' || !body.password || !body.expectedOrigin) {
-      return c.json({ error: 'sessionId, username, password, and expectedOrigin are required' }, 400);
-    }
-    if (body.username.length > 4096 || body.password.length > 65536) {
-      return c.json({ error: 'Credential value is too large' }, 400);
-    }
+    const parsedBody = credentialAutofillRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsedBody.success) return c.json({ error: 'Invalid credential autofill request' }, 400);
+    const body = parsedBody.data;
     const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) return c.json({ error: validationError }, 409);
     if (!browserState.active) return c.json({ error: 'Browser is not active' }, 409);

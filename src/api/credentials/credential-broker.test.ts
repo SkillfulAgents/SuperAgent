@@ -37,8 +37,30 @@ describe('CredentialBroker', () => {
       provider: 'none',
       providerLabel: 'Password manager',
       status: 'unconfigured',
+      installable: false,
       suggestions: [],
     })
+    expect(provider.list).not.toHaveBeenCalled()
+  })
+
+  it('advertises configuration only when the host has an installable provider', async () => {
+    const provider: PairableCredentialProvider = {
+      ...mockProvider(),
+      connectionStatus: vi.fn().mockResolvedValue({
+        provider: 'test-provider',
+        providerLabel: 'Test Passwords',
+        installable: true,
+        status: 'disconnected',
+      }),
+      beginPairing: vi.fn().mockResolvedValue({ status: 'pin_required' }),
+      completePairing: vi.fn().mockResolvedValue(undefined),
+    }
+
+    await expect(new CredentialBroker([provider]).suggest(
+      scope,
+      'https://example.com/login',
+      [],
+    )).resolves.toMatchObject({ status: 'unconfigured', installable: true })
     expect(provider.list).not.toHaveBeenCalled()
   })
 
@@ -110,6 +132,7 @@ describe('CredentialBroker', () => {
       connectionStatus: vi.fn().mockResolvedValue({
         provider: 'test-provider',
         providerLabel: 'Test Passwords',
+        installable: true,
         status: 'disconnected',
       }),
       beginPairing: vi.fn().mockResolvedValue({ status: 'pin_required' }),
@@ -123,6 +146,7 @@ describe('CredentialBroker', () => {
     await expect(broker.connectionStatuses()).resolves.toEqual([{
       provider: 'test-provider',
       providerLabel: 'Test Passwords',
+      installable: true,
       status: 'disconnected',
     }])
     await expect(broker.beginPairing('test-provider')).resolves.toEqual({ status: 'pin_required' })

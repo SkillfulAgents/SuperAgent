@@ -87,6 +87,7 @@ vi.mock('../credentials/credential-broker', () => ({
 
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
 const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+const mockGlobalAdmin = vi.hoisted(() => ({ allowed: true }))
 let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
 // Display-slug -> canonical-id resolution applied by the ResolveAgent mock. Defaults
 // to identity (test slugs are already canonical); a test can override it to exercise
@@ -97,6 +98,9 @@ vi.mock('../middleware/auth', () => ({
   AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
   AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
+  IsAdmin: () => async (c: any, next: () => Promise<void>) => (
+    mockGlobalAdmin.allowed ? next() : c.json({ error: 'Forbidden' }, 403)
+  ),
   // Mirrors the real ResolveAgent: 404 on a missing agent (via the agentExists
   // mock) and stash the resolved id, which getAgentId reads back. For test slugs
   // (already canonical), resolution is the identity.
@@ -3331,6 +3335,7 @@ describe('DELETE /:id/sessions/:sessionId', () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
+    mockGlobalAdmin.allowed = true
   })
 
   it('returns 204 and deletes the session', async () => {
@@ -3383,8 +3388,10 @@ describe('browser credential broker routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mockContainerFetch.mockReset()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
+    mockGlobalAdmin.allowed = true
     userInputRequestManager.reset()
     userInputRequestManager.register({
       id: 'tool-credential',
@@ -3395,13 +3402,17 @@ describe('browser credential broker routes', () => {
       payload: {
         browserContext: {
           url: 'https://example.com/login',
-          capturedAt: 123,
+          capturedAt: Date.now(),
         },
       },
     })
   })
 
-  afterEach(() => userInputRequestManager.reset())
+  afterEach(() => {
+    userInputRequestManager.reset()
+    mockContainerFetch.mockReset()
+    mockGlobalAdmin.allowed = true
+  })
 
   it('returns metadata-only suggestions for the open request', async () => {
     mockCredentialSuggest.mockResolvedValueOnce({
@@ -3453,6 +3464,75 @@ describe('browser credential broker routes', () => {
     expect(mockCredentialCompletePairing).toHaveBeenCalledWith('apple-passwords', '123456')
   })
 
+  it('requires a global admin for host password access in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    mockGlobalAdmin.allowed = false
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential',
+    )
+
+    expect(res.status).toBe(403)
+    expect(mockCredentialSuggest).not.toHaveBeenCalled()
+  })
+
+  it('re-probes and replaces browser context on explicit refresh', async () => {
+    mockContainerFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ url: 'https://new.example/login' }), { status: 200 }),
+    )
+    mockCredentialSuggest.mockResolvedValueOnce({
+      provider: 'apple-passwords',
+      providerLabel: 'Apple Passwords',
+      status: 'ready',
+      installable: true,
+      origin: 'https://new.example',
+      suggestions: [],
+    })
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials' +
+        '?toolUseId=tool-credential&refresh=true',
+    )
+
+    expect(res.status).toBe(200)
+    expect(mockCredentialSuggest).toHaveBeenCalledWith(
+      { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
+      'https://new.example/login',
+      ['apple-passwords'],
+    )
+    expect(userInputRequestManager.getOpenRequest('tool-credential')?.payload)
+      .toMatchObject({ browserContext: { url: 'https://new.example/login' } })
+  })
+
+  it('uses credential-lookup copy for unexpected suggestion failures', async () => {
+    mockCredentialSuggest.mockRejectedValueOnce(new Error('unexpected'))
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential',
+    )
+
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Credential lookup failed' })
+  })
+
+  it('rejects malformed browser context returned by the container', async () => {
+    mockContainerFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ url: 42 }), { status: 200 }),
+    )
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials' +
+        '?toolUseId=tool-credential&refresh=true',
+    )
+
+    expect(res.status).toBe(502)
+    expect(mockCredentialSuggest).not.toHaveBeenCalled()
+  })
+
   it('does not check a provider that is not configured', async () => {
     mockRuntimeSettings.mockReturnValueOnce({ container: {}, skillsets: [], app: { configuredPasswordManagers: [] } })
     const res = await postJson(
@@ -3461,6 +3541,17 @@ describe('browser credential broker routes', () => {
       { toolUseId: 'tool-credential', provider: 'apple-passwords' },
     )
     expect(res.status).toBe(409)
+    expect(mockCredentialBeginPairing).not.toHaveBeenCalled()
+  })
+
+  it('validates password-manager request bodies before provider access', async () => {
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials/check',
+      { toolUseId: 'tool-credential', provider: 42 },
+    )
+
+    expect(res.status).toBe(400)
     expect(mockCredentialBeginPairing).not.toHaveBeenCalled()
   })
 
@@ -3520,6 +3611,98 @@ describe('browser credential broker routes', () => {
       'tool-credential',
       'answered',
     )
+  })
+
+  it('claims the request before retrieval so a concurrent Done cannot settle it', async () => {
+    let releaseContext!: (response: Response) => void
+    const contextResponse = new Promise<Response>((resolve) => { releaseContext = resolve })
+    mockContainerFetch.mockImplementation((path: string) => {
+      if (path.startsWith('/browser/credential-context')) return contextResponse
+      if (path === '/browser/fill-credential') {
+        return Promise.resolve(new Response(JSON.stringify({
+          success: true,
+          usernameFilled: true,
+          passwordFilled: true,
+        }), { status: 200 }))
+      }
+      if (path === '/inputs/tool-credential/resolve') {
+        return Promise.resolve(new Response(JSON.stringify({ success: true }), { status: 200 }))
+      }
+      return Promise.resolve(new Response(JSON.stringify({ error: 'unexpected path' }), { status: 500 }))
+    })
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const filling = postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+    await vi.waitFor(() => expect(mockContainerFetch).toHaveBeenCalledWith(
+      '/browser/credential-context?sessionId=sess-1',
+    ))
+
+    const competing = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      { toolUseId: 'tool-credential' },
+    )
+    expect(competing.status).toBe(409)
+    expect(mockContainerFetch.mock.calls.some(([path]) => path === '/inputs/tool-credential/reject')).toBe(false)
+
+    releaseContext(new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }))
+    expect((await filling).status).toBe(200)
+    expect(messagePersister.completeInputRequest).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases the request claim when autofill fails before settlement', async () => {
+    mockContainerFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'No visible password field was found' }), { status: 409 }),
+      )
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+
+    expect(res.status).toBe(409)
+    const reclaimed = userInputRequestManager.claimRequest('tool-credential')
+    expect(reclaimed?.id).toBe('tool-credential')
+    userInputRequestManager.releaseClaim('tool-credential')
+  })
+
+  it('rejects a malformed autofill response from the container', async () => {
+    mockContainerFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ usernameFilled: 'yes', passwordFilled: true }), { status: 200 }),
+      )
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+
+    expect(res.status).toBe(502)
+    expect(await res.json()).toMatchObject({ error: 'The browser returned an invalid autofill result' })
   })
 
   it('rejects a request id scoped to another session before touching the browser', async () => {

@@ -47,6 +47,7 @@ export function isManagedCredentialProvider(
 }
 
 export interface PairableCredentialProvider extends CredentialProvider {
+  /** Pure capability/session probe; must not launch, unlock, or pair the provider. */
   connectionStatus(): Promise<CredentialProviderConnection>
   beginPairing(): Promise<{ status: 'ready' | 'pin_required' }>
   completePairing(pin: string): Promise<void>
@@ -81,6 +82,8 @@ export interface CredentialProviderRemediation {
 export interface CredentialProviderConnection {
   provider: string
   providerLabel: string
+  /** Whether this provider can be configured on the current host. */
+  installable: boolean
   status: CredentialProviderConnectionStatus
   message?: string
   remediation?: CredentialProviderRemediation
@@ -103,6 +106,8 @@ export interface CredentialSuggestionsResponse {
   provider: string
   providerLabel: string
   status: CredentialProviderStatus
+  /** False when no provider can be configured on this host. */
+  installable: boolean
   origin: string
   message?: string
   suggestions: CredentialSuggestion[]

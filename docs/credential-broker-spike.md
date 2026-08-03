@@ -57,9 +57,9 @@ handshake resets any challenge already in flight.
 Provider setup lives in **Settings → Browser Use → Password Managers**, outside
 the transient login flow. This is durable configuration only: the user selects
 one or more providers from checkbox-style cards, and the provider IDs are saved
-under `app.configuredPasswordManagers`. Selecting a provider can start its
-local broker for prerequisite validation, but does not pair it or ask for a
-verification code.
+under `app.configuredPasswordManagers`. Viewing settings and selecting a
+provider perform filesystem/platform prerequisite probes only; they do not copy
+the extension, prepare a runtime profile, or launch broker Chrome.
 
 Enabling a provider performs a host-side prerequisite check before persisting
 the selection. Apple Passwords verifies macOS support, Google Chrome, Apple's
@@ -71,11 +71,17 @@ that opens Apple's exact Chrome Web Store listing directly in Google Chrome.
 The login request owns short-lived availability. With no configured provider,
 its card shows **Connect Password Manager** and opens Browser Use settings. A
 configured and available provider shows its credential candidates immediately.
+If no provider is installable on the current host (for example a Linux cloud
+deployment), the request card suppresses that setup nudge entirely.
 For Apple Passwords, a configured but disconnected provider shows **Check
 Password Manager**. That action starts `ChallengePIN`; Apple Passwords displays
 a six-digit code on the Mac, and the user enters it directly in the request card
 so the same broker process can complete `PINSet`. The card then refreshes and
 shows credential metadata.
+
+The broker Chrome starts only after that explicit pairing action. A settings
+status read or a disconnected credential lookup reports the provider as locked
+without starting a process as a side effect.
 
 The PAKE session is currently in memory for the lifetime of the broker Chrome
 process. Restarting the app or broker requires another six-digit challenge. No
@@ -87,11 +93,18 @@ Apple password, PIN, or PAKE secret is persisted by Superagent.
 - IDs expire after five minutes, are one-shot, and are bound to the exact agent,
   session, `browser_input` tool call, and origin.
 - The host harness captures the active URL onto `browser_input`; the host then
-  re-checks the live origin immediately before retrieving a password.
+  refreshes stale or explicitly retried context and re-checks the live origin
+  immediately before retrieving a password.
 - The browser repeats the expected-origin check in the same JavaScript turn as
   the field mutation, preventing a navigation race from filling another site.
 - The agent-container credential endpoints require the existing host token. The
   agent's own shell cannot call them.
+- In auth-mode deployments, host password metadata, pairing, and fill routes
+  are restricted to global administrators because the credentials belong to
+  the host owner rather than to an individual agent ACL.
+- A credential fill claims the open `browser_input` request before retrieval.
+  Competing Done/Decline actions cannot settle it while a secret is in flight;
+  every non-settling path releases the claim.
 - Secrets are not put in a tool result, renderer API response, environment
   variable, process argument, analytics event, or log line.
 - Autofill does not submit the form. It resolves `browser_input` with an explicit
@@ -132,8 +145,9 @@ password.
   the user's own installed extension, but this approach still needs product and
   legal review.
 - The broker currently exposes an unauthenticated CDP endpoint on loopback for
-  its lifetime. Prefer Chrome's debugging pipe or an authenticated proxy before
-  production hardening.
+  its lifetime. Chrome's Origin checks remain enabled (the broker does not use
+  `--remote-allow-origins`), but prefer the debugging pipe or an authenticated
+  proxy before production hardening.
 - Top-level document fields only; login forms in cross-origin iframes are not
   filled.
 - The heuristic targets a visible password field and the highest-confidence

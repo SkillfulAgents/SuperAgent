@@ -146,10 +146,11 @@ export class ApplePasswordsProvider implements PairableCredentialProvider {
     try {
       const state = await this.runtime.state()
       return state.state === 'SessionKeySet'
-        ? { provider: this.id, providerLabel: this.label, status: 'connected' }
+        ? { provider: this.id, providerLabel: this.label, installable: true, status: 'connected' }
         : {
             provider: this.id,
             providerLabel: this.label,
+            installable: true,
             status: 'disconnected',
             message: 'Connect to use passwords saved on this Mac',
           }
@@ -164,6 +165,7 @@ export class ApplePasswordsProvider implements PairableCredentialProvider {
           return {
             provider: this.id,
             providerLabel: this.label,
+            installable: error.code !== 'unsupported_platform',
             status: 'unavailable',
             message: error.message,
             remediation: remediationForRuntimeError(error),
@@ -173,6 +175,7 @@ export class ApplePasswordsProvider implements PairableCredentialProvider {
       return {
         provider: this.id,
         providerLabel: this.label,
+        installable: true,
         status: 'error',
         message: 'Apple Passwords connection could not be checked',
       }

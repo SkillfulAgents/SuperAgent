@@ -67,10 +67,13 @@ export class CredentialBroker {
       ? this.providers[0]
       : this.providers.find((candidate) => configuredProviderIds.includes(candidate.id))
     if (!provider) {
+      const installable = (await this.connectionStatuses())
+        .some((connection) => connection.installable)
       return {
         provider: 'none',
         providerLabel: 'Password manager',
         status: 'unconfigured',
+        installable,
         origin: context.origin,
         message: 'Connect a password manager to fill saved logins',
         suggestions: [],
@@ -99,6 +102,7 @@ export class CredentialBroker {
       provider: provider.id,
       providerLabel: provider.label,
       status: result.status,
+      installable: true,
       origin: context.origin,
       ...(result.message ? { message: result.message } : {}),
       suggestions,

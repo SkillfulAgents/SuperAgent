@@ -7,6 +7,7 @@ import { BrowserCredentialPicker } from './browser-credential-picker'
 
 const mockApiFetch = vi.hoisted(() => vi.fn())
 const mockOpenSettings = vi.hoisted(() => vi.fn())
+const mockUser = vi.hoisted(() => ({ isAuthMode: false, isAdmin: false }))
 vi.mock('@renderer/lib/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('@renderer/lib/api')>(),
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
@@ -18,6 +19,10 @@ vi.mock('@renderer/context/dialog-context', async (importOriginal) => ({
     closeSettings: vi.fn(),
     openWizard: vi.fn(),
   }),
+}))
+vi.mock('@renderer/context/user-context', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@renderer/context/user-context')>(),
+  useUser: () => mockUser,
 }))
 
 const props = {
@@ -31,7 +36,11 @@ function response(body: unknown, ok = true) {
 }
 
 describe('BrowserCredentialPicker', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockUser.isAuthMode = false
+    mockUser.isAdmin = false
+  })
 
   it('shows metadata and sends only the opaque id on fill', async () => {
     const user = userEvent.setup()
@@ -40,6 +49,7 @@ describe('BrowserCredentialPicker', () => {
         provider: 'apple-passwords',
         providerLabel: 'Apple Passwords',
         status: 'ready',
+        installable: true,
         origin: 'https://example.com',
         suggestions: [{
           id: 'opaque-1',
@@ -56,6 +66,8 @@ describe('BrowserCredentialPicker', () => {
 
     await user.click(screen.getByTestId('credential-suggestion-opaque-1'))
     await waitFor(() => expect(screen.getByTestId('credential-picker-filled')).toBeInTheDocument())
+    expect(screen.getByText('Continue signing in in the browser.')).toBeInTheDocument()
+    expect(screen.queryByText(/click Done/i)).not.toBeInTheDocument()
 
     expect(mockApiFetch.mock.calls[0][0]).toBe(
       '/api/agents/agent%20a/sessions/session%2F1/browser-credentials?toolUseId=tool%3F1',
@@ -75,12 +87,38 @@ describe('BrowserCredentialPicker', () => {
       provider: 'none',
       providerLabel: 'Password manager',
       status: 'unconfigured',
+      installable: true,
       origin: 'https://example.com',
       suggestions: [],
     }))
     render(<BrowserCredentialPicker {...props} />)
     await user.click(await screen.findByRole('button', { name: 'Connect Password Manager' }))
     expect(mockOpenSettings).toHaveBeenCalledWith('browser')
+  })
+
+  it('suppresses the connect nudge when no provider is installable on this host', async () => {
+    mockApiFetch.mockResolvedValueOnce(response({
+      provider: 'none',
+      providerLabel: 'Password manager',
+      status: 'unconfigured',
+      installable: false,
+      origin: 'https://example.com',
+      suggestions: [],
+    }))
+
+    render(<BrowserCredentialPicker {...props} />)
+    await waitFor(() => expect(mockApiFetch).toHaveBeenCalledOnce())
+    expect(screen.queryByRole('button', { name: 'Connect Password Manager' })).not.toBeInTheDocument()
+  })
+
+  it('does not query host credentials for a non-admin in auth mode', async () => {
+    mockUser.isAuthMode = true
+    mockUser.isAdmin = false
+
+    render(<BrowserCredentialPicker {...props} />)
+
+    await waitFor(() => expect(screen.queryByTestId('credential-picker-loading')).not.toBeInTheDocument())
+    expect(mockApiFetch).not.toHaveBeenCalled()
   })
 
   it('checks and verifies a configured provider before showing credentials', async () => {
@@ -90,6 +128,7 @@ describe('BrowserCredentialPicker', () => {
         provider: 'apple-passwords',
         providerLabel: 'Apple Passwords',
         status: 'locked',
+        installable: true,
         origin: 'https://example.com',
         suggestions: [],
       }))
@@ -107,6 +146,7 @@ describe('BrowserCredentialPicker', () => {
         provider: 'apple-passwords',
         providerLabel: 'Apple Passwords',
         status: 'ready',
+        installable: true,
         origin: 'https://example.com',
         suggestions: [{
           id: 'opaque-after-check',
@@ -137,5 +177,9 @@ describe('BrowserCredentialPicker', () => {
       provider: 'apple-passwords',
       code: '123456',
     })
+    expect(mockApiFetch.mock.calls[3][0]).toBe(
+      '/api/agents/agent%20a/sessions/session%2F1/browser-credentials' +
+        '?toolUseId=tool%3F1&refresh=true',
+    )
   })
 })

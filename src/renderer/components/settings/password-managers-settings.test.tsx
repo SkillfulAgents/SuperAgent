@@ -35,6 +35,7 @@ describe('PasswordManagersSettings', () => {
           provider: 'apple-passwords',
           providerLabel: 'Apple Passwords',
           configured: false,
+          installable: true,
           status: 'disconnected',
         }],
       }))
@@ -67,6 +68,7 @@ describe('PasswordManagersSettings', () => {
         provider: 'apple-passwords',
         providerLabel: 'Apple Passwords',
         configured: false,
+        installable: true,
         status: 'unavailable',
         message: 'Install the iCloud Passwords extension in Chrome',
         remediation: {

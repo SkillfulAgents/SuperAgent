@@ -2,6 +2,8 @@ import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
+import { z } from 'zod'
+import { zValidator } from '@hono/zod-validator'
 import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
@@ -235,6 +237,10 @@ function passwordManagerErrorResponse(c: Context, error: unknown): Response {
   )
 }
 
+const passwordManagerConfigurationSchema = z.object({
+  configured: z.boolean(),
+}).strict()
+
 // Browser Use settings owns the durable provider selection. The short-lived
 // unlock/check flow stays with the browser_input request that needs it.
 settings.get('/password-managers', async (c) => {
@@ -250,42 +256,43 @@ settings.get('/password-managers', async (c) => {
   }
 })
 
-settings.put('/password-managers/:provider', async (c) => {
-  const provider = c.req.param('provider')
-  if (!credentialBroker.hasProvider(provider)) {
-    return c.json({ error: 'Password manager provider not found' }, 404)
-  }
-  try {
-    const body = await c.req.json<{ configured?: unknown }>()
-    if (typeof body.configured !== 'boolean') {
-      return c.json({ error: 'configured must be a boolean' }, 400)
+settings.put(
+  '/password-managers/:provider',
+  zValidator('json', passwordManagerConfigurationSchema),
+  async (c) => {
+    const provider = c.req.param('provider')
+    if (!credentialBroker.hasProvider(provider)) {
+      return c.json({ error: 'Password manager provider not found' }, 404)
     }
-    if (body.configured) {
-      const connection = (await credentialBroker.connectionStatuses())
-        .find((candidate) => candidate.provider === provider)
-      if (!connection) {
-        return c.json({ error: 'Password manager provider not found' }, 404)
+    try {
+      const body = c.req.valid('json')
+      if (body.configured) {
+        const connection = (await credentialBroker.connectionStatuses())
+          .find((candidate) => candidate.provider === provider)
+        if (!connection) {
+          return c.json({ error: 'Password manager provider not found' }, 404)
+        }
+        if (connection.status === 'unavailable' || connection.status === 'error') {
+          return c.json({
+            error: connection.message || 'Password manager prerequisites are not met',
+            provider: { ...connection, configured: false },
+          }, 409)
+        }
       }
-      if (connection.status === 'unavailable' || connection.status === 'error') {
-        return c.json({
-          error: connection.message || 'Password manager prerequisites are not met',
-          provider: { ...connection, configured: false },
-        }, 409)
-      }
+      mutateSettings((current) => {
+        const app = current.app ?? (current.app = {})
+        const configured = new Set(app.configuredPasswordManagers ?? [])
+        if (body.configured) configured.add(provider)
+        else configured.delete(provider)
+        app.configuredPasswordManagers = [...configured]
+      })
+      return c.json({ success: true, provider, configured: body.configured })
+    } catch (error) {
+      console.error('Failed to configure password manager:', error)
+      return c.json({ error: 'Failed to configure password manager' }, 500)
     }
-    mutateSettings((current) => {
-      const app = current.app ?? (current.app = {})
-      const configured = new Set(app.configuredPasswordManagers ?? [])
-      if (body.configured) configured.add(provider)
-      else configured.delete(provider)
-      app.configuredPasswordManagers = [...configured]
-    })
-    return c.json({ success: true, provider, configured: body.configured })
-  } catch (error) {
-    console.error('Failed to configure password manager:', error)
-    return c.json({ error: 'Failed to configure password manager' }, 500)
-  }
-})
+  },
+)
 
 /** All keys in ApiKeySettings — used to generically handle set/delete in PUT. */
 const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [

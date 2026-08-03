@@ -18,6 +18,7 @@ interface PasswordManagerConnection {
   provider: string
   providerLabel: string
   configured: boolean
+  installable: boolean
   status: 'connected' | 'disconnected' | 'unavailable' | 'error'
   message?: string
   remediation?: PasswordManagerRemediation
