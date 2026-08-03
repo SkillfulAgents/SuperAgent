@@ -27,6 +27,7 @@ vi.stubGlobal('fetch', mockFetch)
 
 import cloudProxy, { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from './cloud-proxy'
 import {
+  SKIP_BOOT_PREFETCH_HEADER,
   startCloudBootPrefetch,
   _resetCloudBootPrefetchForTest,
 } from '@shared/lib/services/cloud-boot-prefetch'
@@ -423,6 +424,20 @@ describe('cloud proxy boot prefetch', () => {
 
     expect(mockFetch).toHaveBeenCalledTimes(prefetchCalls + 1)
     expect(forwardedUrl(prefetchCalls)).toBe(`${TARGET.deploymentUrl}/api/agents`)
+  })
+
+  it('leaves the entry for the renderer when the requester marks itself out', async () => {
+    startCloudBootPrefetch()
+    const prefetchCalls = mockFetch.mock.calls.length
+
+    // A main-process poller (tray, app menu) racing the reload must not consume
+    // the one-shot entry...
+    await call('/api/agents', { headers: { [SKIP_BOOT_PREFETCH_HEADER]: '1' } })
+    expect(mockFetch).toHaveBeenCalledTimes(prefetchCalls + 1)
+
+    // ...so the renderer arriving second still gets its head start.
+    await call('/api/agents')
+    expect(mockFetch).toHaveBeenCalledTimes(prefetchCalls + 1)
   })
 
   it('ignores it for a write to the same path', async () => {

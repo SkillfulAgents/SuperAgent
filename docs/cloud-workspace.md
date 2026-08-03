@@ -384,6 +384,13 @@ past the right edge while open.
   that screen.
 - Recording the preference also tears down the quick-dispatch launcher (main does
   that), so the control only owns *this* window.
+- Main's own agent-listing surfaces — the system tray and the app menu's Agents
+  submenu — follow the switch too. They resolve the effective base URL (local, or
+  the keyed proxy prefix) on every poll via `fetchAgentsWithStatus`, and
+  `applyPreferredApiTarget` rebuilds them immediately so the previous
+  Superagent's agents don't sit in the menus for up to a poll interval. Agent
+  deep links resolve their session lookup against the same effective base, since
+  the renderer will interpret the slug on whichever Superagent it is driving.
 
 **The switch is animated from outside the document.** The reload is what makes
 the switch safe — every module-scoped cache, open stream and memoized client
@@ -469,7 +476,7 @@ disagree in a configuration we ship to every browser.
 | --- | --- | --- |
 | this computer, for the agents | `canUseHostFeatures()` | it needs the bridge *and* needs both machines to be the same one |
 | the machine running the API | `!targetIsRemote()` | a web deployment legitimately offers it — the API *is* the machine the user means |
-| the window itself | `isElectron()` | traffic lights, drag regions, tray, updates, the global shortcut: the target is irrelevant |
+| the window itself | `isElectron()` | traffic lights, drag regions, tray, updates, the global shortcut: the target is irrelevant to whether the feature *exists* (what the tray and app menu *list* is a target question — they resolve the effective base URL, see the switch section) |
 
 The first two questions used to be one. Every host-touching feature asked
 `isElectron()`, which was correct for as long as the desktop app could only
