@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
+import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
 import {
   Dialog,
@@ -779,6 +780,24 @@ export function RuntimeTab() {
           />
           <span className="text-sm text-muted-foreground">minutes</span>
         </div>
+      </div>
+
+      {/* Warm-start on typing */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-0.5 min-w-0">
+          <Label htmlFor="warm-start-on-type">Warm start on typing</Label>
+          <p className="text-xs text-muted-foreground">
+            Start the agent container in the background when you begin typing a first message, so it is ready on send.
+          </p>
+        </div>
+        <Switch
+          id="warm-start-on-type"
+          checked={settings?.app?.warmStartOnType !== false}
+          onCheckedChange={(checked: boolean) => {
+            updateSettings.mutate({ app: { warmStartOnType: checked } })
+          }}
+          disabled={isLoading}
+        />
       </div>
 
       {/* Agent Limits */}

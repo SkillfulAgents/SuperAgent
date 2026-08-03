@@ -551,6 +551,10 @@ settings.put('/', async (c) => {
       }
     }
 
+    if (body.app?.warmStartOnType !== undefined && typeof body.app.warmStartOnType !== 'boolean') {
+      return c.json({ error: 'warmStartOnType must be a boolean' }, 400)
+    }
+
     // Validate runtimeSettings if provided
     if (body.container?.runtimeSettings) {
       const limaSettings = body.container.runtimeSettings.lima

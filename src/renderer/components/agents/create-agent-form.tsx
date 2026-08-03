@@ -8,7 +8,7 @@ import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
-import { useCreateAgent } from '@renderer/hooks/use-agents'
+import { useCreateAgent, useUpdateAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -18,6 +18,9 @@ import {
   DEFAULT_AGENT_PROMPT_EXAMPLES,
 } from '@renderer/hooks/use-typewriter-placeholder'
 import { deriveAgentName } from '@renderer/lib/derive-agent-name'
+import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
+import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
+import { useSettings } from '@renderer/hooks/use-settings'
 import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 export interface CreateAgentFormProps {
@@ -50,10 +53,26 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
   const displayedPlaceholder = useTypewriterPlaceholder(DEFAULT_AGENT_PROMPT_EXAMPLES)
 
   const createAgent = useCreateAgent()
+  const updateAgent = useUpdateAgent()
   const createSession = useCreateSession()
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
   const startOnboardingSession = useStartOnboardingSession()
+  const { data: settings } = useSettings()
+  const warmStartEnabled = settings?.app?.warmStartOnType !== false
+
+  const ensureWarmAgent = useCallback(async () => {
+    try {
+      const agent = await createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME })
+      return agent.slug
+    } catch (error) {
+      console.warn('[warm-start] pre-create agent failed:', error)
+      return null
+    }
+  }, [createAgent])
+
+  const awaitWarmStartRef = useRef<() => Promise<string | null>>(async () => null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   const finishCreatedAgent = useCallback(
     async (agent: ApiAgent, source: 'new' | 'import' | 'skillset', hasOnboarding?: boolean) => {
@@ -75,9 +94,15 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
     uploadFile: useCallback(async () => { throw new Error('Cannot upload before agent is created') }, []),
     uploadFolder: useCallback(async () => { throw new Error('Cannot upload before agent is created') }, []),
     onSubmit: useCallback(async (content: string) => {
+      // Local flag — do not key off createAgent.isPending; warm-start reuse of
+      // that mutation would freeze the textarea while the user is still typing.
+      setIsSubmitting(true)
       try {
         const agentName = await deriveAgentName(content)
-        const newAgent = await createAgent.mutateAsync({ name: agentName })
+        const warmSlug = await awaitWarmStartRef.current()
+        const newAgent = warmSlug
+          ? await updateAgent.mutateAsync({ slug: warmSlug, name: agentName })
+          : await createAgent.mutateAsync({ name: agentName })
         const session = await createSession.mutateAsync({
           agentSlug: newAgent.slug,
           message: content,
@@ -94,9 +119,19 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
         toast.error('Failed to create agent', {
           description: error instanceof Error ? error.message : 'Please try again.',
         })
+      } finally {
+        setIsSubmitting(false)
       }
-    }, [createAgent, createSession, navigate, track, onAgentCreated]),
+    }, [createAgent, updateAgent, createSession, navigate, track, onAgentCreated]),
   })
+
+  const { awaitWarmStart } = useWarmStartOnType({
+    agentSlug: null,
+    message: composer.message,
+    enabled: warmStartEnabled,
+    ensureAgent: ensureWarmAgent,
+  })
+  awaitWarmStartRef.current = awaitWarmStart
 
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(initialTemplate ?? null)
 
@@ -126,7 +161,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
     }
   }
 
-  const isDisabled = createAgent.isPending || createSession.isPending
+  const isDisabled = isSubmitting
 
   return (
     <div className={className}>

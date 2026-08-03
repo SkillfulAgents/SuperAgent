@@ -105,6 +105,8 @@ export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
   autoSleepTimeoutMinutes?: number
+  /** Pre-start the agent container when the user begins typing a first message. */
+  warmStartOnType?: boolean
   autoDeleteInactiveDays?: number
   setupCompleted?: boolean
   accountProvider?: AccountProviderType
@@ -401,6 +403,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   app: {
     showMenuBarIcon: true,
     autoSleepTimeoutMinutes: 30,
+    warmStartOnType: true,
     globalDispatchShortcut: DEFAULT_GLOBAL_DISPATCH_SHORTCUT,
     notifications: {
       enabled: true,
