@@ -75,6 +75,13 @@ ENV AUTH_MODE=${AUTH_MODE}
 EXPOSE 47891
 
 ENV NODE_ENV=production
+# V8 compile cache for cold-wake (Node 22+); warmup once at image build.
+ENV NODE_COMPILE_CACHE=/app/.compile-cache
+RUN mkdir -p /app/.compile-cache \
+  && SUPERAGENT_DATA_DIR=/tmp/sa-compile-warmup E2E_MOCK=true PORT=39999 \
+       timeout 12s node dist/web/server.mjs \
+    || true \
+  && rm -rf /tmp/sa-compile-warmup
 
 # umask 000: all files/dirs are world-readable/writable so agent containers
 # (running as non-root "claude" user) can access bind-mounted workspaces.

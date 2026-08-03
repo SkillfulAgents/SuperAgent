@@ -20,10 +20,43 @@ const rawLoaderPlugin: Plugin = {
   },
 }
 
+function isBundleExternal(name: string): boolean {
+  if (
+    name === 'better-sqlite3' ||
+    name === '@skillful-agents/agent-computer' ||
+    name === 'electron' ||
+    name === 'require-in-the-middle' ||
+    name === 'import-in-the-middle'
+  ) {
+    return true
+  }
+  if (name.startsWith('@sentry/') || name.startsWith('@opentelemetry/')) return true
+  return false
+}
+
+const dependencyNames = Object.keys(pkg.dependencies ?? {})
+
 export default defineConfig({
   entry: ['src/web/server.ts'],
   format: ['esm'],
   outDir: 'dist/web',
+  // One file so the createRequire banner applies to all inlined CJS (ws, etc.).
+  splitting: false,
+  // Bundle most deps for cold-wake; leave natives + Sentry/OTel in node_modules.
+  noExternal: dependencyNames.filter((name) => !isBundleExternal(name)),
+  external: [
+    'better-sqlite3',
+    '@skillful-agents/agent-computer',
+    'electron',
+    'require-in-the-middle',
+    'import-in-the-middle',
+    /^@sentry\//,
+    /^@opentelemetry\//,
+  ],
+  // esbuild's ESM __require shim needs a real require for CJS deps that call require('events').
+  banner: {
+    js: "import { createRequire as __coldWakeCreateRequire } from 'module'; const require = __coldWakeCreateRequire(import.meta.url);",
+  },
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },

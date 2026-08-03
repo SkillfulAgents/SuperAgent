@@ -30,16 +30,31 @@ import { shutdownAC } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
 import { initErrorReporting, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
+import { markBoot } from './boot-timing'
 
 /**
  * Initialize all background services.
  *
- * Called from two places:
- * - api/index.ts: for non-Electron environments (Vite dev server, standalone web server)
- * - main/index.ts: for Electron, after SUPERAGENT_DATA_DIR is set
+ * Call AFTER HTTP bind on web/docker (see web/server.ts) so ECS health can
+ * pass before settings/DB/auth work. Electron: main/index.ts after bind.
+ * Vite: vite.config.ts configureServer (after the dev server listens).
  */
 // TODO: this fires a lot of work on startup, which can create a big workload on initial start. We should defer some work and limit concurrency.
-export async function initializeServices() {
+// TODO(cold-wake): NODE_COMPILE_CACHE warmup in Docker image (tsup already noExternal).
+let servicesInitPromise: Promise<void> | null = null
+
+export function initializeServices(): Promise<void> {
+  if (!servicesInitPromise) {
+    servicesInitPromise = initializeServicesInner().catch((error) => {
+      // Allow a later retry if the first attempt failed before completing.
+      servicesInitPromise = null
+      throw error
+    })
+  }
+  return servicesInitPromise
+}
+
+async function initializeServicesInner() {
   // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
   // initErrorReporting is a no-op if already initialized, so this is safe.
   // Skip in dev mode — dev errors are too noisy and pollute Sentry.
@@ -50,6 +65,7 @@ export async function initializeServices() {
   // Set platform auth user identity on error reports (if logged in)
   try {
     const settings = getSettings()
+    markBoot('settingsRead')
     if (settings.platformAuth?.token) {
       setErrorReportingUser({
         id: settings.platformAuth.tokenPreview,
@@ -57,7 +73,8 @@ export async function initializeServices() {
       })
     }
   } catch {
-    // Non-critical
+    // Non-critical — still mark so cold-wake timings show settings were attempted.
+    markBoot('settingsRead')
   }
 
   // Initialize server-side analytics version
@@ -66,17 +83,14 @@ export async function initializeServices() {
   // Register account providers (Composio, Nango if configured)
   registerAllAccountProviders()
 
-  // Drop any skillset configs invalid for the current auth state (e.g. a
-  // platform skillset left over from a previous org). Filesystem cleanup of
-  // installed skills happens lazily in the metadata readers, so we don't
-  // walk every agent workspace on startup.
+  // Post-bind on web: settings.json read+write on S3 Files — keep off the listen path.
   try {
     reconcileSkillsetConfigsForCurrentAuth()
   } catch (error) {
     captureException(error, { tags: { component: 'startup', operation: 'skillset-reconcile' } })
   }
 
-  // Validate auth mode startup requirements before anything else
+  // Post-bind on web: sqlite open/migrate + Better Auth + JWKS — not needed for health.
   if (isAuthMode()) {
     await validateAuthModeStartup()
   }

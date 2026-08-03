@@ -1,8 +1,10 @@
+// First import: origin for boot_timing processStart (cold-wake diagnosis).
+import { markBoot, logBootTiming } from '@shared/lib/boot-timing'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { existsSync } from 'fs'
 import api from '../api'
-import { shutdownServices, setupServerHandlers } from '@shared/lib/startup'
+import { initializeServices, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
 const app = new Hono()
 
@@ -80,6 +82,9 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
 async function start() {
+  // Static imports of this entry finished before start(); mark module-graph load.
+  markBoot('modulesLoaded')
+
   const defaultPort = parseInt(process.env.PORT || '47891', 10)
 
   // Bind atomically, retrying on a port race (no probe-then-bind TOCTOU gap; an
@@ -88,13 +93,17 @@ async function start() {
   const bound = await bindServerWithRetry(app.fetch, { startPort: defaultPort })
   server = bound.server
   process.env.PORT = String(bound.port)
+  // Early mark only — final boot_timing logs after post-bind init (settings/db).
+  markBoot('bound')
   console.log(`API server running on http://localhost:${bound.port}`)
-
-  // Services are initialized by api/index.ts (which we import above).
-  // No need to call initializeServices() here — it already ran at module load.
 
   // Set up server-level handlers (WebSocket proxies, etc.)
   setupServerHandlers(server)
+
+  // Auth validation + skillset reconcile + DB open run here (not at api import),
+  // so ECS probes that only need any HTTP response are not blocked.
+  await initializeServices()
+  logBootTiming()
 }
 
 start().catch((error) => {
