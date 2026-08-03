@@ -1,7 +1,44 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createAgent, uniqueName } from '../helpers/agents'
+
+/**
+ * Drag a grid tile down by `dy` px and only return once the grid has visibly
+ * taken the gesture (the actively-dragged tile carries scale-[1.02]).
+ *
+ * A plain down/move/up sequence engages flakily here for two reasons:
+ * - Radix menus set pointer-events:none on <body> while open and restore it
+ *   asynchronously after close — a pointerdown in that window hits nothing.
+ * - Tiles animate position (transition-[left,top] duration-200), so a
+ *   boundingBox taken mid-reflow points at where the card used to be.
+ * Both produce a silent no-op drag; without retry the spec then hangs on a
+ * layout PUT that never happens. Re-grab coordinates and retry instead.
+ */
+async function dragTile(page: Page, tile: Locator, dy: number): Promise<void> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await tile.scrollIntoViewIfNeeded()
+    const box = await tile.boundingBox()
+    expect(box).not.toBeNull()
+    const cx = box!.x + box!.width / 2
+    const cy = box!.y + box!.height / 2
+    await page.mouse.move(cx, cy)
+    await page.mouse.down()
+    await page.mouse.move(cx, cy + dy, { steps: 8 })
+    try {
+      await expect(tile).toHaveClass(/scale-\[1\.02\]/, { timeout: 2_000 })
+      await page.mouse.up()
+      return
+    } catch (error) {
+      lastError = error
+      await page.mouse.up()
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('dragTile: tile never entered the dragging state')
+}
 
 function seedDashboard(agentSlug: string) {
   const dataDir = process.env.SUPERAGENT_DATA_DIR
@@ -56,30 +93,22 @@ test.describe('home card arrangement', () => {
     await page.keyboard.press('Shift+F10')
     await expect(page.getByRole('menuitemcheckbox', { name: 'Expanded' })).toBeVisible()
     await page.keyboard.press('Escape')
+    // Wait out the Radix menu teardown: it holds pointer-events:none on <body>
+    // slightly past close, which would swallow the pointerdown of the drag.
+    await expect(page.getByRole('menuitemcheckbox', { name: 'Expanded' })).not.toBeVisible()
+    await page.waitForFunction(() => document.body.style.pointerEvents !== 'none')
 
     // Outside Arrange mode, desktop still supports direct pointer reordering.
     // The full-card anchor must not hand the gesture to native HTML link drag.
-    await dashboardWidget.scrollIntoViewIfNeeded()
-    const beforeDirectDrag = await dashboardWidget.boundingBox()
-    expect(beforeDirectDrag).not.toBeNull()
     const directSaved = page.waitForResponse(
       (response) =>
         response.url().includes('/api/user-settings') &&
         response.request().method() === 'PUT' &&
         response.request().postData()?.includes('homeGridLayout') === true &&
-        response.ok()
+        response.ok(),
+      { timeout: 15_000 }
     )
-    await page.mouse.move(
-      beforeDirectDrag!.x + beforeDirectDrag!.width / 2,
-      beforeDirectDrag!.y + beforeDirectDrag!.height / 2
-    )
-    await page.mouse.down()
-    await page.mouse.move(
-      beforeDirectDrag!.x + beforeDirectDrag!.width / 2,
-      beforeDirectDrag!.y + beforeDirectDrag!.height / 2 + 180,
-      { steps: 8 }
-    )
-    await page.mouse.up()
+    await dragTile(page, dashboardWidget, 180)
     await directSaved
 
     await page.getByRole('button', { name: 'Agent layout options' }).click()
@@ -88,21 +117,7 @@ test.describe('home card arrangement', () => {
     await expect(page.getByRole('button', { name: 'Done' })).toBeVisible()
 
     // Dashboard anchors also remain grid drag surfaces in desktop Arrange.
-    await dashboardWidget.scrollIntoViewIfNeeded()
-    const beforeDashboardArrangeDrag = await dashboardWidget.boundingBox()
-    expect(beforeDashboardArrangeDrag).not.toBeNull()
-    await page.mouse.move(
-      beforeDashboardArrangeDrag!.x + beforeDashboardArrangeDrag!.width / 2,
-      beforeDashboardArrangeDrag!.y + beforeDashboardArrangeDrag!.height / 2
-    )
-    await page.mouse.down()
-    await page.mouse.move(
-      beforeDashboardArrangeDrag!.x + beforeDashboardArrangeDrag!.width / 2,
-      beforeDashboardArrangeDrag!.y + beforeDashboardArrangeDrag!.height / 2 + 180,
-      { steps: 8 }
-    )
-    await expect(dashboardWidget).toHaveClass(/scale-\[1\.02\]/)
-    await page.mouse.up()
+    await dragTile(page, dashboardWidget, 180)
 
     // Arrange owns pointer dragging, but desktop right-click still bubbles
     // through its overlay to the unified agent context menu.
@@ -122,29 +137,26 @@ test.describe('home card arrangement', () => {
     await expect(dashboardWidget).not.toBeVisible()
     await page.keyboard.press('Escape')
     await expect(page.getByTestId('agent-settings-item')).not.toBeVisible()
+    // Same Radix teardown wait as above before the next pointer gesture.
+    await page.waitForFunction(() => document.body.style.pointerEvents !== 'none')
 
-    const before = await widget.boundingBox()
-    expect(before).not.toBeNull()
-    await page.mouse.move(before!.x + before!.width / 2, before!.y + before!.height / 2)
-    await page.mouse.down()
-    await page.mouse.move(before!.x + before!.width / 2, before!.y + before!.height / 2 + 280, {
-      steps: 8,
-    })
-    await page.mouse.up()
+    await dragTile(page, widget, 280)
 
     const layoutSaved = page.waitForResponse(
       (response) =>
         response.url().includes('/api/user-settings') &&
         response.request().method() === 'PUT' &&
         response.request().postData()?.includes('homeGridLayout') === true &&
-        response.ok()
+        response.ok(),
+      { timeout: 15_000 }
     )
     const visibilitySaved = page.waitForResponse(
       (response) =>
         response.url().includes('/api/user-settings') &&
         response.request().method() === 'PUT' &&
         response.request().postData()?.includes('hiddenAppCards') === true &&
-        response.ok()
+        response.ok(),
+      { timeout: 15_000 }
     )
     await page.getByRole('button', { name: 'Done' }).click()
     await Promise.all([layoutSaved, visibilitySaved])
@@ -172,27 +184,23 @@ test.describe('home card arrangement', () => {
     await mobileWidget.scrollIntoViewIfNeeded()
     await page.getByRole('button', { name: 'Agent layout options' }).click()
     await page.getByTestId('home-arrange-action').click()
+    // Dragging the agent card on mobile is only eligible once Arrange mode
+    // has rendered (dragEnabled flips in the same React commit that shows the
+    // Done button). Starting the drag before that commit lands makes the
+    // pointerdown a no-op: nothing commits, Done PUTs nothing, and the
+    // homeGridMobileLayout wait below hangs to the test timeout — this was a
+    // consistent CI failure on slower runners.
+    await expect(page.getByRole('button', { name: 'Done' })).toBeVisible()
 
-    const beforeMobile = await mobileWidget.boundingBox()
-    expect(beforeMobile).not.toBeNull()
-    await page.mouse.move(
-      beforeMobile!.x + beforeMobile!.width / 2,
-      beforeMobile!.y + beforeMobile!.height / 2
-    )
-    await page.mouse.down()
-    await page.mouse.move(
-      beforeMobile!.x + beforeMobile!.width / 2,
-      beforeMobile!.y + beforeMobile!.height / 2 + 180,
-      { steps: 8 }
-    )
-    await page.mouse.up()
+    await dragTile(page, mobileWidget, 180)
 
     const mobileSaved = page.waitForResponse(
       (response) =>
         response.url().includes('/api/user-settings') &&
         response.request().method() === 'PUT' &&
         response.request().postData()?.includes('homeGridMobileLayout') === true &&
-        response.ok()
+        response.ok(),
+      { timeout: 15_000 }
     )
     await page.getByRole('button', { name: 'Done' }).click()
     await mobileSaved
