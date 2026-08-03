@@ -6,6 +6,7 @@ import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
 import { Button } from '@renderer/components/ui/button'
 import { DeclineButton } from '@renderer/components/messages/decline-button'
 import { apiFetch } from '@renderer/lib/api'
+import { linkify } from '@renderer/lib/linkify'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useBrowserInputActions } from '@renderer/hooks/use-browser-input-actions'
 import { cn } from '@shared/lib/utils/cn'
@@ -209,7 +210,7 @@ export function BrowserTrayContent({
         <div className="shrink-0 px-4 mt-3">
           <div className="rounded-lg border border-border/60 bg-muted/30 p-3 flex items-center gap-2">
             <span className="text-xs font-medium text-foreground flex-1 truncate">
-              {latestRequest.message || 'Your input needed'}
+              {latestRequest.message ? linkify(latestRequest.message) : 'Your input needed'}
             </span>
             <DeclineButton
               onDecline={(reason) => decline(latestRequest.toolUseId, reason)}
