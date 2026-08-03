@@ -5,17 +5,19 @@ import { fetchAgentsWithStatus, ActivityStatus } from './agent-status'
 let tray: Tray | null = null
 let updateInterval: NodeJS.Timeout | null = null
 let mainWindowRef: BrowserWindow | null = null
-let apiPortRef: number = 0
+// A getter rather than a stored URL: in cloud mode the effective base is the
+// keyed proxy prefix, and which one is in force can change on a target switch.
+let getApiBaseUrlRef: (() => string) | null = null
 
 /**
  * Create the system tray with menu
  */
 export function createTray(
   mainWindow: BrowserWindow | null,
-  apiPort: number
+  getApiBaseUrl: () => string
 ): Tray {
   mainWindowRef = mainWindow
-  apiPortRef = apiPort
+  getApiBaseUrlRef = getApiBaseUrl
 
   // Create programmatic template icon (black circle for macOS menu bar)
   const icon = createTrayIcon()
@@ -66,7 +68,7 @@ export function destroyTray(): void {
 export function setTrayVisible(visible: boolean): void {
   if (visible && !tray) {
     // Create tray if it doesn't exist and we have the required refs
-    if (apiPortRef > 0) {
+    if (getApiBaseUrlRef) {
       const icon = createTrayIcon()
       tray = new Tray(icon)
       tray.setToolTip('Gamut')
@@ -182,12 +184,21 @@ function showWindow(): void {
 }
 
 /**
+ * Rebuild the tray menu now instead of waiting out the poll. Called on a target
+ * switch, where the 30s interval would leave the previous Superagent's agents
+ * on screen. No-op while the tray is hidden.
+ */
+export function refreshTrayMenu(): void {
+  void updateTrayMenu()
+}
+
+/**
  * Update the tray context menu with current agent data
  */
 async function updateTrayMenu(): Promise<void> {
-  if (!tray) return
+  if (!tray || !getApiBaseUrlRef) return
 
-  const agents = await fetchAgentsWithStatus(apiPortRef)
+  const agents = await fetchAgentsWithStatus(getApiBaseUrlRef())
 
   // Group agents by status
   const awaitingInput = agents.filter(a => a.activityStatus === 'awaiting_input')
