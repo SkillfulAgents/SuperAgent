@@ -1987,6 +1987,33 @@ describe('MessagePersister', () => {
     })
   })
 
+  describe('agent activity clock touches', () => {
+    it('markSessionActive touches the activity clock', async () => {
+      const { getAgentLastActivity, clearAgentActivity } = await import('./agent-activity-clock')
+      clearAgentActivity(AGENT_SLUG)
+      const before = Date.now()
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      const at = getAgentLastActivity(AGENT_SLUG)
+      expect(at).toBeDefined()
+      expect(at!).toBeGreaterThanOrEqual(before)
+    })
+
+    it('handleMessage touches the activity clock when agentSlug is known', async () => {
+      const { getAgentLastActivity, clearAgentActivity } = await import('./agent-activity-clock')
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      clearAgentActivity(AGENT_SLUG)
+      const before = Date.now()
+
+      mockClient._sendMessage({ type: 'assistant', content: [{ type: 'text', text: 'hi' }] })
+
+      const at = getAgentLastActivity(AGENT_SLUG)
+      expect(at).toBeDefined()
+      expect(at!).toBeGreaterThanOrEqual(before)
+    })
+  })
+
   // ============================================================================
   // schedule_resume tool handling
   // ============================================================================

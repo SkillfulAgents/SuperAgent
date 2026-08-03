@@ -18,6 +18,7 @@ import {
 import { classifyResult } from './result-classification'
 import { parseBackgroundTasksChanged } from './background-tasks-changed'
 import { parseCommandLifecycle } from './command-lifecycle'
+import { touchAgentActivity } from './agent-activity-clock'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   createScheduledTask,
@@ -534,6 +535,7 @@ class MessagePersister {
   markSessionIdle(sessionId: string): void {
     const state = this.streamingStates.get(sessionId)
     if (!state?.isActive) return
+    if (state.agentSlug) touchAgentActivity(state.agentSlug)
     this.finalizeIdle(sessionId, state)
   }
 
@@ -951,6 +953,7 @@ class MessagePersister {
       // the session — every later turn would end waiting-background, never idle.
       state.bgTasksSnapshot = null
       this.stopAllWorkflowTailers(sessionId)
+      if (state.agentSlug) touchAgentActivity(state.agentSlug)
     }
 
     // Broadcast to session-specific clients
@@ -1046,6 +1049,7 @@ class MessagePersister {
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
+    if (state.agentSlug) touchAgentActivity(state.agentSlug)
 
     // Broadcast to session-specific clients
     this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
@@ -1359,6 +1363,8 @@ class MessagePersister {
     this.capture?.recordInput(sessionId, message)
     const state = this.streamingStates.get(sessionId)
     if (!state) return
+
+    if (state.agentSlug) touchAgentActivity(state.agentSlug)
 
     // Skip processing if session was interrupted (prevents race conditions)
     // Allow 'result' through as it indicates the container actually stopped.
@@ -2179,6 +2185,7 @@ class MessagePersister {
       // working=true and race connectors into a stuck indicator), and emit
       // session_error INSTEAD of session_idle — connectors finalize on either.
       state.isActive = false
+      if (state.agentSlug) touchAgentActivity(state.agentSlug)
       const errorMessage =
         'The agent stopped unexpectedly because the connection to its runtime was lost. ' +
         'The container may have crashed or run out of memory.'
