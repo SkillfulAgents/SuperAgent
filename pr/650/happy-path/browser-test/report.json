@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: tool\n- Navigated to https://example.com\n- Executed JavaScript (document.title) to retrieve the page title\n- Reported the page title as \"Example Domain\"\n- Closed the browser\n- All tool calls displayed with checkmarks indicating successful execution\n\nNo bugs found. The feature is working as designed.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 79146,
+  "sessionId": "5d464eed-ec1c-4d6d-a75e-cdd17295e64c",
+  "cost": {
+    "inputTokens": 376,
+    "outputTokens": 10062,
+    "cacheCreationTokens": 65239,
+    "cacheReadTokens": 1049773,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.237212
+  }
+}
