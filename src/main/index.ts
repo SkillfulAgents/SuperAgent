@@ -1089,7 +1089,8 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       // Resolved against the effective target, not always the local API: the
       // renderer interprets the slug on whichever Superagent it is driving, so
       // the session lookup must ask that same one.
-      fetch(`${activeApiTarget().baseUrl}/api/agents/${encodeURIComponent(slug)}/sessions`)
+      const linkBaseUrl = activeApiTarget().baseUrl
+      fetch(`${linkBaseUrl}/api/agents/${encodeURIComponent(slug)}/sessions`)
         .then(res => res.ok ? res.json() : [])
         .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
           if (!Array.isArray(sessions)) return null
@@ -1098,6 +1099,11 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
         })
         .catch(() => null)
         .then((sessionId: string | null) => {
+          // A switch while the lookup was in flight leaves both the slug and
+          // the session id belonging to the previous Superagent — delivering
+          // them navigates the new renderer to someone else's agent. Drop the
+          // link rather than land it wrong.
+          if (activeApiTarget().baseUrl !== linkBaseUrl) return
           sendToMainWindowWhenReady((win) =>
             win.webContents.send('navigate-to-agent', slug, sessionId),
           )

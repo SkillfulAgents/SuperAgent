@@ -8,6 +8,7 @@ import {
   type CloudProxyTarget,
 } from '@shared/lib/services/cloud-proxy-target'
 import {
+  SKIP_BOOT_PREFETCH_HEADER,
   takeCloudBootPrefetch,
   type PrefetchedResponse,
 } from '@shared/lib/services/cloud-boot-prefetch'
@@ -205,6 +206,9 @@ const PREFETCH_DISQUALIFYING_HEADERS = [
 
 function canUsePrefetch(request: Request): boolean {
   if (request.method !== 'GET') return false
+  // Main's background pollers mark themselves out: the entries are one-shot
+  // and belong to the reloading renderer, not to whoever asks first.
+  if (request.headers.get(SKIP_BOOT_PREFETCH_HEADER) !== null) return false
   return PREFETCH_DISQUALIFYING_HEADERS.every((name) => request.headers.get(name) === null)
 }
 

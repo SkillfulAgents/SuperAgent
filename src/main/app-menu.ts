@@ -105,10 +105,20 @@ function sendToRenderer(channel: string, ...args: unknown[]): void {
 }
 
 /**
+ * Builds overlap: the 30s poll and the target-switch refresh both come through
+ * buildAppMenu, and the base URL is sampled before the await. Without this a
+ * slow response from the previous target could land after the switch refresh
+ * painted the new one and overwrite it. Last started wins.
+ */
+let buildGeneration = 0
+
+/**
  * Build and set the application menu
  */
 async function buildAppMenu(): Promise<void> {
+  const generation = ++buildGeneration
   const agents = getApiBaseUrlRef ? await fetchAgentsWithStatus(getApiBaseUrlRef()) : []
+  if (generation !== buildGeneration) return
 
   // Group agents by status
   const awaitingInput = agents.filter(a => a.activityStatus === 'awaiting_input')

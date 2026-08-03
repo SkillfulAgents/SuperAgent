@@ -193,12 +193,22 @@ export function refreshTrayMenu(): void {
 }
 
 /**
+ * Builds overlap: the 30s poll and the target-switch refresh both come through
+ * updateTrayMenu, and the base URL is sampled before the await. Without this a
+ * slow response from the previous target could land after the switch refresh
+ * painted the new one and overwrite it. Last started wins.
+ */
+let menuGeneration = 0
+
+/**
  * Update the tray context menu with current agent data
  */
 async function updateTrayMenu(): Promise<void> {
   if (!tray || !getApiBaseUrlRef) return
 
+  const generation = ++menuGeneration
   const agents = await fetchAgentsWithStatus(getApiBaseUrlRef())
+  if (generation !== menuGeneration) return
 
   // Group agents by status
   const awaitingInput = agents.filter(a => a.activityStatus === 'awaiting_input')
