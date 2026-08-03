@@ -340,6 +340,19 @@ describe('automated blocking tools from a subagent must receive a container push
     expect(resolvePushesFor(toolId)).toHaveLength(1)
   })
 
+  // Every tool name on every road is looked up in the handler table, so the
+  // lookup must not reach the prototype chain. '__proto__' is the case with a
+  // consequence: it resolves to a non-function, which throws when called and
+  // takes the stream handler down with it. The other inherited names resolve
+  // to harmless functions, so they are not worth a row here.
+  it('a tool named __proto__ is not treated as an automated tool', async () => {
+    const toolId = 'proto-lookup'
+    expect(() => sendMainToolUse('__proto__', toolId, {})).not.toThrow()
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(resolvePushesFor(toolId)).toHaveLength(0)
+  })
+
   it('reattach between the two deliveries: mutating handler still runs once', async () => {
     const toolId = 'side-reattach-1'
     const toolName = 'mcp__user-input__schedule_task'

@@ -1191,9 +1191,6 @@ class MessagePersister {
   // Automated blocking tools (schedule/trigger/webhook) resolve host-side with
   // no registry card. Stream stop and complete-assistant can both carry the
   // same tool_use — first delivery wins so mutating handlers run once.
-  // The container keys the same 13 names, unprefixed, in AUTOMATED_INPUT_TYPES
-  // to pick the 10-minute automated TTL over the 24-hour human one: a tool
-  // added here but not there parks for a day instead of failing fast.
   private dispatchAutomatedBlockingTool(
     sessionId: string,
     toolName: string,
@@ -1205,37 +1202,37 @@ class MessagePersister {
     if (!state) return
     if (state.dispatchedAutomatedToolUseIds.has(toolUseId)) return
 
-    if (toolName === 'mcp__user-input__schedule_task') {
-      this.handleScheduleTaskTool(sessionId, toolUseId, toolInput, agentSlug)
-    } else if (toolName === 'mcp__user-input__schedule_resume') {
-      this.handleScheduleResumeTool(sessionId, toolUseId, toolInput, agentSlug)
-    } else if (toolName === 'mcp__user-input__list_scheduled_tasks') {
-      this.handleListScheduledTasksTool(sessionId, toolUseId, toolInput, agentSlug)
-    } else if (toolName === 'mcp__user-input__cancel_scheduled_task') {
-      this.handleCancelScheduledTaskTool(sessionId, toolUseId, toolInput, agentSlug)
-    } else if (toolName === 'mcp__user-input__pause_scheduled_task') {
-      this.handlePauseResumeScheduledTaskTool('pause', sessionId, toolUseId, toolInput, agentSlug)
-    } else if (toolName === 'mcp__user-input__resume_scheduled_task') {
-      this.handlePauseResumeScheduledTaskTool('resume', sessionId, toolUseId, toolInput, agentSlug)
-    } else if (toolName === 'mcp__user-input__get_available_triggers') {
-      this.handleGetAvailableTriggersTool(sessionId, toolUseId, toolInput, agentSlug)
-    } else if (toolName === 'mcp__user-input__setup_trigger') {
-      this.handleSetupTriggerTool(sessionId, toolUseId, toolInput, agentSlug)
-    } else if (toolName === 'mcp__user-input__list_triggers') {
-      this.handleListTriggersTool(sessionId, toolUseId, toolInput, agentSlug)
-    } else if (toolName === 'mcp__user-input__cancel_trigger') {
-      this.handleCancelTriggerTool(sessionId, toolUseId, toolInput, agentSlug)
-    } else if (toolName === 'mcp__user-input__create_webhook_endpoint') {
-      this.handleCreateWebhookEndpointTool(sessionId, toolUseId, toolInput, agentSlug)
-    } else if (toolName === 'mcp__user-input__update_webhook_endpoint') {
-      this.handleUpdateWebhookEndpointTool(sessionId, toolUseId, toolInput, agentSlug)
-    } else if (toolName === 'mcp__user-input__inspect_webhook_events') {
-      this.handleInspectWebhookEventsTool(sessionId, toolUseId, toolInput, agentSlug)
-    } else {
-      return
-    }
+    // hasOwn, not a truthiness check: every tool name on every road reaches
+    // here, and a plain object would resolve 'toString' or 'constructor' off
+    // the prototype chain.
+    const handlers = MessagePersister.AUTOMATED_TOOL_HANDLERS
+    if (!Object.hasOwn(handlers, toolName)) return
 
+    handlers[toolName](this, sessionId, toolUseId, toolInput, agentSlug)
     state.dispatchedAutomatedToolUseIds.add(toolUseId)
+  }
+
+  // Automated blocking tool name → its handler. The container keys the same 13
+  // names, unprefixed, in AUTOMATED_INPUT_TYPES to pick the 10-minute automated
+  // TTL over the 24-hour human one: a tool added here but not there parks for a
+  // day instead of failing fast.
+  private static readonly AUTOMATED_TOOL_HANDLERS: Record<
+    string,
+    (p: MessagePersister, sessionId: string, toolUseId: string, input: string, agentSlug?: string) => void
+  > = {
+    'mcp__user-input__schedule_task': (p, ...a) => p.handleScheduleTaskTool(...a),
+    'mcp__user-input__schedule_resume': (p, ...a) => p.handleScheduleResumeTool(...a),
+    'mcp__user-input__list_scheduled_tasks': (p, ...a) => p.handleListScheduledTasksTool(...a),
+    'mcp__user-input__cancel_scheduled_task': (p, ...a) => p.handleCancelScheduledTaskTool(...a),
+    'mcp__user-input__pause_scheduled_task': (p, ...a) => p.handlePauseResumeScheduledTaskTool('pause', ...a),
+    'mcp__user-input__resume_scheduled_task': (p, ...a) => p.handlePauseResumeScheduledTaskTool('resume', ...a),
+    'mcp__user-input__get_available_triggers': (p, ...a) => p.handleGetAvailableTriggersTool(...a),
+    'mcp__user-input__setup_trigger': (p, ...a) => p.handleSetupTriggerTool(...a),
+    'mcp__user-input__list_triggers': (p, ...a) => p.handleListTriggersTool(...a),
+    'mcp__user-input__cancel_trigger': (p, ...a) => p.handleCancelTriggerTool(...a),
+    'mcp__user-input__create_webhook_endpoint': (p, ...a) => p.handleCreateWebhookEndpointTool(...a),
+    'mcp__user-input__update_webhook_endpoint': (p, ...a) => p.handleUpdateWebhookEndpointTool(...a),
+    'mcp__user-input__inspect_webhook_events': (p, ...a) => p.handleInspectWebhookEventsTool(...a),
   }
 
   // Blocking user-input tool name → the request kind its handler registers.
