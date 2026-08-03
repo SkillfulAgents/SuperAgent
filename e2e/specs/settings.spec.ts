@@ -437,27 +437,26 @@ test.describe('Settings persistence', () => {
 
       // The API default-policy row inside the "Default Policies" card.
       const globalSection = page.locator('[data-testid="default-policy-api"]')
-      const reviewToggle = globalSection.locator('[data-testid="policy-toggle-review"]')
-      const allowToggle = globalSection.locator('[data-testid="policy-toggle-allow"]')
+      const trigger = globalSection.locator('[data-testid="policy-dropdown-trigger"]')
 
-      // Review is default, should be active.
-      await expect(reviewToggle).toHaveAttribute('data-active', 'true')
-      await expect(allowToggle).toHaveAttribute('data-active', 'false')
+      // Review is default.
+      await expect(trigger).toHaveAttribute('data-decision', 'review')
 
       // Switch to allow and wait for the user-settings mutation.
+      await trigger.click()
       const savePromise = waitForUserSettingsSave(page)
-      await allowToggle.click()
+      await page.locator('[data-testid="policy-menu-allow"]').click()
       await savePromise
-      await expect(allowToggle).toHaveAttribute('data-active', 'true')
-      await expect(reviewToggle).toHaveAttribute('data-active', 'false')
+      await expect(trigger).toHaveAttribute('data-decision', 'allow')
 
       // Close, reopen, verify the persisted setting is reflected by the UI.
       await closeSettings(page)
       await openSettings(page)
       await goToTab(page, 'connections')
-      const reopenedSection = page.locator('[data-testid="default-policy-api"]')
-      await expect(reopenedSection.locator('[data-testid="policy-toggle-allow"]')).toHaveAttribute('data-active', 'true')
-      await expect(reopenedSection.locator('[data-testid="policy-toggle-review"]')).toHaveAttribute('data-active', 'false')
+      const reopenedTrigger = page
+        .locator('[data-testid="default-policy-api"]')
+        .locator('[data-testid="policy-dropdown-trigger"]')
+      await expect(reopenedTrigger).toHaveAttribute('data-decision', 'allow')
 
       const persisted = await userSettings(request)
       expect(persisted.defaultApiPolicy).toBe('allow')
