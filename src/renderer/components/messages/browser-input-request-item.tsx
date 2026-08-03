@@ -6,6 +6,7 @@ import { RequestError } from './request-error'
 import { DeclineButton } from './decline-button'
 import { useBrowserInputActions } from '@renderer/hooks/use-browser-input-actions'
 import { cn } from '@shared/lib/utils/cn'
+import { BrowserCredentialPicker } from './browser-credential-picker'
 
 interface BrowserInputRequestItemProps {
   toolUseId: string
@@ -83,6 +84,15 @@ export function BrowserInputRequestItem({
             </ul>
           </div>
         </div>
+      )}
+
+      {!readOnly && !isCompleted && (
+        <BrowserCredentialPicker
+          agentSlug={agentSlug}
+          sessionId={sessionId}
+          toolUseId={toolUseId}
+          disabled={status === 'submitting'}
+        />
       )}
 
       <RequestItemActions>

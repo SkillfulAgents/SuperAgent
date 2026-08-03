@@ -29,6 +29,7 @@ import { shutdownAC } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
 import { initErrorReporting, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
+import { credentialBroker } from '../../api/credentials/credential-broker'
 
 /**
  * Initialize all background services.
@@ -188,6 +189,7 @@ export function setupServerHandlers(server: ServerType): void {
 export async function shutdownServices() {
   reviewManager.rejectAll()
   chatIntegrationManager.stop()
+  await credentialBroker.shutdown()
   await stopAllProviders()
   taskScheduler.stop()
   triggerManager.stop()

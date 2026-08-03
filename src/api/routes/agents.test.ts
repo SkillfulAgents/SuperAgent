@@ -72,6 +72,19 @@ vi.mock('child_process', () => ({
   execFile: (...args: unknown[]) => mockExecFile(...args),
 }))
 
+const mockCredentialSuggest = vi.fn()
+const mockCredentialRetrieve = vi.fn()
+const mockCredentialBeginPairing = vi.fn()
+const mockCredentialCompletePairing = vi.fn()
+vi.mock('../credentials/credential-broker', () => ({
+  credentialBroker: {
+    suggest: (...args: unknown[]) => mockCredentialSuggest(...args),
+    retrieve: (...args: unknown[]) => mockCredentialRetrieve(...args),
+    beginPairing: (...args: unknown[]) => mockCredentialBeginPairing(...args),
+    completePairing: (...args: unknown[]) => mockCredentialCompletePairing(...args),
+  },
+}))
+
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
 const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
 let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
@@ -422,12 +435,17 @@ vi.mock('@shared/lib/utils/message-transform', () => ({
 const mockGetEffectiveModels = vi.fn(
   (): Record<string, string | undefined> => ({ summarizerModel: 'claude-3-haiku' })
 )
+const mockRuntimeSettings = vi.hoisted(() => vi.fn(() => ({
+  container: {},
+  skillsets: [],
+  app: { configuredPasswordManagers: ['apple-passwords'] },
+})))
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAnthropicApiKey: () => 'test-key',
   getEffectiveModels: () => mockGetEffectiveModels(),
   getEffectiveAgentLimits: () => ({}),
   getCustomEnvVars: () => ({}),
-  getSettings: () => ({ container: {}, skillsets: [] }),
+  getSettings: () => mockRuntimeSettings(),
   mutateSettings: vi.fn(),
   getModelCatalogSettings: () => ({}),
   VALID_SCRIPT_TYPES: {
@@ -3359,6 +3377,161 @@ describe('DELETE /:id/sessions/:sessionId', () => {
 // ============================================================================
 // Awaiting-input recovery from the persisted transcript
 // ============================================================================
+
+describe('browser credential broker routes', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tool-credential',
+      kind: 'browser_input',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {
+        browserContext: {
+          url: 'https://example.com/login',
+          capturedAt: 123,
+        },
+      },
+    })
+  })
+
+  afterEach(() => userInputRequestManager.reset())
+
+  it('returns metadata-only suggestions for the open request', async () => {
+    mockCredentialSuggest.mockResolvedValueOnce({
+      provider: 'apple-passwords',
+      providerLabel: 'Apple Passwords',
+      status: 'ready',
+      origin: 'https://example.com',
+      suggestions: [{ id: 'opaque-id', username: 'person@example.com', domain: 'example.com' }],
+    })
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential',
+    )
+
+    expect(res.status).toBe(200)
+    const json = await res.json() as { suggestions: Array<Record<string, unknown>> }
+    expect(json.suggestions[0]).not.toHaveProperty('password')
+    expect(mockCredentialSuggest).toHaveBeenCalledWith(
+      { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
+      'https://example.com/login',
+      ['apple-passwords'],
+    )
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('starts and verifies the configured provider from the open input request', async () => {
+    mockCredentialBeginPairing.mockResolvedValueOnce({ status: 'pin_required' })
+    mockCredentialCompletePairing.mockResolvedValueOnce(undefined)
+
+    const check = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials/check',
+      { toolUseId: 'tool-credential', provider: 'apple-passwords' },
+    )
+    expect(check.status).toBe(200)
+    expect(await check.json()).toMatchObject({
+      status: 'verification_required',
+      verification: { type: 'numeric_code', length: 6 },
+    })
+
+    const verify = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials/verify',
+      { toolUseId: 'tool-credential', provider: 'apple-passwords', code: '123456' },
+    )
+    expect(verify.status).toBe(200)
+    expect(mockCredentialBeginPairing).toHaveBeenCalledWith('apple-passwords')
+    expect(mockCredentialCompletePairing).toHaveBeenCalledWith('apple-passwords', '123456')
+  })
+
+  it('does not check a provider that is not configured', async () => {
+    mockRuntimeSettings.mockReturnValueOnce({ container: {}, skillsets: [], app: { configuredPasswordManagers: [] } })
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials/check',
+      { toolUseId: 'tool-credential', provider: 'apple-passwords' },
+    )
+    expect(res.status).toBe(409)
+    expect(mockCredentialBeginPairing).not.toHaveBeenCalled()
+  })
+
+  it('retrieves and fills through the privileged endpoint without returning the secret', async () => {
+    mockContainerFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          success: true,
+          usernameFilled: true,
+          passwordFilled: true,
+        }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ success: true }), { status: 200 }),
+      )
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+
+    expect(res.status).toBe(200)
+    const json = await res.json()
+    expect(json).toEqual({
+      success: true,
+      usernameFilled: true,
+      passwordFilled: true,
+      requestSettled: true,
+    })
+    expect(JSON.stringify(json)).not.toContain('host-only-secret')
+    expect(mockCredentialRetrieve).toHaveBeenCalledWith(
+      { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
+      'opaque-id',
+      'https://example.com/login',
+    )
+    const [fillPath, fillOptions] = mockContainerFetch.mock.calls[1]
+    expect(fillPath).toBe('/browser/fill-credential')
+    expect(JSON.parse(fillOptions.body)).toEqual({
+      sessionId: 'sess-1',
+      username: 'person@example.com',
+      password: 'host-only-secret',
+      expectedOrigin: 'https://example.com',
+    })
+    const [resolvePath, resolveOptions] = mockContainerFetch.mock.calls[2]
+    expect(resolvePath).toBe('/inputs/tool-credential/resolve')
+    expect(JSON.parse(resolveOptions.body)).toEqual({ value: 'credentials_filled' })
+    expect(messagePersister.completeInputRequest).toHaveBeenCalledWith(
+      'sess-1',
+      'tool-credential',
+      'answered',
+    )
+  })
+
+  it('rejects a request id scoped to another session before touching the browser', async () => {
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/other-session/browser-credentials?toolUseId=tool-credential',
+    )
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(mockCredentialSuggest).not.toHaveBeenCalled()
+  })
+})
 
 describe('decision routes settle their request immediately', () => {
   // The transcript tool_result normally cleans up the stream store and

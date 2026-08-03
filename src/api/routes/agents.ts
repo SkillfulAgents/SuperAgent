@@ -34,6 +34,8 @@ import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { credentialBroker } from '../credentials/credential-broker'
+import { CredentialBrokerError } from '../credentials/types'
 import type {
   UserInputRequestKind,
   UserInputRequestScope,
@@ -2420,6 +2422,24 @@ function gateRequestDecision(
   })
 }
 
+/** Read/mutate an open request without settling it. */
+function gateOpenRequestAccess(
+  c: Context,
+  toolUseId: string,
+  kind: UserInputRequestKind,
+): Response | null {
+  const open = userInputRequestManager.getOpenRequest(toolUseId)
+  if (!open || !requestMatchesRoute(
+    open,
+    kind,
+    getAgentId(c),
+    c.req.param('sessionId') ?? '',
+  )) {
+    return c.json({ error: 'Request not found' }, 404)
+  }
+  return null
+}
+
 // POST /api/agents/:id/sessions/:sessionId/provide-secret - Provide or decline a secret request
 agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) => {
   try {
@@ -2851,6 +2871,197 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
   } catch (error) {
     console.error('Failed to handle capability review:', error)
     return c.json({ error: 'Failed to handle capability review' }, 500)
+  }
+})
+
+async function readCredentialBrowserUrl(agentSlug: string, sessionId: string): Promise<string> {
+  const client = containerManager.getClient(agentSlug)
+  const response = await client.fetch(
+    `/browser/credential-context?sessionId=${encodeURIComponent(sessionId)}`,
+  )
+  if (!response.ok) throw new CredentialBrokerError('provider_error', 'The active browser page is unavailable')
+  const value = await response.json() as { url?: unknown }
+  if (typeof value.url !== 'string') {
+    throw new CredentialBrokerError('provider_error', 'The active browser page is unavailable')
+  }
+  return value.url
+}
+
+function credentialBrokerErrorResponse(c: Context, error: unknown): Response {
+  if (!(error instanceof CredentialBrokerError)) {
+    return c.json({ error: 'Credential autofill failed' }, 500)
+  }
+  const status = error.code === 'invalid_url' ? 400
+    : error.code === 'provider_error' ? 502
+      : 409
+  return c.json({ error: error.message, code: error.code }, status)
+}
+
+function configuredPasswordManagers(): string[] {
+  const configured = getSettings().app?.configuredPasswordManagers
+  return Array.isArray(configured)
+    ? configured.filter((provider): provider is string => typeof provider === 'string')
+    : []
+}
+
+function passwordManagerIsConfigured(provider: string): boolean {
+  return configuredPasswordManagers().includes(provider)
+}
+
+function capturedBrowserInputUrl(toolUseId: string): string | null {
+  const request = userInputRequestManager.getOpenRequest(toolUseId)
+  if (!request || request.kind !== 'browser_input') return null
+  const context = (request.payload as { browserContext?: { url?: unknown } }).browserContext
+  return typeof context?.url === 'string' ? context.url : null
+}
+
+// GET /api/agents/:id/sessions/:sessionId/browser-credentials - Metadata-only suggestions
+agents.get('/:id/sessions/:sessionId/browser-credentials', AgentUser(), async (c) => {
+  const toolUseId = c.req.query('toolUseId')
+  if (!toolUseId) return c.json({ error: 'toolUseId is required' }, 400)
+  const gated = gateOpenRequestAccess(c, toolUseId, 'browser_input')
+  if (gated) return gated
+
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.param('sessionId')
+  try {
+    // New requests carry a harness-probed URL. Keep the direct read as a
+    // compatibility/race fallback for recovered requests and older runtimes.
+    const url = capturedBrowserInputUrl(toolUseId) ??
+      await readCredentialBrowserUrl(agentSlug, sessionId)
+    const result = await credentialBroker.suggest(
+      { agentSlug, sessionId, toolUseId },
+      url,
+      configuredPasswordManagers(),
+    )
+    return c.json(result)
+  } catch (error) {
+    return credentialBrokerErrorResponse(c, error)
+  }
+})
+
+// POST .../browser-credentials/check - Start the configured provider's ephemeral session.
+agents.post('/:id/sessions/:sessionId/browser-credentials/check', AgentUser(), async (c) => {
+  try {
+    const body = await c.req.json<{ toolUseId?: string; provider?: string }>()
+    if (!body.toolUseId || !body.provider) {
+      return c.json({ error: 'toolUseId and provider are required' }, 400)
+    }
+    const gated = gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
+    if (gated) return gated
+    if (!passwordManagerIsConfigured(body.provider)) {
+      return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
+    }
+    const status = await credentialBroker.beginPairing(body.provider)
+    return c.json({
+      success: true,
+      status: status.status === 'ready' ? 'connected' : 'verification_required',
+      ...(status.status === 'pin_required'
+        ? {
+            verification: {
+              type: 'numeric_code',
+              length: 6,
+              message: 'Enter the code shown by your password manager.',
+            },
+          }
+        : {}),
+    })
+  } catch (error) {
+    return credentialBrokerErrorResponse(c, error)
+  }
+})
+
+// POST .../browser-credentials/verify - Complete the active password-manager check.
+agents.post('/:id/sessions/:sessionId/browser-credentials/verify', AgentUser(), async (c) => {
+  try {
+    const body = await c.req.json<{ toolUseId?: string; provider?: string; code?: string }>()
+    if (!body.toolUseId || !body.provider) {
+      return c.json({ error: 'toolUseId and provider are required' }, 400)
+    }
+    if (typeof body.code !== 'string' || !/^\d{6}$/.test(body.code)) {
+      return c.json({ error: 'Enter the six-digit verification code' }, 400)
+    }
+    const gated = gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
+    if (gated) return gated
+    if (!passwordManagerIsConfigured(body.provider)) {
+      return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
+    }
+    await credentialBroker.completePairing(body.provider, body.code)
+    return c.json({ success: true, status: 'connected' })
+  } catch (error) {
+    return credentialBrokerErrorResponse(c, error)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/autofill-browser-credential - Privileged JIT fill
+agents.post('/:id/sessions/:sessionId/autofill-browser-credential', AgentUser(), async (c) => {
+  let credential: { username: string; password: string } | null = null
+  try {
+    const body = await c.req.json<{ toolUseId?: string; credentialId?: string }>()
+    if (!body.toolUseId || !body.credentialId) {
+      return c.json({ error: 'toolUseId and credentialId are required' }, 400)
+    }
+    const gated = gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
+    if (gated) return gated
+
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    const url = await readCredentialBrowserUrl(agentSlug, sessionId)
+    const retrieved = await credentialBroker.retrieve(
+      { agentSlug, sessionId, toolUseId: body.toolUseId },
+      body.credentialId,
+      url,
+    )
+    credential = retrieved.credential
+
+    const client = containerManager.getClient(agentSlug)
+    const fillResponse = await client.fetch('/browser/fill-credential', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId,
+        username: credential.username,
+        password: credential.password,
+        expectedOrigin: retrieved.expectedOrigin,
+      }),
+    })
+    if (!fillResponse.ok) {
+      const fillError = await fillResponse.json().catch(() => ({})) as { error?: unknown }
+      return c.json({
+        error: typeof fillError.error === 'string' ? fillError.error : 'Credential autofill failed',
+      }, fillResponse.status === 409 ? 409 : 502)
+    }
+    const result = await fillResponse.json() as { usernameFilled?: boolean; passwordFilled?: boolean }
+
+    // Autofill is the successful answer to this browser-input request. Resume
+    // the parked tool with explicit next-step guidance instead of making the
+    // user click Done after they already selected a credential.
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(body.toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: 'credentials_filled' }),
+      },
+    )
+    const requestSettled = resolveResponse.ok
+    if (requestSettled) {
+      messagePersister.completeInputRequest(sessionId, body.toolUseId, 'answered')
+    } else {
+      console.error('[autofill-browser-credential] Credentials filled but browser input could not be resolved')
+    }
+
+    return c.json({
+      success: true,
+      usernameFilled: result.usernameFilled === true,
+      passwordFilled: result.passwordFilled === true,
+      requestSettled,
+    })
+  } catch (error) {
+    return credentialBrokerErrorResponse(c, error)
+  } finally {
+    // Drop the only host-route reference as soon as the fill call finishes.
+    credential = null
   }
 })
 

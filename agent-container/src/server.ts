@@ -33,6 +33,7 @@ import {
 } from './workspace-entry-operations';
 
 import { getEditingCommands } from './cdp-editing-commands';
+import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -2151,6 +2152,171 @@ function findPageTargetViaCdp(browserWsUrl: string): Promise<PageTarget | null> 
     ws.on('error', () => { clearTimeout(timeout); resolve(null); });
   });
 }
+
+interface CredentialAutofillResult {
+  ok: boolean;
+  reason?: 'origin_changed' | 'no_password_field';
+  usernameFilled: boolean;
+  passwordFilled: boolean;
+}
+
+/**
+ * Execute the privileged fill on the active target. The expected-origin check
+ * and DOM mutation happen in one JS turn, so a navigation between host lookup
+ * and fill cannot receive the credential.
+ */
+function autofillCredentialViaCdp(
+  target: PageTarget,
+  username: string,
+  password: string,
+  expectedOrigin: string,
+): Promise<CredentialAutofillResult> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(target.wsUrl);
+    let sessionId: string | null = null;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      ws.close();
+      reject(new Error('Credential autofill timed out'));
+    }, 5000);
+
+    const finish = (result?: CredentialAutofillResult, error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      ws.close();
+      if (error) reject(error);
+      else resolve(result || { ok: false, usernameFilled: false, passwordFilled: false });
+    };
+
+    const sendGlobalLookup = () => {
+      ws.send(JSON.stringify({
+        id: 2,
+        method: 'Runtime.evaluate',
+        params: { expression: 'globalThis', returnByValue: false },
+        ...(sessionId ? { sessionId } : {}),
+      }));
+    };
+
+    ws.on('open', () => {
+      if (target.requiresSession) {
+        ws.send(JSON.stringify({
+          id: 1,
+          method: 'Target.attachToTarget',
+          params: { targetId: target.id, flatten: true },
+        }));
+      } else {
+        sendGlobalLookup();
+      }
+    });
+
+    ws.on('message', (raw) => {
+      try {
+        const message = JSON.parse(raw.toString());
+        if (message.id === 1) {
+          sessionId = message.result?.sessionId || null;
+          if (!sessionId) return finish(undefined, new Error('Could not attach to browser page'));
+          sendGlobalLookup();
+          return;
+        }
+        if (message.id === 2) {
+          const objectId = message.result?.result?.objectId;
+          if (!objectId) return finish(undefined, new Error('Could not access browser page'));
+          ws.send(JSON.stringify({
+            id: 3,
+            method: 'Runtime.callFunctionOn',
+            params: {
+              objectId,
+              functionDeclaration: CREDENTIAL_AUTOFILL_FUNCTION,
+              arguments: [
+                { value: username },
+                { value: password },
+                { value: expectedOrigin },
+              ],
+              returnByValue: true,
+              awaitPromise: true,
+            },
+            ...(sessionId ? { sessionId } : {}),
+          }));
+          return;
+        }
+        if (message.id === 3) {
+          if (message.error || message.result?.exceptionDetails) {
+            return finish(undefined, new Error('Browser rejected credential autofill'));
+          }
+          const value = message.result?.result?.value as CredentialAutofillResult | undefined;
+          if (!value || typeof value.ok !== 'boolean') {
+            return finish(undefined, new Error('Browser returned an invalid autofill result'));
+          }
+          finish(value);
+        }
+      } catch {
+        // Ignore unrelated CDP events and wait for the response IDs above.
+      }
+    });
+
+    ws.on('error', () => finish(undefined, new Error('Could not connect to browser page')));
+  });
+}
+
+// Host-only credential endpoints. The global host-token middleware prevents
+// the agent's own shell from discovering metadata or injecting secrets.
+app.get('/browser/credential-context', async (c) => {
+  if (!hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503);
+  const sessionId = c.req.query('sessionId');
+  if (!sessionId) return c.json({ error: 'sessionId is required' }, 400);
+  const validationError = validateBrowserSessionWithRecovery(sessionId);
+  if (validationError) return c.json({ error: validationError }, 409);
+  if (!browserState.active) return c.json({ error: 'Browser is not active' }, 409);
+
+  const target = await findActivePageTarget();
+  if (!target?.url) return c.json({ error: 'No active browser page was found' }, 409);
+  return c.json({ url: target.url });
+});
+
+app.post('/browser/fill-credential', async (c) => {
+  try {
+    if (!hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503);
+    const body = await c.req.json<{
+      sessionId: string;
+      username: string;
+      password: string;
+      expectedOrigin: string;
+    }>();
+    if (!body.sessionId || typeof body.username !== 'string' || !body.password || !body.expectedOrigin) {
+      return c.json({ error: 'sessionId, username, password, and expectedOrigin are required' }, 400);
+    }
+    if (body.username.length > 4096 || body.password.length > 65536) {
+      return c.json({ error: 'Credential value is too large' }, 400);
+    }
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
+    if (validationError) return c.json({ error: validationError }, 409);
+    if (!browserState.active) return c.json({ error: 'Browser is not active' }, 409);
+
+    const target = await findActivePageTarget();
+    if (!target) return c.json({ error: 'No active browser page was found' }, 409);
+    const result = await autofillCredentialViaCdp(
+      target,
+      body.username,
+      body.password,
+      body.expectedOrigin,
+    );
+    if (!result.ok) {
+      const message = result.reason === 'origin_changed'
+        ? 'The browser page changed before autofill'
+        : 'No visible password field was found';
+      return c.json({ error: message, reason: result.reason }, 409);
+    }
+    return c.json({
+      success: true,
+      usernameFilled: result.usernameFilled,
+      passwordFilled: result.passwordFilled,
+    });
+  } catch (error) {
+    console.error('[Browser] Credential autofill failed:', error instanceof Error ? error.message : 'Unknown error');
+    return c.json({ error: 'Credential autofill failed' }, 500);
+  }
+});
 
 /** Helper to build a CDP message, adding sessionId when in session mode */
 function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params?: Record<string, unknown>): string {
