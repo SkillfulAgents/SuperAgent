@@ -49,7 +49,7 @@ import {
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
@@ -213,11 +213,11 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     initialSecuredSecrets: carryover?.securedSecrets,
   })
 
-  const { data: settings } = useSettings()
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
   useWarmStartOnType({
     agentSlug: agent.slug,
     message: composer.message,
-    enabled: settings?.app?.warmStartOnType !== false,
+    enabled: warmStartEnabled,
   })
 
   // Reset the manual-collapse flag once the message clears.

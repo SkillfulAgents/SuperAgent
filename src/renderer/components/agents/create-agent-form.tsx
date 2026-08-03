@@ -8,7 +8,7 @@ import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
-import { useCreateAgent, useUpdateAgent } from '@renderer/hooks/use-agents'
+import { useCreateAgent, useDeleteAgent, useUpdateAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -20,7 +20,8 @@ import {
 import { deriveAgentName } from '@renderer/lib/derive-agent-name'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
+import { captureRendererException } from '@renderer/lib/error-reporting'
 import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 export interface CreateAgentFormProps {
@@ -54,28 +55,57 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
 
   const createAgent = useCreateAgent()
   const updateAgent = useUpdateAgent()
+  const deleteAgent = useDeleteAgent()
   const createSession = useCreateSession()
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
   const startOnboardingSession = useStartOnboardingSession()
-  const { data: settings } = useSettings()
-  const warmStartEnabled = settings?.app?.warmStartOnType !== false
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
+
+  // Warm-precreated Untitled agent; deleted on abandon unless submit consumes it.
+  const warmSlugOwnedRef = useRef<string | null>(null)
+  const warmConsumedRef = useRef(false)
+  const mountedRef = useRef(true)
+
+  const discardWarmAgent = useCallback(async () => {
+    const slug = warmSlugOwnedRef.current
+    if (!slug || warmConsumedRef.current) return
+    warmSlugOwnedRef.current = null
+    try {
+      await deleteAgent.mutateAsync(slug)
+    } catch (error) {
+      console.warn('[warm-start] discard pre-created agent failed:', error)
+      captureRendererException(error, {
+        tags: { area: 'warm-start', op: 'discard-agent' },
+      })
+    }
+  }, [deleteAgent])
 
   const ensureWarmAgent = useCallback(async () => {
-    try {
-      const agent = await createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME })
-      return agent.slug
-    } catch (error) {
-      console.warn('[warm-start] pre-create agent failed:', error)
+    const agent = await createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME })
+    // Create finished after the form unmounted — delete immediately.
+    if (!mountedRef.current) {
+      try {
+        await deleteAgent.mutateAsync(agent.slug)
+      } catch (error) {
+        console.warn('[warm-start] discard in-flight pre-create failed:', error)
+        captureRendererException(error, {
+          tags: { area: 'warm-start', op: 'discard-agent' },
+        })
+      }
       return null
     }
-  }, [createAgent])
+    warmSlugOwnedRef.current = agent.slug
+    warmConsumedRef.current = false
+    return agent.slug
+  }, [createAgent, deleteAgent])
 
   const awaitWarmStartRef = useRef<() => Promise<string | null>>(async () => null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const finishCreatedAgent = useCallback(
     async (agent: ApiAgent, source: 'new' | 'import' | 'skillset', hasOnboarding?: boolean) => {
+      await discardWarmAgent()
       track('agent_created', { source, num_skills_added_at_creation: 0 })
       void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
       if (hasOnboarding) {
@@ -83,7 +113,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
       }
       await onAgentCreated?.()
     },
-    [track, navigate, startOnboardingSession, onAgentCreated],
+    [discardWarmAgent, track, navigate, startOnboardingSession, onAgentCreated],
   )
 
   const composer = useMessageComposer({
@@ -103,6 +133,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
         const newAgent = warmSlug
           ? await updateAgent.mutateAsync({ slug: warmSlug, name: agentName })
           : await createAgent.mutateAsync({ name: agentName })
+        if (warmSlug) warmConsumedRef.current = true
         const session = await createSession.mutateAsync({
           agentSlug: newAgent.slug,
           message: content,
@@ -131,7 +162,23 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
     enabled: warmStartEnabled,
     ensureAgent: ensureWarmAgent,
   })
-  awaitWarmStartRef.current = awaitWarmStart
+  useEffect(() => {
+    awaitWarmStartRef.current = awaitWarmStart
+  }, [awaitWarmStart])
+
+  // Abandon path: leave the create form without consuming the warm agent.
+  // Ref + empty deps so mutation identity churn doesn't re-bind cleanup mid-edit.
+  const discardWarmAgentRef = useRef(discardWarmAgent)
+  useEffect(() => {
+    discardWarmAgentRef.current = discardWarmAgent
+  }, [discardWarmAgent])
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      void discardWarmAgentRef.current()
+    }
+  }, [])
 
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(initialTemplate ?? null)
 

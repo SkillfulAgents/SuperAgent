@@ -19,7 +19,14 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/alert'
-import { useSettings, useUpdateSettings, useStartRunner, useRestartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
+import {
+  useSettings,
+  useUpdateSettings,
+  useStartRunner,
+  useRestartRunner,
+  useRefreshAvailability,
+  isWarmStartOnTypeEnabled,
+} from '@renderer/hooks/use-settings'
 import { AlertCircle, AlertTriangle, Play, Download, Loader2, RefreshCw, Plus, X } from 'lucide-react'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
 import { RuntimeProvisionProgress } from '@renderer/components/runtime/runtime-provision-progress'
@@ -792,7 +799,7 @@ export function RuntimeTab() {
         </div>
         <Switch
           id="warm-start-on-type"
-          checked={settings?.app?.warmStartOnType !== false}
+          checked={isWarmStartOnTypeEnabled(settings)}
           onCheckedChange={(checked: boolean) => {
             updateSettings.mutate({ app: { warmStartOnType: checked } })
           }}

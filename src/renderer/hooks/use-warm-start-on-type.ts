@@ -13,9 +13,10 @@ export interface UseWarmStartOnTypeOptions {
 }
 
 /**
- * One-shot: on first non-empty message while the runtime is READY, ensure an
- * agent exists and fire POST /start. Submit can await the same in-flight work
- * via awaitWarmStart() so create-on-submit does not race a second agent.
+ * One-shot: on the first user edit that leaves a non-empty message while the
+ * runtime is READY, ensure an agent exists and fire POST /start. Restored
+ * drafts do not trigger — only a change from the mount-time baseline does.
+ * Submit can await the same in-flight work via awaitWarmStart().
  */
 export function useWarmStartOnType({
   agentSlug,
@@ -24,6 +25,9 @@ export function useWarmStartOnType({
   ensureAgent,
 }: UseWarmStartOnTypeOptions) {
   const startAgent = useStartAgent()
+  const startMutateRef = useRef(startAgent.mutate)
+  startMutateRef.current = startAgent.mutate
+
   const { data: runtimeStatus } = useRuntimeStatus()
   const isReady = runtimeStatus?.runtimeReadiness?.status === 'READY'
 
@@ -32,6 +36,9 @@ export function useWarmStartOnType({
   const startedRef = useRef(false)
   const ensureAgentRef = useRef(ensureAgent)
   ensureAgentRef.current = ensureAgent
+
+  // Mount-time baseline — restored drafts must not count as "typing".
+  const baselineRef = useRef(message)
 
   useEffect(() => {
     if (agentSlug) slugRef.current = agentSlug
@@ -48,19 +55,25 @@ export function useWarmStartOnType({
         let slug = slugRef.current
         if (!slug) {
           const created = await ensureAgentRef.current?.()
-          if (!created) return null
+          if (!created) {
+            promiseRef.current = null
+            return null
+          }
           slug = created
           slugRef.current = slug
         }
         startedRef.current = true
-        startAgent.mutate(slug, {
-          onError: (error) => {
-            console.warn('[warm-start] container start failed:', error)
-            captureRendererException(error, {
-              tags: { area: 'warm-start', op: 'start' },
-            })
+        startMutateRef.current(
+          { slug, source: 'warm-start' },
+          {
+            onError: (error) => {
+              console.warn('[warm-start] container start failed:', error)
+              captureRendererException(error, {
+                tags: { area: 'warm-start', op: 'start' },
+              })
+            },
           },
-        })
+        )
         return slug
       } catch (error) {
         console.warn('[warm-start] ensure agent failed:', error)
@@ -73,17 +86,22 @@ export function useWarmStartOnType({
     })()
 
     return promiseRef.current
-  }, [startAgent])
+  }, [])
 
   useEffect(() => {
-    if (!enabled || !isReady || !message.trim()) return
+    if (!enabled || !isReady) return
+    if (!message.trim()) return
+    // Only fire after the user changes the field from its mount-time value.
+    if (message === baselineRef.current) return
     void run()
   }, [enabled, isReady, message, run])
 
   const awaitWarmStart = useCallback(async (): Promise<string | null> => {
-    if (!enabled) return null
+    // Prefer an already-created warm agent even if the setting was toggled off
+    // mid-draft, so submit does not create a second agent.
     if (promiseRef.current) return promiseRef.current
     if (startedRef.current && slugRef.current) return slugRef.current
+    if (!enabled) return null
     if (isReady && message.trim()) return run()
     return null
   }, [enabled, isReady, message, run])

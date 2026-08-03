@@ -46,7 +46,7 @@ describe('useWarmStartOnType', () => {
     })
   })
 
-  it('starts an existing agent once on first non-empty message', async () => {
+  it('starts an existing agent once on first non-empty message edit', async () => {
     const { rerender } = renderHook(
       ({ message }) =>
         useWarmStartOnType({ agentSlug: 'agent-1', message, enabled: true }),
@@ -58,7 +58,10 @@ describe('useWarmStartOnType', () => {
     rerender({ message: 'hello' })
 
     await waitFor(() => {
-      expect(mutate).toHaveBeenCalledWith('agent-1', expect.any(Object))
+      expect(mutate).toHaveBeenCalledWith(
+        { slug: 'agent-1', source: 'warm-start' },
+        expect.any(Object),
+      )
     })
     expect(mutate).toHaveBeenCalledTimes(1)
 
@@ -67,35 +70,93 @@ describe('useWarmStartOnType', () => {
     expect(mutate).toHaveBeenCalledTimes(1)
   })
 
+  it('does not start from a restored draft until the user edits', async () => {
+    const { rerender } = renderHook(
+      ({ message }) =>
+        useWarmStartOnType({ agentSlug: 'agent-1', message, enabled: true }),
+      { wrapper, initialProps: { message: 'stale draft' } },
+    )
+
+    await act(async () => {})
+    expect(mutate).not.toHaveBeenCalled()
+
+    rerender({ message: 'stale draft edited' })
+
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledWith(
+        { slug: 'agent-1', source: 'warm-start' },
+        expect.any(Object),
+      )
+    })
+  })
+
   it('creates then starts when ensureAgent is provided', async () => {
-    renderHook(
-      () =>
+    const { rerender } = renderHook(
+      ({ message }) =>
         useWarmStartOnType({
           agentSlug: null,
-          message: 'draft',
+          message,
           enabled: true,
           ensureAgent,
         }),
-      { wrapper },
+      { wrapper, initialProps: { message: '' } },
     )
+
+    rerender({ message: 'draft' })
 
     await waitFor(() => {
       expect(ensureAgent).toHaveBeenCalledTimes(1)
-      expect(mutate).toHaveBeenCalledWith('agent-warm', expect.any(Object))
+      expect(mutate).toHaveBeenCalledWith(
+        { slug: 'agent-warm', source: 'warm-start' },
+        expect.any(Object),
+      )
+    })
+  })
+
+  it('retries ensureAgent after a failure', async () => {
+    ensureAgent
+      .mockRejectedValueOnce(new Error('create failed'))
+      .mockResolvedValueOnce('agent-warm')
+
+    const { rerender } = renderHook(
+      ({ message }) =>
+        useWarmStartOnType({
+          agentSlug: null,
+          message,
+          enabled: true,
+          ensureAgent,
+        }),
+      { wrapper, initialProps: { message: '' } },
+    )
+
+    rerender({ message: 'hi' })
+    await waitFor(() => expect(ensureAgent).toHaveBeenCalledTimes(1))
+    await act(async () => {})
+    expect(mutate).not.toHaveBeenCalled()
+
+    // Change message again so the effect re-fires after the latch was cleared.
+    rerender({ message: 'hi!' })
+    await waitFor(() => {
+      expect(ensureAgent).toHaveBeenCalledTimes(2)
+      expect(mutate).toHaveBeenCalledWith(
+        { slug: 'agent-warm', source: 'warm-start' },
+        expect.any(Object),
+      )
     })
   })
 
   it('does nothing when disabled', async () => {
-    renderHook(
-      () =>
+    const { rerender } = renderHook(
+      ({ message }) =>
         useWarmStartOnType({
           agentSlug: 'agent-1',
-          message: 'hello',
+          message,
           enabled: false,
         }),
-      { wrapper },
+      { wrapper, initialProps: { message: '' } },
     )
 
+    rerender({ message: 'hello' })
     await act(async () => {})
     expect(mutate).not.toHaveBeenCalled()
   })
@@ -105,16 +166,17 @@ describe('useWarmStartOnType', () => {
       data: { runtimeReadiness: { status: 'RUNTIME_UNAVAILABLE' } },
     })
 
-    renderHook(
-      () =>
+    const { rerender } = renderHook(
+      ({ message }) =>
         useWarmStartOnType({
           agentSlug: 'agent-1',
-          message: 'hello',
+          message,
           enabled: true,
         }),
-      { wrapper },
+      { wrapper, initialProps: { message: '' } },
     )
 
+    rerender({ message: 'hello' })
     await act(async () => {})
     expect(mutate).not.toHaveBeenCalled()
   })
@@ -127,17 +189,18 @@ describe('useWarmStartOnType', () => {
       }),
     )
 
-    const { result } = renderHook(
-      () =>
+    const { result, rerender } = renderHook(
+      ({ message }) =>
         useWarmStartOnType({
           agentSlug: null,
-          message: 'hi',
+          message,
           enabled: true,
           ensureAgent,
         }),
-      { wrapper },
+      { wrapper, initialProps: { message: '' } },
     )
 
+    rerender({ message: 'hi' })
     await waitFor(() => expect(ensureAgent).toHaveBeenCalled())
 
     let awaited: string | null = 'pending' as unknown as null
@@ -147,6 +210,28 @@ describe('useWarmStartOnType', () => {
 
     resolveEnsure('agent-warm')
     await waitFor(() => expect(awaited).toBe('agent-warm'))
-    expect(mutate).toHaveBeenCalledWith('agent-warm', expect.any(Object))
+    expect(mutate).toHaveBeenCalledWith(
+      { slug: 'agent-warm', source: 'warm-start' },
+      expect.any(Object),
+    )
+  })
+
+  it('awaitWarmStart returns an existing warm slug even when disabled', async () => {
+    const { result, rerender } = renderHook(
+      ({ message, enabled }) =>
+        useWarmStartOnType({
+          agentSlug: null,
+          message,
+          enabled,
+          ensureAgent,
+        }),
+      { wrapper, initialProps: { message: '', enabled: true } },
+    )
+
+    rerender({ message: 'hi', enabled: true })
+    await waitFor(() => expect(mutate).toHaveBeenCalled())
+
+    rerender({ message: 'hi', enabled: false })
+    await expect(result.current.awaitWarmStart()).resolves.toBe('agent-warm')
   })
 })
