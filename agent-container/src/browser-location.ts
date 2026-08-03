@@ -8,13 +8,15 @@ export type BrowserRuntimeLocation = 'host' | 'container'
 
 /**
  * Resolve the model-facing location onto the browser process we should use.
- * "configured" preserves the existing host-provider preference, while an
- * explicit "container" always bypasses it.
+ * An omitted location keeps a live browser where it is; with no live browser,
+ * it falls back to the configured provider. Explicit values always win.
  */
 export function resolveBrowserRuntimeLocation(
-  requested: BrowserOpenLocation = 'configured',
+  requested: BrowserOpenLocation | undefined,
+  current: BrowserRuntimeLocation | null = null,
   hostBrowserConfigured: boolean = !!process.env.AGENT_BROWSER_USE_HOST,
 ): BrowserRuntimeLocation {
+  if (requested === undefined && current !== null) return current
   return requested === 'container' || !hostBrowserConfigured ? 'container' : 'host'
 }
 
@@ -37,4 +39,16 @@ export function isLoopbackBrowserUrl(url: string): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Teaching guard for likely model mistakes, not a network security boundary.
+ * Host-loopback remains available when explicitly requested with "configured".
+ */
+export function shouldRefuseImplicitHostLoopback(
+  url: string,
+  requested: BrowserOpenLocation | undefined,
+  resolved: BrowserRuntimeLocation,
+): boolean {
+  return requested === undefined && resolved === 'host' && isLoopbackBrowserUrl(url)
 }

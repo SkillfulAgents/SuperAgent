@@ -818,6 +818,10 @@ export class ClaudeCodeProcess extends EventEmitter {
             'mcp__dashboards__start_dashboard',
             'mcp__dashboards__list_dashboards',
             'mcp__dashboards__get_dashboard_logs',
+            // Intentional product tradeoff: interactive dashboard validation
+            // needs the full browser surface. This also permits configured-host
+            // browsing; location="container" is prompt-guided, not capability-
+            // enforced, matching the existing web-browser agent's authority.
             ...mcpToolNames('browser', browserMcpTools),
             'Read',
             'Write',

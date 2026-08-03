@@ -13,7 +13,6 @@ import { resizeScreenshot } from '../image-utils'
 import {
   BROWSER_OPEN_LOCATIONS,
   isLoopbackBrowserUrl,
-  resolveBrowserRuntimeLocation,
 } from '../browser-location'
 import { hostAuthHeaders } from '../host-auth'
 import { tabManager } from '../tab-manager'
@@ -95,26 +94,19 @@ export function createBrowserTools(getSessionId: () => string | null) {
 
 Use this to start browsing a website. The browser preserves cookies/sessions via a persistent profile, so the user only needs to log in once.
 
-By default, the browser uses the provider selected in the user's settings. Set location="container" for dashboards, development servers, and other URLs served inside the agent container. Changing location closes the current browser before opening the requested one.`,
+Omit location to keep using the current browser where it is; when no browser is live, the user's configured provider is used. Set location="container" for dashboards, development servers, and other URLs served inside the agent container. Set location="configured" to intentionally switch back to the user's configured provider. Changing location closes the current browser before opening the requested one.`,
   {
     url: z.string().describe('The URL to navigate to'),
     location: z
       .enum(BROWSER_OPEN_LOCATIONS)
       .optional()
-      .default('configured')
-      .describe('Where to run the browser. "configured" uses the provider selected in settings (default); "container" forces bundled Chromium so it can reach private container ports.'),
+      .describe('Where to run the browser. Omit to keep the current location (or use settings when no browser is live); "configured" explicitly selects the provider in settings; "container" forces bundled Chromium for private container ports.'),
   },
   async (args) => {
-    const requestedLocation = args.location || 'configured'
-    const runtimeLocation = resolveBrowserRuntimeLocation(requestedLocation)
-    const localhostWarning = isLoopbackBrowserUrl(args.url) && runtimeLocation === 'host'
-      ? '\n\nWARNING: This is a container-local URL, but the configured browser runs outside the container. Reopen it with location="container" to use bundled Chromium.'
-      : ''
-
-    const result = await browserFetch('open', { url: args.url, location: requestedLocation })
+    const result = await browserFetch('open', { url: args.url, location: args.location })
     if (!result.success) {
       return {
-        content: [{ type: 'text' as const, text: `Error: ${result.error}${localhostWarning}` }],
+        content: [{ type: 'text' as const, text: `Error: ${result.error}` }],
         isError: true,
       }
     }
@@ -125,6 +117,9 @@ By default, the browser uses the provider selected in the user's settings. Set l
       : 'the configured browser provider'
     const switchText = data?.switchedFrom
       ? ` The previous ${data.switchedFrom} browser was closed before switching locations.`
+      : ''
+    const localhostWarning = isLoopbackBrowserUrl(args.url) && activeLocation === 'host'
+      ? '\n\nWARNING: This URL points at the host browser\'s own loopback interface. If you meant a service inside the agent container, reopen it with location="container".'
       : ''
 
     if (data?.switchedToExisting) {

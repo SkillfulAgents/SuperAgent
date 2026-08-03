@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   getBrowserState,
   setBrowserState,
@@ -37,6 +37,26 @@ describe('browser-state', () => {
       const released = releaseBrowserLock('session-1')
       expect(released).toBe(true)
       expect(getBrowserState()).toEqual({ active: false, sessionId: null, cdpUrl: 'ws://localhost:9222', location: 'host' })
+    })
+
+    it('notifies the pre-release owner after clearing the lock', () => {
+      setBrowserState({ active: true, sessionId: 'session-1', cdpUrl: null, location: 'container' })
+      const onReleased = vi.fn((releasedSessionId: string) => {
+        expect(releasedSessionId).toBe('session-1')
+        expect(getBrowserState().sessionId).toBeNull()
+        expect(getBrowserState().active).toBe(false)
+      })
+
+      expect(releaseBrowserLock('session-1', onReleased)).toBe(true)
+      expect(onReleased).toHaveBeenCalledOnce()
+    })
+
+    it('does not notify when the requester does not own the lock', () => {
+      setBrowserState({ active: true, sessionId: 'session-1', cdpUrl: null, location: 'container' })
+      const onReleased = vi.fn()
+
+      expect(releaseBrowserLock('session-2', onReleased)).toBe(false)
+      expect(onReleased).not.toHaveBeenCalled()
     })
 
     it('does not release the lock when a non-owning session calls it', () => {

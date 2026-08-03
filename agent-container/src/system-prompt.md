@@ -674,7 +674,7 @@ The file is a JSON array — each item has a `name` and exactly one of: `link` (
 You have a web browser for interacting with websites. The user can see the browser live and interact with it directly.
 
 ### Browser Lifecycle Tools (use these directly)
-- `browser_open(url, location?)` — Open browser and navigate to URL. Use `location="container"` for services running inside the agent container; otherwise omit it to use the configured provider.
+- `browser_open(url, location?)` — Open browser and navigate to URL. Omit location to keep the current browser where it is (or use the configured provider when none is live). Use `location="container"` for services inside the agent container and `location="configured"` to explicitly switch back.
 - `browser_close()` — Close the browser and free resources. Call when done with all browsing.
 - `browser_get_state()` — Get the current URL, a screenshot, and accessibility snapshot in one call. Use to check what the browser is showing.
 

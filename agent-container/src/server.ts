@@ -626,6 +626,7 @@ import {
   type BrowserRuntimeLocation,
   requiresBrowserLocationSwitch,
   resolveBrowserRuntimeLocation,
+  shouldRefuseImplicitHostLoopback,
 } from './browser-location';
 
 // Proxy object so existing code can read `browserState.active` etc. without changes.
@@ -1008,13 +1009,13 @@ async function stopHostBrowserIfNeeded(location: BrowserRuntimeLocation | null):
   }
 }
 
-// Broadcast a browser_active event to the owning session's WebSocket subscribers
-function broadcastBrowserEvent(active: boolean): void {
-  if (!browserState.sessionId) return;
-  const sessionId = browserState.sessionId;
+// Broadcast a browser_active event to the owning session's WebSocket subscribers.
+// Callers releasing a lock can supply the pre-release owner explicitly.
+function broadcastBrowserEvent(active: boolean, targetSessionId: string | null = browserState.sessionId): void {
+  if (!targetSessionId) return;
 
   // Broadcast through the session manager's subscriber system
-  sessionManager.broadcast(sessionId, {
+  sessionManager.broadcast(targetSessionId, {
     type: 'browser_active',
     active,
     timestamp: new Date().toISOString(),
@@ -1050,7 +1051,15 @@ app.post('/browser/open', async (c) => {
       return c.json({ error: validationError }, 409);
     }
 
-    const location = resolveBrowserRuntimeLocation(body.location);
+    const location = resolveBrowserRuntimeLocation(body.location, browserState.location);
+    if (shouldRefuseImplicitHostLoopback(body.url, body.location, location)) {
+      return c.json({
+        error:
+          'This loopback URL would open on the host machine because no browser location was specified. ' +
+          'Retry with location="container" for a service inside the agent container, or explicitly pass ' +
+          'location="configured" to open the host browser\'s loopback interface. The current browser was left unchanged.',
+      }, 400);
+    }
     let switchedFrom: BrowserRuntimeLocation | null = null;
 
     // The browser tools expose one active browser abstraction. Changing its
@@ -1201,9 +1210,10 @@ app.post('/browser/release', async (c) => {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const ownedByRequester = browserState.active && browserState.sessionId === body.sessionId;
-    if (ownedByRequester) broadcastBrowserEvent(false);
-    const released = releaseBrowserLock(body.sessionId);
+    const released = releaseBrowserLock(
+      body.sessionId,
+      releasedSessionId => broadcastBrowserEvent(false, releasedSessionId),
+    );
     if (released) {
       console.log(`[Browser] Lock released by session ${body.sessionId} (browser still running)`);
     }

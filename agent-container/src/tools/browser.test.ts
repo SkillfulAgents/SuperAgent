@@ -96,10 +96,10 @@ describe('browser_open location', () => {
     expect(result.content[0].text).toContain('previous host browser was closed')
   })
 
-  it('keeps configured provider behavior as the backwards-compatible default', async () => {
+  it('omits location so the server can preserve the current browser', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       success: true,
-      location: 'host',
+      location: 'container',
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -111,6 +111,6 @@ describe('browser_open location', () => {
     await openTool.handler({ url: 'https://example.com' })
 
     const [, request] = fetchMock.mock.calls[0]
-    expect(JSON.parse(String(request?.body)).location).toBe('configured')
+    expect(JSON.parse(String(request?.body))).not.toHaveProperty('location')
   })
 })
