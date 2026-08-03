@@ -1,4 +1,5 @@
 ---
+name: dashboards
 description: Create interactive web dashboards to visualize data and provide UI elements to the user
 ---
 
@@ -12,14 +13,16 @@ You can create web dashboards that are served to the user through the Gamut UI. 
 - **`start_dashboard`** — Start a dashboard server (or restart it after code changes)
 - **`list_dashboards`** — List all dashboards and their status
 - **`get_dashboard_logs`** — Read stdout/stderr logs from a dashboard (useful for debugging)
+- **Browser tools** — Open the running dashboard with `browser_open(..., location="container")`, inspect its rendered/accessibility state, exercise controls, and check client-side errors
 
 ## Quick Start (React)
 
 1. Copy the template: `cp -r ~/.claude/skills/dashboards/templates/react-vite /workspace/artifacts/<slug>`
 2. Update `package.json` with the dashboard's `name` and `description`
 3. Edit `src/App.jsx` to build the UI (add API routes in `serve.js` if needed). **All fetch calls in the frontend MUST use relative URLs** — `fetch('api/data')` not `fetch('/api/data')` — absolute paths will 404.
-4. Use `start_dashboard` to build and start the server
-5. The user can view the dashboard in the Gamut UI
+4. Use `start_dashboard` to build and start the server; inspect its screenshot and note the returned port
+5. Open `http://localhost:<port>` with `browser_open(..., location="container")`, exercise the important interactions, and check browser errors
+6. Iterate until both visual and functional checks pass; close the browser when validation is complete
 
 ## Directory Structure
 
@@ -127,9 +130,12 @@ fetch('/api/data')
 
 This applies to all fetches, image sources, link hrefs, etc.
 
-## Important Limitations
+## Interactive Validation
 
-- **Do NOT use the browser tool to view your own dashboards.** The browser runs outside the container and cannot access `localhost` URLs served inside it. Dashboard requests will fail. The user views dashboards through the Gamut UI — you do not need to verify them visually. Use `get_dashboard_logs` to debug issues instead.
+- **Validate every dashboard in container Chromium.** After `start_dashboard`, open its localhost URL with `browser_open(url="http://localhost:<port>", location="container")`. The explicit location forces the bundled browser that can reach private container ports.
+- **Test behavior, not just appearance.** Exercise the primary controls and workflows, inspect rendered and accessibility state, and check browser console/errors for client-side failures.
+- **Use both diagnostic surfaces.** Use `get_dashboard_logs` for server failures and browser diagnostics for rendering or client-side failures.
+- **Close the browser when validation is complete.**
 
 ## Built-in APIs
 
@@ -146,4 +152,5 @@ The following APIs are automatically available in all dashboards (injected by th
 - **Use Bun APIs** — `Bun.serve()`, `Bun.file()`, etc. are fast and built-in
 - **Check logs on errors** — use `get_dashboard_logs` to debug crashes
 - **Restart after changes** — use `start_dashboard` after modifying source code
+- **Verify interactively** — use `browser_open(..., location="container")` after every restart and exercise the changed behavior
 - **Static assets** — serve them from the same directory or use inline styles/scripts for simplicity

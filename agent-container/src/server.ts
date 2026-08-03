@@ -620,6 +620,14 @@ import {
   releaseBrowserLock,
   transferBrowserLock,
 } from './browser-state';
+import {
+  BROWSER_OPEN_LOCATIONS,
+  type BrowserOpenLocation,
+  type BrowserRuntimeLocation,
+  requiresBrowserLocationSwitch,
+  resolveBrowserRuntimeLocation,
+  shouldRefuseImplicitHostLoopback,
+} from './browser-location';
 
 // Proxy object so existing code can read `browserState.active` etc. without changes.
 // Writes must go through _setBrowserState() to keep the canonical module state in sync.
@@ -806,11 +814,11 @@ function reportHostBrowserLaunchError(
   }).catch(() => {});
 }
 
-// Launch the host browser via CDP if AGENT_BROWSER_USE_HOST is set.
+// Launch the host browser via CDP when this open request resolved to the host.
 // Returns the CDP WebSocket URL and host download dir, or undefined if not using host browser.
-// Throws if host browser mode is enabled but the browser fails to launch.
-async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined> {
-  if (!process.env.AGENT_BROWSER_USE_HOST) {
+// Throws if the request resolves to the host but that browser fails to launch.
+async function launchHostBrowserIfNeeded(location: BrowserRuntimeLocation): Promise<HostBrowserInfo | undefined> {
+  if (location !== 'host') {
     return undefined;
   }
 
@@ -978,8 +986,8 @@ async function reapplyDownloadBehavior(): Promise<void> {
 }
 
 // Tell the host to stop the Chrome process for this agent.
-async function stopHostBrowserIfNeeded(): Promise<void> {
-  if (!process.env.AGENT_BROWSER_USE_HOST) return;
+async function stopHostBrowserIfNeeded(location: BrowserRuntimeLocation | null): Promise<void> {
+  if (location !== 'host') return;
 
   const hostAppUrl = process.env.HOST_APP_URL;
   if (!hostAppUrl) return;
@@ -1001,13 +1009,13 @@ async function stopHostBrowserIfNeeded(): Promise<void> {
   }
 }
 
-// Broadcast a browser_active event to the owning session's WebSocket subscribers
-function broadcastBrowserEvent(active: boolean): void {
-  if (!browserState.sessionId) return;
-  const sessionId = browserState.sessionId;
+// Broadcast a browser_active event to the owning session's WebSocket subscribers.
+// Callers releasing a lock can supply the pre-release owner explicitly.
+function broadcastBrowserEvent(active: boolean, targetSessionId: string | null = browserState.sessionId): void {
+  if (!targetSessionId) return;
 
   // Broadcast through the session manager's subscriber system
-  sessionManager.broadcast(sessionId, {
+  sessionManager.broadcast(targetSessionId, {
     type: 'browser_active',
     active,
     timestamp: new Date().toISOString(),
@@ -1025,15 +1033,51 @@ app.get('/browser/status', (c) => {
 // POST /browser/open - Start browser and navigate to URL
 app.post('/browser/open', async (c) => {
   try {
-    const body = await c.req.json<{ sessionId: string; url: string }>();
+    const body = await c.req.json<{
+      sessionId: string;
+      url: string;
+      location?: BrowserOpenLocation;
+    }>();
 
     if (!body.sessionId || !body.url) {
       return c.json({ error: 'sessionId and url are required' }, 400);
+    }
+    if (body.location !== undefined && !BROWSER_OPEN_LOCATIONS.some(value => value === body.location)) {
+      return c.json({ error: `location must be one of: ${BROWSER_OPEN_LOCATIONS.join(', ')}` }, 400);
     }
 
     const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
+    }
+
+    const location = resolveBrowserRuntimeLocation(body.location, browserState.location);
+    if (shouldRefuseImplicitHostLoopback(body.url, body.location, location)) {
+      return c.json({
+        error:
+          'This loopback URL would open on the host machine because no browser location was specified. ' +
+          'Retry with location="container" for a service inside the agent container, or explicitly pass ' +
+          'location="configured" to open the host browser\'s loopback interface. The current browser was left unchanged.',
+      }, 400);
+    }
+    let switchedFrom: BrowserRuntimeLocation | null = null;
+
+    // The browser tools expose one active browser abstraction. Changing its
+    // process location therefore closes the old provider before launching the
+    // new one, rather than leaving an unreachable browser consuming resources.
+    if (requiresBrowserLocationSwitch(browserState.location, location)) {
+      switchedFrom = browserState.location;
+      await execBrowser(['close'], browserState.cdpUrl || undefined);
+      cleanupAgentBrowserDaemon();
+      await stopHostBrowserIfNeeded(browserState.location);
+      cleanupCdpScreencast();
+      broadcastBrowserEvent(false);
+      _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
+      tabManager.resetTabCount();
+      inputManager.rejectByType(
+        'browser_input',
+        'The browser provider changed before the user completed this request'
+      );
     }
 
     // If browser is already active, check for a matching tab before opening a new one
@@ -1044,11 +1088,17 @@ app.post('/browser/open', async (c) => {
         await tabManager.syncTabCount();
         observeUrl(matchingTab.url); // seed URL baseline for post-action digests
         notifyBrowserAction();
-        return c.json({ success: true, switchedToExisting: true, tabId: matchingTab.tabId, url: matchingTab.url });
+        return c.json({
+          success: true,
+          switchedToExisting: true,
+          tabId: matchingTab.tabId,
+          url: matchingTab.url,
+          location,
+        });
       }
     }
 
-    const hostBrowser = await launchHostBrowserIfNeeded();
+    const hostBrowser = await launchHostBrowserIfNeeded(location);
     const cdpUrl = hostBrowser?.cdpUrl;
     const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
 
@@ -1069,7 +1119,7 @@ app.post('/browser/open', async (c) => {
     }
 
     if (result.exitCode !== 0) {
-      const debugInfo = cdpUrl ? ` [cdp=${cdpUrl}, mode=host, attempts=2]` : ' [mode=local, attempts=2]';
+      const debugInfo = ` [location=${location}, attempts=2]`;
       return c.json({ error: `${result.stdout}${debugInfo}`, success: false }, 500);
     }
 
@@ -1087,7 +1137,7 @@ app.post('/browser/open', async (c) => {
       }
     }
 
-    _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null });
+    _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null, location });
     tabManager.resetTabCount();
     resetUrlTracking();
     // Seed the URL baseline so the FIRST post-action digest can distinguish
@@ -1099,7 +1149,7 @@ app.post('/browser/open', async (c) => {
     }
     broadcastBrowserEvent(true);
 
-    return c.json({ success: true });
+    return c.json({ success: true, location, switchedFrom });
   } catch (error: any) {
     console.error('[Browser] Error opening browser:', error);
     return c.json({ error: error.message || 'Failed to open browser' }, 500);
@@ -1120,15 +1170,16 @@ app.post('/browser/close', async (c) => {
       return c.json({ error: validationError }, 409);
     }
 
+    const activeLocation = browserState.location;
     await execBrowser(['close'], browserState.cdpUrl || undefined);
     cleanupAgentBrowserDaemon();
 
     // If using host browser, tell the host to kill the Chrome process
-    await stopHostBrowserIfNeeded();
+    await stopHostBrowserIfNeeded(activeLocation);
 
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
-    _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
+    _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     tabManager.resetTabCount();
 
     // A browser_input request is only answerable while the browser exists —
@@ -1159,9 +1210,11 @@ app.post('/browser/release', async (c) => {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const released = releaseBrowserLock(body.sessionId);
+    const released = releaseBrowserLock(
+      body.sessionId,
+      releasedSessionId => broadcastBrowserEvent(false, releasedSessionId),
+    );
     if (released) {
-      broadcastBrowserEvent(false);
       console.log(`[Browser] Lock released by session ${body.sessionId} (browser still running)`);
     }
     return c.json({ success: true, released });
@@ -1173,11 +1226,11 @@ app.post('/browser/release', async (c) => {
 
 // POST /browser/notify-closed - Host browser was closed externally, clean up state
 app.post('/browser/notify-closed', (c) => {
-  if (browserState.active) {
+  if (browserState.location) {
     cleanupAgentBrowserDaemon();
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
-    _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
+    _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     tabManager.resetTabCount();
     console.log('[Browser] Browser closed externally, state cleaned up');
   }
@@ -2649,12 +2702,12 @@ async function gracefulShutdown(signal: string) {
 
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
 
-  // Close browser if active
-  if (browserState.active) {
+  // Close the browser even if an automated session released its ownership lock.
+  if (browserState.location) {
     try {
       await execBrowser(['close'], browserState.cdpUrl || undefined);
-      await stopHostBrowserIfNeeded();
-      _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
+      await stopHostBrowserIfNeeded(browserState.location);
+      _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     } catch (error) {
       console.error('Error closing browser:', error);
     }
