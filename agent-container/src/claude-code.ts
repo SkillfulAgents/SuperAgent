@@ -809,7 +809,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           maxTurns: 500,
         },
         'dashboard-builder': {
-          description: 'Dashboard building specialist. Delegate any task that involves creating, editing, or debugging dashboards (artifacts) — designing layouts, writing HTML/CSS/JS or React code, adding charts, connecting to data sources, fixing visual issues, or iterating on dashboard design. This agent handles the full build cycle: scaffolding, coding, starting, and verifying via screenshots.',
+          description: 'Dashboard building specialist. Delegate any task that involves creating, editing, or debugging dashboards (artifacts) — designing layouts, writing HTML/CSS/JS or React code, adding charts, connecting to data sources, fixing visual issues, or iterating on dashboard design. This agent handles the full build cycle: scaffolding, coding, starting, and interactive validation in container Chromium.',
           // Host-resolved dashboard-builder model (its own setting); falls back to
           // the main model rather than a hardcoded Claude alias.
           model: this.dashboardBuilderModel || this.model,
@@ -818,6 +818,11 @@ export class ClaudeCodeProcess extends EventEmitter {
             'mcp__dashboards__start_dashboard',
             'mcp__dashboards__list_dashboards',
             'mcp__dashboards__get_dashboard_logs',
+            // Intentional product tradeoff: interactive dashboard validation
+            // needs the full browser surface. This also permits configured-host
+            // browsing; location="container" is prompt-guided, not capability-
+            // enforced, matching the existing web-browser agent's authority.
+            ...mcpToolNames('browser', browserMcpTools),
             'Read',
             'Write',
             'Edit',

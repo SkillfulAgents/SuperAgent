@@ -38,6 +38,23 @@ export function detectAllProviders(): HostBrowserProviderStatus[] {
 }
 
 /**
+ * Stop one instance's browser on EVERY provider, not just the currently
+ * selected one. The active provider setting can change while a browser is
+ * running (e.g. Chrome launched, then the user switches to Browserbase), so
+ * teardown keyed to getActiveProvider() would miss it. Used by agent deletion
+ * before the profile directory is removed.
+ */
+export async function stopInstanceOnAllProviders(instanceId: string): Promise<void> {
+  await Promise.all(
+    Object.values(providerMap).map(async (provider) => {
+      if (provider.isRunning(instanceId)) {
+        await provider.stop(instanceId)
+      }
+    })
+  )
+}
+
+/**
  * Stop all provider instances. Used during graceful shutdown.
  */
 export async function stopAllProviders(): Promise<void> {

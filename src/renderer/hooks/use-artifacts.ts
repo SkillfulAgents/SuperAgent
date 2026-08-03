@@ -9,12 +9,17 @@ export interface ArtifactInfo {
   port: number
 }
 
-/** Default cadence, or 1s when the viewed dashboard is actively waiting. */
+/**
+ * Default cadence, or 300ms when the viewed dashboard is actively waiting —
+ * a dashboard becomes serveable in well under a second once its port is up,
+ * so a 1s poll was a large share of the perceived wait. The fast interval
+ * only applies while a DashboardView is mounted and unresolved (pollFast).
+ */
 export function artifactsRefetchIntervalMs(
   data: ArtifactInfo[] | undefined,
   pollFast: boolean,
 ): number {
-  if (pollFast) return 1_000
+  if (pollFast) return 300
   const hasStarting = data?.some((a) => a.status === 'starting')
   return hasStarting ? 1_000 : 60_000
 }

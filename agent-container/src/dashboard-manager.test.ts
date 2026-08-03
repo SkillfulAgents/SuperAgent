@@ -150,7 +150,7 @@ describe('truncateOversizedLog', () => {
 describe('DashboardManager log stream lifecycle', () => {
   let testDir: string
   let manager: {
-    startDashboard(slug: string): Promise<{
+    startDashboard(slug: string, opts?: { forceInstall?: boolean }): Promise<{
       status: string
       logStream: fs.WriteStream | null
       restartTimestamps: number[]
@@ -204,7 +204,7 @@ describe('DashboardManager log stream lifecycle', () => {
 
   it('closes the log stream when the process exits cleanly', async () => {
     const slug = await scaffoldDashboard()
-    const info = await manager.startDashboard(slug)
+    const info = await manager.startDashboard(slug, { forceInstall: false })
     expect(info.status).toBe('running')
     const stream = info.logStream!
     expect(stream.writableEnded).toBe(false)
@@ -217,7 +217,7 @@ describe('DashboardManager log stream lifecycle', () => {
 
   it('closes the log stream on the crash path', async () => {
     const slug = await scaffoldDashboard()
-    const info = await manager.startDashboard(slug)
+    const info = await manager.startDashboard(slug, { forceInstall: false })
     const stream = info.logStream!
 
     // Exhaust the restart budget so the crash doesn't schedule a restart
@@ -231,7 +231,7 @@ describe('DashboardManager log stream lifecycle', () => {
 
   it('closes the log stream when the process errors without exiting', async () => {
     const slug = await scaffoldDashboard()
-    const info = await manager.startDashboard(slug)
+    const info = await manager.startDashboard(slug, { forceInstall: false })
     const stream = info.logStream!
 
     procs[0].emit('error', new Error('spawn ENOENT'))
@@ -243,13 +243,13 @@ describe('DashboardManager log stream lifecycle', () => {
 
   it('restart-while-running closes the old stream and opens a new one without double-end errors', async () => {
     const slug = await scaffoldDashboard()
-    const first = await manager.startDashboard(slug)
+    const first = await manager.startDashboard(slug, { forceInstall: false })
     const oldStream = first.logStream!
 
     // Restarting kills the old process; its exit ALSO triggers the close
     // handler — the old stream must end exactly once (a second end() would
     // throw ERR_STREAM_ALREADY_FINISHED as an uncaught exception).
-    const second = await manager.startDashboard(slug)
+    const second = await manager.startDashboard(slug, { forceInstall: false })
 
     expect(oldStream.writableEnded).toBe(true)
     expect(second.logStream).not.toBe(oldStream)
@@ -259,7 +259,7 @@ describe('DashboardManager log stream lifecycle', () => {
 
   it('stopDashboard ends the stream even though the close handler also ran', async () => {
     const slug = await scaffoldDashboard()
-    const info = await manager.startDashboard(slug)
+    const info = await manager.startDashboard(slug, { forceInstall: false })
     const stream = info.logStream!
 
     await manager.stopDashboard(slug)
@@ -273,9 +273,66 @@ describe('DashboardManager log stream lifecycle', () => {
     const logPath = path.join(testDir, slug, 'dashboard.log')
     await fs.promises.writeFile(logPath, Buffer.alloc(11 * 1024 * 1024, 0x61))
 
-    await manager.startDashboard(slug)
+    await manager.startDashboard(slug, { forceInstall: false })
 
     const stat = await fs.promises.stat(logPath)
     expect(stat.size).toBeLessThan(1024 * 1024)
+  })
+
+  describe('install semantics', () => {
+    /** Record every spawn; auto-exit `bun install` procs with queued codes. */
+    function recordSpawns(installExitCodes: number[]) {
+      const spawns: Array<{ command: string; args: string[] }> = []
+      spawnHolder.impl = (command, args) => {
+        const proc = new FakeChildProcess()
+        procs.push(proc)
+        spawns.push({ command, args })
+        if (args[0] === 'install') {
+          const code = installExitCodes.shift() ?? 0
+          setImmediate(() => proc.exit(code))
+        }
+        return proc
+      }
+      return spawns
+    }
+
+    it('default start runs bun install even when node_modules is fresh', async () => {
+      const slug = await scaffoldDashboard()
+      const spawns = recordSpawns([0])
+
+      const info = await manager.startDashboard(slug)
+
+      expect(spawns.map((s) => s.args)).toEqual([['install'], ['run', 'start']])
+      expect(info.status).toBe('running')
+    })
+
+    it('boot start skips install when node_modules is fresh', async () => {
+      const slug = await scaffoldDashboard()
+      const spawns = recordSpawns([])
+
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'start']])
+    })
+
+    it('stale boot install tries --frozen-lockfile first and falls back on failure', async () => {
+      const slug = await scaffoldDashboard()
+      const dir = path.join(testDir, slug)
+      await fs.promises.writeFile(path.join(dir, 'bun.lock'), '{}')
+      // Make node_modules stale so the boot path needs an install
+      const past = new Date(Date.now() - 60_000)
+      await fs.promises.utimes(path.join(dir, 'node_modules'), past, past)
+      await fs.promises.utimes(path.join(dir, 'package.json'), new Date(), new Date())
+      const spawns = recordSpawns([1, 0])
+
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([
+        ['install', '--frozen-lockfile'],
+        ['install'],
+        ['run', 'start'],
+      ])
+      expect(info.status).toBe('running')
+    })
   })
 })
