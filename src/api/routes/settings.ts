@@ -2,6 +2,8 @@ import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
+import { z } from 'zod'
+import { zValidator } from '@hono/zod-validator'
 import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
@@ -77,6 +79,8 @@ import {
   tokenExchangeJti,
 } from '@shared/lib/db/schema'
 import fs from 'fs'
+import { credentialBroker } from '../credentials/credential-broker'
+import { CredentialBrokerError } from '../credentials/types'
 
 const WEB_PROVIDER_IDS = ['native', 'exa', 'platform'] as const
 
@@ -222,6 +226,73 @@ settings.get('/models', Authenticated(), (c) => {
 })
 
 settings.use('*', Authenticated(), IsAdmin())
+
+function passwordManagerErrorResponse(c: Context, error: unknown): Response {
+  if (!(error instanceof CredentialBrokerError)) {
+    return c.json({ error: 'Password manager connection failed' }, 500)
+  }
+  return c.json(
+    { error: error.message, code: error.code },
+    error.code === 'provider_locked' ? 409 : 502,
+  )
+}
+
+const passwordManagerConfigurationSchema = z.object({
+  configured: z.boolean(),
+}).strict()
+
+// Browser Use settings owns the durable provider selection. The short-lived
+// unlock/check flow stays with the browser_input request that needs it.
+settings.get('/password-managers', async (c) => {
+  try {
+    const configured = new Set(getSettings().app?.configuredPasswordManagers ?? [])
+    const providers = (await credentialBroker.connectionStatuses()).map((provider) => ({
+      ...provider,
+      configured: configured.has(provider.provider),
+    }))
+    return c.json({ providers })
+  } catch (error) {
+    return passwordManagerErrorResponse(c, error)
+  }
+})
+
+settings.put(
+  '/password-managers/:provider',
+  zValidator('json', passwordManagerConfigurationSchema),
+  async (c) => {
+    const provider = c.req.param('provider')
+    if (!credentialBroker.hasProvider(provider)) {
+      return c.json({ error: 'Password manager provider not found' }, 404)
+    }
+    try {
+      const body = c.req.valid('json')
+      if (body.configured) {
+        const connection = (await credentialBroker.connectionStatuses())
+          .find((candidate) => candidate.provider === provider)
+        if (!connection) {
+          return c.json({ error: 'Password manager provider not found' }, 404)
+        }
+        if (connection.status === 'unavailable' || connection.status === 'error') {
+          return c.json({
+            error: connection.message || 'Password manager prerequisites are not met',
+            provider: { ...connection, configured: false },
+          }, 409)
+        }
+      }
+      mutateSettings((current) => {
+        const app = current.app ?? (current.app = {})
+        const configured = new Set(app.configuredPasswordManagers ?? [])
+        if (body.configured) configured.add(provider)
+        else configured.delete(provider)
+        app.configuredPasswordManagers = [...configured]
+      })
+      return c.json({ success: true, provider, configured: body.configured })
+    } catch (error) {
+      console.error('Failed to configure password manager:', error)
+      return c.json({ error: 'Failed to configure password manager' }, 500)
+    }
+  },
+)
 
 /** All keys in ApiKeySettings — used to generically handle set/delete in PUT. */
 const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [

@@ -197,6 +197,22 @@ export class UserInputRequestManager {
   }
 
   /**
+   * Add host-derived context to an open request without treating it as a new
+   * request. The original created transition has already rendered the card;
+   * enrichments are server-side context used by later privileged actions.
+   */
+  enrichOpenRequestPayload(
+    id: string,
+    kind: PendingUserInputRequest['kind'],
+    enrichment: Record<string, unknown>,
+  ): boolean {
+    const request = this.requests.get(id)
+    if (!request || request.kind !== kind) return false
+    Object.assign(request.payload, enrichment)
+    return true
+  }
+
+  /**
    * Reserve an open request for settlement, returning it to the FIRST caller
    * only. A plain `getOpenRequest` before a decision is check-then-act: the
    * decision path awaits (container lookup, the resolve call itself) between

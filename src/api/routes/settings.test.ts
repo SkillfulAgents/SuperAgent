@@ -149,6 +149,15 @@ vi.mock('@shared/lib/services/audit-log-service', () => ({
   logAuditEvent: mockLogAuditEvent,
 }))
 
+const mockCredentialConnectionStatuses = vi.hoisted(() => vi.fn())
+const mockCredentialHasProvider = vi.hoisted(() => vi.fn())
+vi.mock('../credentials/credential-broker', () => ({
+  credentialBroker: {
+    connectionStatuses: (...args: unknown[]) => mockCredentialConnectionStatuses(...args),
+    hasProvider: (...args: unknown[]) => mockCredentialHasProvider(...args),
+  },
+}))
+
 vi.mock('@shared/lib/db/schema', () => ({
   proxyAuditLog: {},
   proxyTokens: {},
@@ -274,6 +283,13 @@ function setupDefaults() {
   mockEnsureImageReady.mockResolvedValue(undefined)
   mockClearClients.mockReturnValue(undefined)
   mockTotalmem.mockReturnValue(64 * 1024 ** 3)
+  mockCredentialHasProvider.mockImplementation((provider: string) => provider === 'apple-passwords')
+  mockCredentialConnectionStatuses.mockResolvedValue([{
+    provider: 'apple-passwords',
+    providerLabel: 'Apple Passwords',
+    installable: true,
+    status: 'disconnected',
+  }])
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +316,100 @@ describe('settings route', () => {
       body: JSON.stringify(body),
     })
   }
+
+  describe('password manager configuration', () => {
+    it('returns provider-scoped connection status without credential metadata', async () => {
+      mockCredentialConnectionStatuses.mockResolvedValueOnce([{
+        provider: 'apple-passwords',
+        providerLabel: 'Apple Passwords',
+        installable: true,
+        status: 'disconnected',
+        message: 'Connect to use passwords saved on this Mac',
+      }])
+
+      const res = await app.request('http://localhost/api/settings/password-managers')
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({
+        providers: [{
+          provider: 'apple-passwords',
+          providerLabel: 'Apple Passwords',
+          installable: true,
+          status: 'disconnected',
+          message: 'Connect to use passwords saved on this Mac',
+          configured: false,
+        }],
+      })
+    })
+
+    it('persists provider selection without starting a connection', async () => {
+      const res = await app.request(
+        'http://localhost/api/settings/password-managers/apple-passwords',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ configured: true }),
+        },
+      )
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({
+        success: true,
+        provider: 'apple-passwords',
+        configured: true,
+      })
+      expect(mockGetSettings().app.configuredPasswordManagers).toEqual(['apple-passwords'])
+    })
+
+    it('rejects an invalid configuration value', async () => {
+      const res = await app.request(
+        'http://localhost/api/settings/password-managers/apple-passwords',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ configured: 'yes' }),
+        },
+      )
+      expect(res.status).toBe(400)
+    })
+
+    it('refuses configuration and returns prerequisite remediation when unavailable', async () => {
+      mockCredentialConnectionStatuses.mockResolvedValueOnce([{
+        provider: 'apple-passwords',
+        providerLabel: 'Apple Passwords',
+        installable: true,
+        status: 'unavailable',
+        message: 'Install the iCloud Passwords extension in Chrome',
+        remediation: {
+          code: 'extension_not_found',
+          title: 'Install the iCloud Passwords extension',
+          instructions: ['Open the extension in Chrome and choose Add to Chrome.'],
+          action: {
+            kind: 'open_in_chrome',
+            label: 'Install in Chrome',
+            url: 'https://chromewebstore.google.com/example',
+          },
+        },
+      }])
+
+      const res = await app.request(
+        'http://localhost/api/settings/password-managers/apple-passwords',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ configured: true }),
+        },
+      )
+      expect(res.status).toBe(409)
+      expect(await res.json()).toMatchObject({
+        provider: {
+          provider: 'apple-passwords',
+          configured: false,
+          remediation: { code: 'extension_not_found' },
+        },
+      })
+      expect(mockMutateSettings).not.toHaveBeenCalled()
+    })
+  })
 
   // =========================================================================
   // Deep merging of container.resourceLimits

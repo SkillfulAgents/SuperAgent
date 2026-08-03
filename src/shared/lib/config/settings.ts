@@ -120,6 +120,8 @@ export interface AppPreferences {
    */
   globalDispatchShortcut?: string
   maxBrowserTabs?: number
+  /** Password-manager providers the user has chosen in Browser Use settings. */
+  configuredPasswordManagers?: string[]
   faviconDataUrl?: string
   faviconUpdatedAt?: string
 

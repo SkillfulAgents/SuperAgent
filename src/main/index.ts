@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, nativeTheme, powerMonitor, session, shell, Notification } from 'electron'
-import { execFileSync, exec } from 'child_process'
+import { execFile, execFileSync, exec } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -57,6 +57,7 @@ import { parseAgentDeepLink } from './agent-deep-link'
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
+import { APPLE_PASSWORDS_CHROME_EXTENSION_URL } from '@shared/lib/credentials/apple-passwords-links'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
 // Setting app.name before getPath('userData') changes the resolved directory.
@@ -520,6 +521,28 @@ ipcMain.on('renderer-painted', (event) => {
 // above stays strict (web-only) since it fires for untrusted content.
 ipcMain.handle('open-external', async (_event, url: string) => {
   await safeOpenExternalFromApp(url)
+})
+
+// First-party, argument-free launcher for the exact Apple extension listing.
+// On macOS this targets Chrome explicitly so installation remains one click even
+// when another browser is the system default. No renderer-provided URL or app
+// name reaches execFile.
+ipcMain.handle('open-apple-passwords-extension', async () => {
+  if (process.platform === 'darwin' && fs.existsSync('/Applications/Google Chrome.app')) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile(
+          '/usr/bin/open',
+          ['-a', 'Google Chrome', APPLE_PASSWORDS_CHROME_EXTENSION_URL],
+          (error) => error ? reject(error) : resolve(),
+        )
+      })
+      return
+    } catch (error) {
+      console.warn('Could not open the Apple Passwords extension in Chrome:', error)
+    }
+  }
+  await safeOpenExternalFromApp(APPLE_PASSWORDS_CHROME_EXTENSION_URL)
 })
 
 // IPC handler for launching an elevated PowerShell window (Windows only)
