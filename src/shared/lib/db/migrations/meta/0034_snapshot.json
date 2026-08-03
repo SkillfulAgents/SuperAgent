@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d5dd2830-9e6b-42c8-ab45-5ea33f8ae673",
+  "id": "5b15a2cf-103a-42e2-9ef1-ea7c46dd11a3",
   "prevId": "496de14c-a9b9-4ef6-a0cb-7b734f17aedc",
   "tables": {
     "agent_acl": {
@@ -564,8 +564,8 @@
           "notNull": false,
           "autoincrement": false
         },
-        "device_name": {
-          "name": "device_name",
+        "device_id": {
+          "name": "device_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
@@ -586,6 +586,13 @@
             "user_id"
           ],
           "isUnique": false
+        },
+        "session_device_id_idx": {
+          "name": "session_device_id_idx",
+          "columns": [
+            "device_id"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {
@@ -595,6 +602,19 @@
           "tableTo": "user",
           "columnsFrom": [
             "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "session_device_id_mobile_device_id_fk": {
+          "name": "session_device_id_mobile_device_id_fk",
+          "tableFrom": "session",
+          "tableTo": "mobile_device",
+          "columnsFrom": [
+            "device_id"
           ],
           "columnsTo": [
             "id"
@@ -1353,6 +1373,108 @@
         "message_author_user_id_user_id_fk": {
           "name": "message_author_user_id_user_id_fk",
           "tableFrom": "message_author",
+          "tableTo": "user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "mobile_device": {
+      "name": "mobile_device",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "refresh_token_hash": {
+          "name": "refresh_token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "device_name": {
+          "name": "device_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "platform": {
+          "name": "platform",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "mobile_device_refresh_token_hash_unique": {
+          "name": "mobile_device_refresh_token_hash_unique",
+          "columns": [
+            "refresh_token_hash"
+          ],
+          "isUnique": true
+        },
+        "mobile_device_user_id_idx": {
+          "name": "mobile_device_user_id_idx",
+          "columns": [
+            "user_id"
+          ],
+          "isUnique": false
+        },
+        "mobile_device_expires_at_idx": {
+          "name": "mobile_device_expires_at_idx",
+          "columns": [
+            "expires_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "mobile_device_user_id_user_id_fk": {
+          "name": "mobile_device_user_id_user_id_fk",
+          "tableFrom": "mobile_device",
           "tableTo": "user",
           "columnsFrom": [
             "user_id"

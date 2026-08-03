@@ -1,36 +1,34 @@
 import crypto from 'node:crypto'
-import { and, asc, eq, lt } from 'drizzle-orm'
+import { and, asc, eq, gt, lt } from 'drizzle-orm'
 import { captureException } from '@shared/lib/error-reporting'
 import { db } from '@shared/lib/db'
-import { authSession, mobilePairingToken } from '@shared/lib/db/schema'
+import { authSession, mobileDevice, mobilePairingToken } from '@shared/lib/db/schema'
 import { DEFAULT_AUTH_SETTINGS, getSettings } from '@shared/lib/config/settings'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { getAuth } from './index'
-import { withSessionAuditContext } from './session-audit'
+import {
+  InstalledClientSessionError,
+  mintInstalledClientSession,
+} from './installed-client-session'
 import {
   MAX_DEVICE_NAME_LENGTH,
   MAX_OUTSTANDING_PAIRING_TOKENS,
+  MOBILE_REFRESH_TOKEN_PREFIX,
   PAIRING_TOKEN_PREFIX,
   PAIRING_TOKEN_TTL_MS,
-  SUPERSEDE_GRACE_MS,
   type MobileSessionResponse,
-  type RenewPurpose,
 } from './mobile-pairing-schema'
 
-/**
- * Denial for the pairing endpoints. The message is deliberately generic: a
- * missing, expired, and already-redeemed token must be indistinguishable to
- * the caller, so nothing here may disclose which case was hit.
- */
+/** Generic denial for pairing and refresh grants. */
 export class MobilePairingError extends Error {
   constructor(description?: string) {
-    super(description ?? 'invalid_pairing_token')
+    super(description ?? 'invalid_mobile_grant')
     this.name = 'MobilePairingError'
   }
 }
 
 export interface MobilePairingRequestMeta {
   deviceName?: string
+  platform?: string
   userAgent?: string
   ipAddress?: string
 }
@@ -45,24 +43,31 @@ function normalizeDeviceName(deviceName?: string): string | undefined {
   return trimmed || undefined
 }
 
-function mobileSessionLifetimeMs(): number {
-  const settings = getSettings()
-  const auth = { ...DEFAULT_AUTH_SETTINGS, ...settings.auth }
-  return (auth.mobileSessionLifetimeDays ?? 90) * 24 * 60 * 60 * 1000
+function normalizePlatform(platform?: string): string | undefined {
+  const trimmed = platform?.trim().slice(0, 64)
+  return trimmed || undefined
 }
 
-/** Opportunistic TTL cleanup keeps the table bounded. */
+function mobileDeviceLifetimeMs(): number {
+  const settings = getSettings()
+  const auth = { ...DEFAULT_AUTH_SETTINGS, ...settings.auth }
+  const configuredDays = auth.mobileDeviceLifetimeDays ?? 90
+  const days = Number.isFinite(configuredDays) && configuredDays > 0 ? configuredDays : 90
+  return days * 24 * 60 * 60 * 1000
+}
+
+function newRefreshToken(): string {
+  return MOBILE_REFRESH_TOKEN_PREFIX + crypto.randomBytes(32).toString('base64url')
+}
+
+/** Opportunistic TTL cleanup keeps the one-time grant table bounded. */
 function sweepExpiredPairingTokens(): void {
   db.delete(mobilePairingToken).where(lt(mobilePairingToken.expiresAt, new Date())).run()
 }
 
 /**
- * Mint a single-use pairing token for `userId`.
- *
- * The plaintext (`mp_` + 32 random bytes base64url) is returned to the caller
- * exactly once and never stored — only its sha256 hex lands in the database.
- * A user holds at most MAX_OUTSTANDING_PAIRING_TOKENS un-redeemed tokens;
- * minting past the cap deletes the oldest first.
+ * Mint a short-lived, single-use authorization grant for `userId`. Plaintext is
+ * returned exactly once; only its SHA-256 hash is stored.
  */
 export function mintPairingToken(userId: string): { token: string; expiresAt: Date } {
   sweepExpiredPairingTokens()
@@ -87,93 +92,50 @@ export function mintPairingToken(userId: string): { token: string; expiresAt: Da
   return { token, expiresAt }
 }
 
-type AuthContext = Awaited<ReturnType<typeof getAuth>['$context']>
+type IssuedInstalledSession = Awaited<ReturnType<typeof mintInstalledClientSession>>
 
-/**
- * Banned/pending enforcement, mirrored from token-exchange.ts: the admin
- * plugin's session.create.before hook only runs inside an endpoint context, so
- * a session minted through the internal adapter must enforce it explicitly —
- * including the pending-approval ban applied on signup. Mirrors the plugin's
- * banExpires auto-unban.
- */
-async function assertUserMayHoldSession(ctx: AuthContext, userId: string) {
-  const fresh = await ctx.internalAdapter.findUserById(userId)
-  if (!fresh) {
-    // Invariant violation: the pairing row / session referenced this user.
-    // Masked to the client as a generic denial, but a systemic occurrence must
-    // be visible.
-    captureException(new Error('mobile pairing: user missing at session mint'), {
-      tags: { component: 'mobile-pairing', operation: 'user-missing' },
-      extra: { userId },
-    })
-    throw new MobilePairingError()
-  }
-  const banned = fresh as typeof fresh & { banned?: boolean | null; banExpires?: Date | null }
-  if (banned.banned) {
-    if (banned.banExpires && new Date(banned.banExpires).getTime() < Date.now()) {
-      await ctx.internalAdapter.updateUser(fresh.id, {
-        banned: false,
-        banReason: null,
-        banExpires: null,
-      })
-    } else {
-      throw new MobilePairingError()
-    }
-  }
-  return fresh
-}
-
-/**
- * Mint a fixed-lifetime mobile session for `userId` through the internal
- * adapter, tagged `mobile` for the audit trail and the paired-devices list.
- *
- * The 4th `createSession` argument (`overrideAll: true`) is required: without
- * it the adapter's own `expiresAt` (interactive session lifetime) wins over
- * the override (verified against better-auth 1.6.23).
- */
-async function mintMobileSession(
-  ctx: AuthContext,
+async function mintMobileAccessSession(
   userId: string,
+  deviceId: string,
   meta: MobilePairingRequestMeta,
-): Promise<MobileSessionResponse> {
-  const user = await assertUserMayHoldSession(ctx, userId)
-
-  const expiresAt = new Date(Date.now() + mobileSessionLifetimeMs())
-  const session = await withSessionAuditContext({ method: 'mobile' }, () =>
-    ctx.internalAdapter.createSession(
-      user.id,
-      false,
-      {
-        expiresAt,
-        deviceName: normalizeDeviceName(meta.deviceName),
-        userAgent: meta.userAgent?.slice(0, 512) || 'mobile',
-        ipAddress: meta.ipAddress ?? '',
-      },
-      true,
-    ),
-  )
-  if (!session) {
-    captureException(new Error('mobile pairing: session creation returned no session'), {
-      tags: { component: 'mobile-pairing', operation: 'session-create' },
-      extra: { userId: user.id },
+): Promise<IssuedInstalledSession> {
+  try {
+    return await mintInstalledClientSession({
+      userId,
+      method: 'mobile',
+      deviceId,
+      meta,
     })
-    throw new MobilePairingError()
+  } catch (error) {
+    if (error instanceof InstalledClientSessionError) throw new MobilePairingError()
+    throw error
   }
+}
 
+function mobileSessionResponse(
+  issued: IssuedInstalledSession,
+  deviceId: string,
+  refreshToken: string,
+  refreshExpiresAt: Date,
+): MobileSessionResponse {
   return {
-    token: session.token,
-    expiresAt: new Date(session.expiresAt).toISOString(),
-    user: { id: user.id, email: user.email, name: user.name },
+    token: issued.session.token,
+    expiresAt: new Date(issued.session.expiresAt).toISOString(),
+    refreshToken,
+    refreshExpiresAt: refreshExpiresAt.toISOString(),
+    deviceId,
+    user: {
+      id: issued.user.id,
+      email: issued.user.email,
+      name: issued.user.name,
+    },
   }
 }
 
 /**
- * Redeem a pairing token for a mobile session.
- *
- * Single-use is atomic: `DELETE … WHERE token_hash = … RETURNING` — only the
- * request whose delete returns the row may mint a session, so a replayed or
- * concurrent redemption loses cleanly. Expiry is checked on the returned row,
- * and every failure surfaces as the same generic {@link MobilePairingError}.
+ * Redeem a pairing grant into a stable device plus a normal Better Auth access
+ * session. The device owns a separately rotated refresh credential; the access
+ * session deliberately uses the same lifetime policy as desktop token exchange.
  */
 export async function redeemPairingToken(
   token: string,
@@ -187,8 +149,6 @@ export async function redeemPairingToken(
       .returning({ userId: mobilePairingToken.userId, expiresAt: mobilePairingToken.expiresAt })
       .get()
   } catch (error) {
-    // Reaching here means the pairing table itself is failing — report it
-    // (never the token value), deny the client generically.
     captureException(error, { tags: { component: 'mobile-pairing', operation: 'token-consume' } })
     throw new MobilePairingError()
   }
@@ -196,106 +156,151 @@ export async function redeemPairingToken(
     throw new MobilePairingError()
   }
 
-  const auth = getAuth()
-  const ctx = await auth.$context
-  return mintMobileSession(ctx, row.userId, meta)
-}
+  const deviceId = crypto.randomUUID()
+  const refreshToken = newRefreshToken()
+  const now = new Date()
+  const refreshExpiresAt = new Date(now.getTime() + mobileDeviceLifetimeMs())
+  db.insert(mobileDevice)
+    .values({
+      id: deviceId,
+      userId: row.userId,
+      refreshTokenHash: sha256Hex(refreshToken),
+      deviceName: normalizeDeviceName(meta.deviceName),
+      platform: normalizePlatform(meta.platform),
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: refreshExpiresAt,
+    })
+    .run()
 
-export interface MobileSessionForRenewal {
-  id: string
-  userId: string
-  expiresAt: Date
-  deviceName?: string | null
+  try {
+    const issued = await mintMobileAccessSession(row.userId, deviceId, meta)
+    return mobileSessionResponse(issued, deviceId, refreshToken, refreshExpiresAt)
+  } catch (error) {
+    // Device creation and access-session issuance are one logical operation.
+    // Deleting the device also removes any partially created family sessions.
+    db.delete(authSession).where(eq(authSession.deviceId, deviceId)).run()
+    db.delete(mobileDevice).where(eq(mobileDevice.id, deviceId)).run()
+    throw error
+  }
 }
 
 /**
- * Mint a fresh fixed-lifetime mobile session for the caller's user.
- *
- * `purpose: 'renew'` (default) supersedes the calling session with a grace
- * window: the old row's expiry is clamped to at most now + SUPERSEDE_GRACE_MS
- * (never extended), so an app that fails to persist the new token keeps
- * working long enough to retry. `purpose: 'additional-device'` leaves the
- * caller's session untouched.
+ * Rotate a device refresh credential exactly once and replace its access
+ * session. The compare-and-swap on the old hash is the replay/concurrency gate:
+ * only one caller can win, and the losing request never leaves a live session.
  */
 export async function renewMobileSession(
-  session: MobileSessionForRenewal,
-  meta: MobilePairingRequestMeta & { purpose?: RenewPurpose } = {},
+  refreshToken: string,
+  meta: MobilePairingRequestMeta = {},
 ): Promise<MobileSessionResponse> {
-  const auth = getAuth()
-  const ctx = await auth.$context
-  const minted = await mintMobileSession(ctx, session.userId, {
-    ...meta,
-    // A renewal without a new name keeps the device's existing label.
-    deviceName: meta.deviceName ?? session.deviceName ?? undefined,
-  })
+  const oldHash = sha256Hex(refreshToken)
+  const now = new Date()
+  const device = db
+    .select()
+    .from(mobileDevice)
+    .where(and(eq(mobileDevice.refreshTokenHash, oldHash), gt(mobileDevice.expiresAt, now)))
+    .get()
+  if (!device) throw new MobilePairingError('invalid_refresh_token')
 
-  if ((meta.purpose ?? 'renew') === 'renew') {
-    const graceEnd = new Date(Date.now() + SUPERSEDE_GRACE_MS)
-    const currentExpiry = new Date(session.expiresAt)
-    if (currentExpiry.getTime() > graceEnd.getTime()) {
-      db.update(authSession)
-        .set({ expiresAt: graceEnd })
-        .where(eq(authSession.id, session.id))
-        .run()
-    }
+  const rotatedToken = newRefreshToken()
+  const rotatedHash = sha256Hex(rotatedToken)
+  const refreshExpiresAt = new Date(now.getTime() + mobileDeviceLifetimeMs())
+  const deviceName = normalizeDeviceName(meta.deviceName) ?? device.deviceName ?? undefined
+
+  const rotated = db
+    .update(mobileDevice)
+    .set({
+      refreshTokenHash: rotatedHash,
+      deviceName,
+      updatedAt: now,
+      expiresAt: refreshExpiresAt,
+    })
+    .where(
+      and(
+        eq(mobileDevice.id, device.id),
+        eq(mobileDevice.refreshTokenHash, oldHash),
+        gt(mobileDevice.expiresAt, now),
+      ),
+    )
+    .run()
+  if (rotated.changes !== 1) throw new MobilePairingError('invalid_refresh_token')
+
+  try {
+    // The CAS above elected one rotation winner, so it is now safe to remove
+    // the previous access token before minting its replacement.
+    db.delete(authSession).where(eq(authSession.deviceId, device.id)).run()
+    const issued = await mintMobileAccessSession(device.userId, device.id, {
+      ...meta,
+      deviceName,
+      platform: device.platform ?? undefined,
+    })
+    return mobileSessionResponse(issued, device.id, rotatedToken, refreshExpiresAt)
+  } catch (error) {
+    // The new secret has not left this process. Restore the old grant so a
+    // transient session-mint failure is retryable rather than unpairing the app.
+    db.update(mobileDevice)
+      .set({
+        refreshTokenHash: oldHash,
+        deviceName: device.deviceName,
+        updatedAt: device.updatedAt,
+        expiresAt: device.expiresAt,
+      })
+      .where(and(eq(mobileDevice.id, device.id), eq(mobileDevice.refreshTokenHash, rotatedHash)))
+      .run()
+    throw error
   }
-
-  return minted
 }
 
 export interface MobileDevice {
   id: string
   deviceName: string | null
+  platform: string | null
   createdAt: Date
   updatedAt: Date
   expiresAt: Date
 }
 
-/**
- * The user's mobile-paired sessions, for the paired-devices list. Ids, labels
- * and timestamps only — token values never leave the database.
- */
+/** One row per physical paired device; expired refresh grants are not paired. */
 export function listMobileDevices(userId: string): MobileDevice[] {
   return db
     .select({
-      id: authSession.id,
-      deviceName: authSession.deviceName,
-      createdAt: authSession.createdAt,
-      updatedAt: authSession.updatedAt,
-      expiresAt: authSession.expiresAt,
+      id: mobileDevice.id,
+      deviceName: mobileDevice.deviceName,
+      platform: mobileDevice.platform,
+      createdAt: mobileDevice.createdAt,
+      updatedAt: mobileDevice.updatedAt,
+      expiresAt: mobileDevice.expiresAt,
     })
-    .from(authSession)
-    .where(and(eq(authSession.userId, userId), eq(authSession.creationMethod, 'mobile')))
-    .orderBy(asc(authSession.createdAt))
+    .from(mobileDevice)
+    .where(and(eq(mobileDevice.userId, userId), gt(mobileDevice.expiresAt, new Date())))
+    .orderBy(asc(mobileDevice.createdAt))
     .all()
 }
 
-/**
- * Revoke one of the user's mobile-paired sessions by deleting its row (the
- * same mechanism the concurrent-session reaper uses — the bearer token dies
- * with the row). Scoped to the caller's own `creationMethod = 'mobile'` rows;
- * anything else reports not-found. Records a `session:revoked` audit event.
- */
-export async function revokeMobileDevice(userId: string, sessionId: string): Promise<boolean> {
-  const deleted = db
-    .delete(authSession)
-    .where(
-      and(
-        eq(authSession.id, sessionId),
-        eq(authSession.userId, userId),
-        eq(authSession.creationMethod, 'mobile'),
-      ),
-    )
-    .returning({ id: authSession.id })
-    .get()
+/** Revoke an entire mobile device family, including every access session. */
+export async function revokeMobileDevice(userId: string, deviceId: string): Promise<boolean> {
+  const deleted = db.transaction((tx) => {
+    const owned = tx
+      .select({ id: mobileDevice.id })
+      .from(mobileDevice)
+      .where(and(eq(mobileDevice.id, deviceId), eq(mobileDevice.userId, userId)))
+      .get()
+    if (!owned) return false
+    // Explicit deletion keeps revocation correct even on SQLite builds that do
+    // not enforce foreign-key cascades, while the schema FK remains the backstop.
+    tx.delete(authSession).where(eq(authSession.deviceId, deviceId)).run()
+    tx.delete(mobileDevice).where(eq(mobileDevice.id, deviceId)).run()
+    return true
+  })
   if (!deleted) return false
 
   await logAuditEvent({
     userId,
     object: 'session',
-    objectId: sessionId,
+    objectId: deviceId,
     action: 'revoked',
-    details: { method: 'mobile' },
+    details: { method: 'mobile', scope: 'device-family' },
   })
   return true
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import QRCode from 'react-qr-code'
 import { Loader2, QrCode, RefreshCw, Smartphone, Trash2 } from 'lucide-react'
@@ -46,8 +46,14 @@ function PairingQrCard() {
   const [secondsLeft, setSecondsLeft] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [minting, setMinting] = useState(false)
+  const mintInFlight = useRef(false)
 
   const mint = useCallback(async () => {
+    // The expiry interval ticks every second. Without a synchronous guard, a
+    // slow request starts several overlapping mints; the three-token server cap
+    // can then evict a late response before it is rendered as the current QR.
+    if (mintInFlight.current) return
+    mintInFlight.current = true
     setMinting(true)
     setError(null)
     try {
@@ -56,6 +62,7 @@ function PairingQrCard() {
       setPairing(null)
       setError(err instanceof Error ? err.message : 'Failed to create pairing code')
     } finally {
+      mintInFlight.current = false
       setMinting(false)
     }
   }, [])

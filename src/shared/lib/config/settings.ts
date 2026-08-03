@@ -154,8 +154,8 @@ export interface AuthSettings {
   sessionMaxLifetimeHrs?: number
   sessionIdleTimeoutMin?: number
   maxConcurrentSessions?: number
-  /** Fixed lifetime (days) of sessions minted via the mobile pairing flow. */
-  mobileSessionLifetimeDays?: number
+  /** Sliding lifetime (days) of the mobile device refresh credential. */
+  mobileDeviceLifetimeDays?: number
 
   // Lockout
   accountLockoutThreshold?: number
@@ -175,7 +175,7 @@ export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
   sessionMaxLifetimeHrs: 24,
   sessionIdleTimeoutMin: 60,
   maxConcurrentSessions: 5,
-  mobileSessionLifetimeDays: 90,
+  mobileDeviceLifetimeDays: 90,
   accountLockoutThreshold: 10,
   accountLockoutDurationMin: 30,
 }

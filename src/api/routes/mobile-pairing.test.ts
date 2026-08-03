@@ -4,8 +4,8 @@
  * token-exchange.integration.test.ts).
  *
  * Proves the full contract: interactive-only minting, hashed single-use
- * pairing tokens, the atomic redeem, the fixed 90-day mobile session, the
- * renew/supersede flow, and per-user scoping of the devices list and revoke.
+ * pairing tokens, shared-lifetime access sessions, atomically rotated refresh
+ * credentials, and per-user device-family listing/revocation.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import fs from 'fs'
@@ -22,7 +22,14 @@ let dbModule: typeof import('@shared/lib/db')
 let app: Hono
 
 function wipeAuthTables(): void {
-  for (const table of ['session', 'account', 'user', 'mobile_pairing_token', 'audit_log']) {
+  for (const table of [
+    'session',
+    'mobile_device',
+    'account',
+    'mobile_pairing_token',
+    'user',
+    'audit_log',
+  ]) {
     dbModule.sqlite.prepare(`DELETE FROM ${table}`).run()
   }
 }
@@ -69,11 +76,11 @@ function redeemRequest(body: unknown, headers: Record<string, string> = {}) {
   })
 }
 
-function renewRequest(sessionToken: string, body: unknown = {}) {
+function renewRequest(refreshToken: string, body: Record<string, unknown> = {}) {
   return app.request('/api/auth/mobile/renew', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...bearer(sessionToken) },
-    body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ refreshToken, ...body }),
   })
 }
 
@@ -87,15 +94,38 @@ async function pairDevice(webToken: string, deviceName = 'Test Phone') {
   return redeemRes.json() as Promise<{
     token: string
     expiresAt: string
+    refreshToken: string
+    refreshExpiresAt: string
+    deviceId: string
     user: { id: string; email: string; name: string }
   }>
 }
 
 function sessionRow(token: string) {
   return dbModule.sqlite
-    .prepare(`SELECT id, user_id, expires_at, creation_method, device_name FROM session WHERE token = ?`)
+    .prepare(`SELECT id, user_id, expires_at, creation_method, device_id FROM session WHERE token = ?`)
     .get(token) as
-    | { id: string; user_id: string; expires_at: number; creation_method: string; device_name: string | null }
+    | { id: string; user_id: string; expires_at: number; creation_method: string; device_id: string | null }
+    | undefined
+}
+
+function deviceRow(id: string) {
+  return dbModule.sqlite
+    .prepare(
+      `SELECT id, user_id, refresh_token_hash, device_name, platform, created_at, updated_at, expires_at
+       FROM mobile_device WHERE id = ?`,
+    )
+    .get(id) as
+    | {
+        id: string
+        user_id: string
+        refresh_token_hash: string
+        device_name: string | null
+        platform: string | null
+        created_at: number
+        updated_at: number
+        expires_at: number
+      }
     | undefined
 }
 
@@ -179,6 +209,25 @@ describe('minting pairing tokens', () => {
     expect(res.status).toBe(403)
   })
 
+  it.each(['impersonation', 'unknown'] as const)(
+    'refuses to mint from a %s session',
+    async (method) => {
+      const { userId } = await signUpUser()
+      const { getAuth } = await import('@shared/lib/auth/index')
+      const { withSessionAuditContext } = await import('@shared/lib/auth/session-audit')
+      const ctx = await getAuth().$context
+      const session = await withSessionAuditContext({ method }, () =>
+        ctx.internalAdapter.createSession(userId, false, {
+          userAgent: method,
+          ipAddress: '',
+        }),
+      )
+
+      const res = await mintRequest(session!.token)
+      expect(res.status).toBe(403)
+    },
+  )
+
   it('caps outstanding tokens at 3 per user, dropping the oldest first', async () => {
     const { token: webToken, userId } = await signUpUser()
     const tokens: string[] = []
@@ -201,7 +250,7 @@ describe('minting pairing tokens', () => {
 })
 
 describe('redeeming', () => {
-  it('redeems for a working 90-day mobile session', async () => {
+  it('redeems for a standard-lived access session and a 90-day device refresh grant', async () => {
     const { token: webToken, userId, email } = await signUpUser()
     const mintRes = await mintRequest(webToken)
     const { token: pairingToken } = await mintRes.json()
@@ -216,26 +265,38 @@ describe('redeeming', () => {
     expect(typeof body.token).toBe('string')
     expect(body.user).toEqual({ id: userId, email, name: expect.any(String) })
 
-    // Fixed ~90-day expiry.
-    const lifetime = new Date(body.expiresAt).getTime() - Date.now()
-    expect(lifetime).toBeGreaterThan(89 * DAY_MS)
-    expect(lifetime).toBeLessThanOrEqual(90 * DAY_MS)
+    // Access sessions share Better Auth's 24-hour policy with desktop token
+    // exchange instead of advertising an override that updateAge later shrinks.
+    const accessLifetime = new Date(body.expiresAt).getTime() - Date.now()
+    expect(accessLifetime).toBeGreaterThan(23 * 60 * 60 * 1000)
+    expect(accessLifetime).toBeLessThanOrEqual(24 * 60 * 60 * 1000)
+    const refreshLifetime = new Date(body.refreshExpiresAt).getTime() - Date.now()
+    expect(refreshLifetime).toBeGreaterThan(89 * DAY_MS)
+    expect(refreshLifetime).toBeLessThanOrEqual(90 * DAY_MS)
+    expect(body.refreshToken).toMatch(/^mr_[A-Za-z0-9_-]{40,}$/)
 
     // The bearer token authenticates through Authenticated().
     const protectedRes = await app.request('/api/protected', { headers: bearer(body.token) })
     expect(protectedRes.status).toBe(200)
     expect((await protectedRes.json()).userId).toBe(userId)
 
-    // Session hygiene: method + trimmed device name persisted on the row.
+    // Session and stable device-family hygiene.
     const row = sessionRow(body.token)
     expect(row?.creation_method).toBe('mobile')
-    expect(row?.device_name).toBe('My iPhone')
+    expect(row?.device_id).toBe(body.deviceId)
+    const device = deviceRow(body.deviceId)
+    expect(device?.device_name).toBe('My iPhone')
+    expect(device?.platform).toBe('ios')
+    expect(device?.refresh_token_hash).toBe(
+      crypto.createHash('sha256').update(body.refreshToken).digest('hex'),
+    )
+    expect(device?.refresh_token_hash).not.toBe(body.refreshToken)
   })
 
   it('caps the device name at 64 characters', async () => {
     const { token: webToken } = await signUpUser()
     const mobile = await pairDevice(webToken, 'x'.repeat(100))
-    expect(sessionRow(mobile.token)?.device_name).toBe('x'.repeat(64))
+    expect(deviceRow(mobile.deviceId)?.device_name).toBe('x'.repeat(64))
   })
 
   it('rejects a double redeem with the same response as an unknown token', async () => {
@@ -286,79 +347,99 @@ describe('redeeming', () => {
 })
 
 describe('renewing', () => {
-  it('rejects renew from a non-mobile (web) session', async () => {
-    const { token: webToken } = await signUpUser()
-    const res = await renewRequest(webToken)
-    expect(res.status).toBe(403)
-  })
-
-  it('renews with supersede-grace: old session clamped to at most 7 days', async () => {
+  it('rotates the refresh credential once and immediately revokes the old access session', async () => {
     const { token: webToken, userId } = await signUpUser()
     const mobile = await pairDevice(webToken)
     const oldRow = sessionRow(mobile.token)!
 
-    const res = await renewRequest(mobile.token, {})
+    const res = await renewRequest(mobile.refreshToken)
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.user.id).toBe(userId)
-    const lifetime = new Date(body.expiresAt).getTime() - Date.now()
-    expect(lifetime).toBeGreaterThan(89 * DAY_MS)
+    expect(body.deviceId).toBe(mobile.deviceId)
+    expect(body.refreshToken).not.toBe(mobile.refreshToken)
 
-    // New session is a distinct, working mobile session with the same label.
+    // Exactly one access session remains for the stable device family.
     const newRow = sessionRow(body.token)!
     expect(newRow.id).not.toBe(oldRow.id)
     expect(newRow.creation_method).toBe('mobile')
-    expect(newRow.device_name).toBe('Test Phone')
+    expect(newRow.device_id).toBe(mobile.deviceId)
+    expect(sessionRow(mobile.token)).toBeUndefined()
+    const count = dbModule.sqlite
+      .prepare(`SELECT count(*) AS n FROM session WHERE device_id = ?`)
+      .get(mobile.deviceId) as { n: number }
+    expect(count.n).toBe(1)
 
-    // Old session's expiry was clamped down into the grace window.
-    const superseded = sessionRow(mobile.token)!
-    expect(superseded.expires_at).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS + 5000)
-    expect(superseded.expires_at).toBeLessThan(oldRow.expires_at)
-    expect(superseded.expires_at).toBeGreaterThan(Date.now())
+    const deadAccess = await app.request('/api/protected', { headers: bearer(mobile.token) })
+    expect(deadAccess.status).toBe(401)
   })
 
-  it('never extends an old session already inside the grace window', async () => {
+  it('rejects replay of a rotated refresh token while the new refresh token still works', async () => {
     const { token: webToken } = await signUpUser()
     const mobile = await pairDevice(webToken)
-    const soon = Date.now() + 1 * DAY_MS
+
+    const first = await renewRequest(mobile.refreshToken)
+    expect(first.status).toBe(200)
+    const rotated = await first.json()
+
+    const replay = await renewRequest(mobile.refreshToken)
+    expect(replay.status).toBe(401)
+    expect(await replay.json()).toEqual({ error: 'invalid_refresh_token' })
+
+    const second = await renewRequest(rotated.refreshToken)
+    expect(second.status).toBe(200)
+  })
+
+  it('allows only one concurrent rotation winner', async () => {
+    const { token: webToken } = await signUpUser()
+    const mobile = await pairDevice(webToken)
+
+    const responses = await Promise.all([
+      renewRequest(mobile.refreshToken),
+      renewRequest(mobile.refreshToken),
+    ])
+    expect(responses.map((res) => res.status).sort()).toEqual([200, 401])
+
+    const sessions = dbModule.sqlite
+      .prepare(`SELECT count(*) AS n FROM session WHERE device_id = ?`)
+      .get(mobile.deviceId) as { n: number }
+    expect(sessions.n).toBe(1)
+  })
+
+  it('rejects the removed additional-device fan-out purpose', async () => {
+    const { token: webToken } = await signUpUser()
+    const mobile = await pairDevice(webToken)
+    const res = await renewRequest(mobile.refreshToken, { purpose: 'additional-device' })
+    expect(res.status).toBe(401)
+    expect(deviceRow(mobile.deviceId)).toBeDefined()
+  })
+
+  it('rejects an expired device refresh credential', async () => {
+    const { token: webToken } = await signUpUser()
+    const mobile = await pairDevice(webToken)
     dbModule.sqlite
-      .prepare(`UPDATE session SET expires_at = ? WHERE token = ?`)
-      .run(soon, mobile.token)
+      .prepare(`UPDATE mobile_device SET expires_at = ? WHERE id = ?`)
+      .run(Date.now() - 1000, mobile.deviceId)
 
-    const res = await renewRequest(mobile.token, { purpose: 'renew' })
-    expect(res.status).toBe(200)
-    expect(sessionRow(mobile.token)!.expires_at).toBe(soon)
-  })
-
-  it('purpose=additional-device leaves the calling session untouched', async () => {
-    const { token: webToken } = await signUpUser()
-    const mobile = await pairDevice(webToken)
-    const before = sessionRow(mobile.token)!
-
-    const res = await renewRequest(mobile.token, {
-      purpose: 'additional-device',
-      deviceName: 'Second Phone',
-    })
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(sessionRow(body.token)!.device_name).toBe('Second Phone')
-    expect(sessionRow(mobile.token)!.expires_at).toBe(before.expires_at)
+    const res = await renewRequest(mobile.refreshToken)
+    expect(res.status).toBe(401)
   })
 })
 
 describe('devices list and revoke', () => {
-  it('lists only the caller-user’s mobile sessions, flagging the current one', async () => {
+  it('lists only the caller-user’s mobile devices, flagging the current one', async () => {
     const userA = await signUpUser()
     const userB = await signUpUser()
     const mobileA = await pairDevice(userA.token, 'A Phone')
     await pairDevice(userB.token, 'B Phone')
 
-    // Via the web session: A sees exactly A's device, not current.
+    // Via the web session: A sees exactly A's stable device, not current.
     const webView = await app.request('/api/auth/mobile/devices', { headers: bearer(userA.token) })
     expect(webView.status).toBe(200)
     const webBody = await webView.json()
     expect(webBody.devices).toHaveLength(1)
     expect(webBody.devices[0].deviceName).toBe('A Phone')
+    expect(webBody.devices[0].id).toBe(mobileA.deviceId)
     expect(webBody.devices[0].isCurrent).toBe(false)
     expect(JSON.stringify(webBody)).not.toContain(mobileA.token)
 
@@ -371,6 +452,28 @@ describe('devices list and revoke', () => {
     expect(mobileBody.devices[0].isCurrent).toBe(true)
   })
 
+  it('keeps one device-list row across refresh rotations and hides expired devices', async () => {
+    const { token: webToken } = await signUpUser()
+    const mobile = await pairDevice(webToken)
+    const renewed = await renewRequest(mobile.refreshToken)
+    expect(renewed.status).toBe(200)
+
+    const afterRenew = await app.request('/api/auth/mobile/devices', {
+      headers: bearer(webToken),
+    })
+    const renewedList = await afterRenew.json()
+    expect(renewedList.devices).toHaveLength(1)
+    expect(renewedList.devices[0].id).toBe(mobile.deviceId)
+
+    dbModule.sqlite
+      .prepare(`UPDATE mobile_device SET expires_at = ? WHERE id = ?`)
+      .run(Date.now() - 1000, mobile.deviceId)
+    const afterExpiry = await app.request('/api/auth/mobile/devices', {
+      headers: bearer(webToken),
+    })
+    expect((await afterExpiry.json()).devices).toEqual([])
+  })
+
   it('requires authentication to list devices', async () => {
     const res = await app.request('/api/auth/mobile/devices')
     expect(res.status).toBe(401)
@@ -379,9 +482,8 @@ describe('devices list and revoke', () => {
   it('revokes an own mobile device: session dies, audit row written', async () => {
     const { token: webToken, userId } = await signUpUser()
     const mobile = await pairDevice(webToken)
-    const mobileSessionId = sessionRow(mobile.token)!.id
 
-    const res = await app.request(`/api/auth/mobile/devices/${mobileSessionId}`, {
+    const res = await app.request(`/api/auth/mobile/devices/${mobile.deviceId}`, {
       method: 'DELETE',
       headers: bearer(webToken),
     })
@@ -389,12 +491,13 @@ describe('devices list and revoke', () => {
 
     // The bearer token is dead with the row.
     expect(sessionRow(mobile.token)).toBeUndefined()
+    expect(deviceRow(mobile.deviceId)).toBeUndefined()
     const protectedRes = await app.request('/api/protected', { headers: bearer(mobile.token) })
     expect(protectedRes.status).toBe(401)
 
     const audit = dbModule.sqlite
       .prepare(`SELECT user_id, action FROM audit_log WHERE object = 'session' AND action = 'revoked' AND object_id = ?`)
-      .get(mobileSessionId) as { user_id: string; action: string } | undefined
+      .get(mobile.deviceId) as { user_id: string; action: string } | undefined
     expect(audit).toBeDefined()
     expect(audit!.user_id).toBe(userId)
   })
@@ -403,7 +506,7 @@ describe('devices list and revoke', () => {
     const userA = await signUpUser()
     const userB = await signUpUser()
     const mobileB = await pairDevice(userB.token)
-    const idB = sessionRow(mobileB.token)!.id
+    const idB = mobileB.deviceId
 
     const res = await app.request(`/api/auth/mobile/devices/${idB}`, {
       method: 'DELETE',
@@ -414,7 +517,7 @@ describe('devices list and revoke', () => {
     expect(sessionRow(mobileB.token)).toBeDefined()
   })
 
-  it('404s when revoking an own non-mobile session', async () => {
+  it('404s when a session id is supplied instead of a device id', async () => {
     const { token: webToken } = await signUpUser()
     const webSessionId = sessionRow(webToken)!.id
 

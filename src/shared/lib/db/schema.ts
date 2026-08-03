@@ -29,6 +29,27 @@ export const user = sqliteTable('user', {
   mustChangePassword: integer('must_change_password', { mode: 'boolean' }).default(false),
 })
 
+/**
+ * Stable installed-mobile-device identity. Access sessions rotate underneath
+ * this row; the refresh secret is stored only as a SHA-256 hash and deleting
+ * the row revokes every session in the device family through the FK below.
+ */
+export const mobileDevice = sqliteTable('mobile_device', {
+  id: text('id').primaryKey(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  refreshTokenHash: text('refresh_token_hash').notNull().unique(),
+  deviceName: text('device_name'),
+  platform: text('platform'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  userIdIdx: index('mobile_device_user_id_idx').on(table.userId),
+  expiresAtIdx: index('mobile_device_expires_at_idx').on(table.expiresAt),
+}))
+
 export const authSession = sqliteTable('session', {
   id: text('id').primaryKey(),
   expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
@@ -53,13 +74,14 @@ export const authSession = sqliteTable('session', {
    */
   creationMethod: text('creation_method'),
   /**
-   * User-facing label for sessions minted through the mobile pairing flow
-   * ("Iddo's iPhone"), shown in the paired-devices list. Null for every other
-   * kind of session.
+   * Stable mobile-device family for an access session. Null for browser and
+   * desktop token-exchange sessions. Deleting the device revokes all access
+   * sessions minted from its refresh credential.
    */
-  deviceName: text('device_name'),
+  deviceId: text('device_id').references(() => mobileDevice.id, { onDelete: 'cascade' }),
 }, (table) => ({
   userIdIdx: index('session_userId_idx').on(table.userId),
+  deviceIdIdx: index('session_device_id_idx').on(table.deviceId),
 }))
 
 export const authAccount = sqliteTable('account', {
@@ -598,6 +620,8 @@ export type UserSettingsRow = typeof userSettings.$inferSelect
 export type NewUserSettingsRow = typeof userSettings.$inferInsert
 export type User = typeof user.$inferSelect
 export type AuthSession = typeof authSession.$inferSelect
+export type MobileDevice = typeof mobileDevice.$inferSelect
+export type NewMobileDevice = typeof mobileDevice.$inferInsert
 export type MobilePairingToken = typeof mobilePairingToken.$inferSelect
 export type NewMobilePairingToken = typeof mobilePairingToken.$inferInsert
 export type AuthAccount = typeof authAccount.$inferSelect

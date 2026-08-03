@@ -14,6 +14,7 @@ const user1 = { name: 'Mona Mobile', email: 'mona@test.com', password: 'password
 let deepLink = ''
 let pairingToken = ''
 let mobileBearer = ''
+let mobileRefresh = ''
 
 test.describe('Mobile pairing', () => {
   test('user signs up and the Mobile settings tab is visible', async ({ user1Page }) => {
@@ -58,8 +59,10 @@ test.describe('Mobile pairing', () => {
     expect(redeem.status()).toBe(200)
     const body = await redeem.json()
     expect(body.token).toBeTruthy()
+    expect(body.refreshToken).toMatch(/^mr_/)
     expect(body.user.email).toBe(user1.email)
     mobileBearer = body.token
+    mobileRefresh = body.refreshToken
 
     // Replay is refused with a generic 401.
     const replay = await request.post('/api/auth/mobile/redeem', {
@@ -76,15 +79,28 @@ test.describe('Mobile pairing', () => {
   })
 
   test('the mobile session renews for a fresh bearer token', async ({ request }) => {
+    const oldBearer = mobileBearer
+    const oldRefresh = mobileRefresh
     const renew = await request.post('/api/auth/mobile/renew', {
-      headers: { authorization: `Bearer ${mobileBearer}` },
-      data: {},
+      data: { refreshToken: oldRefresh },
     })
     expect(renew.status()).toBe(200)
     const body = await renew.json()
     expect(body.token).toBeTruthy()
-    expect(body.token).not.toBe(mobileBearer)
+    expect(body.token).not.toBe(oldBearer)
+    expect(body.refreshToken).not.toBe(oldRefresh)
     mobileBearer = body.token
+    mobileRefresh = body.refreshToken
+
+    const replay = await request.post('/api/auth/mobile/renew', {
+      data: { refreshToken: oldRefresh },
+    })
+    expect(replay.status()).toBe(401)
+
+    const oldAccess = await request.get('/api/agents', {
+      headers: { authorization: `Bearer ${oldBearer}` },
+    })
+    expect(oldAccess.status()).toBe(401)
 
     const res = await request.get('/api/agents', {
       headers: { authorization: `Bearer ${mobileBearer}` },
@@ -101,7 +117,7 @@ test.describe('Mobile pairing', () => {
   })
 
   test('revoking the device kills its bearer token', async ({ request }) => {
-    // Find the current (renewed) session id via the devices endpoint.
+    // Find the current stable device id via the devices endpoint.
     const devicesRes = await request.get('/api/auth/mobile/devices', {
       headers: { authorization: `Bearer ${mobileBearer}` },
     })

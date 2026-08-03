@@ -172,6 +172,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   apiScopePolicies: {},
   tokenExchangeJti: {},
   mobilePairingToken: {},
+  mobileDevice: {},
 }))
 
 vi.mock('fs', () => ({

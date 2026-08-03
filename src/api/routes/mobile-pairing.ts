@@ -26,13 +26,17 @@ function pairingDenied(c: Context) {
   return c.json({ error: 'invalid_pairing_token' }, 401, NO_STORE_HEADERS)
 }
 
+function refreshDenied(c: Context) {
+  return c.json({ error: 'invalid_refresh_token' }, 401, NO_STORE_HEADERS)
+}
+
 interface SessionInfo {
   session: {
     id: string
     userId: string
     expiresAt: Date
     creationMethod?: string | null
-    deviceName?: string | null
+    deviceId?: string | null
   }
   user: { id: string; email: string; name: string }
 }
@@ -41,7 +45,7 @@ interface SessionInfo {
 async function getRequestSession(c: Context): Promise<SessionInfo | null> {
   const { getAuth } = await import('@shared/lib/auth/index')
   const session = await getAuth().api.getSession({ headers: c.req.raw.headers })
-  // Widen: additional fields (creationMethod, deviceName) are persisted on the
+  // Widen: additional fields (creationMethod, deviceId) are persisted on the
   // row and returned by getSession, but not part of the base inferred type.
   return (session as SessionInfo | null) ?? null
 }
@@ -61,15 +65,15 @@ const limitBody = bodyLimit({
 /**
  * POST /pairing-token — mint a short-lived single-use pairing token.
  *
- * Interactive sessions only: a session that itself arrived through a minted
- * token (token-exchange, mobile) must not be able to mint further credentials,
- * or one leaked token could fan out indefinitely.
+ * Explicitly allow only user-authenticated browser sessions. A denylist would
+ * accidentally admit impersonation, unknown/legacy sessions, and future
+ * non-interactive issuers, turning them into persistent device credentials.
  */
 mobilePairing.post('/pairing-token', async (c) => {
   const info = await getRequestSession(c)
   if (!info) return c.json({ error: 'Unauthorized' }, 401, NO_STORE_HEADERS)
   const method = info.session.creationMethod
-  if (method === 'token-exchange' || method === 'mobile') {
+  if (method !== 'password' && method !== 'oidc') {
     return c.json({ error: 'Pairing requires an interactive session' }, 403, NO_STORE_HEADERS)
   }
 
@@ -107,6 +111,7 @@ mobilePairing.post('/redeem', limitBody, async (c) => {
   try {
     const result = await redeemPairingToken(parsed.data.token, {
       deviceName: parsed.data.deviceName,
+      platform: parsed.data.platform,
       userAgent: c.req.header('user-agent'),
       ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || '',
     })
@@ -119,47 +124,31 @@ mobilePairing.post('/redeem', limitBody, async (c) => {
 })
 
 /**
- * POST /renew — mint a fresh mobile session for the calling mobile session.
- * Gated to `creationMethod === 'mobile'`: a browser session renews by logging
- * in, not by minting installed-app credentials.
+ * POST /renew — atomically rotate a device refresh credential and replace its
+ * short-lived access session. Refresh remains possible after access expiry, so
+ * this grant is carried in the no-store JSON body rather than as a bearer.
  */
 mobilePairing.post('/renew', limitBody, async (c) => {
-  const info = await getRequestSession(c)
-  if (!info) return c.json({ error: 'Unauthorized' }, 401, NO_STORE_HEADERS)
-  if (info.session.creationMethod !== 'mobile') {
-    return c.json({ error: 'Only mobile sessions can renew' }, 403, NO_STORE_HEADERS)
-  }
-
-  let body: unknown = {}
+  let body: unknown
   try {
-    const raw = await c.req.text()
-    if (raw) body = JSON.parse(raw)
+    body = await c.req.json()
   } catch {
-    return c.json({ error: 'Invalid JSON body' }, 400, NO_STORE_HEADERS)
+    return refreshDenied(c)
   }
   const parsed = RenewMobileSessionRequestSchema.safeParse(body)
-  if (!parsed.success) return c.json({ error: 'Invalid request body' }, 400, NO_STORE_HEADERS)
+  if (!parsed.success) return refreshDenied(c)
 
   const { renewMobileSession, MobilePairingError } = await import('@shared/lib/auth/mobile-pairing')
   try {
-    const result = await renewMobileSession(
-      {
-        id: info.session.id,
-        userId: info.session.userId,
-        expiresAt: new Date(info.session.expiresAt),
-        deviceName: info.session.deviceName,
-      },
-      {
-        deviceName: parsed.data.deviceName,
-        purpose: parsed.data.purpose,
-        userAgent: c.req.header('user-agent'),
-        ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || '',
-      },
-    )
+    const result = await renewMobileSession(parsed.data.refreshToken, {
+      deviceName: parsed.data.deviceName,
+      userAgent: c.req.header('user-agent'),
+      ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || '',
+    })
     return c.json(result, 200, NO_STORE_HEADERS)
   } catch (error) {
     if (error instanceof MobilePairingError) {
-      return c.json({ error: 'Unauthorized' }, 401, NO_STORE_HEADERS)
+      return refreshDenied(c)
     }
     captureException(error, { tags: { component: 'mobile-pairing', operation: 'renew' } })
     return c.json({ error: 'Internal server error' }, 500, NO_STORE_HEADERS)
@@ -181,15 +170,16 @@ mobilePairing.get('/devices', async (c) => {
     createdAt: new Date(device.createdAt).toISOString(),
     updatedAt: new Date(device.updatedAt).toISOString(),
     expiresAt: new Date(device.expiresAt).toISOString(),
-    isCurrent: device.id === info.session.id,
+    platform: device.platform,
+    isCurrent: device.id === info.session.deviceId,
   }))
   return c.json({ devices })
 })
 
 /**
  * DELETE /devices/:id — revoke one of the caller's paired mobile devices.
- * Someone else's session — or a non-mobile one — is a plain 404: this route
- * does not confirm foreign session ids exist.
+ * Someone else's device is a plain 404: this route does not confirm foreign
+ * device ids exist. Deleting a device revokes its whole rotated token family.
  */
 mobilePairing.delete('/devices/:id', async (c) => {
   const info = await getRequestSession(c)
