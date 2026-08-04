@@ -63,10 +63,10 @@ describe('HomeExtras', () => {
     const user = userEvent.setup()
     render(<HomeExtras agentSlug="test-agent" />)
 
-    await user.click(screen.getByTestId('home-agent-permissions-open-page'))
+    await user.click(screen.getByTestId('home-x-agent-permissions-open-page'))
 
     expect(mocks.navigate).toHaveBeenCalledWith({
-      to: '/agents/$slug/agent-permissions',
+      to: '/agents/$slug/x-agent-permissions',
       params: { slug: 'test-agent' },
     })
   })

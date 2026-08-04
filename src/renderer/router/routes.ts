@@ -14,7 +14,7 @@ import { NotificationDetailRoute } from '@renderer/components/layout/notificatio
 import { AgentShell } from '@renderer/components/layout/agent-shell'
 import {
   AgentHomeRoute,
-  AgentPermissionsRoute,
+  XAgentPermissionsRoute,
   ApiLogsRoute,
   ChatRoute,
   ConnectionsRoute,
@@ -162,10 +162,10 @@ export const secretsRoute = createRoute({
   component: SecretsRoute,
 })
 
-export const agentPermissionsRoute = createRoute({
+export const xAgentPermissionsRoute = createRoute({
   getParentRoute: () => agentLayoutRoute,
-  path: 'agent-permissions',
-  component: AgentPermissionsRoute,
+  path: 'x-agent-permissions',
+  component: XAgentPermissionsRoute,
 })
 
 // ── SETTINGS: SIBLING of app-shell → replaces the whole shell (App.tsx) ───────
@@ -215,7 +215,7 @@ export const routeTree = rootRoute.addChildren([
       apiLogsRoute,
       connectionsRoute,
       secretsRoute,
-      agentPermissionsRoute,
+      xAgentPermissionsRoute,
     ]),
   ]),
   settingsRoute.addChildren([settingsIndexRoute, settingsTabRoute]),

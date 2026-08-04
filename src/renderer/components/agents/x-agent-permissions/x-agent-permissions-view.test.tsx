@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentPermissionsView } from './agent-permissions-view'
+import { XAgentPermissionsView } from './x-agent-permissions-view'
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -56,12 +56,12 @@ function renderView(agentSlug = 'caller') {
   })
   return render(
     <QueryClientProvider client={client}>
-      <AgentPermissionsView agentSlug={agentSlug} />
+      <XAgentPermissionsView agentSlug={agentSlug} />
     </QueryClientProvider>,
   )
 }
 
-describe('AgentPermissionsView', () => {
+describe('XAgentPermissionsView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.canAdmin = true
@@ -113,14 +113,14 @@ describe('AgentPermissionsView', () => {
     mocks.canAdmin = false
     renderView()
 
-    expect(screen.getByTestId('agent-permissions-no-permission')).toBeInTheDocument()
+    expect(screen.getByTestId('x-agent-permissions-no-permission')).toBeInTheDocument()
     expect(screen.getByText('Owner access required')).toBeInTheDocument()
     expect(mocks.apiFetch).not.toHaveBeenCalled()
   })
 
   it('navigates back to the agent home', async () => {
     renderView()
-    fireEvent.click(await screen.findByTestId('agent-permissions-back-button'))
+    fireEvent.click(await screen.findByTestId('x-agent-permissions-back-button'))
 
     expect(mocks.navigate).toHaveBeenCalledWith({
       to: '/agents/$slug',

@@ -1,7 +1,7 @@
 import { Outlet, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
 import { AgentSecretsView } from '@renderer/components/agents/agent-secrets/agent-secrets-view'
-import { AgentPermissionsView } from '@renderer/components/agents/agent-permissions/agent-permissions-view'
+import { XAgentPermissionsView } from '@renderer/components/agents/x-agent-permissions/x-agent-permissions-view'
 import { ConnectionsView } from '@renderer/components/connections/connections-view'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
@@ -71,11 +71,11 @@ export function SecretsRoute() {
   return <AgentSecretsView agentSlug={slug} />
 }
 
-// agent-permissions route: the agent slug is read from the URL.
-export function AgentPermissionsRoute() {
+// x-agent-permissions route: the agent slug is read from the URL.
+export function XAgentPermissionsRoute() {
   const slug = useAgentSlug()
   if (!slug) return null
-  return <AgentPermissionsView agentSlug={slug} />
+  return <XAgentPermissionsView agentSlug={slug} />
 }
 
 // The open detail overlay travels in the URL search (`?detail&source`),

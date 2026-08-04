@@ -39,7 +39,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
   const webhookTriggerId = view.kind === 'webhook' ? view.id : null
   const apiLogsOpen = view.kind === 'apiLogs'
   const secretsOpen = view.kind === 'secrets'
-  const agentPermissionsOpen = view.kind === 'agentPermissions'
+  const xAgentPermissionsOpen = view.kind === 'xAgentPermissions'
   const connectionsOpen = view.kind === 'connections'
 
   const { data: agent } = useAgent(slug)
@@ -178,7 +178,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
             <span className="truncate text-sm font-light text-foreground">Secrets</span>
           </div>
         )}
-        {agentPermissionsOpen && (
+        {xAgentPermissionsOpen && (
           <div className="flex items-center gap-1.5 min-w-0">
             <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
             <span className="truncate text-sm font-light text-foreground">Agent-to-agent Connections</span>

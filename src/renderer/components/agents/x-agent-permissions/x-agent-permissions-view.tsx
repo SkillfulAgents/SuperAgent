@@ -24,7 +24,7 @@ interface PolicyRow {
   updatedAt: string
 }
 
-interface AgentPermissionsViewProps {
+interface XAgentPermissionsViewProps {
   agentSlug: string
 }
 
@@ -44,8 +44,8 @@ function policyKey(operation: Operation, targetSlug: string | null): string {
  * workspace agents. Lived in the agent settings dialog ("Agents" tab) until
  * it moved to its own route like Secrets and API Logs.
  */
-export function AgentPermissionsView({ agentSlug }: AgentPermissionsViewProps) {
-  useRenderTracker('AgentPermissionsView')
+export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps) {
+  useRenderTracker('XAgentPermissionsView')
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
   const queryClient = useQueryClient()
@@ -168,14 +168,14 @@ export function AgentPermissionsView({ agentSlug }: AgentPermissionsViewProps) {
           onClick: () => {
             void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
           },
-          testId: 'agent-permissions-back-button',
+          testId: 'x-agent-permissions-back-button',
         }}
       />
 
       {isAuthMode && !rolesReady ? (
         <p className="text-sm text-muted-foreground">Checking permissions...</p>
       ) : !canManage ? (
-        <div className="rounded-xl border bg-background px-6 py-10 text-center" data-testid="agent-permissions-no-permission">
+        <div className="rounded-xl border bg-background px-6 py-10 text-center" data-testid="x-agent-permissions-no-permission">
           <p className="text-sm font-medium">Owner access required</p>
           <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
             Only agent owners can view and manage agent-to-agent connections.

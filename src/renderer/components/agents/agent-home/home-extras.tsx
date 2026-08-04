@@ -22,9 +22,9 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
         <ExtrasButton
           label="Agent-to-agent connections"
           onClick={() => {
-            void navigate({ to: '/agents/$slug/agent-permissions', params: { slug: agentSlug } })
+            void navigate({ to: '/agents/$slug/x-agent-permissions', params: { slug: agentSlug } })
           }}
-          testId="home-agent-permissions-open-page"
+          testId="home-x-agent-permissions-open-page"
         />
         <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
         <ExtrasButton

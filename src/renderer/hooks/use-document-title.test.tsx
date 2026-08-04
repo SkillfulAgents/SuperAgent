@@ -73,7 +73,7 @@ describe('getDocumentTitle', () => {
       `Agent One${DASH}API Logs`,
     )
     expect(
-      getDocumentTitle({ location: location({ kind: 'agentPermissions' }, 'agent-one'), agentName: 'Agent One' }),
+      getDocumentTitle({ location: location({ kind: 'xAgentPermissions' }, 'agent-one'), agentName: 'Agent One' }),
     ).toBe(`Agent One${DASH}Agent-to-agent Connections`)
     expect(
       getDocumentTitle({
