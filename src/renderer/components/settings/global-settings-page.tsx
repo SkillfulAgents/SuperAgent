@@ -34,8 +34,12 @@ interface GlobalSettingsPageProps {
   sectionLinkProps?: (id: string) => LinkProps
 }
 
-function platformTeamUrl(platformBaseUrl: string, orgId: string): string {
-  return `${platformBaseUrl}/dashboard/organizations/${orgId}?tab=team`
+function platformInviteHref(platformBaseUrl: string, orgId: string | null | undefined): string {
+  const base = platformBaseUrl.replace(/\/+$/, '')
+  // orgId is JWKS-verified and may be null; still send admins somewhere useful.
+  return orgId
+    ? `${base}/dashboard/organizations/${orgId}?tab=team`
+    : `${base}/dashboard`
 }
 
 export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSectionChange, sectionLinkProps }: GlobalSettingsPageProps) {
@@ -44,12 +48,12 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
   const showAdminSettings = !isAuthMode || isAdmin
   const showAuthAdmin = isAuthMode && isAdmin
 
-  // Env-managed platform token = platform-controlled deployment; manage users there.
-  const usersExternalHref =
-    platformAuth?.source === 'env' && platformAuth.platformBaseUrl && platformAuth.orgId
-      ? platformTeamUrl(platformAuth.platformBaseUrl, platformAuth.orgId)
+  // Same predicate as server isPlatformControlledAuth — not JWKS orgId.
+  const hideLocalAuthSections = Boolean(platformAuth?.platformControlled)
+  const platformTeamInviteHref =
+    hideLocalAuthSections && platformAuth?.platformBaseUrl
+      ? platformInviteHref(platformAuth.platformBaseUrl, platformAuth.orgId)
       : undefined
-  const hideLocalAuthSections = Boolean(usersExternalHref)
 
   // Grouped by what the setting concerns (app-level vs agent behavior), not by
   // who can edit it — admin-only sections are filtered per-item instead.
@@ -62,15 +66,14 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
     ...(showAdminSettings ? [{ id: 'admin', label: 'Admin', icon: <Shield className="h-4 w-4" />, render: () => <AdminTab /> }] : []),
     ...(showAuthAdmin
       ? [
-          usersExternalHref
-            ? {
-                id: 'users',
-                label: 'Users',
-                icon: <Users className="h-4 w-4" />,
-                externalHref: usersExternalHref,
-                render: () => null,
-              }
-            : { id: 'users', label: 'Users', icon: <Users className="h-4 w-4" />, render: () => <UsersTab /> },
+          // Keep local role/ban/remove — Platform Team cannot write Better Auth columns.
+          // Invite goes to Platform when platform-controlled (local email invite is off).
+          {
+            id: 'users',
+            label: 'Users',
+            icon: <Users className="h-4 w-4" />,
+            render: () => <UsersTab platformInviteHref={platformTeamInviteHref} />,
+          },
           {
             id: 'auth',
             label: 'Auth',

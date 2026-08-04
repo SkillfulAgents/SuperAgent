@@ -169,19 +169,15 @@ function SettingsPageContent({
     })
   }, [initialSection, sectionIds, isMobile])
 
-  const onSectionChangeRef = React.useRef(onSectionChange)
-  onSectionChangeRef.current = onSectionChange
-
   React.useEffect(() => {
-    const change = onSectionChangeRef.current
-    if (!change || sectionIds.length === 0) return
+    if (!onSectionChange || sectionIds.length === 0) return
     if (initialSection && sectionIds.includes(initialSection)) return
     if (!sectionIds.includes(active)) return
     // URL still names a removed/external section while content shows a valid tab.
     if (initialSection && initialSection !== active) {
-      change(active)
+      onSectionChange(active)
     }
-  }, [initialSection, sectionIds, active])
+  }, [initialSection, sectionIds, active, onSectionChange])
 
   const handleSectionClick = (id: string) => {
     setActive(id)

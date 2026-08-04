@@ -529,7 +529,52 @@ describe('approval and ban enforcement', () => {
   })
 
   // No PLATFORM_TOKEN → exchange fails closed at the org pin (covered above).
-  // requireAdminApproval staying on in that case is covered by auth-settings.test.ts.
+
+  it('bans pending approval on email signup when self-hosted requireAdminApproval is on', async () => {
+    const prevToken = process.env.PLATFORM_TOKEN
+    delete process.env.PLATFORM_TOKEN
+    try {
+      await writeAuthSettings({
+        requireAdminApproval: true,
+        allowLocalAuth: true,
+        signupMode: 'open',
+      })
+      const { getAuth, resetAuth } = await import('./index')
+      resetAuth()
+
+      await getAuth().api.signUpEmail({
+        body: {
+          email: 'admin@example.com',
+          password: 'CorrectHorseBattery1!',
+          name: 'Admin',
+        },
+      })
+      await getAuth().api.signUpEmail({
+        body: {
+          email: 'pending@example.com',
+          password: 'CorrectHorseBattery1!',
+          name: 'Pending',
+        },
+      })
+
+      const pending = dbModule.sqlite
+        .prepare(`SELECT banned, ban_reason FROM user WHERE email = 'pending@example.com'`)
+        .get() as { banned: number; ban_reason: string | null }
+      expect(pending.banned).toBe(1)
+      expect(pending.ban_reason).toBe('Pending admin approval')
+
+      await expect(
+        getAuth().api.signInEmail({
+          body: { email: 'pending@example.com', password: 'CorrectHorseBattery1!' },
+        }),
+      ).rejects.toThrow()
+    } finally {
+      if (prevToken !== undefined) process.env.PLATFORM_TOKEN = prevToken
+      else delete process.env.PLATFORM_TOKEN
+      const { resetAuth } = await import('./index')
+      resetAuth()
+    }
+  })
 
   it('refuses a session for a banned user', async () => {
     const first = await exchangeRequest(await signGrant())

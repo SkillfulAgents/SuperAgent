@@ -36,9 +36,11 @@ import {
   ChevronRight,
   ChevronsUpDown,
   KeyRound,
+  ExternalLink,
 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { openExternalUrl } from '@renderer/lib/open-external'
 import { InviteUserDialog } from './invite-user-dialog'
 import { ResetPasswordDialog } from './reset-password-dialog'
 
@@ -53,7 +55,12 @@ interface AdminUser {
   createdAt: Date
 }
 
-export function UsersTab() {
+interface UsersTabProps {
+  /** Platform-controlled: invite on Platform Team; keep local role/ban/remove. */
+  platformInviteHref?: string
+}
+
+export function UsersTab({ platformInviteHref }: UsersTabProps) {
   const { user: currentUser } = useUser()
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
@@ -188,11 +195,32 @@ export function UsersTab() {
 
   return (
     <div className="space-y-4">
-      {/* Header with Invite button */}
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">Users</span>
-        <Button variant="outline" size="sm" onClick={() => setInviteOpen(true)}>
-          <UserPlus className="h-4 w-4 mr-1.5" />
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <span className="text-sm font-medium">Users</span>
+          {platformInviteHref ? (
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Invite members on Platform. Role, ban, and remove stay here.
+            </p>
+          ) : null}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          data-testid="users-invite-button"
+          onClick={() => {
+            if (platformInviteHref) {
+              void openExternalUrl(platformInviteHref)
+              return
+            }
+            setInviteOpen(true)
+          }}
+        >
+          {platformInviteHref ? (
+            <ExternalLink className="h-4 w-4 mr-1.5" />
+          ) : (
+            <UserPlus className="h-4 w-4 mr-1.5" />
+          )}
           Invite
         </Button>
       </div>
@@ -428,12 +456,13 @@ export function UsersTab() {
         </div>
       )}
 
-      {/* Invite Dialog */}
-      <InviteUserDialog
-        open={inviteOpen}
-        onOpenChange={setInviteOpen}
-        onInvited={invalidateUsers}
-      />
+      {!platformInviteHref ? (
+        <InviteUserDialog
+          open={inviteOpen}
+          onOpenChange={setInviteOpen}
+          onInvited={invalidateUsers}
+        />
+      ) : null}
 
       {/* Reset Password Dialog */}
       <ResetPasswordDialog

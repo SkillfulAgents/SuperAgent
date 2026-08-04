@@ -8,6 +8,7 @@ import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
 import { getSettings } from '@shared/lib/config/settings'
 import { resolveAuthSettings } from './auth-settings'
+import { PENDING_APPROVAL_BAN_REASON } from './clear-pending-approval-bans'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
 import { auditSessionCreated, resolveSessionCreationMethod } from './session-audit'
 import { getGenericOAuthProviderConfigs } from './provider-config'
@@ -149,7 +150,7 @@ function createAuthInstance() {
               const currentAuth = resolveAuthSettings(getSettings().auth)
               if (result.changes === 0 && currentAuth.requireAdminApproval) {
                 db.update(schema.user)
-                  .set({ banned: true, banReason: 'Pending admin approval' })
+                  .set({ banned: true, banReason: PENDING_APPROVAL_BAN_REASON })
                   .where(eq(schema.user.id, createdUser.id))
                   .run()
                 console.log(`User ${createdUser.email} requires admin approval`)
