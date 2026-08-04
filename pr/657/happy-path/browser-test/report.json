@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified browser use feature: agent successfully opened browser, navigated to example.com, retrieved page title \"Example Domain\", and reported findings within 14 seconds.",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891 — Application loaded successfully showing home page with agents list in sidebar.",
+    "Step 2 - Found the \"QA-20260804-192647-rbyq\" agent in the sidebar and clicked it — Agent page opened successfully with chat interface and message input field.",
+    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered in input field and sent using send button; agent status changed to \"working\".",
+    "Step 4 - Waited for response — Agent completed work in 14 seconds, well within the 3-minute timeout. Agent performed the following tool calls in sequence: ToolSearch, Open Browser (with URL https://example.com), Browser MCP: Browser Get State, and Close Browser.",
+    "Step 5 - Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\" — the page just has that heading, a note that the domain is for use in documentation examples, and a \"Learn more\" link. Browser closed.\" Verification requirement satisfied."
+  ],
+  "bugs": [],
+  "durationMs": 87207,
+  "sessionId": "c8a255a9-59cc-4159-bd76-6e85fdbdbf8e",
+  "cost": {
+    "inputTokens": 434,
+    "outputTokens": 14717,
+    "cacheCreationTokens": 130754,
+    "cacheReadTokens": 1281475,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.365609
+  }
+}
