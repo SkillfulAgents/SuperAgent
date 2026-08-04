@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully tested browser-use feature: agent opened browser, navigated to https://example.com, and returned correct page title \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 - Page loaded successfully showing \"Your Agents\" view with the target agent \"QA-20260804-233237-blyw\" visible in sidebar and card view.",
+    "Clicked on \"QA-20260804-233237-blyw\" agent button in sidebar - Page transitioned to agent chat session at /agents/qa-20260804-233237-blyw-pu9ok3e2zl with empty chat and ready input field.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field - Message appeared in the textbox; send button became enabled.",
+    "Clicked the send button - Message was submitted; page navigated to session view at /agents/qa-20260804-233237-blyw-pu9ok3e2zl/sessions/474c0c4a-9298-43b9-b16e-919c436c66ec; agent status changed to \"working\"; browser preview panel appeared on right side.",
+    "Waited for response completion (max 3 minutes) - Agent completed task in 11 seconds; agent status changed to \"idle\"; complete response displayed showing tool calls (ToolSearch, Open Browser, Browser Get State, Close Browser) and final message.",
+    "Verified response mentions \"Example Domain\" - Response text clearly states: \"The page title is \"Example Domain\" — the page has a single heading with that text, a short paragraph about the domain being for documentation examples, and a 'Learn more' link. Browser is closed.\" ✓"
+  ],
+  "bugs": [],
+  "durationMs": 82338,
+  "sessionId": "700ed484-5126-4a12-80d2-63e7c52fd5fc",
+  "cost": {
+    "inputTokens": 520,
+    "outputTokens": 12626,
+    "cacheCreationTokens": 92320,
+    "cacheReadTokens": 1627971,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.341847
+  }
+}
