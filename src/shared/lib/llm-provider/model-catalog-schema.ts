@@ -48,6 +48,8 @@ export const modelDefinitionSchema = z.object({
   family: z.string().optional(),
   /** This id is what the bare `family` alias resolves to (newest in the family). */
   isLatest: z.boolean().optional(),
+  /** Concrete model selected when switching to this model vendor in the picker. */
+  isDefault: z.boolean().optional(),
   // Omit/undefined ⇒ supported (Claude). false ⇒ OpenRouter non-Claude, etc.
   supportsWebSearch: z.boolean().optional(),
   // Omit/undefined ⇒ follow supportsWebSearch. false when search works but fetch does not (Platform Responses).

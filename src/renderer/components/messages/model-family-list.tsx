@@ -46,18 +46,12 @@ export function vendorDisplayName(key: string): string {
   return VENDOR_LABELS[key] ?? capitalize(key)
 }
 
-/**
- * A vendor's flagship: the last `isLatest` entry in its slice of the catalog
- * (catalogs are authored oldest→newest, cheapest→flagship, so the last family's
- * latest is the newest top-line model), falling back to the slice's last entry
- * for custom catalogs with no `isLatest` at all.
- */
-export function vendorFlagship(
+/** The catalog-declared concrete default for a model vendor. */
+export function vendorDefault(
   catalog: ModelDefinition[],
   vendor: string,
 ): ModelDefinition | undefined {
-  const slice = catalog.filter((m) => vendorKey(m) === vendor)
-  return [...slice].reverse().find((m) => m.isLatest) ?? slice[slice.length - 1]
+  return catalog.find((m) => vendorKey(m) === vendor && m.isDefault)
 }
 
 /**
@@ -396,11 +390,12 @@ function LineRow({
 /**
  * Flat model picker shared by the saved-setting selector and the per-message
  * composer. A vendor tab bar (when the catalog spans more than one brand) filters
- * to one vendor; switching tabs also picks that vendor's flagship (unless the
- * selection is already on the tab), so a tab click IS a selection — single-model
- * vendors need no second click. Lineage families (Opus, Sonnet, …) collapse to one row with
- * per-version pin chips revealed on hover/selection, and non-lineage models whose
- * labels share a versioned base ("GPT-5.6 Sol/Terra/Luna") collapse the same way;
+ * to one vendor; switching tabs also picks that vendor's declared default
+ * (unless the selection is already on the tab), so a tab click IS a selection
+ * — single-model vendors need no second click. Lineage families (Opus, Sonnet,
+ * …) collapse to one row with per-version pin chips revealed on hover/selection,
+ * and non-lineage models whose labels share a versioned base ("GPT-5.6
+ * Sol/Terra/Luna") collapse the same way;
  * remaining models render one row each, newest-first. When `offerLatest` is set,
  * rows carry an explicit "Latest" chip storing the bare alias (rides upgrades) —
  * lit when the alias is the stored selection, while a lit version chip means a
@@ -499,7 +494,7 @@ export function ModelFamilyList({
                           aria-checked={isActive}
                           aria-label={vendorDisplayName(key)}
                           data-testid={`model-vendor-tab-${key}`}
-                          // A tab click also SELECTS the vendor's flagship —
+                          // A tab click also SELECTS the vendor's declared default —
                           // without this, single-model tabs (Grok, Kimi) read
                           // as selected while nothing changed. Skipped when the
                           // selection already lives on the clicked tab, so
@@ -510,9 +505,13 @@ export function ModelFamilyList({
                           onClick={() => {
                             setPickedVendor(key)
                             if (resolved && vendorKey(resolved) === key) return
-                            const flagship = vendorFlagship(catalog, key)
-                            if (flagship) {
-                              onPick(offerLatest && flagship.family ? flagship.family : flagship.id)
+                            const defaultModel = vendorDefault(catalog, key)
+                            if (defaultModel) {
+                              // The catalog declares a concrete default. Do
+                              // not turn it into a family alias on settings
+                              // surfaces: the family's latest may be a
+                              // different model now or after an upgrade.
+                              onPick(defaultModel.id)
                             }
                           }}
                           className={cn(
