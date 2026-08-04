@@ -64,6 +64,24 @@ describe('mapExaSearchResponse', () => {
     })
   })
 
+  it('maps favicon when Exa returns one, and omits it when absent', () => {
+    const withIcon = mapExaSearchResponse({
+      results: [
+        {
+          url: 'https://example.com/a',
+          title: 'A',
+          highlights: ['x'],
+          favicon: 'https://example.com/icon.png',
+        },
+      ],
+    })
+    expect(withIcon.hits[0].favicon).toBe('https://example.com/icon.png')
+    const without = mapExaSearchResponse({
+      results: [{ url: 'https://example.com/a', title: 'A', highlights: ['x'] }],
+    })
+    expect('favicon' in without.hits[0]).toBe(false)
+  })
+
   it('normalizes snippet from joined highlights', () => {
     const res = mapExaSearchResponse({
       results: [{ url: 'https://example.com/a', title: 'A', highlights: ['one.', 'two.'] }],
@@ -126,6 +144,28 @@ describe('mapExaContentsResponse', () => {
       publishedDate: '2026-06-01T00:00:00.000Z',
       fetchedAt: AT,
     })
+  })
+
+  it('maps favicon when Exa returns one, and omits it when absent', () => {
+    const withIcon = mapExaContentsResponse(
+      {
+        results: [
+          {
+            url: 'https://example.com/a',
+            title: 'A',
+            text: 'body',
+            favicon: 'https://example.com/icon.png',
+          },
+        ],
+      },
+      AT,
+    )
+    expect(withIcon.favicon).toBe('https://example.com/icon.png')
+    const without = mapExaContentsResponse(
+      { results: [{ url: 'https://example.com/a', title: 'A', text: 'body' }] },
+      AT,
+    )
+    expect('favicon' in without).toBe(false)
   })
 
   it('maps empty content when Exa returns no text (a kept empty result)', () => {

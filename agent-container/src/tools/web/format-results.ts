@@ -10,6 +10,7 @@ export interface WebSearchHostHit {
   title: string | null
   snippet: string
   publishedDate?: string
+  favicon?: string
 }
 
 export interface WebSearchHostResult {
@@ -18,7 +19,13 @@ export interface WebSearchHostResult {
 }
 
 export function formatWebSearchResults(data: WebSearchHostResult): string {
-  const links = data.hits.map((h) => ({ title: h.title ?? h.url, url: h.url }))
+  // favicon rides on the Links line, not the numbered list: the renderer needs it and the model
+  // does not, so it stays out of the prose the model reasons over.
+  const links = data.hits.map((h) => ({
+    title: h.title ?? h.url,
+    url: h.url,
+    ...(h.favicon ? { favicon: h.favicon } : {}),
+  }))
   const lines: string[] = [`Links: ${JSON.stringify(links)}`, '']
 
   if (data.hits.length === 0) {
@@ -45,6 +52,7 @@ export interface WebFetchHostDoc {
   title: string | null
   content: string
   publishedDate?: string
+  favicon?: string
   fetchedAt: string
 }
 
@@ -61,6 +69,7 @@ export function formatWebFetchResult(data: WebFetchHostResult): string {
   const { result } = data
   const lines: string[] = [result.title ?? result.url, result.url]
   if (result.publishedDate) lines.push(`Published: ${result.publishedDate}`)
+  if (result.favicon) lines.push(`Favicon: ${result.favicon}`)
   lines.push('', result.content || '(no content returned)')
 
   if (data.warnings && data.warnings.length > 0) {

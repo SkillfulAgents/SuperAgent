@@ -29,6 +29,7 @@ export function mapExaSearchResponse(raw: unknown): WebSearchResponse {
         title: r.title,
         snippet,
         ...(r.publishedDate ? { publishedDate: r.publishedDate } : {}),
+        ...(r.favicon ? { favicon: r.favicon } : {}),
       }
     }),
   }
@@ -50,6 +51,7 @@ export function mapExaContentsResponse(raw: unknown, fetchedAt: string): WebFetc
     title: first.title ?? null, // failed/empty stubs (filterEmptyResults:false) may omit title
     content: first.text ?? '',
     ...(first.publishedDate ? { publishedDate: first.publishedDate } : {}),
+    ...(first.favicon ? { favicon: first.favicon } : {}),
     fetchedAt,
   }
 }

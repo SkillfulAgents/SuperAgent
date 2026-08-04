@@ -1,51 +1,55 @@
-
+import { useMemo } from 'react'
 import { Search } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { markdownUrlTransform, safeHref } from '@renderer/lib/markdown-url-transform'
+import { SiteFavicon } from '@renderer/components/ui/site-favicon'
 import { webSearchDef } from '@shared/lib/tool-definitions/web-search'
-import type { ToolRenderer, ToolRendererProps } from './types'
+import { flattenSnippet, hostnameOf, parseSearchResult, stripLeadingTitle } from './web-result-parse'
+import { NO_MARKDOWN_IMAGES, SourceMeta } from './shared'
+import type { CollapsedContentProps, ToolRenderer, ToolRendererProps } from './types'
 
-interface SearchLink {
-  title: string
-  url: string
+const MAX_COLLAPSED_ICONS = 5
+const PROSE = 'prose prose-sm max-w-none dark:prose-invert text-xs prose-p:text-xs prose-li:text-xs prose-headings:text-xs'
+
+function snippetOf(source: { title: string; snippet?: string }): string {
+  return source.snippet ? flattenSnippet(stripLeadingTitle(source.snippet, source.title)) : ''
 }
 
-function parseSearchResult(result: string): { links: SearchLink[]; markdown: string } {
-  const links: SearchLink[] = []
-  let markdown = result
+function SourceLink({ title, url }: { title: string; url: string }) {
+  // safeHref returns '' for blocked/hostile URLs (markdown-url-transform.ts:16-27);
+  // linkify.tsx:74-75 is the precedent for skipping empty hrefs.
+  const href = safeHref(url)
+  if (!href) return <span>{title}</span>
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
+      {title}
+    </a>
+  )
+}
 
-  // Try to find and parse the Links: [...] JSON array
-  const linksMatch = result.match(/Links:\s*(\[[\s\S]*?\])\s*\n/)
-  if (linksMatch) {
-    try {
-      const parsed = JSON.parse(linksMatch[1])
-      if (Array.isArray(parsed)) {
-        for (const item of parsed) {
-          if (item.title && item.url) {
-            links.push({ title: item.title, url: item.url })
-          }
-        }
-      }
-    } catch {
-      // Failed to parse links
-    }
-    // Remove everything up to and including the Links JSON from markdown content
-    const afterLinks = result.indexOf(linksMatch[0]) + linksMatch[0].length
-    markdown = result.slice(afterLinks).trim()
-  } else {
-    // If no Links section, strip the header line and show the rest
-    const lines = result.split('\n')
-    if (lines[0]?.startsWith('Web search results for query:')) {
-      markdown = lines.slice(1).join('\n').trim()
-    }
-  }
-
-  return { links, markdown }
+function CollapsedContent({ result, isError }: CollapsedContentProps) {
+  const sources = useMemo(
+    () => (result && !isError ? parseSearchResult(result).sources : []),
+    [result, isError],
+  )
+  if (sources.length === 0) return null
+  const shown = sources.slice(0, MAX_COLLAPSED_ICONS)
+  return (
+    <span aria-hidden className="flex items-center gap-1 shrink-0">
+      {shown.map((s, i) => (
+        <SiteFavicon key={`${i}-${s.url}`} src={s.favicon} className="h-3.5 w-3.5" />
+      ))}
+      {sources.length > shown.length && (
+        <span className="text-2xs text-muted-foreground">+{sources.length - shown.length}</span>
+      )}
+    </span>
+  )
 }
 
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
   const { query } = webSearchDef.parseInput(input)
+  const { sources, leftover } = useMemo(() => parseSearchResult(result ?? ''), [result])
 
   if (isError || !result) {
     return (
@@ -56,7 +60,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
           </div>
         )}
         {result && (
-          <pre className="bg-background text-red-800 dark:text-red-200 rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto">
+          <pre className="bg-background text-red-800 dark:text-red-200 rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto card-scrollbar">
             {result}
           </pre>
         )}
@@ -64,38 +68,49 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
     )
   }
 
-  const { links, markdown } = parseSearchResult(result)
-
   return (
     <div className="space-y-3">
-      {/* Links list */}
-      {links.length > 0 && (
+      {sources.length > 0 && (
         <div>
           <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
-            Sources ({links.length})
+            Sources ({sources.length})
           </div>
-          <ul className="space-y-1">
-            {links.map((link, i) => (
-              <li key={i} className="text-xs">
-                <a
-                  href={link.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-500 hover:underline"
-                >
-                  {link.title}
-                </a>
+          <ul className="space-y-2">
+            {sources.map((s, i) => (
+              <li key={`${i}-${s.url}`} className="flex gap-2 text-xs">
+                <SiteFavicon src={s.favicon} className="h-4 w-4 mt-0.5" />
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                    <SourceLink title={s.title} url={s.url} />
+                    <SourceMeta host={hostnameOf(s.url)} publishedDate={s.publishedDate} />
+                  </div>
+                  {snippetOf(s) && (
+                    // One paragraph, with the title repeat dropped: the raw snippet is page text
+                    // that opens with the same title this row already links.
+                    <div className={`${PROSE} mt-0.5 text-muted-foreground`}>
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        urlTransform={markdownUrlTransform}
+                        components={NO_MARKDOWN_IMAGES}
+                      >
+                        {snippetOf(s)}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
         </div>
       )}
-
-      {/* Markdown content */}
-      {markdown && (
-        <div className="prose prose-sm max-w-none dark:prose-invert text-xs prose-p:text-xs prose-li:text-xs prose-headings:text-xs">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
-            {markdown}
+      {leftover && (
+        <div className={PROSE}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            urlTransform={markdownUrlTransform}
+            components={NO_MARKDOWN_IMAGES}
+          >
+            {leftover}
           </ReactMarkdown>
         </div>
       )}
@@ -108,4 +123,5 @@ export const webSearchRenderer: ToolRenderer = {
   icon: Search,
   getSummary: webSearchDef.getSummary,
   ExpandedView,
+  CollapsedContent,
 }
