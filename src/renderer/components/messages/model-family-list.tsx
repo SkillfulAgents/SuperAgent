@@ -47,6 +47,20 @@ export function vendorDisplayName(key: string): string {
 }
 
 /**
+ * A vendor's flagship: the last `isLatest` entry in its slice of the catalog
+ * (catalogs are authored oldest→newest, cheapest→flagship, so the last family's
+ * latest is the newest top-line model), falling back to the slice's last entry
+ * for custom catalogs with no `isLatest` at all.
+ */
+export function vendorFlagship(
+  catalog: ModelDefinition[],
+  vendor: string,
+): ModelDefinition | undefined {
+  const slice = catalog.filter((m) => vendorKey(m) === vendor)
+  return [...slice].reverse().find((m) => m.isLatest) ?? slice[slice.length - 1]
+}
+
+/**
  * Families whose entries are versions of one product line. These collapse to a
  * single row ("Opus") with per-version pin chips revealed on hover/selection.
  * Families outside this set (e.g. 'gpt', where each entry is a distinct tier)
@@ -382,7 +396,9 @@ function LineRow({
 /**
  * Flat model picker shared by the saved-setting selector and the per-message
  * composer. A vendor tab bar (when the catalog spans more than one brand) filters
- * to one vendor. Lineage families (Opus, Sonnet, …) collapse to one row with
+ * to one vendor; switching tabs also picks that vendor's flagship (unless the
+ * selection is already on the tab), so a tab click IS a selection — single-model
+ * vendors need no second click. Lineage families (Opus, Sonnet, …) collapse to one row with
  * per-version pin chips revealed on hover/selection, and non-lineage models whose
  * labels share a versioned base ("GPT-5.6 Sol/Terra/Luna") collapse the same way;
  * remaining models render one row each, newest-first. When `offerLatest` is set,
@@ -483,7 +499,22 @@ export function ModelFamilyList({
                           aria-checked={isActive}
                           aria-label={vendorDisplayName(key)}
                           data-testid={`model-vendor-tab-${key}`}
-                          onClick={() => setPickedVendor(key)}
+                          // A tab click also SELECTS the vendor's flagship —
+                          // without this, single-model tabs (Grok, Kimi) read
+                          // as selected while nothing changed. Skipped when the
+                          // selection already lives on the clicked tab, so
+                          // re-clicking your own tab can't clobber a pinned
+                          // version or bare alias. The pick is provisional:
+                          // picks never dismiss, so the check lands in view
+                          // and any other row is one click away.
+                          onClick={() => {
+                            setPickedVendor(key)
+                            if (resolved && vendorKey(resolved) === key) return
+                            const flagship = vendorFlagship(catalog, key)
+                            if (flagship) {
+                              onPick(offerLatest && flagship.family ? flagship.family : flagship.id)
+                            }
+                          }}
                           className={cn(
                             'inline-flex h-6 w-8 items-center justify-center rounded-md transition-all hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                             isActive && 'bg-background text-foreground shadow'

@@ -9,6 +9,7 @@ import {
   familyDisplayName,
   formatTokenThreshold,
   longContextWarningText,
+  vendorFlagship,
   webToolsWarning,
 } from './model-family-list'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
@@ -98,6 +99,22 @@ describe('webToolsWarning', () => {
       ),
     ).toBeNull()
     expect(webToolsWarning(CATALOG.find((m) => m.id === 'openai/gpt-5.5'), true)).toBeNull()
+  })
+})
+
+describe('vendorFlagship', () => {
+  it('returns the last isLatest entry of the vendor slice (catalogs run cheapest→flagship)', () => {
+    // Sonnet is also isLatest but appears earlier — the flagship is the LAST one.
+    expect(vendorFlagship(CATALOG, 'anthropic')?.id).toBe('claude-opus-4-8')
+    expect(vendorFlagship(CATALOG, 'openai')?.id).toBe('openai/gpt-5.5')
+  })
+  it('falls back to the slice last entry when nothing is marked isLatest', () => {
+    const custom: ModelDefinition[] = [
+      { id: 'a', label: 'A', icon: 'uploaded:x.png', supportedEfforts: STD },
+      { id: 'b', label: 'B', icon: 'uploaded:x.png', supportedEfforts: STD },
+    ]
+    expect(vendorFlagship(custom, 'other')?.id).toBe('b')
+    expect(vendorFlagship(custom, 'anthropic')).toBeUndefined()
   })
 })
 
@@ -213,21 +230,78 @@ describe('ModelFamilyList', () => {
     expect(screen.queryByTestId('model-pinned-claude-opus-4-8')).not.toBeInTheDocument()
   })
 
-  it('switching vendor tab swaps the model list without picking a model', async () => {
+  it('switching vendor tab swaps the model list and picks the vendor flagship', async () => {
     const user = userEvent.setup()
     const onPick = vi.fn()
-    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={onPick} />)
+    // Stateful harness: the auto-pick really moves the selection, as it does
+    // live — the follow-up tab click must see the moved selection.
+    function Harness() {
+      const [value, setValue] = useState('claude-opus-4-8')
+      return (
+        <ModelFamilyList
+          catalog={CATALOG}
+          value={value}
+          onPick={(v) => {
+            onPick(v)
+            setValue(v)
+          }}
+        />
+      )
+    }
+    render(<Harness />)
     expect(screen.getByTestId('model-pinned-claude-opus-4-8')).toBeInTheDocument()
     expect(screen.queryByTestId('model-pinned-openai/gpt-5.5')).not.toBeInTheDocument()
 
+    // Cross-vendor click: list swaps AND the vendor's flagship is selected —
+    // a tab click is a selection, not just a filter.
     await user.click(screen.getByTestId('model-vendor-tab-openai'))
     expect(screen.getByTestId('model-pinned-openai/gpt-5.5')).toBeInTheDocument()
     expect(screen.queryByTestId('model-pinned-claude-opus-4-8')).not.toBeInTheDocument()
-    expect(onPick).not.toHaveBeenCalled()
+    expect(onPick).toHaveBeenLastCalledWith('openai/gpt-5.5')
 
-    // Round-trip back: the Anthropic models return, selection intact.
+    // Round-trip back: the Anthropic models return with their flagship picked.
     await user.click(screen.getByTestId('model-vendor-tab-anthropic'))
     expect(screen.getByTestId('model-pinned-claude-opus-4-8')).toBeInTheDocument()
+    expect(onPick).toHaveBeenLastCalledWith('claude-opus-4-8')
+  })
+
+  it('clicking the tab that owns the selection never re-picks (a pin survives)', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-7" onPick={onPick} />)
+    // The pinned 4.7 (not the flagship 4.8) must not be clobbered.
+    await user.click(screen.getByTestId('model-vendor-tab-anthropic'))
+    expect(onPick).not.toHaveBeenCalled()
+  })
+
+  it('a single-model vendor tab selects its only model on click', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    const withGrok: ModelDefinition[] = [
+      ...CATALOG,
+      { id: 'grok-4.5', label: 'Grok 4.5', family: 'grok', isLatest: true, icon: 'xai', supportedEfforts: STD },
+    ]
+    render(<ModelFamilyList catalog={withGrok} value="claude-opus-4-8" onPick={onPick} />)
+    // The motivating confusion: one model listed, tab highlighted, nothing
+    // selected. The tab click now IS the selection.
+    await user.click(screen.getByTestId('model-vendor-tab-xai'))
+    expect(onPick).toHaveBeenCalledWith('grok-4.5')
+  })
+
+  it('tab auto-pick stores the bare family alias in settings mode, the id for family-less models', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    const withStandalone: ModelDefinition[] = [
+      ...CATALOG,
+      { id: 'local-llama', label: 'Llama 3 8B', icon: 'uploaded:my-provider.png', supportedEfforts: STD },
+    ]
+    render(<ModelFamilyList catalog={withStandalone} value="opus" onPick={onPick} offerLatest />)
+    // Alias (rides upgrades), matching what a row click on that tab stores.
+    await user.click(screen.getByTestId('model-vendor-tab-openai'))
+    expect(onPick).toHaveBeenLastCalledWith('gpt')
+    // No family to alias under "Other" — fall back to the concrete id.
+    await user.click(screen.getByTestId('model-vendor-tab-other'))
+    expect(onPick).toHaveBeenLastCalledWith('local-llama')
   })
 
   it('warns when a non-Claude model lacks web tools and no vendor is set, and not for Claude', () => {
