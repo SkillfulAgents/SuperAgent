@@ -60,15 +60,26 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => ({ isStreaming: false }),
 }))
 
+const mockUseSettings = vi.fn()
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({
-    data: { llmProvider: 'anthropic', apiKeyStatus: { anthropic: { isConfigured: true } } },
-  }),
+  useSettings: (options?: { enabled?: boolean }) => mockUseSettings(options),
 }))
 
+// Account-menu identity: default is the BYOK state (no auth user, platform
+// not connected but reachable). Tests flip these to drive the other states.
 const mockUsePlatformAuthStatus = vi.fn()
+const mockHandleConnect = vi.fn()
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => mockUsePlatformAuthStatus(),
+  usePlatformConnect: () => ({
+    handleConnect: mockHandleConnect,
+    isLaunching: false,
+    error: null,
+    message: null,
+    isConnected: false,
+    platformAuth: undefined,
+    isLoadingPlatformAuth: false,
+  }),
 }))
 
 vi.mock('@renderer/hooks/use-user-settings', () => ({
@@ -137,7 +148,7 @@ vi.mock('@renderer/context/search-context', () => ({
 const mockUserContext = {
   isAuthMode: false,
   isAdmin: true,
-  user: null,
+  user: null as { name: string; email: string; image?: string | null } | null,
   signOut: vi.fn(),
   agentMemberCount: () => 1,
 }
@@ -336,12 +347,16 @@ beforeEach(() => {
   mockGetPlatform.mockReturnValue('web')
   mockUserContext.isAuthMode = false
   mockUserContext.user = null
+  mockUseSettings.mockReturnValue({
+    data: { llmProvider: 'anthropic', apiKeyStatus: { anthropic: { isConfigured: true } } },
+  })
   mockUsePlatformAuthStatus.mockReturnValue({
     data: {
       connected: false,
       email: null,
       orgId: null,
       orgName: null,
+      source: null,
       platformBaseUrl: 'https://platform.test.gamut.so',
     },
   })
@@ -470,26 +485,95 @@ describe('AppSidebar — layout & top nav', () => {
   })
 })
 
-describe('AppSidebar — auth identity enrichment', () => {
-  it('uses Better Auth identity when platform metadata is unavailable', async () => {
+describe('AppSidebar — account menu identity states', () => {
+  it('non-auth mode presents the settings provider, not an account', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('user-menu-trigger')).toHaveTextContent('Personal')
+    expect(screen.getByTestId('user-menu-trigger')).toHaveTextContent('Anthropic API key')
+    expect(mockUseSettings).toHaveBeenCalledWith({ enabled: true })
+
+    await user.click(screen.getByTestId('user-menu-trigger'))
+    expect(await screen.findByText('Using your own Anthropic API key')).toBeInTheDocument()
+    expect(screen.getByTestId('connect-platform-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('upgrade-to-pro-button')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('sign-out-button')).not.toBeInTheDocument()
+  })
+
+  it('non-auth mode shows the configured provider in the trigger subline', () => {
+    mockUseSettings.mockReturnValue({ data: { llmProvider: 'openrouter' } })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('user-menu-trigger')).toHaveTextContent('OpenRouter')
+  })
+
+  it('non-auth mode can start the platform login flow', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<AppSidebar />)
+    await user.click(screen.getByTestId('user-menu-trigger'))
+    await user.click(await screen.findByTestId('connect-platform-button'))
+    expect(mockHandleConnect).toHaveBeenCalledTimes(1)
+  })
+
+  it('non-auth mode omits connect when no platform is configured', async () => {
+    // Self-hosted / platform unreachable: no platformBaseUrl in the status.
+    mockUsePlatformAuthStatus.mockReturnValue({
+      data: { connected: false, email: null, source: null, platformBaseUrl: '' },
+    })
+    const user = userEvent.setup()
+    renderWithProviders(<AppSidebar />)
+    await user.click(screen.getByTestId('user-menu-trigger'))
+    expect(await screen.findByTestId('settings-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('connect-platform-button')).not.toBeInTheDocument()
+  })
+
+  it('non-auth mode keeps the provider fallback when platform is connected', async () => {
+    mockUseSettings.mockReturnValue({ data: { llmProvider: 'platform' } })
+    mockUsePlatformAuthStatus.mockReturnValue({
+      data: {
+        connected: true,
+        email: 'west@example.com',
+        orgId: 'org_west',
+        orgName: 'West Engines',
+        source: 'settings',
+        platformBaseUrl: 'https://platform.test.gamut.so',
+      },
+    })
+    const user = userEvent.setup()
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('user-menu-trigger')).toHaveTextContent('Personal')
+    expect(screen.getByTestId('user-menu-trigger')).toHaveTextContent('Gamut platform')
+
+    await user.click(screen.getByTestId('user-menu-trigger'))
+    expect(await screen.findByText('Using Gamut platform credits')).toBeInTheDocument()
+    expect(screen.queryByTestId('upgrade-to-pro-button')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('connect-platform-button')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('sign-out-button')).not.toBeInTheDocument()
+  })
+
+  it('auth mode uses Better Auth identity without a linked platform identity', async () => {
     vi.stubGlobal('__AUTH_MODE__', true)
     mockUserContext.isAuthMode = true
     mockUserContext.user = {
       name: 'Ada Lovelace',
       email: 'ada@example.com',
       image: null,
-    } as never
-
+    }
     const user = userEvent.setup()
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('user-menu-trigger')).toHaveTextContent('Ada Lovelace')
+    expect(screen.getByTestId('user-menu-trigger')).toHaveTextContent('ada@example.com')
+    expect(mockUseSettings).toHaveBeenCalledWith({ enabled: false })
 
     await user.click(screen.getByTestId('user-menu-trigger'))
-    expect(await screen.findByText('ada@example.com')).toBeInTheDocument()
+    expect(screen.getAllByText('ada@example.com')).toHaveLength(2)
     expect(screen.queryByTestId('upgrade-to-pro-button')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('connect-platform-button')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('sign-out-button')).not.toBeInTheDocument()
   })
 
-  it('enriches Better Auth identity and billing from connected platform metadata', async () => {
+  it('auth mode enriches Better Auth identity and billing from platform metadata', async () => {
     vi.stubGlobal('__AUTH_MODE__', true)
     mockUserContext.isAuthMode = true
     mockUserContext.user = {
@@ -503,6 +587,7 @@ describe('AppSidebar — auth identity enrichment', () => {
         email: 'ada@platform.example',
         orgId: 'org_ada',
         orgName: 'Analytical Engines',
+        source: 'env',
         platformBaseUrl: 'https://platform.test.gamut.so',
       },
     })
@@ -521,6 +606,7 @@ describe('AppSidebar — auth identity enrichment', () => {
       'noopener,noreferrer'
     )
     openWindow.mockRestore()
+    expect(screen.queryByTestId('sign-out-button')).not.toBeInTheDocument()
   })
 })
 

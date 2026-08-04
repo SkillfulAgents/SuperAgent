@@ -4,7 +4,8 @@ import {
   ChevronDown,
   CircleFadingArrowUp,
   CircleHelp,
-  LogOut,
+  Cloud,
+  KeyRound,
   Mail,
   MessagesSquare,
   Monitor,
@@ -29,7 +30,8 @@ import {
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { useUser } from '@renderer/context/user-context'
-import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
+import { usePlatformAuthStatus, usePlatformConnect } from '@renderer/hooks/use-platform-auth'
+import { useSettings, type LlmProviderId } from '@renderer/hooks/use-settings'
 import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
 import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
 import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
@@ -49,12 +51,36 @@ const HELP_LINKS = [
   { key: 'support_call', label: 'Book a support call', href: SUPPORT_CALL_URL, icon: Calendar },
 ] as const
 
+// BYOK (no account) presentation: `short` is the trigger subline, `detail`
+// the menu-header second line. `platform` shouldn't appear without a
+// connected account, but the map stays total so a mid-transition render
+// (defaults applied before the auth query refetches) doesn't mislabel.
+const PROVIDER_LABELS: Record<LlmProviderId, { short: string; detail: string }> = {
+  anthropic: { short: 'Anthropic API key', detail: 'Using your own Anthropic API key' },
+  openrouter: { short: 'OpenRouter', detail: 'Using your own OpenRouter key' },
+  bedrock: { short: 'AWS Bedrock', detail: 'Using AWS Bedrock credentials' },
+  generic: { short: 'Custom endpoint', detail: 'Using a custom API endpoint' },
+  platform: { short: 'Gamut platform', detail: 'Using Gamut platform credits' },
+}
+
 function openExternal(url: string) {
   if (window.electronAPI?.openExternal) {
     void window.electronAPI.openExternal(url)
     return
   }
   window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+function AvatarCircle({ size = 32, children }: { size?: number; children: React.ReactNode }) {
+  return (
+    <div
+      aria-hidden="true"
+      className="flex shrink-0 items-center justify-center rounded-full border border-border/60 bg-muted text-xs font-semibold"
+      style={{ width: size, height: size }}
+    >
+      {children}
+    </div>
+  )
 }
 
 function AccountAvatar({
@@ -169,29 +195,34 @@ function AppearanceRow() {
 }
 
 // Sidebar-footer account menu, mirroring the platform web app's user menu.
+//
+// Auth mode always presents the Better Auth user as the core identity. A
+// linked platform account enriches that identity and enables billing actions.
+// Non-auth mode presents the local provider/settings workspace fallback.
 export function UserMenu() {
   const { isAuthMode, user } = useUser()
   const { openSettings } = useDialogs()
+  const { data: settings } = useSettings({ enabled: !isAuthMode })
   const { data: platformAuth } = usePlatformAuthStatus()
+  const { handleConnect } = usePlatformConnect()
   const { switching, switchTo } = useTargetSwitch()
   const updateStatus = useUpdateStatus()
   const updateAvailable = updateStatus.state === 'available' || updateStatus.state === 'downloaded'
   const showUseThisComputer = isAuthMode && !!user && !hasInteractiveLogin()
 
-  // Better Auth owns identity in auth mode. Platform account data enriches the
-  // secondary metadata and billing destination, but never determines whether
-  // the user has an identity. PR #661 supplies the provider/settings fallback
-  // for non-auth mode.
-  const displayName = isAuthMode && user
+  const hasAuthIdentity = isAuthMode && !!user
+  const providerLabels = PROVIDER_LABELS[settings?.llmProvider ?? 'anthropic']
+  const displayName = hasAuthIdentity
     ? (user.name.trim() || user.email)
     : 'Personal'
-  const email = isAuthMode && user
+  const email = hasAuthIdentity
     ? (platformAuth?.connected && platformAuth.email ? platformAuth.email : user.email)
     : null
-  const avatarUrl = isAuthMode && user ? user.image : null
-  const upgradeUrl = isAuthMode && platformAuth?.connected && platformAuth.platformBaseUrl && platformAuth.orgId
+  const avatarUrl = hasAuthIdentity ? user.image : null
+  const upgradeUrl = hasAuthIdentity && platformAuth?.connected && platformAuth.platformBaseUrl && platformAuth.orgId
     ? `${platformAuth.platformBaseUrl}/dashboard/organizations/${platformAuth.orgId}?tab=billing`
     : null
+  const canConnectPlatform = !isAuthMode && !platformAuth?.connected && !!platformAuth?.platformBaseUrl
 
   return (
     /* modal={false}: a modal menu can leave `pointer-events: none` stuck on
@@ -205,10 +236,24 @@ export function UserMenu() {
           data-testid="user-menu-trigger"
           className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-foreground/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30 data-[state=open]:bg-foreground/5"
         >
-          <AccountAvatar name={displayName} image={avatarUrl} />
+          {hasAuthIdentity ? (
+            <AccountAvatar name={displayName} image={avatarUrl} />
+          ) : (
+            <AvatarCircle>
+              <KeyRound className="size-3.5 text-muted-foreground" aria-hidden="true" />
+            </AvatarCircle>
+          )}
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-foreground">{displayName}</p>
-            {upgradeUrl && <p className="truncate text-xs text-brand">Upgrade to Pro</p>}
+            {hasAuthIdentity ? (
+              upgradeUrl ? (
+                <p className="truncate text-xs text-brand">Upgrade to Pro</p>
+              ) : (
+                <p className="truncate text-xs text-muted-foreground">{user.email}</p>
+              )
+            ) : (
+              <p className="truncate text-xs text-muted-foreground">{providerLabels.short}</p>
+            )}
           </div>
           <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
         </button>
@@ -222,12 +267,15 @@ export function UserMenu() {
       >
         <div className="px-2 pb-1.5 pt-1">
           <p className="truncate text-sm font-medium text-foreground">{displayName}</p>
-          {email && <p className="truncate text-xs text-muted-foreground">{email}</p>}
+          <p className="truncate text-xs text-muted-foreground">
+            {hasAuthIdentity ? email : providerLabels.detail}
+          </p>
         </div>
 
         {/* Sized to match the app's small outline buttons, like the platform
-            account menu's upgrade CTA. */}
-        {upgradeUrl && (
+            account menu's upgrade CTA. In non-auth mode this slot is the
+            deliberately quiet platform-connect hook. */}
+        {upgradeUrl ? (
           <DropdownMenuItem
             onSelect={() => openExternal(upgradeUrl)}
             data-testid="upgrade-to-pro-button"
@@ -236,6 +284,17 @@ export function UserMenu() {
             <CircleFadingArrowUp className="size-3.5" aria-hidden="true" />
             Upgrade to Pro
           </DropdownMenuItem>
+        ) : (
+          canConnectPlatform && (
+            <DropdownMenuItem
+              onSelect={() => void handleConnect()}
+              data-testid="connect-platform-button"
+              className="mx-1 mb-2 mt-1 h-8 justify-center rounded-md border border-input bg-background px-3 text-xs font-medium focus:bg-sidebar-accent focus:text-sidebar-accent-foreground"
+            >
+              <Cloud className="size-3.5" aria-hidden="true" />
+              Connect Gamut account
+            </DropdownMenuItem>
+          )
         )}
 
         <DropdownMenuSeparator className="bg-sidebar-border/60" />
@@ -265,7 +324,7 @@ export function UserMenu() {
             className="focus:bg-sidebar-accent focus:text-sidebar-accent-foreground"
           >
             <span className="flex-1">Use this computer</span>
-            <LogOut className="size-4 text-muted-foreground" aria-hidden="true" />
+            <Monitor className="size-4 text-muted-foreground" aria-hidden="true" />
           </DropdownMenuItem>
         )}
 
