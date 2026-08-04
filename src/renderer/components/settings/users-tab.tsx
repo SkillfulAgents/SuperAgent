@@ -56,11 +56,13 @@ interface AdminUser {
 }
 
 interface UsersTabProps {
-  /** Platform-controlled: invite on Platform Team; keep local role/ban/remove. */
+  /** Same gate as AuthTab hideLocalAuthSections — not the invite URL. */
+  platformControlled?: boolean
+  /** Opens Platform Team for invite; may be undefined if base URL is missing. */
   platformInviteHref?: string
 }
 
-export function UsersTab({ platformInviteHref }: UsersTabProps) {
+export function UsersTab({ platformControlled = false, platformInviteHref }: UsersTabProps) {
   const { user: currentUser } = useUser()
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
@@ -198,7 +200,7 @@ export function UsersTab({ platformInviteHref }: UsersTabProps) {
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <span className="text-sm font-medium">Users</span>
-          {platformInviteHref ? (
+          {platformControlled ? (
             <p className="text-xs text-muted-foreground mt-0.5">
               Invite members on Platform. Role, ban, and remove stay here.
             </p>
@@ -208,15 +210,16 @@ export function UsersTab({ platformInviteHref }: UsersTabProps) {
           variant="outline"
           size="sm"
           data-testid="users-invite-button"
+          disabled={platformControlled && !platformInviteHref}
           onClick={() => {
-            if (platformInviteHref) {
-              void openExternalUrl(platformInviteHref)
+            if (platformControlled) {
+              if (platformInviteHref) void openExternalUrl(platformInviteHref)
               return
             }
             setInviteOpen(true)
           }}
         >
-          {platformInviteHref ? (
+          {platformControlled ? (
             <ExternalLink className="h-4 w-4 mr-1.5" />
           ) : (
             <UserPlus className="h-4 w-4 mr-1.5" />
@@ -390,7 +393,7 @@ export function UsersTab({ platformInviteHref }: UsersTabProps) {
                           <Ban className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
                         </Button>
                       )}
-                      {!platformInviteHref ? (
+                      {!platformControlled ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
@@ -458,7 +461,7 @@ export function UsersTab({ platformInviteHref }: UsersTabProps) {
         </div>
       )}
 
-      {!platformInviteHref ? (
+      {!platformControlled ? (
         <InviteUserDialog
           open={inviteOpen}
           onOpenChange={setInviteOpen}

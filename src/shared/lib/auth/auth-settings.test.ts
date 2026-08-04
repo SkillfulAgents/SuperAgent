@@ -29,6 +29,11 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 import { getAuthSettings, isPlatformControlledAuth, resolveAuthSettings } from './auth-settings'
 
+function makeOrgToken(orgId: string): string {
+  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
+  return `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({ orgId })}.sig`
+}
+
 describe('auth-settings', () => {
   afterEach(() => {
     mockIsAuthMode.mockReturnValue(false)
@@ -38,15 +43,21 @@ describe('auth-settings', () => {
   })
 
   describe('isPlatformControlledAuth', () => {
-    it('is true only when AUTH_MODE and PLATFORM_TOKEN are both set', () => {
+    it('is true when AUTH_MODE and PLATFORM_TOKEN carries an orgId claim', () => {
       mockIsAuthMode.mockReturnValue(true)
-      process.env.PLATFORM_TOKEN = 'org-jwt'
+      process.env.PLATFORM_TOKEN = makeOrgToken('org_abc')
       expect(isPlatformControlledAuth()).toBe(true)
+    })
+
+    it('is false for an opaque personal PLATFORM_TOKEN', () => {
+      mockIsAuthMode.mockReturnValue(true)
+      process.env.PLATFORM_TOKEN = 'opaque_personal_access_key'
+      expect(isPlatformControlledAuth()).toBe(false)
     })
 
     it('is false when AUTH_MODE is off', () => {
       mockIsAuthMode.mockReturnValue(false)
-      process.env.PLATFORM_TOKEN = 'org-jwt'
+      process.env.PLATFORM_TOKEN = makeOrgToken('org_abc')
       expect(isPlatformControlledAuth()).toBe(false)
     })
 
@@ -62,19 +73,35 @@ describe('auth-settings', () => {
       expect(resolveAuthSettings({}).requireAdminApproval).toBe(true)
     })
 
-    it('forces requireAdminApproval false when platform-controlled', () => {
+    it('does not force overrides for opaque PLATFORM_TOKEN self-host', () => {
       mockIsAuthMode.mockReturnValue(true)
-      process.env.PLATFORM_TOKEN = 'org-jwt'
-      expect(resolveAuthSettings({ requireAdminApproval: true }).requireAdminApproval).toBe(false)
+      process.env.PLATFORM_TOKEN = 'opaque_personal_access_key'
+      const resolved = resolveAuthSettings({
+        requireAdminApproval: true,
+        signupMode: 'open',
+      })
+      expect(resolved.requireAdminApproval).toBe(true)
+      expect(resolved.signupMode).toBe('open')
     })
 
-    it('preserves other auth fields when forcing approval off', () => {
+    it('forces requireAdminApproval false and signupMode closed when platform-controlled', () => {
       mockIsAuthMode.mockReturnValue(true)
-      process.env.PLATFORM_TOKEN = 'org-jwt'
+      process.env.PLATFORM_TOKEN = makeOrgToken('org_abc')
+      const resolved = resolveAuthSettings({
+        requireAdminApproval: true,
+        signupMode: 'open',
+      })
+      expect(resolved.requireAdminApproval).toBe(false)
+      expect(resolved.signupMode).toBe('closed')
+    })
+
+    it('preserves unrelated auth fields when forcing platform overrides', () => {
+      mockIsAuthMode.mockReturnValue(true)
+      process.env.PLATFORM_TOKEN = makeOrgToken('org_abc')
       const resolved = resolveAuthSettings({
         requireAdminApproval: true,
         allowLocalAuth: false,
-        signupMode: 'closed',
+        signupMode: 'open',
       })
       expect(resolved).toMatchObject({
         requireAdminApproval: false,
@@ -87,11 +114,14 @@ describe('auth-settings', () => {
   describe('getAuthSettings', () => {
     it('reads persisted auth and applies platform-controlled override', () => {
       mockIsAuthMode.mockReturnValue(true)
-      process.env.PLATFORM_TOKEN = 'org-jwt'
-      mockGetSettings.mockReturnValue({ auth: { requireAdminApproval: true, allowLocalAuth: false } })
+      process.env.PLATFORM_TOKEN = makeOrgToken('org_abc')
+      mockGetSettings.mockReturnValue({
+        auth: { requireAdminApproval: true, allowLocalAuth: false, signupMode: 'open' },
+      })
       expect(getAuthSettings()).toMatchObject({
         requireAdminApproval: false,
         allowLocalAuth: false,
+        signupMode: 'closed',
       })
     })
   })

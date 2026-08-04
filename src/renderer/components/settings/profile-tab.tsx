@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { authClient } from '@renderer/lib/auth-client'
 import { useChangePasswordSchema } from '@renderer/lib/password-utils'
 import { useUser } from '@renderer/context/user-context'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { usePublicAuthConfig } from '@renderer/hooks/use-public-auth-config'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { Input } from '@renderer/components/ui/input'
 import { Button } from '@renderer/components/ui/button'
@@ -201,11 +201,14 @@ function ChangePasswordSection() {
 // --- Main tab ---
 
 export function ProfileTab() {
-  const { data: settings } = useSettings()
+  const { config: authConfig, isLoading: authConfigLoading } = usePublicAuthConfig()
   const { data: platformAuth } = usePlatformAuthStatus()
   // Platform / OIDC-only deployments have no local credential to change.
+  // allowLocalAuth comes from public /api/auth-config (non-admins cannot read /api/settings).
   const showChangePassword =
-    (settings?.auth?.allowLocalAuth ?? true) && !platformAuth?.platformControlled
+    !authConfigLoading &&
+    authConfig.allowLocalAuth &&
+    !platformAuth?.platformControlled
 
   return (
     <div className="space-y-6">

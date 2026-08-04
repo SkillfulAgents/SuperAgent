@@ -58,7 +58,7 @@ platformAuth.get('/', async (c) => {
   return c.json({
     ...(await getEnrichedPlatformAuthStatus(userId)),
     platformBaseUrl: getPlatformBaseUrl(),
-    // Same predicate as resolveAuthSettings — UI must not branch on JWKS orgId alone.
+    // Same predicate as resolveAuthSettings (AUTH_MODE + org JWT, not opaque key).
     platformControlled: isPlatformControlledAuth(),
   })
 })

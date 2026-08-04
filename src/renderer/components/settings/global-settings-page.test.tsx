@@ -23,8 +23,18 @@ vi.mock('@renderer/components/connections/connections-list', () => ({
 }))
 
 vi.mock('./users-tab', () => ({
-  UsersTab: ({ platformInviteHref }: { platformInviteHref?: string }) => (
-    <div data-testid="users-tab" data-invite-href={platformInviteHref ?? ''} />
+  UsersTab: ({
+    platformControlled,
+    platformInviteHref,
+  }: {
+    platformControlled?: boolean
+    platformInviteHref?: string
+  }) => (
+    <div
+      data-testid="users-tab"
+      data-platform-controlled={platformControlled ? '1' : '0'}
+      data-invite-href={platformInviteHref ?? ''}
+    />
   ),
 }))
 
@@ -90,6 +100,7 @@ describe('GlobalSettingsPage platform-controlled Users/Auth', () => {
     })
     render(<GlobalSettingsPage onClose={() => {}} onOpenWizard={() => {}} />)
     expect(screen.getByTestId('auth-tab')).toHaveAttribute('data-hide-local', '1')
+    expect(screen.getByTestId('users-tab')).toHaveAttribute('data-platform-controlled', '1')
     expect(screen.getByTestId('users-tab')).toHaveAttribute(
       'data-invite-href',
       'https://platform.example/dashboard/organizations/org_abc?tab=team',
@@ -107,10 +118,26 @@ describe('GlobalSettingsPage platform-controlled Users/Auth', () => {
     })
     render(<GlobalSettingsPage onClose={() => {}} onOpenWizard={() => {}} />)
     expect(screen.getByTestId('auth-tab')).toHaveAttribute('data-hide-local', '1')
+    expect(screen.getByTestId('users-tab')).toHaveAttribute('data-platform-controlled', '1')
     expect(screen.getByTestId('users-tab')).toHaveAttribute(
       'data-invite-href',
       'https://platform.example/dashboard',
     )
+  })
+
+  it('keeps platformControlled when base URL is missing', () => {
+    platformAuthMock.mockReturnValue({
+      data: {
+        platformControlled: true,
+        platformBaseUrl: '',
+        orgId: 'org_abc',
+        source: 'env',
+      },
+    })
+    render(<GlobalSettingsPage onClose={() => {}} onOpenWizard={() => {}} />)
+    expect(screen.getByTestId('auth-tab')).toHaveAttribute('data-hide-local', '1')
+    expect(screen.getByTestId('users-tab')).toHaveAttribute('data-platform-controlled', '1')
+    expect(screen.getByTestId('users-tab')).toHaveAttribute('data-invite-href', '')
   })
 
   it('keeps local invite when not platformControlled', () => {
@@ -124,6 +151,7 @@ describe('GlobalSettingsPage platform-controlled Users/Auth', () => {
     })
     render(<GlobalSettingsPage onClose={() => {}} onOpenWizard={() => {}} />)
     expect(screen.getByTestId('auth-tab')).toHaveAttribute('data-hide-local', '0')
+    expect(screen.getByTestId('users-tab')).toHaveAttribute('data-platform-controlled', '0')
     expect(screen.getByTestId('users-tab')).toHaveAttribute('data-invite-href', '')
   })
 })

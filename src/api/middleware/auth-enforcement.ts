@@ -4,8 +4,6 @@ import { db } from '@shared/lib/db'
 import { user } from '@shared/lib/db/schema'
 import { getAuthSettings } from '@shared/lib/auth/auth-settings'
 
-export { getAuthSettings }
-
 // Per-email failed login attempt tracking
 const accountLockouts = new Map<string, { count: number; lockedUntil: number }>()
 

@@ -2,11 +2,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 
-const useSettingsMock = vi.fn()
+const publicAuthConfigMock = vi.fn()
 const platformAuthMock = vi.fn()
 
-vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => useSettingsMock(),
+vi.mock('@renderer/hooks/use-public-auth-config', () => ({
+  usePublicAuthConfig: () => publicAuthConfigMock(),
 }))
 
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
@@ -35,8 +35,9 @@ import { ProfileTab } from './profile-tab'
 
 describe('ProfileTab', () => {
   beforeEach(() => {
-    useSettingsMock.mockReturnValue({
-      data: { auth: { allowLocalAuth: true } },
+    publicAuthConfigMock.mockReturnValue({
+      config: { allowLocalAuth: true },
+      isLoading: false,
     })
     platformAuthMock.mockReturnValue({ data: { platformControlled: false } })
   })
@@ -49,8 +50,18 @@ describe('ProfileTab', () => {
   })
 
   it('hides Change Password when local auth is off', () => {
-    useSettingsMock.mockReturnValue({
-      data: { auth: { allowLocalAuth: false } },
+    publicAuthConfigMock.mockReturnValue({
+      config: { allowLocalAuth: false },
+      isLoading: false,
+    })
+    render(<ProfileTab />)
+    expect(screen.queryByRole('button', { name: 'Change Password' })).not.toBeInTheDocument()
+  })
+
+  it('hides Change Password while auth-config is loading', () => {
+    publicAuthConfigMock.mockReturnValue({
+      config: { allowLocalAuth: true },
+      isLoading: true,
     })
     render(<ProfileTab />)
     expect(screen.queryByRole('button', { name: 'Change Password' })).not.toBeInTheDocument()

@@ -72,7 +72,12 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
             id: 'users',
             label: 'Users',
             icon: <Users className="h-4 w-4" />,
-            render: () => <UsersTab platformInviteHref={platformTeamInviteHref} />,
+            render: () => (
+              <UsersTab
+                platformControlled={hideLocalAuthSections}
+                platformInviteHref={platformTeamInviteHref}
+              />
+            ),
           },
           {
             id: 'auth',

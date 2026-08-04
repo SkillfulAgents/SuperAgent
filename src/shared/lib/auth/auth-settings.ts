@@ -1,17 +1,19 @@
 import { getSettings, DEFAULT_AUTH_SETTINGS, type AuthSettings } from '@shared/lib/config/settings'
+import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 import { isAuthMode } from './mode'
 
-/** AUTH_MODE + PLATFORM_TOKEN = platform-controlled deployment (members managed on Platform). */
+/** AUTH_MODE + org JWT PLATFORM_TOKEN = platform-controlled (members managed on Platform). */
 export function isPlatformControlledAuth(): boolean {
-  return isAuthMode() && Boolean(process.env.PLATFORM_TOKEN?.trim())
+  return isAuthMode() && decodeOrgIdFromToken(process.env.PLATFORM_TOKEN ?? '') !== null
 }
 
-/** Merge defaults with persisted auth; force no local approval gate when platform-controlled. */
+/** Merge defaults with persisted auth; close local signup/approval when platform-controlled. */
 export function resolveAuthSettings(auth?: AuthSettings | null): AuthSettings {
   const resolved = { ...DEFAULT_AUTH_SETTINGS, ...auth }
-  // No local Users approve UI in env-managed mode — never ban pending approval.
+  // No local Users approve UI / open signup in org-pinned mode — Platform owns membership.
   if (isPlatformControlledAuth()) {
     resolved.requireAdminApproval = false
+    resolved.signupMode = 'closed'
   }
   return resolved
 }

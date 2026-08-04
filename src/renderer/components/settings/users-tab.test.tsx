@@ -28,11 +28,11 @@ vi.mock('@renderer/lib/auth-client', () => ({
 
 import { UsersTab } from './users-tab'
 
-function renderUsers(platformInviteHref?: string) {
+function renderUsers(props?: { platformControlled?: boolean; platformInviteHref?: string }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <UsersTab platformInviteHref={platformInviteHref} />
+      <UsersTab {...props} />
     </QueryClientProvider>,
   )
 }
@@ -42,9 +42,12 @@ describe('UsersTab', () => {
     vi.clearAllMocks()
   })
 
-  it('opens Platform Team for invite when platformInviteHref is set', async () => {
+  it('opens Platform Team for invite when platform-controlled with href', async () => {
     const user = userEvent.setup()
-    renderUsers('https://platform.example/dashboard/organizations/org_1?tab=team')
+    renderUsers({
+      platformControlled: true,
+      platformInviteHref: 'https://platform.example/dashboard/organizations/org_1?tab=team',
+    })
     expect(screen.getByText(/Invite members on Platform/i)).toBeInTheDocument()
     await user.click(screen.getByTestId('users-invite-button'))
     expect(openExternalUrl).toHaveBeenCalledWith(
@@ -52,7 +55,14 @@ describe('UsersTab', () => {
     )
   })
 
-  it('keeps local invite when platformInviteHref is unset', async () => {
+  it('disables invite and skips local dialog when platform-controlled without href', () => {
+    renderUsers({ platformControlled: true })
+    expect(screen.getByText(/Invite members on Platform/i)).toBeInTheDocument()
+    expect(screen.getByTestId('users-invite-button')).toBeDisabled()
+    expect(screen.queryByText('Invite User')).not.toBeInTheDocument()
+  })
+
+  it('keeps local invite when not platform-controlled', async () => {
     const user = userEvent.setup()
     renderUsers()
     await user.click(screen.getByTestId('users-invite-button'))
