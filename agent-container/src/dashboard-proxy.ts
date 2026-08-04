@@ -1,4 +1,5 @@
 import type { IncomingMessage } from 'http'
+import type { DashboardUpstreamPathMode } from './dashboard-manager'
 
 export interface DashboardProxyRoute {
   slug: string
@@ -60,20 +61,36 @@ export function requestedWebSocketProtocols(
   return value ? value.split(',').map((protocol) => protocol.trim()).filter(Boolean) : []
 }
 
+function mountedDashboardPath(subPath: string, publicBasePath: string | null): string {
+  if (!publicBasePath?.startsWith('/')) return subPath
+
+  const mount = publicBasePath.endsWith('/') ? publicBasePath.slice(0, -1) : publicBasePath
+  return subPath === '/' ? `${mount}/` : `${mount}${subPath.startsWith('/') ? '' : '/'}${subPath}`
+}
+
+/** Select the URL path presented to the dashboard's HTTP server. */
+export function dashboardHttpUpstreamPath(
+  subPath: string,
+  publicBasePath: string | null,
+  mode: DashboardUpstreamPathMode,
+): string {
+  return mode === 'mounted' ? mountedDashboardPath(subPath, publicBasePath) : subPath
+}
+
 /**
- * Vite validates upgrade paths against its browser-visible `base`. Regular
- * dashboard sockets keep the platform contract and receive a stripped path.
+ * Mounted dashboards retain their public base for every socket. In the default
+ * stripped mode, Vite HMR is the sole exception because Vite validates upgrade
+ * paths against its browser-visible `base`.
  */
 export function dashboardWebSocketUpstreamPath(
   subPath: string,
   protocols: string[],
   publicBasePath: string | null,
+  mode: DashboardUpstreamPathMode = 'stripped',
 ): string {
+  if (mode === 'mounted') return mountedDashboardPath(subPath, publicBasePath)
   if (!protocols.some((protocol) => protocol === 'vite-hmr' || protocol === 'vite-ping')) {
     return subPath
   }
-  if (!publicBasePath?.startsWith('/')) return subPath
-
-  const mount = publicBasePath.endsWith('/') ? publicBasePath.slice(0, -1) : publicBasePath
-  return subPath === '/' ? `${mount}/` : `${mount}${subPath.startsWith('/') ? '' : '/'}${subPath}`
+  return mountedDashboardPath(subPath, publicBasePath)
 }

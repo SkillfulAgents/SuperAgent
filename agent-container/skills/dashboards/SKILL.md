@@ -144,11 +144,28 @@ Frameworks that accept a base at startup can consume the manager-provided value 
 import type { OpenSlideConfig } from '@open-slide/core';
 
 const config: OpenSlideConfig = {
-  base: process.env.DASHBOARD_BASE_PATH || './',
+  // OpenSlide uses this value for both Vite assets and BrowserRouter.
+  base: process.env.DASHBOARD_BASE_PATH || '/',
+  port: Number(process.env.DASHBOARD_PORT) || 5173,
 };
 
 export default config;
 ```
+
+OpenSlide's built-in Vite configuration cannot install Gamut's prefix-restoring
+middleware. Opt its dashboard server into mounted upstream paths so HTTP modules
+and HMR WebSockets both reach Vite beneath the same absolute base:
+
+```json
+{
+  "scripts": { "start": "open-slide dev" },
+  "gamut": { "upstreamPath": "mounted" }
+}
+```
+
+The default upstream-path mode is `stripped`, which keeps existing dashboard
+servers receiving root-local paths such as `/api/data`. Use `mounted` only when
+the framework requires inbound requests to retain `DASHBOARD_BASE_PATH`.
 
 For an app-owned React Router, prefer the injected runtime value:
 

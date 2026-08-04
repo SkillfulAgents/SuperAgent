@@ -21,6 +21,7 @@ import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager, getDashboardBasePath } from './dashboard-manager';
 import {
   dashboardHttpForwardHeaders,
+  dashboardHttpUpstreamPath,
   dashboardWebSocketForwardHeaders,
   dashboardWebSocketUpstreamPath,
   parseDashboardProxyRoute,
@@ -578,7 +579,12 @@ async function proxyToDashboard(c: any) {
   const url = new URL(c.req.url);
   const prefixPattern = `/artifacts/${slug}`;
   const subPath = url.pathname.slice(url.pathname.indexOf(prefixPattern) + prefixPattern.length) || '/';
-  const targetUrl = `http://localhost:${port}${subPath}${url.search}`;
+  const targetPath = dashboardHttpUpstreamPath(
+    subPath,
+    getDashboardBasePath(slug),
+    dashboardManager.getDashboardUpstreamPathMode(slug),
+  );
+  const targetUrl = `http://localhost:${port}${targetPath}${url.search}`;
 
   const headers = dashboardHttpForwardHeaders(c.req.header());
 
@@ -1997,6 +2003,7 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
       dashboardRoute.subPath,
       protocols,
       getDashboardBasePath(dashboardRoute.slug),
+      dashboardManager.getDashboardUpstreamPathMode(dashboardRoute.slug),
     );
     const upstream = new WebSocket(
       `ws://127.0.0.1:${dashboardPort}${upstreamPath}${url.search}`,

@@ -90,11 +90,13 @@ export function getDashboardBasePath(
 }
 
 export type DashboardStatus = 'running' | 'stopped' | 'crashed' | 'starting'
+export type DashboardUpstreamPathMode = 'stripped' | 'mounted'
 
 interface DashboardInfo {
   slug: string
   name: string
   description: string
+  upstreamPathMode: DashboardUpstreamPathMode
   port: number
   status: DashboardStatus
   process: ChildProcess | null
@@ -176,16 +178,21 @@ class DashboardManager {
     return captureDashboardScreenshot(`http://localhost:${info.port}/`, outPath)
   }
 
-  private readPackageJson(slug: string): { name: string; description: string } {
+  private readPackageJson(slug: string): {
+    name: string
+    description: string
+    upstreamPathMode: DashboardUpstreamPathMode
+  } {
     try {
       const pkgPath = path.join(ARTIFACTS_DIR, slug, 'package.json')
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
       return {
         name: pkg.name || slug,
         description: pkg.description || '',
+        upstreamPathMode: pkg.gamut?.upstreamPath === 'mounted' ? 'mounted' : 'stripped',
       }
     } catch {
-      return { name: slug, description: '' }
+      return { name: slug, description: '', upstreamPathMode: 'stripped' }
     }
   }
 
@@ -217,7 +224,7 @@ class DashboardManager {
       this.closeLogStream(existing)
     }
 
-    const { name, description } = this.readPackageJson(slug)
+    const { name, description, upstreamPathMode } = this.readPackageJson(slug)
     const port = existing?.port ?? this.nextPort++
     const dashboardDir = path.join(ARTIFACTS_DIR, slug)
     const logPath = path.join(dashboardDir, 'dashboard.log')
@@ -226,6 +233,7 @@ class DashboardManager {
       slug,
       name,
       description,
+      upstreamPathMode,
       port,
       status: 'starting',
       process: null,
@@ -531,6 +539,10 @@ class DashboardManager {
     const info = this.dashboards.get(slug)
     if (!info || info.status !== 'running') return null
     return info.port
+  }
+
+  getDashboardUpstreamPathMode(slug: string): DashboardUpstreamPathMode {
+    return this.dashboards.get(slug)?.upstreamPathMode ?? 'stripped'
   }
 
   async getDashboardLogs(slug: string, clear: boolean = false): Promise<string> {

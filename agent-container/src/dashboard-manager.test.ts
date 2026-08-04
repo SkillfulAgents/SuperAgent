@@ -171,6 +171,7 @@ describe('DashboardManager log stream lifecycle', () => {
     }>
     stopDashboard(slug: string): Promise<boolean>
     stopAll(): Promise<void>
+    getDashboardUpstreamPathMode(slug: string): 'stripped' | 'mounted'
   }
   let procs: FakeChildProcess[]
   let slugCounter = 0
@@ -202,13 +203,13 @@ describe('DashboardManager log stream lifecycle', () => {
   })
 
   /** Scaffold a dashboard dir whose node_modules is fresh (skips bun install). */
-  async function scaffoldDashboard(): Promise<string> {
+  async function scaffoldDashboard(packageFields: Record<string, unknown> = {}): Promise<string> {
     const slug = `dash-${++slugCounter}`
     const dir = path.join(testDir, slug)
     await fs.promises.mkdir(path.join(dir, 'node_modules'), { recursive: true })
     await fs.promises.writeFile(
       path.join(dir, 'package.json'),
-      JSON.stringify({ name: slug, scripts: { start: 'true' } })
+      JSON.stringify({ name: slug, scripts: { start: 'true' }, ...packageFields })
     )
     // node_modules must be at least as new as package.json to skip install
     const future = new Date(Date.now() + 60_000)
@@ -291,6 +292,22 @@ describe('DashboardManager log stream lifecycle', () => {
 
     const stat = await fs.promises.stat(logPath)
     expect(stat.size).toBeLessThan(1024 * 1024)
+  })
+
+  it('loads an explicit mounted upstream path contract from package metadata', async () => {
+    const slug = await scaffoldDashboard({ gamut: { upstreamPath: 'mounted' } })
+
+    await manager.startDashboard(slug, { forceInstall: false })
+
+    expect(manager.getDashboardUpstreamPathMode(slug)).toBe('mounted')
+  })
+
+  it('defaults dashboards to the stripped upstream path contract', async () => {
+    const slug = await scaffoldDashboard()
+
+    await manager.startDashboard(slug, { forceInstall: false })
+
+    expect(manager.getDashboardUpstreamPathMode(slug)).toBe('stripped')
   })
 
   describe('install semantics', () => {
