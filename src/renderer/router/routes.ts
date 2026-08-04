@@ -14,6 +14,7 @@ import { NotificationDetailRoute } from '@renderer/components/layout/notificatio
 import { AgentShell } from '@renderer/components/layout/agent-shell'
 import {
   AgentHomeRoute,
+  XAgentPermissionsRoute,
   ApiLogsRoute,
   ChatRoute,
   ConnectionsRoute,
@@ -161,6 +162,12 @@ export const secretsRoute = createRoute({
   component: SecretsRoute,
 })
 
+export const xAgentPermissionsRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'x-agent-permissions',
+  component: XAgentPermissionsRoute,
+})
+
 // ── SETTINGS: SIBLING of app-shell → replaces the whole shell (App.tsx) ───────
 // LAYOUT (just an <Outlet/>): so the `$tab` child renders. `?from=` close-target
 // (open-redirect-safe) lives here and is inherited by both children.
@@ -208,6 +215,7 @@ export const routeTree = rootRoute.addChildren([
       apiLogsRoute,
       connectionsRoute,
       secretsRoute,
+      xAgentPermissionsRoute,
     ]),
   ]),
   settingsRoute.addChildren([settingsIndexRoute, settingsTabRoute]),
