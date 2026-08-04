@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the SuperAgent successfully executes browser use tools, navigates to example.com, retrieves the page title \"Example Domain\", and reports it back in the response.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully, displaying the Gamut home interface with agents listed in the sidebar.",
+    "Clicked on \"QA-20260804-012609-ddxc\" agent in the sidebar — Successfully navigated to the agent's chat page with the session titled \"Browser Page Title Lookup\".",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field — Message was entered correctly in the chat input field.",
+    "Clicked the send button to dispatch the message — Message sent successfully, agent status changed to \"working\".",
+    "Waited up to 3 minutes for the agent response — Agent completed processing in 13 seconds and returned a complete response.",
+    "Verified response content — Response clearly states: \"The page title is \"Example Domain\" — the page has a single heading with that text, a short paragraph noting the domain is for documentation examples, and a \"Learn more\" link. Browser is closed.\" This confirms the agent successfully opened a browser, navigated to https://example.com, extracted the page title, and properly closed the browser session."
+  ],
+  "bugs": [],
+  "durationMs": 79371,
+  "sessionId": "45f06a34-471a-4828-b8a2-d81e88e87c66",
+  "cost": {
+    "inputTokens": 410,
+    "outputTokens": 11973,
+    "cacheCreationTokens": 79833,
+    "cacheReadTokens": 1204020,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.280468
+  }
+}
