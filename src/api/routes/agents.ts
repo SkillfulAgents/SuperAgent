@@ -5768,10 +5768,8 @@ const skipProxyRequestHeaders = new Set([
   // Node fetch transparently decodes upstream bodies. Ask every hop for the
   // identity representation so body bytes and response metadata cannot drift.
   'accept-encoding',
-  // Dashboard HTML is injected per request, so an upstream 304 cannot safely
-  // stand in for the browser's transformed representation.
-  'if-modified-since', 'if-none-match',
 ])
+const conditionalRequestHeaders = new Set(['if-modified-since', 'if-none-match'])
 
 async function proxyArtifactRequest(c: any) {
   const agentSlug = getAgentId(c)
@@ -5814,8 +5812,17 @@ async function proxyArtifactRequest(c: any) {
   // Forward request headers (minus hop-by-hop headers)
   const reqHeaders = c.req.header() as Record<string, string>
   const headers: Record<string, string> = {}
+  // Dashboard HTML is injected per request, so an upstream 304 cannot safely
+  // stand in for the browser's transformed representation. Assets are not
+  // transformed and retain normal ETag/Last-Modified revalidation.
+  const isDocumentRequest = (c.req.method === 'GET' || c.req.method === 'HEAD')
+    && c.req.header('accept')?.includes('text/html')
   for (const key of Object.keys(reqHeaders)) {
-    if (!skipProxyRequestHeaders.has(key.toLowerCase())) {
+    const normalizedKey = key.toLowerCase()
+    if (
+      !skipProxyRequestHeaders.has(normalizedKey)
+      && !(isDocumentRequest && conditionalRequestHeaders.has(normalizedKey))
+    ) {
       headers[key] = reqHeaders[key]
     }
   }

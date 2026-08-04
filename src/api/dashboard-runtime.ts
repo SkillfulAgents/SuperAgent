@@ -59,10 +59,13 @@ export function getDashboardRuntimeJs(basePath: string, slug: string): string {
     if (!value || value === ".") return basePath;
     if (value.charAt(0) === "?" || value.charAt(0) === "#") return basePath + value;
     value = value.replace(/^\\.\\//, "").replace(/^\\/+/, "");
-    if (value === ".." || value.indexOf("../") === 0) {
+
+    var origin = "http://gamut.invalid";
+    var resolved = new URL(value, origin + basePath);
+    if (resolved.origin !== origin || resolved.pathname.indexOf(basePath) !== 0) {
       throw new TypeError("Dashboard URLs cannot escape the dashboard mount");
     }
-    return basePath + value;
+    return resolved.pathname + resolved.search + resolved.hash;
   }
 
   var runtime = {
@@ -82,10 +85,22 @@ export function injectDashboardRuntime(
   options: DashboardRuntimeInjectionOptions,
 ): string {
   const basePath = withTrailingSlash(options.basePath)
+  const existingManagedBase = html.match(
+    /<base\b(?=[^>]*\bdata-gamut-dashboard-base\b)[^>]*>/i,
+  )
   const baseTag = /<base\b[^>]*>/i.test(html)
     ? ''
     : `<base data-gamut-dashboard-base href="${escapeHtmlAttribute(basePath)}">`
-  const tag = `${baseTag}<script>${getDashboardRuntimeJs(basePath, options.slug)}${options.polyfillJs ?? ''}</script>`
+  const scriptTag = `<script>${getDashboardRuntimeJs(basePath, options.slug)}${options.polyfillJs ?? ''}</script>`
+
+  // The browser must parse the managed base before the runtime can update it
+  // with an outer proxy prefix, but the runtime must still precede app assets.
+  if (existingManagedBase) {
+    const pos = existingManagedBase.index! + existingManagedBase[0].length
+    return html.slice(0, pos) + scriptTag + html.slice(pos)
+  }
+
+  const tag = baseTag + scriptTag
   const headMatch = html.match(/<head(\s[^>]*)?>/i)
 
   if (!headMatch) return tag + html

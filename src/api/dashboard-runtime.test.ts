@@ -60,6 +60,21 @@ describe('dashboard runtime injection', () => {
     expect(result).toContain('<base href="/custom/">')
   })
 
+  it('runs after a managed base and before existing dashboard scripts', () => {
+    const result = injectDashboardRuntime(
+      '<html><head><base data-gamut-dashboard-base href="/api/agents/a/artifacts/slides/"><script data-gamut-dashboard-fallback="true">window.fallback=true;</script><script src="./assets/app.js"></script></head></html>',
+      { basePath: '/api/agents/a/artifacts/slides/', slug: 'slides' },
+    )
+
+    const baseAt = result.indexOf('<base data-gamut-dashboard-base')
+    const runtimeAt = result.indexOf('var fallbackBasePath =')
+    const fallbackAt = result.indexOf('data-gamut-dashboard-fallback')
+    const assetAt = result.indexOf('./assets/app.js')
+    expect(baseAt).toBeLessThan(runtimeAt)
+    expect(runtimeAt).toBeLessThan(fallbackAt)
+    expect(runtimeAt).toBeLessThan(assetAt)
+  })
+
   it('uses the exact browser-visible prefix behind the desktop cloud proxy', () => {
     const runtime = runtimeFor(
       'http://127.0.0.1/cloud/KEY/api/agents/a/artifacts/slides/s/my-deck',
@@ -79,6 +94,11 @@ describe('dashboard runtime injection', () => {
     )
     expect(runtime.basePath).toBe('/api/agents/a/artifacts/slides/')
     expect(() => runtime.url('../escape')).toThrow(/cannot escape/)
+    expect(() => runtime.url('nested/../../escape')).toThrow(/cannot escape/)
+    expect(() => runtime.url('nested/%2e%2e/%2e%2e/escape')).toThrow(/cannot escape/)
+    expect(runtime.url('api/data?limit=2#items')).toBe(
+      '/api/agents/a/artifacts/slides/api/data?limit=2#items',
+    )
   })
 })
 

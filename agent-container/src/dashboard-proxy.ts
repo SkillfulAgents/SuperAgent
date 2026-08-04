@@ -7,6 +7,14 @@ export interface DashboardProxyRoute {
 
 const DASHBOARD_SLUG = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 
+/** Do not expose the host-to-container credential to agent-authored servers. */
+export function dashboardHttpForwardHeaders(source: Record<string, string>): Headers {
+  const headers = new Headers(source)
+  headers.delete('host')
+  headers.delete('x-superagent-host-token')
+  return headers
+}
+
 export function parseDashboardProxyRoute(pathname: string): DashboardProxyRoute | null {
   const match = pathname.match(/^\/artifacts\/([^/]+)(\/.*)?$/)
   if (!match) return null

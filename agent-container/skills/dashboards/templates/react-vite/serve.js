@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { getGamutDashboardRuntimeFallbackJs } from './gamut-dashboard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = process.env.DASHBOARD_PORT || 3000;
@@ -48,10 +49,14 @@ function escapeHtmlAttribute(value) {
 }
 
 function withDocumentBase(html) {
-  if (/<base\b[^>]*>/i.test(html)) return html;
   const href = publicBasePath || '/';
-  const tag = `<base data-gamut-dashboard-base href="${escapeHtmlAttribute(href)}">`;
-  return html.replace(/<head(\s[^>]*)?>/i, (head) => `${head}${tag}`);
+  const baseTag = /<base\b[^>]*>/i.test(html)
+    ? ''
+    : `<base data-gamut-dashboard-base href="${escapeHtmlAttribute(href)}">`;
+  const runtimeTag = html.includes('data-gamut-dashboard-fallback')
+    ? ''
+    : `<script data-gamut-dashboard-fallback="true">${getGamutDashboardRuntimeFallbackJs()}</script>`;
+  return html.replace(/<head(\s[^>]*)?>/i, (head) => `${head}${baseTag}${runtimeTag}`);
 }
 
 function responseForFile(filePath) {

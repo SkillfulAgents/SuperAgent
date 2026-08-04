@@ -1,11 +1,28 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  dashboardHttpForwardHeaders,
   dashboardWebSocketForwardHeaders,
   dashboardWebSocketUpstreamPath,
   parseDashboardProxyRoute,
   requestedWebSocketProtocols,
 } from './dashboard-proxy'
+
+describe('dashboard HTTP headers', () => {
+  it('preserves request metadata without exposing the host credential', () => {
+    const headers = dashboardHttpForwardHeaders({
+      host: 'container.internal',
+      cookie: 'dashboard=abc',
+      'x-forwarded-prefix': '/api/agents/a/artifacts/slides',
+      'x-superagent-host-token': 'secret',
+    })
+
+    expect(Object.fromEntries(headers)).toEqual({
+      cookie: 'dashboard=abc',
+      'x-forwarded-prefix': '/api/agents/a/artifacts/slides',
+    })
+  })
+})
 
 describe('dashboard proxy route', () => {
   it('strips the container artifact prefix for a dashboard WebSocket', () => {

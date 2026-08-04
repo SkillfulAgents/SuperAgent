@@ -20,6 +20,7 @@ import { resolveCdpIp } from './cdp-host';
 import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager, getDashboardBasePath } from './dashboard-manager';
 import {
+  dashboardHttpForwardHeaders,
   dashboardWebSocketForwardHeaders,
   dashboardWebSocketUpstreamPath,
   parseDashboardProxyRoute,
@@ -579,8 +580,7 @@ async function proxyToDashboard(c: any) {
   const subPath = url.pathname.slice(url.pathname.indexOf(prefixPattern) + prefixPattern.length) || '/';
   const targetUrl = `http://localhost:${port}${subPath}${url.search}`;
 
-  const headers = new Headers(c.req.header());
-  headers.delete('host');
+  const headers = dashboardHttpForwardHeaders(c.req.header());
 
   const response = await fetch(targetUrl, {
     method: c.req.method,

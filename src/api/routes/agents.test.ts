@@ -4782,7 +4782,10 @@ describe('artifact proxy — subPath uses the raw display-slug URL', () => {
       new Response('ok', { headers: { 'content-type': 'application/javascript' } }),
     )
 
-    const res = await getReq(app, '/api/agents/my-dash-abc1234567/artifacts/dash/static/app.js')
+    const res = await app.request(
+      'http://localhost/api/agents/my-dash-abc1234567/artifacts/dash/static/app.js',
+      { headers: { 'if-none-match': '"asset-v1"' } },
+    )
 
     expect(res.status).toBe(200)
     expect(mockContainerFetch).toHaveBeenCalledTimes(1)
@@ -4795,8 +4798,33 @@ describe('artifact proxy — subPath uses the raw display-slug URL', () => {
         'x-forwarded-prefix': '/api/agents/my-dash-abc1234567/artifacts/dash',
         'x-forwarded-host': 'localhost',
         'x-forwarded-proto': 'http',
+        'if-none-match': '"asset-v1"',
       }),
     })
+  })
+
+  it('removes upstream validators only for transformed HTML documents', async () => {
+    mockContainerFetch.mockResolvedValue(
+      new Response('<html><head></head><body>ok</body></html>', {
+        headers: { 'content-type': 'text/html' },
+      }),
+    )
+
+    const res = await app.request(
+      'http://localhost/api/agents/abc1234567/artifacts/dash/s/deck',
+      {
+        headers: {
+          accept: 'text/html',
+          'if-modified-since': 'Tue, 04 Aug 2026 18:00:00 GMT',
+          'if-none-match': '"document-v1"',
+        },
+      },
+    )
+
+    expect(res.status).toBe(200)
+    const init = mockContainerFetch.mock.calls[0]?.[1] as RequestInit
+    expect(init.headers).not.toHaveProperty('if-modified-since')
+    expect(init.headers).not.toHaveProperty('if-none-match')
   })
 
   it('canonicalizes display-slug document navigations to match the dashboard router base', async () => {
