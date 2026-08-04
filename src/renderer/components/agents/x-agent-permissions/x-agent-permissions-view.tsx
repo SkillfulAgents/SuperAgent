@@ -1,11 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import { Loader2, Search, AlertCircle, Users, ScrollText, Send } from 'lucide-react'
+import { Loader2, Search, AlertCircle, ChevronDown } from 'lucide-react'
 import { Input } from '@renderer/components/ui/input'
-import { PolicyDecisionToggle } from '@renderer/components/ui/policy-decision-toggle'
+import { Button } from '@renderer/components/ui/button'
+import { Switch } from '@renderer/components/ui/switch'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { PolicyDecisionDropdown } from '@renderer/components/ui/policy-decision-toggle'
+import { IntegrationList, IntegrationRow } from '@renderer/components/connections/integration-row'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
+import { startViewTransition } from '@renderer/lib/view-transition'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -32,6 +38,12 @@ interface PoliciesResponse {
   policies: PolicyRow[]
 }
 
+interface PolicyChange {
+  operation: Operation
+  targetSlug: string | null
+  decision: DecisionOrDefault
+}
+
 type AgentsResponse = ApiAgent[]
 
 function policyKey(operation: Operation, targetSlug: string | null): string {
@@ -41,8 +53,11 @@ function policyKey(operation: Operation, targetSlug: string | null): string {
 /**
  * Standalone page for an agent's agent-to-agent connections — the policies
  * this agent has remembered for listing, reading, and messaging other
- * workspace agents. Lived in the agent settings dialog ("Agents" tab) until
- * it moved to its own route like Secrets and API Logs.
+ * workspace agents. Presented like the Agent Connections page: a Switch per
+ * target agent ("connected" = it may send messages, the same relationship a
+ * drawn home-graph edge creates). Connected rows carry a Permissions popover
+ * with the fine-grained controls (Read / Send × Allow / Review / Block);
+ * every state is reachable by connecting first, then tuning there.
  */
 export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps) {
   useRenderTracker('XAgentPermissionsView')
@@ -52,8 +67,14 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
   const { isAuthMode, rolesReady, canAdminAgent } = useUser()
   const canManage = !isAuthMode || (rolesReady && canAdminAgent(agentSlug))
   const [filter, setFilter] = useState('')
-  const [savingKey, setSavingKey] = useState<string | null>(null)
+  const [searchOpen, setSearchOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /**
+   * Optimistic per-slug connected state so a toggled row animates to its new
+   * section immediately (mirrors connections-list grantOverrides). Cleared by
+   * the catch-up effect below once the server state agrees.
+   */
+  const [connectOverrides, setConnectOverrides] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     track('agent_permissions_viewed', { agentSlug })
@@ -62,8 +83,9 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
   // Reset transient UI state when switching agents via the sidebar.
   useEffect(() => {
     setFilter('')
-    setSavingKey(null)
+    setSearchOpen(false)
     setError(null)
+    setConnectOverrides({})
   }, [agentSlug])
 
   // Fetch this caller's stored policies
@@ -97,6 +119,43 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
     return map
   }, [policiesQuery.data])
 
+  const getDecision = (operation: Operation, targetSlug: string | null): DecisionOrDefault => {
+    return policyMap.get(policyKey(operation, targetSlug)) ?? 'default'
+  }
+
+  const globalRead = getDecision('read', null)
+  const globalInvoke = getDecision('invoke', null)
+
+  /** Effective send decision: explicit row, else the global default, else review. */
+  const effectiveInvoke = (slug: string): Decision => {
+    const explicit = getDecision('invoke', slug)
+    if (explicit !== 'default') return explicit
+    return globalInvoke !== 'default' ? globalInvoke : 'review'
+  }
+
+  /** "Connected" = this agent may send messages to the target without a prompt. */
+  const serverConnected = (slug: string): boolean => effectiveInvoke(slug) === 'allow'
+  const isConnected = (slug: string): boolean => connectOverrides[slug] ?? serverConnected(slug)
+
+  // Drop overrides the server has caught up to. Self-terminating: the setter
+  // returns the same reference when nothing changed, so React bails out.
+  useEffect(() => {
+    if (Object.keys(connectOverrides).length === 0) return
+    setConnectOverrides((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const [slug, v] of Object.entries(prev)) {
+        if (serverConnected(slug) === v) {
+          delete next[slug]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+    // serverConnected is derived from policyMap; policyMap identity is the real dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [policyMap, connectOverrides])
+
   const otherAgents = useMemo(() => {
     const all = agentsQuery.data ?? []
     return all
@@ -110,26 +169,21 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
       .sort((a, b) => a.name.localeCompare(b.name))
   }, [agentsQuery.data, agentSlug, filter])
 
-  // Single mutation: build the full policy set with the change applied, PUT it.
+  // Single mutation: build the full policy set with the changes applied, PUT it.
   const savePolicies = useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (params: {
-      operation: Operation
-      targetSlug: string | null
-      decision: DecisionOrDefault
-    }) => {
-      const key = policyKey(params.operation, params.targetSlug)
-      setSavingKey(key)
+    mutationFn: async (changes: PolicyChange[]) => {
       setError(null)
-      // Build the next full policy list: existing rows minus the one we're changing,
-      // plus the new one (unless we're setting it to 'default' which means delete).
+      const changed = new Set(changes.map((c) => policyKey(c.operation, c.targetSlug)))
       const nextPolicies: Array<{ operation: Operation; targetSlug: string | null; decision: Decision }> = []
       for (const p of policiesQuery.data?.policies ?? []) {
-        if (policyKey(p.operation, p.targetAgentSlug) === key) continue
+        if (changed.has(policyKey(p.operation, p.targetAgentSlug))) continue
         nextPolicies.push({ operation: p.operation, targetSlug: p.targetAgentSlug, decision: p.decision })
       }
-      if (params.decision !== 'default') {
-        nextPolicies.push({ operation: params.operation, targetSlug: params.targetSlug, decision: params.decision })
+      for (const c of changes) {
+        if (c.decision !== 'default') {
+          nextPolicies.push({ operation: c.operation, targetSlug: c.targetSlug, decision: c.decision })
+        }
       }
       const res = await apiFetch(`/api/agents/${agentSlug}/x-agent-policies`, {
         method: 'PUT',
@@ -147,23 +201,144 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
     onError: (err: Error) => {
       setError(err.message)
     },
-    onSettled: () => {
-      setSavingKey(null)
-    },
   })
 
-  const getDecision = (operation: Operation, targetSlug: string | null): DecisionOrDefault => {
-    return policyMap.get(policyKey(operation, targetSlug)) ?? 'default'
+  const handleChange = (operation: Operation, targetSlug: string | null) => (next: DecisionOrDefault) => {
+    savePolicies.mutate([{ operation, targetSlug, decision: next }])
   }
 
-  const handleChange = (operation: Operation, targetSlug: string | null) => (next: DecisionOrDefault) => {
-    savePolicies.mutate({ operation, targetSlug, decision: next })
+  /** The Switch spinner: an in-flight change to this slug's send policy. */
+  const isSwitchPending = (slug: string): boolean =>
+    savePolicies.isPending &&
+    (savePolicies.variables ?? []).some((c) => c.targetSlug === slug && c.operation === 'invoke')
+
+  /** The detail panel's saving hint: any in-flight change for this slug. */
+  const isRowSaving = (slug: string): boolean =>
+    savePolicies.isPending && (savePolicies.variables ?? []).some((c) => c.targetSlug === slug)
+
+  const setOverride = (slug: string, value: boolean | null) => {
+    startViewTransition(() => {
+      flushSync(() => {
+        setConnectOverrides((prev) => {
+          const next = { ...prev }
+          if (value === null) delete next[slug]
+          else next[slug] = value
+          return next
+        })
+      })
+    })
   }
+
+  const handleToggle = (slug: string, next: boolean) => {
+    if (next) {
+      // Connect = grant Send (the graph-edge relationship). The connected
+      // row's Permissions popover is where Read is granted or Send dialed
+      // back. Deliberately replaces an explicit Block, like drawing the edge
+      // on the graph does.
+      setOverride(slug, true)
+      savePolicies.mutate([{ operation: 'invoke', targetSlug: slug, decision: 'allow' }], {
+        onError: () => setOverride(slug, null),
+      })
+      return
+    }
+    // Disconnect: remove the explicit send grant; when connected only via the
+    // global default, pin an explicit Review so this one agent prompts again.
+    const explicit = getDecision('invoke', slug)
+    const decision: DecisionOrDefault = explicit !== 'default' ? 'default' : 'review'
+    setOverride(slug, false)
+    savePolicies.mutate([{ operation: 'invoke', targetSlug: slug, decision }], {
+      onError: () => setOverride(slug, null),
+    })
+  }
+
+  const renderAgentRow = (agent: ApiAgent) => {
+    const slug = agent.slug
+    const connected = isConnected(slug)
+    const blocked = effectiveInvoke(slug) === 'block'
+    const pending = isSwitchPending(slug)
+    return (
+      <div key={slug} data-testid={`x-agent-policy-row-${slug}`}>
+        <IntegrationRow
+          icon={null}
+          name={agent.name}
+          nameBadge={
+            blocked ? (
+              <span className="rounded px-1 py-0.5 font-medium bg-orange-100 text-orange-700 dark:bg-orange-950/60 dark:text-orange-400">
+                Blocked
+              </span>
+            ) : undefined
+          }
+          subtitle={<span className="font-mono truncate">{agent.displaySlug}</span>}
+          viewTransitionName={`xagent-${slug}`}
+          right={
+            <>
+              {connected && !pending && (
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="mr-3 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground opacity-0 translate-x-1 transition-all duration-200 ease-out group-hover:opacity-100 group-hover:translate-x-0 focus-visible:opacity-100 focus-visible:translate-x-0 data-[state=open]:opacity-100 data-[state=open]:translate-x-0"
+                      aria-label={`Permissions for ${agent.name}`}
+                      data-testid={`x-agent-permissions-trigger-${slug}`}
+                    >
+                      Permissions
+                      <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    align="end"
+                    className="w-72 p-3 space-y-2.5"
+                    onOpenAutoFocus={(e) => e.preventDefault()}
+                    data-testid={`x-agent-permissions-popover-${slug}`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="whitespace-nowrap text-xs font-medium">Read sessions</span>
+                      <PolicyDecisionDropdown
+                        value={getDecision('read', slug)}
+                        onChange={handleChange('read', slug)}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="whitespace-nowrap text-xs font-medium">Send messages</span>
+                      <PolicyDecisionDropdown
+                        value={getDecision('invoke', slug)}
+                        onChange={handleChange('invoke', slug)}
+                      />
+                    </div>
+                    {isRowSaving(slug) && (
+                      <div className="text-right text-[10px] text-muted-foreground">Saving…</div>
+                    )}
+                  </PopoverContent>
+                </Popover>
+              )}
+              {pending ? (
+                <Loader2
+                  className="h-4 w-4 animate-spin text-muted-foreground"
+                  aria-label="Saving connection change"
+                  data-testid={`x-agent-connect-pending-${slug}`}
+                />
+              ) : (
+                <Switch
+                  checked={connected}
+                  onCheckedChange={(next) => handleToggle(slug, next)}
+                  aria-label={`${connected ? 'Disconnect' : 'Connect'} ${agent.name}`}
+                  data-testid={`x-agent-connect-switch-${slug}`}
+                />
+              )}
+            </>
+          }
+        />
+      </div>
+    )
+  }
+
+  const connectedAgents = otherAgents.filter((a) => isConnected(a.slug))
+  const notConnectedAgents = otherAgents.filter((a) => !isConnected(a.slug))
 
   return (
     <SettingsPageContainer>
       <PageTitle
-        title="Agent-to-agent Connections"
+        title="Connect this agent to others"
         back={{
           onClick: () => {
             void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
@@ -187,13 +362,6 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
         </div>
       ) : (
         <div className="space-y-6">
-          <p className="text-sm text-muted-foreground">
-            Decisions this agent has remembered for using other agents in this workspace. Set to{' '}
-            <span className="font-medium">Allow</span> to skip the prompt;{' '}
-            <span className="font-medium">Review</span> (or no policy) prompts every time;{' '}
-            <span className="font-medium">Block</span> denies without prompting.
-          </p>
-
           {error && (
             <div className="flex items-center gap-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950/50 dark:text-amber-400">
               <AlertCircle className="h-3.5 w-3.5 shrink-0" />
@@ -205,134 +373,106 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
           <div className="space-y-2">
             <h4 className="text-xs font-medium uppercase text-muted-foreground">Global permissions</h4>
             <div className="rounded-md border p-3">
-              <div className="flex items-center justify-between">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <Users className="h-3.5 w-3.5 text-muted-foreground" />
-                    <span className="text-sm font-medium">List Agents</span>
-                  </div>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    Whether this agent can call <code className="font-mono">list_agents</code> to see other workspace agents.
-                  </p>
-                </div>
-                <PolicyDecisionToggle
+              <div className="flex items-center justify-between gap-3">
+                <span className="min-w-0 flex-1 text-xs font-medium">
+                  Allow this agent to see a list of all other agents
+                </span>
+                <PolicyDecisionDropdown
                   value={getDecision('list', null)}
                   onChange={handleChange('list', null)}
-                  size="md"
                 />
               </div>
             </div>
             <div className="rounded-md border p-3" data-testid="x-agent-policy-global-read">
-              <div className="flex items-center justify-between">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <ScrollText className="h-3.5 w-3.5 text-muted-foreground" />
-                    <span className="text-sm font-medium">Read sessions of all agents</span>
-                  </div>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    Default for any agent without a specific Read setting below. Per-agent rows override this.
-                  </p>
-                </div>
-                <PolicyDecisionToggle
-                  value={getDecision('read', null)}
+              <div className="flex items-center justify-between gap-3">
+                <span className="min-w-0 flex-1 text-xs font-medium">
+                  Allow this agent to read sessions of all other agents
+                </span>
+                <PolicyDecisionDropdown
+                  value={globalRead}
                   onChange={handleChange('read', null)}
-                  size="md"
                 />
               </div>
             </div>
             <div className="rounded-md border p-3" data-testid="x-agent-policy-global-invoke">
-              <div className="flex items-center justify-between">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <Send className="h-3.5 w-3.5 text-muted-foreground" />
-                    <span className="text-sm font-medium">Send messages to all agents</span>
-                  </div>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    Default for any agent without a specific Send setting below. Per-agent rows override this.
-                  </p>
-                </div>
-                <PolicyDecisionToggle
-                  value={getDecision('invoke', null)}
+              <div className="flex items-center justify-between gap-3">
+                <span className="min-w-0 flex-1 text-xs font-medium">
+                  Allow this agent to send messages to all other agents
+                </span>
+                <PolicyDecisionDropdown
+                  value={globalInvoke}
                   onChange={handleChange('invoke', null)}
-                  size="md"
                 />
               </div>
             </div>
           </div>
 
-          {/* Per-agent permissions */}
-          <div>
-            <div className="flex items-center justify-between gap-2">
-              <h4 className="text-xs font-medium uppercase text-muted-foreground">Per-agent permissions</h4>
-              {otherAgents.length > 0 && (
-                <div className="relative w-48">
-                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                  <Input
-                    placeholder="Filter agents..."
-                    value={filter}
-                    onChange={(e) => setFilter(e.target.value)}
-                    className="h-7 pl-7 text-xs"
-                  />
+          {/* Per-agent connections */}
+          {agentsQuery.data && agentsQuery.data.filter((a) => a.slug !== agentSlug).length === 0 ? (
+            <p className="text-sm text-muted-foreground">No other agents in this workspace yet.</p>
+          ) : (
+            <>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2 px-1">
+                  <p className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground">
+                    Connected
+                  </p>
+                  {searchOpen ? (
+                    <div className="relative w-44 max-w-full">
+                      <Search className="absolute left-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                      <Input
+                        autoFocus
+                        placeholder="Filter agents..."
+                        value={filter}
+                        onChange={(e) => setFilter(e.target.value)}
+                        onBlur={() => {
+                          if (!filter.trim()) setSearchOpen(false)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') {
+                            setFilter('')
+                            setSearchOpen(false)
+                          }
+                        }}
+                        className="h-6 text-xs pl-6"
+                      />
+                    </div>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="h-6 w-6 px-0 text-muted-foreground"
+                      aria-label="Search agents"
+                      data-testid="x-agent-search-toggle"
+                      onClick={() => setSearchOpen(true)}
+                    >
+                      <Search className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                </div>
+                {connectedAgents.length > 0 ? (
+                  <IntegrationList>{connectedAgents.map(renderAgentRow)}</IntegrationList>
+                ) : (
+                  <div className="rounded-xl border border-dashed bg-background px-4 py-6 text-center">
+                    <p className="text-xs text-muted-foreground">
+                      {filter
+                        ? 'No connected agents match the filter.'
+                        : "This agent isn't connected to any other agents yet. Toggle one on below."}
+                    </p>
+                  </div>
+                )}
+              </div>
+              {notConnectedAgents.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground px-1">
+                    Not connected
+                  </p>
+                  <IntegrationList>{notConnectedAgents.map(renderAgentRow)}</IntegrationList>
                 </div>
               )}
-            </div>
+            </>
+          )}
 
-            {otherAgents.length === 0 ? (
-              <p className="mt-3 text-sm text-muted-foreground">
-                No other agents in this workspace yet.
-              </p>
-            ) : (
-              <div className="mt-2 space-y-1">
-                {/* Column headers */}
-                <div className="grid grid-cols-[1fr_auto_auto] items-center gap-3 px-2 py-1 text-[10px] font-medium uppercase text-muted-foreground">
-                  <span>Agent</span>
-                  <span className="text-center w-[120px]">Read sessions</span>
-                  <span className="text-center w-[120px]">Send messages</span>
-                </div>
-                {otherAgents.map((agent) => {
-                  const readKey = policyKey('read', agent.slug)
-                  const invokeKey = policyKey('invoke', agent.slug)
-                  const isSavingRow = savingKey === readKey || savingKey === invokeKey
-                  const invokeDecision = getDecision('invoke', agent.slug)
-                  const readDecision = getDecision('read', agent.slug)
-                  return (
-                    <div
-                      key={agent.slug}
-                      className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded border px-2 py-2"
-                      data-testid={`x-agent-policy-row-${agent.slug}`}
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">{agent.name}</div>
-                        <div className="truncate text-[10px] font-mono text-muted-foreground">{agent.displaySlug}</div>
-                      </div>
-                      <div className="w-[120px] flex justify-center">
-                        <PolicyDecisionToggle
-                          value={readDecision}
-                          onChange={handleChange('read', agent.slug)}
-                        />
-                      </div>
-                      <div className="w-[120px] flex justify-center">
-                        <PolicyDecisionToggle
-                          value={invokeDecision}
-                          onChange={handleChange('invoke', agent.slug)}
-                        />
-                      </div>
-                      {isSavingRow && (
-                        <div className="col-span-3 -mt-1 text-right text-[10px] text-muted-foreground">
-                          Saving…
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-            <p className="mt-3 text-[11px] text-muted-foreground">
-              <span className="font-medium">Read</span> and <span className="font-medium">Send messages</span> are independent.
-              Allow only Send for &quot;trigger but don&apos;t browse history&quot;; allow only Read for view-only access.
-              Sync invoke responses are always returned to the caller — they don&apos;t require Read.
-            </p>
-          </div>
         </div>
       )}
     </SettingsPageContainer>

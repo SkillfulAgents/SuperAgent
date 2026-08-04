@@ -31,20 +31,21 @@ vi.mock('@renderer/context/user-context', () => ({
 const AGENTS = [
   { slug: 'caller', displaySlug: 'caller', name: 'Caller' },
   { slug: 'target', displaySlug: 'target', name: 'Target' },
+  { slug: 'helper', displaySlug: 'helper', name: 'Helper' },
 ]
 
-const POLICIES = {
-  policies: [
-    {
-      id: 'p1',
-      operation: 'read',
-      targetAgentSlug: 'target',
-      targetAgentName: 'Target',
-      decision: 'allow',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-    },
-  ],
+function policy(operation: string, targetAgentSlug: string | null, decision: string) {
+  return {
+    id: `${operation}-${targetAgentSlug ?? 'global'}`,
+    operation,
+    targetAgentSlug,
+    targetAgentName: targetAgentSlug,
+    decision,
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  }
 }
+
+let policies: ReturnType<typeof policy>[]
 
 function jsonResponse(payload: unknown) {
   return { ok: true, json: async () => payload }
@@ -61,52 +62,124 @@ function renderView(agentSlug = 'caller') {
   )
 }
 
+function lastPutBody() {
+  const putCall = mocks.apiFetch.mock.calls.findLast(([, init]) => init?.method === 'PUT')
+  expect(putCall).toBeDefined()
+  return JSON.parse(putCall![1].body)
+}
+
 describe('XAgentPermissionsView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.canAdmin = true
-    mocks.apiFetch.mockImplementation(async (url: string) => {
-      if (url === '/api/agents/caller/x-agent-policies') return jsonResponse(POLICIES)
+    policies = [policy('invoke', 'target', 'allow'), policy('read', 'target', 'allow')]
+    mocks.apiFetch.mockImplementation(async (url: string, init?: { method?: string }) => {
+      if (url === '/api/agents/caller/x-agent-policies' && (!init || !init.method)) {
+        return jsonResponse({ policies })
+      }
+      if (url === '/api/agents/caller/x-agent-policies' && init?.method === 'PUT') {
+        return jsonResponse({ ok: true })
+      }
       if (url === '/api/agents') return jsonResponse(AGENTS)
       throw new Error(`Unexpected fetch: ${url}`)
     })
   })
 
-  it('renders global toggles and per-agent rows without the agent itself', async () => {
+  it('splits agents into Connected / Not connected by their effective send policy', async () => {
     renderView()
     expect(mocks.track).toHaveBeenCalledWith('agent_permissions_viewed', { agentSlug: 'caller' })
 
-    expect(await screen.findByText('List Agents')).toBeInTheDocument()
+    // Globals stay on top.
+    expect(await screen.findByText('Allow this agent to see a list of all other agents')).toBeInTheDocument()
     expect(screen.getByTestId('x-agent-policy-global-read')).toBeInTheDocument()
     expect(screen.getByTestId('x-agent-policy-global-invoke')).toBeInTheDocument()
 
-    // Only the OTHER workspace agent gets a row; the stored 'allow' decision
-    // is reflected on its Read toggle.
+    // Target (invoke allow) is connected; Helper is not; the caller has no row.
     expect(screen.queryByTestId('x-agent-policy-row-caller')).not.toBeInTheDocument()
-    const row = screen.getByTestId('x-agent-policy-row-target')
-    const readToggle = within(row).getAllByTestId('policy-toggle-allow')[0]
-    expect(readToggle).toHaveAttribute('data-active', 'true')
+    const targetSwitch = screen.getByTestId('x-agent-connect-switch-target')
+    const helperSwitch = screen.getByTestId('x-agent-connect-switch-helper')
+    expect(targetSwitch).toHaveAttribute('aria-checked', 'true')
+    expect(helperSwitch).toHaveAttribute('aria-checked', 'false')
+
+    // Connected rows carry a Permissions popover trigger; not-connected rows don't.
+    expect(screen.getByTestId('x-agent-permissions-trigger-target')).toBeInTheDocument()
+    expect(screen.queryByTestId('x-agent-permissions-trigger-helper')).not.toBeInTheDocument()
   })
 
-  it('PUTs the full policy set with the change applied', async () => {
+  it('connect flow: toggling on grants Send immediately', async () => {
     renderView()
-    const globalRead = await screen.findByTestId('x-agent-policy-global-read')
-
-    fireEvent.click(within(globalRead).getByTestId('policy-toggle-block'))
+    fireEvent.click(await screen.findByTestId('x-agent-connect-switch-helper'))
 
     await waitFor(() => {
-      expect(mocks.apiFetch).toHaveBeenCalledWith(
-        '/api/agents/caller/x-agent-policies',
-        expect.objectContaining({ method: 'PUT' }),
-      )
+      expect(lastPutBody()).toEqual({
+        policies: [
+          { operation: 'invoke', targetSlug: 'target', decision: 'allow' },
+          { operation: 'read', targetSlug: 'target', decision: 'allow' },
+          { operation: 'invoke', targetSlug: 'helper', decision: 'allow' },
+        ],
+      })
     })
-    const putCall = mocks.apiFetch.mock.calls.find(([, init]) => init?.method === 'PUT')!
-    expect(JSON.parse(putCall[1].body)).toEqual({
-      policies: [
-        { operation: 'read', targetSlug: 'target', decision: 'allow' },
-        { operation: 'read', targetSlug: null, decision: 'block' },
-      ],
+    // The row lands in Connected with its Permissions trigger available.
+    expect(await screen.findByTestId('x-agent-permissions-trigger-helper')).toBeInTheDocument()
+  })
+
+  it('disconnect removes the explicit send grant and keeps read untouched', async () => {
+    renderView()
+    fireEvent.click(await screen.findByTestId('x-agent-connect-switch-target'))
+
+    await waitFor(() => {
+      expect(lastPutBody()).toEqual({
+        policies: [{ operation: 'read', targetSlug: 'target', decision: 'allow' }],
+      })
     })
+  })
+
+  it('disconnecting an agent connected only via the global default pins an explicit Review', async () => {
+    policies = [policy('invoke', null, 'allow')]
+    renderView()
+
+    // Both agents inherit connected from the global send=allow.
+    const helperSwitch = await screen.findByTestId('x-agent-connect-switch-helper')
+    expect(helperSwitch).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(helperSwitch)
+    await waitFor(() => {
+      expect(lastPutBody()).toEqual({
+        policies: [
+          { operation: 'invoke', targetSlug: null, decision: 'allow' },
+          { operation: 'invoke', targetSlug: 'helper', decision: 'review' },
+        ],
+      })
+    })
+  })
+
+  it('the Permissions popover on a connected row saves a fine-grained change', async () => {
+    renderView()
+    fireEvent.click(await screen.findByTestId('x-agent-permissions-trigger-target'))
+
+    const popover = screen.getByTestId('x-agent-permissions-popover-target')
+    // Read is the first control; open its dropdown and pick Block (the menu
+    // renders in a portal, so query at screen level).
+    fireEvent.click(within(popover).getAllByTestId('policy-dropdown-trigger')[0])
+    fireEvent.click(await screen.findByTestId('policy-menu-block'))
+
+    await waitFor(() => {
+      expect(lastPutBody()).toEqual({
+        policies: [
+          { operation: 'invoke', targetSlug: 'target', decision: 'allow' },
+          { operation: 'read', targetSlug: 'target', decision: 'block' },
+        ],
+      })
+    })
+  })
+
+  it('badges an explicitly blocked agent in the list', async () => {
+    policies = [policy('invoke', 'target', 'block')]
+    renderView()
+
+    const row = await screen.findByTestId('x-agent-policy-row-target')
+    expect(within(row).getByText('Blocked')).toBeInTheDocument()
+    expect(within(row).getByTestId('x-agent-connect-switch-target')).toHaveAttribute('aria-checked', 'false')
   })
 
   it('shows owner gate and does not fetch for a non-owner', () => {
