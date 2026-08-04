@@ -184,9 +184,10 @@ test.describe('Model selection', () => {
   })
 
   test('the default bare-alias model resolves to a concrete id on the wire', async ({ page }, testInfo) => {
-    // The default `agentModel` setting is the bare alias 'opus'. AgentHome's
-    // trigger must display the resolved Opus model, and a send without touching
-    // the popover must put the resolved concrete id on the wire.
+    // The default `agentModel` setting is the bare alias 'grok', which this
+    // provider's catalog does not carry, so both the trigger and the wire fall
+    // through to the provider's own agent default (Opus). The two ladders must
+    // land on the SAME model — a display that disagrees with the wire is the bug.
     const tag = `${testInfo.workerIndex}-${Date.now()}`
 
     await agentPage.createAgent(`First message ${tag}`)
@@ -202,8 +203,8 @@ test.describe('Model selection', () => {
     const record = await waitForRecord(
       (r) => r.type === 'createSession' && r.initialMessage === followUp
     )
-    // Bare 'opus' resolves to its concrete latest id — match family-shape so the
-    // test survives future default-version bumps.
+    // The fallback resolves to a concrete latest id, never a bare alias — match
+    // family-shape so the test survives future default-version bumps.
     expect(record.model).toContain('opus')
     expect(record.model).not.toBe('opus')
   })
@@ -212,7 +213,7 @@ test.describe('Model selection', () => {
     await agentPage.clickCreateAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
-    // Default starts on Opus — confirm xhigh/max are visible there first.
+    // The default resolves to Opus here — confirm xhigh/max are visible first.
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await expect(page.locator('[data-testid="effort-option-xhigh"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-option-max"]')).toBeVisible()

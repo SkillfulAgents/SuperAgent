@@ -1,8 +1,8 @@
-import { useSettings, useUpdateSettings, type GlobalSettingsResponse } from '@renderer/hooks/use-settings'
+import { useSettings, useModelSettings, useUpdateSettings, type GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { useQueryClient } from '@tanstack/react-query'
 
-/** Onboarding offers just the two headline families; both store a bare alias. */
-type WizardFamily = 'opus' | 'sonnet'
+/** Onboarding offers just the headline families; each stores a bare alias. */
+type WizardFamily = 'grok' | 'opus' | 'sonnet'
 
 const MODEL_OPTIONS: Array<{
   family: WizardFamily
@@ -11,6 +11,13 @@ const MODEL_OPTIONS: Array<{
   description: string
   subdescription: string
 }> = [
+  {
+    family: 'grok',
+    label: 'Grok',
+    tag: 'Best value',
+    description: 'Best for everyday tasks and most agent work.',
+    subdescription: 'The lowest credit cost of the three.',
+  },
   {
     family: 'opus',
     label: 'Opus',
@@ -29,17 +36,35 @@ const MODEL_OPTIONS: Array<{
 
 export function ConfigureModelStep() {
   const { data: settings } = useSettings()
+  const { data: modelSettings } = useModelSettings()
   const updateSettings = useUpdateSettings()
   const queryClient = useQueryClient()
 
+  // Only offer families the active provider can actually serve. The copy below
+  // promises new conversations start with the pick, and a Claude-only setup
+  // (direct key, Bedrock, subscription) carries no Grok — offering it there
+  // would promise a model the resolver silently swaps for the provider default.
+  // An empty catalog means the provider is still loading or unconfigured, so
+  // fall back to the full list rather than rendering an empty step.
+  const activeProvider = modelSettings?.llmProvider ?? settings?.llmProvider
+  const catalog = modelSettings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? []
+  const options = catalog.length
+    ? MODEL_OPTIONS.filter((o) => catalog.some((m) => m.family === o.family))
+    : MODEL_OPTIONS
+
   // The global "Default model" setting (LLM tab) persists `models.agentModel`
-  // as a bare family alias or a pinned id. Derive the headline family from it
-  // so onboarding and settings stay in sync; unknown/other → 'opus'.
+  // as a bare family alias or a pinned id. Derive the headline family from it so
+  // onboarding and settings stay in sync. A stored model outside these families
+  // (GPT, GLM, a custom id) leaves NOTHING selected rather than claiming one of
+  // them — and every row stays clickable, so the pick always persists.
   const agentModel = settings?.models?.agentModel
-  const selectedFamily: WizardFamily = agentModel && /sonnet/.test(agentModel) ? 'sonnet' : 'opus'
+  const selectedFamily = options.find((o) => agentModel?.includes(o.family))?.family
 
   const handleSelect = async (family: WizardFamily) => {
-    if (family === selectedFamily) return
+    // Guard on the STORED value, not the derived row: re-clicking a row that is
+    // already the stored alias is a true no-op, while a stored model outside
+    // these families still writes (that click is not redundant).
+    if (agentModel === family) return
     // Optimistically reflect the choice in the settings cache so the card
     // updates instantly. The mutation's onSuccess invalidation refetches to
     // reconcile with the server; onError rolls back to the previous value.
@@ -71,7 +96,7 @@ export function ConfigureModelStep() {
       </div>
 
       <div className="space-y-3" role="radiogroup" aria-label="Default model">
-        {MODEL_OPTIONS.map((option) => {
+        {options.map((option) => {
           const isSelected = selectedFamily === option.family
           return (
             <div

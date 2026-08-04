@@ -231,8 +231,8 @@ describe('OpenRouterLlmProvider — capabilities and defaults', () => {
   it('opts into model search and exposes bare-alias purpose defaults', () => {
     expect(provider.supportsModelSearch).toBe(true)
     expect(provider.getDefaultModel('summarizer')).toBe('haiku')
-    expect(provider.getDefaultModel('agent')).toBe('sonnet')
-    expect(provider.getDefaultModel('browser')).toBe('sonnet')
-    expect(provider.getDefaultModel('dashboard')).toBe('opus')
+    expect(provider.getDefaultModel('agent')).toBe('grok')
+    expect(provider.getDefaultModel('browser')).toBe('grok')
+    expect(provider.getDefaultModel('dashboard')).toBe('grok')
   })
 })

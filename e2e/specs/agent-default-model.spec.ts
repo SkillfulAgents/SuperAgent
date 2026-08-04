@@ -104,8 +104,8 @@ test.describe('Per-agent default model', () => {
     // Revert via the picker's reset-to-global action (the in-popover
     // replacement for the old reset button): it disables itself once the
     // override is gone, the untouched composer follows the app-wide default
-    // again, and the next session is created with it (bare 'opus' alias,
-    // resolved to the latest concrete id on the wire).
+    // again, and the next session is created with it (a bare alias, resolved
+    // to the latest concrete id on the wire).
     const resetMessage = `Reset to global message ${tag}`
     await page.goBack()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()

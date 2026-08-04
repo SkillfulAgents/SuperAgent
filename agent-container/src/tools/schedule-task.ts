@@ -87,7 +87,7 @@ Avoid recurring intervals shorter than 15 minutes unless truly necessary: freque
         'Optional IANA timezone for interpreting the schedule (e.g., "America/New_York", "Europe/London"). If not specified, uses the creating user\'s timezone.'
       ),
     model: z
-      .enum(['opus', 'sonnet', 'haiku'])
+      .enum(['grok', 'opus', 'sonnet', 'haiku'])
       .optional()
       .describe(
         'Optional model family to use for this task. If not specified, uses the global default.'

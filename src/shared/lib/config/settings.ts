@@ -416,10 +416,10 @@ const DEFAULT_SETTINGS: AppSettings = {
     // Bare family aliases so fresh installs track each family's latest version.
     // The host resolver maps these to a concrete id per active provider.
     summarizerModel: 'haiku',
-    agentModel: 'opus',
-    browserModel: 'sonnet',
+    agentModel: 'grok',
+    browserModel: 'grok',
     // Dashboard-builder subagent — a capable tier by default (overridable).
-    dashboardBuilderModel: 'opus',
+    dashboardBuilderModel: 'grok',
     agentEffort: 'medium',
   },
   enableToolSearch: true,

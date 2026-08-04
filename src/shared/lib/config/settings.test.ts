@@ -246,7 +246,7 @@ describe('loadSettings', () => {
 
       expect(result.models?.agentModel).toBe('claude-opus-4-7')
       expect(result.models?.summarizerModel).toBe('haiku') // default
-      expect(result.models?.browserModel).toBe('sonnet') // default
+      expect(result.models?.browserModel).toBe('grok') // default
     })
 
     it('migrates legacy concrete model defaults to bare family aliases', () => {
@@ -1136,9 +1136,9 @@ describe('getEffectiveModels', () => {
 
     expect(models).toEqual({
       summarizerModel: 'haiku',
-      agentModel: 'opus',
-      browserModel: 'sonnet',
-      dashboardBuilderModel: 'opus',
+      agentModel: 'grok',
+      browserModel: 'grok',
+      dashboardBuilderModel: 'grok',
       agentEffort: 'medium',
     })
   })
@@ -1160,7 +1160,7 @@ describe('getEffectiveModels', () => {
       summarizerModel: 'custom-summarizer',
       agentModel: 'custom-agent',
       browserModel: 'custom-browser',
-      dashboardBuilderModel: 'opus',
+      dashboardBuilderModel: 'grok',
       agentEffort: 'medium',
     })
   })
@@ -1176,7 +1176,7 @@ describe('getEffectiveModels', () => {
 
     expect(models.agentModel).toBe('custom-agent')
     expect(models.summarizerModel).toBe('haiku')
-    expect(models.browserModel).toBe('sonnet')
+    expect(models.browserModel).toBe('grok')
   })
 
   it('falls back to defaults when model values are empty strings', () => {
@@ -1194,8 +1194,8 @@ describe('getEffectiveModels', () => {
 
     // Empty strings are falsy, so || fallback triggers
     expect(models.summarizerModel).toBe('haiku')
-    expect(models.agentModel).toBe('opus')
-    expect(models.browserModel).toBe('sonnet')
+    expect(models.agentModel).toBe('grok')
+    expect(models.browserModel).toBe('grok')
   })
 
   it('handles models being undefined in settings', () => {
@@ -1205,9 +1205,9 @@ describe('getEffectiveModels', () => {
 
     expect(models).toEqual({
       summarizerModel: 'haiku',
-      agentModel: 'opus',
-      browserModel: 'sonnet',
-      dashboardBuilderModel: 'opus',
+      agentModel: 'grok',
+      browserModel: 'grok',
+      dashboardBuilderModel: 'grok',
       agentEffort: 'medium',
     })
   })
@@ -1335,9 +1335,9 @@ describe('DEFAULT_SETTINGS', () => {
   it('has expected model defaults (bare aliases so fresh installs track latest)', () => {
     expect(DEFAULT_SETTINGS.models).toEqual({
       summarizerModel: 'haiku',
-      agentModel: 'opus',
-      browserModel: 'sonnet',
-      dashboardBuilderModel: 'opus',
+      agentModel: 'grok',
+      browserModel: 'grok',
+      dashboardBuilderModel: 'grok',
       agentEffort: 'medium',
     })
   })

@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // getActiveLlmProvider / resolveModelForProvider read settings for the active
 // provider id; stub settings so tests are deterministic and provider-agnostic.
 const settingsMock = vi.fn()
-vi.mock('../config/settings', () => ({
+vi.mock('../config/settings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config/settings')>()),
   getSettings: () => settingsMock(),
   getModelCatalogSettings: () => settingsMock().modelCatalog ?? {},
 }))
@@ -17,7 +18,8 @@ import {
   hasVersionSegment,
   resolveModelForProvider,
 } from './model-catalog'
-import { resolveActiveProviderModel } from './index'
+import { getLlmProvider, resolveActiveProviderModel } from './index'
+import { DEFAULT_SETTINGS } from '../config/settings'
 
 beforeEach(() => {
   settingsMock.mockReturnValue({ llmProvider: 'anthropic' })
@@ -495,7 +497,7 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')
     expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.5')
     expect(resolveModelForProvider('grok-4.5', 'platform', 'agent')).toBe('grok-4.5')
-    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('claude-opus-5')
+    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('grok-4.5')
   })
 
   it('resolves the SAME bare alias to each provider concrete id (cross-provider portability)', () => {
@@ -580,5 +582,32 @@ describe('resolveActiveProviderModel', () => {
   it('resolves against the active provider from settings', () => {
     settingsMock.mockReturnValue({ llmProvider: 'bedrock' })
     expect(resolveActiveProviderModel('opus', 'agent')).toBe('us.anthropic.claude-opus-4-8')
+  })
+})
+
+describe('shipped defaults vs provider defaults', () => {
+  // Two independent sources set the same thing. DEFAULT_SETTINGS.models is what a
+  // fresh install gets; provider.getDefaultModels() is what PUT /settings stamps
+  // over it whenever the active provider changes — which onboarding does, one step
+  // before it asks the user to pick a model. A provider that CAN serve the shipped
+  // family must therefore name it, or picking that provider silently moves the user
+  // off the default we ship.
+  const PURPOSES = [
+    ['agent', 'agentModel'],
+    ['browser', 'browserModel'],
+    ['dashboard', 'dashboardBuilderModel'],
+    ['summarizer', 'summarizerModel'],
+  ] as const
+
+  it('agree for every provider whose catalog carries the shipped family', () => {
+    for (const providerId of ['anthropic', 'bedrock', 'openrouter', 'platform'] as const) {
+      const catalog = getProviderCatalog(providerId)
+      for (const [purpose, settingsKey] of PURPOSES) {
+        const shipped = DEFAULT_SETTINGS.models![settingsKey]
+        if (!catalog.some(model => model.family === shipped)) continue
+        expect(`${providerId}.${purpose}=${getLlmProvider(providerId).getDefaultModel(purpose)}`)
+          .toBe(`${providerId}.${purpose}=${shipped}`)
+      }
+    }
   })
 })

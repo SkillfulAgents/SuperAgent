@@ -58,9 +58,9 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   getDefaultModel(purpose: ModelPurpose): string {
     switch (purpose) {
       case 'summarizer': return 'haiku'
-      case 'agent': return 'opus'
-      case 'browser': return 'sonnet'
-      case 'dashboard': return 'opus'
+      case 'agent': return 'grok'
+      case 'browser': return 'grok'
+      case 'dashboard': return 'grok'
     }
   }
 
