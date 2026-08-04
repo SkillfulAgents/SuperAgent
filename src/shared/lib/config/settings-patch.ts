@@ -8,30 +8,17 @@ import type {
 import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from './capability-policy-schema'
 import { validateFaviconDataUrl } from './favicon'
 import { isValidAccelerator } from './shortcuts'
-import { EFFORT_LEVELS, VALID_LIMA_VM_MEMORY_OPTIONS } from '../container/types'
+import {
+  CONTAINER_RUNNER_IDS,
+  EFFORT_LEVELS,
+  VALID_LIMA_VM_MEMORY_OPTIONS,
+  type ContainerRunner,
+} from '../container/types'
 import { assessVmMemory } from '../container/vm-memory'
 import { customEnvVarsSchema } from '../container/reserved-env-vars'
 import { modelCatalogSettingsSchema } from '../llm-provider/model-catalog-schema'
-
-export const CONTAINER_RUNNER_IDS = [
-  'docker',
-  'podman',
-  'apple-container',
-  'lima',
-  'wsl2',
-  'kubernetes',
-  'lambda-microvm',
-] as const
-
-export const LLM_PROVIDER_IDS = [
-  'anthropic',
-  'openrouter',
-  'bedrock',
-  'platform',
-  'generic',
-] as const
-
-export const WEB_PROVIDER_IDS = ['native', 'exa', 'platform'] as const
+import { LLM_PROVIDER_IDS, type LlmProviderId } from '../llm-provider/provider-types'
+import { WEB_PROVIDER_IDS } from '../web-provider/types'
 
 const notificationSettingsSchema = z.object({
   enabled: z.boolean(),
@@ -230,8 +217,6 @@ export type AppSettingsPatch = z.infer<typeof appSettingsPatchSchema>
 export type ApiKeySettingsPatch = z.infer<typeof apiKeySettingsPatchSchema>
 export type ProviderSettingsPatch = z.infer<typeof providerSettingsPatchSchema>
 export type GeneralSettingsPatch = z.infer<typeof generalSettingsPatchSchema>
-export type ContainerRunnerId = (typeof CONTAINER_RUNNER_IDS)[number]
-export type LlmProviderId = (typeof LLM_PROVIDER_IDS)[number]
 
 interface ProviderDefaultModels {
   summarizerModel: string
@@ -248,7 +233,7 @@ export interface SettingsApplyContext {
 export interface SettingsTransitionContext {
   hasRunningAgents: boolean
   hostTotalMemoryBytes: number
-  supportsCustomAgentImage(runner: ContainerRunnerId): boolean
+  supportsCustomAgentImage(runner: ContainerRunner): boolean
 }
 
 export interface SettingsProblem {
@@ -322,7 +307,7 @@ export const containerSettingsComponent = {
     }
 
     const imageChanged = after.container.agentImage !== before.container.agentImage
-    const effectiveRunner = after.container.containerRunner as ContainerRunnerId
+    const effectiveRunner = after.container.containerRunner as ContainerRunner
     if (imageChanged && !context.supportsCustomAgentImage(effectiveRunner)) {
       problems.push({
         status: 400,

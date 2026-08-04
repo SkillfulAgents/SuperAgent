@@ -39,7 +39,6 @@ import {
   formatSettingsPatchError,
   settingsPatchSchema,
   validateSettingsTransition,
-  type ContainerRunnerId,
 } from '@shared/lib/config/settings-patch'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
@@ -461,7 +460,7 @@ settings.put(
         context: {
           hasRunningAgents,
           hostTotalMemoryBytes: os.totalmem(),
-          supportsCustomAgentImage: (runner: ContainerRunnerId) =>
+          supportsCustomAgentImage: (runner: ContainerRunner) =>
             getContainerClientClass(runner).supportsCustomAgentImage,
         },
       })[0]

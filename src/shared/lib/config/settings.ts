@@ -200,8 +200,8 @@ export interface AnalyticsTarget {
   enabled: boolean
 }
 
-export type { LlmProviderId } from '../llm-provider/base-llm-provider'
-import type { LlmProviderId } from '../llm-provider/base-llm-provider'
+export type { LlmProviderId } from '../llm-provider/provider-types'
+import type { LlmProviderId } from '../llm-provider/provider-types'
 export type { WebProviderId } from '../web-provider/types'
 import type { WebProviderId } from '../web-provider/types'
 
