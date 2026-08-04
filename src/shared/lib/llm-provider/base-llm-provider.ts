@@ -57,7 +57,8 @@ export abstract class BaseLlmProvider {
   /**
    * The provider's built-in catalog of concrete model ids (shipped in code).
    * Each entry is a wire-ready model id with display metadata, family grouping,
-   * and an `isLatest` flag marking what a bare family alias resolves to.
+   * an `isLatest` flag marking what a bare family alias resolves to, and an
+   * `isDefault` flag marking the picker default for each model vendor.
    * See ./model-catalog.ts for how a stored selection resolves against this.
    */
   abstract getBuiltinCatalog(): ModelDefinition[]

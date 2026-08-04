@@ -24,9 +24,14 @@ describe('modelDefinitionSchema', () => {
       icon: 'anthropic',
       family: 'opus',
       isLatest: true,
+      isDefault: true,
       pricing: { inputPerMtok: 5, outputPerMtok: 25 },
     }
-    expect(modelDefinitionSchema.parse(full)).toMatchObject({ family: 'opus', isLatest: true })
+    expect(modelDefinitionSchema.parse(full)).toMatchObject({
+      family: 'opus',
+      isLatest: true,
+      isDefault: true,
+    })
   })
 
   it('rejects an empty id or label', () => {

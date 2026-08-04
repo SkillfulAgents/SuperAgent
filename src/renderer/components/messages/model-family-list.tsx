@@ -46,6 +46,14 @@ export function vendorDisplayName(key: string): string {
   return VENDOR_LABELS[key] ?? capitalize(key)
 }
 
+/** The catalog-declared concrete default for a model vendor. */
+export function vendorDefault(
+  catalog: ModelDefinition[],
+  vendor: string,
+): ModelDefinition | undefined {
+  return catalog.find((m) => vendorKey(m) === vendor && m.isDefault)
+}
+
 /**
  * Families whose entries are versions of one product line. These collapse to a
  * single row ("Opus") with per-version pin chips revealed on hover/selection.
@@ -382,9 +390,12 @@ function LineRow({
 /**
  * Flat model picker shared by the saved-setting selector and the per-message
  * composer. A vendor tab bar (when the catalog spans more than one brand) filters
- * to one vendor. Lineage families (Opus, Sonnet, …) collapse to one row with
- * per-version pin chips revealed on hover/selection, and non-lineage models whose
- * labels share a versioned base ("GPT-5.6 Sol/Terra/Luna") collapse the same way;
+ * to one vendor; switching tabs also picks that vendor's declared default
+ * (unless the selection is already on the tab), so a tab click IS a selection
+ * — single-model vendors need no second click. Lineage families (Opus, Sonnet,
+ * …) collapse to one row with per-version pin chips revealed on hover/selection,
+ * and non-lineage models whose labels share a versioned base ("GPT-5.6
+ * Sol/Terra/Luna") collapse the same way;
  * remaining models render one row each, newest-first. When `offerLatest` is set,
  * rows carry an explicit "Latest" chip storing the bare alias (rides upgrades) —
  * lit when the alias is the stored selection, while a lit version chip means a
@@ -483,7 +494,26 @@ export function ModelFamilyList({
                           aria-checked={isActive}
                           aria-label={vendorDisplayName(key)}
                           data-testid={`model-vendor-tab-${key}`}
-                          onClick={() => setPickedVendor(key)}
+                          // A tab click also SELECTS the vendor's declared default —
+                          // without this, single-model tabs (Grok, Kimi) read
+                          // as selected while nothing changed. Skipped when the
+                          // selection already lives on the clicked tab, so
+                          // re-clicking your own tab can't clobber a pinned
+                          // version or bare alias. The pick is provisional:
+                          // picks never dismiss, so the check lands in view
+                          // and any other row is one click away.
+                          onClick={() => {
+                            setPickedVendor(key)
+                            if (resolved && vendorKey(resolved) === key) return
+                            const defaultModel = vendorDefault(catalog, key)
+                            if (defaultModel) {
+                              // The catalog declares a concrete default. Do
+                              // not turn it into a family alias on settings
+                              // surfaces: the family's latest may be a
+                              // different model now or after an upgrade.
+                              onPick(defaultModel.id)
+                            }
+                          }}
                           className={cn(
                             'inline-flex h-6 w-8 items-center justify-center rounded-md transition-all hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                             isActive && 'bg-background text-foreground shadow'
