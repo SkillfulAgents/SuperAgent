@@ -1,24 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Agent \"QA-20260804-023033-5qjs\" successfully received message and responded with correct answer \"4\" to \"Hello! What is 2+2?\" query",
+  "reason": "Successfully navigated to the agent, sent a math question message, waited for response, and verified the agent correctly answered with \"4\"",
   "steps": [
-    "Navigated to http://localhost:47891 — App loaded successfully with agent list visible in sidebar",
-    "Clicked on \"QA-20260804-023033-5qjs\" agent in the sidebar — Successfully navigated to agent detail page with URL changing to /agents/qa-20260804-023033-5qjs-6xabxia0je",
-    "Verified agent status is \"running\" or \"idle\" — Status indicator shows \"idle\" in the top-right corner, which is valid",
-    "Sent message \"Hello! What is 2+2?\" — Message successfully typed into input field and sent button clicked",
-    "Waited up to 3 minutes for response — Agent processed the message and response appeared within 2 seconds",
-    "Verified response mentions \"4\" and took screenshot — Agent response clearly shows \"4\" as the answer to the math question with \"Worked for 2s\" timestamp. Screenshot captured successfully showing complete conversation."
+    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut app with sidebar containing two agents",
+    "Clicked on \"QA-20260804-175538-xu8u\" agent in sidebar — Agent detail page opened, showing the agent interface with status \"idle\" and message input field",
+    "Verified agent status is \"running\" or \"idle\" — Status indicator shows \"idle\" (confirmed in top right corner and in the snapshot), which meets the requirement",
+    "Sent message \"Hello! What is 2+2?\" — Message was typed into the input field and send button was clicked; page transitioned to chat session view with title \"Basic Math Question with QA Agent\"",
+    "Waited up to 3 minutes for a response — Agent completed processing within 1 second; activity indicator disappeared and status changed back to \"idle\"",
+    "Verified the response mentions \"4\" and took screenshot — Agent response shows \"4\" as the answer to the math question; screenshot captured showing the complete conversation with user message \"Hello! What is 2+2?\" and agent response \"4\""
   ],
   "bugs": [],
-  "durationMs": 136610,
-  "sessionId": "3e8f6119-1b3d-49b2-be80-02c56857e32c",
+  "durationMs": 66820,
+  "sessionId": "be90c75a-9bd3-44a9-914e-e5d36b389945",
   "cost": {
-    "inputTokens": 398,
-    "outputTokens": 11952,
-    "cacheCreationTokens": 112488,
-    "cacheReadTokens": 1077703,
+    "inputTokens": 350,
+    "outputTokens": 9353,
+    "cacheCreationTokens": 114491,
+    "cacheReadTokens": 943435,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.308538
+    "totalCostUsd": 0.284572
   }
 }
