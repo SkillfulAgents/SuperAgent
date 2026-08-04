@@ -390,20 +390,22 @@ export function UsersTab({ platformInviteHref }: UsersTabProps) {
                           <Ban className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
                         </Button>
                       )}
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 w-6 p-0"
-                            onClick={() => setResetPasswordUser(user)}
-                            title="Reset password"
-                          >
-                            <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Reset password</TooltipContent>
-                      </Tooltip>
+                      {!platformInviteHref ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0"
+                              onClick={() => setResetPasswordUser(user)}
+                              title="Reset password"
+                            >
+                              <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Reset password</TooltipContent>
+                        </Tooltip>
+                      ) : null}
                       <Button
                         variant="ghost"
                         size="sm"
