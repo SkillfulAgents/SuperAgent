@@ -180,6 +180,8 @@ class ContainerManager {
    */
   markAsStopped(agentId: string): void {
     this.updateCachedStatus(agentId, 'stopped', null)
+    this.containerStartedAt.delete(agentId)
+    this.lastKeepAliveAt.delete(agentId)
   }
 
   /**
@@ -303,6 +305,12 @@ class ContainerManager {
     if (this.startingAgents.has(agentId)) return info
 
     this.updateCachedStatus(agentId, info.status, info.port)
+
+    // Host restart clears in-memory start times. Floor the idle clock at
+    // rediscovery so zero-session warm containers are still reaped.
+    if (info.status === 'running' && !this.containerStartedAt.has(agentId)) {
+      this.containerStartedAt.set(agentId, Date.now())
+    }
 
     // Broadcast if status changed (e.g., container was stopped externally)
     if (previousStatus && previousStatus !== info.status) {

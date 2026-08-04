@@ -34,6 +34,23 @@ export function useSettings(options?: { enabled?: boolean }) {
   })
 }
 
+/** Default-on preference; treat missing as enabled. */
+export function isWarmStartOnTypeEnabled(
+  settings?: Pick<GlobalSettingsResponse, 'app'> | null,
+): boolean {
+  return settings?.app?.warmStartOnType !== false
+}
+
+/**
+ * Whether warm-start-on-type should fire. Returns false until settings have
+ * loaded so a disabled preference cannot race a speculative start.
+ */
+export function useWarmStartOnTypeEnabled(): boolean {
+  const { data, isSuccess } = useSettings()
+  if (!isSuccess) return false
+  return isWarmStartOnTypeEnabled(data)
+}
+
 /**
  * Picker-safe model settings served to EVERY authenticated user. The composer
  * and default-model pickers must read this — not `useSettings()`, whose

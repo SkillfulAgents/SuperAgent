@@ -182,13 +182,20 @@ export function useUpdateAgent() {
 // as they arrive without leaning on a poll loop.
 const AGENT_START_REINVALIDATE_DELAYS_MS = [5_000, 15_000, 30_000]
 
+export type StartAgentVars = string | { slug: string; source?: 'user' | 'warm-start' }
+
+function resolveStartAgentSlug(vars: StartAgentVars): string {
+  return typeof vars === 'string' ? vars : vars.slug
+}
+
 export function useStartAgent() {
   const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (slug: string) => {
+    mutationFn: async (vars: StartAgentVars) => {
+      const slug = resolveStartAgentSlug(vars)
       const res = await apiFetch(`/api/agents/${slug}/start`, { method: 'POST' })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
@@ -196,8 +203,13 @@ export function useStartAgent() {
       }
       return res.json()
     },
-    onSuccess: (_, slug) => {
-      track('agent_started')
+    onSuccess: (_, vars) => {
+      const slug = resolveStartAgentSlug(vars)
+      const source = typeof vars === 'string' ? 'user' : (vars.source ?? 'user')
+      // Warm-start is background/speculative — don't inflate agent_started.
+      if (source !== 'warm-start') {
+        track('agent_started')
+      }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['agents', slug] })
       for (const delay of AGENT_START_REINVALIDATE_DELAYS_MS) {

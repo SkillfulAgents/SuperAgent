@@ -1899,6 +1899,20 @@ describe('settings route', () => {
       expect(body.app.showMenuBarIcon).toBe(false)
       expect(body.llmProvider).toBe('openrouter')
     })
+
+    it('PUT accepts warmStartOnType boolean under app', async () => {
+      const res = await putSettings({ app: { warmStartOnType: false } })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.app.warmStartOnType).toBe(false)
+    })
+
+    it('PUT rejects non-boolean warmStartOnType', async () => {
+      const res = await putSettings({ app: { warmStartOnType: 'yes' } })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toMatch(/warmStartOnType/)
+    })
   })
 
   describe('model icon uploads', () => {
