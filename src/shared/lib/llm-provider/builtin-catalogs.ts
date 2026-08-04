@@ -10,8 +10,10 @@ import { pricingFor } from './model-pricing-lookup'
  * CLAUDE_BARE_CATALOG; OpenRouter and Platform extend it with non-Claude models
  * (different ids/pricing per upstream); Bedrock uses region-prefixed Claude ids.
  *
- * `isLatest` marks the id a bare family alias resolves to. Effort support is
- * per model: Opus/Fable accept all five levels, Sonnet/Haiku the lower three.
+ * `isLatest` marks the id a bare family alias resolves to. `isDefault` marks
+ * the concrete model selected when switching to that model vendor in the
+ * picker; it is intentionally independent from recency. Effort support is per
+ * model: Opus/Fable accept all five levels, Sonnet/Haiku the lower three.
  */
 
 const ALL_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -135,6 +137,7 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
     blurb: 'Most capable',
     family: 'opus',
     isLatest: true,
+    isDefault: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
     pricing: pricingFor('claude-opus-5'),
@@ -202,6 +205,7 @@ export const BEDROCK_CATALOG: ModelDefinition[] = [
     blurb: 'Most capable',
     family: 'opus',
     isLatest: true,
+    isDefault: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
     pricing: pricingFor('claude-opus-4-8'),
@@ -244,6 +248,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'OpenAI flagship, routed via OpenRouter',
     family: 'gpt',
     isLatest: true,
+    isDefault: true,
     icon: 'openai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     // The agent's web search/fetch are Anthropic-native server tools; they don't
@@ -263,6 +268,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'Z.AI GLM, routed via OpenRouter',
     family: 'glm',
     isLatest: true,
+    isDefault: true,
     icon: 'zai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
@@ -275,6 +281,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'xAI Grok, routed via OpenRouter',
     family: 'grok',
     isLatest: true,
+    isDefault: true,
     icon: 'xai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
@@ -296,6 +303,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'Moonshot AI, routed via OpenRouter',
     family: 'kimi',
     isLatest: true,
+    isDefault: true,
     icon: 'kimi',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
@@ -411,6 +419,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'OpenAI flagship, served via Platform',
     family: 'gpt',
     isLatest: true,
+    isDefault: true,
     icon: 'openai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
@@ -428,6 +437,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'xAI Grok, served via Platform',
     family: 'grok',
     isLatest: true,
+    isDefault: true,
     icon: 'xai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     // xAI offers priority but no flex tier — cost-sensitive work goes to their Batch API.
@@ -444,6 +454,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'Moonshot AI, served via Platform',
     family: 'kimi',
     isLatest: true,
+    isDefault: true,
     icon: 'kimi',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     // Fireworks' fast path is a separate router resource the proxy swaps in;

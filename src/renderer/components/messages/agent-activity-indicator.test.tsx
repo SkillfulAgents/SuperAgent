@@ -122,6 +122,16 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByTestId('activity-indicator')).toBeInTheDocument()
   })
 
+  it('stacks the active indicator behind the composer', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    const indicator = screen.getByTestId('activity-indicator')
+    expect(indicator).toHaveClass('rounded-t-2xl', 'border-b-0', 'pb-8')
+    expect(indicator.parentElement).toHaveClass('-mb-5')
+  })
+
   it('shows elapsed timer when active', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now() - 10000

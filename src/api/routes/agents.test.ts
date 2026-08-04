@@ -61,8 +61,33 @@ vi.mock('stream', () => ({
   },
 }))
 
+// child_process — the run-script route executes approved scripts via
+// promisify(exec)/promisify(execFile); the callback-style mocks below resolve
+// through promisify. Also covers the fire-and-forget execFile in the
+// open-workspace-directory route.
+const mockExec = vi.fn()
+const mockExecFile = vi.fn()
+vi.mock('child_process', () => ({
+  exec: (...args: unknown[]) => mockExec(...args),
+  execFile: (...args: unknown[]) => mockExecFile(...args),
+}))
+
+const mockCredentialSuggest = vi.fn()
+const mockCredentialRetrieve = vi.fn()
+const mockCredentialBeginPairing = vi.fn()
+const mockCredentialCompletePairing = vi.fn()
+vi.mock('../credentials/credential-broker', () => ({
+  credentialBroker: {
+    suggest: (...args: unknown[]) => mockCredentialSuggest(...args),
+    retrieve: (...args: unknown[]) => mockCredentialRetrieve(...args),
+    beginPairing: (...args: unknown[]) => mockCredentialBeginPairing(...args),
+    completePairing: (...args: unknown[]) => mockCredentialCompletePairing(...args),
+  },
+}))
+
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
 const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+const mockGlobalAdmin = vi.hoisted(() => ({ allowed: true }))
 let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
 // Display-slug -> canonical-id resolution applied by the ResolveAgent mock. Defaults
 // to identity (test slugs are already canonical); a test can override it to exercise
@@ -73,6 +98,9 @@ vi.mock('../middleware/auth', () => ({
   AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
   AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
+  IsAdmin: () => async (c: any, next: () => Promise<void>) => (
+    mockGlobalAdmin.allowed ? next() : c.json({ error: 'Forbidden' }, 403)
+  ),
   // Mirrors the real ResolveAgent: 404 on a missing agent (via the agentExists
   // mock) and stash the resolved id, which getAgentId reads back. For test slugs
   // (already canonical), resolution is the identity.
@@ -91,17 +119,20 @@ const mockContainerFetch = vi.fn()
 const mockSendMessage = vi.fn()
 const mockCancelQueuedMessage = vi.fn()
 const mockKeepAlive = vi.fn()
+const mockInterruptSession = vi.fn()
+const mockGetCachedInfo = vi.fn(() => ({ status: 'running', port: 8080 }))
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     getClient: () => ({
       fetch: (...args: unknown[]) => mockContainerFetch(...args),
       sendMessage: (...args: unknown[]) => mockSendMessage(...args),
       cancelQueuedMessage: (...args: unknown[]) => mockCancelQueuedMessage(...args),
+      interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
       start: vi.fn(),
       stop: vi.fn(),
     }),
     ensureRunning: vi.fn(),
-    getCachedInfo: () => ({ status: 'running', port: 8080 }),
+    getCachedInfo: () => mockGetCachedInfo(),
     removeClient: vi.fn(),
     keepAlive: (...args: unknown[]) => mockKeepAlive(...args),
   },
@@ -258,6 +289,8 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true),
+  sessionBelongsToAgent: vi.fn().mockResolvedValue(true),
+  reserveSessionOwnership: vi.fn().mockResolvedValue(undefined),
   sessionIsKnown: vi.fn().mockResolvedValue(true),
   isSessionRegistered: vi.fn().mockResolvedValue(false),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
@@ -278,15 +311,23 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   listUserSecrets: vi.fn(),
   getSecret: vi.fn(),
   setSecret: vi.fn(),
+  updateSecret: vi.fn(),
   deleteSecret: vi.fn(),
-  keyToEnvVar: vi.fn(),
   getSecretEnvVars: vi.fn(),
+}))
+
+vi.mock('@shared/lib/utils/secrets', () => ({
+  keyToEnvVar: vi.fn(),
+}))
+
+vi.mock('@shared/lib/services/audit-log-service', () => ({
+  logAuditEvent: vi.fn(),
+  logAuditEventOrThrow: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listScheduledTasks: vi.fn(),
   listPendingScheduledTasks: vi.fn(),
-  listPendingScheduledTasksByAgents: vi.fn(() => Promise.resolve(new Map())),
   listCancelledScheduledTasks: vi.fn(),
   listPendingWakesByAgent: vi.fn(() => Promise.resolve([])),
   getPendingWakeForSession: vi.fn(() => Promise.resolve(null)),
@@ -319,7 +360,6 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
 
 vi.mock('@shared/lib/services/chat-integration-service', () => ({
   listChatIntegrations: vi.fn(() => []),
-  listChatIntegrationsByAgents: vi.fn(() => new Map()),
 }))
 
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
@@ -343,6 +383,7 @@ const mockGetPendingReviewsForAgent = vi.fn((_slug: string) => [] as any[])
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
     getPendingReviewsForAgent: (slug: string) => mockGetPendingReviewsForAgent(slug),
+    denyAllForAgent: vi.fn(),
     submitDecision: vi.fn(),
     resolveMatchingPending: vi.fn(),
     resolveMatchingPendingByLabel: vi.fn(),
@@ -398,13 +439,24 @@ vi.mock('@shared/lib/utils/message-transform', () => ({
 const mockGetEffectiveModels = vi.fn(
   (): Record<string, string | undefined> => ({ summarizerModel: 'claude-3-haiku' })
 )
+const mockRuntimeSettings = vi.hoisted(() => vi.fn(() => ({
+  container: {},
+  skillsets: [],
+  app: { configuredPasswordManagers: ['apple-passwords'] },
+})))
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAnthropicApiKey: () => 'test-key',
   getEffectiveModels: () => mockGetEffectiveModels(),
   getEffectiveAgentLimits: () => ({}),
   getCustomEnvVars: () => ({}),
-  getSettings: () => ({ container: {}, skillsets: [] }),
+  getSettings: () => mockRuntimeSettings(),
+  mutateSettings: vi.fn(),
   getModelCatalogSettings: () => ({}),
+  VALID_SCRIPT_TYPES: {
+    darwin: ['applescript', 'shell'],
+    linux: ['shell'],
+    win32: ['powershell'],
+  },
 }))
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
@@ -445,12 +497,39 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   CorruptFileError: class CorruptFileError extends Error {},
 }))
 
+const mockStoreUploadChunk = vi.fn()
+const mockMoveUploadedFile = vi.fn()
+vi.mock('@shared/lib/utils/chunked-upload', () => {
+  function formatUploadTooLargeMessage(size: number, maxBytes: number): string {
+    return `File too large (${(size / 1024 / 1024).toFixed(1)}MB, max ${maxBytes / 1024 / 1024}MB)`
+  }
+  class UploadTooLargeError extends Error {
+    size: number
+    maxBytes: number
+    constructor(size: number, maxBytes: number) {
+      super(formatUploadTooLargeMessage(size, maxBytes))
+      this.name = 'UploadTooLargeError'
+      this.size = size
+      this.maxBytes = maxBytes
+    }
+  }
+  return {
+    MAX_UPLOAD_TOTAL_SIZE: 2 * 1024 * 1024 * 1024,
+    formatUploadTooLargeMessage,
+    UploadTooLargeError,
+    storeUploadChunk: (...args: unknown[]) => mockStoreUploadChunk(...args),
+    moveUploadedFile: (...args: unknown[]) => mockMoveUploadedFile(...args),
+    cleanupStaleTempUploads: vi.fn(async () => undefined),
+  }
+})
+
 vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))
 const mockStreamSSE = vi.fn((..._args: unknown[]) => new Response(null, { status: 200 }))
 vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStreamSSE(...args) }))
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
+import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
   importAgentFromTemplate,
   hasOnboardingSkill,
@@ -461,14 +540,17 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
-import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
+import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { listUserSecrets, setSecret, getSecret, keyToEnvVar, getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { keyToEnvVar } from '@shared/lib/utils/secrets'
+import { logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
@@ -485,6 +567,8 @@ function createApp() {
 
 beforeEach(() => {
   mockAuthorizedAgentRole = 'owner'
+  vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+  vi.mocked(sessionIsKnown).mockResolvedValue(true)
 })
 
 async function patchJson(app: Hono, url: string, body: unknown): Promise<Response> {
@@ -843,23 +927,22 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
   })
 
   it('rejects a session that does not belong to the authorized agent', async () => {
-    vi.mocked(sessionExists).mockResolvedValueOnce(false)
+    vi.mocked(sessionIsKnown).mockResolvedValueOnce(false)
 
     const res = await getReq(app, '/api/agents/authorized-agent/sessions/foreign-session/stream')
 
     expect(res.status).toBe(404)
-    expect(sessionExists).toHaveBeenCalledWith('authorized-agent', 'foreign-session')
+    expect(sessionIsKnown).toHaveBeenCalledWith('authorized-agent', 'foreign-session')
     expect(mockStreamSSE).not.toHaveBeenCalled()
   })
 
   it('allows a newly registered session before its transcript exists', async () => {
-    vi.mocked(sessionExists).mockResolvedValueOnce(false)
-    vi.mocked(isSessionRegistered).mockResolvedValueOnce(true)
+    vi.mocked(sessionIsKnown).mockResolvedValueOnce(true)
 
     const res = await getReq(app, '/api/agents/authorized-agent/sessions/new-session/stream')
 
     expect(res.status).toBe(200)
-    expect(isSessionRegistered).toHaveBeenCalledWith('authorized-agent', 'new-session')
+    expect(sessionIsKnown).toHaveBeenCalledWith('authorized-agent', 'new-session')
     expect(mockStreamSSE).toHaveBeenCalledOnce()
   })
 })
@@ -962,10 +1045,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
   }
 
   it('accepts intermediate chunks and returns chunk_received', async () => {
-    // Simulate first of 2 chunks — readdir returns only 1 file
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
-    mockFsReaddir.mockResolvedValue(['chunk-0'])
+    mockStoreUploadChunk.mockResolvedValue({ status: 'received' })
 
     const form = buildChunkForm({
       chunk: 'data-part-0',
@@ -982,19 +1062,21 @@ describe('POST /api/agents/import-template (chunked)', () => {
     expect(body.status).toBe('chunk_received')
     expect(body.chunkIndex).toBe(0)
     expect(importAgentFromTemplate).not.toHaveBeenCalled()
+    expect(mockStoreUploadChunk).toHaveBeenCalledWith(
+      '11111111-1111-1111-1111-111111111111',
+      0,
+      2,
+      expect.any(Buffer),
+      500 * 1024 * 1024,
+    )
   })
 
   it('assembles and processes on final chunk', async () => {
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
-    // readdir returns both chunks → triggers assembly
-    mockFsReaddir.mockResolvedValue(['chunk-0', 'chunk-1'])
-    // readFile for each chunk during assembly
-    mockFsReadFile.mockImplementation((filePath: string) => {
-      if (filePath.endsWith('chunk-0')) return Promise.resolve(Buffer.from('part0'))
-      if (filePath.endsWith('chunk-1')) return Promise.resolve(Buffer.from('part1'))
-      return Promise.reject(new Error('unexpected read'))
-    })
+    const assembledPath = '/mock/tmp/uploads/22222222-2222-2222-2222-222222222222.assembled'
+    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
+    mockFsStat.mockResolvedValue({ size: 10 })
+    mockFsReadFile.mockResolvedValue(Buffer.from('part0part1'))
+    mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
       chunk: 'data-part-1',
@@ -1010,17 +1092,19 @@ describe('POST /api/agents/import-template (chunked)', () => {
     const body = await res.json()
     expect(body.slug).toBe('imported-agent')
     expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      Buffer.concat([Buffer.from('part0'), Buffer.from('part1')]),
+      Buffer.from('part0part1'),
       undefined,
       'full',
     )
+    expect(mockFsUnlink).toHaveBeenCalledWith(assembledPath)
   })
 
   it('passes name override on final chunk', async () => {
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
-    mockFsReaddir.mockResolvedValue(['chunk-0'])
+    const assembledPath = '/mock/tmp/uploads/33333333-3333-3333-3333-333333333333.assembled'
+    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
+    mockFsStat.mockResolvedValue({ size: 7 })
     mockFsReadFile.mockResolvedValue(Buffer.from('zipdata'))
+    mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
       chunk: 'zipdata',
@@ -1053,6 +1137,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
 
     const body = await res.json()
     expect(body.error).toContain('Invalid uploadId')
+    expect(mockStoreUploadChunk).not.toHaveBeenCalled()
   })
 
   it('rejects missing chunked upload fields', async () => {
@@ -1110,52 +1195,38 @@ describe('POST /api/agents/import-template (chunked)', () => {
 
   it('handles duplicate chunk index by overwriting and still assembles correctly', async () => {
     const uploadId = '66666666-6666-6666-6666-666666666666'
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
+    mockStoreUploadChunk
+      .mockResolvedValueOnce({ status: 'received' })
+      .mockResolvedValueOnce({
+        status: 'assembled',
+        filePath: `/mock/tmp/uploads/${uploadId}.assembled`,
+      })
+    mockFsStat.mockResolvedValue({ size: 12 })
+    mockFsReadFile.mockResolvedValue(Buffer.from('new-datapart1'))
+    mockFsUnlink.mockResolvedValue(undefined)
 
-    // First send of chunk 0 — not all chunks present yet
-    mockFsReaddir.mockResolvedValue(['chunk-0'])
     const form1 = buildChunkForm({ chunk: 'old-data', uploadId, chunkIndex: 0, totalChunks: 2 })
     const res1 = await postFormData(app, '/api/agents/import-template', form1)
     expect(res1.status).toBe(200)
     expect((await res1.json()).status).toBe('chunk_received')
 
-    // Re-send chunk 0 with different data (duplicate), then send chunk 1 as final
-    mockFsReaddir.mockResolvedValue(['chunk-0', 'chunk-1'])
-    mockFsReadFile.mockImplementation((filePath: string) => {
-      if (filePath.endsWith('chunk-0')) return Promise.resolve(Buffer.from('new-data'))
-      if (filePath.endsWith('chunk-1')) return Promise.resolve(Buffer.from('part1'))
-      return Promise.reject(new Error('unexpected read'))
-    })
-
     const form2 = buildChunkForm({ chunk: 'part1', uploadId, chunkIndex: 1, totalChunks: 2, mode: 'template' })
     const res2 = await postFormData(app, '/api/agents/import-template', form2)
     expect(res2.status).toBe(201)
     expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      Buffer.concat([Buffer.from('new-data'), Buffer.from('part1')]),
+      Buffer.from('new-datapart1'),
       undefined,
       'template',
     )
   })
 
   it('rejects when assembled compressed size exceeds limit', async () => {
-    mockFsWriteFile.mockResolvedValue(undefined)
-    mockFsMkdir.mockResolvedValue(undefined)
-    // Simulate a single chunk that, once assembled, exceeds MAX_COMPRESSED_SIZE (500MB)
-    // We can't actually allocate 500MB+ in a test, so we verify the check is in processImport
-    // by creating a buffer just over the limit via mock readFile responses
     const uploadId = '77777777-7777-7777-7777-777777777777'
-    mockFsReaddir.mockResolvedValue(['chunk-0'])
-
-    // Create a buffer that's larger than 500MB limit
-    // Instead of allocating a huge buffer, mock readFile to return a large length indicator
-    const oversizedBuffer = Buffer.alloc(100)
-    // We can't easily test with real 500MB+ buffers in unit tests, but we can verify
-    // the route correctly rejects via the processImport guard by setting up a mock
-    // that returns a buffer larger than MAX_COMPRESSED_SIZE
+    const assembledPath = `/mock/tmp/uploads/${uploadId}.assembled`
     const MAX = 500 * 1024 * 1024
-    const mockBuf = { length: MAX + 1 } as Buffer
-    mockFsReadFile.mockResolvedValue(oversizedBuffer)
+    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
+    mockFsStat.mockResolvedValue({ size: MAX + 1 })
+    mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
       chunk: 'data',
@@ -1164,12 +1235,43 @@ describe('POST /api/agents/import-template (chunked)', () => {
       totalChunks: 1,
     })
 
-    // For this test, we directly verify that processImport would reject
-    // We can't easily simulate >500MB in a unit test, so this is a sanity check
-    // that the route handler calls through correctly for small payloads
     const res = await postFormData(app, '/api/agents/import-template', form)
-    // The small payload will succeed (pass size check) then fail at import (mock)
-    expect(res.status).toBe(201)
+    expect(res.status).toBe(413)
+    expect(importAgentFromTemplate).not.toHaveBeenCalled()
+    expect(mockFsReadFile).not.toHaveBeenCalled()
+    expect(mockFsUnlink).toHaveBeenCalledWith(assembledPath)
+  })
+
+  it('returns 413 when storeUploadChunk throws UploadTooLargeError', async () => {
+    mockStoreUploadChunk.mockRejectedValue(new UploadTooLargeError(600 * 1024 * 1024, 500 * 1024 * 1024))
+
+    const form = buildChunkForm({
+      chunk: 'data',
+      uploadId: '88888888-8888-8888-8888-888888888888',
+      chunkIndex: 0,
+      totalChunks: 1,
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(413)
+    const body = await res.json()
+    expect(body.error).toContain('File too large')
+  })
+
+  it('rejects single-request upload when file.size exceeds limit before arrayBuffer', async () => {
+    const file = new File(['x'], 'big.zip', { type: 'application/zip' })
+    const sizeSpy = vi.spyOn(File.prototype, 'size', 'get').mockReturnValue(500 * 1024 * 1024 + 1)
+    const form = new FormData()
+    form.append('file', file)
+    form.append('mode', 'template')
+
+    try {
+      const res = await postFormData(app, '/api/agents/import-template', form)
+      expect(res.status).toBe(413)
+      expect(importAgentFromTemplate).not.toHaveBeenCalled()
+    } finally {
+      sizeSpy.mockRestore()
+    }
   })
 })
 
@@ -2858,6 +2960,53 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     const body = await res.json()
     expect(body.error).toBe('No file provided')
   })
+
+  it('returns 413 when file.size exceeds MAX_UPLOAD_TOTAL_SIZE before reading', async () => {
+    const file = new File(['x'], 'huge.bin', { type: 'application/octet-stream' })
+    const sizeSpy = vi.spyOn(File.prototype, 'size', 'get').mockReturnValue(2 * 1024 * 1024 * 1024 + 1)
+    const formData = new FormData()
+    formData.append('file', file)
+
+    try {
+      const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+      expect(res.status).toBe(413)
+      expect(mockFsWriteFile).not.toHaveBeenCalled()
+    } finally {
+      sizeSpy.mockRestore()
+    }
+  })
+
+  it('moves assembled chunked upload via moveUploadedFile', async () => {
+    const assembledPath = '/mock/tmp/uploads/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.assembled'
+    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
+    mockMoveUploadedFile.mockResolvedValue(11)
+    mockFsUnlink.mockResolvedValue(undefined)
+
+    const form = new FormData()
+    form.append('chunk', new File(['final'], 'chunk.bin'))
+    form.append('uploadId', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+    form.append('chunkIndex', '0')
+    form.append('totalChunks', '1')
+    form.append('filename', 'report.pdf')
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', form)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.success).toBe(true)
+    expect(body.filename).toBe('report.pdf')
+    expect(body.size).toBe(11)
+    expect(mockMoveUploadedFile).toHaveBeenCalledWith(
+      assembledPath,
+      expect.stringContaining('/mock/workspace/uploads/'),
+    )
+    expect(mockStoreUploadChunk).toHaveBeenCalledWith(
+      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      0,
+      1,
+      expect.any(Buffer),
+      2 * 1024 * 1024 * 1024,
+    )
+  })
 })
 
 // ============================================================================
@@ -3186,6 +3335,7 @@ describe('DELETE /:id/sessions/:sessionId', () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
+    mockGlobalAdmin.allowed = true
   })
 
   it('returns 204 and deletes the session', async () => {
@@ -3232,6 +3382,339 @@ describe('DELETE /:id/sessions/:sessionId', () => {
 // ============================================================================
 // Awaiting-input recovery from the persisted transcript
 // ============================================================================
+
+describe('browser credential broker routes', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockContainerFetch.mockReset()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    mockGlobalAdmin.allowed = true
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tool-credential',
+      kind: 'browser_input',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {
+        browserContext: {
+          url: 'https://example.com/login',
+          capturedAt: Date.now(),
+        },
+      },
+    })
+  })
+
+  afterEach(() => {
+    userInputRequestManager.reset()
+    mockContainerFetch.mockReset()
+    mockGlobalAdmin.allowed = true
+  })
+
+  it('returns metadata-only suggestions for the open request', async () => {
+    mockCredentialSuggest.mockResolvedValueOnce({
+      provider: 'apple-passwords',
+      providerLabel: 'Apple Passwords',
+      status: 'ready',
+      origin: 'https://example.com',
+      suggestions: [{ id: 'opaque-id', username: 'person@example.com', domain: 'example.com' }],
+    })
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential',
+    )
+
+    expect(res.status).toBe(200)
+    const json = await res.json() as { suggestions: Array<Record<string, unknown>> }
+    expect(json.suggestions[0]).not.toHaveProperty('password')
+    expect(mockCredentialSuggest).toHaveBeenCalledWith(
+      { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
+      'https://example.com/login',
+      ['apple-passwords'],
+    )
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('starts and verifies the configured provider from the open input request', async () => {
+    mockCredentialBeginPairing.mockResolvedValueOnce({ status: 'pin_required' })
+    mockCredentialCompletePairing.mockResolvedValueOnce(undefined)
+
+    const check = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials/check',
+      { toolUseId: 'tool-credential', provider: 'apple-passwords' },
+    )
+    expect(check.status).toBe(200)
+    expect(await check.json()).toMatchObject({
+      status: 'verification_required',
+      verification: { type: 'numeric_code', length: 6 },
+    })
+
+    const verify = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials/verify',
+      { toolUseId: 'tool-credential', provider: 'apple-passwords', code: '123456' },
+    )
+    expect(verify.status).toBe(200)
+    expect(mockCredentialBeginPairing).toHaveBeenCalledWith('apple-passwords')
+    expect(mockCredentialCompletePairing).toHaveBeenCalledWith('apple-passwords', '123456')
+  })
+
+  it('requires a global admin for host password access in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    mockGlobalAdmin.allowed = false
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential',
+    )
+
+    expect(res.status).toBe(403)
+    expect(mockCredentialSuggest).not.toHaveBeenCalled()
+  })
+
+  it('re-probes and replaces browser context on explicit refresh', async () => {
+    mockContainerFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ url: 'https://new.example/login' }), { status: 200 }),
+    )
+    mockCredentialSuggest.mockResolvedValueOnce({
+      provider: 'apple-passwords',
+      providerLabel: 'Apple Passwords',
+      status: 'ready',
+      installable: true,
+      origin: 'https://new.example',
+      suggestions: [],
+    })
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials' +
+        '?toolUseId=tool-credential&refresh=true',
+    )
+
+    expect(res.status).toBe(200)
+    expect(mockCredentialSuggest).toHaveBeenCalledWith(
+      { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
+      'https://new.example/login',
+      ['apple-passwords'],
+    )
+    expect(userInputRequestManager.getOpenRequest('tool-credential')?.payload)
+      .toMatchObject({ browserContext: { url: 'https://new.example/login' } })
+  })
+
+  it('uses credential-lookup copy for unexpected suggestion failures', async () => {
+    mockCredentialSuggest.mockRejectedValueOnce(new Error('unexpected'))
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential',
+    )
+
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Credential lookup failed' })
+  })
+
+  it('rejects malformed browser context returned by the container', async () => {
+    mockContainerFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ url: 42 }), { status: 200 }),
+    )
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials' +
+        '?toolUseId=tool-credential&refresh=true',
+    )
+
+    expect(res.status).toBe(502)
+    expect(mockCredentialSuggest).not.toHaveBeenCalled()
+  })
+
+  it('does not check a provider that is not configured', async () => {
+    mockRuntimeSettings.mockReturnValueOnce({ container: {}, skillsets: [], app: { configuredPasswordManagers: [] } })
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials/check',
+      { toolUseId: 'tool-credential', provider: 'apple-passwords' },
+    )
+    expect(res.status).toBe(409)
+    expect(mockCredentialBeginPairing).not.toHaveBeenCalled()
+  })
+
+  it('validates password-manager request bodies before provider access', async () => {
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials/check',
+      { toolUseId: 'tool-credential', provider: 42 },
+    )
+
+    expect(res.status).toBe(400)
+    expect(mockCredentialBeginPairing).not.toHaveBeenCalled()
+  })
+
+  it('retrieves and fills through the privileged endpoint without returning the secret', async () => {
+    mockContainerFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          success: true,
+          usernameFilled: true,
+          passwordFilled: true,
+        }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ success: true }), { status: 200 }),
+      )
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+
+    expect(res.status).toBe(200)
+    const json = await res.json()
+    expect(json).toEqual({
+      success: true,
+      usernameFilled: true,
+      passwordFilled: true,
+      requestSettled: true,
+    })
+    expect(JSON.stringify(json)).not.toContain('host-only-secret')
+    expect(mockCredentialRetrieve).toHaveBeenCalledWith(
+      { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
+      'opaque-id',
+      'https://example.com/login',
+    )
+    const [fillPath, fillOptions] = mockContainerFetch.mock.calls[1]
+    expect(fillPath).toBe('/browser/fill-credential')
+    expect(JSON.parse(fillOptions.body)).toEqual({
+      sessionId: 'sess-1',
+      username: 'person@example.com',
+      password: 'host-only-secret',
+      expectedOrigin: 'https://example.com',
+    })
+    const [resolvePath, resolveOptions] = mockContainerFetch.mock.calls[2]
+    expect(resolvePath).toBe('/inputs/tool-credential/resolve')
+    expect(JSON.parse(resolveOptions.body)).toEqual({ value: 'credentials_filled' })
+    expect(messagePersister.completeInputRequest).toHaveBeenCalledWith(
+      'sess-1',
+      'tool-credential',
+      'answered',
+    )
+  })
+
+  it('claims the request before retrieval so a concurrent Done cannot settle it', async () => {
+    let releaseContext!: (response: Response) => void
+    const contextResponse = new Promise<Response>((resolve) => { releaseContext = resolve })
+    mockContainerFetch.mockImplementation((path: string) => {
+      if (path.startsWith('/browser/credential-context')) return contextResponse
+      if (path === '/browser/fill-credential') {
+        return Promise.resolve(new Response(JSON.stringify({
+          success: true,
+          usernameFilled: true,
+          passwordFilled: true,
+        }), { status: 200 }))
+      }
+      if (path === '/inputs/tool-credential/resolve') {
+        return Promise.resolve(new Response(JSON.stringify({ success: true }), { status: 200 }))
+      }
+      return Promise.resolve(new Response(JSON.stringify({ error: 'unexpected path' }), { status: 500 }))
+    })
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const filling = postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+    await vi.waitFor(() => expect(mockContainerFetch).toHaveBeenCalledWith(
+      '/browser/credential-context?sessionId=sess-1',
+    ))
+
+    const competing = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      { toolUseId: 'tool-credential' },
+    )
+    expect(competing.status).toBe(409)
+    expect(mockContainerFetch.mock.calls.some(([path]) => path === '/inputs/tool-credential/reject')).toBe(false)
+
+    releaseContext(new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }))
+    expect((await filling).status).toBe(200)
+    expect(messagePersister.completeInputRequest).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases the request claim when autofill fails before settlement', async () => {
+    mockContainerFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'No visible password field was found' }), { status: 409 }),
+      )
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+
+    expect(res.status).toBe(409)
+    const reclaimed = userInputRequestManager.claimRequest('tool-credential')
+    expect(reclaimed?.id).toBe('tool-credential')
+    userInputRequestManager.releaseClaim('tool-credential')
+  })
+
+  it('rejects a malformed autofill response from the container', async () => {
+    mockContainerFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ usernameFilled: 'yes', passwordFilled: true }), { status: 200 }),
+      )
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+
+    expect(res.status).toBe(502)
+    expect(await res.json()).toMatchObject({ error: 'The browser returned an invalid autofill result' })
+  })
+
+  it('rejects a request id scoped to another session before touching the browser', async () => {
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/other-session/browser-credentials?toolUseId=tool-credential',
+    )
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(mockCredentialSuggest).not.toHaveBeenCalled()
+  })
+})
 
 describe('decision routes settle their request immediately', () => {
   // The transcript tool_result normally cleans up the stream store and
@@ -3995,7 +4478,7 @@ describe('GET /api/agents (enriched summary)', () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
-    // Default: no sessions, no tasks, no artifacts
+    // Default: no sessions or artifacts
     vi.mocked(getSessionSummary).mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null })
     vi.mocked(listSessions).mockResolvedValue([])
     vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
@@ -4019,10 +4502,10 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0].hasActiveSessions).toBe(false)
     expect(body[0].hasSessionsAwaitingInput).toBe(false)
     expect(body[0].lastActivityAt).toBe('2026-01-01T12:00:00.000Z')
-    expect(body[0].scheduledTaskCount).toBe(0)
-    expect(body[0].nextScheduledTaskAt).toBeNull()
-    expect(body[0].dashboardCount).toBe(0)
-    expect(body[0].dashboardNames).toEqual([])
+    expect(body[0].dashboards).toEqual([])
+    expect(body[0]).not.toHaveProperty('scheduledTaskCount')
+    expect(body[0]).not.toHaveProperty('chatIntegrationCount')
+    expect(body[0]).not.toHaveProperty('autoDeleteInactiveDays')
   })
 
   it('detects active sessions via messagePersister', async () => {
@@ -4166,57 +4649,7 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0].lastActivityAt).toBe('2026-01-01T15:00:00.000Z')
   })
 
-  it('returns scheduled task count and nearest next execution', async () => {
-    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    const tasks = [
-      {
-        id: 'task-1',
-        agentSlug: 'agent-1',
-        scheduleType: 'cron',
-        scheduleExpression: '0 9 * * *',
-        prompt: 'do stuff',
-        name: 'Morning task',
-        status: 'pending',
-        nextExecutionAt: new Date('2026-01-02T09:00:00Z'),
-        lastExecutedAt: null,
-        isRecurring: true,
-        executionCount: 0,
-        lastSessionId: null,
-        createdBySessionId: null,
-        timezone: null,
-        createdAt: new Date('2026-01-01'),
-        cancelledAt: null,
-      },
-      {
-        id: 'task-2',
-        agentSlug: 'agent-1',
-        scheduleType: 'cron',
-        scheduleExpression: '0 */2 * * *',
-        prompt: 'check stuff',
-        name: 'Frequent check',
-        status: 'pending',
-        nextExecutionAt: new Date('2026-01-01T14:00:00Z'),
-        lastExecutedAt: null,
-        isRecurring: true,
-        executionCount: 0,
-        lastSessionId: null,
-        createdBySessionId: null,
-        timezone: null,
-        createdAt: new Date('2026-01-01'),
-        cancelledAt: null,
-      },
-    ]
-    vi.mocked(listPendingScheduledTasksByAgents).mockResolvedValue(new Map([['agent-1', tasks]]) as any)
-
-    const res = await getReq(app, '/api/agents')
-    const body = await res.json()
-
-    expect(body[0].scheduledTaskCount).toBe(2)
-    // Should pick the earlier of the two next execution times
-    expect(body[0].nextScheduledTaskAt).toBe('2026-01-01T14:00:00.000Z')
-  })
-
-  it('returns dashboard count and names from artifacts', async () => {
+  it('returns dashboard summaries from artifacts', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([
       { slug: 'dash-1', name: 'Sales Dashboard', description: '', status: 'running', port: 5000 },
@@ -4226,8 +4659,10 @@ describe('GET /api/agents (enriched summary)', () => {
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
 
-    expect(body[0].dashboardCount).toBe(2)
-    expect(body[0].dashboardNames).toEqual(['Sales Dashboard', 'Metrics'])
+    expect(body[0].dashboards).toEqual([
+      { slug: 'dash-1', name: 'Sales Dashboard' },
+      { slug: 'dash-2', name: 'Metrics' },
+    ])
   })
 
   it('uses artifact slug as fallback name when name is empty', async () => {
@@ -4239,7 +4674,7 @@ describe('GET /api/agents (enriched summary)', () => {
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
 
-    expect(body[0].dashboardNames).toEqual(['unnamed-dash'])
+    expect(body[0].dashboards).toEqual([{ slug: 'unnamed-dash', name: 'unnamed-dash' }])
   })
 
   it('enriches agents in auth mode', async () => {
@@ -4258,8 +4693,7 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body).toHaveLength(1)
     // Summary fields should be present even in auth mode
     expect(body[0]).toHaveProperty('hasActiveSessions')
-    expect(body[0]).toHaveProperty('scheduledTaskCount')
-    expect(body[0]).toHaveProperty('dashboardCount')
+    expect(body[0]).toHaveProperty('dashboards')
   })
 
   it('sorts the auth-mode list newest-first', async () => {
@@ -4312,8 +4746,8 @@ describe('GET /api/agents (enriched summary)', () => {
 
     expect(body).toHaveLength(2)
     // Both agents should have summary fields
-    expect(body[0]).toHaveProperty('dashboardCount', 0)
-    expect(body[1]).toHaveProperty('dashboardCount', 0)
+    expect(body[0]).toHaveProperty('dashboards')
+    expect(body[1]).toHaveProperty('dashboards')
     // getSessionSummary called once per agent
     expect(getSessionSummary).toHaveBeenCalledTimes(2)
     expect(getSessionSummary).toHaveBeenCalledWith('agent-1')
@@ -4348,12 +4782,62 @@ describe('artifact proxy — subPath uses the raw display-slug URL', () => {
       new Response('ok', { headers: { 'content-type': 'application/javascript' } }),
     )
 
-    const res = await getReq(app, '/api/agents/my-dash-abc1234567/artifacts/dash/static/app.js')
+    const res = await app.request(
+      'http://localhost/api/agents/my-dash-abc1234567/artifacts/dash/static/app.js',
+      { headers: { 'if-none-match': '"asset-v1"' } },
+    )
 
     expect(res.status).toBe(200)
     expect(mockContainerFetch).toHaveBeenCalledTimes(1)
     // Bug repro: an id-based prefix yields indexOf(prefix) === -1, corrupting this path.
     expect(mockContainerFetch.mock.calls[0]?.[0]).toBe('/artifacts/dash/static/app.js')
+    expect(mockContainerFetch.mock.calls[0]?.[1]).toMatchObject({
+      redirect: 'manual',
+      headers: expect.objectContaining({
+        'accept-encoding': 'identity',
+        'x-forwarded-prefix': '/api/agents/my-dash-abc1234567/artifacts/dash',
+        'x-forwarded-host': 'localhost',
+        'x-forwarded-proto': 'http',
+        'if-none-match': '"asset-v1"',
+      }),
+    })
+  })
+
+  it('removes upstream validators only for transformed HTML documents', async () => {
+    mockContainerFetch.mockResolvedValue(
+      new Response('<html><head></head><body>ok</body></html>', {
+        headers: { 'content-type': 'text/html' },
+      }),
+    )
+
+    const res = await app.request(
+      'http://localhost/api/agents/abc1234567/artifacts/dash/s/deck',
+      {
+        headers: {
+          accept: 'text/html',
+          'if-modified-since': 'Tue, 04 Aug 2026 18:00:00 GMT',
+          'if-none-match': '"document-v1"',
+        },
+      },
+    )
+
+    expect(res.status).toBe(200)
+    const init = mockContainerFetch.mock.calls[0]?.[1] as RequestInit
+    expect(init.headers).not.toHaveProperty('if-modified-since')
+    expect(init.headers).not.toHaveProperty('if-none-match')
+  })
+
+  it('canonicalizes display-slug document navigations to match the dashboard router base', async () => {
+    const res = await app.request(
+      'http://localhost/api/agents/my-dash-abc1234567/artifacts/dash/s/deck?present=1',
+      { headers: { accept: 'text/html' } },
+    )
+
+    expect(res.status).toBe(307)
+    expect(res.headers.get('location')).toBe(
+      '/api/agents/abc1234567/artifacts/dash/s/deck?present=1',
+    )
+    expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 })
 
@@ -4826,6 +5310,21 @@ describe('POST /api/agents/:id/skills/import-zip', () => {
     expect(body.error).toBe('No file provided')
   })
 
+  it('returns 413 when file.size exceeds SKILL_MAX_COMPRESSED_SIZE before reading', async () => {
+    const file = new File(['x'], 'skill.zip', { type: 'application/zip' })
+    const sizeSpy = vi.spyOn(File.prototype, 'size', 'get').mockReturnValue(100 * 1024 * 1024 + 1)
+    const form = new FormData()
+    form.append('file', file)
+
+    try {
+      const res = await postFormData(app, '/api/agents/my-agent/skills/import-zip', form)
+      expect(res.status).toBe(413)
+      expect(importSkillFromZip).not.toHaveBeenCalled()
+    } finally {
+      sizeSpy.mockRestore()
+    }
+  })
+
   it('returns 500 when service throws', async () => {
     vi.mocked(importSkillFromZip).mockRejectedValue(new Error('SKILL.md not found in package'))
 
@@ -4869,7 +5368,109 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
     })
   })
 
+  describe('GET /:id/secrets/:secretId/value', () => {
+    it('returns a raw value with cache prevention headers', async () => {
+      vi.mocked(getSecret).mockResolvedValue({
+        envVar: 'MY_API_KEY',
+        key: 'My API Key',
+        value: 'secret-value',
+      })
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets/MY_API_KEY/value')
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ value: 'secret-value' })
+      expect(res.headers.get('cache-control')).toBe('no-store')
+      expect(res.headers.get('pragma')).toBe('no-cache')
+      expect(logAuditEventOrThrow).toHaveBeenCalledWith({
+        userId: 'test-user-id',
+        object: 'secret',
+        objectId: 'my-agent/MY_API_KEY',
+        action: 'revealed',
+      })
+    })
+
+    it('fails closed when the reveal audit row cannot be written', async () => {
+      vi.mocked(getSecret).mockResolvedValue({
+        envVar: 'MY_API_KEY',
+        key: 'My API Key',
+        value: 'secret-value',
+      })
+      vi.mocked(logAuditEventOrThrow).mockRejectedValueOnce(new Error('audit unavailable'))
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets/MY_API_KEY/value')
+
+      expect(res.status).toBe(500)
+      expect(await res.json()).toEqual({ error: 'Failed to reveal secret' })
+    })
+
+    it('returns a retryable response when the audit database is busy', async () => {
+      vi.mocked(getSecret).mockResolvedValue({
+        envVar: 'MY_API_KEY',
+        key: 'My API Key',
+        value: 'secret-value',
+      })
+      vi.mocked(logAuditEventOrThrow).mockRejectedValueOnce(
+        Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }),
+      )
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets/MY_API_KEY/value')
+
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({
+        error: 'The audit log is temporarily busy. Please try revealing the secret again.',
+      })
+      expect(res.headers.get('retry-after')).toBe('1')
+    })
+
+    it('returns 404 when the requested user secret does not exist', async () => {
+      vi.mocked(getSecret).mockResolvedValue(null)
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets/MISSING/value')
+
+      expect(res.status).toBe(404)
+      expect(logAuditEventOrThrow).not.toHaveBeenCalled()
+    })
+
+    it('does not reveal reserved runtime variables', async () => {
+      const res = await getReq(app, '/api/agents/my-agent/secrets/CONNECTED_ACCOUNTS/value')
+
+      expect(res.status).toBe(404)
+      expect(getSecret).not.toHaveBeenCalled()
+    })
+  })
+
   describe('POST /:id/secrets (bug 2 — reject reserved names)', () => {
+    it('returns field-specific errors for missing required values', async () => {
+      const missingKey = await postJson(app, '/api/agents/my-agent/secrets', {
+        value: 'secret',
+      })
+      expect(missingKey.status).toBe(400)
+      expect(await missingKey.json()).toEqual({ error: 'Key is required' })
+
+      const missingValue = await postJson(app, '/api/agents/my-agent/secrets', {
+        key: 'My Key',
+      })
+      expect(missingValue.status).toBe(400)
+      expect(await missingValue.json()).toEqual({ error: 'Value is required' })
+      expect(setSecret).not.toHaveBeenCalled()
+    })
+
+    it('rejects a key that cannot produce an environment variable', async () => {
+      vi.mocked(keyToEnvVar).mockReturnValue('')
+
+      const res = await postJson(app, '/api/agents/my-agent/secrets', {
+        key: '!!!',
+        value: 'pwned',
+      })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({
+        error: 'Key must contain at least one letter or number',
+      })
+      expect(setSecret).not.toHaveBeenCalled()
+    })
+
     it('rejects a reserved env var (CONNECTED_ACCOUNTS) with 400 and never writes', async () => {
       vi.mocked(keyToEnvVar).mockReturnValue('CONNECTED_ACCOUNTS')
 
@@ -4917,9 +5518,37 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
   })
 
   describe('PUT /:id/secrets/:secretId (bug 2 — reject renaming onto reserved)', () => {
+    it('rejects non-string patch values at the request boundary', async () => {
+      const res = await app.request('http://localhost/api/agents/my-agent/secrets/MY_API_KEY', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: null }),
+      })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'Invalid request body' })
+      expect(updateSecret).not.toHaveBeenCalled()
+    })
+
+    it('rejects empty and no-op patches at the request boundary', async () => {
+      for (const body of [{}, { value: '' }]) {
+        const res = await app.request(
+          'http://localhost/api/agents/my-agent/secrets/MY_API_KEY',
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          },
+        )
+
+        expect(res.status).toBe(400)
+        expect(await res.json()).toEqual({ error: 'Invalid request body' })
+      }
+      expect(updateSecret).not.toHaveBeenCalled()
+    })
+
     it('rejects renaming a secret onto a reserved env var with 400 and never writes', async () => {
-      vi.mocked(getSecret).mockResolvedValue({ envVar: 'MY_API_KEY', value: 'k', key: 'My API Key' })
-      vi.mocked(keyToEnvVar).mockReturnValue('REMOTE_MCPS')
+      vi.mocked(updateSecret).mockResolvedValue({ status: 'reserved', envVar: 'REMOTE_MCPS' })
 
       const res = await app.request('http://localhost/api/agents/my-agent/secrets/MY_API_KEY', {
         method: 'PUT',
@@ -4930,7 +5559,21 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
       expect(res.status).toBe(400)
       const body = await res.json()
       expect(body.error).toContain('REMOTE_MCPS')
-      expect(setSecret).not.toHaveBeenCalled()
+    })
+
+    it('returns 409 rather than overwriting a rename destination', async () => {
+      vi.mocked(updateSecret).mockResolvedValue({ status: 'conflict', envVar: 'EXISTING' })
+
+      const res = await app.request('http://localhost/api/agents/my-agent/secrets/SOURCE', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'Existing' }),
+      })
+
+      expect(res.status).toBe(409)
+      expect(await res.json()).toEqual({
+        error: 'A secret with env var "EXISTING" already exists',
+      })
     })
   })
 })
@@ -5104,6 +5747,16 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('haiku')
     expect(args.effort).toBe('high')
+  })
+
+  it('reserves ownership before publishing global lifecycle state', async () => {
+    const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
+
+    expect(res.status).toBe(201)
+    expect(reserveSessionOwnership).toHaveBeenCalledWith('test-agent', 'session-123')
+    expect(vi.mocked(reserveSessionOwnership).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(messagePersister.markSessionActive).mock.invocationCallOrder[0],
+    )
   })
 
   it('explicit per-session model/effort win over agent preference defaults', async () => {
@@ -5286,5 +5939,327 @@ describe('session existence guards read metadata, not the transcript', () => {
     const res = await postJson(app, '/api/agents/test-agent/sessions/ghost/computer-use/revoke', {})
 
     expect(res.status).toBe(404)
+  })
+})
+
+describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-use', () => {
+  // "Allow once" posts grantType:'once', which the route records as a
+  // use_host_shell grant before executing. checkPermission treats ANY live
+  // grant as granted, and the persister auto-executes the agent's next
+  // request_script_run on that basis — so if the route never consumes the
+  // once-grant after the run it authorized, "Allow once" silently behaves
+  // like "always allow" for the rest of the process lifetime.
+  let app: ReturnType<typeof createApp>
+
+  function parkScriptRun(toolUseId: string) {
+    userInputRequestManager.register({
+      id: toolUseId,
+      kind: 'script_run',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+  }
+
+  async function approveScript(toolUseId: string, grantType: 'once' | 'timed') {
+    parkScriptRun(toolUseId)
+    return postJson(app, '/api/agents/test-agent/sessions/sess-1/run-script', {
+      toolUseId,
+      script: 'echo ok',
+      scriptType: 'shell',
+      grantType,
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    mockAgentExists.mockResolvedValue(true)
+    userInputRequestManager.reset()
+    mockContainerFetch.mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), { status: 200 }),
+    )
+    // Callback-style exec resolving through promisify(exec) in the route.
+    mockExec.mockImplementation((_cmd: unknown, _opts: unknown, cb: unknown) => {
+      ;(cb as (err: null, result: { stdout: string; stderr: string }) => void)(
+        null,
+        { stdout: 'ok', stderr: '' },
+      )
+    })
+  })
+
+  afterEach(() => {
+    computerUsePermissionManager.revokeAllForAgent('test-agent')
+    userInputRequestManager.reset()
+  })
+
+  it('an approved once-grant is consumed by the run it authorized', async () => {
+    expect(
+      computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
+    ).toBe('prompt_needed')
+
+    const res = await approveScript('tool-once-1', 'once')
+
+    expect(res.status).toBe(200)
+    expect(mockExec).toHaveBeenCalledTimes(1)
+    expect(messagePersister.completeInputRequest).toHaveBeenCalledWith(
+      'sess-1', 'tool-once-1', 'answered',
+    )
+
+    // The next request_script_run must prompt again, not auto-execute.
+    expect(
+      computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
+    ).toBe('prompt_needed')
+  })
+
+  it('a timed grant survives the run that created it', async () => {
+    const res = await approveScript('tool-timed-1', 'timed')
+
+    expect(res.status).toBe(200)
+    expect(
+      computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
+    ).toBe('granted')
+  })
+})
+
+// ============================================================================
+// Cross-agent session scoping
+// ============================================================================
+
+/**
+ * Session-scoped routes authorize the AGENT in the URL, never the session id in
+ * it. Most siblings are safe by construction because they build a filesystem
+ * path from `agentSlug + sessionId`, so a foreign id is simply a miss — but the
+ * routes that reach the message persister are not: it is a process-global
+ * registry keyed by session id ALONE, with no agent dimension. Without an
+ * explicit ownership gate, a caller holding a role on agent A can pass agent B's
+ * session id and drive B's live session: wipe its streaming state, broadcast a
+ * bogus `session_idle` to everyone watching it, spoof messages into its
+ * transcript view, or grant it a capability.
+ *
+ * Each test below asserts BOTH halves — the 404, and that the global side effect
+ * never fired. The status code alone would pass even if the mutation happened
+ * first and the route merely reported failure afterwards.
+ */
+describe('cross-agent session scoping', () => {
+  const ATTACKER = 'attacker-agent'
+  const OWN_SESSION = 'own-session-id'
+  const VICTIM_SESSION = 'victim-session-id'
+
+  let app: Hono
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockAgentExists.mockResolvedValue(true)
+    mockIsAuthMode.mockReturnValue(true)
+    mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 })
+    mockInterruptSession.mockResolvedValue(true)
+    mockSendMessage.mockResolvedValue(undefined)
+    mockContainerFetch.mockResolvedValue({ ok: true, json: async () => ({}) })
+
+    // The attacker owns exactly one session; the victim's id belongs to another
+    // agent, so it resolves to neither a transcript nor a metadata entry here.
+    vi.mocked(sessionIsKnown).mockImplementation(
+      async (agentSlug: string, sessionId: string) =>
+        agentSlug === ATTACKER && sessionId === OWN_SESSION,
+    )
+    vi.mocked(sessionBelongsToAgent).mockImplementation(
+      async (agentSlug: string, sessionId: string) =>
+        agentSlug === ATTACKER && sessionId === OWN_SESSION,
+    )
+    vi.mocked(sessionExists).mockImplementation(
+      async (agentSlug: string, sessionId: string) =>
+        agentSlug === ATTACKER && sessionId === OWN_SESSION,
+    )
+    vi.mocked(getSession).mockImplementation(async (agentSlug: string, sessionId: string) =>
+      agentSlug === ATTACKER && sessionId === OWN_SESSION
+        ? ({ id: sessionId, agentSlug, name: 'Own', createdAt: new Date(), lastActivityAt: new Date(), messageCount: 1 } as any)
+        : null,
+    )
+    vi.mocked(deleteSession).mockResolvedValue(false)
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Attacker' } } as any)
+  })
+
+  afterEach(() => {
+    mockIsAuthMode.mockReturnValue(false)
+    mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 })
+  })
+
+  function url(sessionId: string, suffix = ''): string {
+    return `/api/agents/${ATTACKER}/sessions/${sessionId}${suffix}`
+  }
+
+  describe('GET /sessions/:sessionId/messages', () => {
+    it('rejects a foreign id even if a same-named transcript exists locally', async () => {
+      vi.mocked(sessionExists).mockResolvedValue(true)
+
+      const res = await app.request(url(VICTIM_SESSION, '/messages'))
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.getSettledInputRequests).not.toHaveBeenCalled()
+      expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('POST /sessions/:sessionId/interrupt', () => {
+    it('404s on a foreign session and never marks it interrupted', async () => {
+      const res = await postJson(app, url(VICTIM_SESSION, '/interrupt'), {})
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+      expect(mockInterruptSession).not.toHaveBeenCalled()
+    })
+
+    it('404s on a foreign session even when the container is not running', async () => {
+      // The stopped-container path marks the session interrupted directly,
+      // without going through the container at all.
+      mockGetCachedInfo.mockReturnValue({ status: 'stopped', port: 0 })
+
+      const res = await postJson(app, url(VICTIM_SESSION, '/interrupt'), {})
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+    })
+
+    it('404s on a foreign session even when the container call throws', async () => {
+      // The handler's catch deliberately marks the session interrupted anyway
+      // (to unstick a stale UI). The gate has to run BEFORE that try, or the
+      // error path becomes a second way in.
+      mockInterruptSession.mockRejectedValue(new Error('container exploded'))
+
+      const res = await postJson(app, url(VICTIM_SESSION, '/interrupt'), {})
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+    })
+
+    it('404s on a session id that escapes the agent’s session directory', async () => {
+      const res = await postJson(app, url('..%2F..%2Fvictim', '/interrupt'), {})
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+    })
+
+    it('still interrupts the caller’s own session', async () => {
+      const res = await postJson(app, url(OWN_SESSION, '/interrupt'), {})
+
+      expect(res.status).toBe(200)
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(OWN_SESSION)
+    })
+
+    it('still marks the caller’s own session interrupted when the container throws', async () => {
+      mockInterruptSession.mockRejectedValue(new Error('container exploded'))
+
+      const res = await postJson(app, url(OWN_SESSION, '/interrupt'), {})
+
+      expect(res.status).toBe(200)
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(OWN_SESSION)
+    })
+  })
+
+  // GET …/stream is gated too, but by its own inline check with dedicated
+  // coverage above ('session stream access') — not repeated here.
+
+  describe('POST /sessions/:sessionId/messages', () => {
+    it('404s on a foreign session and never touches its live state', async () => {
+      const res = await postJson(app, url(VICTIM_SESSION, '/messages'), { content: 'hi' })
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.cancelAwaitingInput).not.toHaveBeenCalled()
+      expect(messagePersister.markSessionActive).not.toHaveBeenCalled()
+      expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
+      expect(messagePersister.subscribeToSession).not.toHaveBeenCalled()
+      expect(mockSendMessage).not.toHaveBeenCalled()
+    })
+
+    it('still sends to the caller’s own session', async () => {
+      const res = await postJson(app, url(OWN_SESSION, '/messages'), { content: 'hi' })
+
+      expect(res.status).toBe(201)
+      expect(mockSendMessage).toHaveBeenCalled()
+    })
+  })
+
+  describe('POST /sessions/:sessionId/typing', () => {
+    it('404s on a foreign session and never broadcasts into it', async () => {
+      const res = await postJson(app, url(VICTIM_SESSION, '/typing'), {})
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
+    })
+
+    it('still broadcasts typing for the caller’s own session', async () => {
+      const res = await postJson(app, url(OWN_SESSION, '/typing'), {})
+
+      expect(res.status).toBe(200)
+      expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith(
+        OWN_SESSION,
+        expect.objectContaining({ type: 'user_typing' }),
+      )
+    })
+  })
+
+  // The decision routes reach the same session-id-keyed registries, but they are
+  // already closed by gateRequestDecision, which binds the toolUseId to the
+  // route's agent AND session. It answers an unknown id with 200
+  // {alreadySettled} rather than a 404 — deliberately, so a stale card dismisses
+  // itself — so these assert the side effect, not the status.
+  describe('POST /sessions/:sessionId/capability-review', () => {
+    it('never grants a capability in a foreign session', async () => {
+      await postJson(app, url(VICTIM_SESSION, '/capability-review'), {
+        toolUseId: 'tool-1',
+        capability: 'subagents',
+        scope: 'session',
+      })
+
+      expect(messagePersister.grantSessionCapability).not.toHaveBeenCalled()
+      expect(messagePersister.completeCapabilityReview).not.toHaveBeenCalled()
+    })
+
+    it('never resolves a foreign session’s review card when declining', async () => {
+      await postJson(app, url(VICTIM_SESSION, '/capability-review'), {
+        toolUseId: 'tool-1',
+        capability: 'subagents',
+        decline: true,
+      })
+
+      expect(messagePersister.completeCapabilityReview).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('POST /sessions/:sessionId/complete-browser-input', () => {
+    it('never marks a foreign session interrupted', async () => {
+      await postJson(app, url(VICTIM_SESSION, '/complete-browser-input'), {
+        toolUseId: 'tool-1',
+        decline: true,
+      })
+
+      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('DELETE /sessions/:sessionId', () => {
+    it('404s on a foreign session without unsubscribing its persister', async () => {
+      const res = await deleteReq(app, url(VICTIM_SESSION))
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.unsubscribeFromSession).not.toHaveBeenCalled()
+    })
+
+    it('still deletes an owned metadata-only entry without createdAt', async () => {
+      vi.mocked(sessionExists).mockResolvedValue(false)
+      vi.mocked(isSessionRegistered).mockResolvedValue(true)
+      vi.mocked(deleteSession).mockResolvedValue(true)
+
+      const res = await deleteReq(app, url(OWN_SESSION))
+
+      expect(res.status).toBe(204)
+      expect(messagePersister.unsubscribeFromSession).toHaveBeenCalledWith(OWN_SESSION)
+      expect(deleteSession).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
+    })
   })
 })

@@ -26,6 +26,11 @@ const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 const SIDEBAR_WIDTH_STORAGE_KEY = "sidebar_width"
 
+/** The only widths the sidebar is allowed to have, wherever the number came from. */
+function clampSidebarWidth(width: number): number {
+  return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, width))
+}
+
 type SidebarContextProps = {
   state: "expanded" | "collapsed"
   open: boolean
@@ -74,8 +79,14 @@ const SidebarProvider = React.forwardRef<
     const isMobile = useIsMobile()
     const [openMobile, setOpenMobile] = React.useState(false)
     const [sidebarWidth, setSidebarWidth] = React.useState(() => {
-      const stored = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY)
-      return stored ? Number(stored) : SIDEBAR_WIDTH_DEFAULT
+      // Clamp what we read, not just what we write. A stored width below the
+      // minimum comes back as a sidebar narrower than any drag can produce —
+      // the user cannot widen it by a pixel and cannot reproduce it either, so
+      // it reads as the app launching broken. Values written by older builds
+      // (this store is keyed on the app name, so every local build shares it)
+      // are outside our control; the clamp is.
+      const stored = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY))
+      return stored > 0 ? clampSidebarWidth(stored) : SIDEBAR_WIDTH_DEFAULT
     })
     const [isResizing, setIsResizing] = React.useState(false)
 
@@ -293,19 +304,24 @@ const SidebarRail = React.forwardRef<
   HTMLButtonElement,
   React.ComponentProps<"button">
 >(({ className, ...props }, ref) => {
-  const { toggleSidebar, setSidebarWidth, setIsResizing } = useSidebar()
+  const { toggleSidebar, sidebarWidth, setSidebarWidth, setIsResizing } = useSidebar()
   const startXRef = React.useRef(0)
   const startWidthRef = React.useRef(0)
+  const finalWidthRef = React.useRef(0)
   const didDragRef = React.useRef(false)
 
   const handleMouseDown = React.useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault()
-      const sidebar = (e.target as HTMLElement).closest("[data-sidebar='sidebar']")
-      if (!sidebar) return
-      const startWidth = sidebar.getBoundingClientRect().width
+      // Both ends of the drag work from the width we own rather than from a
+      // measured element. `[data-sidebar='sidebar']` is *inside* the inset
+      // variant's `p-2`, so measuring it reported 16px less than the width we
+      // had set — and since that measurement was both the drag's starting point
+      // and the value persisted on release, every drag shrank the sidebar by
+      // 16px and eventually stored widths under the minimum.
       startXRef.current = e.clientX
-      startWidthRef.current = startWidth
+      startWidthRef.current = sidebarWidth
+      finalWidthRef.current = sidebarWidth
       didDragRef.current = false
       setIsResizing(true)
       document.body.style.cursor = "col-resize"
@@ -314,10 +330,8 @@ const SidebarRail = React.forwardRef<
       const handleMouseMove = (moveEvent: MouseEvent) => {
         const dx = moveEvent.clientX - startXRef.current
         if (Math.abs(dx) > 3) didDragRef.current = true
-        const newWidth = Math.min(
-          SIDEBAR_WIDTH_MAX,
-          Math.max(SIDEBAR_WIDTH_MIN, startWidthRef.current + dx)
-        )
+        const newWidth = clampSidebarWidth(startWidthRef.current + dx)
+        finalWidthRef.current = newWidth
         setSidebarWidth(newWidth)
       }
 
@@ -328,11 +342,7 @@ const SidebarRail = React.forwardRef<
         document.body.style.userSelect = ""
         setIsResizing(false)
         // Persist final width
-        const sidebar2 = document.querySelector("[data-sidebar='sidebar']")
-        if (sidebar2) {
-          const finalWidth = sidebar2.getBoundingClientRect().width
-          localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(finalWidth)))
-        }
+        localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(finalWidthRef.current)))
         // If it was just a click (no drag), toggle
         if (!didDragRef.current) {
           toggleSidebar()
@@ -342,7 +352,7 @@ const SidebarRail = React.forwardRef<
       document.addEventListener("mousemove", handleMouseMove)
       document.addEventListener("mouseup", handleMouseUp)
     },
-    [setSidebarWidth, setIsResizing, toggleSidebar]
+    [sidebarWidth, setSidebarWidth, setIsResizing, toggleSidebar]
   )
 
   return (

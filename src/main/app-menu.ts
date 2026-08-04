@@ -3,7 +3,9 @@ import path from 'path'
 import { fetchAgentsWithStatus, ActivityStatus } from './agent-status'
 
 let mainWindowRef: BrowserWindow | null = null
-let apiPortRef: number = 0
+// A getter rather than a stored URL: in cloud mode the effective base is the
+// keyed proxy prefix, and which one is in force can change on a target switch.
+let getApiBaseUrlRef: (() => string) | null = null
 let updateInterval: NodeJS.Timeout | null = null
 
 /**
@@ -103,10 +105,20 @@ function sendToRenderer(channel: string, ...args: unknown[]): void {
 }
 
 /**
+ * Builds overlap: the 30s poll and the target-switch refresh both come through
+ * buildAppMenu, and the base URL is sampled before the await. Without this a
+ * slow response from the previous target could land after the switch refresh
+ * painted the new one and overwrite it. Last started wins.
+ */
+let buildGeneration = 0
+
+/**
  * Build and set the application menu
  */
 async function buildAppMenu(): Promise<void> {
-  const agents = await fetchAgentsWithStatus(apiPortRef)
+  const generation = ++buildGeneration
+  const agents = getApiBaseUrlRef ? await fetchAgentsWithStatus(getApiBaseUrlRef()) : []
+  if (generation !== buildGeneration) return
 
   // Group agents by status
   const awaitingInput = agents.filter(a => a.activityStatus === 'awaiting_input')
@@ -268,22 +280,29 @@ async function buildAppMenu(): Promise<void> {
  */
 export function createAppMenu(
   mainWindow: BrowserWindow | null,
-  apiPort: number
+  getApiBaseUrl: () => string
 ): void {
   mainWindowRef = mainWindow
-  apiPortRef = apiPort
+  getApiBaseUrlRef = getApiBaseUrl
 
   // Initial build
-  buildAppMenu().catch((error) => {
-    console.error('Failed to build app menu:', error)
-  })
+  refreshAppMenu()
 
   // Update periodically to refresh agent list (every 30s, same as tray)
   updateInterval = setInterval(() => {
-    buildAppMenu().catch((error) => {
-      console.error('Failed to update app menu:', error)
-    })
+    refreshAppMenu()
   }, 30000)
+}
+
+/**
+ * Rebuild the menu now instead of waiting out the poll. Called on a target
+ * switch, where the 30s interval would leave the previous Superagent's agents
+ * in the Agents menu.
+ */
+export function refreshAppMenu(): void {
+  buildAppMenu().catch((error) => {
+    console.error('Failed to build app menu:', error)
+  })
 }
 
 /**

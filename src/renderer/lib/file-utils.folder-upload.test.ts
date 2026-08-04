@@ -5,6 +5,7 @@ import {
   getItemsFromDataTransfer,
   zipFolderFiles,
 } from './file-utils'
+import { _resetApiTargetForTest, setActiveTarget } from './api-target'
 
 /**
  * Helper to create a mock FileList from an array of partial File objects.
@@ -338,5 +339,67 @@ describe('zipFolderFiles', () => {
 
     const blob = await zipFolderFiles(files)
     expect(blob.size).toBeGreaterThan(0)
+  })
+})
+
+// ============================================================================
+// Cloud workspace — a host path is the wrong machine's
+// ============================================================================
+
+describe('cloud workspace — folder paths are not handed over', () => {
+  // Electron is still Electron in cloud mode, so getPathForFile still answers.
+  // But the only thing done with a folderPath downstream is to have the machine
+  // running the agent read or mount it, and that machine is not this one. The
+  // right answer is the web one: enumerate and upload the bytes.
+  let originalElectronAPI: typeof window.electronAPI
+
+  beforeEach(() => {
+    originalElectronAPI = window.electronAPI
+    window.electronAPI = {
+      getPathForFile: vi.fn((f: File) => (f as File & { path?: string }).path ?? ''),
+    } as any
+    _resetApiTargetForTest() // the global setup already settled it to 'local'
+    setActiveTarget('cloud', null)
+  })
+
+  afterEach(() => {
+    window.electronAPI = originalElectronAPI
+    _resetApiTargetForTest()
+  })
+
+  it('enumerates a picked folder rather than passing this laptop’s path', () => {
+    const fileList = createMockFileList([
+      {
+        name: 'index.ts',
+        webkitRelativePath: 'my-project/src/index.ts',
+        path: '/Users/joe/code/my-project/src/index.ts',
+      },
+    ])
+
+    const result = getFolderFromDirectoryInput(fileList)
+
+    expect(result?.folderName).toBe('my-project')
+    expect(result?.folderPath).toBeUndefined()
+    expect(result?.files).toHaveLength(1)
+  })
+
+  it('enumerates a dropped folder rather than passing this laptop’s path', async () => {
+    const nestedFile = new File(['content'], 'nested.txt')
+    const dirEntry = createMockDirEntry('my-folder', [
+      createMockFileEntry('nested.txt', nestedFile) as unknown as FileSystemEntry,
+    ])
+    const folderFile = new File([], 'my-folder')
+    Object.defineProperty(folderFile, 'path', { value: '/Users/joe/Desktop/my-folder' })
+
+    const mockDataTransfer = {
+      items: [{ webkitGetAsEntry: () => dirEntry }],
+      files: [folderFile],
+    } as unknown as DataTransfer
+
+    const result = await getItemsFromDataTransfer(mockDataTransfer)
+
+    expect(result.folders[0].folderPath).toBeUndefined()
+    expect(result.folders[0].files).toHaveLength(1)
+    expect(result.folders[0].files[0].file).toBe(nestedFile)
   })
 })

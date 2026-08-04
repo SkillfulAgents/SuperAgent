@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { FolderEntryContextMenu } from './folder-file-context-menu'
 import type { FolderTab } from '@renderer/context/file-preview-context'
 import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
+import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
@@ -317,5 +318,22 @@ describe('FolderFileContextMenu', () => {
       '/api/agents/test-agent/folders/reveal-path',
       expect.objectContaining({ method: 'POST' }),
     )
+  })
+
+  it('does not offer to reveal a cloud workspace file on this computer', async () => {
+    // The host path comes back from the deployment and describes ITS filesystem.
+    // Opening it here either fails or lands on a same-named folder of yours.
+    window.electronAPI = {
+      platform: 'darwin',
+      revealInFolder: mocks.revealInFolder,
+    } as unknown as typeof window.electronAPI
+    _resetApiTargetForTest() // the global setup already settled it to 'local'
+    setActiveTarget('cloud', null)
+
+    renderMenu()
+
+    expect(screen.queryByRole('button', { name: 'Reveal in Finder' })).not.toBeInTheDocument()
+    expect(mocks.revealInFolder).not.toHaveBeenCalled()
+    _resetApiTargetForTest()
   })
 })

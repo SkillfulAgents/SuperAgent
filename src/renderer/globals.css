@@ -287,6 +287,15 @@ html[data-keyboard-open] [data-composer-footer] {
   background: transparent !important;
 }
 
+/* The pre-app screens (session check, boot) cover the whole window, so an opaque
+   background there replaces the native material with a flat sheet — and since
+   the theme class is applied further down the tree, that sheet is light even in
+   dark mode. Keeping them transparent turns a switch into a pause rather than a
+   flash. */
+.electron-vibrancy [data-boot-surface] {
+  background: transparent !important;
+}
+
 /* Windows acrylic alone is too low-contrast against the app's palette, so lay a light
    tint over the entire vibrancy surface (rail + inset gutters). The opaque inset panel
    covers the tint over the main content area, so only the translucent regions see it. */
@@ -336,11 +345,77 @@ html[data-keyboard-open] [data-composer-footer] {
   -webkit-app-region: no-drag;
 }
 
+@keyframes home-card-jiggle {
+  from {
+    transform: rotate(-0.35deg) translateY(0);
+  }
+  to {
+    transform: rotate(0.35deg) translateY(-0.4px);
+  }
+}
+
+.home-card-jiggle {
+  transform-origin: 50% 55%;
+  animation: home-card-jiggle 160ms ease-in-out infinite alternate;
+}
+
+@keyframes home-title-ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.home-title-ticker {
+  animation: home-title-ticker 14s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-card-jiggle {
+    animation: none;
+  }
+
+  .home-title-ticker {
+    animation: none;
+  }
+}
+
 /* Windows: pad right side of main content headers to avoid overlapping with the custom
    window controls (144px wide at right-2, so 152px total reserved). */
 .electron-vibrancy-win main > div > header,
 .electron-vibrancy-win main > header {
   padding-right: 152px;
+}
+
+/* Windows: Chromium paints classic opaque scrollbars (arrow buttons, full-height
+   track) on every overflow container, unlike macOS's auto-hiding overlays.
+   Restyle them app-wide to the same thin muted thumb the app sidebar uses so
+   scrollable areas read the same on both platforms. Custom webkit scrollbars
+   are always painted when content overflows, so scrollability stays visible. */
+.electron-vibrancy-win ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+  background: transparent;
+}
+.electron-vibrancy-win ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.electron-vibrancy-win ::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: hsl(var(--muted-foreground) / 0.25);
+}
+.electron-vibrancy-win ::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--muted-foreground) / 0.4);
+}
+.electron-vibrancy-win ::-webkit-scrollbar-button {
+  display: none;
+}
+.electron-vibrancy-win ::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* Delivered file pill hover animation */

@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, nativeTheme, powerMonitor, session, shell, Notification } from 'electron'
-import { execFileSync, exec } from 'child_process'
+import { execFile, execFileSync, exec } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -57,6 +57,7 @@ import { parseAgentDeepLink } from './agent-deep-link'
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
+import { APPLE_PASSWORDS_CHROME_EXTENSION_URL } from '@shared/lib/credentials/apple-passwords-links'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
 // Setting app.name before getPath('userData') changes the resolved directory.
@@ -119,6 +120,12 @@ import { initializeServices, shutdownServices } from '@shared/lib/startup'
 import { setupServerHandlers } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
+import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
+import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
+import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
+import { applyPreferredApiTarget, resolveApiTargetForRenderer } from './api-target'
+import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
+import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
@@ -316,7 +323,11 @@ function createWindow() {
     },
     ...(process.platform === 'darwin' && {
       titleBarStyle: 'hiddenInset' as const,
-      trafficLightPosition: { x: 16, y: 16 },
+      // Centered in the sidebar's 48px title bar row, which is now the only
+      // thing the lights ever sit beside — the renderer used to push a second
+      // position over IPC whenever the sidebar collapsed, back when an expanded
+      // sidebar had a taller header to align with.
+      trafficLightPosition: { x: 21, y: 23 },
       vibrancy: 'sidebar' as const,
       visualEffectState: 'active' as const,
     }),
@@ -458,18 +469,47 @@ ipcMain.handle('get-window-maximized-state', () => {
   return mainWindow?.isMaximized() ?? false
 })
 
-// Reposition macOS traffic-light buttons to vertically center them in the
-// 48px top bar when the sidebar is collapsed (no sidebar header to align with).
-ipcMain.on('set-sidebar-collapsed', (_event, collapsed: boolean) => {
-  if (process.platform !== 'darwin' || !mainWindow) return
-  const y = collapsed ? 23 : 16
-  const x = collapsed ? 21 : 16
-  mainWindow.setWindowButtonPosition({ x, y })
-})
-
 // IPC handler for getting the API URL (port may vary)
 ipcMain.handle('get-api-url', () => {
   return `http://localhost:${actualApiPort}`
+})
+
+/** The cloud proxy's base URL, or null when there is no workspace to drive. */
+function cloudApiBaseUrl(): string | null {
+  if (!isCloudProxyEnabled() || !resolveCloudProxyTarget()) return null
+  return `http://localhost:${actualApiPort}${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}`
+}
+
+/** Which Superagent this app is driving, and the base URL that reaches it. */
+function activeApiTarget() {
+  return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, cloudApiBaseUrl())
+}
+
+// Which Superagent this renderer drives, settled in main rather than in the
+// renderer — see api-target.ts. The renderer is handed a finished base URL
+// rather than assembling one, because half of the cloud prefix is the per-boot
+// proxy key, a secret owned by main (see cloud-proxy-key.ts).
+ipcMain.handle('get-api-target', () => activeApiTarget())
+
+ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
+  applyPreferredApiTarget(target)
+})
+
+// The switch animation, which cannot live in the document the switch reloads.
+// Awaited by the renderer so the band is up before it reloads itself; lifted
+// when the reloaded renderer says it has painted. Both are no-ops when there is
+// nothing on screen, so the renderer never has to track whether it is switching.
+ipcMain.handle('begin-target-switch', async () => {
+  if (mainWindow) await showTargetSwitchOverlay(mainWindow)
+})
+
+// Only the covered window's own paint counts. Every renderer with our preload
+// sends this, and a second one opening mid-switch (a quick-dispatch composer, a
+// popout) would otherwise report a paint the user cannot see and take the band
+// off the window that is still blank.
+ipcMain.on('renderer-painted', (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return
+  void finishTargetSwitchOverlay()
 })
 
 // IPC handler for opening URLs in system browser. Renderer-supplied strings are
@@ -481,6 +521,28 @@ ipcMain.handle('get-api-url', () => {
 // above stays strict (web-only) since it fires for untrusted content.
 ipcMain.handle('open-external', async (_event, url: string) => {
   await safeOpenExternalFromApp(url)
+})
+
+// First-party, argument-free launcher for the exact Apple extension listing.
+// On macOS this targets Chrome explicitly so installation remains one click even
+// when another browser is the system default. No renderer-provided URL or app
+// name reaches execFile.
+ipcMain.handle('open-apple-passwords-extension', async () => {
+  if (process.platform === 'darwin' && fs.existsSync('/Applications/Google Chrome.app')) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile(
+          '/usr/bin/open',
+          ['-a', 'Google Chrome', APPLE_PASSWORDS_CHROME_EXTENSION_URL],
+          (error) => error ? reject(error) : resolve(),
+        )
+      })
+      return
+    } catch (error) {
+      console.warn('Could not open the Apple Passwords extension in Chrome:', error)
+    }
+  }
+  await safeOpenExternalFromApp(APPLE_PASSWORDS_CHROME_EXTENSION_URL)
 })
 
 // IPC handler for launching an elevated PowerShell window (Windows only)
@@ -866,7 +928,7 @@ ipcMain.handle('show-emoji-panel', () => {
 
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
-  openDashboardWindow(agentSlug, dashboardSlug, actualApiPort)
+  openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
 })
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
@@ -1047,7 +1109,11 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     try {
       const slug = agentLink.agentSlug
       showOrCreateMainWindow()
-      fetch(`http://localhost:${actualApiPort}/api/agents/${encodeURIComponent(slug)}/sessions`)
+      // Resolved against the effective target, not always the local API: the
+      // renderer interprets the slug on whichever Superagent it is driving, so
+      // the session lookup must ask that same one.
+      const linkBaseUrl = activeApiTarget().baseUrl
+      fetch(`${linkBaseUrl}/api/agents/${encodeURIComponent(slug)}/sessions`)
         .then(res => res.ok ? res.json() : [])
         .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
           if (!Array.isArray(sessions)) return null
@@ -1056,6 +1122,11 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
         })
         .catch(() => null)
         .then((sessionId: string | null) => {
+          // A switch while the lookup was in flight leaves both the slug and
+          // the session id belonging to the previous Superagent — delivering
+          // them navigates the new renderer to someone else's agent. Drop the
+          // link rather than land it wrong.
+          if (activeApiTarget().baseUrl !== linkBaseUrl) return
           sendToMainWindowWhenReady((win) =>
             win.webContents.send('navigate-to-agent', slug, sessionId),
           )
@@ -1079,7 +1150,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const agentSlug = decodeURIComponent(parts[0])
       const dashboardSlug = decodeURIComponent(parts[1])
       if (apiReady) {
-        openDashboardWindow(agentSlug, dashboardSlug, actualApiPort)
+        openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
       } else {
         pendingDashboardLinks.push({ agentSlug, dashboardSlug })
       }
@@ -1408,7 +1479,6 @@ async function startApp() {
   // Bind the API server atomically, retrying on a port race until a port is
   // claimed (no probe-then-bind TOCTOU gap; an EADDRINUSE retries instead of
   // crashing the app via uncaughtException). See bindServerWithRetry.
-  let boundPort: number
   try {
     const bound = await bindServerWithRetry(api.fetch, {
       startPort: DEFAULT_API_PORT,
@@ -1420,7 +1490,6 @@ async function startApp() {
     // server, so update both the module state and process.env.PORT.
     actualApiPort = bound.port
     process.env.PORT = String(bound.port)
-    boundPort = bound.port
     // Wire server-level handlers (WebSocket proxies, etc.) on the bound server.
     setupServerHandlers(bound.server)
     console.log(`API server running on http://localhost:${bound.port}`)
@@ -1448,7 +1517,7 @@ async function startApp() {
   // Mark API as ready and process any queued dashboard deep links
   apiReady = true
   for (const link of pendingDashboardLinks) {
-    openDashboardWindow(link.agentSlug, link.dashboardSlug, actualApiPort)
+    openDashboardWindow(link.agentSlug, link.dashboardSlug, activeApiTarget().baseUrl)
   }
   pendingDashboardLinks.length = 0
   processPendingProtocolUrls()
@@ -1457,15 +1526,23 @@ async function startApp() {
   // deferred until here so they're never built against a port that never bound.
   await app.whenReady()
 
+  // A cold start into a cloud workspace faces the same wait as a switch: the
+  // renderer cannot ask for anything until it has loaded. Start those calls
+  // alongside the window rather than after it (no-op without a workspace).
+  if (activeApiTarget().target === 'cloud') startCloudBootPrefetch()
+
   createWindow()
 
-  // Create the application menu (macOS menu bar)
-  createAppMenu(mainWindow, boundPort)
+  // Create the application menu (macOS menu bar). The getter re-resolves the
+  // effective base URL on every poll, so the Agents menu and the tray follow a
+  // target switch (via the keyed cloud proxy) instead of always listing this
+  // machine's agents.
+  createAppMenu(mainWindow, () => activeApiTarget().baseUrl)
 
   // Create system tray if enabled in settings
   const settings = getSettings()
   if (settings.app?.showMenuBarIcon !== false) {
-    createTray(mainWindow, boundPort)
+    createTray(mainWindow, () => activeApiTarget().baseUrl)
   }
 
   // Restore keep-awake state from previous session (after window is ready so dialogs display correctly)

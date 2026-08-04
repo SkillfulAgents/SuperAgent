@@ -6,6 +6,7 @@ import { useAddMount } from './use-mounts'
 import { useDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
 import { zipFolderFiles, type FolderGroup } from '@renderer/lib/file-utils'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
 import {
   findPotentialSecrets,
@@ -124,7 +125,10 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   // Mount choice dialog state
   const [pendingFolders, setPendingFolders] = useState<FolderGroup[]>([])
   const [showMountDialog, setShowMountDialog] = useState(false)
-  const isElectron = !!window.electronAPI
+  // Whether a dropped folder can be offered as a *mount* rather than an upload.
+  // Mounting hands the agent's machine a path on this one, so it needs both the
+  // bridge and for the two to be the same machine.
+  const canOfferMount = canUseHostFeatures()
 
   const handleFoldersReceived = useCallback((folders: FolderGroup[]) => {
     setPendingFolders(folders)
@@ -145,7 +149,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     handleFolderSelect,
     dragHandlers,
   } = useAttachments({
-    onFoldersReceived: isElectron ? handleFoldersReceived : undefined,
+    onFoldersReceived: canOfferMount ? handleFoldersReceived : undefined,
     initialAttachments: options.initialAttachments,
   })
 

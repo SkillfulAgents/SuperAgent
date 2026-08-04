@@ -136,6 +136,25 @@ export async function setPolicy(
   })
 }
 
+/** Delete the exact policy row(s) for (caller, operation, target). */
+export function deletePolicy(
+  callerSlug: string,
+  operation: XAgentOperation,
+  targetSlug: string | null,
+): number {
+  const result = db
+    .delete(xAgentPolicies)
+    .where(
+      and(
+        eq(xAgentPolicies.callerAgentSlug, callerSlug),
+        eq(xAgentPolicies.operation, operation),
+        targetMatch(targetSlug),
+      ),
+    )
+    .run()
+  return result.changes
+}
+
 /**
  * Delete the specific-target policy rows for (caller, operation, target).
  * With `preserveBlock`, 'block' rows survive: revoking a granted edge must
@@ -149,6 +168,9 @@ export function deleteTargetPolicy(
   targetSlug: string,
   options?: { preserveBlock?: boolean },
 ): number {
+  if (!options?.preserveBlock) {
+    return deletePolicy(callerSlug, operation, targetSlug)
+  }
   const conditions = [
     eq(xAgentPolicies.callerAgentSlug, callerSlug),
     eq(xAgentPolicies.operation, operation),

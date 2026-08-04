@@ -431,6 +431,32 @@ describe('pending user-input request lifecycle (characterization)', () => {
     }
   )
 
+  it('attaches host-probed browser context to a browser input request', async () => {
+    vi.mocked(mockClient.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ url: 'https://example.com/login' }),
+    } as unknown as Response)
+
+    simulateToolUse(
+      'mcp__user-input__request_browser_input',
+      'tool-browser-context',
+      { message: 'Please log in', requirements: ['Enter credentials'] },
+    )
+
+    await vi.waitFor(() => {
+      expect(userInputRequestManager.getOpenRequest('tool-browser-context')?.payload)
+        .toMatchObject({
+          browserContext: {
+            url: 'https://example.com/login',
+            capturedAt: expect.any(Number),
+          },
+        })
+    })
+    expect(mockClient.fetch).toHaveBeenCalledWith(
+      `/browser/credential-context?sessionId=${SESSION_ID}`,
+    )
+  })
+
   // ==========================================================================
   // Documented divergence: computer-use has route-driven clearing and
   // survives idle boundaries — the registry expresses this as a distinct

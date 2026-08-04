@@ -274,7 +274,7 @@ export function AccessTab({ agentSlug }: AccessTabProps) {
                     onValueChange={(role) => changeRole.mutate({ userId: entry.userId, role: role as AgentRole })}
                     disabled={isLastOwner}
                   >
-                    <SelectTrigger className="w-24 h-8 text-xs" data-testid={`access-role-${entry.userId}`}>
+                    <SelectTrigger className="w-24 h-8" data-testid={`access-role-${entry.userId}`}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>

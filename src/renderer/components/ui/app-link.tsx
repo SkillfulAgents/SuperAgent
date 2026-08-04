@@ -1,5 +1,10 @@
 import { Link, type LinkProps } from '@tanstack/react-router'
-import { forwardRef, type MouseEventHandler, type ReactNode } from 'react'
+import {
+  forwardRef,
+  type KeyboardEventHandler,
+  type MouseEventHandler,
+  type ReactNode,
+} from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import { router } from '@renderer/router'
 
@@ -12,9 +17,13 @@ type AppLinkProps = LinkProps & {
   children?: ReactNode
   onClick?: MouseEventHandler<HTMLAnchorElement>
   onDoubleClick?: MouseEventHandler<HTMLAnchorElement>
+  onKeyDown?: KeyboardEventHandler<HTMLAnchorElement>
   title?: string
+  draggable?: boolean
   'aria-label'?: string
   'data-testid'?: string
+  /** Marks a full-card navigation link that may also initiate board dragging. */
+  'data-widget-drag-surface'?: string
 }
 
 /**

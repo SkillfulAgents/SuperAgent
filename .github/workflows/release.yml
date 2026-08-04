@@ -72,8 +72,12 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry-backed build cache shared with build-container.yml so
+          # release tags reuse main's layers and keep identical digests —
+          # clients then pull only the changed top layers between versions.
+          # NOTE: ref must be lowercase; github.repository_owner is not.
+          cache-from: type=registry,ref=ghcr.io/skillfulagents/superagent-agent-container-base:buildcache
+          cache-to: type=registry,ref=ghcr.io/skillfulagents/superagent-agent-container-base:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
 
   # Build and push app containers with version tags (regular + auth)
   build-app-container:

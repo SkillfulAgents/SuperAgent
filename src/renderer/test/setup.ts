@@ -1,6 +1,18 @@
 import '@testing-library/jest-dom/vitest'
-import { vi } from 'vitest'
+import { beforeEach, vi } from 'vitest'
 import { createElement } from 'react'
+import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
+
+// Auth mode is now derived from the resolved API target, and reading it before
+// boot settles that target throws by design (a wrong guess routes cloud traffic
+// to the laptop). Production settles it in `initApiBaseUrl()`; tests get the
+// local target here so everything that renders UserProvider behaves exactly as
+// it did when auth mode was a build-time constant. A test that needs the cloud
+// target resets and re-sets it in its own `beforeEach`, which runs after this.
+beforeEach(() => {
+  _resetApiTargetForTest()
+  setActiveTarget('local', null)
+})
 
 // jsdom has no matchMedia; components read it via useIsMobile() and
 // prefers-reduced-motion. Default to "no match" (desktop, motion allowed) with
@@ -18,6 +30,23 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   }) as unknown as MediaQueryList
 }
 
+// jsdom has no ResizeObserver; recharts' ResponsiveContainer (used by the home
+// page usage sparklines) needs it. Stub it as a no-op so chart-rendering
+// components can mount in tests.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+}
+
+// jsdom logs a "Not implemented" error whenever an otherwise unrelated
+// component probes canvas. Focused canvas tests spy on top of this default.
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = () => null
+}
+
 const signIn = {
   email: vi.fn(),
   oauth2: vi.fn(),
@@ -28,13 +57,14 @@ const signUp = {
 }
 
 // Mock auth-client globally — UserProvider imports it at module level.
-// When __AUTH_MODE__ is false the hooks are never called, but the import still runs.
+// Outside auth mode the hooks are never called, but the import still runs.
 vi.mock('@renderer/lib/auth-client', () => ({
   authClient: {},
   signIn,
   signUp,
   signOut: vi.fn(),
   useSession: () => ({ data: null, isPending: false }),
+  _resetAuthClientForTest: vi.fn(),
 }))
 
 // Mock server analytics globally — it imports `fs` via tenant-id.ts which

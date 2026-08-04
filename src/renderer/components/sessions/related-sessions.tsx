@@ -106,7 +106,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
             {title ?? 'Related Sessions'}
           </h3>
           <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v as SortOrder); setPage(0) }}>
-            <SelectTrigger className="h-7 w-[130px] text-xs">
+            <SelectTrigger className="h-7 w-[130px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

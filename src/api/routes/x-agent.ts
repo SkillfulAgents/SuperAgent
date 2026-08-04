@@ -32,7 +32,9 @@ import {
   getSessionMessagesWithCompact,
   getSessionMetadata,
   registerSession,
+  reserveSessionOwnership,
   updateSessionMetadata,
+  sessionIsKnown,
 } from '@shared/lib/services/session-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -507,6 +509,13 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
+  // Status and wait state live in the process-global persister. Validate the
+  // target/session pair before consulting it, not only before reading the
+  // target-scoped transcript below.
+  if (!(await sessionIsKnown(targetSlug, sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
   if (sync && messagePersister.isSessionActive(sessionId)) {
     try {
       await messagePersister.waitForIdle(sessionId)
@@ -621,6 +630,13 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     let stage = 'ensure_running'
     try {
       if (existingSessionId) {
+        // Invoke rights on the target say nothing about the session id sent
+        // with them. The persister is keyed by session id alone, so a third
+        // agent's id would get re-pointed at the target's container here — and
+        // the target's transcript written under it.
+        if (!(await sessionIsKnown(targetSlug, existingSessionId))) {
+          return c.json({ error: 'Session not found' }, 404)
+        }
         if (messagePersister.isSessionActive(existingSessionId)) {
           return c.json({ error: 'Target session is currently running' }, 409)
         }
@@ -704,6 +720,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         maxBrowserTabs: getSettings().app?.maxBrowserTabs,
       })
       const newSessionId = containerSession.id
+      await reserveSessionOwnership(targetSlug, newSessionId)
       // Mark active before any await so waitForIdle sees state if result arrives early.
       messagePersister.markSessionActive(newSessionId, targetSlug)
 

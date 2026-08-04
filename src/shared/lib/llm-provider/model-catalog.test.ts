@@ -24,6 +24,33 @@ beforeEach(() => {
 })
 
 describe('getProviderCatalog', () => {
+  it('declares one concrete picker default for every built-in model vendor', () => {
+    const defaultsByIcon = (providerId: 'anthropic' | 'bedrock' | 'openrouter' | 'platform') =>
+      getProviderCatalog(providerId)
+        .filter((model) => model.isDefault)
+        .map((model) => [model.icon, model.id])
+
+    expect(defaultsByIcon('anthropic')).toEqual([
+      ['anthropic', 'claude-opus-5'],
+    ])
+    expect(defaultsByIcon('bedrock')).toEqual([
+      ['anthropic', 'us.anthropic.claude-opus-4-8'],
+    ])
+    expect(defaultsByIcon('openrouter')).toEqual([
+      ['anthropic', 'claude-opus-5'],
+      ['openai', 'openai/gpt-5.5'],
+      ['zai', 'z-ai/glm-5.2'],
+      ['xai', 'x-ai/grok-4.5'],
+      ['kimi', 'moonshotai/kimi-k3'],
+    ])
+    expect(defaultsByIcon('platform')).toEqual([
+      ['anthropic', 'claude-opus-5'],
+      ['openai', 'gpt-5.6-sol'],
+      ['xai', 'grok-4.5'],
+      ['kimi', 'kimi-k3'],
+    ])
+  })
+
   it('normalizes to at most one isLatest per family', () => {
     for (const providerId of ['anthropic', 'bedrock', 'openrouter', 'platform'] as const) {
       const catalog = getProviderCatalog(providerId)

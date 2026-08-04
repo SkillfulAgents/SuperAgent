@@ -9,6 +9,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { readJsonFileStrictSync, writeFileAtomicSync, CorruptFileError } from '@shared/lib/utils/file-storage'
+import { waitForBrowserProfileCleanup, markProfileInUse, unmarkProfileInUse } from './profile-maintenance'
 import { z } from 'zod'
 
 // Chrome's DevTools Protocol has no auth token: any host/process that can reach
@@ -267,6 +268,34 @@ export class ChromeProvider implements HostBrowserProvider {
       throw err
     }
 
+    // Claim this profile BEFORE waiting on the sweep: if the sweep hasn't
+    // started yet, the mark makes it skip this profile; if it's already
+    // running, the await keeps us out of its way. Marking after the await
+    // would leave a window where a sweep firing right now could delete
+    // directories under a spawning Chrome. On success the claim is held until
+    // stop()/handleExit; on ANY launch failure it's released here, so no
+    // throw site inside the claimed phase can leak it (a leaked claim would
+    // make the sweep skip this profile until the next restart — the exact
+    // wrong outcome when the failure was disk pressure).
+    markProfileInUse(instanceId)
+    try {
+      return await this.launchClaimed(instanceId, options)
+    } catch (err) {
+      // Idempotent with the release in stop() for failure paths that got far
+      // enough to call it.
+      unmarkProfileInUse(instanceId)
+      throw err
+    }
+  }
+
+  /** The launch phase that runs with the profile claim held. The caller owns
+   *  the claim: it is released there if this throws, and by stop()/handleExit
+   *  once the instance is registered and running. */
+  private async launchClaimed(instanceId: string, options?: Record<string, string>): Promise<BrowserConnectionInfo> {
+    // If the startup profile-storage sweep is still running, let it finish
+    // before touching (or launching Chrome onto) this profile dir.
+    await waitForBrowserProfileCleanup()
+
     const port = await this.findFreePort()
     const profileId = options?.chromeProfileId
 
@@ -342,7 +371,18 @@ export class ChromeProvider implements HostBrowserProvider {
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
       '--disable-background-timer-throttling',
-      '--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion',
+      // Chrome honors only the LAST --disable-features occurrence, so every
+      // disabled feature must live in this single flag.
+      // CalculateNativeWinOcclusion/WebContentsOcclusion: occlusion throttling
+      // (see above). The optimization-guide features stop Chrome from
+      // downloading the on-device Gemini Nano model (4 GB per profile) and
+      // per-page optimization hints into these automation profiles.
+      '--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion,OptimizationGuideOnDeviceModel,OptimizationGuideModelDownloading,OptimizationHints,TextSafetyClassifier',
+      // Component updater re-downloads browser-level components (safe-browsing
+      // lists, TTS engines, CRX caches, optimization-guide model store —
+      // ~130 MB) into every per-agent user-data-dir. None of it is needed for
+      // automation; disabling it keeps each profile at just its session state.
+      '--disable-component-update',
       // Start with about:blank instead of chrome://newtab so agent-browser's
       // target discovery sees a trackable page and reuses it rather than
       // creating an extra tab (it filters out chrome:// URLs).
@@ -554,6 +594,7 @@ export class ChromeProvider implements HostBrowserProvider {
         instance.externalCloseWatcher = null
       }
       this.instances.delete(instanceId)
+      unmarkProfileInUse(instanceId)
       if (!wasIntentional) {
         console.log(`[ChromeProvider] Browser for instance ${instanceId} closed externally, notifying listeners`)
         Promise.resolve(this.onExternalClose?.(instanceId)).catch((err) => {
@@ -693,6 +734,7 @@ export class ChromeProvider implements HostBrowserProvider {
       }
     }
     this.instances.delete(instanceId)
+    unmarkProfileInUse(instanceId)
   }
 
   async stopAll(): Promise<void> {

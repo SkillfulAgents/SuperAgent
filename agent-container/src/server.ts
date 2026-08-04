@@ -13,11 +13,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile, execSync } from 'child_process';
 import { promisify } from 'util';
+import { z } from 'zod';
 
 import { inputManager } from './input-manager';
 import { resolveCdpIp } from './cdp-host';
 import { startScreenshotJanitor } from './screenshot-janitor';
-import { dashboardManager } from './dashboard-manager';
+import { dashboardManager, getDashboardBasePath } from './dashboard-manager';
+import {
+  dashboardHttpForwardHeaders,
+  dashboardWebSocketForwardHeaders,
+  dashboardWebSocketUpstreamPath,
+  parseDashboardProxyRoute,
+  requestedWebSocketProtocols,
+} from './dashboard-proxy';
 import { tabManager } from './tab-manager';
 import { startTabPolling, stopTabPolling } from './tab-poll';
 import { runBrowserUpload } from './browser-upload';
@@ -33,6 +41,7 @@ import {
 } from './workspace-entry-operations';
 
 import { getEditingCommands } from './cdp-editing-commands';
+import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -571,12 +580,12 @@ async function proxyToDashboard(c: any) {
   const subPath = url.pathname.slice(url.pathname.indexOf(prefixPattern) + prefixPattern.length) || '/';
   const targetUrl = `http://localhost:${port}${subPath}${url.search}`;
 
-  const headers = new Headers(c.req.header());
-  headers.delete('host');
+  const headers = dashboardHttpForwardHeaders(c.req.header());
 
   const response = await fetch(targetUrl, {
     method: c.req.method,
     headers,
+    redirect: 'manual',
     body: c.req.method !== 'GET' && c.req.method !== 'HEAD'
       ? await c.req.arrayBuffer()
       : undefined,
@@ -620,6 +629,14 @@ import {
   releaseBrowserLock,
   transferBrowserLock,
 } from './browser-state';
+import {
+  BROWSER_OPEN_LOCATIONS,
+  type BrowserOpenLocation,
+  type BrowserRuntimeLocation,
+  requiresBrowserLocationSwitch,
+  resolveBrowserRuntimeLocation,
+  shouldRefuseImplicitHostLoopback,
+} from './browser-location';
 
 // Proxy object so existing code can read `browserState.active` etc. without changes.
 // Writes must go through _setBrowserState() to keep the canonical module state in sync.
@@ -806,11 +823,11 @@ function reportHostBrowserLaunchError(
   }).catch(() => {});
 }
 
-// Launch the host browser via CDP if AGENT_BROWSER_USE_HOST is set.
+// Launch the host browser via CDP when this open request resolved to the host.
 // Returns the CDP WebSocket URL and host download dir, or undefined if not using host browser.
-// Throws if host browser mode is enabled but the browser fails to launch.
-async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined> {
-  if (!process.env.AGENT_BROWSER_USE_HOST) {
+// Throws if the request resolves to the host but that browser fails to launch.
+async function launchHostBrowserIfNeeded(location: BrowserRuntimeLocation): Promise<HostBrowserInfo | undefined> {
+  if (location !== 'host') {
     return undefined;
   }
 
@@ -978,8 +995,8 @@ async function reapplyDownloadBehavior(): Promise<void> {
 }
 
 // Tell the host to stop the Chrome process for this agent.
-async function stopHostBrowserIfNeeded(): Promise<void> {
-  if (!process.env.AGENT_BROWSER_USE_HOST) return;
+async function stopHostBrowserIfNeeded(location: BrowserRuntimeLocation | null): Promise<void> {
+  if (location !== 'host') return;
 
   const hostAppUrl = process.env.HOST_APP_URL;
   if (!hostAppUrl) return;
@@ -1001,13 +1018,13 @@ async function stopHostBrowserIfNeeded(): Promise<void> {
   }
 }
 
-// Broadcast a browser_active event to the owning session's WebSocket subscribers
-function broadcastBrowserEvent(active: boolean): void {
-  if (!browserState.sessionId) return;
-  const sessionId = browserState.sessionId;
+// Broadcast a browser_active event to the owning session's WebSocket subscribers.
+// Callers releasing a lock can supply the pre-release owner explicitly.
+function broadcastBrowserEvent(active: boolean, targetSessionId: string | null = browserState.sessionId): void {
+  if (!targetSessionId) return;
 
   // Broadcast through the session manager's subscriber system
-  sessionManager.broadcast(sessionId, {
+  sessionManager.broadcast(targetSessionId, {
     type: 'browser_active',
     active,
     timestamp: new Date().toISOString(),
@@ -1025,15 +1042,51 @@ app.get('/browser/status', (c) => {
 // POST /browser/open - Start browser and navigate to URL
 app.post('/browser/open', async (c) => {
   try {
-    const body = await c.req.json<{ sessionId: string; url: string }>();
+    const body = await c.req.json<{
+      sessionId: string;
+      url: string;
+      location?: BrowserOpenLocation;
+    }>();
 
     if (!body.sessionId || !body.url) {
       return c.json({ error: 'sessionId and url are required' }, 400);
+    }
+    if (body.location !== undefined && !BROWSER_OPEN_LOCATIONS.some(value => value === body.location)) {
+      return c.json({ error: `location must be one of: ${BROWSER_OPEN_LOCATIONS.join(', ')}` }, 400);
     }
 
     const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
+    }
+
+    const location = resolveBrowserRuntimeLocation(body.location, browserState.location);
+    if (shouldRefuseImplicitHostLoopback(body.url, body.location, location)) {
+      return c.json({
+        error:
+          'This loopback URL would open on the host machine because no browser location was specified. ' +
+          'Retry with location="container" for a service inside the agent container, or explicitly pass ' +
+          'location="configured" to open the host browser\'s loopback interface. The current browser was left unchanged.',
+      }, 400);
+    }
+    let switchedFrom: BrowserRuntimeLocation | null = null;
+
+    // The browser tools expose one active browser abstraction. Changing its
+    // process location therefore closes the old provider before launching the
+    // new one, rather than leaving an unreachable browser consuming resources.
+    if (requiresBrowserLocationSwitch(browserState.location, location)) {
+      switchedFrom = browserState.location;
+      await execBrowser(['close'], browserState.cdpUrl || undefined);
+      cleanupAgentBrowserDaemon();
+      await stopHostBrowserIfNeeded(browserState.location);
+      cleanupCdpScreencast();
+      broadcastBrowserEvent(false);
+      _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
+      tabManager.resetTabCount();
+      inputManager.rejectByType(
+        'browser_input',
+        'The browser provider changed before the user completed this request'
+      );
     }
 
     // If browser is already active, check for a matching tab before opening a new one
@@ -1044,11 +1097,17 @@ app.post('/browser/open', async (c) => {
         await tabManager.syncTabCount();
         observeUrl(matchingTab.url); // seed URL baseline for post-action digests
         notifyBrowserAction();
-        return c.json({ success: true, switchedToExisting: true, tabId: matchingTab.tabId, url: matchingTab.url });
+        return c.json({
+          success: true,
+          switchedToExisting: true,
+          tabId: matchingTab.tabId,
+          url: matchingTab.url,
+          location,
+        });
       }
     }
 
-    const hostBrowser = await launchHostBrowserIfNeeded();
+    const hostBrowser = await launchHostBrowserIfNeeded(location);
     const cdpUrl = hostBrowser?.cdpUrl;
     const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
 
@@ -1069,7 +1128,7 @@ app.post('/browser/open', async (c) => {
     }
 
     if (result.exitCode !== 0) {
-      const debugInfo = cdpUrl ? ` [cdp=${cdpUrl}, mode=host, attempts=2]` : ' [mode=local, attempts=2]';
+      const debugInfo = ` [location=${location}, attempts=2]`;
       return c.json({ error: `${result.stdout}${debugInfo}`, success: false }, 500);
     }
 
@@ -1087,7 +1146,7 @@ app.post('/browser/open', async (c) => {
       }
     }
 
-    _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null });
+    _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null, location });
     tabManager.resetTabCount();
     resetUrlTracking();
     // Seed the URL baseline so the FIRST post-action digest can distinguish
@@ -1099,7 +1158,7 @@ app.post('/browser/open', async (c) => {
     }
     broadcastBrowserEvent(true);
 
-    return c.json({ success: true });
+    return c.json({ success: true, location, switchedFrom });
   } catch (error: any) {
     console.error('[Browser] Error opening browser:', error);
     return c.json({ error: error.message || 'Failed to open browser' }, 500);
@@ -1120,15 +1179,16 @@ app.post('/browser/close', async (c) => {
       return c.json({ error: validationError }, 409);
     }
 
+    const activeLocation = browserState.location;
     await execBrowser(['close'], browserState.cdpUrl || undefined);
     cleanupAgentBrowserDaemon();
 
     // If using host browser, tell the host to kill the Chrome process
-    await stopHostBrowserIfNeeded();
+    await stopHostBrowserIfNeeded(activeLocation);
 
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
-    _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
+    _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     tabManager.resetTabCount();
 
     // A browser_input request is only answerable while the browser exists —
@@ -1159,9 +1219,11 @@ app.post('/browser/release', async (c) => {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const released = releaseBrowserLock(body.sessionId);
+    const released = releaseBrowserLock(
+      body.sessionId,
+      releasedSessionId => broadcastBrowserEvent(false, releasedSessionId),
+    );
     if (released) {
-      broadcastBrowserEvent(false);
       console.log(`[Browser] Lock released by session ${body.sessionId} (browser still running)`);
     }
     return c.json({ success: true, released });
@@ -1173,11 +1235,11 @@ app.post('/browser/release', async (c) => {
 
 // POST /browser/notify-closed - Host browser was closed externally, clean up state
 app.post('/browser/notify-closed', (c) => {
-  if (browserState.active) {
+  if (browserState.location) {
     cleanupAgentBrowserDaemon();
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
-    _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
+    _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     tabManager.resetTabCount();
     console.log('[Browser] Browser closed externally, state cleaned up');
   }
@@ -1847,6 +1909,40 @@ const wss = new WebSocketServer({ noServer: true });
 // Create a separate WebSocket server for browser stream proxying
 const browserWss = new WebSocketServer({ noServer: true });
 
+interface DashboardProtocolRequest extends http.IncomingMessage {
+  _dashboardProtocol?: string;
+}
+
+const dashboardWss = new WebSocketServer({
+  noServer: true,
+  handleProtocols(protocols, request) {
+    const selected = (request as DashboardProtocolRequest)._dashboardProtocol;
+    return selected && protocols.has(selected) ? selected : false;
+  },
+});
+
+function closeDashboardPeer(peer: WebSocket, code?: number, reason?: Buffer): void {
+  if (peer.readyState !== WebSocket.OPEN) return;
+  const relayCode = code === 1000 || (code !== undefined && code >= 3000) ? code : 1011;
+  peer.close(relayCode, reason?.toString().slice(0, 120));
+}
+
+function bridgeDashboardWebSocket(browser: WebSocket, dashboard: WebSocket): void {
+  dashboard.on('message', (data, isBinary) => {
+    if (browser.readyState === WebSocket.OPEN) browser.send(data, { binary: isBinary });
+  });
+  browser.on('message', (data, isBinary) => {
+    if (dashboard.readyState === WebSocket.OPEN) dashboard.send(data, { binary: isBinary });
+  });
+  dashboard.on('close', (code, reason) => closeDashboardPeer(browser, code, reason));
+  browser.on('close', (code, reason) => closeDashboardPeer(dashboard, code, reason));
+  dashboard.on('error', (error) => {
+    console.error('[Artifacts] Dashboard WebSocket error:', error);
+    closeDashboardPeer(browser);
+  });
+  browser.on('error', () => closeDashboardPeer(dashboard));
+}
+
 // Handle WebSocket upgrade
 server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) => {
   // Upgrades bypass the Hono middleware chain — enforce host auth here too.
@@ -1880,6 +1976,64 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
 
     browserWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
       handleBrowserStreamConnection(ws);
+    });
+    return;
+  }
+
+  // Dashboard application sockets and Vite HMR use the same artifact mount as
+  // HTTP. The public prefix was stripped by the host proxy; strip the remaining
+  // container prefix before dialing the dashboard process.
+  const dashboardRoute = parseDashboardProxyRoute(pathname);
+  if (dashboardRoute) {
+    const dashboardPort = dashboardManager.getDashboardPort(dashboardRoute.slug);
+    if (!dashboardPort) {
+      socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    const protocols = requestedWebSocketProtocols(request);
+    const upstreamPath = dashboardWebSocketUpstreamPath(
+      dashboardRoute.subPath,
+      protocols,
+      getDashboardBasePath(dashboardRoute.slug),
+    );
+    const upstream = new WebSocket(
+      `ws://127.0.0.1:${dashboardPort}${upstreamPath}${url.search}`,
+      protocols,
+      { headers: dashboardWebSocketForwardHeaders(request) },
+    );
+    let settled = false;
+
+    const fail = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      upstream.terminate();
+      if (error) console.error('[Artifacts] Failed to connect dashboard WebSocket:', error);
+      if (!socket.destroyed) {
+        socket.write('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+      }
+    };
+
+    socket.once('close', () => {
+      if (!settled) upstream.terminate();
+    });
+    upstream.once('unexpected-response', (_req, response) => {
+      response.resume();
+      fail(new Error(`Dashboard refused WebSocket upgrade (${response.statusCode})`));
+    });
+    upstream.once('error', fail);
+    upstream.once('open', () => {
+      if (settled || socket.destroyed) {
+        upstream.terminate();
+        return;
+      }
+      settled = true;
+      (request as DashboardProtocolRequest)._dashboardProtocol = upstream.protocol || undefined;
+      dashboardWss.handleUpgrade(request, socket, head, (browser) => {
+        bridgeDashboardWebSocket(browser, upstream);
+      });
     });
     return;
   }
@@ -2151,6 +2305,178 @@ function findPageTargetViaCdp(browserWsUrl: string): Promise<PageTarget | null> 
     ws.on('error', () => { clearTimeout(timeout); resolve(null); });
   });
 }
+
+interface CredentialAutofillResult {
+  ok: boolean;
+  reason?: 'origin_changed' | 'no_password_field';
+  usernameFilled: boolean;
+  passwordFilled: boolean;
+}
+
+/**
+ * Execute the privileged fill on the active target. The expected-origin check
+ * and DOM mutation happen in one JS turn, so a navigation between host lookup
+ * and fill cannot receive the credential.
+ */
+function autofillCredentialViaCdp(
+  target: PageTarget,
+  username: string,
+  password: string,
+  expectedOrigin: string,
+): Promise<CredentialAutofillResult> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(target.wsUrl);
+    let sessionId: string | null = null;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      ws.close();
+      reject(new Error('Credential autofill timed out'));
+    }, 5000);
+
+    const finish = (result?: CredentialAutofillResult, error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      ws.close();
+      if (error) reject(error);
+      else resolve(result || { ok: false, usernameFilled: false, passwordFilled: false });
+    };
+
+    const sendGlobalLookup = () => {
+      ws.send(JSON.stringify({
+        id: 2,
+        method: 'Runtime.evaluate',
+        params: { expression: 'globalThis', returnByValue: false },
+        ...(sessionId ? { sessionId } : {}),
+      }));
+    };
+
+    ws.on('open', () => {
+      if (target.requiresSession) {
+        ws.send(JSON.stringify({
+          id: 1,
+          method: 'Target.attachToTarget',
+          params: { targetId: target.id, flatten: true },
+        }));
+      } else {
+        sendGlobalLookup();
+      }
+    });
+
+    ws.on('message', (raw) => {
+      try {
+        const message = JSON.parse(raw.toString());
+        if (message.id === 1) {
+          sessionId = message.result?.sessionId || null;
+          if (!sessionId) return finish(undefined, new Error('Could not attach to browser page'));
+          sendGlobalLookup();
+          return;
+        }
+        if (message.id === 2) {
+          const objectId = message.result?.result?.objectId;
+          if (!objectId) return finish(undefined, new Error('Could not access browser page'));
+          ws.send(JSON.stringify({
+            id: 3,
+            method: 'Runtime.callFunctionOn',
+            params: {
+              objectId,
+              functionDeclaration: CREDENTIAL_AUTOFILL_FUNCTION,
+              arguments: [
+                { value: username },
+                { value: password },
+                { value: expectedOrigin },
+              ],
+              returnByValue: true,
+              awaitPromise: true,
+            },
+            ...(sessionId ? { sessionId } : {}),
+          }));
+          return;
+        }
+        if (message.id === 3) {
+          if (message.error || message.result?.exceptionDetails) {
+            return finish(undefined, new Error('Browser rejected credential autofill'));
+          }
+          const value = message.result?.result?.value as CredentialAutofillResult | undefined;
+          if (!value || typeof value.ok !== 'boolean') {
+            return finish(undefined, new Error('Browser returned an invalid autofill result'));
+          }
+          finish(value);
+        }
+      } catch {
+        // Ignore unrelated CDP events and wait for the response IDs above.
+      }
+    });
+
+    ws.on('error', () => finish(undefined, new Error('Could not connect to browser page')));
+  });
+}
+
+// Host-only credential endpoints. The global host-token middleware prevents
+// the agent's own shell from discovering metadata or injecting secrets.
+const credentialAutofillRequestSchema = z.object({
+  sessionId: z.string().min(1).max(1024),
+  username: z.string().max(4096),
+  password: z.string().min(1).max(65536),
+  expectedOrigin: z.string().max(2048).refine((value) => {
+    try {
+      const parsed = new URL(value);
+      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.origin === value;
+    } catch {
+      return false;
+    }
+  }),
+}).strict();
+
+app.get('/browser/credential-context', async (c) => {
+  if (!hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503);
+  const sessionId = c.req.query('sessionId');
+  if (!sessionId) return c.json({ error: 'sessionId is required' }, 400);
+  const validationError = validateBrowserSessionWithRecovery(sessionId);
+  if (validationError) return c.json({ error: validationError }, 409);
+  if (!browserState.active) return c.json({ error: 'Browser is not active' }, 409);
+
+  const target = await findActivePageTarget();
+  if (!target?.url) return c.json({ error: 'No active browser page was found' }, 409);
+  return c.json({ url: target.url });
+});
+
+app.post('/browser/fill-credential', async (c) => {
+  try {
+    if (!hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503);
+    const parsedBody = credentialAutofillRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsedBody.success) return c.json({ error: 'Invalid credential autofill request' }, 400);
+    const body = parsedBody.data;
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
+    if (validationError) return c.json({ error: validationError }, 409);
+    if (!browserState.active) return c.json({ error: 'Browser is not active' }, 409);
+
+    const target = await findActivePageTarget();
+    if (!target) return c.json({ error: 'No active browser page was found' }, 409);
+    const result = await autofillCredentialViaCdp(
+      target,
+      body.username,
+      body.password,
+      body.expectedOrigin,
+    );
+    if (!result.ok) {
+      const message = result.reason === 'origin_changed'
+        ? 'The browser page changed before autofill'
+        : 'No visible password field was found';
+      return c.json({ error: message, reason: result.reason }, 409);
+    }
+    return c.json({
+      success: true,
+      usernameFilled: result.usernameFilled,
+      passwordFilled: result.passwordFilled,
+    });
+  } catch (error) {
+    console.error('[Browser] Credential autofill failed:', error instanceof Error ? error.message : 'Unknown error');
+    return c.json({ error: 'Credential autofill failed' }, 500);
+  }
+});
 
 /** Helper to build a CDP message, adding sessionId when in session mode */
 function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params?: Record<string, unknown>): string {
@@ -2649,12 +2975,12 @@ async function gracefulShutdown(signal: string) {
 
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
 
-  // Close browser if active
-  if (browserState.active) {
+  // Close the browser even if an automated session released its ownership lock.
+  if (browserState.location) {
     try {
       await execBrowser(['close'], browserState.cdpUrl || undefined);
-      await stopHostBrowserIfNeeded();
-      _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
+      await stopHostBrowserIfNeeded(browserState.location);
+      _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     } catch (error) {
       console.error('Error closing browser:', error);
     }

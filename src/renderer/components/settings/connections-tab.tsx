@@ -1,7 +1,7 @@
 import { useMemo, useEffect, useCallback } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { ChevronRight, Loader2, Zap } from 'lucide-react'
-import { PolicyDecisionToggle } from '@renderer/components/ui/policy-decision-toggle'
+import { PolicyDecisionDropdown } from '@renderer/components/ui/policy-decision-toggle'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import {
   useConnectedAccounts,
@@ -166,13 +166,13 @@ export function ConnectionsTab() {
               </div>
             </div>
             <div className="shrink-0">
-              <PolicyDecisionToggle
+              <PolicyDecisionDropdown
                 value={apiPolicy}
+                includeDefault={false}
                 onChange={(value) => {
                   if (value === 'default') return
                   updateSettings.mutate({ defaultApiPolicy: value })
                 }}
-                size="sm"
               />
             </div>
           </div>
@@ -185,13 +185,13 @@ export function ConnectionsTab() {
               </div>
             </div>
             <div className="shrink-0">
-              <PolicyDecisionToggle
+              <PolicyDecisionDropdown
                 value={mcpPolicy}
+                includeDefault={false}
                 onChange={(value) => {
                   if (value === 'default') return
                   updateSettings.mutate({ defaultMcpPolicy: value })
                 }}
-                size="sm"
               />
             </div>
           </div>

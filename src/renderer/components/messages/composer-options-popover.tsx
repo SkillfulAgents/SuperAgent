@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, type ReactNode } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -15,9 +15,11 @@ interface ComposerOptionsPopoverProps {
   disabled?: boolean
   /** Show the Effort section. Disable for model-only pickers (e.g. summarizer). */
   includeEffort?: boolean
+  /** Optional caller-owned content rendered after the picker sections. */
+  footer?: ReactNode
 }
 
-function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: ComposerOptionsPopoverProps) {
+function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, footer }: ComposerOptionsPopoverProps) {
   const { effort, setEffort, speed, setSpeed, model, setModel, catalog, webProvider } = state
 
   // Trigger display fallback for the brief window before useComposerOptions
@@ -117,6 +119,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
             <SpeedSection speeds={visibleSpeeds} value={speed} onChange={setSpeed} />
           </>
         )}
+        {footer}
       </PopoverContent>
     </Popover>
   )

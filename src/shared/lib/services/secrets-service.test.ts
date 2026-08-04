@@ -5,15 +5,16 @@ import * as os from 'os'
 import {
   parseEnvFile,
   serializeEnvFile,
-  keyToEnvVar,
   listSecrets,
   listUserSecrets,
   getSecret,
   setSecret,
+  updateSecret,
   deleteSecret,
   hasSecrets,
   getSecretEnvVars,
 } from './secrets-service'
+import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import {
   SAMPLE_ENV_FILE,
   SAMPLE_ENV_FILE_WITH_SPECIAL_CHARS,
@@ -458,6 +459,60 @@ describe('secrets service integration', () => {
       // container — a different uid — must still be able to read AND write the
       // file. A carried-over restrictive mode locks it out (EACCES on POST /env).
       expect(stats.mode & 0o777).toBe(0o666)
+    })
+  })
+
+  describe('updateSecret', () => {
+    it('returns not found without creating a workspace for a missing secret file', async () => {
+      const result = await updateSecret('missing-agent', 'MISSING', { value: 'new' })
+
+      expect(result).toEqual({ status: 'not_found' })
+      expect(
+        fs.existsSync(path.join(testDir, 'agents', 'missing-agent', 'workspace')),
+      ).toBe(false)
+    })
+
+    it('renames and updates a secret without a delete-then-set gap', async () => {
+      await setSecret('test-agent', { key: 'Old Key', envVar: 'OLD_KEY', value: 'old' })
+
+      const result = await updateSecret('test-agent', 'OLD_KEY', {
+        key: 'New Key',
+        value: 'new',
+      })
+
+      expect(result).toEqual({
+        status: 'updated',
+        secret: { key: 'New Key', envVar: 'NEW_KEY', value: 'new' },
+      })
+      expect(await getSecret('test-agent', 'OLD_KEY')).toBeNull()
+      expect(await getSecret('test-agent', 'NEW_KEY')).toEqual({
+        key: 'New Key',
+        envVar: 'NEW_KEY',
+        value: 'new',
+      })
+    })
+
+    it('rejects a destination collision and preserves both secrets', async () => {
+      await setSecret('test-agent', { key: 'Source', envVar: 'SOURCE', value: 'source-value' })
+      await setSecret('test-agent', { key: 'Target', envVar: 'TARGET', value: 'target-value' })
+
+      const result = await updateSecret('test-agent', 'SOURCE', { key: 'Target' })
+
+      expect(result).toEqual({ status: 'conflict', envVar: 'TARGET' })
+      expect((await getSecret('test-agent', 'SOURCE'))?.value).toBe('source-value')
+      expect((await getSecret('test-agent', 'TARGET'))?.value).toBe('target-value')
+    })
+
+    it('hides reserved source variables from the update operation', async () => {
+      const envPath = path.join(testDir, 'agents', 'test-agent', 'workspace', '.env')
+      await fs.promises.writeFile(envPath, 'CONNECTED_ACCOUNTS=runtime-value\n')
+
+      const result = await updateSecret('test-agent', 'CONNECTED_ACCOUNTS', {
+        key: 'Stolen Runtime Value',
+      })
+
+      expect(result).toEqual({ status: 'not_found' })
+      expect((await getSecret('test-agent', 'CONNECTED_ACCOUNTS'))?.value).toBe('runtime-value')
     })
   })
 

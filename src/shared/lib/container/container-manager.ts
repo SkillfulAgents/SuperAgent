@@ -108,6 +108,9 @@ class ContainerManager {
             })
           })
         },
+        // MicroVM dead-generation replace (and similar) must restart through the
+        // manager so starts share startingAgents and rebuild env from the DB.
+        restartAgent: () => this.restartAgent(agentId),
       }
 
       client = createContainerClient(config)
@@ -115,6 +118,36 @@ class ContainerManager {
     }
 
     return client
+  }
+
+  // Single-flight restart used by runtime clients that tear down a dead generation.
+  private async restartAgent(agentId: string): Promise<void> {
+    if (this.stoppingAgents.has(agentId)) {
+      throw new Error(`Cannot restart agent ${agentId} while it is stopping`)
+    }
+    const inflight = this.startingAgents.get(agentId)
+    if (inflight) {
+      await inflight
+      return
+    }
+
+    this.markAsStopped(agentId)
+    // Dead generation had live sessions; clear isActive before the new start
+    // (same as stopContainer — replace does not go through stopContainer).
+    messagePersister.markAllSessionsInactiveForAgent(agentId)
+    messagePersister.broadcastGlobal({
+      type: 'agent_status_changed',
+      agentSlug: agentId,
+      status: 'stopped',
+    })
+    const client = this.getClient(agentId)
+    const startPromise = this.doStartContainer(agentId, client)
+    this.startingAgents.set(agentId, startPromise)
+    try {
+      await startPromise
+    } finally {
+      this.startingAgents.delete(agentId)
+    }
   }
 
   /**
@@ -147,6 +180,8 @@ class ContainerManager {
    */
   markAsStopped(agentId: string): void {
     this.updateCachedStatus(agentId, 'stopped', null)
+    this.containerStartedAt.delete(agentId)
+    this.lastKeepAliveAt.delete(agentId)
   }
 
   /**
@@ -270,6 +305,12 @@ class ContainerManager {
     if (this.startingAgents.has(agentId)) return info
 
     this.updateCachedStatus(agentId, info.status, info.port)
+
+    // Host restart clears in-memory start times. Floor the idle clock at
+    // rediscovery so zero-session warm containers are still reaped.
+    if (info.status === 'running' && !this.containerStartedAt.has(agentId)) {
+      this.containerStartedAt.set(agentId, Date.now())
+    }
 
     // Broadcast if status changed (e.g., container was stopped externally)
     if (previousStatus && previousStatus !== info.status) {

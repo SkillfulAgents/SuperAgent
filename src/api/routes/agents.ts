@@ -1,13 +1,19 @@
 import { Hono, type Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
+import { getConnInfo } from '@hono/node-server/conninfo'
 import type Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import { getLlmPolyfillJs } from '../llm-polyfill'
+import {
+  dashboardMountPath,
+  dashboardResponseHeaders,
+  injectDashboardRuntime,
+} from '../dashboard-runtime'
 import { parsePagination } from '../pagination'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -27,13 +33,15 @@ import {
 import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
-import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
+import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { credentialBroker } from '../credentials/credential-broker'
+import { CredentialBrokerError } from '../credentials/types'
 import type {
   UserInputRequestKind,
   UserInputRequestScope,
@@ -49,6 +57,8 @@ import {
   getSession,
   getSessionMetadata,
   sessionExists,
+  sessionBelongsToAgent,
+  reserveSessionOwnership,
   sessionIsKnown,
   isSessionRegistered,
   updateSessionMetadata,
@@ -56,7 +66,15 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
+import {
+  MAX_UPLOAD_TOTAL_SIZE,
+  UploadTooLargeError,
+  cleanupStaleTempUploads,
+  formatUploadTooLargeMessage,
+  moveUploadedFile,
+  storeUploadChunk,
+} from '@shared/lib/utils/chunked-upload'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
@@ -64,15 +82,15 @@ import {
   listUserSecrets,
   getSecret,
   setSecret,
+  updateSecret,
   deleteSecret,
-  keyToEnvVar,
   getSecretEnvVars,
 } from '@shared/lib/services/secrets-service'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
+import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import {
   listScheduledTasks,
   listPendingScheduledTasks,
-  listPendingScheduledTasksByAgents,
   listCancelledScheduledTasks,
   cancelPendingWakeForSession,
   getPendingWakeForSession,
@@ -111,6 +129,7 @@ import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import {
+  deletePolicy,
   deletePoliciesForAgent,
   deleteTargetPolicy,
   listPoliciesForCaller,
@@ -118,6 +137,7 @@ import {
   replacePoliciesForCallerInputSchema,
   setPolicy,
   xAgentDecisionSchema,
+  xAgentOperationSchema,
 } from '@shared/lib/services/x-agent-policy-service'
 import {
   exportAgentTemplate,
@@ -153,7 +173,9 @@ import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/ut
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
-import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { stopInstanceOnAllProviders } from '../../main/host-browser'
+import { deleteBrowserProfile } from '../../main/host-browser/profile-maintenance'
+import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { captureException } from '@shared/lib/error-reporting'
 import * as fs from 'fs'
@@ -167,6 +189,7 @@ import {
   toAgentConnectedAccountDto,
   toAgentRemoteMcpDto,
 } from '@shared/lib/agent-connections/public'
+import { createSecretRequestSchema, updateSecretRequestSchema } from './secrets-schema'
 
 const WorkspaceBookmarkSchema = z.object({
   name: z.string().min(1),
@@ -374,34 +397,25 @@ function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'pro
 
 /**
  * Enrich an array of ApiAgent objects with summary fields:
- * active/awaiting sessions, last activity, scheduled tasks, dashboards.
- * Batch DB queries upfront, then parallelize per-agent FS operations.
+ * active/awaiting sessions, last activity, and dashboards.
+ * Batch notification lookup upfront, then parallelize per-agent FS operations.
  */
 async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> {
   const slugs = agents.map(a => a.slug)
 
-  // Batch DB queries: 2 queries instead of 2*N individual queries
-  const [unreadByAgent, tasksByAgent, chatIntegrationsByAgent] = await Promise.all([
-    getUnreadNotificationsByAgents(slugs),
-    listPendingScheduledTasksByAgents(slugs),
-    Promise.resolve(listChatIntegrationsByAgents(slugs)),
-  ])
+  const unreadByAgent = await getUnreadNotificationsByAgents(slugs)
 
   const limit = pLimit(5)
   return Promise.all(
     agents.map((agent) => limit(async () => {
       // Only FS operations remain per-agent (parallelized)
-      const [sessionSummary, artifacts, agentPrefs, sessionMetadata] = await Promise.all([
+      const [sessionSummary, artifacts, sessionMetadata] = await Promise.all([
         getSessionSummary(agent.slug),
         listArtifactsFromFilesystem(agent.slug),
-        readAgentPreferences(agent.slug),
         readSessionMetadata(agent.slug),
       ])
 
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
-      // Session wakes are excluded from the agent-level automation summary —
-      // they belong to a session, not the agent's schedule.
-      const pendingTasks = (tasksByAgent.get(agent.slug) ?? []).filter((t) => !t.resumeSessionId)
 
       // Compute session flags from in-memory state (no I/O needed).
       // `unreadByAgent` is already filtered to user-actionable notification types
@@ -442,18 +456,6 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         hasSessionsAwaitingInput = true
       }
 
-      // Compute scheduled task summary
-      const scheduledTaskCount = pendingTasks.length
-      let nextScheduledTaskAt: Date | null = null
-      for (const task of pendingTasks) {
-        if (task.nextExecutionAt) {
-          const ts = new Date(task.nextExecutionAt)
-          if (!nextScheduledTaskAt || ts < nextScheduledTaskAt) {
-            nextScheduledTaskAt = ts
-          }
-        }
-      }
-
       return {
         ...agent,
         hasActiveSessions,
@@ -461,18 +463,11 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         hasUnreadNotifications,
         sessionCount: sessionSummary.sessionCount,
         lastActivityAt: sessionSummary.lastActivityAt,
-        scheduledTaskCount,
-        nextScheduledTaskAt,
-        chatIntegrationCount: (chatIntegrationsByAgent.get(agent.slug) ?? []).length,
-        dashboardCount: artifacts.length,
-        dashboardNames: artifacts.map((a) => a.name || a.slug),
-        dashboardSlugs: artifacts.map((a) => a.slug),
         dashboards: artifacts.map((a) => ({
           slug: a.slug,
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
-        autoDeleteInactiveDays: agentPrefs.autoDeleteInactiveDays,
       }
     }))
   )
@@ -591,11 +586,18 @@ agents.post('/import-template', async (c) => {
       return c.json({ error: 'No file or chunk provided' }, 400)
     }
 
+    if (file.size > MAX_COMPRESSED_SIZE) {
+      return c.json({ error: formatUploadTooLargeMessage(file.size, MAX_COMPRESSED_SIZE) }, 413)
+    }
+
     const arrayBuffer = await file.arrayBuffer()
     const zipBuffer = Buffer.from(arrayBuffer)
 
     return await processImport(c, zipBuffer, formData)
   } catch (error) {
+    if (error instanceof UploadTooLargeError) {
+      return c.json({ error: error.message }, 413)
+    }
     const message = error instanceof Error ? error.message : 'Failed to import template'
     console.error('Failed to import template:', error)
     captureException(error, { tags: { component: 'agents', operation: 'import-template' } })
@@ -631,56 +633,47 @@ function parseChunkFields(formData: FormData): ParsedChunkFields {
   return { ok: true, uploadId, chunkIndex, totalChunks }
 }
 
-type StoreChunkResult = { status: 'received' } | { status: 'assembled'; buffer: Buffer }
-
-// Persist one chunk; assemble once all arrive (`.assembling` lock prevents double assembly).
-// TODO(upload-memory): cap total size before reading; stream to disk instead of Buffer.concat.
-async function storeUploadChunk(uploadId: string, chunkIndex: number, totalChunks: number, chunk: Buffer): Promise<StoreChunkResult> {
-  const uploadDir = path.join(getTempUploadsDir(), uploadId)
-  await ensureDirectory(uploadDir)
-
-  await fs.promises.writeFile(path.join(uploadDir, `chunk-${chunkIndex}`), chunk)
-
-  const files = await fs.promises.readdir(uploadDir)
-  const chunkFiles = files.filter((f) => f.startsWith('chunk-'))
-  if (chunkFiles.length < totalChunks) {
-    return { status: 'received' }
-  }
-
-  const lockPath = path.join(uploadDir, '.assembling')
-  try {
-    await fs.promises.writeFile(lockPath, '', { flag: 'wx' }) // fails if already exists
-  } catch {
-    return { status: 'received' }
-  }
-
-  try {
-    const buffers: Buffer[] = []
-    for (let i = 0; i < totalChunks; i++) {
-      buffers.push(await fs.promises.readFile(path.join(uploadDir, `chunk-${i}`)))
-    }
-    return { status: 'assembled', buffer: Buffer.concat(buffers) }
-  } finally {
-    try { await removeDirectory(uploadDir) } catch { /* ignore cleanup errors */ }
-  }
-}
-
 async function handleChunkedImport(c: Context, formData: FormData, chunk: File) {
   const parsed = parseChunkFields(formData)
   if (!parsed.ok) return c.json({ error: parsed.error }, 400)
 
-  const result = await storeUploadChunk(parsed.uploadId, parsed.chunkIndex, parsed.totalChunks, Buffer.from(await chunk.arrayBuffer()))
+  const result = await storeUploadChunk(
+    parsed.uploadId,
+    parsed.chunkIndex,
+    parsed.totalChunks,
+    Buffer.from(await chunk.arrayBuffer()),
+    MAX_COMPRESSED_SIZE,
+  )
 
   if (result.status === 'received') {
     return c.json({ status: 'chunk_received', chunkIndex: parsed.chunkIndex })
   }
 
-  return await processImport(c, result.buffer, formData)
+  try {
+    const size = (await fs.promises.stat(result.filePath)).size
+    if (size > MAX_COMPRESSED_SIZE) {
+      return c.json({ error: formatUploadTooLargeMessage(size, MAX_COMPRESSED_SIZE) }, 413)
+    }
+    const zipBuffer = await fs.promises.readFile(result.filePath)
+    return await processImport(c, zipBuffer, formData)
+  } finally {
+    try {
+      await fs.promises.unlink(result.filePath)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.warn('[agents] failed to unlink assembled import upload:', err)
+        captureException(err, {
+          tags: { component: 'agents', operation: 'unlink-assembled-import' },
+          extra: { filePath: result.filePath },
+        })
+      }
+    }
+  }
 }
 
 async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
   if (zipBuffer.length > MAX_COMPRESSED_SIZE) {
-    return c.json({ error: `File too large (${(zipBuffer.length / 1024 / 1024).toFixed(1)}MB, max ${MAX_COMPRESSED_SIZE / 1024 / 1024}MB)` }, 413)
+    return c.json({ error: formatUploadTooLargeMessage(zipBuffer.length, MAX_COMPRESSED_SIZE) }, 413)
   }
 
   const nameOverride = formData.get('name') as string | null
@@ -948,7 +941,7 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
 }
 
 // GET /api/agents - List agents with status (filtered by ACL in auth mode)
-// Response includes pre-aggregated summary: active sessions, scheduled tasks, dashboards.
+// Response includes pre-aggregated summary: session activity and dashboards.
 agents.get('/', async (c) => {
   try {
     // In auth mode, only return agents the user has explicit ACL entries for.
@@ -1093,6 +1086,19 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     const deleted = await deleteAgent(slug)
     if (!deleted) {
       return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    // Remove the agent's dedicated host-browser Chrome profile. The container
+    // teardown above only stops the browser on the ACTIVE provider — a Chrome
+    // launched before the user switched providers survives it — so stop this
+    // agent's browser on every provider first. deleteBrowserProfile itself
+    // refuses profiles claimed by an in-flight launch. Best-effort throughout:
+    // a leftover dir is reclaimed by a later startup sweep.
+    try {
+      await stopInstanceOnAllProviders(slug)
+      await deleteBrowserProfile(slug)
+    } catch (error) {
+      console.error('Failed to delete host-browser profile:', error)
     }
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'deleted', details: { name: agentBeforeDelete.frontmatter.name } })
@@ -1640,6 +1646,11 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     })
     const sessionId = containerSession.id
 
+    // Claim the globally keyed id before any lifecycle state becomes visible.
+    // Metadata registration below is intentionally later so stream attachment
+    // still wins the race with early container output.
+    await reserveSessionOwnership(slug, sessionId)
+
     // Attach lifecycle state and the stream before slower metadata/DB work. The
     // first turn can start emitting shortly after createSession returns, and a
     // blocking input emitted during that window must not be missed or reset.
@@ -1722,7 +1733,10 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     // No JSONL transcript on disk — e.g. it was deleted by the CLI's retention
     // cleanup while the metadata entry lingers in the nav. Signal this distinctly
     // from an empty (but present) transcript so the UI can show a clear message.
-    if (!(await sessionExists(agentSlug, sessionId))) {
+    if (
+      !(await sessionBelongsToAgent(agentSlug, sessionId)) ||
+      !(await sessionExists(agentSlug, sessionId))
+    ) {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
 
@@ -1922,6 +1936,14 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
 
     const runtimeOptions = parseRuntimeOptions(body)
 
+    // cancelAwaitingInput / markSessionActive / broadcastSessionEvent below are
+    // all keyed by session id alone: an unowned id would cancel another agent's
+    // pending input request, re-bind its session to this agent, and inject a
+    // spoofed user message into every client watching it.
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
     const agent = await getAgent(agentSlug)
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
@@ -2039,6 +2061,12 @@ agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
   const sessionId = c.req.param('sessionId')
   const user = c.get('user' as never) as { id: string; name: string }
 
+  // Otherwise this puts the caller's name in the typing indicator of a session
+  // in someone else's agent.
+  if (!(await sessionIsKnown(getAgentId(c), sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
   messagePersister.broadcastSessionEvent(sessionId, {
     type: 'user_typing',
     sender: { id: user.id, name: user.name },
@@ -2142,6 +2170,21 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
+    // Ownership first: unsubscribeFromSession below is keyed by session id
+    // alone, so on a foreign id it would tear down another agent's live message
+    // subscription on the way to a 404. This costs no deletability — it accepts
+    // exactly the "transcript OR metadata entry exists" condition that
+    // deleteSession itself reports success for.
+    if (
+      !(await sessionBelongsToAgent(agentSlug, sessionId)) ||
+      (!(await sessionExists(agentSlug, sessionId)) &&
+        !(await isSessionRegistered(agentSlug, sessionId)))
+    ) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
+    // Before the delete, so an in-flight append can't recreate the transcript
+    // just after it is unlinked.
     messagePersister.unsubscribeFromSession(sessionId)
 
     // deleteSession is the authority for existence here: it removes the JSONL
@@ -2182,10 +2225,7 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
 agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
-  if (
-    !(await sessionExists(agentSlug, sessionId)) &&
-    !(await isSessionRegistered(agentSlug, sessionId))
-  ) {
+  if (!(await sessionIsKnown(agentSlug, sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
@@ -2268,11 +2308,18 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
 
 // POST /api/agents/:id/sessions/:sessionId/interrupt - Interrupt an active session
 agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.param('sessionId')
+
+  // Outside the try on purpose. Every path below — including the catch — ends in
+  // markSessionInterrupted, which is keyed by session id alone across all agents,
+  // so an unowned id reaching any of them wipes another agent's live session
+  // state and tells its viewers it went idle.
+  if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
   try {
-    const agentSlug = getAgentId(c)
-    const sessionId = c.req.param('sessionId')
-
-
     const client = containerManager.getClient(agentSlug)
     // Use cached status to avoid spawning docker process
     const info = containerManager.getCachedInfo(agentSlug)
@@ -2301,12 +2348,11 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to interrupt session:', error)
-    // Even on error, try to mark session as interrupted to fix UI state
+    // Even on error, try to mark session as interrupted to fix UI state.
+    // Ownership was established above, so this reaches only the caller's session.
     try {
-      const sessionId = c.req.param('sessionId')
-      const agentSlugFallback = getAgentId(c)
       await messagePersister.markSessionInterrupted(sessionId)
-      reviewManager.denyAllForAgent(agentSlugFallback)
+      reviewManager.denyAllForAgent(agentSlug)
       return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
     } catch {
       return c.json({ error: 'Failed to interrupt session' }, 500)
@@ -2397,6 +2443,24 @@ function gateRequestDecision(
     alreadySettled: true,
     ...(settled ? { outcome: settled.outcome } : {}),
   })
+}
+
+/** Read/mutate an open request without settling it. */
+function gateOpenRequestAccess(
+  c: Context,
+  toolUseId: string,
+  kind: UserInputRequestKind,
+): Response | null {
+  const open = userInputRequestManager.getOpenRequest(toolUseId)
+  if (!open || !requestMatchesRoute(
+    open,
+    kind,
+    getAgentId(c),
+    c.req.param('sessionId') ?? '',
+  )) {
+    return c.json({ error: 'Request not found' }, 404)
+  }
+  return null
 }
 
 // POST /api/agents/:id/sessions/:sessionId/provide-secret - Provide or decline a secret request
@@ -2833,8 +2897,261 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
   }
 })
 
+async function readCredentialBrowserUrl(agentSlug: string, sessionId: string): Promise<string> {
+  const client = containerManager.getClient(agentSlug)
+  const response = await client.fetch(
+    `/browser/credential-context?sessionId=${encodeURIComponent(sessionId)}`,
+  )
+  if (!response.ok) throw new CredentialBrokerError('provider_error', 'The active browser page is unavailable')
+  const parsed = credentialContextResponseSchema.safeParse(
+    await response.json().catch(() => null),
+  )
+  if (!parsed.success) {
+    throw new CredentialBrokerError('provider_error', 'The active browser page is unavailable')
+  }
+  return parsed.data.url
+}
+
+function credentialBrokerErrorResponse(
+  c: Context,
+  error: unknown,
+  fallbackMessage = 'Credential autofill failed',
+): Response {
+  if (!(error instanceof CredentialBrokerError)) {
+    return c.json({ error: fallbackMessage }, 500)
+  }
+  const status = error.code === 'invalid_url' ? 400
+    : error.code === 'provider_error' ? 502
+      : 409
+  return c.json({ error: error.message, code: error.code }, status)
+}
+
+function configuredPasswordManagers(): string[] {
+  const configured = getSettings().app?.configuredPasswordManagers
+  return Array.isArray(configured)
+    ? configured.filter((provider): provider is string => typeof provider === 'string')
+    : []
+}
+
+function passwordManagerIsConfigured(provider: string): boolean {
+  return configuredPasswordManagers().includes(provider)
+}
+
+const BROWSER_CONTEXT_TTL_MS = 30_000
+const credentialContextResponseSchema = z.object({
+  url: z.string().min(1),
+})
+const credentialFillResponseSchema = z.object({
+  usernameFilled: z.boolean(),
+  passwordFilled: z.boolean(),
+})
+const credentialErrorResponseSchema = z.object({
+  error: z.string(),
+})
+const browserInputContextSchema = z.object({
+  url: z.string().min(1),
+  capturedAt: z.number().finite(),
+})
+const browserCredentialCheckBodySchema = z.object({
+  toolUseId: z.string().min(1),
+  provider: z.string().min(1),
+}).strict()
+const browserCredentialVerifyBodySchema = browserCredentialCheckBodySchema.extend({
+  code: z.string().regex(/^\d{6}$/, 'Enter the six-digit verification code'),
+}).strict()
+const browserCredentialAutofillBodySchema = z.object({
+  toolUseId: z.string().min(1),
+  credentialId: z.string().min(1),
+}).strict()
+
+function capturedBrowserInputUrl(toolUseId: string, now = Date.now()): string | null {
+  const request = userInputRequestManager.getOpenRequest(toolUseId)
+  if (!request || request.kind !== 'browser_input') return null
+  const parsed = browserInputContextSchema.safeParse(request.payload.browserContext)
+  if (!parsed.success) return null
+  const age = now - parsed.data.capturedAt
+  return age >= 0 && age <= BROWSER_CONTEXT_TTL_MS ? parsed.data.url : null
+}
+
+async function refreshBrowserInputUrl(
+  agentSlug: string,
+  sessionId: string,
+  toolUseId: string,
+): Promise<string> {
+  const url = await readCredentialBrowserUrl(agentSlug, sessionId)
+  userInputRequestManager.enrichOpenRequestPayload(toolUseId, 'browser_input', {
+    browserContext: { url, capturedAt: Date.now() },
+  })
+  return url
+}
+
+// GET /api/agents/:id/sessions/:sessionId/browser-credentials - Metadata-only suggestions
+agents.get('/:id/sessions/:sessionId/browser-credentials', IsAdmin(), async (c) => {
+  const toolUseId = c.req.query('toolUseId')
+  if (!toolUseId) return c.json({ error: 'toolUseId is required' }, 400)
+  const gated = gateOpenRequestAccess(c, toolUseId, 'browser_input')
+  if (gated) return gated
+
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.param('sessionId')
+  try {
+    // New requests carry a harness-probed URL. Explicit refreshes and stale or
+    // recovered requests re-probe the live browser and replace that context.
+    const forceRefresh = c.req.query('refresh') === 'true'
+    const url = (!forceRefresh && capturedBrowserInputUrl(toolUseId)) ||
+      await refreshBrowserInputUrl(agentSlug, sessionId, toolUseId)
+    const result = await credentialBroker.suggest(
+      { agentSlug, sessionId, toolUseId },
+      url,
+      configuredPasswordManagers(),
+    )
+    return c.json(result)
+  } catch (error) {
+    return credentialBrokerErrorResponse(c, error, 'Credential lookup failed')
+  }
+})
+
+// POST .../browser-credentials/check - Start the configured provider's ephemeral session.
+agents.post(
+  '/:id/sessions/:sessionId/browser-credentials/check',
+  IsAdmin(),
+  zValidator('json', browserCredentialCheckBodySchema),
+  async (c) => {
+  try {
+    const body = c.req.valid('json')
+    const gated = gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
+    if (gated) return gated
+    if (!passwordManagerIsConfigured(body.provider)) {
+      return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
+    }
+    const status = await credentialBroker.beginPairing(body.provider)
+    return c.json({
+      success: true,
+      status: status.status === 'ready' ? 'connected' : 'verification_required',
+      ...(status.status === 'pin_required'
+        ? {
+            verification: {
+              type: 'numeric_code',
+              length: 6,
+              message: 'Enter the code shown by your password manager.',
+            },
+          }
+        : {}),
+    })
+  } catch (error) {
+    return credentialBrokerErrorResponse(c, error, 'Password manager check failed')
+  }
+  },
+)
+
+// POST .../browser-credentials/verify - Complete the active password-manager check.
+agents.post(
+  '/:id/sessions/:sessionId/browser-credentials/verify',
+  IsAdmin(),
+  zValidator('json', browserCredentialVerifyBodySchema),
+  async (c) => {
+  try {
+    const body = c.req.valid('json')
+    const gated = gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
+    if (gated) return gated
+    if (!passwordManagerIsConfigured(body.provider)) {
+      return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
+    }
+    await credentialBroker.completePairing(body.provider, body.code)
+    return c.json({ success: true, status: 'connected' })
+  } catch (error) {
+    return credentialBrokerErrorResponse(c, error, 'Password manager verification failed')
+  }
+  },
+)
+
+// POST /api/agents/:id/sessions/:sessionId/autofill-browser-credential - Privileged JIT fill
+agents.post(
+  '/:id/sessions/:sessionId/autofill-browser-credential',
+  IsAdmin(),
+  zValidator('json', browserCredentialAutofillBodySchema),
+  async (c) => {
+  let claimedToolUseId: string | null = null
+  try {
+    const body = c.req.valid('json')
+    const gated = gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
+    if (gated) return gated
+    if (!userInputRequestManager.claimRequest(body.toolUseId)) {
+      return c.json({ error: 'This browser request is already being handled' }, 409)
+    }
+    claimedToolUseId = body.toolUseId
+
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    const url = await readCredentialBrowserUrl(agentSlug, sessionId)
+    const retrieved = await credentialBroker.retrieve(
+      { agentSlug, sessionId, toolUseId: body.toolUseId },
+      body.credentialId,
+      url,
+    )
+    const credential = retrieved.credential
+
+    const client = containerManager.getClient(agentSlug)
+    const fillResponse = await client.fetch('/browser/fill-credential', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId,
+        username: credential.username,
+        password: credential.password,
+        expectedOrigin: retrieved.expectedOrigin,
+      }),
+    })
+    if (!fillResponse.ok) {
+      const fillError = credentialErrorResponseSchema.safeParse(
+        await fillResponse.json().catch(() => null),
+      )
+      return c.json({
+        error: fillError.success ? fillError.data.error : 'Credential autofill failed',
+      }, fillResponse.status === 409 ? 409 : 502)
+    }
+    const parsedFill = credentialFillResponseSchema.safeParse(
+      await fillResponse.json().catch(() => null),
+    )
+    if (!parsedFill.success) {
+      throw new CredentialBrokerError('provider_error', 'The browser returned an invalid autofill result')
+    }
+
+    // Autofill is the successful answer to this browser-input request. Resume
+    // the parked tool with explicit next-step guidance instead of making the
+    // user click Done after they already selected a credential.
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(body.toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: 'credentials_filled' }),
+      },
+    )
+    const requestSettled = resolveResponse.ok
+    if (requestSettled) {
+      messagePersister.completeInputRequest(sessionId, body.toolUseId, 'answered')
+    } else {
+      console.error('[autofill-browser-credential] Credentials filled but browser input could not be resolved')
+    }
+
+    return c.json({
+      success: true,
+      usernameFilled: parsedFill.data.usernameFilled,
+      passwordFilled: parsedFill.data.passwordFilled,
+      requestSettled,
+    })
+  } catch (error) {
+    return credentialBrokerErrorResponse(c, error)
+  } finally {
+    if (claimedToolUseId) userInputRequestManager.releaseClaim(claimedToolUseId)
+  }
+  },
+)
+
 // POST /api/agents/:id/sessions/:sessionId/complete-browser-input - Complete or cancel a browser input request
 agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), async (c) => {
+  let claimedToolUseId: string | null = null
   try {
     const agentSlug = getAgentId(c)
     const body = await c.req.json()
@@ -2846,6 +3163,10 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
 
     const gated = gateRequestDecision(c, toolUseId, 'browser_input')
     if (gated) return gated
+    if (!userInputRequestManager.claimRequest(toolUseId)) {
+      return c.json({ error: 'This browser request is already being handled' }, 409)
+    }
+    claimedToolUseId = toolUseId
 
     const client = containerManager.getClient(agentSlug)
 
@@ -2915,6 +3236,8 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
   } catch (error) {
     console.error('Failed to complete browser input:', error)
     return c.json({ error: 'Failed to complete browser input' }, 500)
+  } finally {
+    if (claimedToolUseId) userInputRequestManager.releaseClaim(claimedToolUseId)
   }
 })
 
@@ -3014,6 +3337,11 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
       stdout = execError.stdout || ''
       stderr = execError.stderr || ''
       exitCode = execError.code ?? 1
+    }
+
+    // Consume "once" grant after use
+    if (body.grantType === 'once') {
+      computerUsePermissionManager.consumeOnceGrant(agentSlug, 'use_host_shell')
     }
 
     // Format output for the agent
@@ -3346,23 +3674,80 @@ agents.get('/:id/secrets', AgentRead(), async (c) => {
   }
 })
 
+function isRetryableAuditWriteError(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (typeof current !== 'object' || current === null) return false
+    const code = 'code' in current ? current.code : undefined
+    if (
+      typeof code === 'string' &&
+      (code.startsWith('SQLITE_BUSY') || code.startsWith('SQLITE_LOCKED'))
+    ) {
+      return true
+    }
+    current = 'cause' in current ? current.cause : undefined
+  }
+  return false
+}
+
+// GET /api/agents/:id/secrets/:secretId/value - Reveal the raw value of a single secret
+agents.get('/:id/secrets/:secretId/value', AgentAdmin(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    const envVar = c.req.param('secretId')
+
+    // Reserved runtime vars are system-managed and hidden from the secrets
+    // list (SUP-239 bug 3), so they don't exist as user secrets here either —
+    // 404 rather than confirming the var and leaking e.g. CONNECTED_ACCOUNTS.
+    const secret = isReservedEnvVar(envVar) ? null : await getSecret(slug, envVar)
+    if (!secret) {
+      return c.json({ error: 'Secret not found' }, 404)
+    }
+
+    // Revealing plaintext is fail-closed on audit storage: the endpoint must
+    // never disclose a value unless its durable `revealed` row was written.
+    await logAuditEventOrThrow({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${envVar}`, action: 'revealed' })
+    return c.json(
+      { value: secret.value },
+      200,
+      { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+    )
+  } catch (error) {
+    console.error('Failed to reveal secret:', error)
+    if (isRetryableAuditWriteError(error)) {
+      return c.json(
+        { error: 'The audit log is temporarily busy. Please try revealing the secret again.' },
+        503,
+        { 'Retry-After': '1' },
+      )
+    }
+    return c.json({ error: 'Failed to reveal secret' }, 500)
+  }
+})
+
 // POST /api/agents/:id/secrets - Create or update a secret
 agents.post('/:id/secrets', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const body = await c.req.json()
-    const { key, value } = body
+    const parsedBody = createSecretRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    )
+    if (!parsedBody.success) {
+      return c.json({ error: 'Invalid request body' }, 400)
+    }
+    const { key, value } = parsedBody.data
 
-    if (!key?.trim()) {
+    if (!key.trim()) {
       return c.json({ error: 'Key is required' }, 400)
     }
-
-    if (value === undefined || value === null) {
+    if (!value) {
       return c.json({ error: 'Value is required' }, 400)
     }
 
-
     const envVar = keyToEnvVar(key.trim())
+    if (!envVar) {
+      return c.json({ error: 'Key must contain at least one letter or number' }, 400)
+    }
 
     // A secret is just an env var injected into the container, so it must obey
     // the same reserved-runtime-var rule as global custom env vars (SUP-210 /
@@ -3395,39 +3780,37 @@ agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
     const envVar = c.req.param('secretId')
-    const body = await c.req.json()
-    const { key, value } = body
+    const parsedBody = updateSecretRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    )
+    if (!parsedBody.success) {
+      return c.json({ error: 'Invalid request body' }, 400)
+    }
+    const { key, value } = parsedBody.data
 
-
-    const existing = await getSecret(slug, envVar)
-    if (!existing) {
+    const result = await updateSecret(slug, envVar, { key, value })
+    if (result.status === 'not_found') {
       return c.json({ error: 'Secret not found' }, 404)
     }
-
-    const newKey = key?.trim() || existing.key
-    const newEnvVar = keyToEnvVar(newKey)
-    const newValue = value !== undefined ? value : existing.value
-
-    // Renaming a secret onto a reserved runtime var is blocked too (SUP-239 bug 2).
-    if (isReservedEnvVar(newEnvVar)) {
+    if (result.status === 'invalid_key') {
+      return c.json({ error: 'Key must contain at least one letter or number' }, 400)
+    }
+    if (result.status === 'reserved') {
       return c.json(
-        { error: `"${newEnvVar}" is a reserved runtime variable and cannot be used as a secret` },
+        { error: `"${result.envVar}" is a reserved runtime variable and cannot be used as a secret` },
         400
       )
     }
-
-    if (newEnvVar !== envVar) {
-      await deleteSecret(slug, envVar)
+    if (result.status === 'conflict') {
+      return c.json(
+        { error: `A secret with env var "${result.envVar}" already exists` },
+        409,
+      )
     }
 
-    await setSecret(slug, {
-      key: newKey,
-      envVar: newEnvVar,
-      value: newValue,
-    })
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${newEnvVar}`, action: 'updated', details: { key: newKey } })
-    return c.json({ id: newEnvVar, key: newKey, envVar: newEnvVar, hasValue: true })
+    const updated = result.secret
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${updated.envVar}`, action: 'updated', details: { key: updated.key } })
+    return c.json({ id: updated.envVar, key: updated.key, envVar: updated.envVar, hasValue: true })
   } catch (error) {
     console.error('Failed to update secret:', error)
     return c.json({ error: 'Failed to update secret' }, 500)
@@ -4283,11 +4666,15 @@ agents.post('/:id/skills/import-zip', AgentAdmin(), async (c) => {
       return c.json({ error: 'No file provided' }, 400)
     }
 
+    if (file.size > SKILL_MAX_COMPRESSED_SIZE) {
+      return c.json({ error: formatUploadTooLargeMessage(file.size, SKILL_MAX_COMPRESSED_SIZE) }, 413)
+    }
+
     const arrayBuffer = await file.arrayBuffer()
     const zipBuffer = Buffer.from(arrayBuffer)
 
     if (zipBuffer.length > SKILL_MAX_COMPRESSED_SIZE) {
-      return c.json({ error: `File too large (${(zipBuffer.length / 1024 / 1024).toFixed(1)}MB, max ${SKILL_MAX_COMPRESSED_SIZE / 1024 / 1024}MB)` }, 413)
+      return c.json({ error: formatUploadTooLargeMessage(zipBuffer.length, SKILL_MAX_COMPRESSED_SIZE) }, 413)
     }
 
     const result = await importSkillFromZip(agentSlug, zipBuffer)
@@ -4456,8 +4843,7 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
   }
 })
 
-// Shared upload logic - writes a buffer to the agent workspace
-async function writeUploadedFile(agentSlug: string, filename: string, buffer: Buffer, relativePath?: string) {
+function resolveUploadDestPath(agentSlug: string, filename: string, relativePath?: string) {
   // If relativePath is provided (folder upload), preserve directory structure
   let uploadPath: string
   if (relativePath) {
@@ -4478,6 +4864,13 @@ async function writeUploadedFile(agentSlug: string, filename: string, buffer: Bu
     throw new Error('Invalid file path')
   }
 
+  return { uploadPath, fullPath }
+}
+
+// Shared upload logic - writes a buffer to the agent workspace
+async function writeUploadedFile(agentSlug: string, filename: string, buffer: Buffer, relativePath?: string) {
+  const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, filename, relativePath)
+
   // Write directly to host filesystem (volume-mounted into container)
   await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
   await fs.promises.writeFile(fullPath, buffer)
@@ -4490,14 +4883,28 @@ async function writeUploadedFile(agentSlug: string, filename: string, buffer: Bu
   }
 }
 
+async function writeUploadedFileFromPath(agentSlug: string, filename: string, srcPath: string, relativePath?: string) {
+  const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, filename, relativePath)
+  const size = await moveUploadedFile(srcPath, fullPath)
+  return {
+    success: true,
+    path: `/workspace/${uploadPath}`,
+    filename,
+    size,
+  }
+}
+
 async function handleFileUpload(agentSlug: string, file: File, relativePath?: string) {
+  if (file.size > MAX_UPLOAD_TOTAL_SIZE) {
+    throw new UploadTooLargeError(file.size, MAX_UPLOAD_TOTAL_SIZE)
+  }
   const buffer = Buffer.from(await file.arrayBuffer())
   return writeUploadedFile(agentSlug, file.name, buffer, relativePath)
 }
 
 // Shared by both upload-file routes. When a `chunk` field is present, persist it
 // and only write the final file once every chunk has arrived. Returns
-// `{ pending }` (a Response to return immediately — either a 400 or the interim
+// `{ pending }` (a Response to return immediately — either a 400/413 or the interim
 // `chunk_received` ack) or `{ uploadResult }` once the file is fully assembled.
 type ChunkedFileUploadOutcome = {
   pending: Response | null
@@ -4511,14 +4918,35 @@ async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: 
   const filename = (formData.get('filename') as string | null) || 'upload'
   const relativePath = formData.get('relativePath') as string | null
 
-  const result = await storeUploadChunk(parsed.uploadId, parsed.chunkIndex, parsed.totalChunks, Buffer.from(await chunk.arrayBuffer()))
+  const result = await storeUploadChunk(
+    parsed.uploadId,
+    parsed.chunkIndex,
+    parsed.totalChunks,
+    Buffer.from(await chunk.arrayBuffer()),
+    MAX_UPLOAD_TOTAL_SIZE,
+  )
 
   if (result.status === 'received') {
     return { pending: c.json({ status: 'chunk_received', chunkIndex: parsed.chunkIndex }) }
   }
 
-  const uploadResult = await writeUploadedFile(agentSlug, filename, result.buffer, relativePath || undefined)
-  return { pending: null, uploadResult }
+  try {
+    const uploadResult = await writeUploadedFileFromPath(agentSlug, filename, result.filePath, relativePath || undefined)
+    return { pending: null, uploadResult }
+  } finally {
+    try {
+      await fs.promises.unlink(result.filePath)
+    } catch (err) {
+      // rename may have already moved the file
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.warn('[agents] failed to unlink assembled file upload:', err)
+        captureException(err, {
+          tags: { component: 'agents', operation: 'unlink-assembled-upload' },
+          extra: { filePath: result.filePath, agentSlug },
+        })
+      }
+    }
+  }
 }
 
 // Shared handler for both agent-level and session-level upload-file routes.
@@ -4550,6 +4978,9 @@ async function respondUploadFile(c: Context) {
     logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.filename}`, action: 'uploaded' })
     return c.json(result)
   } catch (error) {
+    if (error instanceof UploadTooLargeError) {
+      return c.json({ error: error.message }, 413)
+    }
     console.error('Failed to upload file:', error)
     captureException(error, { tags: { component: 'agents', operation: 'upload-file' }, extra: { agentSlug: getAgentId(c) } })
     return c.json({ error: 'Failed to upload file' }, 500)
@@ -5336,7 +5767,11 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
 // Shared handler for proxying artifact requests to the container
 const skipProxyRequestHeaders = new Set([
   'host', 'connection', 'transfer-encoding',
+  // Node fetch transparently decodes upstream bodies. Ask every hop for the
+  // identity representation so body bytes and response metadata cannot drift.
+  'accept-encoding',
 ])
+const conditionalRequestHeaders = new Set(['if-modified-since', 'if-none-match'])
 
 async function proxyArtifactRequest(c: any) {
   const agentSlug = getAgentId(c)
@@ -5359,19 +5794,59 @@ async function proxyArtifactRequest(c: any) {
   const url = new URL(c.req.url)
   const routeSlug = c.req.param('id')
   const prefix = `/api/agents/${routeSlug}/artifacts/${artifactSlug}`
+  const publicBasePath = dashboardMountPath(routeSlug, artifactSlug)
   const subPath = url.pathname.slice(url.pathname.indexOf(prefix) + prefix.length) || '/'
   const containerPath = `/artifacts/${artifactSlug}${subPath}${url.search}`
+
+  // Framework router bases are compiled from the canonical id passed to the
+  // dashboard process. A display-slug document URL would therefore disagree
+  // with that router base. Canonicalize navigations while continuing to proxy
+  // non-document assets for compatibility with older relative builds.
+  if (
+    routeSlug !== agentSlug
+    && (c.req.method === 'GET' || c.req.method === 'HEAD')
+    && c.req.header('accept')?.includes('text/html')
+  ) {
+    const canonicalBasePath = dashboardMountPath(encodeURIComponent(agentSlug), artifactSlug)
+    return c.redirect(`${canonicalBasePath.slice(0, -1)}${subPath}${url.search}`, 307)
+  }
 
   // Forward request headers (minus hop-by-hop headers)
   const reqHeaders = c.req.header() as Record<string, string>
   const headers: Record<string, string> = {}
+  // Dashboard HTML is injected per request, so an upstream 304 cannot safely
+  // stand in for the browser's transformed representation. Assets are not
+  // transformed and retain normal ETag/Last-Modified revalidation.
+  const isDocumentRequest = (c.req.method === 'GET' || c.req.method === 'HEAD')
+    && c.req.header('accept')?.includes('text/html')
   for (const key of Object.keys(reqHeaders)) {
-    if (!skipProxyRequestHeaders.has(key.toLowerCase())) {
+    const normalizedKey = key.toLowerCase()
+    if (
+      !skipProxyRequestHeaders.has(normalizedKey)
+      && !(isDocumentRequest && conditionalRequestHeaders.has(normalizedKey))
+    ) {
       headers[key] = reqHeaders[key]
     }
   }
+  headers['accept-encoding'] = 'identity'
+  headers['x-forwarded-prefix'] = publicBasePath.slice(0, -1)
+  headers['x-forwarded-host'] = c.req.header('x-forwarded-host') || url.host
+  headers['x-forwarded-proto'] = c.req.header('x-forwarded-proto') || url.protocol.slice(0, -1)
+  // Hono's Node connection metadata is unavailable in direct app.request()
+  // calls (including tests and some embedded adapters). Existing forwarded
+  // metadata is still preserved in that case.
+  let remoteAddress: string | undefined
+  try {
+    remoteAddress = getConnInfo(c).remote.address
+  } catch {
+    remoteAddress = undefined
+  }
+  if (remoteAddress) {
+    const forwardedFor = c.req.header('x-forwarded-for')
+    headers['x-forwarded-for'] = forwardedFor ? `${forwardedFor}, ${remoteAddress}` : remoteAddress
+  }
 
-  const init: RequestInit = { method: c.req.method, headers }
+  const init: RequestInit = { method: c.req.method, headers, redirect: 'manual' }
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     init.body = await c.req.arrayBuffer()
   }
@@ -5380,23 +5855,20 @@ async function proxyArtifactRequest(c: any) {
 
   const contentType = response.headers.get('content-type') || ''
   if (contentType.includes('text/html')) {
-    let html = await response.text()
-    const tags = `<script>${getPolyfillJs()}${getLlmPolyfillJs()}</script>`
-    const headMatch = html.match(/<head(\s[^>]*)?>/i)
-    if (headMatch) {
-      const pos = headMatch.index! + headMatch[0].length
-      html = html.slice(0, pos) + tags + html.slice(pos)
-    } else {
-      html = tags + html
-    }
-    const headers = new Headers(response.headers)
-    headers.delete('content-length')
-    return new Response(html, { status: response.status, headers })
+    const html = injectDashboardRuntime(await response.text(), {
+      basePath: publicBasePath,
+      slug: artifactSlug,
+      polyfillJs: getPolyfillJs() + getLlmPolyfillJs(),
+    })
+    return new Response(html, {
+      status: response.status,
+      headers: dashboardResponseHeaders(response.headers, publicBasePath, { transformedHtml: true }),
+    })
   }
 
   return new Response(response.body, {
     status: response.status,
-    headers: new Headers(response.headers),
+    headers: dashboardResponseHeaders(response.headers, publicBasePath),
   })
 }
 
@@ -5483,19 +5955,10 @@ const STALE_UPLOAD_MS = 60 * 60 * 1000 // 1 hour
 
 async function cleanupStaleUploads() {
   try {
-    const uploadsDir = getTempUploadsDir()
-    const entries = await fs.promises.readdir(uploadsDir, { withFileTypes: true }).catch(() => [])
-    const now = Date.now()
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-      const dirPath = path.join(uploadsDir, entry.name)
-      const stat = await fs.promises.stat(dirPath).catch(() => null)
-      if (stat && now - stat.mtimeMs > STALE_UPLOAD_MS) {
-        await removeDirectory(dirPath).catch(() => {})
-      }
-    }
-  } catch {
-    // Ignore cleanup errors
+    await cleanupStaleTempUploads(STALE_UPLOAD_MS)
+  } catch (err) {
+    console.warn('[agents] stale upload cleanup failed:', err)
+    captureException(err, { tags: { component: 'agents', operation: 'cleanup-stale-uploads' } })
   }
 }
 
@@ -5734,6 +6197,48 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
         updatedAt: r.updatedAt,
       })),
   })
+})
+
+// PATCH /api/agents/:id/x-agent-policies - Atomically update or clear one
+// policy. The editor sends independent controls through this route so rapid
+// edits never race through the whole-list replacement endpoint below.
+agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
+  const slug = getAgentId(c)
+  const callerAgent = await getAgent(slug)
+  if (!callerAgent) {
+    return c.json({ error: 'Agent not found' }, 404)
+  }
+
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = z.object({
+    operation: xAgentOperationSchema,
+    targetSlug: z.string().nullable(),
+    decision: z.union([xAgentDecisionSchema, z.literal('default')]),
+  }).safeParse(body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid policy payload', details: parsed.error.format() }, 400)
+  }
+
+  const { operation, targetSlug, decision } = parsed.data
+  if (operation === 'list' && targetSlug !== null) {
+    return c.json({ error: 'List policies cannot target an agent' }, 400)
+  }
+  if (targetSlug === slug) {
+    return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
+  }
+  if (targetSlug !== null) {
+    const targetAgent = await getAgent(targetSlug)
+    if (!targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+  }
+
+  if (decision === 'default') {
+    const removed = deletePolicy(slug, operation, targetSlug)
+    return c.json({ ok: true, removed })
+  }
+  const result = await setPolicy(slug, operation, targetSlug, decision)
+  return c.json({ ok: true, ...result })
 })
 
 // PUT /api/agents/:id/x-agent-policies - Replace all policies for this caller (batch)

@@ -34,6 +34,7 @@ type ExposedApi = {
   platform: string
   osVersion: string
   openExternal: (url: string) => Promise<void>
+  openApplePasswordsExtension: () => Promise<void>
   revealInFolder: (hostPath: string) => Promise<string | null>
   createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
   getPathForFile: (file: File) => string
@@ -44,7 +45,7 @@ type ExposedApi = {
     context?: unknown,
   ) => Promise<void>
   minimizeWindow: () => void
-  setSidebarCollapsed: (collapsed: boolean) => void
+  focusWindow: () => void
   onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => void
   removeNavigateToAgent: () => void
   onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => void
@@ -96,6 +97,9 @@ describe('preload electronAPI bridge', () => {
     await api.openExternal('https://example.com')
     expect(electronMocks.invoke).toHaveBeenLastCalledWith('open-external', 'https://example.com')
 
+    await api.openApplePasswordsExtension()
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith('open-apple-passwords-extension')
+
     await api.revealInFolder('/workspace/reports/notes.md')
     expect(electronMocks.invoke).toHaveBeenLastCalledWith(
       'reveal-in-folder',
@@ -127,10 +131,10 @@ describe('preload electronAPI bridge', () => {
     const api = await loadApi()
 
     api.minimizeWindow()
-    api.setSidebarCollapsed(true)
+    api.focusWindow()
 
     expect(electronMocks.send).toHaveBeenCalledWith('window-minimize')
-    expect(electronMocks.send).toHaveBeenCalledWith('set-sidebar-collapsed', true)
+    expect(electronMocks.send).toHaveBeenCalledWith('focus-window')
   })
 
   it('forwards navigation events and removes channel listeners', async () => {

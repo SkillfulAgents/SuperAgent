@@ -71,7 +71,8 @@ const mockRefreshAvailability = {
   isPending: false,
 }
 
-vi.mock('@renderer/hooks/use-settings', () => ({
+vi.mock('@renderer/hooks/use-settings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/hooks/use-settings')>()),
   useSettings: () => mockSettings,
   useUpdateSettings: () => mockUpdateSettings,
   useStartRunner: () => mockStartRunner,

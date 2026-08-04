@@ -11,6 +11,7 @@ vi.mock('../middleware/auth', () => ({
   AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),
   AgentUser: () => async (_c: unknown, next: () => Promise<void>) => next(),
   AgentAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  IsAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
   ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
   getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
 }))
@@ -126,8 +127,8 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   listSecrets: vi.fn(),
   getSecret: vi.fn(),
   setSecret: vi.fn(),
+  updateSecret: vi.fn(),
   deleteSecret: vi.fn(),
-  keyToEnvVar: vi.fn(),
   getSecretEnvVars: vi.fn(),
 }))
 

@@ -13,7 +13,7 @@ export const AUDIT_EVENT_MAP = {
   task:             ['created', 'updated', 'deleted', 'paused', 'resumed'],
   chat_integration: ['created', 'updated', 'deleted'],
   skill:            ['created', 'updated', 'deleted', 'exported'],
-  secret:           ['created', 'updated', 'deleted'],
+  secret:           ['created', 'updated', 'deleted', 'revealed'],
   file:             ['uploaded'],
   mount:            ['created', 'deleted'],
   settings:         ['updated', 'factory_reset'],
@@ -44,17 +44,29 @@ export type LogAuditEventParams = {
   }
 }[AuditObject]
 
+/**
+ * Write an audit event and surface storage failures to the caller.
+ *
+ * Use this for security-sensitive operations that must not succeed without a
+ * durable audit row. Most product events should continue to use
+ * logAuditEvent(), whose best-effort behavior keeps audit storage outages from
+ * breaking unrelated user actions.
+ */
+export async function logAuditEventOrThrow(params: LogAuditEventParams): Promise<void> {
+  await db.insert(auditLog).values({
+    id: crypto.randomUUID(),
+    userId: params.userId ?? null,
+    object: params.object,
+    objectId: params.objectId,
+    action: params.action,
+    details: params.details ? JSON.stringify(params.details) : null,
+    createdAt: new Date(),
+  })
+}
+
 export async function logAuditEvent(params: LogAuditEventParams): Promise<void> {
   try {
-    await db.insert(auditLog).values({
-      id: crypto.randomUUID(),
-      userId: params.userId ?? null,
-      object: params.object,
-      objectId: params.objectId,
-      action: params.action,
-      details: params.details ? JSON.stringify(params.details) : null,
-      createdAt: new Date(),
-    })
+    await logAuditEventOrThrow(params)
   } catch (error) {
     console.error('[audit] Failed to write audit log:', error)
   }

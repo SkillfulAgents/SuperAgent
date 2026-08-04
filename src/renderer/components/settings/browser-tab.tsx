@@ -19,6 +19,7 @@ import { RequestError } from '@renderer/components/messages/request-error'
 import type { HostBrowserProviderId, BrowserbaseStealthOs } from '@shared/lib/config/settings'
 import { ChromeProfileSelect } from '@renderer/components/settings/chrome-profile-select'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
+import { PasswordManagersSettings } from './password-managers-settings'
 
 // Value used for "Container (built-in)" — no host browser provider
 const CONTAINER_VALUE = '__container__'
@@ -257,6 +258,8 @@ export function BrowserTab() {
           />
         </div>
       </div>
+
+      <PasswordManagersSettings />
 
       {/* Host selection — radio cards, expanded card shows provider settings */}
       <div className="space-y-2">

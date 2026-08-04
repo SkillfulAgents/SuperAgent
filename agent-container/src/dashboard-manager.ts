@@ -10,6 +10,9 @@ export const ARTIFACTS_DIR = process.env.ARTIFACTS_DIR || '/workspace/artifacts'
 const DASHBOARD_BASE_PORT = 5000
 const MAX_RESTARTS = 3
 const RESTART_WINDOW_MS = 5 * 60 * 1000 // 5 minutes
+// Boot screenshots spawn a Chromium per dashboard; deferring them keeps the
+// container's few CPUs free for dashboard/server startup while users wait.
+const BOOT_SCREENSHOT_DELAY_MS = 10_000
 export const SLUG_REGEX = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 
 // dashboard.log is append-only across every start/crash/restart; without a
@@ -67,6 +70,25 @@ export function validateSlug(slug: string): void {
   }
 }
 
+/**
+ * Browser-visible mount supplied to framework build/dev tooling.
+ *
+ * The agent id is injected by the host when the container starts. Dashboards
+ * still work without it (for direct development and older hosts), but only a
+ * host-provided id can form the public Gamut path without hardcoding it in the
+ * dashboard itself.
+ */
+export function getDashboardBasePath(
+  slug: string,
+  agentId: string | undefined = process.env.SUPERAGENT_AGENT_SLUG
+    || process.env.SUPERAGENT_AGENT_ID,
+): string | null {
+  validateSlug(slug)
+  const normalizedAgentId = agentId?.trim()
+  if (!normalizedAgentId || !/^[A-Za-z0-9._-]+$/.test(normalizedAgentId)) return null
+  return `/api/agents/${encodeURIComponent(normalizedAgentId)}/artifacts/${slug}/`
+}
+
 export type DashboardStatus = 'running' | 'stopped' | 'crashed' | 'starting'
 
 interface DashboardInfo {
@@ -102,23 +124,38 @@ class DashboardManager {
       await fs.promises.mkdir(ARTIFACTS_DIR, { recursive: true })
       const entries = await fs.promises.readdir(ARTIFACTS_DIR, { withFileTypes: true })
 
+      const started: string[] = []
       for (const entry of entries) {
         if (!entry.isDirectory()) continue
 
         const pkgPath = path.join(ARTIFACTS_DIR, entry.name, 'package.json')
         try {
           await fs.promises.access(pkgPath)
-          const info = await this.startDashboard(entry.name)
-          // Fire-and-forget screenshot refresh on boot. No agent is waiting,
-          // so we don't block the scan loop.
-          if (info.status === 'running') {
-            this.captureScreenshot(entry.name).catch((err) => {
-              console.warn(`[DashboardManager] Boot screenshot failed for ${entry.name}:`, err)
-            })
-          }
+          // Boot scan trusts the node_modules freshness heuristic — deps only
+          // change through agent-initiated starts, which force an install.
+          const info = await this.startDashboard(entry.name, { forceInstall: false })
+          if (info.status === 'running') started.push(entry.name)
         } catch {
           // No package.json, skip
         }
+      }
+
+      // Refresh screenshots only after the boot storm settles: each capture
+      // spawns a Chromium, and doing that while dashboards (and the session
+      // prewarm) are still starting starves them of CPU exactly when a user
+      // is waiting for first paint. Sequential on purpose — one Chromium at
+      // a time.
+      if (started.length > 0) {
+        setTimeout(() => {
+          void (async () => {
+            for (const slug of started) {
+              if (this.dashboards.get(slug)?.status !== 'running') continue
+              await this.captureScreenshot(slug).catch((err) => {
+                console.warn(`[DashboardManager] Boot screenshot failed for ${slug}:`, err)
+              })
+            }
+          })()
+        }, BOOT_SCREENSHOT_DELAY_MS)
       }
     } catch (error) {
       console.error('[DashboardManager] Error scanning artifacts:', error)
@@ -152,7 +189,17 @@ class DashboardManager {
     }
   }
 
-  async startDashboard(slug: string): Promise<DashboardInfo> {
+  /**
+   * `forceInstall` (default true) always runs `bun install` before starting,
+   * so an agent-edited package.json takes effect even when the node_modules
+   * freshness heuristic would skip it. Internal boot/crash-restart paths pass
+   * false — deps can't have changed there, and skipping keeps boot fast.
+   */
+  async startDashboard(
+    slug: string,
+    opts?: { forceInstall?: boolean }
+  ): Promise<DashboardInfo> {
+    const forceInstall = opts?.forceInstall ?? true
     validateSlug(slug)
     const existing = this.dashboards.get(slug)
 
@@ -201,15 +248,19 @@ class DashboardManager {
         console.error(`[DashboardManager] Log stream error for ${slug}:`, error)
       })
 
-      // Run bun install only if node_modules is missing or package.json is newer than it
-      await this.runBunInstallIfNeeded(dashboardDir, info.logStream)
+      // Run bun install: always when forced (deps may have changed), else
+      // only if node_modules is missing or package.json is newer than it
+      await this.runBunInstallIfNeeded(dashboardDir, info.logStream, forceInstall)
 
       // Start the dashboard server
+      const dashboardBasePath = getDashboardBasePath(slug)
       const proc = spawn('bun', ['run', 'start'], {
         cwd: dashboardDir,
         env: {
           ...process.env,
           DASHBOARD_PORT: String(port),
+          ...(dashboardBasePath ? { DASHBOARD_BASE_PATH: dashboardBasePath } : {}),
+          DASHBOARD_ARTIFACT_SLUG: slug,
           PORT: String(port),
           NODE_ENV: 'production',
         },
@@ -276,25 +327,54 @@ class DashboardManager {
     return info
   }
 
-  private async runBunInstallIfNeeded(dir: string, logStream?: fs.WriteStream): Promise<void> {
-    const nodeModules = path.join(dir, 'node_modules')
-    const pkgJson = path.join(dir, 'package.json')
-    try {
-      const nmStat = fs.statSync(nodeModules)
-      const pkgStat = fs.statSync(pkgJson)
-      if (nmStat.isDirectory() && nmStat.mtimeMs >= pkgStat.mtimeMs) {
-        logStream?.write('[DashboardManager] node_modules up-to-date, skipping bun install\n')
-        return
+  private async runBunInstallIfNeeded(
+    dir: string,
+    logStream: fs.WriteStream | undefined,
+    force: boolean
+  ): Promise<void> {
+    if (!force) {
+      const nodeModules = path.join(dir, 'node_modules')
+      const pkgJson = path.join(dir, 'package.json')
+      try {
+        const nmStat = fs.statSync(nodeModules)
+        const pkgStat = fs.statSync(pkgJson)
+        if (nmStat.isDirectory() && nmStat.mtimeMs >= pkgStat.mtimeMs) {
+          logStream?.write('[DashboardManager] node_modules up-to-date, skipping bun install\n')
+          return
+        }
+      } catch {
+        // node_modules doesn't exist or stat failed — need install
       }
-    } catch {
-      // node_modules doesn't exist or stat failed — need install
+      // Boot-path install with a lockfile present: try --frozen-lockfile first
+      // so the install is resolution-free and deterministic. If the lockfile
+      // is out of sync with package.json, fall back to a plain install.
+      if (this.hasLockfile(dir)) {
+        try {
+          return await this.runBunInstall(dir, logStream, ['--frozen-lockfile'])
+        } catch {
+          logStream?.write('[DashboardManager] frozen-lockfile install failed, retrying without\n')
+        }
+      }
     }
+    // Forced (agent-initiated) or no/stale lockfile: plain install, which
+    // resolves and updates the lockfile as needed.
     return this.runBunInstall(dir, logStream)
   }
 
-  private async runBunInstall(dir: string, logStream?: fs.WriteStream): Promise<void> {
+  private hasLockfile(dir: string): boolean {
+    return (
+      fs.existsSync(path.join(dir, 'bun.lock')) ||
+      fs.existsSync(path.join(dir, 'bun.lockb'))
+    )
+  }
+
+  private async runBunInstall(
+    dir: string,
+    logStream?: fs.WriteStream,
+    extraArgs: string[] = []
+  ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const proc = spawn('bun', ['install'], {
+      const proc = spawn('bun', ['install', ...extraArgs], {
         cwd: dir,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
@@ -325,7 +405,7 @@ class DashboardManager {
 
   private async waitForPort(port: number, timeoutMs: number): Promise<boolean> {
     const start = Date.now()
-    const interval = 250
+    const interval = 100
     while (Date.now() - start < timeoutMs) {
       try {
         const response = await fetch(`http://localhost:${port}/`, {
@@ -362,9 +442,10 @@ class DashboardManager {
     info.restartCount++
     console.log(`[DashboardManager] Auto-restarting dashboard ${slug} (attempt ${info.restartTimestamps.length}/${MAX_RESTARTS})`)
 
-    // Delay restart slightly
+    // Delay restart slightly. Deps can't have changed across a crash — skip
+    // the forced install.
     setTimeout(() => {
-      this.startDashboard(slug).catch((err) => {
+      this.startDashboard(slug, { forceInstall: false }).catch((err) => {
         console.error(`[DashboardManager] Failed to restart dashboard ${slug}:`, err)
       })
     }, 1000)

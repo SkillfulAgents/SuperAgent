@@ -41,6 +41,7 @@ import { useFilePreview, type FolderTab } from '@renderer/context/file-preview-c
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { downloadBlob } from '@renderer/lib/download'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
 import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
 import type { Bookmark } from '@renderer/hooks/use-bookmarks'
@@ -119,7 +120,10 @@ export function FolderEntryContextMenu({
   const isBookmarked = bookmarkList.some(bookmark => (
     isDirectory ? bookmark.folder === entry.path : bookmark.file === entry.path
   ))
-  const electronRevealAvailable = !!window.electronAPI?.revealInFolder
+  // Reveal asks the agent's Superagent for the file's host path, then opens
+  // that path here. Only coherent when both are the same machine — against a
+  // cloud workspace the path describes a filesystem this window cannot see.
+  const electronRevealAvailable = canUseHostFeatures() && !!window.electronAPI?.revealInFolder
 
   const refreshFolder = () => queryClient.invalidateQueries({
     queryKey: ['folder-entries', folder.agentSlug, folder.rootPath],

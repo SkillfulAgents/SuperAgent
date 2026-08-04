@@ -26,6 +26,7 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
@@ -47,6 +48,8 @@ import {
 } from '@renderer/hooks/use-typewriter-placeholder'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
+import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
+import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
@@ -61,7 +64,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // The new-agent morph tag lives in NavTransientContext — above the router, so
   // it survives in-app nav and dies on hard reload. justCreatedSlug producer =
   // use-create-untitled-agent.
-  const { justCreatedSlug, setJustCreatedSlug, openAgentSettings, setOpenAgentSettings } = useNavTransient()
+  const { justCreatedSlug, setJustCreatedSlug } = useNavTransient()
   const navigate = useNavigate()
   const [introStagger] = useState(() => {
     if (justCreatedSlug !== agent.slug) return false
@@ -118,8 +121,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // so the post-submit deriveAgentName fallback doesn't clobber it.
   const nameAssignedRef = useRef(false)
   // Agent-scoped settings dialogs — opened from the settings button and
-  // HomeExtras (system-prompt/secrets). NOT the global /settings route; they
-  // stay local dialog state here.
+  // HomeExtras (system prompt). Secrets now have a standalone route; these
+  // settings remain local dialog state rather than global /settings routes.
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
@@ -131,19 +134,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     setSettingsTab(tab)
     setSettingsOpen(true)
   }, [])
-  // One-shot from NavTransientContext: another page (e.g. the home graph's
-  // "edit permissions") navigated here asking for a settings tab. Consume
-  // immediately so it can't replay on a later visit — and drop it unacted
-  // when stale: an abandoned navigation would otherwise pop the dialog on a
-  // much-later organic visit to this agent.
-  useEffect(() => {
-    if (openAgentSettings?.slug !== agent.slug) return
-    if (Date.now() - openAgentSettings.requestedAt < 10_000) {
-      handleOpenSettings(openAgentSettings.tab)
-    }
-    setOpenAgentSettings(null)
-  }, [openAgentSettings, agent.slug, handleOpenSettings, setOpenAgentSettings])
-
   const sessions = useMemo(() => {
     if (!Array.isArray(sessionsData)) return []
     return sessionsData.map((s) => ({
@@ -208,6 +198,13 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     draftKey: `agent:${agent.slug}`,
     initialAttachments: carryover?.attachments,
     initialSecuredSecrets: carryover?.securedSecrets,
+  })
+
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
+  useWarmStartOnType({
+    agentSlug: agent.slug,
+    message: composer.message,
+    enabled: warmStartEnabled,
   })
 
   // Reset the manual-collapse flag once the message clears.
@@ -402,7 +399,17 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                         onRecentFileAttach={(file) => composer.addFiles([{ file }])}
                         disabled={isDisabled}
                       />
-                      <ComposerOptions state={composerOptions} disabled={isDisabled} />
+                      <ComposerOptions
+                        state={composerOptions}
+                        disabled={isDisabled}
+                        footer={
+                          <AgentDefaultFooter
+                            agentSlug={agent.slug}
+                            state={composerOptions}
+                            agentHomeLink={false}
+                          />
+                        }
+                      />
                     </>
                   )}
                   topRightActions={(

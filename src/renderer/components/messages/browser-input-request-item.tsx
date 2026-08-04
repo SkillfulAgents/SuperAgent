@@ -5,7 +5,9 @@ import { RequestItemActions } from './request-item-actions'
 import { RequestError } from './request-error'
 import { DeclineButton } from './decline-button'
 import { useBrowserInputActions } from '@renderer/hooks/use-browser-input-actions'
+import { linkify } from '@renderer/lib/linkify'
 import { cn } from '@shared/lib/utils/cn'
+import { BrowserCredentialPicker } from './browser-credential-picker'
 
 interface BrowserInputRequestItemProps {
   toolUseId: string
@@ -77,12 +79,21 @@ export function BrowserInputRequestItem({
               {safeRequirements.map((req, i) => (
                 <li key={i} className="flex items-start gap-2 text-foreground">
                   <span className="mt-0.5 shrink-0 text-xs text-muted-foreground">{i + 1}.</span>
-                  <span>{req}</span>
+                  <span>{typeof req === 'string' ? linkify(req) : req}</span>
                 </li>
               ))}
             </ul>
           </div>
         </div>
+      )}
+
+      {!readOnly && !isCompleted && (
+        <BrowserCredentialPicker
+          agentSlug={agentSlug}
+          sessionId={sessionId}
+          toolUseId={toolUseId}
+          disabled={status === 'submitting'}
+        />
       )}
 
       <RequestItemActions>

@@ -24,7 +24,7 @@ import { CapabilitiesTab } from './capabilities-tab'
 import { AuditLogTab } from './audit-log-tab'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { isElectron } from '@renderer/lib/env'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
 
 interface GlobalSettingsPageProps {
   onClose: () => void
@@ -89,7 +89,12 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
           { id: 'skillsets', label: 'Skillsets', icon: <Layers className="h-4 w-4" />, render: () => <SkillsetsTab /> },
           { id: 'web', label: 'Web Search', icon: <Search className="h-4 w-4" />, render: () => <WebTab /> },
           { id: 'browser', label: 'Browser Use', icon: <MousePointer2 className="h-4 w-4" />, render: () => <BrowserTab /> },
-          ...(isElectron() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Mouse className="h-4 w-4" />, render: () => <ComputerUseTab /> }] : []),
+          // Computer Use drives the machine the agent runs on, and its whole
+          // UI — permission grants, the recovery link into System Settings — is
+          // written for that machine being yours. `isElectron()` stays true in
+          // cloud mode while execution moves to the deployment, so the tab would
+          // describe your laptop and govern someone else's.
+          ...(canUseHostFeatures() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Mouse className="h-4 w-4" />, render: () => <ComputerUseTab /> }] : []),
           { id: 'capabilities', label: 'Subagents', icon: <Workflow className="h-4 w-4" />, render: () => <CapabilitiesTab /> },
           { id: 'voice', label: 'Voice', icon: <Mic className="h-4 w-4" />, render: () => <VoiceTab /> },
         ]

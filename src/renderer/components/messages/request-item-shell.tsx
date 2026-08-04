@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
+import { linkify } from '@renderer/lib/linkify'
 import { RequestItemErrorContext } from './request-item-actions'
 import { usePagination } from './pending-request-stack'
 import { StopSessionButton } from './stop-session-button'
@@ -90,7 +91,7 @@ export function RequestItemShell({
         </span>
       )}
       <div className="flex-1 min-w-0 text-sm font-medium leading-5 text-foreground whitespace-pre-line">
-        {title}
+        {typeof title === 'string' ? linkify(title) : title}
       </div>
     </div>
   )

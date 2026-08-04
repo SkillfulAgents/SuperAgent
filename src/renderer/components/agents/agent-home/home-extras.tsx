@@ -19,6 +19,13 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
     <div className={cn("rounded-xl border bg-background py-2", className)}>
       <div className="divide-y divide-border/50">
         <HomeDefaultModel agentSlug={agentSlug} />
+        <ExtrasButton
+          label="Agent-to-agent connections"
+          onClick={() => {
+            void navigate({ to: '/agents/$slug/x-agent-permissions', params: { slug: agentSlug } })
+          }}
+          testId="home-x-agent-permissions-open-page"
+        />
         <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
         <ExtrasButton
           label="Agent Directory"
@@ -26,7 +33,13 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
           hoverIcon={<PanelRightOpen className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
           testId="home-agent-directory-open-browser"
         />
-        <ExtrasButton label="Secrets" onClick={() => onOpenSettings?.('secrets')} />
+        <ExtrasButton
+          label="Secrets"
+          onClick={() => {
+            void navigate({ to: '/agents/$slug/secrets', params: { slug: agentSlug } })
+          }}
+          testId="home-secrets-open-page"
+        />
         <ExtrasButton
           label="API Logs"
           onClick={() => {

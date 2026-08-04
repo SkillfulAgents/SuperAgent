@@ -1,4 +1,6 @@
-import type { ContainerClient, ContainerConfig, ImagePullProgress } from './types'
+import type { ContainerClient, ContainerConfig, ContainerRunner, ImagePullProgress } from './types'
+export { CONTAINER_RUNNER_IDS } from './types'
+export type { ContainerRunner } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
@@ -14,8 +16,6 @@ import { BaseContainerClient, execWithPath, spawnWithPath, AGENT_CONTAINER_PATH 
 import { platform, homedir } from 'os'
 import * as fs from 'fs'
 import { statfs } from 'fs/promises'
-
-export type ContainerRunner = 'docker' | 'podman' | 'apple-container' | 'lima' | 'wsl2' | 'kubernetes' | 'lambda-microvm'
 
 /**
  * How long a pull may go without any CLI output before the stall watchdog

@@ -19,6 +19,10 @@ export function useUpdateUserSettings() {
   const queryClient = useQueryClient()
 
   return useMutation<UserSettingsData, Error, Partial<UserSettingsData>>({
+    // Settings writes are partial read/merge/write operations on one document.
+    // Serialize every instance of this mutation so rapid layout/visibility
+    // changes cannot complete out of order and restore an older snapshot.
+    scope: { id: 'user-settings' },
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (data) => {
       const res = await apiFetch('/api/user-settings', {
@@ -32,8 +36,12 @@ export function useUpdateUserSettings() {
       }
       return res.json()
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['user-settings'] })
+    onSuccess: (data) => {
+      // The PUT returns the full merged settings — write them straight into
+      // the cache. (invalidate + refetch left a window where consumers that
+      // clear optimistic state on settle briefly rendered the stale cache,
+      // e.g. a resized home card flickering back to its old size.)
+      queryClient.setQueryData(['user-settings'], data)
     },
   })
 }
