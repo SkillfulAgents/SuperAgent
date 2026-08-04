@@ -44,6 +44,10 @@ interface PolicyChange {
   decision: DecisionOrDefault
 }
 
+interface PolicyMutation extends PolicyChange {
+  rollbackConnectionOverride?: boolean
+}
+
 type AgentsResponse = ApiAgent[]
 
 function policyKey(operation: Operation, targetSlug: string | null): string {
@@ -55,9 +59,9 @@ function policyKey(operation: Operation, targetSlug: string | null): string {
  * this agent has remembered for listing, reading, and messaging other
  * workspace agents. Presented like the Agent Connections page: a Switch per
  * target agent ("connected" = it may send messages, the same relationship a
- * drawn home-graph edge creates). Connected rows carry a Permissions popover
- * with the fine-grained controls (Read / Send × Allow / Review / Block);
- * every state is reachable by connecting first, then tuning there.
+ * drawn home-graph edge creates). Every row carries a Permissions popover with
+ * the independent fine-grained controls (Read / Send × Allow / Review /
+ * Block), so inspecting or changing one permission never grants the other.
  */
 export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps) {
   useRenderTracker('XAgentPermissionsView')
@@ -69,6 +73,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
   const [filter, setFilter] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pendingKeys, setPendingKeys] = useState<Set<string>>(() => new Set())
   /**
    * Optimistic per-slug connected state so a toggled row animates to its new
    * section immediately (mirrors connections-list grantOverrides). Cleared by
@@ -85,6 +90,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
     setFilter('')
     setSearchOpen(false)
     setError(null)
+    setPendingKeys(new Set())
     setConnectOverrides({})
   }, [agentSlug])
 
@@ -169,53 +175,6 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
       .sort((a, b) => a.name.localeCompare(b.name))
   }, [agentsQuery.data, agentSlug, filter])
 
-  // Single mutation: build the full policy set with the changes applied, PUT it.
-  const savePolicies = useMutation({
-    meta: { skipGlobalErrorToast: true },
-    mutationFn: async (changes: PolicyChange[]) => {
-      setError(null)
-      const changed = new Set(changes.map((c) => policyKey(c.operation, c.targetSlug)))
-      const nextPolicies: Array<{ operation: Operation; targetSlug: string | null; decision: Decision }> = []
-      for (const p of policiesQuery.data?.policies ?? []) {
-        if (changed.has(policyKey(p.operation, p.targetAgentSlug))) continue
-        nextPolicies.push({ operation: p.operation, targetSlug: p.targetAgentSlug, decision: p.decision })
-      }
-      for (const c of changes) {
-        if (c.decision !== 'default') {
-          nextPolicies.push({ operation: c.operation, targetSlug: c.targetSlug, decision: c.decision })
-        }
-      }
-      const res = await apiFetch(`/api/agents/${agentSlug}/x-agent-policies`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ policies: nextPolicies }),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to save policy')
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['x-agent-policies', agentSlug] })
-    },
-    onError: (err: Error) => {
-      setError(err.message)
-    },
-  })
-
-  const handleChange = (operation: Operation, targetSlug: string | null) => (next: DecisionOrDefault) => {
-    savePolicies.mutate([{ operation, targetSlug, decision: next }])
-  }
-
-  /** The Switch spinner: an in-flight change to this slug's send policy. */
-  const isSwitchPending = (slug: string): boolean =>
-    savePolicies.isPending &&
-    (savePolicies.variables ?? []).some((c) => c.targetSlug === slug && c.operation === 'invoke')
-
-  /** The detail panel's saving hint: any in-flight change for this slug. */
-  const isRowSaving = (slug: string): boolean =>
-    savePolicies.isPending && (savePolicies.variables ?? []).some((c) => c.targetSlug === slug)
-
   const setOverride = (slug: string, value: boolean | null) => {
     startViewTransition(() => {
       flushSync(() => {
@@ -229,25 +188,87 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
     })
   }
 
+  // Each control updates exactly one row. The API applies the change atomically,
+  // so independent edits can be in flight together without whole-list last-write-wins.
+  const savePolicy = useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async (change: PolicyMutation) => {
+      setError(null)
+      const res = await apiFetch(`/api/agents/${agentSlug}/x-agent-policies`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          operation: change.operation,
+          targetSlug: change.targetSlug,
+          decision: change.decision,
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to save policy')
+      }
+    },
+    onMutate: (change) => {
+      const key = policyKey(change.operation, change.targetSlug)
+      setPendingKeys((prev) => new Set(prev).add(key))
+    },
+    onSuccess: () => {
+      return queryClient.invalidateQueries({ queryKey: ['x-agent-policies', agentSlug] })
+    },
+    onError: (err: Error, change) => {
+      setError(err.message)
+      if (change.rollbackConnectionOverride && change.targetSlug !== null) {
+        setOverride(change.targetSlug, null)
+      }
+    },
+    onSettled: (_data, _error, change) => {
+      const key = policyKey(change.operation, change.targetSlug)
+      setPendingKeys((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
+    },
+  })
+
+  const handleChange = (operation: Operation, targetSlug: string | null) => (next: DecisionOrDefault) => {
+    if (pendingKeys.has(policyKey(operation, targetSlug))) return
+    savePolicy.mutate({ operation, targetSlug, decision: next })
+  }
+
+  /** The Switch spinner: an in-flight change to this slug's send policy. */
+  const isSwitchPending = (slug: string): boolean => pendingKeys.has(policyKey('invoke', slug))
+
+  /** The detail panel's saving hint: any in-flight change for this slug. */
+  const isRowSaving = (slug: string): boolean =>
+    pendingKeys.has(policyKey('read', slug)) || pendingKeys.has(policyKey('invoke', slug))
+
   const handleToggle = (slug: string, next: boolean) => {
+    if (isSwitchPending(slug)) return
     if (next) {
       // Connect = grant Send (the graph-edge relationship). The connected
       // row's Permissions popover is where Read is granted or Send dialed
       // back. Deliberately replaces an explicit Block, like drawing the edge
       // on the graph does.
       setOverride(slug, true)
-      savePolicies.mutate([{ operation: 'invoke', targetSlug: slug, decision: 'allow' }], {
-        onError: () => setOverride(slug, null),
+      savePolicy.mutate({
+        operation: 'invoke',
+        targetSlug: slug,
+        decision: 'allow',
+        rollbackConnectionOverride: true,
       })
       return
     }
-    // Disconnect: remove the explicit send grant; when connected only via the
-    // global default, pin an explicit Review so this one agent prompts again.
-    const explicit = getDecision('invoke', slug)
-    const decision: DecisionOrDefault = explicit !== 'default' ? 'default' : 'review'
+    // Disconnect: inherit when the fallback is not allowed; if the global
+    // default allows Send, pin Review so removing an explicit allow cannot
+    // leave this target effectively connected.
+    const decision: DecisionOrDefault = globalInvoke === 'allow' ? 'review' : 'default'
     setOverride(slug, false)
-    savePolicies.mutate([{ operation: 'invoke', targetSlug: slug, decision }], {
-      onError: () => setOverride(slug, null),
+    savePolicy.mutate({
+      operation: 'invoke',
+      targetSlug: slug,
+      decision,
+      rollbackConnectionOverride: true,
     })
   }
 
@@ -272,7 +293,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
           viewTransitionName={`xagent-${slug}`}
           right={
             <>
-              {connected && !pending && (
+              {!pending && (
                 <Popover>
                   <PopoverTrigger asChild>
                     <button
@@ -296,6 +317,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                       <PolicyDecisionDropdown
                         value={getDecision('read', slug)}
                         onChange={handleChange('read', slug)}
+                        disabled={pendingKeys.has(policyKey('read', slug))}
                       />
                     </div>
                     <div className="flex items-center justify-between gap-3">
@@ -303,6 +325,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                       <PolicyDecisionDropdown
                         value={getDecision('invoke', slug)}
                         onChange={handleChange('invoke', slug)}
+                        disabled={pendingKeys.has(policyKey('invoke', slug))}
                       />
                     </div>
                     {isRowSaving(slug) && (
@@ -380,6 +403,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                 <PolicyDecisionDropdown
                   value={getDecision('list', null)}
                   onChange={handleChange('list', null)}
+                  disabled={pendingKeys.has(policyKey('list', null))}
                 />
               </div>
             </div>
@@ -391,6 +415,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                 <PolicyDecisionDropdown
                   value={globalRead}
                   onChange={handleChange('read', null)}
+                  disabled={pendingKeys.has(policyKey('read', null))}
                 />
               </div>
             </div>
@@ -402,6 +427,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                 <PolicyDecisionDropdown
                   value={globalInvoke}
                   onChange={handleChange('invoke', null)}
+                  disabled={pendingKeys.has(policyKey('invoke', null))}
                 />
               </div>
             </div>

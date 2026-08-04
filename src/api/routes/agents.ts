@@ -121,6 +121,7 @@ import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import {
+  deletePolicy,
   deletePoliciesForAgent,
   deleteTargetPolicy,
   listPoliciesForCaller,
@@ -128,6 +129,7 @@ import {
   replacePoliciesForCallerInputSchema,
   setPolicy,
   xAgentDecisionSchema,
+  xAgentOperationSchema,
 } from '@shared/lib/services/x-agent-policy-service'
 import {
   exportAgentTemplate,
@@ -5869,6 +5871,48 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
         updatedAt: r.updatedAt,
       })),
   })
+})
+
+// PATCH /api/agents/:id/x-agent-policies - Atomically update or clear one
+// policy. The editor sends independent controls through this route so rapid
+// edits never race through the whole-list replacement endpoint below.
+agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
+  const slug = getAgentId(c)
+  const callerAgent = await getAgent(slug)
+  if (!callerAgent) {
+    return c.json({ error: 'Agent not found' }, 404)
+  }
+
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = z.object({
+    operation: xAgentOperationSchema,
+    targetSlug: z.string().nullable(),
+    decision: z.union([xAgentDecisionSchema, z.literal('default')]),
+  }).safeParse(body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid policy payload', details: parsed.error.format() }, 400)
+  }
+
+  const { operation, targetSlug, decision } = parsed.data
+  if (operation === 'list' && targetSlug !== null) {
+    return c.json({ error: 'List policies cannot target an agent' }, 400)
+  }
+  if (targetSlug === slug) {
+    return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
+  }
+  if (targetSlug !== null) {
+    const targetAgent = await getAgent(targetSlug)
+    if (!targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+  }
+
+  if (decision === 'default') {
+    const removed = deletePolicy(slug, operation, targetSlug)
+    return c.json({ ok: true, removed })
+  }
+  const result = await setPolicy(slug, operation, targetSlug, decision)
+  return c.json({ ok: true, ...result })
 })
 
 // PUT /api/agents/:id/x-agent-policies - Replace all policies for this caller (batch)

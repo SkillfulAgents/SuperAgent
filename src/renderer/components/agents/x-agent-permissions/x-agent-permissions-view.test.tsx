@@ -62,10 +62,14 @@ function renderView(agentSlug = 'caller') {
   )
 }
 
-function lastPutBody() {
-  const putCall = mocks.apiFetch.mock.calls.findLast(([, init]) => init?.method === 'PUT')
-  expect(putCall).toBeDefined()
-  return JSON.parse(putCall![1].body)
+function patchBodies() {
+  return mocks.apiFetch.mock.calls
+    .filter(([, init]) => init?.method === 'PATCH')
+    .map(([, init]) => JSON.parse(String(init.body)))
+}
+
+function lastPatchBody() {
+  return patchBodies().at(-1)
 }
 
 describe('XAgentPermissionsView', () => {
@@ -73,11 +77,22 @@ describe('XAgentPermissionsView', () => {
     vi.clearAllMocks()
     mocks.canAdmin = true
     policies = [policy('invoke', 'target', 'allow'), policy('read', 'target', 'allow')]
-    mocks.apiFetch.mockImplementation(async (url: string, init?: { method?: string }) => {
+    mocks.apiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url === '/api/agents/caller/x-agent-policies' && (!init || !init.method)) {
         return jsonResponse({ policies })
       }
-      if (url === '/api/agents/caller/x-agent-policies' && init?.method === 'PUT') {
+      if (url === '/api/agents/caller/x-agent-policies' && init?.method === 'PATCH') {
+        const change = JSON.parse(String(init.body)) as {
+          operation: string
+          targetSlug: string | null
+          decision: string
+        }
+        policies = policies.filter(
+          (p) => p.operation !== change.operation || p.targetAgentSlug !== change.targetSlug,
+        )
+        if (change.decision !== 'default') {
+          policies.push(policy(change.operation, change.targetSlug, change.decision))
+        }
         return jsonResponse({ ok: true })
       }
       if (url === '/api/agents') return jsonResponse(AGENTS)
@@ -101,9 +116,9 @@ describe('XAgentPermissionsView', () => {
     expect(targetSwitch).toHaveAttribute('aria-checked', 'true')
     expect(helperSwitch).toHaveAttribute('aria-checked', 'false')
 
-    // Connected rows carry a Permissions popover trigger; not-connected rows don't.
+    // Every row carries a Permissions popover so independent Read grants remain editable.
     expect(screen.getByTestId('x-agent-permissions-trigger-target')).toBeInTheDocument()
-    expect(screen.queryByTestId('x-agent-permissions-trigger-helper')).not.toBeInTheDocument()
+    expect(screen.getByTestId('x-agent-permissions-trigger-helper')).toBeInTheDocument()
   })
 
   it('connect flow: toggling on grants Send immediately', async () => {
@@ -111,12 +126,10 @@ describe('XAgentPermissionsView', () => {
     fireEvent.click(await screen.findByTestId('x-agent-connect-switch-helper'))
 
     await waitFor(() => {
-      expect(lastPutBody()).toEqual({
-        policies: [
-          { operation: 'invoke', targetSlug: 'target', decision: 'allow' },
-          { operation: 'read', targetSlug: 'target', decision: 'allow' },
-          { operation: 'invoke', targetSlug: 'helper', decision: 'allow' },
-        ],
+      expect(lastPatchBody()).toEqual({
+        operation: 'invoke',
+        targetSlug: 'helper',
+        decision: 'allow',
       })
     })
     // The row lands in Connected with its Permissions trigger available.
@@ -128,8 +141,10 @@ describe('XAgentPermissionsView', () => {
     fireEvent.click(await screen.findByTestId('x-agent-connect-switch-target'))
 
     await waitFor(() => {
-      expect(lastPutBody()).toEqual({
-        policies: [{ operation: 'read', targetSlug: 'target', decision: 'allow' }],
+      expect(lastPatchBody()).toEqual({
+        operation: 'invoke',
+        targetSlug: 'target',
+        decision: 'default',
       })
     })
   })
@@ -144,13 +159,49 @@ describe('XAgentPermissionsView', () => {
 
     fireEvent.click(helperSwitch)
     await waitFor(() => {
-      expect(lastPutBody()).toEqual({
-        policies: [
-          { operation: 'invoke', targetSlug: null, decision: 'allow' },
-          { operation: 'invoke', targetSlug: 'helper', decision: 'review' },
-        ],
+      expect(lastPatchBody()).toEqual({
+        operation: 'invoke',
+        targetSlug: 'helper',
+        decision: 'review',
       })
     })
+  })
+
+  it('disconnecting an explicit allow also pins Review when the fallback is globally allowed', async () => {
+    policies = [
+      policy('invoke', null, 'allow'),
+      policy('invoke', 'target', 'allow'),
+    ]
+    renderView()
+
+    fireEvent.click(await screen.findByTestId('x-agent-connect-switch-target'))
+
+    await waitFor(() => {
+      expect(lastPatchBody()).toEqual({
+        operation: 'invoke',
+        targetSlug: 'target',
+        decision: 'review',
+      })
+    })
+    expect(await screen.findByTestId('x-agent-connect-switch-target')).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('sends rapid edits as independent atomic patches', async () => {
+    renderView()
+    const targetSwitch = await screen.findByTestId('x-agent-connect-switch-target')
+    const helperSwitch = screen.getByTestId('x-agent-connect-switch-helper')
+
+    fireEvent.click(targetSwitch)
+    fireEvent.click(helperSwitch)
+
+    await waitFor(() => {
+      expect(patchBodies()).toEqual(expect.arrayContaining([
+        { operation: 'invoke', targetSlug: 'target', decision: 'default' },
+        { operation: 'invoke', targetSlug: 'helper', decision: 'allow' },
+      ]))
+      expect(patchBodies()).toHaveLength(2)
+    })
+    expect(mocks.apiFetch.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
   })
 
   it('the Permissions popover on a connected row saves a fine-grained change', async () => {
@@ -164,11 +215,10 @@ describe('XAgentPermissionsView', () => {
     fireEvent.click(await screen.findByTestId('policy-menu-block'))
 
     await waitFor(() => {
-      expect(lastPutBody()).toEqual({
-        policies: [
-          { operation: 'invoke', targetSlug: 'target', decision: 'allow' },
-          { operation: 'read', targetSlug: 'target', decision: 'block' },
-        ],
+      expect(lastPatchBody()).toEqual({
+        operation: 'read',
+        targetSlug: 'target',
+        decision: 'block',
       })
     })
   })
@@ -180,6 +230,33 @@ describe('XAgentPermissionsView', () => {
     const row = await screen.findByTestId('x-agent-policy-row-target')
     expect(within(row).getByText('Blocked')).toBeInTheDocument()
     expect(within(row).getByTestId('x-agent-connect-switch-target')).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('edits Read on a disconnected row without granting Send', async () => {
+    policies = [
+      policy('read', 'target', 'allow'),
+      policy('invoke', 'target', 'block'),
+    ]
+    renderView()
+
+    expect(await screen.findByTestId('x-agent-connect-switch-target')).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(screen.getByTestId('x-agent-permissions-trigger-target'))
+    const popover = screen.getByTestId('x-agent-permissions-popover-target')
+    fireEvent.click(within(popover).getAllByTestId('policy-dropdown-trigger')[0])
+    fireEvent.click(await screen.findByTestId('policy-menu-review'))
+
+    await waitFor(() => {
+      expect(lastPatchBody()).toEqual({
+        operation: 'read',
+        targetSlug: 'target',
+        decision: 'review',
+      })
+    })
+    expect(patchBodies()).not.toContainEqual({
+      operation: 'invoke',
+      targetSlug: 'target',
+      decision: 'allow',
+    })
   })
 
   it('shows owner gate and does not fetch for a non-owner', () => {

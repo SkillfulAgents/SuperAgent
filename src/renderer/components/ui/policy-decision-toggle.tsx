@@ -133,6 +133,7 @@ export function PolicyDecisionDropdown({
   onChange,
   className,
   includeDefault = true,
+  disabled = false,
 }: {
   value: PolicyDecision
   onChange: (value: PolicyDecision) => void
@@ -143,19 +144,23 @@ export function PolicyDecisionDropdown({
    * `allowDeselect={false}`.
    */
   includeDefault?: boolean
+  /** Prevent another write for this policy while its current change is saving. */
+  disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const current = options.find((o) => o.value === value)
   const CurrentIcon = current?.icon
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
       <PopoverTrigger asChild>
         <button
           type="button"
+          disabled={disabled}
           data-testid="policy-dropdown-trigger"
           data-decision={value}
           className={cn(
             'flex h-7 w-36 items-center gap-1.5 whitespace-nowrap rounded-md border border-input bg-transparent px-2 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring',
+            disabled && 'cursor-wait opacity-60',
             className,
           )}
         >
