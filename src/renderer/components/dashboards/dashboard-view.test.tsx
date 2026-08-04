@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardView } from './dashboard-view'
 
 const mocks = vi.hoisted(() => ({
+  agentSlug: 'agent',
   agentStatus: 'running',
   dashboardStatus: 'crashed',
   start: {
@@ -18,12 +19,13 @@ const mocks = vi.hoisted(() => ({
     mutateAsync: vi.fn(),
     isPending: false,
   },
+  openDashboardExternal: vi.fn(),
 }))
 
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgent: () => ({
     data: {
-      slug: 'agent',
+      slug: mocks.agentSlug,
       status: mocks.agentStatus,
     },
   }),
@@ -65,6 +67,7 @@ vi.mock('@renderer/lib/env', () => ({
   getApiBaseUrl: () => '',
   getPlatform: () => 'web',
   isElectron: () => false,
+  openDashboardExternal: mocks.openDashboardExternal,
 }))
 
 vi.mock('@renderer/lib/dashboard-utils', () => ({
@@ -78,6 +81,7 @@ vi.mock('@renderer/lib/perf', () => ({
 describe('DashboardView restart', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.agentSlug = 'agent'
     mocks.agentStatus = 'running'
     mocks.dashboardStatus = 'crashed'
     mocks.start.mutateAsync.mockResolvedValue({})
@@ -128,5 +132,18 @@ describe('DashboardView restart', () => {
     view.rerender(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
 
     expect(waiting()).not.toBeNull()
+  })
+
+  it('uses the canonical agent id for the mounted dashboard URL', () => {
+    mocks.agentSlug = 'abc1234567'
+    mocks.dashboardStatus = 'running'
+
+    render(
+      <DashboardView agentSlug="My Agent-abc1234567" dashboardSlug="dashboard" />,
+    )
+
+    expect(document.querySelector('iframe')?.getAttribute('src')).toBe(
+      '/api/agents/abc1234567/artifacts/dashboard/',
+    )
   })
 })

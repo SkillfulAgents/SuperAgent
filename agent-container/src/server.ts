@@ -18,7 +18,14 @@ import { z } from 'zod';
 import { inputManager } from './input-manager';
 import { resolveCdpIp } from './cdp-host';
 import { startScreenshotJanitor } from './screenshot-janitor';
-import { dashboardManager } from './dashboard-manager';
+import { dashboardManager, getDashboardBasePath } from './dashboard-manager';
+import {
+  dashboardHttpForwardHeaders,
+  dashboardWebSocketForwardHeaders,
+  dashboardWebSocketUpstreamPath,
+  parseDashboardProxyRoute,
+  requestedWebSocketProtocols,
+} from './dashboard-proxy';
 import { tabManager } from './tab-manager';
 import { startTabPolling, stopTabPolling } from './tab-poll';
 import { runBrowserUpload } from './browser-upload';
@@ -573,12 +580,12 @@ async function proxyToDashboard(c: any) {
   const subPath = url.pathname.slice(url.pathname.indexOf(prefixPattern) + prefixPattern.length) || '/';
   const targetUrl = `http://localhost:${port}${subPath}${url.search}`;
 
-  const headers = new Headers(c.req.header());
-  headers.delete('host');
+  const headers = dashboardHttpForwardHeaders(c.req.header());
 
   const response = await fetch(targetUrl, {
     method: c.req.method,
     headers,
+    redirect: 'manual',
     body: c.req.method !== 'GET' && c.req.method !== 'HEAD'
       ? await c.req.arrayBuffer()
       : undefined,
@@ -1902,6 +1909,40 @@ const wss = new WebSocketServer({ noServer: true });
 // Create a separate WebSocket server for browser stream proxying
 const browserWss = new WebSocketServer({ noServer: true });
 
+interface DashboardProtocolRequest extends http.IncomingMessage {
+  _dashboardProtocol?: string;
+}
+
+const dashboardWss = new WebSocketServer({
+  noServer: true,
+  handleProtocols(protocols, request) {
+    const selected = (request as DashboardProtocolRequest)._dashboardProtocol;
+    return selected && protocols.has(selected) ? selected : false;
+  },
+});
+
+function closeDashboardPeer(peer: WebSocket, code?: number, reason?: Buffer): void {
+  if (peer.readyState !== WebSocket.OPEN) return;
+  const relayCode = code === 1000 || (code !== undefined && code >= 3000) ? code : 1011;
+  peer.close(relayCode, reason?.toString().slice(0, 120));
+}
+
+function bridgeDashboardWebSocket(browser: WebSocket, dashboard: WebSocket): void {
+  dashboard.on('message', (data, isBinary) => {
+    if (browser.readyState === WebSocket.OPEN) browser.send(data, { binary: isBinary });
+  });
+  browser.on('message', (data, isBinary) => {
+    if (dashboard.readyState === WebSocket.OPEN) dashboard.send(data, { binary: isBinary });
+  });
+  dashboard.on('close', (code, reason) => closeDashboardPeer(browser, code, reason));
+  browser.on('close', (code, reason) => closeDashboardPeer(dashboard, code, reason));
+  dashboard.on('error', (error) => {
+    console.error('[Artifacts] Dashboard WebSocket error:', error);
+    closeDashboardPeer(browser);
+  });
+  browser.on('error', () => closeDashboardPeer(dashboard));
+}
+
 // Handle WebSocket upgrade
 server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) => {
   // Upgrades bypass the Hono middleware chain — enforce host auth here too.
@@ -1935,6 +1976,64 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
 
     browserWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
       handleBrowserStreamConnection(ws);
+    });
+    return;
+  }
+
+  // Dashboard application sockets and Vite HMR use the same artifact mount as
+  // HTTP. The public prefix was stripped by the host proxy; strip the remaining
+  // container prefix before dialing the dashboard process.
+  const dashboardRoute = parseDashboardProxyRoute(pathname);
+  if (dashboardRoute) {
+    const dashboardPort = dashboardManager.getDashboardPort(dashboardRoute.slug);
+    if (!dashboardPort) {
+      socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    const protocols = requestedWebSocketProtocols(request);
+    const upstreamPath = dashboardWebSocketUpstreamPath(
+      dashboardRoute.subPath,
+      protocols,
+      getDashboardBasePath(dashboardRoute.slug),
+    );
+    const upstream = new WebSocket(
+      `ws://127.0.0.1:${dashboardPort}${upstreamPath}${url.search}`,
+      protocols,
+      { headers: dashboardWebSocketForwardHeaders(request) },
+    );
+    let settled = false;
+
+    const fail = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      upstream.terminate();
+      if (error) console.error('[Artifacts] Failed to connect dashboard WebSocket:', error);
+      if (!socket.destroyed) {
+        socket.write('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+      }
+    };
+
+    socket.once('close', () => {
+      if (!settled) upstream.terminate();
+    });
+    upstream.once('unexpected-response', (_req, response) => {
+      response.resume();
+      fail(new Error(`Dashboard refused WebSocket upgrade (${response.statusCode})`));
+    });
+    upstream.once('error', fail);
+    upstream.once('open', () => {
+      if (settled || socket.destroyed) {
+        upstream.terminate();
+        return;
+      }
+      settled = true;
+      (request as DashboardProtocolRequest)._dashboardProtocol = upstream.protocol || undefined;
+      dashboardWss.handleUpgrade(request, socket, head, (browser) => {
+        bridgeDashboardWebSocket(browser, upstream);
+      });
     });
     return;
   }
