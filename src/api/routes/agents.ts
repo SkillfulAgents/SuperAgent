@@ -1,11 +1,17 @@
 import { Hono, type Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
+import { getConnInfo } from '@hono/node-server/conninfo'
 import type Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import { getLlmPolyfillJs } from '../llm-polyfill'
+import {
+  dashboardMountPath,
+  dashboardResponseHeaders,
+  injectDashboardRuntime,
+} from '../dashboard-runtime'
 import { parsePagination } from '../pagination'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole } from '../middleware/auth'
 import {
@@ -5759,6 +5765,12 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
 // Shared handler for proxying artifact requests to the container
 const skipProxyRequestHeaders = new Set([
   'host', 'connection', 'transfer-encoding',
+  // Node fetch transparently decodes upstream bodies. Ask every hop for the
+  // identity representation so body bytes and response metadata cannot drift.
+  'accept-encoding',
+  // Dashboard HTML is injected per request, so an upstream 304 cannot safely
+  // stand in for the browser's transformed representation.
+  'if-modified-since', 'if-none-match',
 ])
 
 async function proxyArtifactRequest(c: any) {
@@ -5782,8 +5794,22 @@ async function proxyArtifactRequest(c: any) {
   const url = new URL(c.req.url)
   const routeSlug = c.req.param('id')
   const prefix = `/api/agents/${routeSlug}/artifacts/${artifactSlug}`
+  const publicBasePath = dashboardMountPath(routeSlug, artifactSlug)
   const subPath = url.pathname.slice(url.pathname.indexOf(prefix) + prefix.length) || '/'
   const containerPath = `/artifacts/${artifactSlug}${subPath}${url.search}`
+
+  // Framework router bases are compiled from the canonical id passed to the
+  // dashboard process. A display-slug document URL would therefore disagree
+  // with that router base. Canonicalize navigations while continuing to proxy
+  // non-document assets for compatibility with older relative builds.
+  if (
+    routeSlug !== agentSlug
+    && (c.req.method === 'GET' || c.req.method === 'HEAD')
+    && c.req.header('accept')?.includes('text/html')
+  ) {
+    const canonicalBasePath = dashboardMountPath(encodeURIComponent(agentSlug), artifactSlug)
+    return c.redirect(`${canonicalBasePath.slice(0, -1)}${subPath}${url.search}`, 307)
+  }
 
   // Forward request headers (minus hop-by-hop headers)
   const reqHeaders = c.req.header() as Record<string, string>
@@ -5793,8 +5819,25 @@ async function proxyArtifactRequest(c: any) {
       headers[key] = reqHeaders[key]
     }
   }
+  headers['accept-encoding'] = 'identity'
+  headers['x-forwarded-prefix'] = publicBasePath.slice(0, -1)
+  headers['x-forwarded-host'] = c.req.header('x-forwarded-host') || url.host
+  headers['x-forwarded-proto'] = c.req.header('x-forwarded-proto') || url.protocol.slice(0, -1)
+  // Hono's Node connection metadata is unavailable in direct app.request()
+  // calls (including tests and some embedded adapters). Existing forwarded
+  // metadata is still preserved in that case.
+  let remoteAddress: string | undefined
+  try {
+    remoteAddress = getConnInfo(c).remote.address
+  } catch {
+    remoteAddress = undefined
+  }
+  if (remoteAddress) {
+    const forwardedFor = c.req.header('x-forwarded-for')
+    headers['x-forwarded-for'] = forwardedFor ? `${forwardedFor}, ${remoteAddress}` : remoteAddress
+  }
 
-  const init: RequestInit = { method: c.req.method, headers }
+  const init: RequestInit = { method: c.req.method, headers, redirect: 'manual' }
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     init.body = await c.req.arrayBuffer()
   }
@@ -5803,23 +5846,20 @@ async function proxyArtifactRequest(c: any) {
 
   const contentType = response.headers.get('content-type') || ''
   if (contentType.includes('text/html')) {
-    let html = await response.text()
-    const tags = `<script>${getPolyfillJs()}${getLlmPolyfillJs()}</script>`
-    const headMatch = html.match(/<head(\s[^>]*)?>/i)
-    if (headMatch) {
-      const pos = headMatch.index! + headMatch[0].length
-      html = html.slice(0, pos) + tags + html.slice(pos)
-    } else {
-      html = tags + html
-    }
-    const headers = new Headers(response.headers)
-    headers.delete('content-length')
-    return new Response(html, { status: response.status, headers })
+    const html = injectDashboardRuntime(await response.text(), {
+      basePath: publicBasePath,
+      slug: artifactSlug,
+      polyfillJs: getPolyfillJs() + getLlmPolyfillJs(),
+    })
+    return new Response(html, {
+      status: response.status,
+      headers: dashboardResponseHeaders(response.headers, publicBasePath, { transformedHtml: true }),
+    })
   }
 
   return new Response(response.body, {
     status: response.status,
-    headers: new Headers(response.headers),
+    headers: dashboardResponseHeaders(response.headers, publicBasePath),
   })
 }
 

@@ -70,6 +70,25 @@ export function validateSlug(slug: string): void {
   }
 }
 
+/**
+ * Browser-visible mount supplied to framework build/dev tooling.
+ *
+ * The agent id is injected by the host when the container starts. Dashboards
+ * still work without it (for direct development and older hosts), but only a
+ * host-provided id can form the public Gamut path without hardcoding it in the
+ * dashboard itself.
+ */
+export function getDashboardBasePath(
+  slug: string,
+  agentId: string | undefined = process.env.SUPERAGENT_AGENT_SLUG
+    || process.env.SUPERAGENT_AGENT_ID,
+): string | null {
+  validateSlug(slug)
+  const normalizedAgentId = agentId?.trim()
+  if (!normalizedAgentId || !/^[A-Za-z0-9._-]+$/.test(normalizedAgentId)) return null
+  return `/api/agents/${encodeURIComponent(normalizedAgentId)}/artifacts/${slug}/`
+}
+
 export type DashboardStatus = 'running' | 'stopped' | 'crashed' | 'starting'
 
 interface DashboardInfo {
@@ -234,11 +253,14 @@ class DashboardManager {
       await this.runBunInstallIfNeeded(dashboardDir, info.logStream, forceInstall)
 
       // Start the dashboard server
+      const dashboardBasePath = getDashboardBasePath(slug)
       const proc = spawn('bun', ['run', 'start'], {
         cwd: dashboardDir,
         env: {
           ...process.env,
           DASHBOARD_PORT: String(port),
+          ...(dashboardBasePath ? { DASHBOARD_BASE_PATH: dashboardBasePath } : {}),
+          DASHBOARD_ARTIFACT_SLUG: slug,
           PORT: String(port),
           NODE_ENV: 'production',
         },

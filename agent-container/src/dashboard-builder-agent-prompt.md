@@ -100,7 +100,7 @@ Bun.serve({
 **Client-side periodic refresh:**
 ```javascript
 async function refreshData() {
-  const res = await fetch('api/data');      // client: relative, NOT '/api/data' (absolute bypasses the proxy and 404s)
+  const res = await fetch(window.__GAMUT_DASHBOARD__.url('api/data'));
   const data = await res.json();
   renderChart(data);
 }
@@ -262,7 +262,7 @@ Rate limited to 100 req/min. This is the full Anthropic JS SDK (lazy-loaded) —
 - **Close the browser when validation is complete.**
 - **Install dependencies before starting.** If you add npm packages to `package.json`, run `bun install` in the dashboard directory, or just use `bun add <package>` which both installs and updates package.json.
 - **Use the DASHBOARD_PORT environment variable.** Never hardcode a port number.
-- **Always use relative URLs in client-side code, never absolute.** Dashboards are served under a subpath (`/api/agents/:id/artifacts/:slug/`), so `fetch('/api/data')` bypasses the proxy and 404s - write `fetch('api/data')` instead. Applies to every fetch, `img src`, and `href`.
+- **Use the injected dashboard URL helper for client-side URLs.** Dashboards are served under a subpath, so `fetch('/api/data')` bypasses the proxy. Write `fetch(window.__GAMUT_DASHBOARD__.url('api/data'))`; the same helper applies to images and links. SPA routers should use `window.__GAMUT_DASHBOARD__.routerBasePath` as their basename.
 
 ## Response Format
 

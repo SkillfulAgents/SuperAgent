@@ -8,6 +8,7 @@ import {
   validateSlug,
   SLUG_REGEX,
   ARTIFACTS_DIR,
+  getDashboardBasePath,
   truncateOversizedLog,
 } from './dashboard-manager'
 
@@ -106,6 +107,19 @@ describe('validateSlug', () => {
       const resolved = path.resolve(ARTIFACTS_DIR, '..', 'etc')
       expect(resolved.startsWith(ARTIFACTS_DIR + '/')).toBe(false)
     })
+  })
+})
+
+describe('getDashboardBasePath', () => {
+  it('builds the browser-visible artifact prefix from trusted startup identity', () => {
+    expect(getDashboardBasePath('open-slide', 'agent-123')).toBe(
+      '/api/agents/agent-123/artifacts/open-slide/',
+    )
+  })
+
+  it('omits startup metadata when no valid agent identity is available', () => {
+    expect(getDashboardBasePath('open-slide', '')).toBeNull()
+    expect(getDashboardBasePath('open-slide', '../spoofed')).toBeNull()
   })
 })
 
@@ -304,6 +318,33 @@ describe('DashboardManager log stream lifecycle', () => {
 
       expect(spawns.map((s) => s.args)).toEqual([['install'], ['run', 'start']])
       expect(info.status).toBe('running')
+    })
+
+    it('passes dashboard mount metadata to the dashboard process', async () => {
+      const slug = await scaffoldDashboard()
+      let dashboardEnv: NodeJS.ProcessEnv | undefined
+      process.env.SUPERAGENT_AGENT_ID = 'agent-123'
+      spawnHolder.impl = (_command, args, options) => {
+        const proc = new FakeChildProcess()
+        procs.push(proc)
+        if (args[0] === 'install') {
+          setImmediate(() => proc.exit(0))
+        } else {
+          dashboardEnv = (options as { env?: NodeJS.ProcessEnv }).env
+        }
+        return proc
+      }
+
+      try {
+        await manager.startDashboard(slug)
+      } finally {
+        delete process.env.SUPERAGENT_AGENT_ID
+      }
+
+      expect(dashboardEnv?.DASHBOARD_BASE_PATH).toBe(
+        `/api/agents/agent-123/artifacts/${slug}/`,
+      )
+      expect(dashboardEnv?.DASHBOARD_ARTIFACT_SLUG).toBe(slug)
     })
 
     it('boot start skips install when node_modules is fresh', async () => {
