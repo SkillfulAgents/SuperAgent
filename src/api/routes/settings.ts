@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
-import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema, GenericLlmProvider } from '@shared/lib/llm-provider'
+import { getLlmProvider, getAllProviderInfo, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
@@ -30,15 +30,16 @@ import {
   getEffectiveAgentLimits,
   getCustomEnvVars,
   type AppSettings,
-  type AppPreferences,
-  type ApiKeySettings,
-  type ContainerSettings,
   type GlobalSettingsResponse,
   type ModelPickerSettingsResponse,
 } from '@shared/lib/config/settings'
-import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
-import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
-import { isValidAccelerator } from '@shared/lib/config/shortcuts'
+import { DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
+import {
+  applySettingsPatch,
+  formatSettingsPatchError,
+  settingsPatchSchema,
+  validateSettingsTransition,
+} from '@shared/lib/config/settings-patch'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
 import {
@@ -48,9 +49,6 @@ import {
 } from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
-import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
-import { assessVmMemory } from '@shared/lib/container/vm-memory'
-import { customEnvVarsSchema } from '@shared/lib/container/reserved-env-vars'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { db } from '@shared/lib/db'
@@ -81,8 +79,6 @@ import {
 import fs from 'fs'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
-
-const WEB_PROVIDER_IDS = ['native', 'exa', 'platform'] as const
 
 const settings = new Hono()
 
@@ -294,27 +290,6 @@ settings.put(
   },
 )
 
-/** All keys in ApiKeySettings — used to generically handle set/delete in PUT. */
-const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [
-  'anthropicApiKey',
-  'openrouterApiKey',
-  'genericApiKey',
-  'genericBaseUrl',
-  'bedrockApiKey',
-  'bedrockAccessKeyId',
-  'bedrockSecretAccessKey',
-  'bedrockRegion',
-  'composioApiKey',
-  'composioUserId',
-  'browserbaseApiKey',
-  'browserbaseProjectId',
-  'deepgramApiKey',
-  'openaiApiKey',
-  'nangoSecretKey',
-  'accountProviderUserId',
-  'exaApiKey',
-]
-
 // GET /api/settings/llm-providers/:providerId/models/search - Provider-native model discovery
 settings.get('/llm-providers/:providerId/models/search', async (c) => {
   try {
@@ -382,11 +357,6 @@ settings.post('/model-icons', async (c) => {
     return c.json({ error: 'Failed to upload model icon' }, 500)
   }
 })
-
-type AppPreferencesPatch = Partial<AppPreferences> & {
-  faviconDataUrl?: unknown
-  hostBrowserProvider?: unknown
-}
 
 /** The generic provider's saved endpoint — displayed (not secret) in Settings. */
 function getGenericBaseUrl(): string | undefined {
@@ -459,297 +429,101 @@ settings.get('/', async (c) => {
   }
 })
 
-// PUT /api/settings - Update settings
-settings.put('/', async (c) => {
-  try {
-    const body = await c.req.json()
-
-    if (
-      body.webProvider !== undefined &&
-      body.webProvider !== null &&
-      !(WEB_PROVIDER_IDS as readonly string[]).includes(body.webProvider)
-    ) {
-      return c.json({ error: `Invalid webProvider: ${String(body.webProvider)}` }, 400)
+// PUT /api/settings - Update settings (patch semantics retained for compatibility)
+settings.put(
+  '/',
+  zValidator('json', settingsPatchSchema, (result, c) => {
+    if (!result.success) {
+      return c.json({ error: formatSettingsPatchError(result.error) }, 400)
     }
+  }),
+  async (c) => {
+    try {
+      const body = c.req.valid('json')
 
-    // Read FRESH and fail-closed: never merge onto the possibly-
-    // corruption-defaulted cache (that is what overwrote real API keys/auth). A
-    // corrupt settings.json throws here → caught below → 500, instead of being
-    // silently replaced with defaults. The write path below this point has no
-    // `await`, so the read-merge-write stays atomic (no interleaving).
-    const currentSettings = loadSettingsStrict()
-    const hasRunningAgents = containerManager.hasRunningAgents()
+      // Read FRESH and fail-closed: never merge onto the possibly-
+      // corruption-defaulted cache (that is what overwrote real API keys/auth).
+      // Applying and validating the candidate below are synchronous, so a valid
+      // write still has no await between this strict read and updateSettings.
+      const currentSettings = loadSettingsStrict()
+      const hasRunningAgents = containerManager.hasRunningAgents()
+      const newSettings = applySettingsPatch(currentSettings, body, {
+        now: new Date(),
+        getProviderDefaultModels: (provider) =>
+          getLlmProvider(provider).getDefaultModels(),
+      })
 
-    // Check if trying to change restricted settings while agents are running
-    if (hasRunningAgents && body.container) {
-      const newContainer = body.container as Partial<ContainerSettings>
+      const transitionProblem = validateSettingsTransition({
+        before: currentSettings,
+        after: newSettings,
+        patch: body,
+        context: {
+          hasRunningAgents,
+          hostTotalMemoryBytes: os.totalmem(),
+          supportsCustomAgentImage: (runner: ContainerRunner) =>
+            getContainerClientClass(runner).supportsCustomAgentImage,
+        },
+      })[0]
 
-      if (
-        (newContainer.containerRunner !== undefined &&
-          newContainer.containerRunner !==
-            currentSettings.container.containerRunner) ||
-        (newContainer.resourceLimits !== undefined &&
-          JSON.stringify(newContainer.resourceLimits) !==
-            JSON.stringify(currentSettings.container.resourceLimits))
-      ) {
+      if (transitionProblem) {
         return c.json(
           {
-            error:
-              'Cannot change container runner or resource limits while agents are running. Please stop all agents first.',
-            runningAgents: await containerManager.getRunningAgentIds(),
+            error: transitionProblem.message,
+            ...(transitionProblem.includeRunningAgentIds
+              ? { runningAgents: await containerManager.getRunningAgentIds() }
+              : {}),
           },
-          409
+          transitionProblem.status,
         )
       }
-    }
 
-    // Reject agentImage changes for runners whose image is fixed by the
-    // deployment (e.g. lambda-microvm reads only MICROVM_AGENT_IMAGE_ARN).
-    if (body.container?.agentImage !== undefined) {
-      const newContainer = body.container as Partial<ContainerSettings>
-      const effectiveRunner = (newContainer.containerRunner ??
-        currentSettings.container.containerRunner) as ContainerRunner
+      updateSettings(newSettings)
+
+      // If account provider settings changed, re-register providers
+      if (body.apiKeys?.nangoSecretKey !== undefined || body.app?.accountProvider !== undefined) {
+        try {
+          const { registerAllAccountProviders } = await import('@shared/lib/account-providers/register')
+          await registerAllAccountProviders()
+        } catch (err) {
+          console.error('Failed to re-register account providers:', err)
+        }
+      }
+
+      // If auth settings changed, reset the Better Auth singleton so it picks up new config
+      if (body.auth !== undefined && isAuthMode()) {
+        import('@shared/lib/auth/index').then(({ resetAuth }) => resetAuth()).catch(() => {})
+      }
+
+      // If container runner changed, clear cached clients so new ones use the updated runner
+      if (newSettings.container.containerRunner !== currentSettings.container.containerRunner) {
+        containerManager.clearClients()
+      }
+
+      // If image or runner changed, re-check readiness (may need to pull new image)
       if (
-        newContainer.agentImage !== currentSettings.container.agentImage &&
-        !getContainerClientClass(effectiveRunner).supportsCustomAgentImage
+        newSettings.container.agentImage !== currentSettings.container.agentImage ||
+        newSettings.container.containerRunner !== currentSettings.container.containerRunner
       ) {
-        return c.json(
-          { error: `Agent image is managed by the deployment for the ${effectiveRunner} runner and cannot be changed here.` },
-          400
-        )
-      }
-    }
-
-    // Validate enableToolSearch if provided
-    if (body.enableToolSearch !== undefined && typeof body.enableToolSearch !== 'boolean') {
-      return c.json({ error: 'enableToolSearch must be a boolean' }, 400)
-    }
-
-    // Validate agentEffort if provided
-    if (body.models?.agentEffort !== undefined && !EFFORT_LEVELS.includes(body.models.agentEffort)) {
-      return c.json({ error: `agentEffort must be one of: ${EFFORT_LEVELS.join(', ')}` }, 400)
-    }
-
-    // Validate agentCapabilities if provided (partial patch of allow/review/block tiers)
-    if (body.agentCapabilities !== undefined) {
-      const parsed = agentCapabilitySettingsPatchSchema.safeParse(body.agentCapabilities)
-      if (!parsed.success) {
-        return c.json({ error: 'agentCapabilities values must be one of: allow, review, block' }, 400)
-      }
-    }
-
-    // Validate the quick-dispatch global shortcut accelerator. Empty string is
-    // allowed and means "disabled"; any other value must be a plausible
-    // accelerator (main's globalShortcut.register is the authoritative gate).
-    if (body.app?.globalDispatchShortcut !== undefined) {
-      const acc = body.app.globalDispatchShortcut
-      if (typeof acc !== 'string' || (acc !== '' && !isValidAccelerator(acc))) {
-        return c.json(
-          { error: 'globalDispatchShortcut must be an accelerator like "CommandOrControl+Shift+Space" (or "" to disable)' },
-          400,
-        )
-      }
-    }
-
-    if (body.app?.warmStartOnType !== undefined && typeof body.app.warmStartOnType !== 'boolean') {
-      return c.json({ error: 'warmStartOnType must be a boolean' }, 400)
-    }
-
-    // Validate runtimeSettings if provided
-    if (body.container?.runtimeSettings) {
-      const limaSettings = body.container.runtimeSettings.lima
-      if (limaSettings?.vmMemory && !VALID_LIMA_VM_MEMORY_OPTIONS.includes(limaSettings.vmMemory)) {
-        return c.json({ error: `Invalid VM memory setting. Must be one of: ${VALID_LIMA_VM_MEMORY_OPTIONS.join(', ')}` }, 400)
-      }
-      // A VM sized at or beyond physical RAM starves the host and gets agents
-      // OOM-killed mid-turn — refuse it here so it can never be persisted.
-      if (limaSettings?.vmMemory) {
-        const assessment = assessVmMemory(limaSettings.vmMemory, os.totalmem())
-        if (assessment.level === 'refuse') {
-          return c.json({ error: assessment.message }, 400)
-        }
-      }
-    }
-
-    // Validate customEnvVars at the write boundary (defense-in-depth for
-    // SUP-210): reject payloads that try to set reserved runtime env vars so
-    // they never reach persisted settings.
-    if (body.customEnvVars !== undefined) {
-      const parsed = customEnvVarsSchema.safeParse(body.customEnvVars)
-      if (!parsed.success) {
-        return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid customEnvVars' }, 400)
-      }
-    }
-
-    let parsedModelCatalog = currentSettings.modelCatalog
-    if (body.modelCatalog !== undefined) {
-      const parsed = modelCatalogSettingsSchema.safeParse(body.modelCatalog)
-      if (!parsed.success) {
-        return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid modelCatalog' }, 400)
-      }
-      parsedModelCatalog = parsed.data
-    }
-
-    let appPatch = body.app as AppPreferencesPatch | undefined
-    if (appPatch && Object.prototype.hasOwnProperty.call(appPatch, 'faviconDataUrl')) {
-      const validation = validateFaviconDataUrl(appPatch.faviconDataUrl)
-      if (!validation.ok) {
-        return c.json({ error: validation.error }, 400)
+        containerManager.ensureImageReady().catch((error) => {
+          console.error('Failed to re-check image readiness:', error)
+        })
       }
 
-      appPatch = { ...appPatch }
-      appPatch.faviconUpdatedAt = new Date().toISOString()
-      if (appPatch.faviconDataUrl === null || appPatch.faviconDataUrl === '') {
-        appPatch.faviconDataUrl = undefined
-      }
-    }
-
-    // When the active LLM provider changes, reset model selections to the new
-    // provider's defaults (bare aliases) — unless the same request sets `models`
-    // explicitly. Prevents a pin from the old provider's catalog (which may not
-    // exist for the new one, e.g. a bare-Claude id on Bedrock) from leaking across.
-    const currentProvider = currentSettings.llmProvider ?? 'anthropic'
-    const providerChanged =
-      body.llmProvider !== undefined && body.llmProvider !== currentProvider
-    let providerDefaultModels:
-      | { summarizerModel: string; agentModel: string; browserModel: string; dashboardBuilderModel: string }
-      | undefined
-    if (providerChanged && body.models === undefined) {
-      try {
-        providerDefaultModels = getLlmProvider(body.llmProvider).getDefaultModels()
-      } catch {
-        // Unknown provider id — leave models as-is; other guards handle validity.
-        providerDefaultModels = undefined
-      }
-    }
-
-    // Merge new settings with current settings
-    // TODO refactor - pineapple on pizza level gross
-    const newSettings: AppSettings = {
-      container: {
-        ...currentSettings.container,
-        ...body.container,
-        resourceLimits: body.container?.resourceLimits
-          ? { ...currentSettings.container.resourceLimits, ...body.container.resourceLimits }
-          : currentSettings.container.resourceLimits,
-        runtimeSettings: body.container?.runtimeSettings
-          ? { ...currentSettings.container.runtimeSettings, ...body.container.runtimeSettings }
-          : currentSettings.container.runtimeSettings,
-      },
-      app: {
-        ...currentSettings.app,
-        ...appPatch,
-        // If hostBrowserProvider was explicitly set to null (meaning "use container"),
-        // remove it from settings so consumers treat it as "no host provider"
-        ...(appPatch && 'hostBrowserProvider' in appPatch && appPatch.hostBrowserProvider == null
-          ? { hostBrowserProvider: undefined }
-          : {}),
-      },
-      apiKeys: currentSettings.apiKeys,
-      llmProvider: body.llmProvider !== undefined ? body.llmProvider : currentSettings.llmProvider,
-      // null clears to automatic (undefined); omitted preserves.
-      webProvider: body.webProvider === null ? undefined
-        : body.webProvider !== undefined ? body.webProvider : currentSettings.webProvider,
-      webAllowedSites: body.webAllowedSites !== undefined ? body.webAllowedSites : currentSettings.webAllowedSites,
-      webBlockedSites: body.webBlockedSites !== undefined ? body.webBlockedSites : currentSettings.webBlockedSites,
-      models: body.models
-        ? { ...currentSettings.models, ...body.models }
-        : providerDefaultModels
-          ? { ...currentSettings.models, ...providerDefaultModels }
-          : currentSettings.models,
-      modelCatalog: parsedModelCatalog,
-      agentLimits: body.agentLimits !== undefined
-        ? { ...currentSettings.agentLimits, ...body.agentLimits }
-        : currentSettings.agentLimits,
-      customEnvVars: body.customEnvVars !== undefined ? body.customEnvVars : currentSettings.customEnvVars,
-      skillsets: currentSettings.skillsets,
-      platformAuth: currentSettings.platformAuth,
-      // Preserve the maintained cloud-workspace deployment token across global
-      // settings writes; it's owned by the platform-auth flow, not this route.
-      cloudWorkspace: currentSettings.cloudWorkspace,
-      // Likewise owned elsewhere: the desktop's local-or-cloud target (main
-      // process) and the OS-notification dedup watermark. `updateSettings`
-      // REPLACES the whole object, so anything omitted here is deleted — and
-      // every field of AppSettings is optional, so omissions typecheck.
-      apiTarget: currentSettings.apiTarget,
-      platformNotifications: currentSettings.platformNotifications,
-      auth: body.auth !== undefined ? { ...currentSettings.auth, ...body.auth } : currentSettings.auth,
-      voice: body.voice !== undefined ? { ...currentSettings.voice, ...body.voice } : currentSettings.voice,
-      shareAnalytics: body.shareAnalytics !== undefined ? body.shareAnalytics : currentSettings.shareAnalytics,
-      shareErrorReports: body.shareErrorReports !== undefined ? body.shareErrorReports : currentSettings.shareErrorReports,
-      enableToolSearch: body.enableToolSearch !== undefined ? body.enableToolSearch : currentSettings.enableToolSearch,
-      computerUse: body.computerUse !== undefined
-        ? { ...currentSettings.computerUse, ...body.computerUse }
-        : currentSettings.computerUse,
-      agentCapabilities: body.agentCapabilities !== undefined
-        ? { ...DEFAULT_AGENT_CAPABILITIES, ...currentSettings.agentCapabilities, ...body.agentCapabilities }
-        : currentSettings.agentCapabilities,
-      analyticsTargets: body.analyticsTargets !== undefined ? body.analyticsTargets : currentSettings.analyticsTargets,
-    }
-
-    // Handle API key updates: empty string = delete, truthy = set, absent = keep
-    if (body.apiKeys !== undefined) {
-      for (const field of API_KEY_FIELDS) {
-        const value = body.apiKeys[field]
-        if (value === '') {
-          newSettings.apiKeys = { ...newSettings.apiKeys }
-          delete newSettings.apiKeys[field]
-        } else if (value) {
-          newSettings.apiKeys = { ...newSettings.apiKeys, [field]: value }
-        }
-      }
-
-      if (newSettings.apiKeys && Object.keys(newSettings.apiKeys).length === 0) {
-        delete newSettings.apiKeys
-      }
-    }
-
-    updateSettings(newSettings)
-
-    // If account provider settings changed, re-register providers
-    if (body.apiKeys?.nangoSecretKey !== undefined || body.app?.accountProvider !== undefined) {
-      try {
-        const { registerAllAccountProviders } = await import('@shared/lib/account-providers/register')
-        await registerAllAccountProviders()
-      } catch (err) {
-        console.error('Failed to re-register account providers:', err)
-      }
-    }
-
-    // If auth settings changed, reset the Better Auth singleton so it picks up new config
-    if (body.auth !== undefined && isAuthMode()) {
-      import('@shared/lib/auth/index').then(({ resetAuth }) => resetAuth()).catch(() => {})
-    }
-
-    // If container runner changed, clear cached clients so new ones use the updated runner
-    if (newSettings.container.containerRunner !== currentSettings.container.containerRunner) {
-      containerManager.clearClients()
-    }
-
-    // If image or runner changed, re-check readiness (may need to pull new image)
-    if (
-      newSettings.container.agentImage !== currentSettings.container.agentImage ||
-      newSettings.container.containerRunner !== currentSettings.container.containerRunner
-    ) {
-      containerManager.ensureImageReady().catch((error) => {
-        console.error('Failed to re-check image readiness:', error)
+      const runnerAvailability = await checkAllRunnersAvailability()
+      logAuditEvent({
+        userId: getCurrentUserId(c),
+        object: 'settings',
+        objectId: 'global',
+        action: 'updated',
+        details: buildSettingsAuditDetails(currentSettings, newSettings),
       })
+      return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runnerAvailability))
+    } catch (error) {
+      console.error('Failed to update settings:', error)
+      return c.json({ error: 'Failed to update settings' }, 500)
     }
-
-    const runnerAvailability = await checkAllRunnersAvailability()
-    logAuditEvent({
-      userId: getCurrentUserId(c),
-      object: 'settings',
-      objectId: 'global',
-      action: 'updated',
-      details: buildSettingsAuditDetails(currentSettings, newSettings),
-    })
-    return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runnerAvailability))
-  } catch (error) {
-    console.error('Failed to update settings:', error)
-    return c.json({ error: 'Failed to update settings' }, 500)
-  }
-})
+  },
+)
 
 // POST /api/settings/start-runner - Start a container runtime
 settings.post('/start-runner', async (c) => {

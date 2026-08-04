@@ -1,8 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
+import type { LlmProviderId } from './provider-types'
 
-export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock' | 'platform' | 'generic'
+export { LLM_PROVIDER_IDS } from './provider-types'
+export type { LlmProviderId } from './provider-types'
 
 export type ModelPurpose = 'agent' | 'summarizer' | 'browser' | 'dashboard'
 

@@ -1,4 +1,5 @@
-export type WebProviderId = 'native' | 'exa' | 'platform'
+export const WEB_PROVIDER_IDS = ['native', 'exa', 'platform'] as const
+export type WebProviderId = (typeof WEB_PROVIDER_IDS)[number]
 
 export interface WebSearchOptions {
   numResults?: number // host applies a default + hard max (Exa bills per result)
