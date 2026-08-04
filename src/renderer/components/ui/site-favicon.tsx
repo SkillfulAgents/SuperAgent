@@ -15,8 +15,8 @@ import { cn } from '@shared/lib/utils/cn'
  * Deliberately mirrors, rather than imports, `isPrivateHost` from
  * shared/lib/utils/url-safety.ts: that module imports `node:dns/promises` at top level, and no
  * renderer file pulls it in today. Importing it here would drag Node's dns into the browser
- * bundle - which typecheck and vitest both pass and only a build catches. Keep the two host
- * families in step when either changes.
+ * bundle - which typecheck and vitest both pass and only a build catches. site-favicon.test.ts
+ * asserts this copy is never weaker than that one, so loosening it here fails the suite.
  */
 function isPrivateHost(hostname: string): boolean {
   // A trailing dot is the same name to a resolver ('localhost.' resolves to localhost), so it

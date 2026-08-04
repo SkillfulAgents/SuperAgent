@@ -34,7 +34,6 @@ const HIT_RE = /^\d+\. /
 const PUBLISHED_RE = /^ {3}Published: (.+)$/
 // The fetch header carries optional labelled lines between the url and the blank line.
 const FETCH_HEADER_RE = /^(Published|Favicon): (.+)$/
-const MULTILINE_RE = /[\r\n]/
 // Both formatters append warnings as a single trailing line. Matching one line, not
 // [\s\S]+, is what stops an ordinary "Note:" paragraph inside page text from claiming
 // everything after it.
@@ -131,15 +130,14 @@ export function parseSearchResult(result: string): ParsedSearchResult {
 
   // Anchor on block structure, not on a free search for each url line. Titles and snippets are
   // interpolated raw, so a hostile result can emit lines that look like another hit's block and
-  // plant its text under that site's name, favicon and link. Three conditions have to hold, and
+  // plant its text under that site's name, favicon and link. Two conditions have to hold, and
   // any failure degrades to the plain rendering below:
-  //   - every title and url is single-line, so one hit really is one header line. A newline in a
-  //     title splits its block and would otherwise hide the real one from this scan.
   //   - the block count matches the link count, so an injected extra block cannot pass.
   //   - block i's header is exactly the header the formatter writes for link i, and the line
   //     under it is that link's url.
+  // A multi-line title needs no separate check: `lines` comes from split('\n'), so no element can
+  // ever equal a header string that contains a newline, and the equality below already fails.
   const anchored =
-    sources.every((s) => !MULTILINE_RE.test(s.title) && !MULTILINE_RE.test(s.url)) &&
     starts.length === sources.length &&
     sources.every(
       (source, i) =>

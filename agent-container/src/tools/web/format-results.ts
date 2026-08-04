@@ -61,13 +61,21 @@ export interface WebFetchHostResult {
   warnings?: string[]
 }
 
+/** The header's contract is one field per line, so a field can't be allowed to carry a newline. */
+const oneLine = (value: string) => value.replace(/[\r\n]+/g, ' ')
+
 /**
  * Format the host /web-fetch/fetch response into the text block the agent reads: a title/url header
  * (plus publish date when present) followed by the page's full content. Pure (no SDK / network).
+ *
+ * The header is positional - the reader takes line 0 as the title, line 1 as the url, and any
+ * labelled lines after those as metadata. The page writes its own <title>, so a newline in it
+ * would shift that window and let the page plant a `Favicon:`/`Published:` line the reader
+ * attributes to the fetch. Flattening the two header fields keeps one field on one line.
  */
 export function formatWebFetchResult(data: WebFetchHostResult): string {
   const { result } = data
-  const lines: string[] = [result.title ?? result.url, result.url]
+  const lines: string[] = [oneLine(result.title ?? result.url), oneLine(result.url)]
   if (result.publishedDate) lines.push(`Published: ${result.publishedDate}`)
   if (result.favicon) lines.push(`Favicon: ${result.favicon}`)
   lines.push('', result.content || '(no content returned)')
