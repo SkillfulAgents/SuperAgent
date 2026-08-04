@@ -36,6 +36,7 @@ const cases: AppLocation[] = [
   { selectedAgentSlug: SLUG, view: { kind: 'dashboard', slug: 'dash-1' } },
   { selectedAgentSlug: SLUG, view: { kind: 'apiLogs' } },
   { selectedAgentSlug: SLUG, view: { kind: 'secrets' } },
+  { selectedAgentSlug: SLUG, view: { kind: 'agentPermissions' } },
   { selectedAgentSlug: SLUG, view: { kind: 'connections' } },
   { selectedAgentSlug: SLUG, view: { kind: 'connections', detail: { rowKey: 'account-123', source: 'home' } } },
   { selectedAgentSlug: SLUG, view: { kind: 'connections', detail: { rowKey: 'mcp-456', source: 'list' } } },
