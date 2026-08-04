@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature test — agent successfully opened a browser, navigated to https://example.com, extracted the page title \"Example Domain\", and reported it back with full transparency of all browser tool calls and live preview.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — App loaded successfully with \"Gamut\" title, displaying agent list in sidebar",
+    "Step 2: Found and clicked agent \"QA-20260804-232357-lbde\" in sidebar — Agent page loaded successfully, showing chat interface and agent settings",
+    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was accepted and agent began processing",
+    "Step 4: Waited for response (up to 3 minutes) — Agent completed task in 16 seconds, executing multiple browser tool calls (ToolSearch, Open Browser, Browser Get State, Run JavaScript)",
+    "Step 5: Verified response mentions \"Example Domain\" — Response clearly displays: \"The page title is \\\"Example Domain\\\".\" with live browser preview showing the correct website; all tool calls marked with green checkmarks indicating successful execution"
+  ],
+  "bugs": [],
+  "durationMs": 86535,
+  "sessionId": "01399f59-6e28-4dba-b597-8745db50fc0a",
+  "cost": {
+    "inputTokens": 410,
+    "outputTokens": 12311,
+    "cacheCreationTokens": 77279,
+    "cacheReadTokens": 1173803,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.275944
+  }
+}
