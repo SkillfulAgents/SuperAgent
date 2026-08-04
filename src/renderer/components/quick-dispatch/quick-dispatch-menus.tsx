@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { AtSign, Check, FileIcon, FolderOpen, Loader2, Search } from 'lucide-react'
 import { cn } from '@shared/lib/utils'
 import { ModelFamilyList } from '@renderer/components/messages/model-family-list'
-import { findCatalogModel, type ComposerOptionsState } from '@renderer/components/messages/composer-options'
+import { resolveDisplayModel, type ComposerOptionsState } from '@renderer/components/messages/composer-options'
 import { EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
 import { SpeedSection, availableSpeeds, useSpeedClamp } from '@renderer/components/messages/speed-section'
 import { EFFORT_LEVELS } from '@shared/lib/container/types'
@@ -95,9 +95,8 @@ export function AgentMenu({
 }
 
 export function ModelEffortMenu({ state, maxHeight }: { state: ComposerOptionsState; maxHeight: number }) {
-  const { effort, setEffort, speed, setSpeed, model, setModel, catalog, webProvider } = state
-  const selected =
-    findCatalogModel(model, catalog) ?? catalog.find((m) => m.family === 'sonnet' && m.isLatest) ?? catalog[0]
+  const { effort, setEffort, speed, setSpeed, model, setModel, catalog, providerDefaultModel, webProvider } = state
+  const selected = resolveDisplayModel(model, catalog, providerDefaultModel)
   const efforts = EFFORT_LEVELS.filter((l) => (selected ? selected.supportedEfforts.includes(l) : true))
   // Without the clamp this menu kept (and dispatched) an unsupported effort
   // after a model switch, while the slider silently rendered at Low.

@@ -2,6 +2,16 @@ import { z } from 'zod'
 import { EFFORT_LEVELS, SPEED_LEVELS } from '../container/types'
 
 /**
+ * True when a string carries a version segment (a hyphen followed by a digit).
+ * Lives here, beside the selection-shape contract it belongs to, so renderer
+ * code can ask the question without importing the resolver — which pulls the
+ * provider registry and host-only settings IO into the browser bundle.
+ */
+export function hasVersionSegment(s: string): boolean {
+  return /-\d/.test(s)
+}
+
+/**
  * A concrete, versioned model offered by a provider's catalog.
  *
  * The `id` is BOTH the catalog key and the exact wire value sent to the SDK

@@ -77,6 +77,7 @@ export interface ProviderDefaultModels {
   agent: string
   summarizer: string
   browser: string
+  dashboard: string
 }
 
 export interface LlmProviderInfo {
@@ -99,6 +100,7 @@ function defaultModelsFor(provider: BaseLlmProvider): ProviderDefaultModels {
     agent: provider.getDefaultModel('agent'),
     summarizer: provider.getDefaultModel('summarizer'),
     browser: provider.getDefaultModel('browser'),
+    dashboard: provider.getDefaultModel('dashboard'),
   }
 }
 

@@ -5,8 +5,8 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Separator } from '@renderer/components/ui/separator'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { EFFORT_LEVELS } from '@shared/lib/container/types'
-import { type ComposerOptionsState } from './composer-options'
-import { ModelFamilyList, findCatalogModel } from './model-family-list'
+import { resolveDisplayModel, type ComposerOptionsState } from './composer-options'
+import { ModelFamilyList } from './model-family-list'
 import { EFFORT_LABELS, EffortSection, useEffortClamp } from './effort-slider'
 import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from './speed-section'
 
@@ -20,16 +20,11 @@ interface ComposerOptionsPopoverProps {
 }
 
 function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, footer }: ComposerOptionsPopoverProps) {
-  const { effort, setEffort, speed, setSpeed, model, setModel, catalog, webProvider } = state
+  const { effort, setEffort, speed, setSpeed, model, setModel, catalog, providerDefaultModel, webProvider } = state
 
   // Trigger display fallback for the brief window before useComposerOptions
-  // seeds `model`. Order: resolve the selection against the catalog (exact id
-  // or family-latest) → the catalog's latest Sonnet (codebase-wide default,
-  // beats falling through to the first entry) → first entry.
-  const selectedModel =
-    findCatalogModel(model, catalog)
-    ?? catalog.find((m) => m.family === 'sonnet' && m.isLatest)
-    ?? catalog[0]
+  // seeds `model`, and for a selection this provider's catalog cannot carry.
+  const selectedModel = resolveDisplayModel(model, catalog, providerDefaultModel)
 
   useEffortClamp(includeEffort ? selectedModel : undefined, effort, setEffort)
 

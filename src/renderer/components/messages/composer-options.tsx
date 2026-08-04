@@ -31,6 +31,8 @@ export interface ComposerOptionsState {
   setModel: (m: string) => void
   /** The active provider's flat catalog of concrete model ids. */
   catalog: ModelDefinition[]
+  /** The active provider's own agent default — the host resolver's last rung. */
+  providerDefaultModel?: string
   /** Active host web-provider id (settings-derived), so the model picker's web-tools availability
    *  warning knows a configured vendor makes those tools work on any model. Undefined = native. */
   webProvider?: string
@@ -58,6 +60,32 @@ export function findCatalogModel(
   return (
     catalog.find((m) => m.id === selection) ??
     catalog.find((m) => m.family === selection && m.isLatest)
+  )
+}
+
+/**
+ * The catalog entry a selection will actually run as, mirroring the host
+ * resolver's full ladder: exact id / family-latest → the active provider's own
+ * agent default → first entry. The provider rung is what a bare findCatalogModel
+ * misses: a family the active provider's catalog does not carry (e.g. 'gpt' on
+ * a Claude-only provider) resolves host-side to that provider's default, so the
+ * picker has to land on the same row or it displays a model the wire never sends.
+ *
+ * Deliberately WITHOUT the versioned-pin guard SettingsModelSelect carries: this
+ * ladder only picks a row to label, while that one also feeds the effort and speed
+ * clamps, which would persist a rewrite from the wrong model's capabilities. An
+ * unknown versioned pin still mislabels here (the host passes it to the SDK
+ * verbatim); it costs a wrong label, not wrong state.
+ */
+export function resolveDisplayModel(
+  selection: string | undefined,
+  catalog: ModelDefinition[],
+  providerDefaultModel: string | undefined,
+): ModelDefinition | undefined {
+  return (
+    findCatalogModel(selection, catalog) ??
+    findCatalogModel(providerDefaultModel, catalog) ??
+    catalog[0]
   )
 }
 
@@ -258,10 +286,11 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       model,
       setModel,
       catalog,
+      providerDefaultModel: providerInfo?.defaultModels?.agent,
       webProvider: settings?.webProvider,
       toRuntimeOptions,
     }),
-    [effort, setEffort, speed, setSpeed, model, setModel, catalog, settings, toRuntimeOptions],
+    [effort, setEffort, speed, setSpeed, model, setModel, catalog, providerInfo, settings, toRuntimeOptions],
   )
 }
 
