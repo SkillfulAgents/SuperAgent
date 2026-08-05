@@ -12,6 +12,8 @@ import { useCreateAgent, useDeleteAgent, useUpdateAgent } from '@renderer/hooks/
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
+import { useUser } from '@renderer/context/user-context'
+import { seedPendingSessionMessage } from '@renderer/context/pending-session-seed'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import {
   useTypewriterPlaceholder,
@@ -59,6 +61,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
   const createSession = useCreateSession()
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
+  const { user, isAuthMode } = useUser()
   const startOnboardingSession = useStartOnboardingSession()
   const warmStartEnabled = useWarmStartOnTypeEnabled()
 
@@ -123,6 +126,10 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
     // expose them in this layout so they're unreachable in practice.
     uploadFile: useCallback(async () => { throw new Error('Cannot upload before agent is created') }, []),
     uploadFolder: useCallback(async () => { throw new Error('Cannot upload before agent is created') }, []),
+    // Keep typed text visible while create runs; seed the session ghost before
+    // navigate so AgentShell (which mounts after the wizard closes) can show it.
+    keepMessageUntilComplete: true,
+    submitDisabled: isSubmitting,
     onSubmit: useCallback(async (content: string) => {
       // Local flag — do not key off createAgent.isPending; warm-start reuse of
       // that mutation would freeze the textarea while the user is still typing.
@@ -142,6 +149,12 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
           // family alias to the active provider's specific model.
           model: 'opus',
         })
+        seedPendingSessionMessage(
+          session.id,
+          content,
+          session.initialMessageUuid,
+          isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
+        )
         track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.displaySlug, sessionId: session.id } })
         await onAgentCreated?.()
@@ -153,7 +166,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
       } finally {
         setIsSubmitting(false)
       }
-    }, [createAgent, updateAgent, createSession, navigate, track, onAgentCreated]),
+    }, [createAgent, updateAgent, createSession, navigate, track, onAgentCreated, isAuthMode, user]),
   })
 
   const { awaitWarmStart } = useWarmStartOnType({
