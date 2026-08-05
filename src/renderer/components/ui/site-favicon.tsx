@@ -74,6 +74,20 @@ export function vendorFaviconHref(src: string): string | null {
   }
 }
 
+/**
+ * The showable icon URL for a vendor-supplied favicon, with load failures tracked per URL -
+ * a new src on the same mounted instance gets a fresh try instead of inheriting the previous
+ * icon's broken state. `href` is null when the URL is refused, absent, or has failed.
+ */
+export function useVendorFavicon(src?: string): { href: string | null; onError: () => void } {
+  const candidate = src ? vendorFaviconHref(src) : null
+  const [failedHref, setFailedHref] = useState<string | null>(null)
+  return {
+    href: candidate && failedHref !== candidate ? candidate : null,
+    onError: () => setFailedHref(candidate),
+  }
+}
+
 export function SiteFavicon({
   src,
   className,
@@ -89,9 +103,8 @@ export function SiteFavicon({
   /** 'none' where a globe already sits in the same row, so a failure isn't two identical icons. */
   fallback?: 'globe' | 'none'
 }) {
-  const href = src ? vendorFaviconHref(src) : null
-  const [failed, setFailed] = useState(false)
-  if (!href || failed) {
+  const { href, onError } = useVendorFavicon(src)
+  if (!href) {
     if (fallback === 'none') return null
     return <Globe aria-hidden className={cn('shrink-0 text-muted-foreground', className)} />
   }
@@ -105,12 +118,7 @@ export function SiteFavicon({
         className,
       )}
     >
-      <img
-        src={href}
-        alt=""
-        className="h-full w-full object-contain"
-        onError={() => setFailed(true)}
-      />
+      <img src={href} alt="" className="h-full w-full object-contain" onError={onError} />
     </span>
   )
 }

@@ -1,6 +1,8 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
+import { fireEvent, render } from '@testing-library/react'
 import { isPrivateHost } from '@shared/lib/utils/url-safety'
-import { vendorFaviconHref } from './site-favicon'
+import { SiteFavicon, vendorFaviconHref } from './site-favicon'
 
 describe('vendorFaviconHref', () => {
   it('accepts the https icon the search vendor supplied', () => {
@@ -67,5 +69,18 @@ describe('vendorFaviconHref', () => {
     ]) {
       expect(vendorFaviconHref(url), url).not.toBeNull()
     }
+  })
+})
+
+describe('SiteFavicon', () => {
+  it('retries a new src after a previous one failed to load', () => {
+    // The failure is per-href, not per-instance: a mounted instance whose icon 404'd must not
+    // keep showing the globe once it receives a different, valid icon URL.
+    const { container, rerender } = render(<SiteFavicon src="https://a.com/broken.png" />)
+    fireEvent.error(container.querySelector('img')!)
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('svg'), 'globe fallback after a load failure').not.toBeNull()
+    rerender(<SiteFavicon src="https://b.com/i.png" />)
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('https://b.com/i.png')
   })
 })
