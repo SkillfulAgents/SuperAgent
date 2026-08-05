@@ -54,6 +54,10 @@ import {
   type Capability,
 } from './capability-policies';
 import { createCapabilityGateHook, CAPABILITY_REVIEW_HOOK_TIMEOUT_S } from './capability-gate-hook';
+import {
+  buildModelSubagentDefinitions,
+  type SubagentModelDefinition,
+} from './subagent-model-catalog';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
@@ -251,6 +255,7 @@ export interface SystemPromptVars {
   webSearchToolName: string;
   webFetchToolName: string;
   subagentsEnabled: boolean;
+  hasModelRoutedSubagents: boolean;
   composioTriggers: boolean;
   webhookEndpoints: boolean;
   anyTriggers: boolean;
@@ -279,6 +284,7 @@ export function buildSystemPromptVars(
   webSearchProvider?: string,
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
+  subagentModels?: SubagentModelDefinition[],
 ): SystemPromptVars {
   const composioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true';
   const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
@@ -294,6 +300,7 @@ export function buildSystemPromptVars(
     // Blocked subagents must not be advertised anywhere in the prompt; review
     // still advertises them (the gate happens at call time).
     subagentsEnabled: policyFor(capabilityPolicies, 'subagents') !== 'block',
+    hasModelRoutedSubagents: (subagentModels?.length ?? 0) > 0,
     composioTriggers,
     webhookEndpoints,
     anyTriggers: composioTriggers || webhookEndpoints,
@@ -322,8 +329,17 @@ export function generateSystemPrompt(
   webSearchProvider?: string,
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
+  subagentModels?: SubagentModelDefinition[],
 ): string {
-  const vars = buildSystemPromptVars(availableEnvVars, userSystemPrompt, modelPromptHints, webSearchProvider, webFetchProvider, capabilityPolicies);
+  const vars = buildSystemPromptVars(
+    availableEnvVars,
+    userSystemPrompt,
+    modelPromptHints,
+    webSearchProvider,
+    webFetchProvider,
+    capabilityPolicies,
+    subagentModels,
+  );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
 
@@ -403,6 +419,7 @@ export interface ClaudeCodeProcessOptions {
   model?: string;
   browserModel?: string;
   dashboardBuilderModel?: string;
+  subagentModels?: SubagentModelDefinition[];
   webSearchProvider?: string;
   webFetchProvider?: string;
   maxOutputTokens?: number;
@@ -427,6 +444,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private model: string | undefined;
   private browserModel: string | undefined;
   private dashboardBuilderModel: string | undefined;
+  private subagentModels: SubagentModelDefinition[];
   private webSearchProvider: string | undefined;
   private webFetchProvider: string | undefined;
   private maxOutputTokens: number | undefined;
@@ -505,6 +523,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.model = options.model;
     this.browserModel = options.browserModel;
     this.dashboardBuilderModel = options.dashboardBuilderModel;
+    this.subagentModels = options.subagentModels ?? [];
     this.webSearchProvider = options.webSearchProvider;
     this.webFetchProvider = options.webFetchProvider;
     this.maxOutputTokens = options.maxOutputTokens;
@@ -525,7 +544,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       options.modelPromptHints,
       options.webSearchProvider,
       options.webFetchProvider,
-      options.capabilityPolicies
+      options.capabilityPolicies,
+      this.subagentModels,
     );
   }
 
@@ -789,6 +809,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...remoteMcpConfigs,
       },
       agents: {
+        ...buildModelSubagentDefinitions(this.subagentModels),
         'web-browser': {
           description: 'Web browsing specialist. Delegate any task that requires interacting with websites — navigating pages, filling forms, clicking buttons, extracting information, searching for products, changing settings on web services, or any multi-step web interaction. The browser should already be open (use browser_open first). This agent runs on a cheaper model and handles all browser interactions autonomously.',
           // Host-resolved concrete wire id for the browser model (any provider/
@@ -1244,7 +1265,8 @@ export class ClaudeCodeProcess extends EventEmitter {
         this.modelPromptHints,
         this.webSearchProvider,
         this.webFetchProvider,
-        this.capabilityPolicies
+        this.capabilityPolicies,
+        this.subagentModels,
       );
     }
 
@@ -1278,7 +1300,8 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.modelPromptHints,
           this.webSearchProvider,
           this.webFetchProvider,
-          nextPolicies
+          nextPolicies,
+          this.subagentModels,
         );
       }
       this.reconcilePendingCapabilityReviews();

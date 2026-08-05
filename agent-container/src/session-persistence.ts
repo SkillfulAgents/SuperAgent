@@ -1,38 +1,11 @@
 import * as fs from 'fs';
 import { writeFileAtomicSync } from './atomic-file';
 import type { AgentCapabilityPolicies, EffortLevel, SpeedLevel } from './types';
-
-interface SessionMetadata {
-  sessionId: string;
-  claudeSessionId: string;
-  workingDirectory: string;
-  createdAt: string;
-  lastActivity: string;
-  systemPrompt?: string;
-  modelPromptHints?: string[];
-  availableEnvVars?: string[];
-  model?: string;
-  browserModel?: string;
-  dashboardBuilderModel?: string;
-  webSearchProvider?: string;
-  webFetchProvider?: string;
-  maxOutputTokens?: number;
-  maxThinkingTokens?: number;
-  maxTurns?: number;
-  maxBudgetUsd?: number;
-  customEnvVars?: Record<string, string>;
-  effort?: EffortLevel;
-  speed?: SpeedLevel;
-  // Must survive resume: doResumeSession starts the query straight from these
-  // options, so an unpersisted block policy would briefly re-expose the tools.
-  capabilityPolicies?: AgentCapabilityPolicies;
-  // "Allow for this session" review grants — session-scoped, so they must
-  // survive eviction+resume (the host's grant record assumes they do).
-  sessionCapabilityGrants?: Array<'subagents' | 'workflows'>;
-  // Session classification (e.g. isAutomated) — must survive resume so the
-  // idle-eviction class and browser-lock-on-result behavior stay correct.
-  metadata?: Record<string, unknown>;
-}
+import {
+  persistedSessionsSchema,
+  sessionMetadataSchema,
+  type SessionMetadata,
+} from './session-persistence-schema';
 
 // Overridable so the session-GC E2E harness (which runs this stack on a dev
 // machine, where /workspace does not exist) gets working persistence.
@@ -61,7 +34,7 @@ export class SessionPersistence {
     }
 
     try {
-      const sessions = JSON.parse(data);
+      const sessions = persistedSessionsSchema.parse(JSON.parse(data));
       this.sessions = new Map(Object.entries(sessions));
       console.log(`Loaded ${this.sessions.size} persisted sessions`);
     } catch (error) {
@@ -94,7 +67,8 @@ export class SessionPersistence {
   }
 
   saveSession(metadata: SessionMetadata): void {
-    this.sessions.set(metadata.sessionId, metadata);
+    const parsed = sessionMetadataSchema.parse(metadata);
+    this.sessions.set(parsed.sessionId, parsed);
     this.save();
   }
 
