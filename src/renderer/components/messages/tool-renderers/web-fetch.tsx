@@ -26,7 +26,13 @@ function CollapsedContent({ result, isError }: CollapsedContentProps) {
 }
 
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
-  const parsed = useMemo(() => (result ? parseFetchResult(result) : null), [result])
+  // Title-stripping is part of the parse, not the render: the body can be ~50k chars, and
+  // re-deriving it every render would hand ReactMarkdown a fresh string to re-parse each time.
+  const parsed = useMemo(() => {
+    if (!result) return null
+    const p = parseFetchResult(result)
+    return { ...p, body: stripLeadingTitle(p.body, p.title) }
+  }, [result])
   const { url: inputUrl } = webFetchDef.parseInput(input)
 
   // Error: keep parity with the generic panel this view replaces (input URL + error text).
@@ -82,7 +88,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
           urlTransform={markdownUrlTransform}
           components={NO_MARKDOWN_IMAGES}
         >
-          {stripLeadingTitle(parsed.body, parsed.title)}
+          {parsed.body}
         </ReactMarkdown>
       </div>
       {parsed.note && <div className="text-xs text-muted-foreground">{parsed.note}</div>}
