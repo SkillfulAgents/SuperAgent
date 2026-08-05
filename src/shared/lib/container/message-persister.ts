@@ -1,4 +1,5 @@
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
+import { mergeCanonicalSlashCommands } from './slash-commands'
 import type { SessionUsage, SessionActivity } from '@shared/lib/types/agent'
 import type { AskUserQuestionInput } from '@shared/lib/tool-definitions/ask-user-question'
 import type { RequestSecretInput } from '@shared/lib/tool-definitions/request-secret'
@@ -445,7 +446,7 @@ class MessagePersister {
       lastAssistantUsage: null,
       completedSubagentIds: new Set(),
       activeSubagents: new Map(),
-      slashCommands: [],
+      slashCommands: prior?.slashCommands ?? [],
       isAwaitingInput: priorIsAwaitingInput,
       settledInputRequests: priorSettledInputRequests,
       cancelledCapabilityReviews: new Set(),
@@ -1583,13 +1584,13 @@ class MessagePersister {
       case 'system':
         // System messages (init, etc.)
         if (content.subtype === 'init') {
-          // Capture slash commands from init event as fallback (e.g. resumed sessions)
-          if (state.slashCommands.length === 0 && Array.isArray(content.slash_commands)) {
-            state.slashCommands = content.slash_commands.map((name: string) => ({
-              name,
-              description: '',
-              argumentHint: '',
-            }))
+          // The init strings are the executable names. Reconcile even when we
+          // already have rich/persisted commands so display titles cannot win.
+          if (Array.isArray(content.slash_commands)) {
+            state.slashCommands = mergeCanonicalSlashCommands(
+              content.slash_commands.filter((name: unknown): name is string => typeof name === 'string'),
+              state.slashCommands,
+            )
           }
           this.broadcastToSSE(sessionId, {
             type: 'stream_start',
