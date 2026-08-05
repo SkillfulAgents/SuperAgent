@@ -30,6 +30,7 @@ import { resolveContainerModel, getContainerModelPromptHints } from './resolve-m
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { getOrCreateHostToken } from './host-token-store'
+import { getSubagentModelCatalog } from './subagent-model-catalog'
 
 const execAsync = promisify(exec)
 
@@ -1109,6 +1110,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
     const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
     const modelPromptHints = getContainerModelPromptHints(resolvedModel)
+    const subagentModels = getSubagentModelCatalog(getActiveLlmProvider().id)
     // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
     // Resolved once here from global settings so every session-creation caller inherits it. One
     // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
@@ -1140,6 +1142,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           model: resolvedModel,
           browserModel: resolvedBrowserModel,
           dashboardBuilderModel: resolvedDashboardBuilderModel,
+          subagentModels,
           webSearchProvider,
           webFetchProvider,
           maxOutputTokens: options.maxOutputTokens,

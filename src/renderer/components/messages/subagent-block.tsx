@@ -30,6 +30,27 @@ function formatTokens(tokens: number): string {
   return `${tokens}`
 }
 
+export function displaySubagentType(subagentType: string): string {
+  const modelType = /^model-(.+)-[a-z0-9]{7}$/.exec(subagentType)
+  if (!modelType) return subagentType
+
+  const parts = modelType[1]
+    .split('-')
+    .map((part) => {
+      if (!/^[a-z]+$/.test(part)) return part
+      return part.length <= 4
+        ? part.toUpperCase()
+        : `${part[0].toUpperCase()}${part.slice(1)}`
+    })
+
+  return parts.reduce((label, part, index) => {
+    const separator = index > 0 && /^\d+$/.test(part) && /^\d+$/.test(parts[index - 1])
+      ? '.'
+      : index > 0 ? ' ' : ''
+    return `${label}${separator}${part}`
+  }, '')
+}
+
 export function SubAgentBlock({
   toolCall,
   sessionId,
@@ -125,6 +146,7 @@ export function SubAgentBlock({
   // fall back to tool_use input (available once the tool call is fully streamed)
   const input = toolCall.input as { subagent_type?: string; description?: string }
   const subagentType = activeSubagent?.subagentType || input.subagent_type || 'Agent'
+  const subagentDisplayType = displaySubagentType(subagentType)
   const description = activeSubagent?.description || input.description || ''
 
   // Extract summary text — prefer persisted tool_result, fall back to SSE-delivered resultText
@@ -176,7 +198,7 @@ export function SubAgentBlock({
         <Workflow className="h-3.5 w-3.5 shrink-0 text-foreground/45 group-hover:text-foreground transition-colors" />
         <span className={SUBAGENT_LABEL_CLASS}>Sub-agent:</span>
         <span className={SUBAGENT_LABEL_CLASS}>
-          {subagentType}
+          {subagentDisplayType}
         </span>
         {description && (
           <>
