@@ -2016,7 +2016,7 @@ describe('MessageList', () => {
       expect(geometry.scrollTop).toBe(1200)
     })
 
-    it('discards only the reserved room that the user scrolls past', () => {
+    it('discards reserved room before the reader can leave the live edge', () => {
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
       const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       const el = screen.getByTestId('message-list')
@@ -2037,6 +2037,9 @@ describe('MessageList', () => {
       fireEvent.scroll(el)
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
 
+      fireEvent.wheel(el, { deltaY: -200 })
+      geometry.setScrollTop(500)
+      fireEvent.scroll(el)
       const releasedScrollTop = geometry.scrollTop
       geometry.setNaturalScrollHeight(1900)
       mockStreamState.streamingMessage = 'More output after the user took control'
@@ -2044,6 +2047,42 @@ describe('MessageList', () => {
         <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
       )
       expect(geometry.scrollTop).toBe(releasedScrollTop)
+    })
+
+    it('follows within 80px of the bottom and resumes when the reader returns', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      // A wheel gesture that remains within the 80px live-edge threshold must
+      // not opt the session out of following.
+      fireEvent.wheel(el, { deltaY: -50 })
+      geometry.setScrollTop(650)
+      fireEvent.scroll(el)
+      geometry.setNaturalScrollHeight(1400)
+      mockStreamState.streamingMessage = 'First streamed update'
+      mockStreamState.isStreaming = true
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(geometry.scrollTop).toBe(800)
+
+      // Moving farther away pauses following.
+      fireEvent.wheel(el, { deltaY: -200 })
+      geometry.setScrollTop(600)
+      fireEvent.scroll(el)
+      geometry.setNaturalScrollHeight(1500)
+      mockStreamState.streamingMessage = 'Second streamed update'
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(geometry.scrollTop).toBe(600)
+
+      // Returning within 80px restores following for subsequent content.
+      fireEvent.wheel(el, { deltaY: 250 })
+      geometry.setScrollTop(850)
+      fireEvent.scroll(el)
+      geometry.setNaturalScrollHeight(1600)
+      mockStreamState.streamingMessage = 'Third streamed update'
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(geometry.scrollTop).toBe(1000)
     })
   })
 
