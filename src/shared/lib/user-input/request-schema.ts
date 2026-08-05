@@ -89,7 +89,17 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
   }),
   baseRequest.extend({
     kind: z.literal('browser_input'),
-    payload: z.looseObject({ message: lenientString, requirements: z.unknown().optional() }),
+    payload: z.looseObject({
+      message: lenientString,
+      requirements: z.unknown().optional(),
+      // Captured by the host harness when the request opens. This is not part
+      // of the model-facing tool input: the browser itself remains the source
+      // of truth for credential scoping.
+      browserContext: z.looseObject({
+        url: z.string(),
+        capturedAt: z.number(),
+      }).optional().catch(undefined),
+    }),
   }),
   baseRequest.extend({
     kind: z.literal('script_run'),

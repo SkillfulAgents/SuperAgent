@@ -13,61 +13,10 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { resolveAgentId } from '@shared/lib/utils/file-storage'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getSettings } from '@shared/lib/config/settings'
-import { isAuthMode } from '@shared/lib/auth/mode'
 import { captureException } from '@shared/lib/error-reporting'
-import { db } from '@shared/lib/db'
-import { agentAcl } from '@shared/lib/db/schema'
-import { and, eq } from 'drizzle-orm'
+import { authenticateAgentWebSocket } from './agent-websocket-auth'
 
 const browserWss = new WebSocketServer({ noServer: true })
-
-const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
-
-import { type AgentRole, ROLE_HIERARCHY } from '@shared/lib/types/agent'
-
-async function authenticateWs(
-  request: IncomingMessage,
-  agentSlug: string,
-  minRole: AgentRole,
-): Promise<boolean> {
-  if (!isAuthMode()) {
-    // Only restrict to localhost in Electron
-    if (process.type === 'browser') {
-      const addr = request.socket?.remoteAddress
-      if (!addr || !LOCALHOST_ADDRS.has(addr)) return false
-    }
-    return true
-  }
-
-  try {
-    // Lazy import to avoid pulling in better-auth ESM at startup
-    const { getAuth } = await import('@shared/lib/auth/index')
-    const auth = getAuth()
-
-    // Convert raw headers to Headers for Better Auth
-    const headers = new Headers()
-    for (const [key, value] of Object.entries(request.headers)) {
-      if (value) headers.set(key, Array.isArray(value) ? value[0] : value)
-    }
-
-    const session = await auth.api.getSession({ headers })
-    if (!session?.user) return false
-
-    // Check agent-level ACL
-    const [row] = await db
-      .select({ role: agentAcl.role })
-      .from(agentAcl)
-      .where(and(eq(agentAcl.userId, session.user.id), eq(agentAcl.agentSlug, agentSlug)))
-      .limit(1)
-
-    if (!row) return false
-    const userRole = row.role as AgentRole
-    return ROLE_HIERARCHY[userRole] >= ROLE_HIERARCHY[minRole]
-  } catch (error) {
-    console.error('[BrowserProxy] Auth check failed:', error)
-    return false
-  }
-}
 
 export function setupBrowserStreamProxy(server: ServerType): void {
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -93,7 +42,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
       ;(request as any)._agentId = agentSlug
 
       // Authenticate before upgrading — viewer+ can watch, but input is filtered per-role below
-      authenticateWs(request, agentSlug, 'viewer').then((allowed) => {
+      authenticateAgentWebSocket(request, agentSlug, 'viewer').then((allowed) => {
         if (!allowed) {
           socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
           socket.destroy()
@@ -101,7 +50,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         }
 
         // Check if user has 'user' role (can send input) — stash on the request object
-        authenticateWs(request, agentSlug, 'user').then((canInput) => {
+        authenticateAgentWebSocket(request, agentSlug, 'user').then((canInput) => {
           ;(request as any)._canInput = canInput
           browserWss.handleUpgrade(request, socket, head, (ws) => {
             browserWss.emit('connection', ws, request)

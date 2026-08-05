@@ -50,13 +50,18 @@ Example:
     }
 
     try {
-      await inputManager.createPendingWithType(toolUseId, 'browser_input', {
+      const completion = await inputManager.createPendingWithType<string>(toolUseId, 'browser_input', {
         message: args.message,
         requirements: args.requirements,
       })
 
       return {
-        content: [{ type: 'text' as const, text: 'User has completed the requested browser interaction. Take a browser snapshot to see the current state.' }],
+        content: [{
+          type: 'text' as const,
+          text: completion === 'credentials_filled'
+            ? 'Credentials have been filled into the browser. Click the login or sign-in button to continue. If 2FA or another manual step appears, call request_browser_input again.'
+            : 'User has completed the requested browser interaction. Take a browser snapshot to see the current state.',
+        }],
       }
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'

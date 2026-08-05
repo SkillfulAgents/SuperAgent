@@ -59,6 +59,18 @@ describe('HomeExtras', () => {
     expect(screen.getByText('Agent Directory')).toBeVisible()
   })
 
+  it('opens the Agent-to-agent connections page', async () => {
+    const user = userEvent.setup()
+    render(<HomeExtras agentSlug="test-agent" />)
+
+    await user.click(screen.getByTestId('home-x-agent-permissions-open-page'))
+
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/x-agent-permissions',
+      params: { slug: 'test-agent' },
+    })
+  })
+
   it('renders the agent default model as the first row, above System Prompt', () => {
     render(<HomeExtras agentSlug="test-agent" />)
 

@@ -24,6 +24,7 @@ import {
 import { getPlatformAccessToken } from './services/platform-auth-service'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setupCloudStreamProxy } from '../../main/cloud-stream-proxy'
+import { setupArtifactStreamProxy } from '../../main/artifact-stream-proxy'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
 import { shutdownAC } from './computer-use/executor'
@@ -31,6 +32,7 @@ import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reco
 import { initErrorReporting, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
 import { markBoot } from './boot-timing'
+import { credentialBroker } from '../../api/credentials/credential-broker'
 
 /**
  * Initialize all background services.
@@ -195,6 +197,7 @@ async function initializeServicesInner() {
  */
 export function setupServerHandlers(server: ServerType): void {
   setupBrowserStreamProxy(server)
+  setupArtifactStreamProxy(server)
   // Self-gated to Electron main outside auth mode; a no-op everywhere else.
   setupCloudStreamProxy(server)
 }
@@ -211,6 +214,7 @@ export async function shutdownServices() {
   reviewManager.rejectAll()
   stopBrowserProfileCleanup()
   chatIntegrationManager.stop()
+  await credentialBroker.shutdown()
   await stopAllProviders()
   taskScheduler.stop()
   triggerManager.stop()

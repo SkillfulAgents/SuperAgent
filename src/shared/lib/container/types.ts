@@ -1,5 +1,16 @@
 import type { RuntimeOptions } from './runtime-options'
 
+export const CONTAINER_RUNNER_IDS = [
+  'docker',
+  'podman',
+  'apple-container',
+  'lima',
+  'wsl2',
+  'kubernetes',
+  'lambda-microvm',
+] as const
+export type ContainerRunner = (typeof CONTAINER_RUNNER_IDS)[number]
+
 export type ContainerStatus = 'stopped' | 'running'
 
 // Effort levels supported by Claude Agent SDK v0.2.111+.

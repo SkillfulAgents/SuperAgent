@@ -1,5 +1,5 @@
 /**
- * Tests for the GET / PUT /api/agents/:id/x-agent-policies routes
+ * Tests for the GET / PATCH / PUT /api/agents/:id/x-agent-policies routes
  * (the per-agent UI for reviewing remembered cross-agent permissions).
  *
  * Uses in-memory SQLite + mocks for file-based services. Mounts agents.ts as a sub-app.
@@ -237,6 +237,80 @@ describe('GET /api/agents/:id/x-agent-policies', () => {
     expect(slugs).toContain(TARGET_A)
     expect(slugs).toContain(null) // 'list' policy still shown
     expect(slugs).not.toContain(TARGET_B)
+  })
+})
+
+// ============================================================================
+// PATCH /api/agents/:id/x-agent-policies
+// ============================================================================
+
+describe('PATCH /api/agents/:id/x-agent-policies', () => {
+  const patchPolicy = (body: unknown) => app.request(`/api/agents/${CALLER}/x-agent-policies`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+
+  it('updates one policy atomically without replacing sibling rows', async () => {
+    await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+    await setPolicy(CALLER, 'read', TARGET_B, 'block')
+
+    const res = await patchPolicy({ operation: 'invoke', targetSlug: TARGET_A, decision: 'review' })
+
+    expect(res.status).toBe(200)
+    expect(getPolicy(CALLER, 'invoke', TARGET_A)?.decision).toBe('review')
+    expect(getPolicy(CALLER, 'read', TARGET_B)?.decision).toBe('block')
+  })
+
+  it('clears only the selected row when decision is default', async () => {
+    await setPolicy(CALLER, 'read', null, 'allow')
+    await setPolicy(CALLER, 'read', TARGET_A, 'block')
+
+    const res = await patchPolicy({ operation: 'read', targetSlug: null, decision: 'default' })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ ok: true, removed: 1 })
+    expect(getPolicy(CALLER, 'read', null)).toBeNull()
+    expect(getPolicy(CALLER, 'read', TARGET_A)?.decision).toBe('block')
+  })
+
+  it('does not lose either of two concurrent changes', async () => {
+    await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+    await setPolicy(CALLER, 'invoke', TARGET_B, 'allow')
+
+    const [a, b] = await Promise.all([
+      patchPolicy({ operation: 'invoke', targetSlug: TARGET_A, decision: 'default' }),
+      patchPolicy({ operation: 'invoke', targetSlug: TARGET_B, decision: 'default' }),
+    ])
+
+    expect(a.status).toBe(200)
+    expect(b.status).toBe(200)
+    expect(getPolicy(CALLER, 'invoke', TARGET_A)).toBeNull()
+    expect(getPolicy(CALLER, 'invoke', TARGET_B)).toBeNull()
+  })
+
+  it('rejects self-targeted and targeted list policies', async () => {
+    const self = await patchPolicy({ operation: 'invoke', targetSlug: CALLER, decision: 'allow' })
+    const targetedList = await patchPolicy({ operation: 'list', targetSlug: TARGET_A, decision: 'allow' })
+
+    expect(self.status).toBe(400)
+    expect(targetedList.status).toBe(400)
+  })
+
+  it('does not write a policy toward an invisible target in auth mode', async () => {
+    authModeEnabled = true
+    currentUserId = 'user-viewer'
+    await testDb.insert(schema.user).values([
+      { id: 'user-viewer', name: 'V', email: 'v@t', emailVerified: false },
+    ])
+    await testDb.insert(schema.agentAcl).values([
+      { id: 'acl-c', userId: 'user-viewer', agentSlug: CALLER, role: 'owner', createdAt: new Date() },
+    ])
+
+    const res = await patchPolicy({ operation: 'read', targetSlug: TARGET_B, decision: 'allow' })
+
+    expect(res.status).toBe(404)
+    expect(getPolicy(CALLER, 'read', TARGET_B)).toBeNull()
   })
 })
 

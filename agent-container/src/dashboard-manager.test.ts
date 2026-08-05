@@ -8,6 +8,8 @@ import {
   validateSlug,
   SLUG_REGEX,
   ARTIFACTS_DIR,
+  getDashboardBasePath,
+  getDashboardValidationUrl,
   truncateOversizedLog,
 } from './dashboard-manager'
 
@@ -109,6 +111,33 @@ describe('validateSlug', () => {
   })
 })
 
+describe('getDashboardBasePath', () => {
+  it('builds the browser-visible artifact prefix from trusted startup identity', () => {
+    expect(getDashboardBasePath('open-slide', 'agent-123')).toBe(
+      '/api/agents/agent-123/artifacts/open-slide/',
+    )
+  })
+
+  it('omits startup metadata when no valid agent identity is available', () => {
+    expect(getDashboardBasePath('open-slide', '')).toBeNull()
+    expect(getDashboardBasePath('open-slide', '../spoofed')).toBeNull()
+  })
+})
+
+describe('getDashboardValidationUrl', () => {
+  it('uses the local root for stripped dashboards', () => {
+    expect(getDashboardValidationUrl('slides', 5000, 'stripped', 'agent-123')).toBe(
+      'http://localhost:5000/',
+    )
+  })
+
+  it('uses the public mount for mounted dashboards', () => {
+    expect(getDashboardValidationUrl('slides', 5000, 'mounted', 'agent-123')).toBe(
+      'http://localhost:5000/api/agents/agent-123/artifacts/slides/',
+    )
+  })
+})
+
 describe('truncateOversizedLog', () => {
   let testDir: string
 
@@ -157,6 +186,7 @@ describe('DashboardManager log stream lifecycle', () => {
     }>
     stopDashboard(slug: string): Promise<boolean>
     stopAll(): Promise<void>
+    getDashboardUpstreamPathMode(slug: string): 'stripped' | 'mounted'
   }
   let procs: FakeChildProcess[]
   let slugCounter = 0
@@ -188,13 +218,13 @@ describe('DashboardManager log stream lifecycle', () => {
   })
 
   /** Scaffold a dashboard dir whose node_modules is fresh (skips bun install). */
-  async function scaffoldDashboard(): Promise<string> {
+  async function scaffoldDashboard(packageFields: Record<string, unknown> = {}): Promise<string> {
     const slug = `dash-${++slugCounter}`
     const dir = path.join(testDir, slug)
     await fs.promises.mkdir(path.join(dir, 'node_modules'), { recursive: true })
     await fs.promises.writeFile(
       path.join(dir, 'package.json'),
-      JSON.stringify({ name: slug, scripts: { start: 'true' } })
+      JSON.stringify({ name: slug, scripts: { start: 'true' }, ...packageFields })
     )
     // node_modules must be at least as new as package.json to skip install
     const future = new Date(Date.now() + 60_000)
@@ -279,6 +309,35 @@ describe('DashboardManager log stream lifecycle', () => {
     expect(stat.size).toBeLessThan(1024 * 1024)
   })
 
+  it('loads an explicit mounted upstream path contract from package metadata', async () => {
+    const slug = await scaffoldDashboard({ gamut: { upstreamPath: 'mounted' } })
+
+    await manager.startDashboard(slug, { forceInstall: false })
+
+    expect(manager.getDashboardUpstreamPathMode(slug)).toBe('mounted')
+  })
+
+  it('defaults dashboards to the stripped upstream path contract', async () => {
+    const slug = await scaffoldDashboard()
+
+    await manager.startDashboard(slug, { forceInstall: false })
+
+    expect(manager.getDashboardUpstreamPathMode(slug)).toBe('stripped')
+  })
+
+  it('warns and safely defaults an invalid upstream path mode', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const slug = await scaffoldDashboard({ gamut: { upstreamPath: 'Mounted' } })
+
+    await manager.startDashboard(slug, { forceInstall: false })
+
+    expect(manager.getDashboardUpstreamPathMode(slug)).toBe('stripped')
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(`Invalid package.json metadata for ${slug}`),
+      expect.anything(),
+    )
+  })
+
   describe('install semantics', () => {
     /** Record every spawn; auto-exit `bun install` procs with queued codes. */
     function recordSpawns(installExitCodes: number[]) {
@@ -304,6 +363,33 @@ describe('DashboardManager log stream lifecycle', () => {
 
       expect(spawns.map((s) => s.args)).toEqual([['install'], ['run', 'start']])
       expect(info.status).toBe('running')
+    })
+
+    it('passes dashboard mount metadata to the dashboard process', async () => {
+      const slug = await scaffoldDashboard()
+      let dashboardEnv: NodeJS.ProcessEnv | undefined
+      process.env.SUPERAGENT_AGENT_ID = 'agent-123'
+      spawnHolder.impl = (_command, args, options) => {
+        const proc = new FakeChildProcess()
+        procs.push(proc)
+        if (args[0] === 'install') {
+          setImmediate(() => proc.exit(0))
+        } else {
+          dashboardEnv = (options as { env?: NodeJS.ProcessEnv }).env
+        }
+        return proc
+      }
+
+      try {
+        await manager.startDashboard(slug)
+      } finally {
+        delete process.env.SUPERAGENT_AGENT_ID
+      }
+
+      expect(dashboardEnv?.DASHBOARD_BASE_PATH).toBe(
+        `/api/agents/agent-123/artifacts/${slug}/`,
+      )
+      expect(dashboardEnv?.DASHBOARD_ARTIFACT_SLUG).toBe(slug)
     })
 
     it('boot start skips install when node_modules is fresh', async () => {

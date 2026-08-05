@@ -1,6 +1,7 @@
 export { BaseWebProvider } from './base-web-provider'
 export { ExaWebProvider } from './exa-web-provider'
 export { PlatformWebProvider } from './platform-web-provider'
+export { WEB_PROVIDER_IDS } from './types'
 export {
   findWebProvider,
   getActiveWebProvider,

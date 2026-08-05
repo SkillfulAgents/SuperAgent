@@ -389,6 +389,35 @@ html[data-keyboard-open] [data-composer-footer] {
   padding-right: 152px;
 }
 
+/* Windows: Chromium paints classic opaque scrollbars (arrow buttons, full-height
+   track) on every overflow container, unlike macOS's auto-hiding overlays.
+   Restyle them app-wide to the same thin muted thumb the app sidebar uses so
+   scrollable areas read the same on both platforms. Custom webkit scrollbars
+   are always painted when content overflows, so scrollability stays visible. */
+.electron-vibrancy-win ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+  background: transparent;
+}
+.electron-vibrancy-win ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.electron-vibrancy-win ::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: hsl(var(--muted-foreground) / 0.25);
+}
+.electron-vibrancy-win ::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--muted-foreground) / 0.4);
+}
+.electron-vibrancy-win ::-webkit-scrollbar-button {
+  display: none;
+}
+.electron-vibrancy-win ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* Delivered file pill hover animation */
 @keyframes boink-down {
   0% { opacity: 0; transform: translateY(-6px); }

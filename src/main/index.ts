@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, nativeTheme, powerMonitor, session, shell, Notification } from 'electron'
-import { execFileSync, exec } from 'child_process'
+import { execFile, execFileSync, exec } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -57,6 +57,7 @@ import { parseAgentDeepLink } from './agent-deep-link'
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
+import { APPLE_PASSWORDS_CHROME_EXTENSION_URL } from '@shared/lib/credentials/apple-passwords-links'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
 // Setting app.name before getPath('userData') changes the resolved directory.
@@ -520,6 +521,28 @@ ipcMain.on('renderer-painted', (event) => {
 // above stays strict (web-only) since it fires for untrusted content.
 ipcMain.handle('open-external', async (_event, url: string) => {
   await safeOpenExternalFromApp(url)
+})
+
+// First-party, argument-free launcher for the exact Apple extension listing.
+// On macOS this targets Chrome explicitly so installation remains one click even
+// when another browser is the system default. No renderer-provided URL or app
+// name reaches execFile.
+ipcMain.handle('open-apple-passwords-extension', async () => {
+  if (process.platform === 'darwin' && fs.existsSync('/Applications/Google Chrome.app')) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile(
+          '/usr/bin/open',
+          ['-a', 'Google Chrome', APPLE_PASSWORDS_CHROME_EXTENSION_URL],
+          (error) => error ? reject(error) : resolve(),
+        )
+      })
+      return
+    } catch (error) {
+      console.warn('Could not open the Apple Passwords extension in Chrome:', error)
+    }
+  }
+  await safeOpenExternalFromApp(APPLE_PASSWORDS_CHROME_EXTENSION_URL)
 })
 
 // IPC handler for launching an elevated PowerShell window (Windows only)
@@ -1086,7 +1109,11 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     try {
       const slug = agentLink.agentSlug
       showOrCreateMainWindow()
-      fetch(`http://localhost:${actualApiPort}/api/agents/${encodeURIComponent(slug)}/sessions`)
+      // Resolved against the effective target, not always the local API: the
+      // renderer interprets the slug on whichever Superagent it is driving, so
+      // the session lookup must ask that same one.
+      const linkBaseUrl = activeApiTarget().baseUrl
+      fetch(`${linkBaseUrl}/api/agents/${encodeURIComponent(slug)}/sessions`)
         .then(res => res.ok ? res.json() : [])
         .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
           if (!Array.isArray(sessions)) return null
@@ -1095,6 +1122,11 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
         })
         .catch(() => null)
         .then((sessionId: string | null) => {
+          // A switch while the lookup was in flight leaves both the slug and
+          // the session id belonging to the previous Superagent — delivering
+          // them navigates the new renderer to someone else's agent. Drop the
+          // link rather than land it wrong.
+          if (activeApiTarget().baseUrl !== linkBaseUrl) return
           sendToMainWindowWhenReady((win) =>
             win.webContents.send('navigate-to-agent', slug, sessionId),
           )
@@ -1447,7 +1479,6 @@ async function startApp() {
   // Bind the API server atomically, retrying on a port race until a port is
   // claimed (no probe-then-bind TOCTOU gap; an EADDRINUSE retries instead of
   // crashing the app via uncaughtException). See bindServerWithRetry.
-  let boundPort: number
   try {
     const bound = await bindServerWithRetry(api.fetch, {
       startPort: DEFAULT_API_PORT,
@@ -1459,7 +1490,6 @@ async function startApp() {
     // server, so update both the module state and process.env.PORT.
     actualApiPort = bound.port
     process.env.PORT = String(bound.port)
-    boundPort = bound.port
     // Wire server-level handlers (WebSocket proxies, etc.) on the bound server.
     setupServerHandlers(bound.server)
     console.log(`API server running on http://localhost:${bound.port}`)
@@ -1503,13 +1533,16 @@ async function startApp() {
 
   createWindow()
 
-  // Create the application menu (macOS menu bar)
-  createAppMenu(mainWindow, boundPort)
+  // Create the application menu (macOS menu bar). The getter re-resolves the
+  // effective base URL on every poll, so the Agents menu and the tray follow a
+  // target switch (via the keyed cloud proxy) instead of always listing this
+  // machine's agents.
+  createAppMenu(mainWindow, () => activeApiTarget().baseUrl)
 
   // Create system tray if enabled in settings
   const settings = getSettings()
   if (settings.app?.showMenuBarIcon !== false) {
-    createTray(mainWindow, boundPort)
+    createTray(mainWindow, () => activeApiTarget().baseUrl)
   }
 
   // Restore keep-awake state from previous session (after window is ready so dialogs display correctly)

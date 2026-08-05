@@ -6,6 +6,8 @@ import {
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { closeQuickDispatchWindow } from './quick-dispatch-window'
 import { closeAllDashboardWindows } from './dashboard-window'
+import { refreshTrayMenu } from './tray'
+import { refreshAppMenu } from './app-menu'
 
 /**
  * Main-process side of "which Superagent is this app driving?".
@@ -60,4 +62,10 @@ export function applyPreferredApiTarget(target: unknown): void {
   closeQuickDispatchWindow()
   closeAllDashboardWindows()
   if (next === 'cloud') startCloudBootPrefetch()
+  // The tray and the app menu's Agents submenu resolve the effective base URL
+  // on every fetch, so the preference write above is all they need — but they
+  // poll on a 30s interval, which would leave the previous Superagent's agents
+  // on screen for up to that long. Kick them now.
+  refreshTrayMenu()
+  refreshAppMenu()
 }

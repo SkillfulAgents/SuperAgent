@@ -105,6 +105,8 @@ export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
   autoSleepTimeoutMinutes?: number
+  /** Pre-start the agent container when the user begins typing a first message. */
+  warmStartOnType?: boolean
   autoDeleteInactiveDays?: number
   setupCompleted?: boolean
   accountProvider?: AccountProviderType
@@ -120,6 +122,8 @@ export interface AppPreferences {
    */
   globalDispatchShortcut?: string
   maxBrowserTabs?: number
+  /** Password-manager providers the user has chosen in Browser Use settings. */
+  configuredPasswordManagers?: string[]
   faviconDataUrl?: string
   faviconUpdatedAt?: string
 
@@ -196,8 +200,8 @@ export interface AnalyticsTarget {
   enabled: boolean
 }
 
-export type { LlmProviderId } from '../llm-provider/base-llm-provider'
-import type { LlmProviderId } from '../llm-provider/base-llm-provider'
+export type { LlmProviderId } from '../llm-provider/provider-types'
+import type { LlmProviderId } from '../llm-provider/provider-types'
 export type { WebProviderId } from '../web-provider/types'
 import type { WebProviderId } from '../web-provider/types'
 
@@ -399,6 +403,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   app: {
     showMenuBarIcon: true,
     autoSleepTimeoutMinutes: 30,
+    warmStartOnType: true,
     globalDispatchShortcut: DEFAULT_GLOBAL_DISPATCH_SHORTCUT,
     notifications: {
       enabled: true,

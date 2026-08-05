@@ -33,7 +33,12 @@ export function IntegrationList({ children, className, variant = 'list' }: Integ
 
 interface IntegrationRowProps {
   iconSlug?: string
-  iconFallback: IntegrationIconFallback
+  iconFallback?: IntegrationIconFallback
+  /**
+   * Custom icon node rendered inside the muted square instead of ServiceIcon;
+   * pass `null` to omit the icon square entirely.
+   */
+  icon?: ReactNode | null
   name: ReactNode
   /** Inline badge/chip rendered next to the name on the same row. */
   nameBadge?: ReactNode
@@ -64,6 +69,7 @@ interface IntegrationRowProps {
 export function IntegrationRow({
   iconSlug,
   iconFallback,
+  icon,
   name,
   nameBadge,
   subtitle,
@@ -102,13 +108,17 @@ export function IntegrationRow({
       }
     >
       <div className="flex items-center gap-3">
-        <div className="h-7 w-7 rounded-md bg-muted dark:bg-zinc-200 flex items-center justify-center shrink-0">
-          <ServiceIcon
-            slug={iconSlug}
-            fallback={iconFallback}
-            className="h-4 w-4 text-muted-foreground/60"
-          />
-        </div>
+        {icon !== null && (
+          <div className="h-7 w-7 rounded-md bg-muted dark:bg-zinc-200 flex items-center justify-center shrink-0">
+            {icon ?? (
+              <ServiceIcon
+                slug={iconSlug}
+                fallback={iconFallback ?? 'blocks'}
+                className="h-4 w-4 text-muted-foreground/60"
+              />
+            )}
+          </div>
+        )}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 min-w-0">
             <span className="text-xs font-medium truncate">{name}</span>

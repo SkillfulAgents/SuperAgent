@@ -11,13 +11,11 @@ import type {
   VoiceSettings,
   AnalyticsTarget,
   LlmProviderId,
-  WebProviderId,
-  AgentCapabilitySettings,
 } from '@shared/lib/config/settings'
-import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
+import type { SettingsPatch } from '@shared/lib/config/settings-patch'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 import type { RunnerSetupRemediation } from '@shared/lib/container/wsl2-setup-errors'
-import type { ModelCatalogSettings, ModelSearchResult } from '@shared/lib/llm-provider'
+import type { ModelSearchResult } from '@shared/lib/llm-provider'
 
 export type { GlobalSettingsResponse, ModelPickerSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability, RunnerSetupRemediation }
 
@@ -32,6 +30,23 @@ export function useSettings(options?: { enabled?: boolean }) {
     refetchInterval: 60000, // Poll less frequently - container status is cached server-side
     enabled: options?.enabled,
   })
+}
+
+/** Default-on preference; treat missing as enabled. */
+export function isWarmStartOnTypeEnabled(
+  settings?: Pick<GlobalSettingsResponse, 'app'> | null,
+): boolean {
+  return settings?.app?.warmStartOnType !== false
+}
+
+/**
+ * Whether warm-start-on-type should fire. Returns false until settings have
+ * loaded so a disabled preference cannot race a speculative start.
+ */
+export function useWarmStartOnTypeEnabled(): boolean {
+  const { data, isSuccess } = useSettings()
+  if (!isSuccess) return false
+  return isWarmStartOnTypeEnabled(data)
 }
 
 /**
@@ -74,44 +89,8 @@ export function useProviderModelSearch(
   })
 }
 
-export interface UpdateSettingsParams {
-  container?: Partial<ContainerSettings>
-  app?: Omit<Partial<AppPreferences>, 'faviconDataUrl'> & { faviconDataUrl?: string | null }
-  llmProvider?: LlmProviderId
-  // null clears to auto-resolve (server stores undefined).
-  webProvider?: WebProviderId | null
-  apiKeys?: {
-    anthropicApiKey?: string
-    openrouterApiKey?: string
-    genericApiKey?: string
-    genericBaseUrl?: string
-    bedrockApiKey?: string
-    bedrockAccessKeyId?: string
-    bedrockSecretAccessKey?: string
-    bedrockRegion?: string
-    composioApiKey?: string
-    composioUserId?: string
-    browserbaseApiKey?: string
-    browserbaseProjectId?: string
-    deepgramApiKey?: string
-    openaiApiKey?: string
-    nangoSecretKey?: string
-    accountProviderUserId?: string
-    exaApiKey?: string
-  }
-  models?: Partial<ModelSettings>
-  modelCatalog?: ModelCatalogSettings
-  agentLimits?: Partial<AgentLimitsSettings>
-  customEnvVars?: Record<string, string>
-  auth?: Partial<AuthSettings>
-  voice?: Partial<VoiceSettings>
-  computerUse?: Partial<ComputerUseSettings>
-  shareAnalytics?: boolean
-  analyticsTargets?: AnalyticsTarget[]
-  shareErrorReports?: boolean
-  enableToolSearch?: boolean
-  agentCapabilities?: Partial<AgentCapabilitySettings>
-}
+/** Inferred from the same runtime schema enforced by PUT /api/settings. */
+export type UpdateSettingsParams = SettingsPatch
 
 export interface UpdateSettingsError {
   error: string

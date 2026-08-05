@@ -9,16 +9,26 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { applyPreferredApiTarget, resolveApiTargetForRenderer } from './api-target'
 
-const { closeQuickDispatchWindow, closeAllDashboardWindows, startCloudBootPrefetch, settings } =
-  vi.hoisted(() => ({
-    closeQuickDispatchWindow: vi.fn(),
-    closeAllDashboardWindows: vi.fn(),
-    startCloudBootPrefetch: vi.fn(),
-    settings: { value: {} as Record<string, unknown> },
-  }))
+const {
+  closeQuickDispatchWindow,
+  closeAllDashboardWindows,
+  startCloudBootPrefetch,
+  refreshTrayMenu,
+  refreshAppMenu,
+  settings,
+} = vi.hoisted(() => ({
+  closeQuickDispatchWindow: vi.fn(),
+  closeAllDashboardWindows: vi.fn(),
+  startCloudBootPrefetch: vi.fn(),
+  refreshTrayMenu: vi.fn(),
+  refreshAppMenu: vi.fn(),
+  settings: { value: {} as Record<string, unknown> },
+}))
 
 vi.mock('./quick-dispatch-window', () => ({ closeQuickDispatchWindow }))
 vi.mock('./dashboard-window', () => ({ closeAllDashboardWindows }))
+vi.mock('./tray', () => ({ refreshTrayMenu }))
+vi.mock('./app-menu', () => ({ refreshAppMenu }))
 vi.mock('@shared/lib/services/cloud-boot-prefetch', () => ({ startCloudBootPrefetch }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -37,6 +47,8 @@ beforeEach(() => {
   closeQuickDispatchWindow.mockClear()
   closeAllDashboardWindows.mockClear()
   startCloudBootPrefetch.mockClear()
+  refreshTrayMenu.mockClear()
+  refreshAppMenu.mockClear()
 })
 
 describe('resolveApiTargetForRenderer', () => {
@@ -111,6 +123,21 @@ describe('applyPreferredApiTarget', () => {
   it('refuses to store an unrecognized target', () => {
     applyPreferredApiTarget('somewhere-else')
     expect(settings.value.apiTarget).toBe('local')
+  })
+
+  it('rebuilds the tray and app menu now, instead of waiting out their poll', () => {
+    // Both list agents from the effective target; on their 30s interval the
+    // previous Superagent's agents would sit in the menus for up to that long.
+    applyPreferredApiTarget('cloud')
+    expect(refreshTrayMenu).toHaveBeenCalled()
+    expect(refreshAppMenu).toHaveBeenCalled()
+  })
+
+  it('rebuilds them switching back to local too', () => {
+    settings.value.apiTarget = 'cloud'
+    applyPreferredApiTarget('local')
+    expect(refreshTrayMenu).toHaveBeenCalled()
+    expect(refreshAppMenu).toHaveBeenCalled()
   })
 
   it('starts the workspace round trips here, before the reload', () => {
