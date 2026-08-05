@@ -31,6 +31,8 @@ export const sessionMetadataSchema = z
   })
   .passthrough();
 
-export const persistedSessionsSchema = z.record(z.string(), sessionMetadataSchema);
+// Parse the file envelope separately from each record so one session written
+// by a newer build (or hand-edited badly) cannot discard every valid session.
+export const persistedSessionsFileSchema = z.record(z.string(), z.unknown());
 
 export type SessionMetadata = z.infer<typeof sessionMetadataSchema>;

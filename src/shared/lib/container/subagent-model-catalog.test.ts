@@ -41,4 +41,24 @@ describe('getSubagentModelCatalog', () => {
 
     expect(getSubagentModelCatalog('openrouter').some((model) => model.id === 'openai/gpt-5.5')).toBe(false)
   })
+
+  it('warns when the effective catalog exceeds the subagent cap', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    settingsMock.mockReturnValue({
+      llmProvider: 'openrouter',
+      modelCatalog: {
+        openrouter: {
+          overrides: Array.from({ length: MAX_SUBAGENT_MODELS + 1 }, (_, index) => ({
+            id: `custom/model-${index}`,
+            label: `Custom ${index}`,
+            supportedEfforts: ['low', 'medium', 'high'],
+          })),
+        },
+      },
+    })
+
+    expect(getSubagentModelCatalog('openrouter')).toHaveLength(MAX_SUBAGENT_MODELS)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('only the first 32'))
+    warn.mockRestore()
+  })
 })

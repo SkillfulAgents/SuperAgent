@@ -51,4 +51,29 @@ describe('model-backed subagents', () => {
       ),
     ).toThrow();
   });
+
+  it('swaps globally-disabled native web tools for configured host vendor tools', () => {
+    const definitions = buildModelSubagentDefinitions(models, 'exa', 'exa');
+    const gptTools = definitions[subagentTypeForModel(models[0])].tools;
+    const sonnetTools = definitions[subagentTypeForModel(models[1])].tools;
+
+    expect(gptTools).toContain('mcp__web__web_search');
+    expect(gptTools).toContain('mcp__web__web_fetch');
+    expect(gptTools).not.toContain('WebSearch');
+    expect(gptTools).not.toContain('WebFetch');
+    expect(sonnetTools).toContain('mcp__web__web_search');
+    expect(sonnetTools).toContain('mcp__web__web_fetch');
+    expect(sonnetTools).not.toContain('WebSearch');
+    expect(sonnetTools).not.toContain('WebFetch');
+  });
+
+  it('only swaps the native web capability whose host vendor is active', () => {
+    const definitions = buildModelSubagentDefinitions(models, 'exa');
+    const sonnetTools = definitions[subagentTypeForModel(models[1])].tools;
+
+    expect(sonnetTools).toContain('mcp__web__web_search');
+    expect(sonnetTools).not.toContain('WebSearch');
+    expect(sonnetTools).toContain('WebFetch');
+    expect(sonnetTools).not.toContain('mcp__web__web_fetch');
+  });
 });

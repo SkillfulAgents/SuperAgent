@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import { writeFileAtomicSync } from './atomic-file';
 import type { AgentCapabilityPolicies, EffortLevel, SpeedLevel } from './types';
 import {
-  persistedSessionsSchema,
+  persistedSessionsFileSchema,
   sessionMetadataSchema,
   type SessionMetadata,
 } from './session-persistence-schema';
@@ -34,8 +34,20 @@ export class SessionPersistence {
     }
 
     try {
-      const sessions = persistedSessionsSchema.parse(JSON.parse(data));
-      this.sessions = new Map(Object.entries(sessions));
+      const rawSessions = persistedSessionsFileSchema.parse(JSON.parse(data));
+      const sessions = new Map<string, SessionMetadata>();
+      for (const [sessionId, rawSession] of Object.entries(rawSessions)) {
+        const parsed = sessionMetadataSchema.safeParse(rawSession);
+        if (!parsed.success) {
+          console.error(
+            `Dropping invalid persisted session "${sessionId}":`,
+            parsed.error.issues[0]?.message ?? parsed.error.message,
+          );
+          continue;
+        }
+        sessions.set(sessionId, parsed.data);
+      }
+      this.sessions = sessions;
       console.log(`Loaded ${this.sessions.size} persisted sessions`);
     } catch (error) {
       // Corrupt JSON (e.g. a torn write from an older build, or disk damage). Do

@@ -809,7 +809,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...remoteMcpConfigs,
       },
       agents: {
-        ...buildModelSubagentDefinitions(this.subagentModels),
+        ...buildModelSubagentDefinitions(
+          this.subagentModels,
+          this.webSearchProvider,
+          this.webFetchProvider,
+        ),
         'web-browser': {
           description: 'Web browsing specialist. Delegate any task that requires interacting with websites — navigating pages, filling forms, clicking buttons, extracting information, searching for products, changing settings on web services, or any multi-step web interaction. The browser should already be open (use browser_open first). This agent runs on a cheaper model and handles all browser interactions autonomously.',
           // Host-resolved concrete wire id for the browser model (any provider/

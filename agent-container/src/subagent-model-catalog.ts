@@ -1,6 +1,8 @@
 import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 
+// Keep in sync with src/shared/lib/container/subagent-model-catalog.ts. The
+// container package cannot import the host application's @shared modules.
 export const MAX_SUBAGENT_MODELS = 32;
 
 export const subagentModelDefinitionSchema = z.object({
@@ -71,15 +73,29 @@ function modelPrompt(model: SubagentModelDefinition): string {
   return `Complete the delegated task independently using the exact model configured for this subagent. Return a concise result with relevant evidence. Do not delegate the task to another agent.${hints}`;
 }
 
-function directToolsForModel(model: SubagentModelDefinition): string[] {
+function directToolsForModel(
+  model: SubagentModelDefinition,
+  webSearchProvider?: string,
+  webFetchProvider?: string,
+): string[] {
   const tools = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'];
-  if (model.supportsWebSearch !== false) tools.push('WebSearch');
-  if ((model.supportsWebFetch ?? model.supportsWebSearch) !== false) tools.push('WebFetch');
+  if (webSearchProvider) {
+    tools.push('mcp__web__web_search');
+  } else if (model.supportsWebSearch !== false) {
+    tools.push('WebSearch');
+  }
+  if (webFetchProvider) {
+    tools.push('mcp__web__web_fetch');
+  } else if ((model.supportsWebFetch ?? model.supportsWebSearch) !== false) {
+    tools.push('WebFetch');
+  }
   return tools;
 }
 
 export function buildModelSubagentDefinitions(
   models: SubagentModelDefinition[],
+  webSearchProvider?: string,
+  webFetchProvider?: string,
 ): Record<string, AgentDefinition> {
   return Object.fromEntries(
     models.map((model) => [
@@ -88,7 +104,7 @@ export function buildModelSubagentDefinitions(
         description: modelDescription(model),
         model: model.id,
         prompt: modelPrompt(model),
-        tools: directToolsForModel(model),
+        tools: directToolsForModel(model, webSearchProvider, webFetchProvider),
       },
     ]),
   );
