@@ -227,8 +227,9 @@ describe('subagent capability gating', () => {
       [{ id: 'openai/gpt-5.5', label: 'GPT 5.5' }],
     )
 
-    expect(withoutCatalog).not.toContain('General-purpose `model-*` subagent types')
-    expect(withCatalog).toContain('General-purpose `model-*` subagent types')
+    expect(withoutCatalog).not.toContain('You can use a different model')
+    expect(withCatalog).toContain('You can use a different model')
+    expect(withCatalog).toContain('latest enabled model in an available model family')
     expect(withCatalog).toContain("omit the Agent tool's `model` argument")
   })
 
