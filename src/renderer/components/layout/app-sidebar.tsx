@@ -746,14 +746,11 @@ export function AppSidebar() {
   useEffect(() => {
     if (isMobile) setOpenMobile(false)
   }, [locationHref, isMobile, setOpenMobile])
+  const drivingCloud = isElectron() && targetIsRemote()
   const { data: platformAuth } = usePlatformAuthStatus()
-  // IPC-backed: safe in cloud mode (HTTP would proxy to the remote host-app).
-  const cloudWorkspaceQueryEnabled =
-    isElectron() && (targetIsRemote() || platformAuth?.connected === true)
-  const { data: cloudWorkspace } = useCloudWorkspace(
-    cloudWorkspaceQueryEnabled,
-    platformAuth?.orgId,
-  )
+  // Only needed while driving cloud (footer shows that deployment's version).
+  // IPC-backed so the query does not proxy to the remote host-app.
+  const { data: cloudWorkspace } = useCloudWorkspace(drivingCloud, platformAuth?.orgId)
   const { data: agents, isLoading, error } = useAgents()
   // Whether to offer Explore is two round trips deep — skillsets, and only then
   // the discoverable agents they contain — so the item arrives after the rest of
@@ -1047,7 +1044,7 @@ export function AppSidebar() {
             <span>Settings</span>
           </SidebarMenuButton>
           <SidebarVersion
-            cloudConnected={cloudWorkspace?.found === true}
+            drivingCloud={drivingCloud}
             cloudVersion={cloudWorkspace?.superagentVersion ?? null}
             onOpenUpdates={() => openSettings('general')}
           />

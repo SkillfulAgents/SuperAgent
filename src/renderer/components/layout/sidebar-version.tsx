@@ -1,32 +1,29 @@
-import { appVersionsMatch, formatAppVersion } from '@shared/lib/config/app-version'
+import { formatAppVersion } from '@shared/lib/config/app-version'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
 
-/** Sidebar version chip: local + cloud when connected; amber cue on drift. */
+/** Sidebar version chip: local build, or cloud deployment version when driving cloud. */
 export function SidebarVersion({
+  drivingCloud,
   cloudVersion,
-  cloudConnected,
   onOpenUpdates,
 }: {
+  /** True when this window is driving the cloud workspace. */
+  drivingCloud: boolean
   /** Platform-discovered cloud deployment version, or null when unknown. */
   cloudVersion: string | null
-  /** True when a cloud workspace is found (token optional for display). */
-  cloudConnected: boolean
   onOpenUpdates: () => void
 }) {
   const updateStatus = useUpdateStatus()
   const updateAvailable = updateStatus.state === 'available' || updateStatus.state === 'downloaded'
   const localLabel = formatAppVersion(__APP_VERSION__)
   const cloudLabel = cloudVersion ? formatAppVersion(cloudVersion) : null
-  const drifted =
-    cloudConnected && cloudLabel != null && !appVersionsMatch(__APP_VERSION__, cloudVersion!)
+  const label = drivingCloud && cloudLabel ? cloudLabel : localLabel
 
   let title: string | undefined
-  if (drifted) {
-    title = `Local ${localLabel} · Cloud ${cloudLabel}`
-  } else if (updateAvailable) {
+  if (updateAvailable) {
     title = `Update available: v${updateStatus.version}`
-  } else if (cloudConnected && cloudLabel) {
-    title = `Local and cloud: ${localLabel}`
+  } else if (drivingCloud && cloudLabel) {
+    title = `Cloud workspace ${cloudLabel}`
   }
 
   return (
@@ -37,23 +34,15 @@ export function SidebarVersion({
       title={title}
       data-testid="sidebar-version"
     >
-      {drifted ? (
-        <span
-          className="h-2 w-2 rounded-full bg-amber-500"
-          aria-label="Cloud and local versions differ"
-          data-testid="sidebar-version-drift"
-        />
-      ) : updateAvailable ? (
+      {updateAvailable && (
         <span className="h-2 w-2 rounded-full bg-blue-500" aria-label="Update available" />
-      ) : null}
+      )}
       <span>
-        {localLabel}
-        {cloudConnected && cloudLabel ? (
-          <>
-            {' · '}
-            <span data-testid="sidebar-cloud-version">cloud {cloudLabel}</span>
-          </>
-        ) : null}
+        {drivingCloud && cloudLabel ? (
+          <span data-testid="sidebar-cloud-version">cloud {cloudLabel}</span>
+        ) : (
+          label
+        )}
       </span>
     </button>
   )

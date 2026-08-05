@@ -20,66 +20,45 @@ describe('SidebarVersion', () => {
     mockUseUpdateStatus.mockReturnValue({ state: 'idle' })
   })
 
-  it('shows only the local version when no cloud workspace is connected', () => {
+  it('shows the local version when driving local', () => {
     render(
       <SidebarVersion
-        cloudConnected={false}
-        cloudVersion={null}
+        drivingCloud={false}
+        cloudVersion="v0.5.0"
         onOpenUpdates={onOpenUpdates}
       />,
     )
     expect(screen.getByTestId('sidebar-version')).toHaveTextContent('v0.5.1-rc.1')
     expect(screen.queryByTestId('sidebar-cloud-version')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('sidebar-version-drift')).not.toBeInTheDocument()
   })
 
-  it('shows cloud version without a drift cue when versions match', () => {
+  it('shows the cloud version when driving cloud', () => {
     render(
-      <SidebarVersion
-        cloudConnected
-        cloudVersion="v0.5.1-rc.1"
-        onOpenUpdates={onOpenUpdates}
-      />,
-    )
-    expect(screen.getByTestId('sidebar-cloud-version')).toHaveTextContent('cloud v0.5.1-rc.1')
-    expect(screen.queryByTestId('sidebar-version-drift')).not.toBeInTheDocument()
-    expect(screen.getByTestId('sidebar-version')).toHaveAttribute(
-      'title',
-      'Local and cloud: v0.5.1-rc.1',
-    )
-  })
-
-  it('shows an amber drift cue when cloud and local differ', () => {
-    render(
-      <SidebarVersion cloudConnected cloudVersion="v0.5.0" onOpenUpdates={onOpenUpdates} />,
+      <SidebarVersion drivingCloud cloudVersion="v0.5.0" onOpenUpdates={onOpenUpdates} />,
     )
     expect(screen.getByTestId('sidebar-cloud-version')).toHaveTextContent('cloud v0.5.0')
-    expect(screen.getByTestId('sidebar-version-drift')).toBeInTheDocument()
     expect(screen.getByTestId('sidebar-version')).toHaveAttribute(
       'title',
-      'Local v0.5.1-rc.1 · Cloud v0.5.0',
+      'Cloud workspace v0.5.0',
     )
   })
 
-  it('treats bare and v-prefixed cloud versions as equal to local', () => {
+  it('falls back to local version in cloud mode when cloud version is unknown', () => {
     render(
-      <SidebarVersion
-        cloudConnected
-        cloudVersion="0.5.1-rc.1"
-        onOpenUpdates={onOpenUpdates}
-      />,
+      <SidebarVersion drivingCloud cloudVersion={null} onOpenUpdates={onOpenUpdates} />,
     )
-    expect(screen.queryByTestId('sidebar-version-drift')).not.toBeInTheDocument()
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent('v0.5.1-rc.1')
+    expect(screen.queryByTestId('sidebar-cloud-version')).not.toBeInTheDocument()
   })
 
-  it('keeps the electron update cue when not drifted', () => {
+  it('keeps the electron update cue', () => {
     mockUseUpdateStatus.mockReturnValue({
       state: 'available',
       version: '0.5.2',
     } as never)
     render(
       <SidebarVersion
-        cloudConnected={false}
+        drivingCloud={false}
         cloudVersion={null}
         onOpenUpdates={onOpenUpdates}
       />,
@@ -94,7 +73,7 @@ describe('SidebarVersion', () => {
   it('opens updates settings on click', async () => {
     render(
       <SidebarVersion
-        cloudConnected={false}
+        drivingCloud={false}
         cloudVersion={null}
         onOpenUpdates={onOpenUpdates}
       />,
