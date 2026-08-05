@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
 import { captureDashboardScreenshot, type ScreenshotResult } from './dashboard-screenshot'
+import { DashboardPackageSchema } from './dashboard-package-schema'
 
 const SCREENSHOT_FILENAME = 'screenshot.png'
 
@@ -90,11 +91,23 @@ export function getDashboardBasePath(
 }
 
 export type DashboardStatus = 'running' | 'stopped' | 'crashed' | 'starting'
+export type DashboardUpstreamPathMode = 'stripped' | 'mounted'
+
+export function getDashboardValidationUrl(
+  slug: string,
+  port: number,
+  mode: DashboardUpstreamPathMode,
+  agentId?: string,
+): string {
+  const pathname = mode === 'mounted' ? (getDashboardBasePath(slug, agentId) ?? '/') : '/'
+  return `http://localhost:${port}${pathname}`
+}
 
 interface DashboardInfo {
   slug: string
   name: string
   description: string
+  upstreamPathMode: DashboardUpstreamPathMode
   port: number
   status: DashboardStatus
   process: ChildProcess | null
@@ -173,19 +186,29 @@ class DashboardManager {
       return { ok: false, reason: `Dashboard ${slug} is not running` }
     }
     const outPath = path.join(ARTIFACTS_DIR, slug, SCREENSHOT_FILENAME)
-    return captureDashboardScreenshot(`http://localhost:${info.port}/`, outPath)
+    const url = getDashboardValidationUrl(slug, info.port, info.upstreamPathMode)
+    return captureDashboardScreenshot(url, outPath)
   }
 
-  private readPackageJson(slug: string): { name: string; description: string } {
+  private readPackageJson(slug: string): {
+    name: string
+    description: string
+    upstreamPathMode: DashboardUpstreamPathMode
+  } {
     try {
       const pkgPath = path.join(ARTIFACTS_DIR, slug, 'package.json')
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
+      const pkg = DashboardPackageSchema.parse(JSON.parse(fs.readFileSync(pkgPath, 'utf-8')))
       return {
         name: pkg.name || slug,
         description: pkg.description || '',
+        upstreamPathMode: pkg.gamut?.upstreamPath === 'mounted' ? 'mounted' : 'stripped',
       }
-    } catch {
-      return { name: slug, description: '' }
+    } catch (error) {
+      console.warn(
+        `[DashboardManager] Invalid package.json metadata for ${slug}; using safe defaults:`,
+        error,
+      )
+      return { name: slug, description: '', upstreamPathMode: 'stripped' }
     }
   }
 
@@ -217,7 +240,7 @@ class DashboardManager {
       this.closeLogStream(existing)
     }
 
-    const { name, description } = this.readPackageJson(slug)
+    const { name, description, upstreamPathMode } = this.readPackageJson(slug)
     const port = existing?.port ?? this.nextPort++
     const dashboardDir = path.join(ARTIFACTS_DIR, slug)
     const logPath = path.join(dashboardDir, 'dashboard.log')
@@ -226,6 +249,7 @@ class DashboardManager {
       slug,
       name,
       description,
+      upstreamPathMode,
       port,
       status: 'starting',
       process: null,
@@ -531,6 +555,10 @@ class DashboardManager {
     const info = this.dashboards.get(slug)
     if (!info || info.status !== 'running') return null
     return info.port
+  }
+
+  getDashboardUpstreamPathMode(slug: string): DashboardUpstreamPathMode {
+    return this.dashboards.get(slug)?.upstreamPathMode ?? 'stripped'
   }
 
   async getDashboardLogs(slug: string, clear: boolean = false): Promise<string> {
