@@ -38,6 +38,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     file \
     tree \
+    # Document/media reading (formats the product renders)
+    poppler-utils \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x
