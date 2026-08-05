@@ -8,10 +8,3 @@ export function formatAppVersion(version: string): string {
   const normalized = normalizeAppVersion(version)
   return normalized ? `v${normalized}` : ''
 }
-
-/** True when both strings name the same release after `v`-normalization. */
-export function appVersionsMatch(left: string, right: string): boolean {
-  const a = normalizeAppVersion(left)
-  const b = normalizeAppVersion(right)
-  return a.length > 0 && a === b
-}

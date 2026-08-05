@@ -21,8 +21,15 @@ export interface CloudWorkspaceResponse {
 }
 
 /**
- * Cloud-workspace status. Prefers IPC in Electron (works in cloud mode); HTTP
- * fallback for tests. `orgId` is a cache key so org A's URL can't flash under B.
+ * Cloud-workspace status. Prefers IPC in Electron — in cloud mode HTTP would
+ * proxy to the deployment, which self-gates and answers "not available" about
+ * itself. The HTTP path serves non-Electron renderers (web) and tests.
+ *
+ * `orgId` is part of the cache key, not just a parameter: the response carries
+ * a deployment URL the user can click "Open" on, and a single global key would
+ * let one account's workspace render under another's while the refetch is
+ * still in flight. Connect/reconnect additionally *resets* this key — see
+ * `use-platform-auth`.
  */
 export function useCloudWorkspace(enabled: boolean, orgId?: string | null) {
   return useQuery<CloudWorkspaceResponse>({
