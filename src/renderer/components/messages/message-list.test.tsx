@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act } from '@testing-library/react'
 import { useState } from 'react'
 import { MessageList } from './message-list'
@@ -155,6 +155,10 @@ describe('MessageList', () => {
       discardedCommandUuids: [],
       thinkingBlocks: [],
     })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   it('shows loading spinner', () => {
@@ -1876,6 +1880,209 @@ describe('MessageList', () => {
       // Pinned to bottom: the slice slides so the DOM stays bounded — m5 drops off.
       expect(screen.queryByText('m5')).not.toBeInTheDocument()
       expect(screen.getByText('m305')).toBeInTheDocument()
+    })
+  })
+
+  describe('new-turn scroll anchoring', () => {
+    const pending = { localId: 'pending-turn', text: 'What changed?', sentAt: Date.now() }
+
+    function mockTurnGeometry(el: HTMLElement, { reducedMotion = true } = {}) {
+      let naturalScrollHeight = 1300
+      let scrollTop = 700
+      const anchorDocumentTop = 1200
+      const spacer = screen.getByTestId('turn-anchor-spacer')
+
+      vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+        matches: reducedMotion && query === '(prefers-reduced-motion: reduce)',
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }) as unknown as MediaQueryList)
+
+      Object.defineProperty(el, 'scrollHeight', {
+        configurable: true,
+        get: () => naturalScrollHeight + (Number.parseFloat(spacer.style.height) || 0),
+      })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 600 })
+      Object.defineProperty(el, 'scrollTop', {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => { scrollTop = value },
+      })
+
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        const top = this === el
+          ? 0
+          : (this as HTMLElement).dataset.turnAnchorId
+            ? anchorDocumentTop - scrollTop
+            : 0
+        return {
+          x: 0,
+          y: top,
+          top,
+          bottom: top,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: 0,
+          toJSON: () => ({}),
+        }
+      })
+
+      return {
+        get scrollTop() { return scrollTop },
+        setScrollTop(value: number) { scrollTop = value },
+        setNaturalScrollHeight(value: number) { naturalScrollHeight = value },
+      }
+    }
+
+    it('places a newly sent message 100px from the top and reserves room below it', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      rerender(
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[pending]}
+        />,
+      )
+
+      const anchor = screen.getByText('What changed?').closest('[data-turn-anchor-id]') as HTMLElement
+      expect(anchor.getBoundingClientRect().top).toBe(100)
+      expect(geometry.scrollTop).toBe(1100)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+    })
+
+    it('animates the new turn to its reading line with eased progress', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el, { reducedMotion: false })
+      const frames: FrameRequestCallback[] = []
+      vi.spyOn(performance, 'now').mockReturnValue(0)
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+        frames.push(callback)
+        return frames.length
+      })
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+
+      expect(geometry.scrollTop).toBe(700)
+      expect(frames).toHaveLength(1)
+
+      act(() => frames.shift()!(110))
+      expect(geometry.scrollTop).toBeGreaterThan(700)
+      expect(geometry.scrollTop).toBeLessThan(1100)
+
+      act(() => frames.shift()!(220))
+      expect(geometry.scrollTop).toBe(1100)
+    })
+
+    it('spends the reserved room before following streamed content at the live edge', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const geometry = mockTurnGeometry(screen.getByTestId('message-list'))
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+
+      geometry.setNaturalScrollHeight(1550)
+      mockStreamState.streamingMessage = 'The response is growing'
+      mockStreamState.isStreaming = true
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(1100)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '150px' })
+
+      geometry.setNaturalScrollHeight(1800)
+      mockStreamState.streamingMessage = 'The response has reached the live edge and keeps growing'
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
+      expect(geometry.scrollTop).toBe(1200)
+    })
+
+    it('discards reserved room before the reader can leave the live edge', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+
+      fireEvent.wheel(el, { deltaY: -80 })
+      geometry.setScrollTop(1020)
+      fireEvent.scroll(el)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '320px' })
+      expect(geometry.scrollTop).toBe(1020)
+
+      geometry.setScrollTop(700)
+      fireEvent.scroll(el)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
+
+      fireEvent.wheel(el, { deltaY: -200 })
+      geometry.setScrollTop(500)
+      fireEvent.scroll(el)
+      const releasedScrollTop = geometry.scrollTop
+      geometry.setNaturalScrollHeight(1900)
+      mockStreamState.streamingMessage = 'More output after the user took control'
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(releasedScrollTop)
+    })
+
+    it('follows within 80px of the bottom and resumes when the reader returns', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      // A wheel gesture that remains within the 80px live-edge threshold must
+      // not opt the session out of following.
+      fireEvent.wheel(el, { deltaY: -50 })
+      geometry.setScrollTop(650)
+      fireEvent.scroll(el)
+      geometry.setNaturalScrollHeight(1400)
+      mockStreamState.streamingMessage = 'First streamed update'
+      mockStreamState.isStreaming = true
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(geometry.scrollTop).toBe(800)
+
+      // Moving farther away pauses following.
+      fireEvent.wheel(el, { deltaY: -200 })
+      geometry.setScrollTop(600)
+      fireEvent.scroll(el)
+      geometry.setNaturalScrollHeight(1500)
+      mockStreamState.streamingMessage = 'Second streamed update'
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(geometry.scrollTop).toBe(600)
+
+      // Returning within 80px restores following for subsequent content.
+      fireEvent.wheel(el, { deltaY: 250 })
+      geometry.setScrollTop(850)
+      fireEvent.scroll(el)
+      geometry.setNaturalScrollHeight(1600)
+      mockStreamState.streamingMessage = 'Third streamed update'
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(geometry.scrollTop).toBe(1000)
     })
   })
 

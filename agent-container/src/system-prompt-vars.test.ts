@@ -215,6 +215,38 @@ describe('subagent capability gating', () => {
     expect(render({ workflows: 'block' })).toBe(render(undefined))
   })
 
+  it('teaches exact model routing only when model-backed subagents are available', () => {
+    const withoutCatalog = generateSystemPrompt()
+    const withCatalog = generateSystemPrompt(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [{ id: 'openai/gpt-5.5', label: 'GPT 5.5' }],
+    )
+
+    expect(withoutCatalog).not.toContain('You can use a different model')
+    expect(withCatalog).toContain('You can use a different model')
+    expect(withCatalog).toContain('latest enabled model in an available model family')
+    expect(withCatalog).toContain("omit the Agent tool's `model` argument")
+  })
+
+  it('does not advertise model routing when subagents are blocked', () => {
+    const out = generateSystemPrompt(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { subagents: 'block' },
+      [{ id: 'openai/gpt-5.5', label: 'GPT 5.5' }],
+    )
+
+    expect(out).not.toContain('model-*')
+  })
+
   it('blocking subagents orphans no heading', () => {
     const bodyless = (prompt: string) => {
       const lines = prompt.split('\n')

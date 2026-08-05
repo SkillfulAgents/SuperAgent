@@ -78,7 +78,10 @@ const SECTION_RULES: Array<[prefix: string, label: string]> = [
   ['app.hostBrowserProvider', 'Browser Use'],
   ['app.chrome', 'Browser Use'],
   ['app.maxBrowserTabs', 'Browser Use'],
+  ['app.configuredPasswordManagers', 'Browser Use'],
   ['app.browserbase', 'Browser Use'],
+  ['app.autoSleepTimeoutMinutes', 'Container Runtime'],
+  ['app.warmStartOnType', 'Container Runtime'],
   ['app.', 'General'],
 ]
 

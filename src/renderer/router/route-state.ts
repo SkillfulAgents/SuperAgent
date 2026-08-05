@@ -15,6 +15,7 @@ export type AgentView =
   | { kind: 'dashboard'; slug: string }
   | { kind: 'apiLogs' }
   | { kind: 'secrets' }
+  | { kind: 'xAgentPermissions' }
   | {
       kind: 'connections'
       /**
@@ -87,6 +88,8 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
       return { to: '/agents/$slug/api-logs', params: { slug } }
     case 'secrets':
       return { to: '/agents/$slug/secrets', params: { slug } }
+    case 'xAgentPermissions':
+      return { to: '/agents/$slug/x-agent-permissions', params: { slug } }
     case 'connections':
       return {
         to: '/agents/$slug/connections',
@@ -139,6 +142,8 @@ export function decodeLocation(snap: RouteSnapshot): AppLocation {
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'apiLogs' } }
     case '/agents/$slug/secrets':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'secrets' } }
+    case '/agents/$slug/x-agent-permissions':
+      return { selectedAgentSlug: p.slug ?? null, view: { kind: 'xAgentPermissions' } }
     case '/agents/$slug/connections': {
       const detail = typeof search.detail === 'string' ? search.detail : undefined
       const source = search.source === 'home' || search.source === 'list' ? search.source : undefined

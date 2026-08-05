@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
+import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
 import {
   Dialog,
@@ -18,7 +19,14 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/alert'
-import { useSettings, useUpdateSettings, useStartRunner, useRestartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
+import {
+  useSettings,
+  useUpdateSettings,
+  useStartRunner,
+  useRestartRunner,
+  useRefreshAvailability,
+  isWarmStartOnTypeEnabled,
+} from '@renderer/hooks/use-settings'
 import { AlertCircle, AlertTriangle, Play, Download, Loader2, RefreshCw, Plus, X } from 'lucide-react'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
 import { RuntimeProvisionProgress } from '@renderer/components/runtime/runtime-provision-progress'
@@ -779,6 +787,24 @@ export function RuntimeTab() {
           />
           <span className="text-sm text-muted-foreground">minutes</span>
         </div>
+      </div>
+
+      {/* Warm-start on typing */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-0.5 min-w-0">
+          <Label htmlFor="warm-start-on-type">Warm start on typing</Label>
+          <p className="text-xs text-muted-foreground">
+            Start the agent container in the background when you begin typing a first message, so it is ready on send.
+          </p>
+        </div>
+        <Switch
+          id="warm-start-on-type"
+          checked={isWarmStartOnTypeEnabled(settings)}
+          onCheckedChange={(checked: boolean) => {
+            updateSettings.mutate({ app: { warmStartOnType: checked } })
+          }}
+          disabled={isLoading}
+        />
       </div>
 
       {/* Agent Limits */}

@@ -34,6 +34,7 @@ type ExposedApi = {
   platform: string
   osVersion: string
   openExternal: (url: string) => Promise<void>
+  openApplePasswordsExtension: () => Promise<void>
   revealInFolder: (hostPath: string) => Promise<string | null>
   createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
   getPathForFile: (file: File) => string
@@ -95,6 +96,9 @@ describe('preload electronAPI bridge', () => {
 
     await api.openExternal('https://example.com')
     expect(electronMocks.invoke).toHaveBeenLastCalledWith('open-external', 'https://example.com')
+
+    await api.openApplePasswordsExtension()
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith('open-apple-passwords-extension')
 
     await api.revealInFolder('/workspace/reports/notes.md')
     expect(electronMocks.invoke).toHaveBeenLastCalledWith(

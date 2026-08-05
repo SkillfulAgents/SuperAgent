@@ -13,6 +13,7 @@ import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monito
 import { accountSyncService } from './scheduler/account-sync-service'
 import { platformService } from './services/platform-service'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
+import { startBrowserProfileCleanup, stopBrowserProfileCleanup } from '../../main/host-browser/profile-maintenance'
 import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
 import { validateAuthModeStartup } from './auth/startup-validation'
@@ -23,12 +24,14 @@ import {
 import { getPlatformAccessToken } from './services/platform-auth-service'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setupCloudStreamProxy } from '../../main/cloud-stream-proxy'
+import { setupArtifactStreamProxy } from '../../main/artifact-stream-proxy'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
 import { shutdownAC } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
 import { initErrorReporting, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
+import { credentialBroker } from '../../api/credentials/credential-broker'
 
 /**
  * Initialize all background services.
@@ -94,6 +97,13 @@ export async function initializeServices() {
   const agents = await listAgents()
   const slugs = agents.map((a) => a.slug)
   await containerManager.initializeAgents(slugs)
+
+  // Reclaim host-browser profile storage (orphaned/legacy dirs, regenerable
+  // Chrome caches). Scheduled a few minutes out so it doesn't pile onto the
+  // startup burst. The agent list is a supplier resolved when the sweep fires,
+  // not a snapshot — an agent created during the delay must not be treated as
+  // an orphan. Profiles claimed by a browser launch are skipped internally.
+  startBrowserProfileCleanup(async () => (await listAgents()).map((a) => a.slug))
 
   // Stop the host browser for an agent before its container is torn down,
   // so the browser closes gracefully instead of getting a "socket hang up".
@@ -173,6 +183,7 @@ export async function initializeServices() {
  */
 export function setupServerHandlers(server: ServerType): void {
   setupBrowserStreamProxy(server)
+  setupArtifactStreamProxy(server)
   // Self-gated to Electron main outside auth mode; a no-op everywhere else.
   setupCloudStreamProxy(server)
 }
@@ -187,7 +198,9 @@ export function setupServerHandlers(server: ServerType): void {
  */
 export async function shutdownServices() {
   reviewManager.rejectAll()
+  stopBrowserProfileCleanup()
   chatIntegrationManager.stop()
+  await credentialBroker.shutdown()
   await stopAllProviders()
   taskScheduler.stop()
   triggerManager.stop()

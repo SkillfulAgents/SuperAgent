@@ -3,6 +3,13 @@
 
 import { type AgentActivityStatus, getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import type { ContainerStatus } from '@shared/lib/container/types'
+import { SKIP_BOOT_PREFETCH_HEADER } from '@shared/lib/services/cloud-boot-prefetch'
+
+// These polls are not made on the renderer's behalf: in cloud mode they travel
+// the same proxy paths as the boot prefetches, which are one-shot and reserved
+// for the reloading renderer. Marked out so a poll racing a switch cannot
+// consume the renderer's head start.
+const POLL_HEADERS = { [SKIP_BOOT_PREFETCH_HEADER]: '1' }
 
 export type ActivityStatus = AgentActivityStatus
 
@@ -52,13 +59,17 @@ function applyAgentOrder(agents: AgentInfo[], savedOrder: string[] | undefined):
 /**
  * Fetch agents with their activity status from the API,
  * sorted by the user's saved agent order.
+ *
+ * `apiBaseUrl` is the *effective* base — in cloud mode it is the keyed proxy
+ * prefix, so the tray and app menu list the same Superagent the renderers are
+ * driving rather than always this machine's.
  */
-export async function fetchAgentsWithStatus(apiPort: number): Promise<AgentInfo[]> {
+export async function fetchAgentsWithStatus(apiBaseUrl: string): Promise<AgentInfo[]> {
   try {
     // Fetch agents and user settings in parallel
     const [agentsRes, settingsRes] = await Promise.all([
-      fetch(`http://localhost:${apiPort}/api/agents`),
-      fetch(`http://localhost:${apiPort}/api/user-settings`).catch(() => null),
+      fetch(`${apiBaseUrl}/api/agents`, { headers: POLL_HEADERS }),
+      fetch(`${apiBaseUrl}/api/user-settings`, { headers: POLL_HEADERS }).catch(() => null),
     ])
     if (!agentsRes.ok) return []
     const agents: ApiAgent[] = await agentsRes.json()
@@ -76,7 +87,8 @@ export async function fetchAgentsWithStatus(apiPort: number): Promise<AgentInfo[
         if (agent.status === 'running') {
           try {
             const sessionsRes = await fetch(
-              `http://localhost:${apiPort}/api/agents/${agent.slug}/sessions`
+              `${apiBaseUrl}/api/agents/${agent.slug}/sessions`,
+              { headers: POLL_HEADERS }
             )
             if (sessionsRes.ok) {
               const sessions: ApiSession[] = await sessionsRes.json()

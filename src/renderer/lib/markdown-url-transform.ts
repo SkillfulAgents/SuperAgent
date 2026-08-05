@@ -13,6 +13,20 @@ import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
 const EXTRA_ALLOWED_HREF_SCHEME = /^(?:tel|sms):/i
 
 /**
+ * The renderer's single link-href policy: the URL to use, or '' to refuse it.
+ *
+ * Both link surfaces go through here — <ReactMarkdown> via markdownUrlTransform
+ * below, and plain-prose autolinking via src/renderer/lib/linkify.tsx — so the
+ * two can never drift apart, or from safe-open-external.ts.
+ */
+export function safeHref(url: string): string {
+  if (EXTRA_ALLOWED_HREF_SCHEME.test(url)) {
+    return url
+  }
+  return defaultUrlTransform(url)
+}
+
+/**
  * Shared `urlTransform` for every <ReactMarkdown> renderer.
  *
  * Composes react-markdown's defaultUrlTransform — so dangerous schemes
@@ -23,8 +37,8 @@ const EXTRA_ALLOWED_HREF_SCHEME = /^(?:tel|sms):/i
  * what images/other resources may load.
  */
 export const markdownUrlTransform: UrlTransform = (url, key) => {
-  if (key === 'href' && typeof url === 'string' && EXTRA_ALLOWED_HREF_SCHEME.test(url)) {
-    return url
+  if (key === 'href' && typeof url === 'string') {
+    return safeHref(url)
   }
   return defaultUrlTransform(url)
 }

@@ -45,7 +45,7 @@ function findItem(items: TemplateItem[], label: string): TemplateItem | undefine
 // createAppMenu kicks off the async buildAppMenu (fire-and-forget); wait for it
 // to finish, then return the captured menu template.
 async function buildMenuWithNoWindow(): Promise<TemplateItem[]> {
-  createAppMenu(null, 0)
+  createAppMenu(null, () => 'http://localhost:0')
   await vi.waitFor(() => expect(setApplicationMenu).toHaveBeenCalled())
   const lastCall = buildFromTemplate.mock.calls.at(-1)
   return (lastCall?.[0] ?? []) as TemplateItem[]

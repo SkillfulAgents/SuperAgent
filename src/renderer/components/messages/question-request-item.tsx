@@ -9,6 +9,7 @@ import { DeclineButton } from './decline-button'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 import { useSubPagination } from './pending-request-stack'
+import { linkify } from '@renderer/lib/linkify'
 import { cn } from '@shared/lib/utils/cn'
 
 interface Question {
@@ -233,7 +234,7 @@ export function QuestionRequestItem({
         description: questions.length > 1 ? (
           <div className="mt-3 space-y-2">
             {questions.slice(1).map((q, i) => (
-              <p key={i} className="whitespace-pre-line text-sm font-medium leading-5 text-foreground">{q.question}</p>
+              <p key={i} className="whitespace-pre-line text-sm font-medium leading-5 text-foreground">{typeof q.question === 'string' ? linkify(q.question) : q.question}</p>
             ))}
           </div>
         ) : undefined,

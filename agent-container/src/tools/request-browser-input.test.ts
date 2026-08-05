@@ -38,7 +38,7 @@ describe('requestBrowserInputTool browser-lifecycle guard', () => {
   })
 
   it('creates a pending normally while the browser is active', async () => {
-    setBrowserState({ active: true, sessionId: 'sess-1', cdpUrl: 'ws://127.0.0.1:9222' })
+    setBrowserState({ active: true, sessionId: 'sess-1', cdpUrl: 'ws://127.0.0.1:9222', location: 'host' })
     const toolUseId = `guard-live-${Date.now()}`
     inputManager.setCurrentToolUseId(toolUseId)
 
@@ -59,5 +59,25 @@ describe('requestBrowserInputTool browser-lifecycle guard', () => {
     const result = await resultPromise
     expect(result.isError).toBeUndefined()
     expect(result.content[0].text).toContain('completed the requested browser interaction')
+  })
+
+  it('tells the agent to submit the login after credentials are autofilled', async () => {
+    setBrowserState({ active: true, sessionId: 'sess-1', cdpUrl: 'ws://127.0.0.1:9222' })
+    const toolUseId = `guard-autofill-${Date.now()}`
+    inputManager.setCurrentToolUseId(toolUseId)
+
+    const { requestBrowserInputTool } = await import('./request-browser-input')
+    const handler = (requestBrowserInputTool as any).handler
+    const resultPromise = handler({
+      message: 'Log in to GitHub to finish the submission.',
+      requirements: [],
+    })
+
+    await vi.waitFor(() => expect(inputManager.hasPending(toolUseId)).toBe(true))
+    inputManager.resolve(toolUseId, 'credentials_filled')
+
+    const result = await resultPromise
+    expect(result.content[0].text).toContain('Click the login or sign-in button')
+    expect(result.content[0].text).toContain('call request_browser_input again')
   })
 })

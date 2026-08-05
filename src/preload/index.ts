@@ -129,6 +129,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-external', url)
   },
 
+  openApplePasswordsExtension: (): Promise<void> => {
+    return ipcRenderer.invoke('open-apple-passwords-extension')
+  },
+
   // Launch an elevated PowerShell window with a whitelisted command (Windows only)
   launchPowershellAdmin: (command: string): Promise<void> => {
     return ipcRenderer.invoke('launch-powershell-admin', command)
@@ -484,6 +488,7 @@ declare global {
       onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => () => void
       removeWindowMaximizedChange: () => void
       openExternal: (url: string) => Promise<void>
+      openApplePasswordsExtension: () => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
       onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => () => void
       removeNavigateToAgent: () => void

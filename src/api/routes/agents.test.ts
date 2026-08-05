@@ -72,8 +72,22 @@ vi.mock('child_process', () => ({
   execFile: (...args: unknown[]) => mockExecFile(...args),
 }))
 
+const mockCredentialSuggest = vi.fn()
+const mockCredentialRetrieve = vi.fn()
+const mockCredentialBeginPairing = vi.fn()
+const mockCredentialCompletePairing = vi.fn()
+vi.mock('../credentials/credential-broker', () => ({
+  credentialBroker: {
+    suggest: (...args: unknown[]) => mockCredentialSuggest(...args),
+    retrieve: (...args: unknown[]) => mockCredentialRetrieve(...args),
+    beginPairing: (...args: unknown[]) => mockCredentialBeginPairing(...args),
+    completePairing: (...args: unknown[]) => mockCredentialCompletePairing(...args),
+  },
+}))
+
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
 const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+const mockGlobalAdmin = vi.hoisted(() => ({ allowed: true }))
 let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
 // Display-slug -> canonical-id resolution applied by the ResolveAgent mock. Defaults
 // to identity (test slugs are already canonical); a test can override it to exercise
@@ -84,6 +98,9 @@ vi.mock('../middleware/auth', () => ({
   AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
   AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
+  IsAdmin: () => async (c: any, next: () => Promise<void>) => (
+    mockGlobalAdmin.allowed ? next() : c.json({ error: 'Forbidden' }, 403)
+  ),
   // Mirrors the real ResolveAgent: 404 on a missing agent (via the agentExists
   // mock) and stash the resolved id, which getAgentId reads back. For test slugs
   // (already canonical), resolution is the identity.
@@ -422,12 +439,17 @@ vi.mock('@shared/lib/utils/message-transform', () => ({
 const mockGetEffectiveModels = vi.fn(
   (): Record<string, string | undefined> => ({ summarizerModel: 'claude-3-haiku' })
 )
+const mockRuntimeSettings = vi.hoisted(() => vi.fn(() => ({
+  container: {},
+  skillsets: [],
+  app: { configuredPasswordManagers: ['apple-passwords'] },
+})))
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAnthropicApiKey: () => 'test-key',
   getEffectiveModels: () => mockGetEffectiveModels(),
   getEffectiveAgentLimits: () => ({}),
   getCustomEnvVars: () => ({}),
-  getSettings: () => ({ container: {}, skillsets: [] }),
+  getSettings: () => mockRuntimeSettings(),
   mutateSettings: vi.fn(),
   getModelCatalogSettings: () => ({}),
   VALID_SCRIPT_TYPES: {
@@ -3313,6 +3335,7 @@ describe('DELETE /:id/sessions/:sessionId', () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
+    mockGlobalAdmin.allowed = true
   })
 
   it('returns 204 and deletes the session', async () => {
@@ -3359,6 +3382,339 @@ describe('DELETE /:id/sessions/:sessionId', () => {
 // ============================================================================
 // Awaiting-input recovery from the persisted transcript
 // ============================================================================
+
+describe('browser credential broker routes', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockContainerFetch.mockReset()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    mockGlobalAdmin.allowed = true
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tool-credential',
+      kind: 'browser_input',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {
+        browserContext: {
+          url: 'https://example.com/login',
+          capturedAt: Date.now(),
+        },
+      },
+    })
+  })
+
+  afterEach(() => {
+    userInputRequestManager.reset()
+    mockContainerFetch.mockReset()
+    mockGlobalAdmin.allowed = true
+  })
+
+  it('returns metadata-only suggestions for the open request', async () => {
+    mockCredentialSuggest.mockResolvedValueOnce({
+      provider: 'apple-passwords',
+      providerLabel: 'Apple Passwords',
+      status: 'ready',
+      origin: 'https://example.com',
+      suggestions: [{ id: 'opaque-id', username: 'person@example.com', domain: 'example.com' }],
+    })
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential',
+    )
+
+    expect(res.status).toBe(200)
+    const json = await res.json() as { suggestions: Array<Record<string, unknown>> }
+    expect(json.suggestions[0]).not.toHaveProperty('password')
+    expect(mockCredentialSuggest).toHaveBeenCalledWith(
+      { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
+      'https://example.com/login',
+      ['apple-passwords'],
+    )
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('starts and verifies the configured provider from the open input request', async () => {
+    mockCredentialBeginPairing.mockResolvedValueOnce({ status: 'pin_required' })
+    mockCredentialCompletePairing.mockResolvedValueOnce(undefined)
+
+    const check = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials/check',
+      { toolUseId: 'tool-credential', provider: 'apple-passwords' },
+    )
+    expect(check.status).toBe(200)
+    expect(await check.json()).toMatchObject({
+      status: 'verification_required',
+      verification: { type: 'numeric_code', length: 6 },
+    })
+
+    const verify = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials/verify',
+      { toolUseId: 'tool-credential', provider: 'apple-passwords', code: '123456' },
+    )
+    expect(verify.status).toBe(200)
+    expect(mockCredentialBeginPairing).toHaveBeenCalledWith('apple-passwords')
+    expect(mockCredentialCompletePairing).toHaveBeenCalledWith('apple-passwords', '123456')
+  })
+
+  it('requires a global admin for host password access in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    mockGlobalAdmin.allowed = false
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential',
+    )
+
+    expect(res.status).toBe(403)
+    expect(mockCredentialSuggest).not.toHaveBeenCalled()
+  })
+
+  it('re-probes and replaces browser context on explicit refresh', async () => {
+    mockContainerFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ url: 'https://new.example/login' }), { status: 200 }),
+    )
+    mockCredentialSuggest.mockResolvedValueOnce({
+      provider: 'apple-passwords',
+      providerLabel: 'Apple Passwords',
+      status: 'ready',
+      installable: true,
+      origin: 'https://new.example',
+      suggestions: [],
+    })
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials' +
+        '?toolUseId=tool-credential&refresh=true',
+    )
+
+    expect(res.status).toBe(200)
+    expect(mockCredentialSuggest).toHaveBeenCalledWith(
+      { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
+      'https://new.example/login',
+      ['apple-passwords'],
+    )
+    expect(userInputRequestManager.getOpenRequest('tool-credential')?.payload)
+      .toMatchObject({ browserContext: { url: 'https://new.example/login' } })
+  })
+
+  it('uses credential-lookup copy for unexpected suggestion failures', async () => {
+    mockCredentialSuggest.mockRejectedValueOnce(new Error('unexpected'))
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential',
+    )
+
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Credential lookup failed' })
+  })
+
+  it('rejects malformed browser context returned by the container', async () => {
+    mockContainerFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ url: 42 }), { status: 200 }),
+    )
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials' +
+        '?toolUseId=tool-credential&refresh=true',
+    )
+
+    expect(res.status).toBe(502)
+    expect(mockCredentialSuggest).not.toHaveBeenCalled()
+  })
+
+  it('does not check a provider that is not configured', async () => {
+    mockRuntimeSettings.mockReturnValueOnce({ container: {}, skillsets: [], app: { configuredPasswordManagers: [] } })
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials/check',
+      { toolUseId: 'tool-credential', provider: 'apple-passwords' },
+    )
+    expect(res.status).toBe(409)
+    expect(mockCredentialBeginPairing).not.toHaveBeenCalled()
+  })
+
+  it('validates password-manager request bodies before provider access', async () => {
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials/check',
+      { toolUseId: 'tool-credential', provider: 42 },
+    )
+
+    expect(res.status).toBe(400)
+    expect(mockCredentialBeginPairing).not.toHaveBeenCalled()
+  })
+
+  it('retrieves and fills through the privileged endpoint without returning the secret', async () => {
+    mockContainerFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          success: true,
+          usernameFilled: true,
+          passwordFilled: true,
+        }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ success: true }), { status: 200 }),
+      )
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+
+    expect(res.status).toBe(200)
+    const json = await res.json()
+    expect(json).toEqual({
+      success: true,
+      usernameFilled: true,
+      passwordFilled: true,
+      requestSettled: true,
+    })
+    expect(JSON.stringify(json)).not.toContain('host-only-secret')
+    expect(mockCredentialRetrieve).toHaveBeenCalledWith(
+      { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
+      'opaque-id',
+      'https://example.com/login',
+    )
+    const [fillPath, fillOptions] = mockContainerFetch.mock.calls[1]
+    expect(fillPath).toBe('/browser/fill-credential')
+    expect(JSON.parse(fillOptions.body)).toEqual({
+      sessionId: 'sess-1',
+      username: 'person@example.com',
+      password: 'host-only-secret',
+      expectedOrigin: 'https://example.com',
+    })
+    const [resolvePath, resolveOptions] = mockContainerFetch.mock.calls[2]
+    expect(resolvePath).toBe('/inputs/tool-credential/resolve')
+    expect(JSON.parse(resolveOptions.body)).toEqual({ value: 'credentials_filled' })
+    expect(messagePersister.completeInputRequest).toHaveBeenCalledWith(
+      'sess-1',
+      'tool-credential',
+      'answered',
+    )
+  })
+
+  it('claims the request before retrieval so a concurrent Done cannot settle it', async () => {
+    let releaseContext!: (response: Response) => void
+    const contextResponse = new Promise<Response>((resolve) => { releaseContext = resolve })
+    mockContainerFetch.mockImplementation((path: string) => {
+      if (path.startsWith('/browser/credential-context')) return contextResponse
+      if (path === '/browser/fill-credential') {
+        return Promise.resolve(new Response(JSON.stringify({
+          success: true,
+          usernameFilled: true,
+          passwordFilled: true,
+        }), { status: 200 }))
+      }
+      if (path === '/inputs/tool-credential/resolve') {
+        return Promise.resolve(new Response(JSON.stringify({ success: true }), { status: 200 }))
+      }
+      return Promise.resolve(new Response(JSON.stringify({ error: 'unexpected path' }), { status: 500 }))
+    })
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const filling = postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+    await vi.waitFor(() => expect(mockContainerFetch).toHaveBeenCalledWith(
+      '/browser/credential-context?sessionId=sess-1',
+    ))
+
+    const competing = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      { toolUseId: 'tool-credential' },
+    )
+    expect(competing.status).toBe(409)
+    expect(mockContainerFetch.mock.calls.some(([path]) => path === '/inputs/tool-credential/reject')).toBe(false)
+
+    releaseContext(new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }))
+    expect((await filling).status).toBe(200)
+    expect(messagePersister.completeInputRequest).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases the request claim when autofill fails before settlement', async () => {
+    mockContainerFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'No visible password field was found' }), { status: 409 }),
+      )
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+
+    expect(res.status).toBe(409)
+    const reclaimed = userInputRequestManager.claimRequest('tool-credential')
+    expect(reclaimed?.id).toBe('tool-credential')
+    userInputRequestManager.releaseClaim('tool-credential')
+  })
+
+  it('rejects a malformed autofill response from the container', async () => {
+    mockContainerFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ usernameFilled: 'yes', passwordFilled: true }), { status: 200 }),
+      )
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+
+    expect(res.status).toBe(502)
+    expect(await res.json()).toMatchObject({ error: 'The browser returned an invalid autofill result' })
+  })
+
+  it('rejects a request id scoped to another session before touching the browser', async () => {
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/other-session/browser-credentials?toolUseId=tool-credential',
+    )
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(mockCredentialSuggest).not.toHaveBeenCalled()
+  })
+})
 
 describe('decision routes settle their request immediately', () => {
   // The transcript tool_result normally cleans up the stream store and
@@ -4426,12 +4782,62 @@ describe('artifact proxy — subPath uses the raw display-slug URL', () => {
       new Response('ok', { headers: { 'content-type': 'application/javascript' } }),
     )
 
-    const res = await getReq(app, '/api/agents/my-dash-abc1234567/artifacts/dash/static/app.js')
+    const res = await app.request(
+      'http://localhost/api/agents/my-dash-abc1234567/artifacts/dash/static/app.js',
+      { headers: { 'if-none-match': '"asset-v1"' } },
+    )
 
     expect(res.status).toBe(200)
     expect(mockContainerFetch).toHaveBeenCalledTimes(1)
     // Bug repro: an id-based prefix yields indexOf(prefix) === -1, corrupting this path.
     expect(mockContainerFetch.mock.calls[0]?.[0]).toBe('/artifacts/dash/static/app.js')
+    expect(mockContainerFetch.mock.calls[0]?.[1]).toMatchObject({
+      redirect: 'manual',
+      headers: expect.objectContaining({
+        'accept-encoding': 'identity',
+        'x-forwarded-prefix': '/api/agents/my-dash-abc1234567/artifacts/dash',
+        'x-forwarded-host': 'localhost',
+        'x-forwarded-proto': 'http',
+        'if-none-match': '"asset-v1"',
+      }),
+    })
+  })
+
+  it('removes upstream validators only for transformed HTML documents', async () => {
+    mockContainerFetch.mockResolvedValue(
+      new Response('<html><head></head><body>ok</body></html>', {
+        headers: { 'content-type': 'text/html' },
+      }),
+    )
+
+    const res = await app.request(
+      'http://localhost/api/agents/abc1234567/artifacts/dash/s/deck',
+      {
+        headers: {
+          accept: 'text/html',
+          'if-modified-since': 'Tue, 04 Aug 2026 18:00:00 GMT',
+          'if-none-match': '"document-v1"',
+        },
+      },
+    )
+
+    expect(res.status).toBe(200)
+    const init = mockContainerFetch.mock.calls[0]?.[1] as RequestInit
+    expect(init.headers).not.toHaveProperty('if-modified-since')
+    expect(init.headers).not.toHaveProperty('if-none-match')
+  })
+
+  it('canonicalizes display-slug document navigations to match the dashboard router base', async () => {
+    const res = await app.request(
+      'http://localhost/api/agents/my-dash-abc1234567/artifacts/dash/s/deck?present=1',
+      { headers: { accept: 'text/html' } },
+    )
+
+    expect(res.status).toBe(307)
+    expect(res.headers.get('location')).toBe(
+      '/api/agents/abc1234567/artifacts/dash/s/deck?present=1',
+    )
+    expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 })
 

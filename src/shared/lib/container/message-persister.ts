@@ -4467,6 +4467,29 @@ ${continuation}`
         { agentSlug, parentToolUseId },
       )
 
+      // The URL is host-observed context, never a model-supplied tool field.
+      // Capture it when the request opens so credential discovery does not
+      // need a separate browser roundtrip later. Fill still re-checks the live
+      // origin immediately before the password crosses the host boundary.
+      const client = this.containerClients.get(sessionId)
+      if (client) {
+        void client.fetch(
+          `/browser/credential-context?sessionId=${encodeURIComponent(sessionId)}`,
+        ).then(async (response) => {
+          if (!response?.ok || typeof response.json !== 'function') return
+          const context = await response.json() as { url?: unknown }
+          if (typeof context.url !== 'string') return
+          userInputRequestManager.enrichOpenRequestPayload(toolUseId, 'browser_input', {
+            browserContext: { url: context.url, capturedAt: Date.now() },
+          })
+        }).catch((error: unknown) => {
+          console.warn(
+            '[MessagePersister] Failed to capture browser input context:',
+            error instanceof Error ? error.message : error,
+          )
+        })
+      }
+
       // The request always blocks on the user, no matter which stream it came
       // from. Marking here (not only in the main-stream content_block_stop
       // handler) covers SUBAGENT-originated requests, whose sidechain paths

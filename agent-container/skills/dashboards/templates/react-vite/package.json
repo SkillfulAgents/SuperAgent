@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "bunx --bun vite build",
+    "dev": "bunx --bun vite",
     "start": "bun run build && bun run serve.js"
   },
   "dependencies": {

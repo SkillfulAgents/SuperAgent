@@ -12,6 +12,12 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
+// Credential-picker behavior has focused tests of its own. Keep these action
+// tests scoped to Done/Decline and their exact request ordering.
+vi.mock('./browser-credential-picker', () => ({
+  BrowserCredentialPicker: () => null,
+}))
+
 // A promise we resolve by hand, so a test can observe the component WHILE a
 // request is in flight (proves the second call awaits the first, and that
 // controls are disabled mid-request).

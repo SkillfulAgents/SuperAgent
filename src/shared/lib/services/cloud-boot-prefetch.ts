@@ -56,6 +56,15 @@ const PREFETCH_TTL_MS = 15_000
 /** Bodies above this are not worth holding in memory for a head start. */
 const MAX_PREFETCH_BODY_BYTES = 2 * 1024 * 1024
 
+/**
+ * Requests carrying this header never claim a prefetch entry. The entries are
+ * one-shot and exist to give the *reloading renderer* its head start — but
+ * main's own background pollers (the tray, the app menu) request the same
+ * paths through the same proxy at switch time, and whichever asked first would
+ * otherwise consume them.
+ */
+export const SKIP_BOOT_PREFETCH_HEADER = 'x-skip-boot-prefetch'
+
 export interface PrefetchedResponse {
   status: number
   headers: [string, string][]

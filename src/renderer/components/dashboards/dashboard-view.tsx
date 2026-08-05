@@ -85,7 +85,11 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   }, [nextPollFast])
 
   const baseUrl = getApiBaseUrl()
-  const iframeSrc = `${baseUrl}${buildDashboardArtifactPath(agentSlug, dashboardSlug)}`
+  // Dashboard processes receive the canonical agent id in
+  // DASHBOARD_BASE_PATH. Keep their browser-visible URL on that same stable
+  // id even when the surrounding app route uses a decorative display slug.
+  const dashboardAgentSlug = agent?.slug ?? agentSlug
+  const iframeSrc = `${baseUrl}${buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)}`
 
   useEffect(() => {
     setIframeLoaded(false)
@@ -99,8 +103,8 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   }, [iframeSrc])
 
   const handlePopOut = useCallback(() => {
-    openDashboardExternal(agentSlug, dashboardSlug, dashboard?.name)
-  }, [agentSlug, dashboardSlug, dashboard?.name])
+    openDashboardExternal(dashboardAgentSlug, dashboardSlug, dashboard?.name)
+  }, [dashboardAgentSlug, dashboardSlug, dashboard?.name])
 
   const handleStartAgent = useCallback(() => {
     startAgent.mutate(agentSlug)
@@ -195,7 +199,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
       <AddToDockDialog
         open={dockDialogOpen}
         onOpenChange={setDockDialogOpen}
-        agentSlug={agentSlug}
+        agentSlug={dashboardAgentSlug}
         dashboardSlug={dashboardSlug}
         dashboardName={dashboard?.name || dashboardSlug}
       />

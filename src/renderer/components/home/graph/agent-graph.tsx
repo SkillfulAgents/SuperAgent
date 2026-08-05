@@ -34,7 +34,6 @@ import {
 } from '@xyflow/react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { Loader2, RotateCcw } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
@@ -408,16 +407,14 @@ export function AgentGraph() {
     [deleteEdge],
   )
   // "Edit permissions" on an agent↔agent connector: go to the caller agent's
-  // page with a one-shot asking it to open the policies tab.
-  const { setOpenAgentSettings } = useNavTransient()
+  // permissions page.
   const editEdgePermissions = useCallback(
     (edgeId: string) => {
       const spec = graph.edges.find((e) => e.id === edgeId)
       if (!spec?.policyAgentSlug) return
-      setOpenAgentSettings({ slug: spec.policyAgentSlug, tab: 'x-agent-policies' })
-      void navigate({ to: '/agents/$slug', params: { slug: spec.policyAgentSlug } })
+      void navigate({ to: '/agents/$slug/x-agent-permissions', params: { slug: spec.policyAgentSlug } })
     },
-    [graph.edges, setOpenAgentSettings, navigate],
+    [graph.edges, navigate],
   )
 
   const savedEdgeGeometry = userSettings?.graphEdgeGeometry

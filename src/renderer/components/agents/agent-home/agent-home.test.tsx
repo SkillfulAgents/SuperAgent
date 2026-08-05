@@ -47,6 +47,11 @@ vi.mock('@renderer/hooks/use-agents', () => ({
     mutate: mockDeleteAgentMutate,
     isPending: false,
   }),
+  useStartAgent: () => ({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn(),
+    isPending: false,
+  }),
 }))
 
 // Default to "loaded, empty" — most tests don't care. Specific tests that need
@@ -69,6 +74,7 @@ vi.mock('@renderer/hooks/use-settings', () => {
     data: {
       llmProvider: 'anthropic',
       models: { agentModel: 'sonnet' },
+      app: { warmStartOnType: true },
       llmProviderStatus: [
         {
           id: 'anthropic',
@@ -85,8 +91,10 @@ vi.mock('@renderer/hooks/use-settings', () => {
     },
   }
   return {
-    useSettings: () => settings,
+    useSettings: () => ({ ...settings, isSuccess: true }),
     useModelSettings: () => settings,
+    useWarmStartOnTypeEnabled: () => true,
+    isWarmStartOnTypeEnabled: () => true,
   }
 })
 

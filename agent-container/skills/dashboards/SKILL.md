@@ -1,4 +1,5 @@
 ---
+name: dashboards
 description: Create interactive web dashboards to visualize data and provide UI elements to the user
 ---
 
@@ -12,14 +13,16 @@ You can create web dashboards that are served to the user through the Gamut UI. 
 - **`start_dashboard`** — Start a dashboard server (or restart it after code changes)
 - **`list_dashboards`** — List all dashboards and their status
 - **`get_dashboard_logs`** — Read stdout/stderr logs from a dashboard (useful for debugging)
+- **Browser tools** — Open the running dashboard with `browser_open(..., location="container")`, inspect its rendered/accessibility state, exercise controls, and check client-side errors
 
 ## Quick Start (React)
 
 1. Copy the template: `cp -r ~/.claude/skills/dashboards/templates/react-vite /workspace/artifacts/<slug>`
 2. Update `package.json` with the dashboard's `name` and `description`
-3. Edit `src/App.jsx` to build the UI (add API routes in `serve.js` if needed). **All fetch calls in the frontend MUST use relative URLs** — `fetch('api/data')` not `fetch('/api/data')` — absolute paths will 404.
-4. Use `start_dashboard` to build and start the server
-5. The user can view the dashboard in the Gamut UI
+3. Edit `src/App.jsx` to build the UI (add API routes in `serve.js` if needed). Build dashboard-scoped URLs with `window.__GAMUT_DASHBOARD__.url('api/data')`.
+4. Use `start_dashboard` to build and start the server; inspect its screenshot and note the returned port
+5. Open `http://localhost:<port>` with `browser_open(..., location="container")`, exercise the important interactions, and check browser errors
+6. Iterate until both visual and functional checks pass; close the browser when validation is complete
 
 ## Directory Structure
 
@@ -80,7 +83,8 @@ The template structure:
 ```
 /workspace/artifacts/<slug>/
 ├── package.json        # Update name + description
-├── vite.config.js      # Pre-configured with base: './' (DO NOT remove this)
+├── gamut-dashboard.js  # Gamut base-path + Vite/HMR adapter
+├── vite.config.js      # Uses the Gamut adapter
 ├── serve.js            # Static server with API route support
 ├── index.html
 └── src/
@@ -88,9 +92,9 @@ The template structure:
     └── App.jsx          # Edit this to build your dashboard
 ```
 
-React dashboards are **built to static files** (`vite build`) and served via `serve.js`. The start script runs `bun run build && bun run serve.js`. Vite's dev server cannot be used because dashboards are served through a proxy chain.
+React dashboards are **built to static files** (`vite build`) and served via `serve.js` by default. The start script runs `bun run build && bun run serve.js`. The included adapter also supports the Vite dev server and keeps HMR beneath the artifact mount.
 
-**CRITICAL:** `vite.config.js` must include `base: './'` so that built asset paths are relative. Without this, the built HTML will reference `/assets/...` (absolute), which bypasses the proxy chain and 404s. The template already has this configured — do not remove it.
+**CRITICAL:** Keep `gamutDashboard()` in `vite.config.js`. The dashboard manager supplies `DASHBOARD_BASE_PATH`; in development the adapter applies it to Vite's entry modules and HMR client. Production assets, dynamic imports, CSS/worker URLs, fonts, and images remain relative, while `serve.js` and the injected runtime provide a stable document/router base. This keeps one production build relocatable.
 
 ### Adding API routes to a React dashboard
 
@@ -104,7 +108,7 @@ if (url.pathname === '/api/data') {
 }
 
 // Static files are served automatically for all other paths
-return serveStatic(url.pathname);
+return serveStatic(req, url.pathname);
 ```
 
 ## URL Paths & Proxying
@@ -114,22 +118,71 @@ Dashboards are served through a proxy chain:
 Browser → Main App (/api/agents/:id/artifacts/:slug/) → Container → Dashboard Server
 ```
 
-**IMPORTANT: Always use relative URLs in dashboard code.** The dashboard is served under a subpath, so absolute paths (starting with `/`) will bypass the proxy and hit the main app instead.
+Gamut always communicates the public artifact mount through `DASHBOARD_BASE_PATH` in the process and `window.__GAMUT_DASHBOARD__` in browser HTML. The default `stripped` mode also sends `X-Forwarded-Prefix` on HTTP/WebSocket requests. The opt-in `mounted` mode retains the prefix in the upstream request path and omits that header on the final dashboard hop to avoid applying the prefix twice.
+
+Use the injected helper for dashboard-owned URLs. It stays correct on nested client routes and when another trusted proxy adds its own prefix:
 
 ```javascript
-// CORRECT — relative paths are proxied to your dashboard server
-fetch('api/data')
-fetch('./api/data')
+const { basePath, routerBasePath, url } = window.__GAMUT_DASHBOARD__;
 
-// WRONG — absolute paths bypass the proxy, hitting the main app
-fetch('/api/data')
+fetch(url('api/data'));
+image.src = url('assets/chart.png');
+
+// React Router and similar SPA routers need the runtime router base, which is
+// intentionally separate from Vite's build-time asset base.
+// <BrowserRouter basename={routerBasePath}>...</BrowserRouter>
 ```
 
-This applies to all fetches, image sources, link hrefs, etc.
+Root-relative application URLs such as `/api/data` still target the Gamut host and must not be used for dashboard-owned routes.
 
-## Important Limitations
+### Third-party Vite apps and OpenSlide
 
-- **Do NOT use the browser tool to view your own dashboards.** The browser runs outside the container and cannot access `localhost` URLs served inside it. Dashboard requests will fail. The user views dashboards through the Gamut UI — you do not need to verify them visually. Use `get_dashboard_logs` to debug issues instead.
+Frameworks that accept a base at startup can consume the manager-provided value directly:
+
+```ts
+// open-slide.config.ts
+import type { OpenSlideConfig } from '@open-slide/core';
+
+const config: OpenSlideConfig = {
+  // OpenSlide uses this value for both Vite assets and BrowserRouter.
+  base: process.env.DASHBOARD_BASE_PATH || '/',
+  port: Number(process.env.DASHBOARD_PORT) || 5173,
+};
+
+export default config;
+```
+
+OpenSlide's built-in Vite configuration cannot install Gamut's prefix-restoring
+middleware. Opt its dashboard server into mounted upstream paths so HTTP modules
+and HMR WebSockets both reach Vite beneath the same absolute base:
+
+```json
+{
+  "scripts": { "start": "open-slide dev" },
+  "gamut": { "upstreamPath": "mounted" }
+}
+```
+
+The default upstream-path mode is `stripped`, which keeps existing dashboard
+servers receiving root-local paths such as `/api/data`. Use `mounted` only when
+the framework requires inbound requests to retain `DASHBOARD_BASE_PATH`.
+
+For an app-owned React Router, prefer the injected runtime value:
+
+```tsx
+<BrowserRouter basename={window.__GAMUT_DASHBOARD__?.routerBasePath ?? '/'}>
+  <App />
+</BrowserRouter>
+```
+
+Do not patch generated bundles after Vite hashes them and do not add a query string to only one copy of an entry module. Both approaches violate module/cache identity and can leave stale router code or duplicate React instances.
+
+## Interactive Validation
+
+- **Validate every dashboard in container Chromium.** After `start_dashboard`, open the exact localhost URL it returns with `browser_open(..., location="container")`. Mounted dashboards include `DASHBOARD_BASE_PATH` in that URL; do not trim it back to `/`. The explicit location forces the bundled browser that can reach private container ports.
+- **Test behavior, not just appearance.** Exercise the primary controls and workflows, inspect rendered and accessibility state, and check browser console/errors for client-side failures.
+- **Use both diagnostic surfaces.** Use `get_dashboard_logs` for server failures and browser diagnostics for rendering or client-side failures.
+- **Close the browser when validation is complete.**
 
 ## Built-in APIs
 
@@ -142,8 +195,9 @@ The following APIs are automatically available in all dashboards (injected by th
 
 - **Keep dependencies minimal** — fewer deps means faster installs and starts
 - **Always use `process.env.DASHBOARD_PORT`** — never hardcode ports
-- **Always use relative URLs** — absolute paths bypass the dashboard proxy (see above)
+- **Use the dashboard URL helper** — `window.__GAMUT_DASHBOARD__.url(...)` keeps URLs inside the mount
 - **Use Bun APIs** — `Bun.serve()`, `Bun.file()`, etc. are fast and built-in
 - **Check logs on errors** — use `get_dashboard_logs` to debug crashes
 - **Restart after changes** — use `start_dashboard` after modifying source code
+- **Verify interactively** — use `browser_open(..., location="container")` after every restart and exercise the changed behavior
 - **Static assets** — serve them from the same directory or use inline styles/scripts for simplicity

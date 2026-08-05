@@ -245,4 +245,35 @@ describe('RequestItemShell', () => {
       expect(screen.queryByText(/of/)).not.toBeInTheDocument()
     })
   })
+
+  // Pins the fix site: a dual per-card patch that leaves the shell as plain text
+  // would still green the question-card regression, but fails here.
+  describe('title linkify', () => {
+    it('renders a bare URL in a string title as a clickable link', () => {
+      const url = 'https://app.clay.com/oauth/device?user_code=LCWW-PKKC'
+      render(
+        <RequestItemShell title={`Open this URL: ${url}`} theme="blue">
+          <div />
+        </RequestItemShell>
+      )
+
+      expect(screen.getByRole('link', { name: url })).toHaveAttribute('href', url)
+    })
+
+    it('does not interpret markdown in a string title', () => {
+      // Rejected shape A (MarkdownBlock) would bold this and collapse the blank line.
+      render(
+        <RequestItemShell
+          title={'Line one\n\n**not bold** https://example.com/path'}
+          theme="blue"
+        >
+          <div />
+        </RequestItemShell>
+      )
+
+      expect(screen.getByRole('link')).toHaveAttribute('href', 'https://example.com/path')
+      expect(screen.getByText(/\*\*not bold\*\*/)).toBeInTheDocument()
+      expect(document.querySelector('strong')).toBeNull()
+    })
+  })
 })

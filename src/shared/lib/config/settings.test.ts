@@ -1320,6 +1320,7 @@ describe('DEFAULT_SETTINGS', () => {
   it('has expected app defaults', () => {
     expect(DEFAULT_SETTINGS.app?.showMenuBarIcon).toBe(true)
     expect(DEFAULT_SETTINGS.app?.autoSleepTimeoutMinutes).toBe(30)
+    expect(DEFAULT_SETTINGS.app?.warmStartOnType).toBe(true)
   })
 
   it('has expected notification defaults', () => {

@@ -31,6 +31,7 @@ type CustomModelExtras = Partial<
     ModelDefinition,
     | 'blurb'
     | 'contextWindow'
+    | 'isDefault'
     | 'supportsWebSearch'
     | 'supportsImageInput'
     | 'promptHints'
@@ -62,6 +63,7 @@ function extrasFromModel(model: ModelDefinition): CustomModelExtras {
   return {
     blurb: model.blurb,
     contextWindow: model.contextWindow,
+    isDefault: model.isDefault,
     supportsWebSearch: model.supportsWebSearch,
     supportsImageInput: model.supportsImageInput,
     promptHints: model.promptHints,
@@ -211,6 +213,9 @@ function CustomModelDialogBody({
       ...(hasPricing ? { pricing: { inputPerMtok: inputPrice!, outputPerMtok: outputPrice! } } : {}),
       ...(includeExtras && extras.blurb ? { blurb: extras.blurb } : {}),
       ...(includeExtras && extras.contextWindow ? { contextWindow: extras.contextWindow } : {}),
+      ...(includeExtras && extras.isDefault !== undefined
+        ? { isDefault: extras.isDefault }
+        : {}),
       ...(includeExtras && extras.supportsWebSearch !== undefined
         ? { supportsWebSearch: extras.supportsWebSearch }
         : {}),
