@@ -9,6 +9,7 @@ import {
   SLUG_REGEX,
   ARTIFACTS_DIR,
   getDashboardBasePath,
+  getDashboardValidationUrl,
   truncateOversizedLog,
 } from './dashboard-manager'
 
@@ -120,6 +121,20 @@ describe('getDashboardBasePath', () => {
   it('omits startup metadata when no valid agent identity is available', () => {
     expect(getDashboardBasePath('open-slide', '')).toBeNull()
     expect(getDashboardBasePath('open-slide', '../spoofed')).toBeNull()
+  })
+})
+
+describe('getDashboardValidationUrl', () => {
+  it('uses the local root for stripped dashboards', () => {
+    expect(getDashboardValidationUrl('slides', 5000, 'stripped', 'agent-123')).toBe(
+      'http://localhost:5000/',
+    )
+  })
+
+  it('uses the public mount for mounted dashboards', () => {
+    expect(getDashboardValidationUrl('slides', 5000, 'mounted', 'agent-123')).toBe(
+      'http://localhost:5000/api/agents/agent-123/artifacts/slides/',
+    )
   })
 })
 
@@ -308,6 +323,19 @@ describe('DashboardManager log stream lifecycle', () => {
     await manager.startDashboard(slug, { forceInstall: false })
 
     expect(manager.getDashboardUpstreamPathMode(slug)).toBe('stripped')
+  })
+
+  it('warns and safely defaults an invalid upstream path mode', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const slug = await scaffoldDashboard({ gamut: { upstreamPath: 'Mounted' } })
+
+    await manager.startDashboard(slug, { forceInstall: false })
+
+    expect(manager.getDashboardUpstreamPathMode(slug)).toBe('stripped')
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(`Invalid package.json metadata for ${slug}`),
+      expect.anything(),
+    )
   })
 
   describe('install semantics', () => {

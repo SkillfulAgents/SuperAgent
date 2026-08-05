@@ -118,7 +118,7 @@ Dashboards are served through a proxy chain:
 Browser → Main App (/api/agents/:id/artifacts/:slug/) → Container → Dashboard Server
 ```
 
-Gamut strips the public artifact prefix before forwarding requests to the dashboard server. It communicates that mount through `DASHBOARD_BASE_PATH` in the process, `X-Forwarded-Prefix` on HTTP/WebSocket requests, and `window.__GAMUT_DASHBOARD__` in browser HTML.
+Gamut always communicates the public artifact mount through `DASHBOARD_BASE_PATH` in the process and `window.__GAMUT_DASHBOARD__` in browser HTML. The default `stripped` mode also sends `X-Forwarded-Prefix` on HTTP/WebSocket requests. The opt-in `mounted` mode retains the prefix in the upstream request path and omits that header on the final dashboard hop to avoid applying the prefix twice.
 
 Use the injected helper for dashboard-owned URLs. It stays correct on nested client routes and when another trusted proxy adds its own prefix:
 
@@ -179,7 +179,7 @@ Do not patch generated bundles after Vite hashes them and do not add a query str
 
 ## Interactive Validation
 
-- **Validate every dashboard in container Chromium.** After `start_dashboard`, open its localhost URL with `browser_open(url="http://localhost:<port>", location="container")`. The explicit location forces the bundled browser that can reach private container ports.
+- **Validate every dashboard in container Chromium.** After `start_dashboard`, open the exact localhost URL it returns with `browser_open(..., location="container")`. Mounted dashboards include `DASHBOARD_BASE_PATH` in that URL; do not trim it back to `/`. The explicit location forces the bundled browser that can reach private container ports.
 - **Test behavior, not just appearance.** Exercise the primary controls and workflows, inspect rendered and accessibility state, and check browser console/errors for client-side failures.
 - **Use both diagnostic surfaces.** Use `get_dashboard_logs` for server failures and browser diagnostics for rendering or client-side failures.
 - **Close the browser when validation is complete.**

@@ -9,10 +9,14 @@ export interface DashboardProxyRoute {
 const DASHBOARD_SLUG = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 
 /** Do not expose the host-to-container credential to agent-authored servers. */
-export function dashboardHttpForwardHeaders(source: Record<string, string>): Headers {
+export function dashboardHttpForwardHeaders(
+  source: Record<string, string>,
+  mode: DashboardUpstreamPathMode,
+): Headers {
   const headers = new Headers(source)
   headers.delete('host')
   headers.delete('x-superagent-host-token')
+  if (mode === 'mounted') headers.delete('x-forwarded-prefix')
   return headers
 }
 
@@ -44,10 +48,12 @@ const SKIP_WEBSOCKET_HEADERS = new Set([
 
 export function dashboardWebSocketForwardHeaders(
   request: Pick<IncomingMessage, 'headers'>,
+  mode: DashboardUpstreamPathMode,
 ): Record<string, string> {
   const headers: Record<string, string> = {}
   for (const [name, value] of Object.entries(request.headers)) {
     if (value === undefined || SKIP_WEBSOCKET_HEADERS.has(name.toLowerCase())) continue
+    if (mode === 'mounted' && name.toLowerCase() === 'x-forwarded-prefix') continue
     headers[name] = Array.isArray(value) ? value.join(', ') : value
   }
   return headers
@@ -86,7 +92,7 @@ export function dashboardWebSocketUpstreamPath(
   subPath: string,
   protocols: string[],
   publicBasePath: string | null,
-  mode: DashboardUpstreamPathMode = 'stripped',
+  mode: DashboardUpstreamPathMode,
 ): string {
   if (mode === 'mounted') return mountedDashboardPath(subPath, publicBasePath)
   if (!protocols.some((protocol) => protocol === 'vite-hmr' || protocol === 'vite-ping')) {

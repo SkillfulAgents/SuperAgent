@@ -579,14 +579,15 @@ async function proxyToDashboard(c: any) {
   const url = new URL(c.req.url);
   const prefixPattern = `/artifacts/${slug}`;
   const subPath = url.pathname.slice(url.pathname.indexOf(prefixPattern) + prefixPattern.length) || '/';
+  const upstreamPathMode = dashboardManager.getDashboardUpstreamPathMode(slug);
   const targetPath = dashboardHttpUpstreamPath(
     subPath,
     getDashboardBasePath(slug),
-    dashboardManager.getDashboardUpstreamPathMode(slug),
+    upstreamPathMode,
   );
   const targetUrl = `http://localhost:${port}${targetPath}${url.search}`;
 
-  const headers = dashboardHttpForwardHeaders(c.req.header());
+  const headers = dashboardHttpForwardHeaders(c.req.header(), upstreamPathMode);
 
   const response = await fetch(targetUrl, {
     method: c.req.method,
@@ -1986,9 +1987,8 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
     return;
   }
 
-  // Dashboard application sockets and Vite HMR use the same artifact mount as
-  // HTTP. The public prefix was stripped by the host proxy; strip the remaining
-  // container prefix before dialing the dashboard process.
+  // Dashboard application sockets and Vite HMR use the same upstream path
+  // contract as HTTP after the container artifact prefix is removed.
   const dashboardRoute = parseDashboardProxyRoute(pathname);
   if (dashboardRoute) {
     const dashboardPort = dashboardManager.getDashboardPort(dashboardRoute.slug);
@@ -1999,16 +1999,17 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
     }
 
     const protocols = requestedWebSocketProtocols(request);
+    const upstreamPathMode = dashboardManager.getDashboardUpstreamPathMode(dashboardRoute.slug);
     const upstreamPath = dashboardWebSocketUpstreamPath(
       dashboardRoute.subPath,
       protocols,
       getDashboardBasePath(dashboardRoute.slug),
-      dashboardManager.getDashboardUpstreamPathMode(dashboardRoute.slug),
+      upstreamPathMode,
     );
     const upstream = new WebSocket(
       `ws://127.0.0.1:${dashboardPort}${upstreamPath}${url.search}`,
       protocols,
-      { headers: dashboardWebSocketForwardHeaders(request) },
+      { headers: dashboardWebSocketForwardHeaders(request, upstreamPathMode) },
     );
     let settled = false;
 
