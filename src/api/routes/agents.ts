@@ -902,30 +902,37 @@ async function generateAndUpdateSessionNameAsync(
   agentName: string
 ): Promise<void> {
   let sessionName: string | null = null
-  try {
-    const anthropic = getLlmClient()
-    sessionName = await createSummarizerText(anthropic, {
-      model: getSummarizerModel(),
-      messages: [
-        {
-          role: 'user',
-          content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
+  // The E2E mock avoids all real provider calls — but this host-direct SDK
+  // call bypassed it, so every test session made a doomed HTTPS round trip
+  // (plus SDK retries) and logged an auth-error stack. Skip straight to the
+  // truncated-message fallback below.
+  const skipProviderNaming = process.env.E2E_MOCK === 'true'
+  if (!skipProviderNaming) {
+    try {
+      const anthropic = getLlmClient()
+      sessionName = await createSummarizerText(anthropic, {
+        model: getSummarizerModel(),
+        messages: [
+          {
+            role: 'user',
+            content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
 
 "${message}"
 
 Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
-        },
-      ],
-    })
-  } catch (error) {
-    console.error('Failed to generate session name after retries:', error)
+          },
+        ],
+      })
+    } catch (error) {
+      console.error('Failed to generate session name after retries:', error)
+    }
   }
   try {
     // Naming can fail outright (misconfigured summarizer model) or return no
     // text (thinking-first ruminators like small qwen burn the whole budget);
     // fall back to the truncated first message so the session is still
     // identifiable in the sidebar instead of staying "New Session".
-    if (!sessionName) {
+    if (!sessionName && !skipProviderNaming) {
       console.warn(`Session name generation returned no text; falling back to truncated message for session ${sessionId}`)
     }
     const finalName = sessionName

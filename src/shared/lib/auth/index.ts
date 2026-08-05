@@ -91,6 +91,14 @@ function createAuthInstance() {
           required: false,
           input: false,
         },
+        // Stable device-family id for mobile access sessions. Written only by
+        // the installed-client issuer; refresh rotation replaces sessions
+        // without making one physical device appear as several devices.
+        deviceId: {
+          type: 'string',
+          required: false,
+          input: false,
+        },
       },
     },
     user: {

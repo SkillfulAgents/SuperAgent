@@ -8,7 +8,10 @@ import { getAuth } from './index'
 import { getAppBaseUrl } from './config'
 import { verifyOidcJwt } from './oidc-jwt'
 import { getAuthProviderIssuer, isAuthProviderEnabled } from './provider-config'
-import { withSessionAuditContext } from './session-audit'
+import {
+  InstalledClientSessionError,
+  mintInstalledClientSession,
+} from './installed-client-session'
 import {
   DEPLOYMENT_ASSERTION_TYP,
   DeploymentGrantClaimsSchema,
@@ -316,54 +319,19 @@ export async function exchangeDeploymentGrant(
 
   const user = await resolveUser(ctx, claims)
 
-  // Banned/pending enforcement. The admin plugin's session.create.before hook
-  // only runs inside an endpoint context, so enforce here explicitly —
-  // including the pending-approval ban applied by the user.create.after hook
-  // during first-exchange provisioning. Mirrors the plugin's banExpires
-  // auto-unban.
-  const fresh = await ctx.internalAdapter.findUserById(user.id)
-  if (!fresh) {
-    // Invariant violation: resolveUser just produced this user. Masked to the
-    // client as a generic denial, but a systemic occurrence must be visible.
-    captureException(new Error('token exchange: resolved user missing after provisioning'), {
-      tags: { component: 'token-exchange', operation: 'user-missing' },
-      extra: { userId: user.id },
-    })
-    throw new TokenExchangeError('invalid_grant')
-  }
-  const banned = fresh as typeof fresh & { banned?: boolean | null; banExpires?: Date | null }
-  if (banned.banned) {
-    if (banned.banExpires && new Date(banned.banExpires).getTime() < Date.now()) {
-      await ctx.internalAdapter.updateUser(fresh.id, {
-        banned: false,
-        banReason: null,
-        banExpires: null,
-      })
-    } else {
+  let session: Awaited<ReturnType<typeof mintInstalledClientSession>>['session']
+  try {
+    ;({ session } = await mintInstalledClientSession({
+      userId: user.id,
+      method: 'token-exchange',
+      orgId: claims.org_id,
+      meta,
+    }))
+  } catch (error) {
+    if (error instanceof InstalledClientSessionError) {
       throw new TokenExchangeError('invalid_grant')
     }
-  }
-
-  // Session hygiene: record where this session came from so users can see
-  // and revoke it in the sessions list.
-  //
-  // Wrapped so the session.create.after hook can attribute the audit row: this
-  // call is not a Better Auth endpoint, so there is no endpoint path for the
-  // hook to read, and the grant's org is only known here.
-  const session = await withSessionAuditContext(
-    { method: 'token-exchange', orgId: claims.org_id },
-    () =>
-      ctx.internalAdapter.createSession(fresh.id, false, {
-        userAgent: meta.userAgent?.slice(0, 512) || 'token-exchange',
-        ipAddress: meta.ipAddress ?? '',
-      }),
-  )
-  if (!session) {
-    captureException(new Error('token exchange: session creation returned no session'), {
-      tags: { component: 'token-exchange', operation: 'session-create' },
-      extra: { userId: fresh.id },
-    })
-    throw new TokenExchangeError('invalid_grant')
+    throw error
   }
 
   const expiresIn = Math.max(

@@ -40,6 +40,7 @@ import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
 import platformSsoStart from './routes/platform-sso-start'
 import tokenExchange from './routes/token-exchange'
+import mobilePairing from './routes/mobile-pairing'
 import agentBootstrap from './routes/agent-bootstrap'
 import activityRouter from './routes/activity'
 import { initializeServices } from '@shared/lib/startup'
@@ -136,6 +137,12 @@ if (isAuthMode()) {
 // wins the route match, after the rate limiter + enforcement middleware above.
 if (isAuthMode()) {
   app.route('/api/auth/token', tokenExchange)
+}
+
+// Mobile pairing endpoints — same placement rationale as the token endpoint:
+// before the Better Auth wildcard, behind the /api/auth/* middleware stack.
+if (isAuthMode()) {
+  app.route('/api/auth/mobile', mobilePairing)
 }
 
 // Mount Better Auth handler (only when AUTH_MODE is enabled)
