@@ -9,7 +9,7 @@
  *     as the current level (so the first post-upgrade message with effort='high'
  *     does not trigger a spurious restart).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 type MockQueryCall = { options: Record<string, unknown> }
 const calls: MockQueryCall[] = []
@@ -17,9 +17,20 @@ const setModelCalls: (string | undefined)[] = []
 
 // Stub the SDK before importing ClaudeCodeProcess.
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
-  // Returns an async iterator that never yields until aborted — good enough to
-  // model a running session for the purposes of this test.
-  function makeQuery(_args: { prompt: unknown; options: Record<string, unknown> }) {
+  // Model a running SDK iterator that actually honors the AbortController.
+  // This lets interrupt() observe processMessages() unwind immediately instead
+  // of paying its 5-second hung-SDK fallback in every restart test.
+  function makeQuery(args: { prompt: unknown; options: Record<string, unknown> }) {
+    const abortController = args.options.abortController as AbortController
+    let resolvePending:
+      | ((result: IteratorResult<never>) => void)
+      | undefined
+    const finish = () => {
+      resolvePending?.({ value: undefined, done: true })
+      resolvePending = undefined
+    }
+    abortController.signal.addEventListener('abort', finish, { once: true })
+
     const iter: AsyncIterableIterator<never> & {
       interrupt: () => Promise<void>
       setModel: (model?: string) => Promise<void>
@@ -28,11 +39,15 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         return this
       },
       next() {
-        return new Promise<IteratorResult<never>>(() => {
-          /* pending forever — real abort handled via AbortController in process */
+        if (abortController.signal.aborted) {
+          return Promise.resolve({ value: undefined, done: true })
+        }
+        return new Promise<IteratorResult<never>>((resolve) => {
+          resolvePending = resolve
         })
       },
       return() {
+        finish()
         return Promise.resolve({ value: undefined, done: true } as IteratorResult<never>)
       },
       throw(err?: unknown) {
@@ -68,7 +83,13 @@ vi.mock('./mcp-server', () => ({
 }))
 
 vi.mock('./tools/browser', () => ({
-  createBrowserTools: () => [],
+  createBrowserTools: () => [
+    { name: 'browser_open' },
+    { name: 'browser_get_state' },
+    { name: 'browser_snapshot' },
+    { name: 'browser_click' },
+    { name: 'browser_close' },
+  ],
 }))
 
 vi.mock('./tools/computer-use', () => ({
@@ -82,6 +103,7 @@ vi.mock('./file-hooks', () => ({
 
 vi.mock('./input-manager', () => ({
   inputManager: {},
+  HUMAN_INPUT_TTL_MS: 24 * 60 * 60 * 1000,
 }))
 
 import { ClaudeCodeProcess } from './claude-code'
@@ -91,14 +113,7 @@ describe('ClaudeCodeProcess effort handling', () => {
     calls.length = 0
   })
 
-  afterEach(async () => {
-    // Nothing to tear down — process.stop() triggers abort which our stub ignores.
-  })
-
-  // Interrupt's wait-for-stop polls up to 5 s before falling through; our mock
-  // doesn't honor the abort signal, so each effort-change test waits that full
-  // window. Raise the per-test timeout accordingly.
-  it('rebuilds the query with the new effort when effort changes', { timeout: 15000 }, async () => {
+  it('rebuilds the query with the new effort when effort changes', async () => {
     const process = new ClaudeCodeProcess({
       sessionId: 'test-session-1',
       workingDirectory: '/tmp',
@@ -134,7 +149,7 @@ describe('ClaudeCodeProcess effort handling', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('treats undefined stored effort as high so first high message does not restart', { timeout: 15000 }, async () => {
+  it('treats undefined stored effort as high so first high message does not restart', async () => {
     // Simulates a session created before this feature (no persisted effort).
     const process = new ClaudeCodeProcess({
       sessionId: 'test-session-3',
@@ -156,6 +171,88 @@ describe('ClaudeCodeProcess effort handling', () => {
     await process.sendMessage('hello again', undefined, { effort: 'low' })
     expect(calls).toHaveLength(2)
     expect(calls[1].options.effort).toBe('low')
+  })
+})
+
+describe('ClaudeCodeProcess speed handling', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  const speedHeaderOf = (call: MockQueryCall): string | undefined => {
+    const env = call.options.env as Record<string, string | undefined>
+    return env.ANTHROPIC_CUSTOM_HEADERS?.split('\n').find((l) => l.startsWith('X-Superagent-Speed:'))
+  }
+
+  it('bakes the speed header into the query env at creation', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-speed-1',
+      workingDirectory: '/tmp',
+      speed: 'fast',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(speedHeaderOf(calls[0])).toBe('X-Superagent-Speed: fast')
+  })
+
+  it("emits no speed header for 'normal' or unset speed", async () => {
+    const p1 = new ClaudeCodeProcess({ sessionId: 'test-speed-2a', workingDirectory: '/tmp', speed: 'normal' })
+    await p1.start()
+    const p2 = new ClaudeCodeProcess({ sessionId: 'test-speed-2b', workingDirectory: '/tmp' })
+    await p2.start()
+    expect(calls).toHaveLength(2)
+    expect(speedHeaderOf(calls[0])).toBeUndefined()
+    expect(speedHeaderOf(calls[1])).toBeUndefined()
+  })
+
+  it('rebuilds the query with the new header when speed changes', { timeout: 15000 }, async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-speed-3',
+      workingDirectory: '/tmp',
+      speed: 'normal',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello', undefined, { speed: 'fast' })
+
+    expect(calls).toHaveLength(2)
+    expect(speedHeaderOf(calls[1])).toBe('X-Superagent-Speed: fast')
+  })
+
+  it('does not rebuild the query when the same speed is passed', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-speed-4',
+      workingDirectory: '/tmp',
+      speed: 'fast',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello', undefined, { speed: 'fast' })
+    expect(calls).toHaveLength(1)
+  })
+
+  it("treats undefined stored speed as 'normal' so a first normal message does not restart", { timeout: 15000 }, async () => {
+    // Simulates a session created before this feature (no persisted speed).
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-speed-5',
+      workingDirectory: '/tmp',
+      // speed intentionally omitted
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello', undefined, { speed: 'normal' })
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello again', undefined, { speed: 'slow' })
+    expect(calls).toHaveLength(2)
+    expect(speedHeaderOf(calls[1])).toBe('X-Superagent-Speed: slow')
   })
 })
 
@@ -274,6 +371,67 @@ describe('ClaudeCodeProcess model prompt hints', () => {
   })
 })
 
+describe('ClaudeCodeProcess agent-browser Bash hook', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('adds a warning without denying direct agent-browser commands', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-agent-browser-hook',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const hooks = calls[0].options.hooks as {
+      PreToolUse: Array<{
+        matcher: string
+        hooks: Array<(input: unknown) => Promise<Record<string, unknown>>>
+      }>
+    }
+    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher === 'Bash')
+    expect(bashHook).toBeDefined()
+
+    const directResult = await bashHook!.hooks[0]({
+      tool_name: 'Bash',
+      tool_input: { command: 'agent-browser open https://example.com' },
+    })
+    const discoveryResult = await bashHook!.hooks[0]({
+      tool_name: 'Bash',
+      tool_input: { command: 'which agent-browser; agent-browser --help' },
+    })
+    for (const result of [directResult, discoveryResult]) {
+      expect(result).toMatchObject({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          additionalContext: expect.stringContaining('STRONG WARNING'),
+        },
+      })
+      expect(result).not.toHaveProperty('hookSpecificOutput.permissionDecision')
+    }
+  })
+
+  it('does not add context to ordinary Bash commands', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ordinary-bash-hook',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const hooks = calls[0].options.hooks as {
+      PreToolUse: Array<{
+        matcher: string
+        hooks: Array<(input: unknown) => Promise<Record<string, unknown>>>
+      }>
+    }
+    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher === 'Bash')!
+    await expect(bashHook.hooks[0]({
+      tool_name: 'Bash',
+      tool_input: { command: 'rg browser src' },
+    })).resolves.toEqual({})
+  })
+})
+
 describe('ClaudeCodeProcess static tool bans', () => {
   beforeEach(() => {
     calls.length = 0
@@ -289,5 +447,26 @@ describe('ClaudeCodeProcess static tool bans', () => {
     expect(calls).toHaveLength(1)
     const disallowed = calls[0].options.disallowedTools as string[]
     expect(disallowed).toContain('DesignSync')
+  })
+})
+
+describe('ClaudeCodeProcess dashboard browser tools', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('lets the dashboard builder open and validate container-local dashboards', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-dashboard-browser-tools',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const agents = calls[0].options.agents as Record<string, { tools: string[] }>
+    const tools = agents['dashboard-builder'].tools
+    expect(tools).toContain('mcp__browser__browser_open')
+    expect(tools).toContain('mcp__browser__browser_get_state')
+    expect(tools).toContain('mcp__browser__browser_click')
+    expect(tools).toContain('mcp__browser__browser_close')
   })
 })

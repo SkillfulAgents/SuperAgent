@@ -13,12 +13,15 @@ import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
+import { registerSessionComposerFocus } from './composer-focus'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
+import { AgentDefaultFooter } from './agent-default-footer'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
-import type { EffortLevel } from '@shared/lib/container/types'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import type { ComposerSnapshot } from '@renderer/lib/new-session-carryover'
 
 interface MessageInputProps {
   sessionId: string
@@ -31,11 +34,15 @@ interface MessageInputProps {
   onMessageFailed?: (localId: string) => void
   /** Effort level last used on this session; seeds the composer selector. Defaults to 'high' when absent. */
   initialEffort?: EffortLevel
+  /** Speed last used on this session; seeds the composer selector. Defaults to 'normal' when absent. */
+  initialSpeed?: SpeedLevel
   /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
   initialModel?: string
+  /** Registers a getter so the stale-session prompt can move the live draft. */
+  registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialModel }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, registerSnapshot }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -45,13 +52,17 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
   const composerOptions = useComposerOptions({
     initialEffort,
+    initialSpeed,
     initialModel,
     agentDefaultModel: agentPrefs?.defaultModel,
     agentDefaultEffort: agentPrefs?.defaultEffort,
+    agentDefaultSpeed: agentPrefs?.defaultSpeed,
     agentKey: agentSlug,
     agentDefaultsReady: agentPrefsFetched,
   })
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const textareaRef = useRef<HTMLDivElement>(null)
+  // Let out-of-tree components (file-preview comment bar) focus this composer.
+  useEffect(() => registerSessionComposerFocus(sessionId, () => textareaRef.current?.focus()), [sessionId])
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
@@ -111,6 +122,28 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     draftKey: `session:${sessionId}`,
   })
 
+  const snapshotRef = useRef<ComposerSnapshot>({
+    text: '',
+    attachments: [],
+    model: undefined,
+    effort: composerOptions.effort,
+    speed: composerOptions.speed,
+    securedSecrets: [],
+  })
+  snapshotRef.current = {
+    text: composer.message,
+    attachments: composer.attachments,
+    model: composerOptions.model,
+    effort: composerOptions.effort,
+    speed: composerOptions.speed,
+    securedSecrets: composer.securedSecrets,
+  }
+  useEffect(() => {
+    if (!registerSnapshot) return
+    registerSnapshot(() => snapshotRef.current)
+    return () => registerSnapshot(null)
+  }, [registerSnapshot])
+
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {
     const match = composer.message.match(/^\/(\S*)$/)
@@ -137,8 +170,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     textareaRef.current?.focus()
   }, [composer])
 
-  const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value
+  const handleChange = useCallback((value: string) => {
     composer.setMessage(value)
 
     // Open slash menu when input is "/" followed by optional non-space chars (still typing command)
@@ -173,7 +205,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     // Slash command menu keyboard navigation
     if (slashMenuOpen && filteredCommands.length > 0) {
       if (e.key === 'ArrowDown') {
@@ -205,7 +237,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       // mid-thought. Desktop (fine pointer) keeps Enter-to-send unchanged.
       if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
       e.preventDefault()
-      composer.handleSubmit(e)
+      void composer.handleSubmit(e)
     }
   }
 
@@ -219,7 +251,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   return (
     <form
       onSubmit={composer.handleSubmit}
-      className={`relative px-4 pt-3 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      className={`relative px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       {...composer.dragHandlers}
     >
       <MountChoiceDialog
@@ -255,6 +287,14 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         rows={2}
         enterKeyHint="enter"
         dataTestId="message-input"
+        secureSecrets={{
+          agentSlug,
+          potentialSecrets: composer.potentialSecrets,
+          securedSecrets: composer.securedSecrets,
+          onDismiss: composer.dismissPotentialSecret,
+          onSecure: composer.securePotentialSecret,
+          onRemove: composer.removeSecuredSecrets,
+        }}
         leftActions={(
           <>
             <AttachmentPicker
@@ -265,7 +305,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
             />
             {/* Model/effort are locked while the agent works — changing them
                 mid-turn would interrupt the running query. */}
-            <ComposerOptions state={composerOptions} disabled={isDisabled || isActive} />
+            <ComposerOptions
+              state={composerOptions}
+              disabled={isDisabled || isActive}
+              footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
+            />
           </>
         )}
         rightActions={(

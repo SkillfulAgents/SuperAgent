@@ -1,79 +1,26 @@
-import { memo, useEffect, useState, type ReactNode } from 'react'
-import { Check, ChevronDown } from 'lucide-react'
+import { memo, type ReactNode } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
-import { cn } from '@shared/lib/utils'
-import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
+import { EFFORT_LEVELS } from '@shared/lib/container/types'
 import { type ComposerOptionsState } from './composer-options'
 import { ModelFamilyList, findCatalogModel } from './model-family-list'
-
-const EFFORT_META: Record<EffortLevel, { label: string; blurb: string }> = {
-  low: { label: 'Low', blurb: 'Fastest. Minimal thinking, terse answers.' },
-  medium: { label: 'Medium', blurb: 'Default. Balanced thinking and response depth.' },
-  high: { label: 'High', blurb: 'Thorough planning and explanations.' },
-  xhigh: { label: 'Extra High', blurb: 'Deep reasoning for long-horizon work.' },
-  max: { label: 'Max', blurb: 'Highest effort.' },
-}
-
-function SectionHeader({ children }: { children: ReactNode }) {
-  return (
-    <div className="px-2 pt-1 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-      {children}
-    </div>
-  )
-}
-
-interface EffortRowProps {
-  label: string
-  blurb: string
-  isSelected: boolean
-  onClick: () => void
-  testId: string
-}
-
-function EffortRow({ label, blurb, isSelected, onClick, testId }: EffortRowProps) {
-  return (
-    <button
-      type="button"
-      data-testid={testId}
-      onClick={onClick}
-      className={cn(
-        'group flex items-start justify-between gap-2 rounded-sm px-2 py-1 text-left hover:bg-accent',
-        isSelected && 'bg-accent'
-      )}
-    >
-      <span className="flex min-w-0 flex-col">
-        <span className="text-xs font-normal">{label}</span>
-        <span
-          className={cn(
-            'overflow-hidden text-xs font-normal text-muted-foreground transition-[max-height,opacity,margin-top] duration-500 ease-out',
-            isSelected
-              ? 'mt-0.5 max-h-16 opacity-100'
-              : 'mt-0 max-h-0 opacity-0 group-hover:mt-0.5 group-hover:max-h-16 group-hover:opacity-100'
-          )}
-        >
-          {blurb}
-        </span>
-      </span>
-      {isSelected && (
-        <Check className="h-3.5 w-3.5 shrink-0 self-center text-foreground" />
-      )}
-    </button>
-  )
-}
+import { EFFORT_LABELS, EffortSection, useEffortClamp } from './effort-slider'
+import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from './speed-section'
 
 interface ComposerOptionsPopoverProps {
   state: ComposerOptionsState
   disabled?: boolean
   /** Show the Effort section. Disable for model-only pickers (e.g. summarizer). */
   includeEffort?: boolean
+  /** Optional caller-owned content rendered after the picker sections. */
+  footer?: ReactNode
 }
 
-function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: ComposerOptionsPopoverProps) {
-  const { effort, setEffort, model, setModel, catalog, webProvider } = state
-  const [open, setOpen] = useState(false)
+function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, footer }: ComposerOptionsPopoverProps) {
+  const { effort, setEffort, speed, setSpeed, model, setModel, catalog, webProvider } = state
 
   // Trigger display fallback for the brief window before useComposerOptions
   // seeds `model`. Order: resolve the selection against the catalog (exact id
@@ -84,27 +31,33 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
     ?? catalog.find((m) => m.family === 'sonnet' && m.isLatest)
     ?? catalog[0]
 
-  // Reset to Medium whenever the selected model disallows the current effort.
-  // Medium is the default effort and every model supports it, so it's safe.
-  const supportsCurrentEffort = selectedModel?.supportedEfforts.includes(effort) ?? true
-  useEffect(() => {
-    if (includeEffort && selectedModel && !supportsCurrentEffort) {
-      setEffort('medium')
-    }
-  }, [includeEffort, selectedModel, supportsCurrentEffort, setEffort])
+  useEffortClamp(includeEffort ? selectedModel : undefined, effort, setEffort)
 
   const visibleEfforts = EFFORT_LEVELS.filter((level) =>
     selectedModel ? selectedModel.supportedEfforts.includes(level) : true
   )
 
-  const effortLabel = EFFORT_META[effort].label
+  // Speed options come from the selected model's catalog entry; a model switch
+  // that drops the current pick snaps back to Normal.
+  const visibleSpeeds = availableSpeeds(selectedModel)
+  useSpeedClamp(includeEffort ? selectedModel : undefined, speed, setSpeed)
+
+  const effortLabel = EFFORT_LABELS[effort]
+  // Keep the trigger uncluttered: surface speed only when it's off the default.
+  // Session metadata deliberately persists speed as an open string (forward
+  // compat), so an off-enum value can reach here — render no suffix rather
+  // than "· undefined".
+  const speedLabel: string | undefined = SPEED_LABELS[speed]
+  const speedSuffix = speed !== 'normal' && speedLabel ? ` · ${speedLabel}` : ''
   const selectedModelLabel = selectedModel?.label
   const triggerAriaLabel = includeEffort
-    ? (selectedModelLabel ? `${selectedModelLabel} · ${effortLabel}` : effortLabel)
+    ? (selectedModelLabel ? `${selectedModelLabel} · ${effortLabel}${speedSuffix}` : `${effortLabel}${speedSuffix}`)
     : (selectedModelLabel ?? 'Model')
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    // Uncontrolled: nothing closes the popover programmatically anymore (picks
+    // never dismiss), so Radix owns the open state.
+    <Popover>
       <PopoverTrigger asChild>
         <Button
           type="button"
@@ -120,53 +73,53 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
             {selectedModelLabel}
             {includeEffort && (
               <span className="text-muted-foreground">
-                {selectedModelLabel ? ' · ' : ''}{effortLabel}
+                {selectedModelLabel ? ' · ' : ''}{effortLabel}{speedSuffix}
               </span>
             )}
           </span>
           <ChevronDown className="h-3.5 w-3.5" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-80 px-1 py-2" align="start">
+      <PopoverContent
+        // Fixed reading order Model → Effort → Speed in both open directions —
+        // no col-reverse (unlike the settings picker, which flips to keep Effort
+        // by the trigger). Speed is the tertiary knob, so it stays at the bottom.
+        className="flex w-64 flex-col px-1 py-2"
+        align="start"
+        // Don't auto-focus the first element (a vendor tab) on open — focusing
+        // it pops its name tooltip instantly. Keyboard users can Tab in.
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
         {selectedModel && (
           <>
-            <SectionHeader>Models</SectionHeader>
-            {/* Grouped by family, no "latest" — per-message picks a concrete version. */}
+            {/* Flat list, no "latest" — per-message picks a concrete version.
+                The "Models" label renders inside, below the vendor tabs.
+                Picks never dismiss: model and effort get tuned together, and the
+                popover closes only on outside click / Escape / trigger toggle. */}
             <ModelFamilyList
+              header="Models"
               catalog={catalog}
               value={model}
-              onPick={(value) => {
-                setModel(value)
-                setOpen(false)
-              }}
-              // One click on a family selects its latest and expands (no close),
-              // so the 90% who just want the latest are done in a single click.
-              onSelectFamilyLatest={(value) => setModel(value)}
+              onPick={setModel}
               webProvider={webProvider}
             />
-            {includeEffort && <Separator className="my-2" />}
+            {includeEffort && <Separator className="my-2 bg-border/50" />}
           </>
         )}
         {includeEffort && (
+          <EffortSection levels={visibleEfforts} value={effort} onChange={setEffort} />
+        )}
+        {/* Speed rides the same gate as Effort: model-only pickers (summarizer)
+            show neither. Hidden entirely for models whose serving path offers
+            no speed choice (normal-only). Rendered last so it sits below
+            Effort in the fixed Model → Effort → Speed order. */}
+        {includeEffort && visibleSpeeds.length > 1 && (
           <>
-            <SectionHeader>Effort</SectionHeader>
-            <div className="flex flex-col gap-1">
-              {visibleEfforts.map((level) => (
-                <EffortRow
-                  key={level}
-                  label={EFFORT_META[level].label}
-                  blurb={EFFORT_META[level].blurb}
-                  isSelected={effort === level}
-                  onClick={() => {
-                    setEffort(level)
-                    setOpen(false)
-                  }}
-                  testId={`effort-option-${level}`}
-                />
-              ))}
-            </div>
+            <Separator className="my-2 bg-border/50" />
+            <SpeedSection speeds={visibleSpeeds} value={speed} onChange={setSpeed} />
           </>
         )}
+        {footer}
       </PopoverContent>
     </Popover>
   )

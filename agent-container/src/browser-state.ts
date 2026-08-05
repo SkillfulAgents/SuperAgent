@@ -1,10 +1,13 @@
+import type { BrowserRuntimeLocation } from './browser-location'
+
 export interface BrowserState {
   active: boolean;
   sessionId: string | null;
   cdpUrl: string | null;
+  location: BrowserRuntimeLocation | null;
 }
 
-const initialState: BrowserState = { active: false, sessionId: null, cdpUrl: null };
+const initialState: BrowserState = { active: false, sessionId: null, cdpUrl: null, location: null };
 
 let browserState: BrowserState = { ...initialState };
 
@@ -36,11 +39,18 @@ export function validateBrowserSession(requestSessionId: string): string | null 
  * Does NOT close the browser or kill chromium — only drops the ownership lock
  * so another session can acquire it. The Chrome process and cookies are preserved.
  *
- * Returns true if the lock was released, false if the session didn't own it.
+ * `onReleased` receives the pre-release owner after state is cleared. This lets
+ * callers send lifecycle events to the right session without reimplementing
+ * the ownership check or reading a now-null sessionId.
  */
-export function releaseBrowserLock(sessionId: string): boolean {
+export function releaseBrowserLock(
+  sessionId: string,
+  onReleased?: (releasedSessionId: string) => void,
+): boolean {
   if (browserState.active && browserState.sessionId === sessionId) {
-    browserState = { active: false, sessionId: null, cdpUrl: null };
+    const releasedSessionId = browserState.sessionId
+    browserState = { ...browserState, active: false, sessionId: null };
+    onReleased?.(releasedSessionId)
     return true;
   }
   return false;

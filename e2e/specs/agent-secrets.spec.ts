@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Locator } from '@playwright/test'
 import * as fs from 'fs'
 import * as path from 'path'
 import { AppPage } from '../pages/app.page'
@@ -33,7 +33,15 @@ function readRecords(): MockRecord[] {
     .trim()
     .split('\n')
     .filter(Boolean)
-    .map((l) => JSON.parse(l) as MockRecord)
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as MockRecord]
+      } catch {
+        // The app appends to this file while the test polls it. Ignore a
+        // partially-written final line and retry on the next pass.
+        return []
+      }
+    })
 }
 
 /**
@@ -66,33 +74,47 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
   })
 
   test('a UI-added secret persists and is delivered to the container on the next session', async ({ page }, testInfo) => {
+    // This case deliberately forces a cold page reload before continuing the
+    // full container-delivery flow. Give CI room for a cold Vite transform
+    // instead of relying on Playwright retries to hide a budget-only flake.
+    test.slow()
+
     // Unique, deterministic env var name. keyToEnvVar uppercases and turns
     // non-alphanumeric runs into underscores, so "E2E Secret W0T123" → "E2E_SECRET_W0T123".
     const tag = `W${testInfo.workerIndex}T${Date.now()}`
     const secretKey = `E2E Secret ${tag}`
     const expectedEnvVar = `E2E_SECRET_${tag.toUpperCase()}`
 
-    // 1. Add the secret through the agent settings → Secrets tab.
-    await agentPage.openSettings()
-    await page.locator('[data-testid="agent-settings-nav-secrets"]').click()
-    await page.locator('#secret-key').fill(secretKey)
-    await page.locator('#secret-value').fill('super-secret-value')
-    await page.getByRole('button', { name: 'Add Secret' }).click()
+    // 1. Add the secret through the standalone Agent Secrets page.
+    await page.getByTestId('home-secrets-open-page').click()
+    await expect(page).toHaveURL(/\/secrets$/)
+    await page.getByTestId('secrets-add-button').click()
+    await page.getByTestId('secret-dialog-key').fill(secretKey)
+    const secretValueInput = page.getByTestId('secret-dialog-value')
+    await expect(secretValueInput).toHaveAttribute('type', 'text')
+    await expect(secretValueInput).toHaveCSS('-webkit-text-security', 'disc')
+    await expect(secretValueInput).toHaveAttribute('data-1p-ignore', 'true')
+    await expect(secretValueInput).toHaveAttribute('data-bwignore', 'true')
+    await expect(secretValueInput).toHaveAttribute('data-form-type', 'other')
+    await expect(secretValueInput).toHaveAttribute('data-lpignore', 'true')
+    await secretValueInput.fill('super-secret-value')
+    await page.getByTestId('secret-dialog-submit').click()
 
     // It shows up in the list (the env var name is rendered on the row).
-    await expect(page.getByText(expectedEnvVar)).toBeVisible({ timeout: 10000 })
+    await expect(page.getByTestId(`secret-row-${expectedEnvVar}`)).toBeVisible({ timeout: 10000 })
 
-    // 2. Close settings.
-    await page.keyboard.press('Escape')
-    await expect(page.locator('[data-testid="agent-settings-dialog"]')).not.toBeVisible()
+    // 2. Persistence: a full reload cold-reads the on-disk `.env` (the hardened
+    //    read side) through the deep-linked /agents/:slug/secrets route.
+    await page.reload()
+    await expect(page.getByTestId(`secret-row-${expectedEnvVar}`)).toBeVisible({ timeout: 15000 })
 
-    // 3. Persistence: reopen settings → Secrets and confirm the secret is read
-    //    back from the on-disk `.env` (the hardened read side).
-    await agentPage.openSettings()
-    await page.locator('[data-testid="agent-settings-nav-secrets"]').click()
-    await expect(page.getByText(expectedEnvVar)).toBeVisible({ timeout: 10000 })
-    await page.keyboard.press('Escape')
-    await expect(page.locator('[data-testid="agent-settings-dialog"]')).not.toBeVisible()
+    // 3. Click-to-reveal round-trips the raw value through the value endpoint.
+    await page.getByTestId(`secret-reveal-${expectedEnvVar}`).click({ timeout: 15000 })
+    await expect(page.getByText('super-secret-value')).toBeVisible({ timeout: 10000 })
+
+    // Back to the agent home to start a session.
+    await page.getByTestId('secrets-back-button').click()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 10000 })
 
     // 4. Start a NEW session — the create-session path resolves the agent's
     //    secret env var names from the `.env` and passes them to the container.
@@ -114,19 +136,24 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
     const secretKey = `E2E Secret ${tag}`
     const expectedEnvVar = `E2E_SECRET_${tag.toUpperCase()}`
 
-    // Add then immediately delete the secret.
-    await agentPage.openSettings()
-    await page.locator('[data-testid="agent-settings-nav-secrets"]').click()
-    await page.locator('#secret-key').fill(secretKey)
-    await page.locator('#secret-value').fill('to-be-removed')
-    await page.getByRole('button', { name: 'Add Secret' }).click()
+    // Add then immediately delete the secret on the standalone page.
+    await page.getByTestId('home-secrets-open-page').click()
+    await page.getByTestId('secrets-add-button').click()
+    await page.getByTestId('secret-dialog-key').fill(secretKey)
+    await page.getByTestId('secret-dialog-value').fill('to-be-removed')
+    await page.getByTestId('secret-dialog-submit').click()
 
-    await expect(page.getByText(expectedEnvVar)).toBeVisible({ timeout: 10000 })
-    await page.locator(`[data-testid="delete-secret-${expectedEnvVar}"]`).click()
-    await expect(page.getByText(expectedEnvVar)).toHaveCount(0, { timeout: 10000 })
+    await expect(page.getByTestId(`secret-row-${expectedEnvVar}`)).toBeVisible({ timeout: 10000 })
 
-    await page.keyboard.press('Escape')
-    await expect(page.locator('[data-testid="agent-settings-dialog"]')).not.toBeVisible()
+    // Delete goes row menu → Delete → confirm dialog.
+    await page.getByTestId(`secret-menu-${expectedEnvVar}`).click()
+    await page.getByTestId(`delete-secret-${expectedEnvVar}`).click()
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Delete' }).click()
+    await expect(page.getByTestId(`secret-row-${expectedEnvVar}`)).toHaveCount(0, { timeout: 10000 })
+
+    // Back to the agent home to start a session.
+    await page.getByTestId('secrets-back-button').click()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 10000 })
 
     // Start a new session — the deleted secret must NOT be among the env vars.
     const sessionMessage = `After delete ${tag}`
@@ -138,5 +165,80 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
       (r) => r.type === 'createSession' && r.initialMessage === sessionMessage
     )
     expect(record.availableEnvVars ?? []).not.toContain(expectedEnvVar)
+  })
+
+  /**
+   * DialogContent and AlertDialogContent are `display: grid`. A direct child of a grid
+   * container has `min-width: auto`, so its automatic minimum size is its min-content
+   * width. One long unbreakable token drives that to thousands of pixels: the child
+   * overflows the capped dialog and the dialog's own controls are laid out outside it,
+   * unreachable. Both primitives neutralize it with `[&>*]:min-w-0`.
+   *
+   * Assert geometry, never the class name, so any other way of reintroducing the
+   * overflow fails this too.
+   */
+  test('an unbreakable token must not strand dialog controls', async ({ page }) => {
+    const longToken = 'a'.repeat(240)
+
+    const expectContainedIn = async (control: Locator, container: Locator) => {
+      await expect(control).toBeVisible({ timeout: 10000 })
+      const containerBox = await container.boundingBox()
+      const controlBox = await control.boundingBox()
+      expect(containerBox).not.toBeNull()
+      expect(controlBox).not.toBeNull()
+      expect(controlBox!.x + controlBox!.width).toBeLessThanOrEqual(containerBox!.x + containerBox!.width)
+    }
+
+    await test.step('DialogContent: an overlong secret key leaves the dialog controls reachable', async () => {
+      const envVar = longToken.toUpperCase()
+      await page.getByTestId('home-secrets-open-page').click()
+      await page.getByTestId('secrets-add-button').click()
+      await page.getByTestId('secret-dialog-key').fill(longToken)
+      await page.getByTestId('secret-dialog-value').fill('overlong-key-value')
+
+      // The env-var preview renders the unbreakable token inside DialogContent;
+      // the submit button must stay inside the dialog and hittable.
+      const secretDialog = page.getByTestId('secret-dialog')
+      const submitButton = page.getByTestId('secret-dialog-submit')
+      await expectContainedIn(submitButton, secretDialog)
+      await submitButton.click()
+
+      // The delete confirm (AlertDialogContent) quotes the token too — its
+      // Confirm must stay reachable. The click is the other half of the guard:
+      // a stranded button is not hittable.
+      await expect(page.getByTestId(`secret-row-${envVar}`)).toBeVisible({ timeout: 10000 })
+      await page.getByTestId(`secret-menu-${envVar}`).click()
+      await page.getByTestId(`delete-secret-${envVar}`).click()
+      const alertDialog = page.getByRole('alertdialog')
+      const confirmButton = alertDialog.getByRole('button', { name: 'Delete' })
+      await expectContainedIn(confirmButton, alertDialog)
+      await confirmButton.click()
+      await expect(page.getByTestId(`secret-row-${envVar}`)).toHaveCount(0, { timeout: 10000 })
+
+      await page.getByTestId('secrets-back-button').click()
+    })
+
+    await test.step('AlertDialogContent: an overlong agent name leaves Confirm reachable and wraps', async () => {
+      await agentPage.openSettings()
+      await page.locator('[data-testid="agent-settings-nav-general"]').click()
+      // The confirmation quotes the live value of this field, so the dialog inflates
+      // without the rename ever being saved.
+      await page.locator('#agent-name').fill(longToken)
+      await page.locator('[data-testid="delete-agent-button"]').click()
+
+      const alertDialog = page.getByRole('alertdialog')
+      const confirmButton = page.locator('[data-testid="confirm-button"]')
+      await expectContainedIn(confirmButton, alertDialog)
+
+      // Reachable controls are not enough: the name itself must wrap rather than paint
+      // out through the alert's edge, which `overflow: visible` on the dialog allows.
+      const descOverflow = await alertDialog
+        .locator('p')
+        .first()
+        .evaluate((el) => el.scrollWidth - el.clientWidth)
+      expect(descOverflow).toBeLessThanOrEqual(0)
+
+      await confirmButton.click()
+    })
   })
 })

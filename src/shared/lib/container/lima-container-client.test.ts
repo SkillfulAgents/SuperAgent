@@ -702,6 +702,36 @@ describe('LimaContainerClient.handleRunError', () => {
     expect(execCmds().some((c) => c.includes(' start '))).toBe(false)
   })
 
+  it('treats an untagged "not found" error as a known VM issue (control for the tag below)', async () => {
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 ** 3 }], guestReachable: true })
+    mockFsState({ version: 'v99.0.0', haSockExists: true })
+
+    const recovered = await makeClient().handleRunError(
+      new Error('Image pull failed with exit code 1: ghcr.io/x/y:9.9.9: not found')
+    )
+
+    // String-match short-circuits to ensureLimaReady, which no-ops on the
+    // healthy VM and reports "recovered" — triggering a pointless retry.
+    expect(recovered).toBe(true)
+  })
+
+  it('never treats a registry "not found" from an image create as a VM issue', async () => {
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 ** 3 }], guestReachable: true })
+    mockFsState({ version: 'v99.0.0', haSockExists: true })
+
+    const recovered = await makeClient().handleRunError(
+      Object.assign(new Error('Image pull failed with exit code 1: ghcr.io/x/y:9.9.9: not found'), {
+        isImageCreateError: true,
+        sentryCaptured: true,
+      })
+    )
+
+    // Tagged create errors defer to the health probe; the VM is healthy, so
+    // there is nothing to recover and the pull error surfaces immediately.
+    expect(recovered).toBe(false)
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(false)
+  })
+
   it('does NOT rebuild a wedged VM — recovery surfaces it and reports unrecovered', async () => {
     mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 ** 3 }], guestReachable: false })
     mockFsState({ version: 'v99.0.0', haSockExists: true, haPid: '777' })

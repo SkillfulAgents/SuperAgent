@@ -8,6 +8,7 @@ const mockUpdateNextExecution = vi.fn()
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   getDueTasks: (...args: unknown[]) => mockGetDueTasks(...args),
+  getScheduledTask: vi.fn(() => Promise.resolve(null)),
   markTaskExecuted: (...args: unknown[]) => mockMarkTaskExecuted(...args),
   markTaskFailed: (...args: unknown[]) => mockMarkTaskFailed(...args),
   updateNextExecution: (...args: unknown[]) => mockUpdateNextExecution(...args),
@@ -59,6 +60,7 @@ const mockGetSessionForScheduledExecution = vi.fn()
 const mockRegisterSession = vi.fn()
 
 vi.mock('@shared/lib/services/session-service', () => ({
+  getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   getSessionForScheduledExecution: (...args: unknown[]) =>
     mockGetSessionForScheduledExecution(...args),
   registerSession: (...args: unknown[]) => mockRegisterSession(...args),
@@ -113,6 +115,8 @@ function createTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     timezone: 'America/Los_Angeles',
     model: null,
     effort: null,
+    speed: null,
+    resumeSessionId: null,
     createdAt: new Date('2026-06-26T16:00:00.000Z'),
     cancelledAt: null,
     pausedAt: null,
@@ -120,7 +124,7 @@ function createTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   }
 }
 
-describe('TaskScheduler model and effort resolution', () => {
+describe('TaskScheduler model, effort, and speed resolution', () => {
   beforeEach(() => {
     taskScheduler.stop()
     vi.clearAllMocks()
@@ -155,20 +159,29 @@ describe('TaskScheduler model and effort resolution', () => {
     const args = await executeTask()
     expect(args.model).toBe('claude-sonnet-4-20250514')
     expect(args.effort).toBeUndefined()
+    expect(args.speed).toBeUndefined()
   })
 
   it('falls back to the agent default over the global default', async () => {
-    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
+    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' })
     const args = await executeTask()
     expect(mockReadAgentPreferences).toHaveBeenCalledWith('agent-one')
     expect(args.model).toBe('opus')
     expect(args.effort).toBe('high')
+    expect(args.speed).toBe('slow')
   })
 
   it('prefers the task override over the agent default', async () => {
-    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
-    const args = await executeTask({ model: 'claude-haiku-4-5-20251001', effort: 'low' })
+    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'fast' })
+    const args = await executeTask({ model: 'claude-haiku-4-5-20251001', effort: 'low', speed: 'slow' })
     expect(args.model).toBe('claude-haiku-4-5-20251001')
     expect(args.effort).toBe('low')
+    expect(args.speed).toBe('slow')
+  })
+
+  it('a stored normal task speed beats a non-normal agent default', async () => {
+    mockReadAgentPreferences.mockResolvedValue({ defaultSpeed: 'fast' })
+    const args = await executeTask({ speed: 'normal' })
+    expect(args.speed).toBe('normal')
   })
 })

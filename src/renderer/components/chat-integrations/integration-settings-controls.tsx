@@ -10,8 +10,8 @@ import {
 } from '@renderer/components/ui/select'
 import { useUpdateChatIntegration } from '@renderer/hooks/use-chat-integrations'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
-import type { EffortLevel } from '@shared/lib/container/types'
-import type { ChatIntegration } from '@shared/lib/db/schema'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
 
 export function ToggleRow({ label, helperText, checked, onCheckedChange, disabled }: {
   label: string
@@ -102,12 +102,12 @@ export function SessionTimeoutSelect({ value, onCommit, disabled, id, descriptio
       disabled={disabled}
       onValueChange={(v) => onCommit(v === 'never' ? null : parseInt(v, 10))}
     >
-      <SelectTrigger id={id} className={layout === 'inline' ? 'h-7 w-24 shrink-0 text-xs' : 'h-7 text-xs'}>
+      <SelectTrigger id={id} className={layout === 'inline' ? 'h-7 w-24 shrink-0' : 'h-7'}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
         {options.map((o) => (
-          <SelectItem key={o.value} value={o.value} className="text-xs">
+          <SelectItem key={o.value} value={o.value}>
             {o.label}
           </SelectItem>
         ))}
@@ -146,6 +146,12 @@ export function IntegrationModelEffort({ integration }: { integration: ChatInteg
       includeEffort
       effort={(integration.effort as EffortLevel) ?? 'medium'}
       onEffortChange={(e) => updateIntegration.mutate({ id: integration.id, effort: e })}
+      includeSpeed
+      speed={(integration.speed as SpeedLevel) ?? 'normal'}
+      onSpeedChange={(s) => updateIntegration.mutate({ id: integration.id, speed: s })}
+      // Left-aligned in its DetailCard, so the LEFT edge is the fixed one —
+      // anchoring 'end' would slide the popover on every pick.
+      align="start"
     />
   )
 }

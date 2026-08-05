@@ -1,7 +1,10 @@
+import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
-import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema } from '@shared/lib/llm-provider'
+import { z } from 'zod'
+import { zValidator } from '@hono/zod-validator'
+import { getLlmProvider, getAllProviderInfo, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
@@ -10,10 +13,12 @@ import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { buildSettingsAuditDetails } from '@shared/lib/services/settings-audit'
 import {
   getSettings,
   loadSettingsStrict,
   updateSettings,
+  mutateSettings,
   clearSettingsCache,
   getBrowserbaseApiKeyStatus,
   getComposioApiKeyStatus,
@@ -25,21 +30,26 @@ import {
   getEffectiveAgentLimits,
   getCustomEnvVars,
   type AppSettings,
-  type AppPreferences,
-  type ApiKeySettings,
-  type ContainerSettings,
   type GlobalSettingsResponse,
+  type ModelPickerSettingsResponse,
 } from '@shared/lib/config/settings'
-import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
-import { isValidAccelerator } from '@shared/lib/config/shortcuts'
+import { DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
+import {
+  applySettingsPatch,
+  formatSettingsPatchError,
+  settingsPatchSchema,
+  validateSettingsTransition,
+} from '@shared/lib/config/settings-patch'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
-import { findWebProvider, getWebProvider } from '@shared/lib/web-provider'
+import {
+  findWebProvider,
+  getWebProvider,
+  resolveEffectiveWebVendor,
+} from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
-import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
-import { customEnvVarsSchema } from '@shared/lib/container/reserved-env-vars'
+import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { db } from '@shared/lib/db'
@@ -65,8 +75,11 @@ import {
   messageAuthor,
   xAgentPolicies,
   apiScopePolicies,
+  tokenExchangeJti,
 } from '@shared/lib/db/schema'
 import fs from 'fs'
+import { credentialBroker } from '../credentials/credential-broker'
+import { CredentialBrokerError } from '../credentials/types'
 
 const settings = new Hono()
 
@@ -180,32 +193,103 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   userSettings,
   // global app audit log
   auditLog,
+  // transient single-use jti replay guard for the token-exchange endpoint
+  tokenExchangeJti,
 ]
 
 // Custom model icons are used in regular model pickers, so any authenticated
 // user may read them. Writes and the rest of settings stay admin-only.
 settings.get('/model-icons/:fileName', Authenticated(), serveUploadedModelIcon)
 
+// The model catalog drives the composer and default-model pickers, which every
+// authenticated user may use — choosing a model is not an admin action, only
+// editing provider config/catalog is. Serve the picker-safe subset above the
+// admin gate; it carries no secrets (provider ids/names, an isConfigured
+// boolean, catalogs, and default selections).
+settings.get('/models', Authenticated(), (c) => {
+  try {
+    const appSettings = getSettings()
+    const response: ModelPickerSettingsResponse = {
+      llmProvider: appSettings.llmProvider ?? 'anthropic',
+      llmProviderStatus: getAllProviderInfo(),
+      models: getEffectiveModels(),
+      webProvider: resolveEffectiveWebVendor(),
+    }
+    return c.json(response)
+  } catch (error) {
+    console.error('Failed to fetch model settings:', error)
+    return c.json({ error: 'Failed to fetch model settings' }, 500)
+  }
+})
+
 settings.use('*', Authenticated(), IsAdmin())
 
-/** All keys in ApiKeySettings — used to generically handle set/delete in PUT. */
-const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [
-  'anthropicApiKey',
-  'openrouterApiKey',
-  'bedrockApiKey',
-  'bedrockAccessKeyId',
-  'bedrockSecretAccessKey',
-  'bedrockRegion',
-  'composioApiKey',
-  'composioUserId',
-  'browserbaseApiKey',
-  'browserbaseProjectId',
-  'deepgramApiKey',
-  'openaiApiKey',
-  'nangoSecretKey',
-  'accountProviderUserId',
-  'exaApiKey',
-]
+function passwordManagerErrorResponse(c: Context, error: unknown): Response {
+  if (!(error instanceof CredentialBrokerError)) {
+    return c.json({ error: 'Password manager connection failed' }, 500)
+  }
+  return c.json(
+    { error: error.message, code: error.code },
+    error.code === 'provider_locked' ? 409 : 502,
+  )
+}
+
+const passwordManagerConfigurationSchema = z.object({
+  configured: z.boolean(),
+}).strict()
+
+// Browser Use settings owns the durable provider selection. The short-lived
+// unlock/check flow stays with the browser_input request that needs it.
+settings.get('/password-managers', async (c) => {
+  try {
+    const configured = new Set(getSettings().app?.configuredPasswordManagers ?? [])
+    const providers = (await credentialBroker.connectionStatuses()).map((provider) => ({
+      ...provider,
+      configured: configured.has(provider.provider),
+    }))
+    return c.json({ providers })
+  } catch (error) {
+    return passwordManagerErrorResponse(c, error)
+  }
+})
+
+settings.put(
+  '/password-managers/:provider',
+  zValidator('json', passwordManagerConfigurationSchema),
+  async (c) => {
+    const provider = c.req.param('provider')
+    if (!credentialBroker.hasProvider(provider)) {
+      return c.json({ error: 'Password manager provider not found' }, 404)
+    }
+    try {
+      const body = c.req.valid('json')
+      if (body.configured) {
+        const connection = (await credentialBroker.connectionStatuses())
+          .find((candidate) => candidate.provider === provider)
+        if (!connection) {
+          return c.json({ error: 'Password manager provider not found' }, 404)
+        }
+        if (connection.status === 'unavailable' || connection.status === 'error') {
+          return c.json({
+            error: connection.message || 'Password manager prerequisites are not met',
+            provider: { ...connection, configured: false },
+          }, 409)
+        }
+      }
+      mutateSettings((current) => {
+        const app = current.app ?? (current.app = {})
+        const configured = new Set(app.configuredPasswordManagers ?? [])
+        if (body.configured) configured.add(provider)
+        else configured.delete(provider)
+        app.configuredPasswordManagers = [...configured]
+      })
+      return c.json({ success: true, provider, configured: body.configured })
+    } catch (error) {
+      console.error('Failed to configure password manager:', error)
+      return c.json({ error: 'Failed to configure password manager' }, 500)
+    }
+  },
+)
 
 // GET /api/settings/llm-providers/:providerId/models/search - Provider-native model discovery
 settings.get('/llm-providers/:providerId/models/search', async (c) => {
@@ -231,7 +315,8 @@ settings.get('/llm-providers/:providerId/models/search', async (c) => {
       return c.json({ error: error.message }, 400)
     }
     console.error('Failed to search provider models:', error)
-    return c.json({ error: 'Failed to search provider models' }, 500)
+    const message = error instanceof Error ? error.message : 'Failed to search provider models'
+    return c.json({ error: message }, 500)
   }
 })
 
@@ -274,9 +359,10 @@ settings.post('/model-icons', async (c) => {
   }
 })
 
-type AppPreferencesPatch = Partial<AppPreferences> & {
-  faviconDataUrl?: unknown
-  hostBrowserProvider?: unknown
+/** The generic provider's saved endpoint — displayed (not secret) in Settings. */
+function getGenericBaseUrl(): string | undefined {
+  const provider = getLlmProvider('generic')
+  return provider instanceof GenericLlmProvider ? provider.getEffectiveBaseUrl() : undefined
 }
 
 /** Build the GlobalSettingsResponse shared by GET and PUT handlers. */
@@ -287,6 +373,7 @@ function buildSettingsResponse(
 ): GlobalSettingsResponse {
   return {
     dataDir: getDataDir(),
+    hostTotalMemoryBytes: os.totalmem(),
     container: appSettings.container,
     app: appSettings.app || { showMenuBarIcon: true },
     hasRunningAgents,
@@ -294,12 +381,14 @@ function buildSettingsResponse(
     llmProvider: appSettings.llmProvider ?? 'anthropic',
     llmProviderStatus: getAllProviderInfo(),
     modelCatalog: appSettings.modelCatalog ?? {},
-    webProvider: appSettings.webProvider ?? 'native',
+    webProvider: resolveEffectiveWebVendor(),
+    webProviderIsDefault: appSettings.webProvider == null,
     apiKeyStatus: {
       anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
       openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
       bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
       platform: getLlmProvider('platform').getApiKeyStatus(),
+      generic: getLlmProvider('generic').getApiKeyStatus(),
       browserbase: getBrowserbaseApiKeyStatus(),
       composio: getComposioApiKeyStatus(),
       nango: getNangoApiKeyStatus(),
@@ -311,6 +400,7 @@ function buildSettingsResponse(
     agentLimits: getEffectiveAgentLimits(),
     customEnvVars: getCustomEnvVars(),
     composioUserId: getComposioUserId(),
+    genericBaseUrl: getGenericBaseUrl(),
     accountProviderUserId: getAccountProviderUserId(),
     setupCompleted: !!appSettings.app?.setupCompleted,
     hostBrowserStatus: { providers: detectAllProviders() },
@@ -323,6 +413,7 @@ function buildSettingsResponse(
     analyticsTargets: appSettings.analyticsTargets,
     shareErrorReports: appSettings.shareErrorReports !== false,
     enableToolSearch: appSettings.enableToolSearch !== false,
+    agentCapabilities: appSettings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES,
   }
 }
 
@@ -339,276 +430,130 @@ settings.get('/', async (c) => {
   }
 })
 
-// PUT /api/settings - Update settings
-settings.put('/', async (c) => {
-  try {
-    const body = await c.req.json()
-    // Read FRESH and fail-closed: never merge onto the possibly-
-    // corruption-defaulted cache (that is what overwrote real API keys/auth). A
-    // corrupt settings.json throws here → caught below → 500, instead of being
-    // silently replaced with defaults. The write path below this point has no
-    // `await`, so the read-merge-write stays atomic (no interleaving).
-    const currentSettings = loadSettingsStrict()
-    const hasRunningAgents = containerManager.hasRunningAgents()
+// PUT /api/settings - Update settings (patch semantics retained for compatibility)
+settings.put(
+  '/',
+  zValidator('json', settingsPatchSchema, (result, c) => {
+    if (!result.success) {
+      return c.json({ error: formatSettingsPatchError(result.error) }, 400)
+    }
+  }),
+  async (c) => {
+    try {
+      const body = c.req.valid('json')
 
-    // Check if trying to change restricted settings while agents are running
-    if (hasRunningAgents && body.container) {
-      const newContainer = body.container as Partial<ContainerSettings>
+      // Read FRESH and fail-closed: never merge onto the possibly-
+      // corruption-defaulted cache (that is what overwrote real API keys/auth).
+      // Applying and validating the candidate below are synchronous, so a valid
+      // write still has no await between this strict read and updateSettings.
+      const currentSettings = loadSettingsStrict()
+      const hasRunningAgents = containerManager.hasRunningAgents()
+      const newSettings = applySettingsPatch(currentSettings, body, {
+        now: new Date(),
+        getProviderDefaultModels: (provider) =>
+          getLlmProvider(provider).getDefaultModels(),
+      })
 
-      if (
-        (newContainer.containerRunner !== undefined &&
-          newContainer.containerRunner !==
-            currentSettings.container.containerRunner) ||
-        (newContainer.resourceLimits !== undefined &&
-          JSON.stringify(newContainer.resourceLimits) !==
-            JSON.stringify(currentSettings.container.resourceLimits))
-      ) {
+      const transitionProblem = validateSettingsTransition({
+        before: currentSettings,
+        after: newSettings,
+        patch: body,
+        context: {
+          hasRunningAgents,
+          hostTotalMemoryBytes: os.totalmem(),
+          supportsCustomAgentImage: (runner: ContainerRunner) =>
+            getContainerClientClass(runner).supportsCustomAgentImage,
+        },
+      })[0]
+
+      if (transitionProblem) {
         return c.json(
           {
-            error:
-              'Cannot change container runner or resource limits while agents are running. Please stop all agents first.',
-            runningAgents: await containerManager.getRunningAgentIds(),
+            error: transitionProblem.message,
+            ...(transitionProblem.includeRunningAgentIds
+              ? { runningAgents: await containerManager.getRunningAgentIds() }
+              : {}),
           },
-          409
+          transitionProblem.status,
         )
       }
-    }
 
-    // Block any settings change while a running agent is mid-turn.
-    if (hasRunningAgents) {
-      const busyAgents = containerManager
-        .getRunningAgentIds()
-        .filter((agentId) => messagePersister.hasActiveSessionsForAgent(agentId))
-      if (busyAgents.length > 0) {
-        const first = busyAgents[0]
-        const error =
-          busyAgents.length === 1
-            ? `${first} is still working. Finish or stop that session, then try again.`
-            : `${first} and ${busyAgents.length - 1} more are still working. Finish or stop those sessions, then try again.`
-        return c.json({ error, busyAgents }, 409)
-      }
-    }
-
-    // Reject agentImage changes for runners whose image is fixed by the
-    // deployment (e.g. lambda-microvm reads only MICROVM_AGENT_IMAGE_ARN).
-    if (body.container?.agentImage !== undefined) {
-      const newContainer = body.container as Partial<ContainerSettings>
-      const effectiveRunner = (newContainer.containerRunner ??
-        currentSettings.container.containerRunner) as ContainerRunner
-      if (
-        newContainer.agentImage !== currentSettings.container.agentImage &&
-        !getContainerClientClass(effectiveRunner).supportsCustomAgentImage
-      ) {
-        return c.json(
-          { error: `Agent image is managed by the deployment for the ${effectiveRunner} runner and cannot be changed here.` },
-          400
-        )
-      }
-    }
-
-    // Validate enableToolSearch if provided
-    if (body.enableToolSearch !== undefined && typeof body.enableToolSearch !== 'boolean') {
-      return c.json({ error: 'enableToolSearch must be a boolean' }, 400)
-    }
-
-    // Validate agentEffort if provided
-    if (body.models?.agentEffort !== undefined && !EFFORT_LEVELS.includes(body.models.agentEffort)) {
-      return c.json({ error: `agentEffort must be one of: ${EFFORT_LEVELS.join(', ')}` }, 400)
-    }
-
-    // Validate the quick-dispatch global shortcut accelerator. Empty string is
-    // allowed and means "disabled"; any other value must be a plausible
-    // accelerator (main's globalShortcut.register is the authoritative gate).
-    if (body.app?.globalDispatchShortcut !== undefined) {
-      const acc = body.app.globalDispatchShortcut
-      if (typeof acc !== 'string' || (acc !== '' && !isValidAccelerator(acc))) {
-        return c.json(
-          { error: 'globalDispatchShortcut must be an accelerator like "CommandOrControl+Shift+Space" (or "" to disable)' },
-          400,
-        )
-      }
-    }
-
-    // Validate runtimeSettings if provided
-    if (body.container?.runtimeSettings) {
-      const limaSettings = body.container.runtimeSettings.lima
-      if (limaSettings?.vmMemory && !VALID_LIMA_VM_MEMORY_OPTIONS.includes(limaSettings.vmMemory)) {
-        return c.json({ error: `Invalid VM memory setting. Must be one of: ${VALID_LIMA_VM_MEMORY_OPTIONS.join(', ')}` }, 400)
-      }
-    }
-
-    // Validate customEnvVars at the write boundary (defense-in-depth for
-    // SUP-210): reject payloads that try to set reserved runtime env vars so
-    // they never reach persisted settings.
-    if (body.customEnvVars !== undefined) {
-      const parsed = customEnvVarsSchema.safeParse(body.customEnvVars)
-      if (!parsed.success) {
-        return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid customEnvVars' }, 400)
-      }
-    }
-
-    let parsedModelCatalog = currentSettings.modelCatalog
-    if (body.modelCatalog !== undefined) {
-      const parsed = modelCatalogSettingsSchema.safeParse(body.modelCatalog)
-      if (!parsed.success) {
-        return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid modelCatalog' }, 400)
-      }
-      parsedModelCatalog = parsed.data
-    }
-
-    let appPatch = body.app as AppPreferencesPatch | undefined
-    if (appPatch && Object.prototype.hasOwnProperty.call(appPatch, 'faviconDataUrl')) {
-      const validation = validateFaviconDataUrl(appPatch.faviconDataUrl)
-      if (!validation.ok) {
-        return c.json({ error: validation.error }, 400)
-      }
-
-      appPatch = { ...appPatch }
-      appPatch.faviconUpdatedAt = new Date().toISOString()
-      if (appPatch.faviconDataUrl === null || appPatch.faviconDataUrl === '') {
-        appPatch.faviconDataUrl = undefined
-      }
-    }
-
-    // When the active LLM provider changes, reset model selections to the new
-    // provider's defaults (bare aliases) — unless the same request sets `models`
-    // explicitly. Prevents a pin from the old provider's catalog (which may not
-    // exist for the new one, e.g. a bare-Claude id on Bedrock) from leaking across.
-    const currentProvider = currentSettings.llmProvider ?? 'anthropic'
-    const providerChanged =
-      body.llmProvider !== undefined && body.llmProvider !== currentProvider
-    let providerDefaultModels:
-      | { summarizerModel: string; agentModel: string; browserModel: string; dashboardBuilderModel: string }
-      | undefined
-    if (providerChanged && body.models === undefined) {
-      try {
-        providerDefaultModels = getLlmProvider(body.llmProvider).getDefaultModels()
-      } catch {
-        // Unknown provider id — leave models as-is; other guards handle validity.
-        providerDefaultModels = undefined
-      }
-    }
-
-    // Merge new settings with current settings
-    // TODO refactor - pineapple on pizza level gross
-    const newSettings: AppSettings = {
-      container: {
-        ...currentSettings.container,
-        ...body.container,
-        resourceLimits: body.container?.resourceLimits
-          ? { ...currentSettings.container.resourceLimits, ...body.container.resourceLimits }
-          : currentSettings.container.resourceLimits,
-        runtimeSettings: body.container?.runtimeSettings
-          ? { ...currentSettings.container.runtimeSettings, ...body.container.runtimeSettings }
-          : currentSettings.container.runtimeSettings,
-      },
-      app: {
-        ...currentSettings.app,
-        ...appPatch,
-        // If hostBrowserProvider was explicitly set to null (meaning "use container"),
-        // remove it from settings so consumers treat it as "no host provider"
-        ...(appPatch && 'hostBrowserProvider' in appPatch && appPatch.hostBrowserProvider == null
-          ? { hostBrowserProvider: undefined }
-          : {}),
-      },
-      apiKeys: currentSettings.apiKeys,
-      llmProvider: body.llmProvider !== undefined ? body.llmProvider : currentSettings.llmProvider,
-      webProvider: body.webProvider !== undefined ? body.webProvider : currentSettings.webProvider,
-      webAllowedSites: body.webAllowedSites !== undefined ? body.webAllowedSites : currentSettings.webAllowedSites,
-      webBlockedSites: body.webBlockedSites !== undefined ? body.webBlockedSites : currentSettings.webBlockedSites,
-      models: body.models
-        ? { ...currentSettings.models, ...body.models }
-        : providerDefaultModels
-          ? { ...currentSettings.models, ...providerDefaultModels }
-          : currentSettings.models,
-      modelCatalog: parsedModelCatalog,
-      agentLimits: body.agentLimits !== undefined
-        ? { ...currentSettings.agentLimits, ...body.agentLimits }
-        : currentSettings.agentLimits,
-      customEnvVars: body.customEnvVars !== undefined ? body.customEnvVars : currentSettings.customEnvVars,
-      skillsets: currentSettings.skillsets,
-      platformAuth: currentSettings.platformAuth,
-      auth: body.auth !== undefined ? { ...currentSettings.auth, ...body.auth } : currentSettings.auth,
-      voice: body.voice !== undefined ? { ...currentSettings.voice, ...body.voice } : currentSettings.voice,
-      shareAnalytics: body.shareAnalytics !== undefined ? body.shareAnalytics : currentSettings.shareAnalytics,
-      shareErrorReports: body.shareErrorReports !== undefined ? body.shareErrorReports : currentSettings.shareErrorReports,
-      enableToolSearch: body.enableToolSearch !== undefined ? body.enableToolSearch : currentSettings.enableToolSearch,
-      computerUse: body.computerUse !== undefined
-        ? { ...currentSettings.computerUse, ...body.computerUse }
-        : currentSettings.computerUse,
-      analyticsTargets: body.analyticsTargets !== undefined ? body.analyticsTargets : currentSettings.analyticsTargets,
-    }
-
-    // Handle API key updates: empty string = delete, truthy = set, absent = keep
-    if (body.apiKeys !== undefined) {
-      for (const field of API_KEY_FIELDS) {
-        const value = body.apiKeys[field]
-        if (value === '') {
-          newSettings.apiKeys = { ...newSettings.apiKeys }
-          delete newSettings.apiKeys[field]
-        } else if (value) {
-          newSettings.apiKeys = { ...newSettings.apiKeys, [field]: value }
+      // Block any settings change while a running agent is mid-turn.
+      if (hasRunningAgents) {
+        const busyAgents = containerManager
+          .getRunningAgentIds()
+          .filter((agentId) => messagePersister.hasActiveSessionsForAgent(agentId))
+        if (busyAgents.length > 0) {
+          const first = busyAgents[0]
+          const error =
+            busyAgents.length === 1
+              ? `${first} is still working. Finish or stop that session, then try again.`
+              : `${first} and ${busyAgents.length - 1} more are still working. Finish or stop those sessions, then try again.`
+          return c.json({ error, busyAgents }, 409)
         }
       }
 
-      if (newSettings.apiKeys && Object.keys(newSettings.apiKeys).length === 0) {
-        delete newSettings.apiKeys
+      updateSettings(newSettings)
+
+      // If account provider settings changed, re-register providers
+      if (body.apiKeys?.nangoSecretKey !== undefined || body.app?.accountProvider !== undefined) {
+        try {
+          const { registerAllAccountProviders } = await import('@shared/lib/account-providers/register')
+          await registerAllAccountProviders()
+        } catch (err) {
+          console.error('Failed to re-register account providers:', err)
+        }
       }
-    }
 
-    updateSettings(newSettings)
-
-    // If account provider settings changed, re-register providers
-    if (body.apiKeys?.nangoSecretKey !== undefined || body.app?.accountProvider !== undefined) {
-      try {
-        const { registerAllAccountProviders } = await import('@shared/lib/account-providers/register')
-        await registerAllAccountProviders()
-      } catch (err) {
-        console.error('Failed to re-register account providers:', err)
+      // If auth settings changed, reset the Better Auth singleton so it picks up new config
+      if (body.auth !== undefined && isAuthMode()) {
+        import('@shared/lib/auth/index').then(({ resetAuth }) => resetAuth()).catch(() => {})
       }
-    }
 
-    // If auth settings changed, reset the Better Auth singleton so it picks up new config
-    if (body.auth !== undefined && isAuthMode()) {
-      import('@shared/lib/auth/index').then(({ resetAuth }) => resetAuth()).catch(() => {})
-    }
+      // If container runner changed, clear cached clients so new ones use the updated runner
+      if (newSettings.container.containerRunner !== currentSettings.container.containerRunner) {
+        containerManager.clearClients()
+      }
 
-    // If container runner changed, clear cached clients so new ones use the updated runner
-    if (newSettings.container.containerRunner !== currentSettings.container.containerRunner) {
-      containerManager.clearClients()
-    }
+      // If image or runner changed, re-check readiness (may need to pull new image)
+      if (
+        newSettings.container.agentImage !== currentSettings.container.agentImage ||
+        newSettings.container.containerRunner !== currentSettings.container.containerRunner
+      ) {
+        containerManager.ensureImageReady().catch((error) => {
+          console.error('Failed to re-check image readiness:', error)
+        })
+      }
 
-    // If image or runner changed, re-check readiness (may need to pull new image)
-    if (
-      newSettings.container.agentImage !== currentSettings.container.agentImage ||
-      newSettings.container.containerRunner !== currentSettings.container.containerRunner
-    ) {
-      containerManager.ensureImageReady().catch((error) => {
-        console.error('Failed to re-check image readiness:', error)
+      const runnerAvailability = await checkAllRunnersAvailability()
+      logAuditEvent({
+        userId: getCurrentUserId(c),
+        object: 'settings',
+        objectId: 'global',
+        action: 'updated',
+        details: buildSettingsAuditDetails(currentSettings, newSettings),
       })
+
+      // Stop running agents after any settings change so the next start picks up
+      // fresh config. Mid-turn work was blocked above.
+      if (hasRunningAgents) {
+        await containerManager.stopAll()
+      }
+
+      return c.json(
+        buildSettingsResponse(
+          newSettings,
+          containerManager.hasRunningAgents(),
+          runnerAvailability,
+        ),
+      )
+    } catch (error) {
+      console.error('Failed to update settings:', error)
+      return c.json({ error: 'Failed to update settings' }, 500)
     }
+  },
+)
 
-    const runnerAvailability = await checkAllRunnersAvailability()
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'settings', objectId: 'global', action: 'updated' })
-
-    // Stop running agents after any settings change so the next start picks up
-    // fresh config. Mid-turn work was blocked above.
-    if (hasRunningAgents) {
-      await containerManager.stopAll()
-    }
-
-    return c.json(
-      buildSettingsResponse(
-        newSettings,
-        containerManager.hasRunningAgents(),
-        runnerAvailability,
-      ),
-    )
-  } catch (error) {
-    console.error('Failed to update settings:', error)
-    return c.json({ error: 'Failed to update settings' }, 500)
-  }
-})
 
 // POST /api/settings/start-runner - Start a container runtime
 settings.post('/start-runner', async (c) => {
@@ -621,11 +566,24 @@ settings.post('/start-runner', async (c) => {
     }
 
     // Immediately broadcast CHECKING state so the frontend shows the starting banner
-    containerManager.resetReadiness(`Starting ${runner} runtime...`)
+    containerManager.resetReadiness(`Starting ${getRunnerDisplayName(runner)} runtime...`)
 
-    const result = await startRunner(runner)
+    const result = await startRunner(
+      runner,
+      (progress) => {
+        containerManager.updateStartProgress(progress)
+      },
+      { allowInstall: true },
+    )
 
     if (result.success) {
+      if (!containerManager.hasRunningAgents() && getSettings().container.containerRunner !== runner) {
+        mutateSettings((s) => {
+          s.container.containerRunner = runner
+        })
+        containerManager.clearClients()
+      }
+
       // Wait a bit for the runtime to start, then refresh availability (clears cache first)
       await new Promise((resolve) => setTimeout(resolve, 2000))
       const runnerAvailability = await refreshRunnerAvailability()
@@ -641,9 +599,20 @@ settings.post('/start-runner', async (c) => {
       })
     }
 
-    return c.json(result, 400)
+    // Clear CHECKING before refresh so a hung probe cannot wedge the UI.
+    containerManager.markRuntimeUnavailable(result.message)
+    let runnerAvailability: Awaited<ReturnType<typeof refreshRunnerAvailability>> = []
+    try {
+      runnerAvailability = await refreshRunnerAvailability()
+    } catch (refreshError) {
+      console.error('Failed to refresh runner availability after start failure:', refreshError)
+    }
+    return c.json({ ...result, runnerAvailability }, 400)
   } catch (error) {
     console.error('Failed to start runner:', error)
+    containerManager.markRuntimeUnavailable(
+      error instanceof Error ? error.message : 'Failed to start runner',
+    )
     return c.json({ error: 'Failed to start runner' }, 500)
   }
 })
@@ -660,7 +629,7 @@ settings.post('/restart-runner', async (c) => {
 
     // Immediately broadcast CHECKING state so the frontend blocks agent creation
     // and shows the "restarting" banner before the actual restart begins
-    containerManager.resetReadiness(`Restarting ${runner} runtime...`)
+    containerManager.resetReadiness(`Restarting ${getRunnerDisplayName(runner)} runtime...`)
 
     const result = await restartRunner(runner)
 
@@ -716,19 +685,30 @@ settings.post('/validate-anthropic-key', async (c) => {
 // POST /api/settings/validate-llm-key - Validate an API key for any LLM provider
 settings.post('/validate-llm-key', async (c) => {
   try {
-    const { provider, apiKey } = await c.req.json()
-    if (!apiKey || typeof apiKey !== 'string') {
-      return c.json({ valid: false, error: 'API key is required' }, 400)
-    }
+    const { provider, apiKey, baseUrl } = await c.req.json()
     if (!provider || typeof provider !== 'string') {
       return c.json({ valid: false, error: 'Provider is required' }, 400)
     }
-    if (provider !== 'anthropic' && provider !== 'openrouter' && provider !== 'bedrock') {
+    // The generic provider accepts an empty key and revalidates with the saved
+    // one — the renderer never holds the saved secret, so a base-URL-only
+    // change couldn't resend it.
+    if (typeof apiKey !== 'string' || (!apiKey && provider !== 'generic')) {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+    if (
+      provider !== 'anthropic' &&
+      provider !== 'openrouter' &&
+      provider !== 'bedrock' &&
+      provider !== 'generic'
+    ) {
       return c.json({ valid: false, error: `Unknown provider: ${provider}` }, 400)
     }
 
     const llmProvider = getLlmProvider(provider)
-    const result = await llmProvider.validateKey(apiKey)
+    const result = await llmProvider.validateKey(
+      apiKey,
+      typeof baseUrl === 'string' ? { baseUrl } : undefined,
+    )
     return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Invalid API key'
@@ -893,6 +873,9 @@ settings.post('/validate-web-key', async (c) => {
     }
     if (!provider || typeof provider !== 'string' || provider === 'native') {
       return c.json({ valid: false, error: 'A web vendor is required' }, 400)
+    }
+    if (provider === 'platform') {
+      return c.json({ valid: false, error: 'Platform uses your Gamut login, not an API key.' }, 400)
     }
     const webProvider = findWebProvider(provider)
     if (!webProvider) {

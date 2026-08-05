@@ -5,6 +5,7 @@ export interface Bookmark {
   name: string
   link?: string
   file?: string
+  folder?: string
 }
 
 export function useBookmarks(agentSlug: string | null) {

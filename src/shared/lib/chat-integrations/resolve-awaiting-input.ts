@@ -14,8 +14,22 @@
 
 interface AwaitingInputPersister {
   isSessionAwaitingInput(sessionId: string): boolean
-  getPendingInputRequests(sessionId: string): Array<{ type: string; toolUseId: string }>
   cancelAwaitingInput(sessionId: string, agentSlug: string): Promise<void>
+}
+
+/**
+ * The registry, narrowed to what this decision needs. Reading the open request
+ * from here rather than the persister's replay mirror is what keeps chat and
+ * the app answering the same question from the same source — the mirror is a
+ * legacy store scheduled for deletion, and it holds entries the registry has
+ * already settled.
+ */
+interface OpenRequestRegistry {
+  getOpenRequestsForSession(sessionId: string): Array<{
+    id: string
+    kind: string
+    payload: unknown
+  }>
 }
 
 interface DismissibleConnector {
@@ -35,9 +49,10 @@ export async function consumeOrCancelAwaitingInput(opts: {
   answerText?: string
   hasFiles: boolean
   persister: AwaitingInputPersister
+  registry: OpenRequestRegistry
   connector: DismissibleConnector
 }): Promise<boolean> {
-  const { sessionId, agentSlug, chatId, messageText, answerText, hasFiles, persister, connector } = opts
+  const { sessionId, agentSlug, chatId, messageText, answerText, hasFiles, persister, registry, connector } = opts
 
   // A plain-text message during an open single-question card is the free-form "Other" answer:
   // resolve that question so the same turn continues. isSessionAwaitingInput is the source of
@@ -46,11 +61,14 @@ export async function consumeOrCancelAwaitingInput(opts: {
   // awaiting type falls through to cancel.
   const isPlainText = !!messageText.trim() && !hasFiles
   if (isPlainText && persister.isSessionAwaitingInput(sessionId)) {
-    const pendingQuestion = persister
-      .getPendingInputRequests(sessionId)
-      .find((r) => r.type === 'user_question_request')
+    // Recovered stubs are excluded the same way they are excluded from the
+    // wire: they carry no renderable payload, so no card was ever posted and
+    // there is nothing in this chat for the text to answer.
+    const pendingQuestion = registry
+      .getOpenRequestsForSession(sessionId)
+      .find((r) => r.kind === 'question' && (r.payload as { recovered?: unknown }).recovered !== true)
     if (pendingQuestion) {
-      const answered = await connector.answerOpenQuestionWithText(chatId, pendingQuestion.toolUseId, answerText ?? messageText)
+      const answered = await connector.answerOpenQuestionWithText(chatId, pendingQuestion.id, answerText ?? messageText)
       if (answered) return true
     }
   }

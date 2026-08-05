@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
 // ---------------------------------------------------------------------------
@@ -7,6 +7,7 @@ import { Hono } from 'hono'
 
 const mockGetSettings = vi.fn()
 const mockUpdateSettings = vi.fn()
+const mockMutateSettings = vi.fn()
 const mockClearSettingsCache = vi.fn()
 const mockGetAnthropicApiKeyStatus = vi.fn()
 const mockGetComposioApiKeyStatus = vi.fn()
@@ -29,6 +30,17 @@ const mockFsPromises = vi.hoisted(() => ({
 const mockAuthenticatedMiddleware = vi.hoisted(() =>
   vi.fn(async (_c: unknown, next: () => Promise<void>) => next()),
 )
+// Host total memory for the VM-memory sizing guard. Default is large enough
+// that every allowlisted option passes; sizing tests shrink it.
+const mockTotalmem = vi.hoisted(() => vi.fn(() => 64 * 1024 ** 3))
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>()
+  return {
+    ...actual,
+    default: { ...actual, totalmem: mockTotalmem },
+    totalmem: mockTotalmem,
+  }
+})
 const mockIsAdminMiddleware = vi.hoisted(() =>
   vi.fn(async (_c: unknown, next: () => Promise<void>) => next()),
 )
@@ -39,6 +51,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   // map it to the same seeded settings the tests already provide.
   loadSettingsStrict: (...args: unknown[]) => mockGetSettings(...args),
   updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
+  mutateSettings: (...args: unknown[]) => mockMutateSettings(...args),
   clearSettingsCache: (...args: unknown[]) => mockClearSettingsCache(...args),
   getAnthropicApiKeyStatus: (...args: unknown[]) => mockGetAnthropicApiKeyStatus(...args),
   getComposioApiKeyStatus: (...args: unknown[]) => mockGetComposioApiKeyStatus(...args),
@@ -61,6 +74,9 @@ const mockClearClients = vi.fn()
 const mockEnsureImageReady = vi.fn()
 const mockGetReadiness = vi.fn()
 const mockStopAll = vi.fn()
+const mockResetReadiness = vi.fn()
+const mockMarkRuntimeUnavailable = vi.fn()
+const mockUpdateStartProgress = vi.fn()
 
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
@@ -69,6 +85,9 @@ vi.mock('@shared/lib/container/container-manager', () => ({
     clearClients: (...args: unknown[]) => mockClearClients(...args),
     ensureImageReady: (...args: unknown[]) => mockEnsureImageReady(...args),
     getReadiness: (...args: unknown[]) => mockGetReadiness(...args),
+    resetReadiness: (...args: unknown[]) => mockResetReadiness(...args),
+    markRuntimeUnavailable: (...args: unknown[]) => mockMarkRuntimeUnavailable(...args),
+    updateStartProgress: (...args: unknown[]) => mockUpdateStartProgress(...args),
     stopAll: (...args: unknown[]) => mockStopAll(...args),
   },
 }))
@@ -89,6 +108,8 @@ vi.mock('@shared/lib/container/client-factory', () => ({
   checkAllRunnersAvailability: (...args: unknown[]) => mockCheckAllRunnersAvailability(...args),
   refreshRunnerAvailability: (...args: unknown[]) => mockRefreshRunnerAvailability(...args),
   startRunner: (...args: unknown[]) => mockStartRunner(...args),
+  restartRunner: (...args: unknown[]) => mockStartRunner(...args),
+  getRunnerDisplayName: (runner: string) => runner,
   getContainerClientClass: (runner: string) => ({
     supportsCustomAgentImage: runner !== 'lambda-microvm',
   }),
@@ -132,6 +153,20 @@ vi.mock('@shared/lib/db', () => ({
   db: { delete: () => ({ run: vi.fn() }) },
 }))
 
+const mockLogAuditEvent = vi.hoisted(() => vi.fn())
+vi.mock('@shared/lib/services/audit-log-service', () => ({
+  logAuditEvent: mockLogAuditEvent,
+}))
+
+const mockCredentialConnectionStatuses = vi.hoisted(() => vi.fn())
+const mockCredentialHasProvider = vi.hoisted(() => vi.fn())
+vi.mock('../credentials/credential-broker', () => ({
+  credentialBroker: {
+    connectionStatuses: (...args: unknown[]) => mockCredentialConnectionStatuses(...args),
+    hasProvider: (...args: unknown[]) => mockCredentialHasProvider(...args),
+  },
+}))
+
 vi.mock('@shared/lib/db/schema', () => ({
   proxyAuditLog: {},
   proxyTokens: {},
@@ -153,6 +188,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   messageAuthor: {},
   xAgentPolicies: {},
   apiScopePolicies: {},
+  tokenExchangeJti: {},
 }))
 
 vi.mock('fs', () => ({
@@ -210,11 +246,27 @@ function defaultSettings() {
       createdAt: '2026-03-24T00:00:00.000Z',
       updatedAt: '2026-03-24T00:00:00.000Z',
     },
+    cloudWorkspace: {
+      deploymentUrl: 'https://ws.example.com',
+      orgId: 'org_test_123',
+      token: 'deploy_session_token',
+      tokenPreview: 'deploy...oken',
+      expiresAt: '2026-03-25T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    },
+    apiTarget: 'cloud' as const,
+    platformNotifications: { lastNotifiedAt: '2026-03-24T00:00:00.000Z' },
   }
 }
 
 function setupDefaults() {
   mockGetSettings.mockReturnValue(defaultSettings())
+  mockMutateSettings.mockImplementation((mutator: (s: ReturnType<typeof defaultSettings>) => void) => {
+    const s = mockGetSettings()
+    mutator(s)
+    mockGetSettings.mockReturnValue(s)
+    return s
+  })
   mockHasRunningAgents.mockReturnValue(false)
   mockGetRunningAgentIds.mockReturnValue([])
   mockHasActiveSessionsForAgent.mockReturnValue(false)
@@ -241,6 +293,14 @@ function setupDefaults() {
   mockGetReadiness.mockReturnValue({ ready: true })
   mockEnsureImageReady.mockResolvedValue(undefined)
   mockClearClients.mockReturnValue(undefined)
+  mockTotalmem.mockReturnValue(64 * 1024 ** 3)
+  mockCredentialHasProvider.mockImplementation((provider: string) => provider === 'apple-passwords')
+  mockCredentialConnectionStatuses.mockResolvedValue([{
+    provider: 'apple-passwords',
+    providerLabel: 'Apple Passwords',
+    installable: true,
+    status: 'disconnected',
+  }])
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +327,217 @@ describe('settings route', () => {
       body: JSON.stringify(body),
     })
   }
+
+  // =========================================================================
+  // PUT request boundary validation
+  // =========================================================================
+  describe('PUT request boundary validation', () => {
+    it('rejects malformed JSON without reading or writing settings', async () => {
+      const res = await app.request('http://localhost/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{not-json',
+      })
+
+      expect(res.status).toBe(400)
+      expect(mockGetSettings).not.toHaveBeenCalled()
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('rejects a non-object request body', async () => {
+      const res = await app.request('http://localhost/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify([]),
+      })
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('rejects unknown root settings instead of silently ignoring them', async () => {
+      const res = await putSettings({ unknownField: 'ignored' })
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('rejects unknown nested settings instead of persisting them through object spreads', async () => {
+      const res = await putSettings({ app: { inventedPreference: true } })
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('rejects settings owned by another write flow', async () => {
+      const res = await putSettings({ app: { faviconUpdatedAt: '2026-01-01T00:00:00.000Z' } })
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['shareAnalytics', { shareAnalytics: 'yes' }],
+      ['shareErrorReports', { shareErrorReports: 1 }],
+      ['enableToolSearch', { enableToolSearch: 'enabled' }],
+    ])('rejects a non-boolean %s', async (_name, request) => {
+      const res = await putSettings(request)
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['apiKeys', { apiKeys: { anthropicApiKey: 123 } }],
+      ['agentLimits', { agentLimits: { maxTurns: 'many' } }],
+      ['auth', { auth: { signupMode: 'sometimes' } }],
+      ['voice', { voice: { sttProvider: 'unknown' } }],
+      ['analyticsTargets', { analyticsTargets: [{ type: 'amplitude', config: {}, enabled: 'yes' }] }],
+      ['computerUse', { computerUse: { agentPermissions: { agent: { grants: [{ level: 'root', grantType: 'always' }] } } } }],
+    ])('rejects a malformed %s patch', async (_name, request) => {
+      const res = await putSettings(request)
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('rejects an unknown LLM provider', async () => {
+      const res = await putSettings({ llmProvider: 'made-up-provider' })
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('rejects an unknown container runner', async () => {
+      const res = await putSettings({ container: { containerRunner: 'made-up-runner' } })
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('rejects an unsupported agent effort', async () => {
+      const res = await putSettings({ models: { agentEffort: 'extreme' } })
+
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('agentEffort')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('accepts a partial agent-capability patch', async () => {
+      const res = await putSettings({ agentCapabilities: { subagents: 'review' } })
+
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings.mock.calls[0][0].agentCapabilities).toEqual({
+        subagents: 'review',
+        workflows: 'review',
+      })
+    })
+
+    it('rejects invalid or unknown agent-capability values without side effects', async () => {
+      const invalidValue = await putSettings({ agentCapabilities: { subagents: 'sometimes' } })
+      const unknownKey = await putSettings({ agentCapabilities: { hiddenTier: 'allow' } })
+
+      expect(invalidValue.status).toBe(400)
+      expect(unknownKey.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+      expect(mockClearClients).not.toHaveBeenCalled()
+      expect(mockEnsureImageReady).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('password manager configuration', () => {
+    it('returns provider-scoped connection status without credential metadata', async () => {
+      mockCredentialConnectionStatuses.mockResolvedValueOnce([{
+        provider: 'apple-passwords',
+        providerLabel: 'Apple Passwords',
+        installable: true,
+        status: 'disconnected',
+        message: 'Connect to use passwords saved on this Mac',
+      }])
+
+      const res = await app.request('http://localhost/api/settings/password-managers')
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({
+        providers: [{
+          provider: 'apple-passwords',
+          providerLabel: 'Apple Passwords',
+          installable: true,
+          status: 'disconnected',
+          message: 'Connect to use passwords saved on this Mac',
+          configured: false,
+        }],
+      })
+    })
+
+    it('persists provider selection without starting a connection', async () => {
+      const res = await app.request(
+        'http://localhost/api/settings/password-managers/apple-passwords',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ configured: true }),
+        },
+      )
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({
+        success: true,
+        provider: 'apple-passwords',
+        configured: true,
+      })
+      expect(mockGetSettings().app.configuredPasswordManagers).toEqual(['apple-passwords'])
+    })
+
+    it('rejects an invalid configuration value', async () => {
+      const res = await app.request(
+        'http://localhost/api/settings/password-managers/apple-passwords',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ configured: 'yes' }),
+        },
+      )
+      expect(res.status).toBe(400)
+    })
+
+    it('refuses configuration and returns prerequisite remediation when unavailable', async () => {
+      mockCredentialConnectionStatuses.mockResolvedValueOnce([{
+        provider: 'apple-passwords',
+        providerLabel: 'Apple Passwords',
+        installable: true,
+        status: 'unavailable',
+        message: 'Install the iCloud Passwords extension in Chrome',
+        remediation: {
+          code: 'extension_not_found',
+          title: 'Install the iCloud Passwords extension',
+          instructions: ['Open the extension in Chrome and choose Add to Chrome.'],
+          action: {
+            kind: 'open_in_chrome',
+            label: 'Install in Chrome',
+            url: 'https://chromewebstore.google.com/example',
+          },
+        },
+      }])
+
+      const res = await app.request(
+        'http://localhost/api/settings/password-managers/apple-passwords',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ configured: true }),
+        },
+      )
+      expect(res.status).toBe(409)
+      expect(await res.json()).toMatchObject({
+        provider: {
+          provider: 'apple-passwords',
+          configured: false,
+          remediation: { code: 'extension_not_found' },
+        },
+      })
+      expect(mockMutateSettings).not.toHaveBeenCalled()
+    })
+  })
 
   // =========================================================================
   // Deep merging of container.resourceLimits
@@ -393,6 +664,43 @@ describe('settings route', () => {
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.platformAuth).toEqual(defaultSettings().platformAuth)
       expect(saved.llmProvider).toBe('platform')
+    })
+
+    it('preserves the maintained cloudWorkspace token when updating unrelated settings', async () => {
+      const res = await putSettings({ llmProvider: 'platform' })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      // Regression: a global settings PUT must not silently drop the deployment
+      // token maintained by the platform-auth flow.
+      expect(saved.cloudWorkspace).toEqual(defaultSettings().cloudWorkspace)
+    })
+
+    it('preserves the desktop local-or-cloud target when updating unrelated settings', async () => {
+      const res = await putSettings({ llmProvider: 'platform' })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      // Regression: dropping this silently sends the next boot to the laptop.
+      // The reachable case is a cloud preference that fell back to local for a
+      // boot — the renderer is talking to the local API, so its settings save
+      // lands here and would erase the preference for good.
+      expect(saved.apiTarget).toBe('cloud')
+    })
+
+    it('preserves every field it does not own, including ones added later', async () => {
+      // This route REBUILDS AppSettings field by field and `updateSettings`
+      // replaces the whole persisted object, so any field left out is deleted.
+      // Every field of AppSettings is optional, so an omission typechecks —
+      // which is how both `apiTarget` and `platformNotifications` went missing.
+      // Asserting on the key set catches the next one automatically, rather
+      // than waiting for someone to remember a per-field regression test.
+      const res = await putSettings({ llmProvider: 'platform' })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      const dropped = Object.keys(defaultSettings()).filter((key) => !(key in saved))
+      expect(dropped).toEqual([])
     })
   })
 
@@ -521,6 +829,37 @@ describe('settings route', () => {
   })
 
   // =========================================================================
+  // Audit details
+  // =========================================================================
+  describe('audit details', () => {
+    it('logs which fields changed, with API key values redacted', async () => {
+      const res = await putSettings({
+        llmProvider: 'openrouter',
+        apiKeys: { anthropicApiKey: 'sk-brand-new' },
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockLogAuditEvent).toHaveBeenCalledTimes(1)
+      const call = mockLogAuditEvent.mock.calls[0][0]
+      expect(call.object).toBe('settings')
+      expect(call.action).toBe('updated')
+      expect(call.details.sections).toContain('Model Provider')
+      expect(call.details.changes['llmProvider']).toEqual({ from: null, to: 'openrouter' })
+      expect(call.details.changes['apiKeys.anthropicApiKey']).toBe('updated')
+      expect(JSON.stringify(call.details)).not.toContain('sk-brand-new')
+      expect(JSON.stringify(call.details)).not.toContain('sk-existing')
+    })
+
+    it('omits details when the update is a no-op', async () => {
+      const res = await putSettings({ app: { showMenuBarIcon: true } })
+
+      expect(res.status).toBe(200)
+      expect(mockLogAuditEvent).toHaveBeenCalledTimes(1)
+      expect(mockLogAuditEvent.mock.calls[0][0].details).toBeUndefined()
+    })
+  })
+
+  // =========================================================================
   // Running agents guard
   // =========================================================================
   describe('cannot change runner while agents running', () => {
@@ -569,6 +908,17 @@ describe('settings route', () => {
       // Setting the same value as current should be allowed
       const res = await putSettings({
         container: { containerRunner: 'docker' },
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings).toHaveBeenCalledOnce()
+    })
+
+    it('allows a partial resource-limit patch whose merged result is unchanged', async () => {
+      mockHasRunningAgents.mockReturnValue(true)
+
+      const res = await putSettings({
+        container: { resourceLimits: { cpu: 2 } },
       })
 
       expect(res.status).toBe(200)
@@ -996,6 +1346,70 @@ describe('settings route', () => {
     })
   })
 
+  // =========================================================================
+  // LLM key validation (uses the REAL provider classes over mocked settings)
+  // =========================================================================
+  describe('POST /validate-llm-key', () => {
+    async function validateLlmKey(body: Record<string, unknown>): Promise<Response> {
+      return app.request('http://localhost/api/settings/validate-llm-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    }
+
+    const savedGenericKeyEnv = process.env.GENERIC_API_KEY
+    beforeEach(() => {
+      delete process.env.GENERIC_API_KEY
+    })
+    afterEach(() => {
+      if (savedGenericKeyEnv === undefined) delete process.env.GENERIC_API_KEY
+      else process.env.GENERIC_API_KEY = savedGenericKeyEnv
+      vi.unstubAllGlobals()
+    })
+
+    it('returns 400 for an empty apiKey on a non-generic provider', async () => {
+      const res = await validateLlmKey({ provider: 'openrouter', apiKey: '' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('API key is required')
+    })
+
+    it('lets the generic provider revalidate a base-URL-only change with the saved key', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        apiKeys: { genericApiKey: 'saved-key', genericBaseUrl: 'http://old.example.com:4000' },
+      })
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const res = await validateLlmKey({
+        provider: 'generic',
+        apiKey: '',
+        baseUrl: 'http://ollama.example.com:11434',
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ valid: true })
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+      expect(url).toBe('http://ollama.example.com:11434/v1/models')
+      expect(init.headers).toMatchObject({ Authorization: 'Bearer saved-key' })
+    })
+
+    it('reports a key requirement for generic when no key is given or saved', async () => {
+      mockGetSettings.mockReturnValue({ ...defaultSettings(), apiKeys: {} })
+      const res = await validateLlmKey({ provider: 'generic', apiKey: '', baseUrl: 'http://ollama.example.com:11434' })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ valid: false, error: 'API key is required' })
+    })
+
+    it('rejects a bare single-label hostname for the generic provider', async () => {
+      const res = await validateLlmKey({ provider: 'generic', apiKey: 'k', baseUrl: 'http://my-gpu-box:11434' })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.valid).toBe(false)
+      expect(body.error).toContain('bare hostname')
+    })
+  })
+
   describe('POST /validate-web-key', () => {
     async function validate(body: unknown) {
       return app.request('http://localhost/api/settings/validate-web-key', {
@@ -1021,6 +1435,14 @@ describe('settings route', () => {
       const res = await validate({ apiKey: 'k', provider: 'bogus' })
       expect(res.status).toBe(400)
       expect((await res.json()).error).toContain('Unknown web provider')
+    })
+
+    // Platform is a registered vendor, so it would otherwise dispatch into the registry and fire a
+    // billable proxy call with a key it does not use.
+    it('rejects platform without dispatching (login-based, not key-based)', async () => {
+      const res = await validate({ apiKey: 'k', provider: 'platform' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('Gamut login')
     })
   })
 
@@ -1257,6 +1679,41 @@ describe('settings route', () => {
       expect(res.status).toBe(200)
       expect(mockUpdateSettings).toHaveBeenCalledOnce()
     })
+
+    it('refuses VM memory equal to host total memory', async () => {
+      mockTotalmem.mockReturnValue(16 * 1024 ** 3)
+      const res = await putSettings({
+        container: {
+          runtimeSettings: { lima: { vmMemory: '16GiB' } },
+        },
+      })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('total memory')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('refuses VM memory above host total memory', async () => {
+      mockTotalmem.mockReturnValue(8 * 1024 ** 3)
+      const res = await putSettings({
+        container: {
+          runtimeSettings: { lima: { vmMemory: '12GiB' } },
+        },
+      })
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('accepts VM memory above half of host total (warn is UI-side, not a rejection)', async () => {
+      mockTotalmem.mockReturnValue(16 * 1024 ** 3)
+      const res = await putSettings({
+        container: {
+          runtimeSettings: { lima: { vmMemory: '12GiB' } },
+        },
+      })
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings).toHaveBeenCalledOnce()
+    })
   })
 
   // =========================================================================
@@ -1383,6 +1840,26 @@ describe('settings route', () => {
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.webProvider).toBe('exa')
+    })
+
+    it('stores platform as an explicit webProvider choice', async () => {
+      const res = await putSettings({ webProvider: 'platform' })
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings.mock.calls[0][0].webProvider).toBe('platform')
+    })
+
+    it('clears webProvider to automatic (stored undefined) when sent null', async () => {
+      mockGetSettings.mockReturnValue({ ...defaultSettings(), webProvider: 'exa' })
+      const res = await putSettings({ webProvider: null })
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings.mock.calls[0][0].webProvider).toBeUndefined()
+    })
+
+    it('rejects an unknown webProvider id at the boundary without writing', async () => {
+      const res = await putSettings({ webProvider: 'bogus' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('Invalid webProvider')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
     })
 
     it('allows setting llmProvider to undefined explicitly', async () => {
@@ -1547,11 +2024,6 @@ describe('settings route', () => {
       expect(saved.skillsets).toEqual(defaultSettings().skillsets)
     })
 
-    it('handles body with only non-settings fields gracefully', async () => {
-      const res = await putSettings({ unknownField: 'ignored' } as Record<string, unknown>)
-      expect(res.status).toBe(200)
-      expect(mockUpdateSettings).toHaveBeenCalledOnce()
-    })
   })
 
   // =========================================================================
@@ -1602,6 +2074,20 @@ describe('settings route', () => {
       const body = await res.json()
       expect(body.app.showMenuBarIcon).toBe(false)
       expect(body.llmProvider).toBe('openrouter')
+    })
+
+    it('PUT accepts warmStartOnType boolean under app', async () => {
+      const res = await putSettings({ app: { warmStartOnType: false } })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.app.warmStartOnType).toBe(false)
+    })
+
+    it('PUT rejects non-boolean warmStartOnType', async () => {
+      const res = await putSettings({ app: { warmStartOnType: 'yes' } })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toMatch(/warmStartOnType/)
     })
   })
 
@@ -1760,6 +2246,60 @@ describe('settings route', () => {
       expect(body).toHaveProperty('voice')
       expect(body).toHaveProperty('tenantId')
       expect(body).toHaveProperty('shareAnalytics')
+    })
+
+    describe('webProvider: active vendor + isDefault', () => {
+      it('unset -> webProvider is the default vendor and isDefault is true', async () => {
+        mockGetSettings.mockReturnValue({ ...defaultSettings(), webProvider: undefined })
+        const body = await (await app.request('http://localhost/api/settings')).json()
+        expect(body.webProvider).toBe('platform')
+        expect(body.webProviderIsDefault).toBe(true)
+      })
+
+      it('pinned vendor -> webProvider is the pin and isDefault is false', async () => {
+        mockGetSettings.mockReturnValue({
+          ...defaultSettings(),
+          webProvider: 'exa',
+          apiKeys: { anthropicApiKey: 'sk-existing' },
+        })
+        const body = await (await app.request('http://localhost/api/settings')).json()
+        expect(body.webProvider).toBe('exa')
+        expect(body.webProviderIsDefault).toBe(false)
+      })
+    })
+  })
+
+  describe('POST /start-runner', () => {
+    const postStart = (runner: string) =>
+      app.request('http://localhost/api/settings/start-runner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runner }),
+      })
+
+    it('on failure clears CHECKING and returns refreshed runnerAvailability', async () => {
+      const availability = [{ runner: 'docker', installed: true, running: false, available: false, canStart: true, supportsCustomAgentImage: true }]
+      mockStartRunner.mockResolvedValue({ success: false, message: 'Failed to start Docker Desktop. Is it installed?' })
+      mockRefreshRunnerAvailability.mockResolvedValue(availability)
+
+      const res = await postStart('docker')
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.runnerAvailability).toEqual(availability)
+      expect(mockMarkRuntimeUnavailable).toHaveBeenCalledWith(expect.stringMatching(/Docker/i))
+      expect(mockRefreshRunnerAvailability).toHaveBeenCalled()
+    })
+
+    it('on success persists containerRunner', async () => {
+      vi.useFakeTimers()
+      mockStartRunner.mockResolvedValue({ success: true, message: 'ok' })
+      mockRefreshRunnerAvailability.mockResolvedValue([])
+      const pending = postStart('podman')
+      await vi.advanceTimersByTimeAsync(2000)
+      const res = await pending
+      vi.useRealTimers()
+      expect(res.status).toBe(200)
+      expect(mockGetSettings().container.containerRunner).toBe('podman')
     })
   })
 })

@@ -9,8 +9,9 @@ const enableToolSearch = vi.fn((): boolean | undefined => true)
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ enableToolSearch: enableToolSearch() }),
 }))
+const getContainerEnvVars = vi.fn(() => ({ ANTHROPIC_API_KEY: 'provider-key' }))
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({ ANTHROPIC_API_KEY: 'provider-key' }) }),
+  getActiveLlmProvider: () => ({ getContainerEnvVars }),
 }))
 
 /** Minimal concrete subclass to exercise protected run-error classification. */
@@ -50,6 +51,13 @@ describe('buildAgentEnv', () => {
     enableToolSearch.mockReturnValue(false)
     const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
+  })
+
+  it('passes the agent identity to the provider so it can attribute LLM usage', () => {
+    new TestContainerClient({ agentId: 'my-agent', envVars: {} }).testBuildAgentEnv()
+    expect(getContainerEnvVars).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'my-agent' })
+    )
   })
 })
 

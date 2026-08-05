@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiFetch } from '@renderer/lib/api'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
 import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
@@ -30,6 +31,9 @@ export function useAddMount() {
 
   return useMutation({
     mutationFn: async (data: { agentSlug: string; hostPath: string; restart?: boolean }) => {
+      if (!data.hostPath) {
+        throw new Error('Could not determine the folder’s location on disk. Try dragging the folder in, or attach it as an upload.')
+      }
       const res = await apiFetch(`/api/agents/${data.agentSlug}/mounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -126,6 +130,11 @@ export function useVolumesManager(agentSlug: string) {
     restartError,
     isAddingMount: addMount.isPending,
     isRemovingMount: removeMount.isPending,
+    // A mount is a path on the machine that runs the agent. Picking one here
+    // opens *this* computer's directory picker, so it only means something when
+    // this computer is also the one running them. Existing mounts still list —
+    // they are real on whichever Superagent is being driven.
+    canAddMount: canUseHostFeatures(),
     handleAddMount,
     handleRemove,
     handleRestart,

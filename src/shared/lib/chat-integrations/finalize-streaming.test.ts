@@ -272,7 +272,7 @@ describe('TelegramConnector.sendUserRequestCard (rich)', () => {
 
   it('sends a single question as rich with an inline keyboard', async () => {
     await connector.sendUserRequestCard('123', {
-      type: 'user_question_request',
+      type: 'question_request',
       toolUseId: 't1',
       questions: [{ question: 'Pick one', header: 'Choice', options: [{ label: 'A' }, { label: 'B' }] }],
     } as any)
@@ -290,7 +290,7 @@ describe('TelegramConnector.sendUserRequestCard (rich)', () => {
 
   it('escapes interpolated values so they cannot break the markdown', async () => {
     await connector.sendUserRequestCard('123', {
-      type: 'user_question_request', toolUseId: 't3',
+      type: 'question_request', toolUseId: 't3',
       questions: [{ question: 'needs **admin** rights', options: [{ label: 'A' }] }],
     } as any)
     const md: string = mockSendRich.mock.calls[0][0].rich_message.markdown

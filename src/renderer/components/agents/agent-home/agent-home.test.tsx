@@ -2,9 +2,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, act, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState, type ReactNode } from 'react'
 import { AgentHome } from './agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import { useDraftsStore } from '@renderer/context/drafts-context'
+import {
+  newSessionCarryoverKey,
+  type NewSessionCarryover,
+} from '@renderer/lib/new-session-carryover'
 
 // --- Mock data ---
 
@@ -41,6 +47,11 @@ vi.mock('@renderer/hooks/use-agents', () => ({
     mutate: mockDeleteAgentMutate,
     isPending: false,
   }),
+  useStartAgent: () => ({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn(),
+    isPending: false,
+  }),
 }))
 
 // Default to "loaded, empty" — most tests don't care. Specific tests that need
@@ -56,12 +67,14 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
 }))
 
 // Settings drive ComposerOptions: the catalog comes from llmProviderStatus,
-// fallback model from settings.models.agentModel.
-vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({
+// fallback model from settings.models.agentModel. The pickers read the
+// non-admin useModelSettings; useSettings stays for any admin-only consumers.
+vi.mock('@renderer/hooks/use-settings', () => {
+  const settings = {
     data: {
       llmProvider: 'anthropic',
       models: { agentModel: 'sonnet' },
+      app: { warmStartOnType: true },
       llmProviderStatus: [
         {
           id: 'anthropic',
@@ -76,8 +89,14 @@ vi.mock('@renderer/hooks/use-settings', () => ({
         },
       ],
     },
-  }),
-}))
+  }
+  return {
+    useSettings: () => ({ ...settings, isSuccess: true }),
+    useModelSettings: () => settings,
+    useWarmStartOnTypeEnabled: () => true,
+    isWarmStartOnTypeEnabled: () => true,
+  }
+})
 
 vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useScheduledTasks: () => ({ data: [] }),
@@ -102,6 +121,11 @@ vi.mock('@renderer/context/nav-transient-context', () => ({
 // — their internals aren't under test here and would pull in extra hooks.
 vi.mock('@renderer/components/agents/agent-settings-dialog', () => ({
   AgentSettingsDialog: () => null,
+}))
+vi.mock('@renderer/components/agents/agent-context-menu', () => ({
+  AgentContextMenu: ({ agent, children }: { agent: ApiAgent; children: React.ReactNode }) => (
+    <div data-testid="agent-title-context-menu" data-agent-slug={agent.slug}>{children}</div>
+  ),
 }))
 vi.mock('@renderer/components/agents/system-prompt-dialog', () => ({
   SystemPromptDialog: () => null,
@@ -143,6 +167,15 @@ const mockComposer = {
 }
 
 let capturedComposerOptions: any
+
+function CarryoverSeeder({ value, children }: { value: NewSessionCarryover; children: ReactNode }) {
+  const store = useDraftsStore()
+  useState(() => {
+    store.set(newSessionCarryoverKey(testAgent.slug), value)
+    return null
+  })
+  return children
+}
 
 vi.mock('@renderer/hooks/use-message-composer', () => ({
   useMessageComposer: (opts: any) => {
@@ -223,6 +256,26 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
+  })
+
+  it('keeps the non-owner layout full-width below the desktop breakpoint', () => {
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    const layout = screen.getByTestId('agent-home-layout')
+    expect(layout).toHaveClass('w-full', 'xl:max-w-2xl')
+    expect(layout).not.toHaveClass('max-w-2xl')
+  })
+
+  it('reuses the agent context menu on the agent title', () => {
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    const contextMenu = screen.getByTestId('agent-title-context-menu')
+    expect(contextMenu).toHaveAttribute('data-agent-slug', 'test-agent')
+    expect(contextMenu).toContainElement(screen.getByTestId('agent-name'))
   })
 
   it('renames the agent inline for owners', async () => {
@@ -362,7 +415,7 @@ describe('AgentHome', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('home-message-input')).toBeDisabled()
+    expect(screen.getByTestId('home-message-input')).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('disables input when createSession is pending', () => {
@@ -370,7 +423,7 @@ describe('AgentHome', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('home-message-input')).toBeDisabled()
+    expect(screen.getByTestId('home-message-input')).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('disables input when uploading', () => {
@@ -378,12 +431,29 @@ describe('AgentHome', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('home-message-input')).toBeDisabled()
+    expect(screen.getByTestId('home-message-input')).toHaveAttribute('aria-disabled', 'true')
   })
 
   // --- Auto-expand ---
 
-  it('auto-expands to full view when the textarea overflows its max-height', () => {
+  it('expands and shrinks the editor with the input-size toggle', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    const editor = screen.getByTestId('home-message-input')
+    expect(editor.className).toContain('min-h-[60px]')
+    expect(editor.style.minHeight).toBe('')
+
+    await user.click(screen.getByRole('button', { name: 'Expand input' }))
+    expect(editor.className).toContain('min-h-[50vh]')
+
+    await user.click(screen.getByRole('button', { name: 'Shrink input' }))
+    expect(editor.className).toContain('min-h-[60px]')
+  })
+
+  it('auto-expands to full view when the editor overflows its max-height', async () => {
     // jsdom doesn't compute layout, so stub scrollHeight > clientHeight to
     // simulate content overflowing the CSS-driven 6-line cap.
     const origScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
@@ -396,7 +466,9 @@ describe('AgentHome', () => {
         <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
       )
 
-      expect(screen.getByTestId('home-message-input').className).toContain('min-h-[50vh]')
+      await waitFor(() => {
+        expect(screen.getByTestId('home-message-input').className).toContain('min-h-[50vh]')
+      })
     } finally {
       if (origScroll) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', origScroll)
       if (origClient) Object.defineProperty(HTMLElement.prototype, 'clientHeight', origClient)
@@ -482,6 +554,30 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(capturedComposerOptions.draftKey).toBe('agent:test-agent')
+  })
+
+  it('hydrates a carried composer and sends its model and effort on the new session', async () => {
+    const attachment = {
+      type: 'file' as const,
+      id: 'file-1',
+      file: new File(['hello'], 'hello.txt', { type: 'text/plain' }),
+    }
+    renderWithProviders(
+      <CarryoverSeeder value={{ attachments: [attachment], model: 'opus', effort: 'high', speed: 'normal' }}>
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      </CarryoverSeeder>,
+    )
+
+    expect(capturedComposerOptions.initialAttachments).toEqual([attachment])
+    await act(() => capturedComposerOptions.onSubmit('Continue in a new session'))
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith({
+      agentSlug: 'test-agent',
+      message: 'Continue in a new session',
+      model: 'opus',
+      effort: 'high',
+      // A carried speed is an explicit (session-seeded) value, so it rides along.
+      speed: 'normal',
+    })
   })
 
   it('passes submitDisabled based on createSession.isPending and runtime readiness', () => {

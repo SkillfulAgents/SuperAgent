@@ -38,6 +38,9 @@ import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { formatDistanceToNow } from 'date-fns'
 import { HomeCollapsible } from './home-collapsible'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
+import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
+import { ActivitySparkChart, ActivitySparkChartSkeleton, CronSparkChart } from '@renderer/components/activity/activity-spark-chart'
+import type { CronActivityPoint, DailyActivityPoint } from '@shared/lib/types/activity'
 
 interface HomeTriggersProps {
   agentSlug: string
@@ -61,6 +64,7 @@ export function HomeTriggers({
   const { data: webhookTriggersData } = useWebhookTriggers(agentSlug, 'active')
   const { data: cancelledWebhooksData } = useWebhookTriggers(agentSlug, 'cancelled')
   const { data: cancelledTasksData } = useScheduledTasks(agentSlug, 'cancelled')
+  const { data: activityStats, isPending: activityPending } = useAgentActivityStats(agentSlug)
   const [showDeleted, setShowDeleted] = useState(false)
 
   const items = useMemo<TriggerItem[]>(() => {
@@ -104,6 +108,8 @@ export function HomeTriggers({
                 task={item.task}
                 agentSlug={agentSlug}
                 onSelect={() => onSelectTask(item.task.id)}
+                activity={activityStats?.cronByTaskId[item.task.id]}
+                activityPending={activityPending}
               />
             ) : (
               <WebhookRow
@@ -111,6 +117,8 @@ export function HomeTriggers({
                 trigger={item.trigger}
                 agentSlug={agentSlug}
                 onSelect={() => onSelectWebhook(item.trigger.id)}
+                activity={activityStats?.webhookByTriggerId[item.trigger.id]}
+                activityPending={activityPending}
               />
             ),
           )}
@@ -131,6 +139,8 @@ export function HomeTriggers({
                       task={item.task}
                       agentSlug={agentSlug}
                       onSelect={() => onSelectTask(item.task.id)}
+                      activity={activityStats?.cronByTaskId[item.task.id]}
+                      activityPending={activityPending}
                     />
                   </div>
                 ) : (
@@ -139,6 +149,8 @@ export function HomeTriggers({
                       trigger={item.trigger}
                       agentSlug={agentSlug}
                       onSelect={() => onSelectWebhook(item.trigger.id)}
+                      activity={activityStats?.webhookByTriggerId[item.trigger.id]}
+                      activityPending={activityPending}
                     />
                   </div>
                 ),
@@ -177,6 +189,7 @@ interface TriggerRowProps {
   runNowPending?: boolean
   // When true, the trigger is already deleted — only the View Details action is shown.
   isDeleted?: boolean
+  activityChart?: ReactNode
 }
 
 function TriggerRow({
@@ -194,6 +207,7 @@ function TriggerRow({
   onRunNow,
   runNowPending,
   isDeleted = false,
+  activityChart,
 }: TriggerRowProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const label = kind === 'cron' ? 'Cron' : 'Webhook'
@@ -207,18 +221,23 @@ function TriggerRow({
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect() } }}
         className="group relative w-full py-3 px-4 text-left hover:bg-muted/50 transition-colors cursor-pointer"
       >
-        <div className="flex items-center gap-1.5">
-          <div className="text-xs font-medium truncate">{name}</div>
-          {isPaused && (
-            <span className="inline-flex items-center gap-0.5 text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
-              <Pause className="h-2.5 w-2.5 fill-current" />
-              Paused
-            </span>
-          )}
-        </div>
-        <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground mt-0.5">
-          {subtitleLeft}
-          {subtitleRight}
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <div className="text-xs font-medium truncate">{name}</div>
+              {isPaused && (
+                <span className="inline-flex items-center gap-0.5 text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
+                  <Pause className="h-2.5 w-2.5 fill-current" />
+                  Paused
+                </span>
+              )}
+            </div>
+            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground mt-0.5">
+              {subtitleLeft}
+              {subtitleRight}
+            </div>
+          </div>
+          {activityChart && <div className="shrink-0 mr-6">{activityChart}</div>}
         </div>
         <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity">
           <Popover>
@@ -332,10 +351,14 @@ function CronRow({
   task,
   agentSlug,
   onSelect,
+  activity,
+  activityPending,
 }: {
   task: ApiScheduledTask
   agentSlug: string
   onSelect: () => void
+  activity?: CronActivityPoint[]
+  activityPending?: boolean
 }) {
   const runNow = useRunScheduledTaskNow()
   const cancelTask = useCancelScheduledTask()
@@ -374,6 +397,11 @@ function CronRow({
       deletePending={cancelTask.isPending}
       onRunNow={() => runNow.mutate({ taskId: task.id, agentSlug })}
       runNowPending={runNow.isPending}
+      activityChart={activity !== undefined ? (
+        <CronSparkChart label={`${task.name ?? 'Scheduled Task'} schedule`} data={activity} />
+      ) : activityPending ? (
+        <ActivitySparkChartSkeleton />
+      ) : undefined}
     />
   )
 }
@@ -382,10 +410,14 @@ function WebhookRow({
   trigger,
   agentSlug,
   onSelect,
+  activity,
+  activityPending,
 }: {
   trigger: WebhookTrigger
   agentSlug: string
   onSelect: () => void
+  activity?: DailyActivityPoint[]
+  activityPending?: boolean
 }) {
   const cancelTrigger = useCancelWebhookTrigger()
   const pauseTrigger = usePauseWebhookTrigger()
@@ -430,6 +462,11 @@ function WebhookRow({
       onSelect={onSelect}
       onConfirmDelete={() => cancelTrigger.mutate({ id: trigger.id, agentSlug })}
       deletePending={cancelTrigger.isPending}
+      activityChart={activity !== undefined ? (
+        <ActivitySparkChart label={`${displayName} activity`} data={activity} />
+      ) : activityPending ? (
+        <ActivitySparkChartSkeleton />
+      ) : undefined}
     />
   )
 }

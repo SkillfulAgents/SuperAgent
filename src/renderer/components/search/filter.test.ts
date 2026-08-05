@@ -108,22 +108,6 @@ describe('filterAgentsAndSessions', () => {
     expect(groups[0].dashboards.map((d) => d.slug)).toEqual(['revops'])
   })
 
-  it('falls back to dashboard summary names and slugs', () => {
-    const legacyAgent: ApiAgent = {
-      ...agent('legacy', 'Legacy Bot', new Date('2025-01-01')),
-      dashboards: undefined,
-      dashboardNames: ['Legacy Dashboard'],
-      dashboardSlugs: ['legacy-dashboard'],
-    }
-
-    const groups = filterAgentsAndSessions([legacyAgent], {}, 'legacy dashboard')
-
-    expect(groups).toHaveLength(1)
-    expect(groups[0].dashboards).toEqual([
-      { slug: 'legacy-dashboard', name: 'Legacy Dashboard' },
-    ])
-  })
-
   it('hides agents with no name match and no session match', () => {
     const groups = filterAgentsAndSessions([alpha, beta], sessions, 'zzz')
     expect(groups).toHaveLength(0)

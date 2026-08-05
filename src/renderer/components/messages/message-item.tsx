@@ -163,7 +163,7 @@ const MARKDOWN_COMPONENTS: Components = {
   // table to one giant line, while many short columns still drive the breakout.
   th: ({ children }) => (
     <th className={cn(
-      'border-b-2 px-3 py-1.5 text-left font-semibold align-top',
+      'border-b-2 px-3 py-1.5 text-left font-medium align-top',
       'border-border'
     )}>
       <div className="max-w-[32rem]">{children}</div>
@@ -219,6 +219,28 @@ interface MessageItemProps {
   /** Read-only mirror (chat-integration replay): no edit actions; lift the
    *  connector's inline sender prefix into the sender label. */
   readOnly?: boolean
+}
+
+function resolveSubagentRun(
+  toolCall: ApiToolCall,
+  activeSubagents: SubagentInfo[] | undefined,
+  completedSubagents: Set<string> | null | undefined,
+): { activeSubagent: SubagentInfo | null; isCompleted: boolean } {
+  const directRun = activeSubagents?.find((sub) => sub.parentToolId === toolCall.id)
+  const agentId = toolCall.subagent?.agentId
+  const resumedRun = agentId
+    ? activeSubagents?.find((sub) =>
+      sub.agentId === agentId &&
+      sub.parentToolId !== toolCall.id &&
+      (!sub.parentToolId || !completedSubagents?.has(sub.parentToolId))
+    )
+    : undefined
+  const activeSubagent = resumedRun ?? directRun ?? null
+  const selectedToolId = activeSubagent?.parentToolId ?? toolCall.id
+  return {
+    activeSubagent,
+    isCompleted: completedSubagents?.has(selectedToolId) ?? false,
+  }
 }
 
 function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly }: MessageItemProps) {
@@ -327,12 +349,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
             >
               {/* Slash command display */}
               {isSlashCommand && hasText && (
-                <div className="flex items-baseline gap-1.5">
-                  <span className="font-mono font-semibold text-sm">
+                <div className="text-sm">
+                  <span className="font-mono font-medium">
                     {text.split(' ')[0]}
                   </span>
                   {text.includes(' ') && (
-                    <span className="text-sm opacity-80">
+                    <span className="opacity-80">
+                      {' '}
                       {text.slice(text.indexOf(' ') + 1)}
                     </span>
                   )}
@@ -417,32 +440,35 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         {/* Tool calls - shown below assistant message */}
         {isAssistant && toolCalls.length > 0 && (
           <div className="w-full space-y-2">
-            {toolCalls.map((toolCall) => (
-              <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
-                <div>
-                  <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
-                    {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
-                      <SubAgentBlock
-                        toolCall={toolCall}
-                        sessionId={sessionId}
-                        agentSlug={agentSlug!}
-                        isSessionActive={isSessionActive}
-                        activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
-                        isCompleted={completedSubagents?.has(toolCall.id) ?? false}
-                      />
-                    ) : toolCall.name === 'Workflow' ? (
-                      <WorkflowBlock
-                        toolCall={toolCall}
-                        activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
-                        isCompleted={completedSubagents?.has(toolCall.id) ?? false}
-                      />
-                    ) : (
-                      <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
-                    )}
-                  </MessageErrorBoundary>
-                </div>
-              </MessageContextMenu>
-            ))}
+            {toolCalls.map((toolCall) => {
+              const subagentRun = resolveSubagentRun(toolCall, activeSubagents, completedSubagents)
+              return (
+                <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
+                  <div>
+                    <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
+                      {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
+                        <SubAgentBlock
+                          toolCall={toolCall}
+                          sessionId={sessionId}
+                          agentSlug={agentSlug!}
+                          isSessionActive={isSessionActive}
+                          activeSubagent={subagentRun.activeSubagent}
+                          isCompleted={subagentRun.isCompleted}
+                        />
+                      ) : toolCall.name === 'Workflow' ? (
+                        <WorkflowBlock
+                          toolCall={toolCall}
+                          activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
+                          isCompleted={completedSubagents?.has(toolCall.id) ?? false}
+                        />
+                      ) : (
+                        <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
+                      )}
+                    </MessageErrorBoundary>
+                  </div>
+                </MessageContextMenu>
+              )
+            })}
           </div>
         )}
       </div>

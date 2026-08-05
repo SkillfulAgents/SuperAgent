@@ -8,9 +8,9 @@ interface NavTransientValue {
 const NavTransientContext = createContext<NavTransientValue | null>(null)
 
 /**
- * Holds the new-agent "morph" one-shot, which must outlive in-app navigation
- * but die on a hard reload (correct for a one-shot). Mounted ABOVE the router
- * (App.tsx) so a route change never resets it.
+ * Holds one-shots that must outlive in-app navigation but die on a hard
+ * reload (correct for one-shots). Mounted ABOVE the router (App.tsx) so a
+ * route change never resets them.
  *
  * - `justCreatedSlug`: the new-agent "morph" tag. Produced by
  *   `useCreateUntitledAgent` on create and consumed by AgentHome.

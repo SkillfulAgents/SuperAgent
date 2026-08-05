@@ -45,6 +45,13 @@ export const authSession = sqliteTable('session', {
     .notNull()
     .references(() => user.id, { onDelete: 'cascade' }),
   impersonatedBy: text('impersonated_by'),
+  /**
+   * How this session came to exist — one of `SESSION_CREATION_METHODS`
+   * (auth/session-audit.ts), written once at creation and never updated.
+   * Nullable: rows that predate the column carry no answer, and "unknown"
+   * would be a claim we cannot make about them.
+   */
+  creationMethod: text('creation_method'),
 }, (table) => ({
   userIdIdx: index('session_userId_idx').on(table.userId),
 }))
@@ -71,6 +78,19 @@ export const authAccount = sqliteTable('account', {
     .notNull(),
 }, (table) => ({
   userIdIdx: index('account_userId_idx').on(table.userId),
+  // One stable mapping per external identity: (providerId, accountId) is the
+  // durable lookup for token-exchange provisioning and must never fork.
+  providerAccountIdx: uniqueIndex('account_provider_account_unique').on(table.providerId, table.accountId),
+}))
+
+// Single-use `jti` replay guard for the RFC 7523 token-exchange endpoint.
+// The primary key makes consumption atomic: only the request whose INSERT
+// lands may mint a session for that grant. Rows expire with the grant's exp.
+export const tokenExchangeJti = sqliteTable('token_exchange_jti', {
+  jti: text('jti').primaryKey(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  expiresAtIdx: index('token_exchange_jti_expires_at_idx').on(table.expiresAt),
 }))
 
 export const verification = sqliteTable('verification', {
@@ -161,6 +181,9 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   lastSessionId: text('last_session_id'),
   createdBySessionId: text('created_by_session_id'),
   createdByUserId: text('created_by_user_id'), // For ACL purposes in auth mode
+  // When set, this task is a session "wake": firing resumes the referenced
+  // existing session (sendMessage into it) instead of creating a new one.
+  resumeSessionId: text('resume_session_id'),
 
   // Timezone (IANA identifier, e.g. 'America/New_York')
   timezone: text('timezone'),
@@ -168,12 +191,21 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   // Runtime options (override global defaults when set)
   model: text('model'),
   effort: text('effort'),
+  speed: text('speed'),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   cancelledAt: integer('cancelled_at', { mode: 'timestamp_ms' }),
   pausedAt: integer('paused_at', { mode: 'timestamp_ms' }),
-})
+}, (table) => ({
+  // One pending wake per session, enforced at the storage layer: the
+  // replace-on-create logic in createSessionWake runs in a transaction, and
+  // this partial index makes any interleaving that slips past it a hard
+  // constraint error instead of a silent duplicate wake.
+  pendingWakePerSession: uniqueIndex('scheduled_tasks_pending_wake_unique')
+    .on(table.resumeSessionId)
+    .where(sql`status = 'pending' AND resume_session_id IS NOT NULL`),
+}))
 
 // Notifications - user notifications for session events
 export const notifications = sqliteTable('notifications', {
@@ -225,7 +257,14 @@ export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
   matchedScopes: text('matched_scopes'), // JSON array string of matched scope names
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
-})
+}, (table) => ({
+  agentSlugCreatedAtIdx: index('proxy_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),
+  accountIdCreatedAtIdx: index('proxy_audit_log_account_id_created_at_idx').on(table.accountId, table.createdAt),
+  // Covers the home-graph usage aggregation (GROUP BY agent×account, with an
+  // owner join on account_id) — the table grows with every proxied call, so
+  // an unindexed scan degrades linearly forever.
+  accountAgentIdx: index('proxy_audit_log_account_agent_idx').on(table.accountId, table.agentSlug),
+}))
 
 // Remote MCP servers registered at app level
 export const remoteMcpServers = sqliteTable('remote_mcp_servers', {
@@ -281,7 +320,13 @@ export const mcpAuditLog = sqliteTable('mcp_audit_log', {
   policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
   matchedTool: text('matched_tool'), // tool name for tools/call requests
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
-})
+}, (table) => ({
+  agentSlugCreatedAtIdx: index('mcp_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),
+  remoteMcpIdCreatedAtIdx: index('mcp_audit_log_remote_mcp_id_created_at_idx').on(table.remoteMcpId, table.createdAt),
+  // Same rationale as proxy_audit_log_account_agent_idx: usage aggregation
+  // over an append-only table.
+  mcpAgentIdx: index('mcp_audit_log_mcp_agent_idx').on(table.remoteMcpId, table.agentSlug),
+}))
 
 // Agent ACLs - maps users to agents with roles (auth mode only)
 export const agentAcl = sqliteTable('agent_acl', {
@@ -402,6 +447,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   // Runtime options (override global defaults when set)
   model: text('model'),
   effort: text('effort'),
+  speed: text('speed'),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -429,6 +475,7 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
   model: text('model'), // Claude model override; null = use default
   effort: text('effort'), // Effort level override; null = use default
+  speed: text('speed'), // Speed level override; null = use default
 
   // Status
   status: text('status', { enum: ['active', 'paused', 'error', 'disconnected'] })

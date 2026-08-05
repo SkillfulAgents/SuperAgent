@@ -84,14 +84,10 @@ class AutoSleepMonitor {
           // Check last activity across all sessions
           const sessions = await listSessions(agentId)
 
-          // No sessions — container was just started, skip it
-          if (sessions.length === 0) {
-            continue
-          }
-
           // Use container start time as a floor — when an agent is woken up
           // to view its dashboard, session timestamps are stale from before
-          // the previous sleep and would cause immediate re-sleep.
+          // the previous sleep and would cause immediate re-sleep. Also covers
+          // warm-started containers that still have zero sessions.
           const containerStartTime =
             containerManager.getContainerStartTime(agentId) ?? 0
           const lastKeepAlive =
@@ -102,6 +98,11 @@ class AutoSleepMonitor {
             lastKeepAlive,
             ...sessions.map((s) => s.lastActivityAt.getTime())
           )
+
+          // No start/keep-alive/session signal yet — do not reap.
+          if (lastActivity === 0) {
+            continue
+          }
 
           if (now - lastActivity > timeoutMs) {
             console.log(

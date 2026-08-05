@@ -1,0 +1,32 @@
+{
+  "sessionId": "a183a96b-1e4c-45aa-a6ff-d5619aa4cd2e",
+  "agentSlug": "capture",
+  "description": "Real SUPERAGENT_CAPTURE_DIR capture (2026-07-09, claude-agent-sdk 0.3.206 / CLI 2.1.206). Two run_in_background Bash tasks (sleep 8, sleep 30) started in one turn. Includes the new background_tasks_changed system messages: full live-task snapshots on each membership change (1 task -> 2 tasks -> 1 -> 0). Premature session_state_changed:idle fires at turn-end while both tasks run; each task later clears via its own task_notification/task_updated. Guards: idle-with-bg-pending must emit session_waiting_background (not finalize), and snapshot-based liveness must agree with the incremental map at every frame.",
+  "sdkVersion": "0.3.206",
+  "cliVersion": "2.1.206",
+  "capturedAt": "2026-07-09",
+  "startActive": true,
+  "subagents": [],
+  "backgroundTasks": [
+    {
+      "taskId": "b0ct29ahl",
+      "taskType": "local_bash",
+      "startedT": 199937,
+      "prematureIdleT": 202083,
+      "realCompletionT": 207952
+    },
+    {
+      "taskId": "b1ztuel3p",
+      "taskType": "local_bash",
+      "startedT": 200575,
+      "prematureIdleT": 202083,
+      "realCompletionT": 230591
+    }
+  ],
+  "newFrameCounts": {
+    "background_tasks_changed": 4,
+    "result.terminal_reason:completed": 3,
+    "command_lifecycle:completed": 1
+  },
+  "totalEntries": 77
+}

@@ -1,5 +1,8 @@
 import * as path from 'path'
 import { promises as fs } from 'fs'
+import pLimit from 'p-limit'
+import { isPathWithinDir } from '../utils/path-safety'
+import { streamJsonlFile } from '../utils/file-storage'
 import { parseWorkflowScript } from './workflow-script-parser'
 import {
   JournalLineSchema,
@@ -15,6 +18,13 @@ import {
 type JoinedAgent = Omit<WorkflowAgentNode, 'prompt' | 'toolCount' | 'tokens' | 'durationMs'>
 
 /**
+ * How many agent transcripts readAgentStats has open concurrently. Peak memory
+ * is roughly this times the largest transcript, so it bounds the drawer's cost
+ * on a run with hundreds of agents instead of scaling with the run.
+ */
+const AGENT_STATS_CONCURRENCY = 10
+
+/**
  * Reconstruct a workflow's per-agent tree from its on-disk artifacts and join each
  * agent back to its script call site to recover the (label, phase) the wire never
  * carries.
@@ -23,6 +33,9 @@ type JoinedAgent = Omit<WorkflowAgentNode, 'prompt' | 'toolCount' | 'tokens' | '
  *   <sessionsDir>/<sessionId>/subagents/workflows/<runId>/journal.jsonl   (status + result, ordered)
  *   <sessionsDir>/<sessionId>/subagents/workflows/<runId>/agent-<id>.jsonl (first user msg = the join key)
  *   <sessionsDir>/<sessionId>/workflows/scripts/<name>-<runId>.js          (phases + per-call label/phase)
+ *   — plus the Workflow invocation mined from <sessionsDir>/<sessionId>.jsonl:
+ *     the executed script's path for `scriptPath` runs (no session-dir copy
+ *     exists) and the `args` input, which sizes `args.<key>` fan-outs.
  *
  * Returns null when the run dir / journal doesn't exist (→ the route 404s).
  */
@@ -70,19 +83,31 @@ export async function buildWorkflowTree(opts: {
     }
   }
 
-  const script = await loadScript(sessionsDir, sessionId, runId)
+  const invocation = await findWorkflowInvocation(sessionsDir, sessionId, runId)
+  const script = await loadScript(sessionsDir, sessionId, runId, invocation.scriptHostPath)
   const stats = new Map<string, AgentStats>()
+  // A wide run has hundreds of agent transcripts and they are individually
+  // large; reading them all at once puts the whole run dir in memory at peak.
+  const statsLimit = pLimit(AGENT_STATS_CONCURRENCY)
   await Promise.all(
-    startedOrder.map(async (agentId) => {
-      stats.set(agentId, await readAgentStats(path.join(runDir, `agent-${agentId}.jsonl`)))
-    })
+    startedOrder.map((agentId) =>
+      statsLimit(async () => {
+        stats.set(agentId, await readAgentStats(path.join(runDir, `agent-${agentId}.jsonl`)))
+      })
+    )
   )
 
   const firstPrompts = new Map([...stats].map(([id, s]) => [id, s.firstPrompt]))
   const agents = joinAgents({ startedOrder, statusByAgent, firstPrompts, script }).map((node) => {
     const s = stats.get(node.agentId)
+    // The journal has no failure event — a dead agent is a `started` with no
+    // `result`, forever. The durable marker is the transcript ending on a
+    // synthetic error frame; self-correcting if the agent appends more entries.
+    const failed = node.status === 'running' && s?.trailingError != null
     return {
       ...node,
+      status: failed ? ('failed' as const) : node.status,
+      result: node.result ?? (failed ? s.trailingError : null),
       prompt: s?.firstPrompt ?? '',
       toolCount: s?.toolCount ?? 0,
       tokens: s?.tokens ?? 0,
@@ -106,7 +131,7 @@ export async function buildWorkflowTree(opts: {
     description: script.description,
     phases: script.phases,
     agents,
-    expectedAgents: script.agentCalls.length,
+    expectedAgents: expectedAgentCount(script, invocation.args),
     totals,
   })
 }
@@ -157,7 +182,7 @@ function joinAgents(input: {
       agentId,
       label: resolveLabel(chosen, captures, index),
       phase: chosen ? chosen.phase ?? chosen.sourcePhase : null,
-      status: st.status,
+      status: st.status, // 'running' may be promoted to 'failed' once transcript stats are layered on
       result: displayAgentResult(st.result),
       resolved,
     })
@@ -185,22 +210,118 @@ function resolveLabel(
   return unresolved ? fallback : label
 }
 
-async function loadScript(sessionsDir: string, sessionId: string, runId: string): Promise<ParsedScript> {
+async function loadScript(
+  sessionsDir: string,
+  sessionId: string,
+  runId: string,
+  invocationScriptPath: string | null
+): Promise<ParsedScript> {
   const empty: ParsedScript = { name: null, description: null, phases: [], agentCalls: [] }
+  // Canonical location: inline-`script` invocations get a copy persisted here.
   const scriptsDir = path.join(sessionsDir, sessionId, 'workflows', 'scripts')
-  let entries: string[]
   try {
-    entries = await fs.readdir(scriptsDir)
+    const entries = await fs.readdir(scriptsDir)
+    const file = entries.find((f) => f.endsWith(`${runId}.js`))
+    if (file) return parseWorkflowScript(await fs.readFile(path.join(scriptsDir, file), 'utf8'))
   } catch {
-    return empty
+    // fall through to the invocation-referenced path
   }
-  const file = entries.find((f) => f.endsWith(`${runId}.js`))
-  if (!file) return empty
+  // `scriptPath` invocations run a caller-owned file (e.g. a skill's script) and
+  // persist nothing under the session dir — read the file the invocation named.
+  if (invocationScriptPath) {
+    try {
+      return parseWorkflowScript(await fs.readFile(invocationScriptPath, 'utf8'))
+    } catch {
+      // unreadable/unparsable script → same degraded tree as before
+    }
+  }
+  return empty
+}
+
+/**
+ * Estimated total agents for the run: a call site fanning out over a Workflow
+ * `args` array counts as that array's actual length; every other call site counts
+ * as 1. Still a lower bound — fan-outs over runtime-computed collections (an
+ * earlier phase's output) can't be sized statically.
+ */
+function expectedAgentCount(script: ParsedScript, args: unknown): number {
+  const argsObj =
+    args !== null && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : null
+  return script.agentCalls.reduce((n, call) => {
+    if (call.fanOutArgsKey && argsObj) {
+      const list = argsObj[call.fanOutArgsKey]
+      if (Array.isArray(list)) return n + list.length
+    }
+    return n + 1
+  }, 0)
+}
+
+interface WorkflowInvocation {
+  /** Host path of the executed script, contained within the agent workspace; null if unknown. */
+  scriptHostPath: string | null
+  /** The invocation's `args` input, verbatim; undefined if unknown. */
+  args: unknown
+}
+
+/**
+ * Mine the run's Workflow invocation out of the parent session transcript: the
+ * tool_result names the executed script (`Script file: <container path>`) and its
+ * paired tool_use input carries `args` (sizes fan-outs) and, for `scriptPath`
+ * invocations, the caller-owned script location. Container paths (`/workspace/...`)
+ * are mapped onto the host workspace dir; anything escaping it is ignored.
+ */
+async function findWorkflowInvocation(
+  sessionsDir: string,
+  sessionId: string,
+  runId: string
+): Promise<WorkflowInvocation> {
+  const none: WorkflowInvocation = { scriptHostPath: null, args: undefined }
+  // sessionsDir = <workspace>/.claude/projects/-workspace
+  const workspaceDir = path.resolve(sessionsDir, '..', '..', '..')
+
+  const inputsByToolUseId = new Map<string, Record<string, unknown>>()
+  let resultText: string | null = null
+  let resultToolUseId: string | null = null
   try {
-    return parseWorkflowScript(await fs.readFile(path.join(scriptsDir, file), 'utf8'))
+    // The parent transcript is the largest file this module touches; stream it
+    // rather than holding it whole to pull one tool_use/tool_result pair out.
+    const lines = streamJsonlFile<{ message?: { content?: unknown } }>(
+      path.join(sessionsDir, `${sessionId}.jsonl`)
+    )
+    for await (const entry of lines) {
+      const content = entry.message?.content
+      if (!Array.isArray(content)) continue
+      for (const block of content as Array<Record<string, unknown>>) {
+        if (block?.type === 'tool_use' && block.name === 'Workflow' && typeof block.id === 'string') {
+          const input = block.input
+          inputsByToolUseId.set(block.id, input !== null && typeof input === 'object' ? (input as Record<string, unknown>) : {})
+        }
+        if (resultText === null && block?.type === 'tool_result') {
+          const text = messageText(block.content)
+          if (text.includes(runId)) {
+            resultText = text
+            resultToolUseId = typeof block.tool_use_id === 'string' ? block.tool_use_id : null
+          }
+        }
+      }
+    }
   } catch {
-    return empty
+    return none
   }
+  if (resultText === null) return none
+
+  const input = resultToolUseId !== null ? inputsByToolUseId.get(resultToolUseId) : undefined
+  // Prefer the result's `Script file:` line (present for inline-`script` runs too,
+  // pointing at the persisted copy); fall back to the tool_use's own scriptPath.
+  const containerPath =
+    /Script file: (\/workspace\/\S+)/.exec(resultText)?.[1] ??
+    (typeof input?.scriptPath === 'string' ? input.scriptPath : null)
+  let scriptHostPath: string | null = null
+  if (containerPath?.startsWith('/workspace/')) {
+    const host = path.join(workspaceDir, containerPath.slice('/workspace/'.length))
+    if (isPathWithinDir(workspaceDir, host)) scriptHostPath = host
+  }
+  return { scriptHostPath, args: input?.args }
 }
 
 interface AgentStats {
@@ -209,6 +330,9 @@ interface AgentStats {
   tokens: number
   firstTs: number | null
   lastTs: number | null
+  /** Error text when the transcript's FINAL entry is a synthetic error frame
+   *  (`error` + `errorDetails` fields) — the durable marker of a dead agent. */
+  trailingError: string | null
 }
 
 function messageText(content: unknown): string {
@@ -228,48 +352,59 @@ function messageText(content: unknown): string {
  * first/last timestamps (for duration). Tolerant of a half-written trailing line.
  */
 async function readAgentStats(filePath: string): Promise<AgentStats> {
-  const empty: AgentStats = { firstPrompt: '', toolCount: 0, tokens: 0, firstTs: null, lastTs: null }
-  let raw: string
-  try {
-    raw = await fs.readFile(filePath, 'utf8')
-  } catch {
-    return empty
+  const empty: AgentStats = {
+    firstPrompt: '',
+    toolCount: 0,
+    tokens: 0,
+    firstTs: null,
+    lastTs: null,
+    trailingError: null,
   }
   let firstPrompt = ''
   let toolCount = 0
   let tokens = 0
   let firstTs: number | null = null
   let lastTs: number | null = null
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-    let entry: {
+  let trailingError: string | null = null
+  try {
+    // Streamed, not read whole: a single agent transcript can be tens of MB and
+    // a wide run holds AGENT_STATS_CONCURRENCY of them open at once.
+    const lines = streamJsonlFile<{
       type?: string
       timestamp?: string
+      error?: unknown
+      errorDetails?: unknown
       message?: { content?: unknown; usage?: { output_tokens?: number } }
-    }
-    try {
-      entry = JSON.parse(trimmed)
-    } catch {
-      continue
-    }
-    if (typeof entry.timestamp === 'string') {
-      const t = Date.parse(entry.timestamp)
-      if (!Number.isNaN(t)) {
-        if (firstTs == null) firstTs = t
-        lastTs = t
+    }>(filePath)
+    for await (const entry of lines) {
+      // Track the error marker of the LAST entry only: a mid-transcript error the
+      // agent recovered from must not read as failure, so any later entry clears it.
+      trailingError =
+        typeof entry.error === 'string'
+          ? typeof entry.errorDetails === 'string'
+            ? entry.errorDetails
+            : entry.error
+          : null
+      if (typeof entry.timestamp === 'string') {
+        const t = Date.parse(entry.timestamp)
+        if (!Number.isNaN(t)) {
+          if (firstTs == null) firstTs = t
+          lastTs = t
+        }
+      }
+      if (entry.type === 'user' && !firstPrompt) {
+        firstPrompt = messageText(entry.message?.content)
+      }
+      if (entry.type === 'assistant') {
+        const content = entry.message?.content
+        if (Array.isArray(content)) {
+          toolCount += content.filter((b) => (b as { type?: string })?.type === 'tool_use').length
+        }
+        tokens += entry.message?.usage?.output_tokens ?? 0
       }
     }
-    if (entry.type === 'user' && !firstPrompt) {
-      firstPrompt = messageText(entry.message?.content)
-    }
-    if (entry.type === 'assistant') {
-      const content = entry.message?.content
-      if (Array.isArray(content)) {
-        toolCount += content.filter((b) => (b as { type?: string })?.type === 'tool_use').length
-      }
-      tokens += entry.message?.usage?.output_tokens ?? 0
-    }
+  } catch {
+    return empty
   }
-  return { firstPrompt, toolCount, tokens, firstTs, lastTs }
+  return { firstPrompt, toolCount, tokens, firstTs, lastTs, trailingError }
 }

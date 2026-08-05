@@ -1,6 +1,6 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest'
 import * as path from 'path'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, promises as fsPromises } from 'fs'
 import { tmpdir } from 'os'
 
 const settingsMock = vi.fn()
@@ -9,9 +9,15 @@ vi.mock('../config/settings', () => ({
   getModelCatalogSettings: () => settingsMock().modelCatalog ?? {},
 }))
 
-import { loadDailyUsageData as loadDailyUsageDataLightweight, calculateCost } from './usage-service'
+import {
+  loadDailyUsageData as loadDailyUsageDataLightweight,
+  loadSessionUsageTotals,
+  calculateCost,
+} from './usage-service'
 
 const FIXTURES_DIR = path.resolve(__dirname, '__fixtures__/usage-data')
+const RUNTIME_MODEL_FIXTURE = path.join(FIXTURES_DIR, 'runtime-model-ids')
+const MISSING_PRICE_FIXTURE = path.join(FIXTURES_DIR, 'missing-model-price')
 
 const AGENT_SLUGS = [
   '4b41c573-4c33-456d-9cc5-3df6ee95dc32', // has subagent files (agent-*)
@@ -198,6 +204,465 @@ describe('usage-service', () => {
         0
       )
       expect(totalTokens).toBe(ccTotalTokens)
+    })
+  })
+
+  describe('loadSessionUsageTotals', () => {
+    it('calculates totals from only the requested session transcript', async () => {
+      const claudePath = getClaudePath('edge-cases')
+      const sessionPath = path.join(claudePath, 'projects', '-workspace', 'session-a.jsonl')
+
+      const [totals, allDaily] = await Promise.all([
+        loadSessionUsageTotals({ sessionPath }),
+        loadDailyUsageDataLightweight({ claudePath }),
+      ])
+      const sessionDay = allDaily.find((day) => day.date === '2025-12-10')!
+
+      expect(totals).toEqual({
+        totalCost: sessionDay.totalCost,
+        totalTokens:
+          sessionDay.inputTokens +
+          sessionDay.outputTokens +
+          sessionDay.cacheCreationTokens +
+          sessionDay.cacheReadTokens,
+        priceMissing: sessionDay.priceMissing,
+        // session-a also contains a deliberately malformed trailing row.
+        usageIncomplete: true,
+      })
+    })
+
+    it('returns zero totals before a session transcript exists', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-missing-session-'))
+      writeFileSync(path.join(dir, 'agent-legacy.jsonl'), '{}\n')
+
+      try {
+        const totals = await loadSessionUsageTotals({
+          sessionPath: path.join(dir, 'missing-session.jsonl'),
+        })
+
+        expect(totals).toEqual({
+          totalCost: 0,
+          totalTokens: 0,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('deduplicates snapshots when requestId presence differs', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-mixed-request-id-'))
+      const transcript = path.join(dir, 'mixed-request-id.jsonl')
+      const partialSnapshot = JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-01-01T12:00:00.000Z',
+        requestId: 'request-1',
+        costUSD: 0.1,
+        message: {
+          id: 'shared-message-id',
+          model: 'claude-sonnet-4-6',
+          usage: { input_tokens: 100, output_tokens: 10 },
+        },
+      })
+      const finalSnapshotWithoutRequestId = JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-01-01T12:00:01.000Z',
+        costUSD: 0.2,
+        message: {
+          id: 'shared-message-id',
+          model: 'claude-sonnet-4-6',
+          usage: { input_tokens: 100, output_tokens: 20 },
+        },
+      })
+      writeFileSync(transcript, `${partialSnapshot}\n${finalSnapshotWithoutRequestId}\n`)
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.2,
+          totalTokens: 120,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe('sanitized runtime-model regression fixture', () => {
+    const sessionPath = path.join(
+      RUNTIME_MODEL_FIXTURE,
+      'projects',
+      '-workspace',
+      'sanitized-session.jsonl',
+    )
+
+    it('deduplicates repeated snapshots that omit requestId', async () => {
+      const result = await loadDailyUsageDataLightweight({
+        claudePath: RUNTIME_MODEL_FIXTURE,
+        providerId: 'anthropic',
+      })
+      const day = result.find((entry) => entry.date === '2026-01-01')!
+
+      // The source transcript had three identical snapshots for the first
+      // message and no requestId. Count that message once: 138,263 tokens,
+      // rather than the previously displayed 229,419.
+      expect(day.inputTokens).toBe(5_939)
+      expect(day.outputTokens).toBe(354)
+      expect(day.cacheCreationTokens).toBe(85_916)
+      expect(day.cacheReadTokens).toBe(46_054)
+      expect(
+        day.inputTokens +
+          day.outputTokens +
+          day.cacheCreationTokens +
+          day.cacheReadTokens,
+      ).toBe(138_263)
+      expect(day.totalCost).toBeCloseTo(0.3591282, 10)
+      expect(day.modelBreakdowns).toEqual([
+        expect.objectContaining({
+          modelName: 'anthropic/claude-sonnet-5-20260630',
+          cost: 0.3591282,
+        }),
+      ])
+    })
+
+    it('prices each provider-qualified dated model id retained in the fixture', async () => {
+      const result = await loadDailyUsageDataLightweight({
+        claudePath: RUNTIME_MODEL_FIXTURE,
+        providerId: 'anthropic',
+      })
+      const day = result.find((entry) => entry.date === '2026-01-02')!
+      const costs = new Map(day.modelBreakdowns.map((entry) => [entry.modelName, entry.cost]))
+
+      expect(costs.get('anthropic/claude-4.6-opus-20260205')).toBeCloseTo(0.19845875, 10)
+      expect(costs.get('anthropic/claude-4.6-sonnet-20260217')).toBeCloseTo(0.1221165, 10)
+      expect(costs.get('openai/gpt-5.5-20260423')).toBeCloseTo(0.12104, 10)
+      expect(costs.get('x-ai/grok-4.5-20260708')).toBeCloseTo(0.0552996, 10)
+      expect(costs.get('anthropic/claude-4.5-haiku-20251001')).toBeCloseTo(0.04190125, 10)
+      expect(day.totalCost).toBeCloseTo(0.5388161, 10)
+    })
+
+    it('returns corrected all-time totals through the session calculation path', async () => {
+      await expect(
+        loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' }),
+      ).resolves.toEqual({
+        totalCost: 0.8979443,
+        totalTokens: 286_966,
+        priceMissing: false,
+        usageIncomplete: false,
+      })
+    })
+  })
+
+  describe('sanitized missing-model-price regression fixture', () => {
+    const sessionPath = path.join(
+      MISSING_PRICE_FIXTURE,
+      'projects',
+      '-workspace',
+      'sanitized-session.jsonl',
+    )
+
+    it('marks an unpriced discovered model without changing its deduplicated tokens', async () => {
+      await expect(loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' })).resolves.toEqual({
+        totalCost: 0,
+        totalTokens: 79_429,
+        priceMissing: true,
+        usageIncomplete: false,
+      })
+    })
+
+    it('does not mark a numeric recorded zero as missing pricing', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-recorded-zero-'))
+      const transcript = path.join(dir, 'recorded-zero.jsonl')
+      writeFileSync(
+        transcript,
+        `${JSON.stringify({
+          type: 'assistant',
+          timestamp: '2026-01-01T12:00:00.000Z',
+          costUSD: 0,
+          message: {
+            id: 'recorded-zero-message',
+            model: 'unknown-but-recorded-free',
+            usage: { input_tokens: 100, output_tokens: 10 },
+          },
+        })}\n`,
+      )
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0,
+          totalTokens: 110,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe('session usage completeness', () => {
+    it('counts both cache-read-only and cache-creation-only usage rows', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-cache-only-'))
+      const transcript = path.join(dir, 'cache-only.jsonl')
+      const cacheReadRow = JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-01-01T12:00:00.000Z',
+        message: {
+          id: 'cache-only-message',
+          model: 'claude-sonnet-4-6',
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 123,
+          },
+        },
+      })
+      const cacheCreationRow = JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-01-01T12:00:01.000Z',
+        costUSD: 0,
+        message: {
+          id: 'cache-creation-only-message',
+          model: 'claude-sonnet-4-6',
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 456,
+            cache_read_input_tokens: 0,
+          },
+        },
+      })
+      writeFileSync(transcript, `${cacheReadRow}\n${cacheCreationRow}\n`)
+
+      try {
+        const totals = await loadSessionUsageTotals({ sessionPath: transcript })
+        expect(totals).toEqual({
+          totalCost: 0.0000369,
+          totalTokens: 579,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('warns rather than guessing ownership of legacy flat subagent transcripts', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-legacy-subagent-'))
+      const transcript = path.join(dir, 'session.jsonl')
+      const legacySubagent = path.join(dir, 'agent-legacy.jsonl')
+      writeFileSync(
+        transcript,
+        `${JSON.stringify({
+          type: 'assistant',
+          timestamp: '2026-01-01T12:00:00.000Z',
+          costUSD: 0.1,
+          message: {
+            id: 'main-session-message',
+            model: 'claude-sonnet-4-6',
+            usage: { input_tokens: 100, output_tokens: 10 },
+          },
+        })}\n`,
+      )
+      writeFileSync(
+        legacySubagent,
+        `${JSON.stringify({
+          type: 'assistant',
+          timestamp: '2026-01-01T12:00:01.000Z',
+          costUSD: 0.2,
+          message: {
+            id: 'unlinked-subagent-message',
+            model: 'claude-sonnet-4-6',
+            usage: { input_tokens: 200, output_tokens: 20 },
+          },
+        })}\n`,
+      )
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.1,
+          totalTokens: 110,
+          priceMissing: false,
+          usageIncomplete: true,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('warns while retaining valid totals when a JSONL row is truncated', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-truncated-'))
+      const transcript = path.join(dir, 'truncated.jsonl')
+      const validRow = JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-01-01T12:00:00.000Z',
+        message: {
+          id: 'valid-message',
+          model: 'claude-sonnet-4-6',
+          usage: { input_tokens: 100, output_tokens: 10 },
+        },
+      })
+      writeFileSync(transcript, `${validRow}\n{"message":{"usage":{"input_tokens":50}\n`)
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.00045,
+          totalTokens: 110,
+          priceMissing: false,
+          usageIncomplete: true,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('warns when a discovered transcript cannot be read', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-unreadable-'))
+      const transcript = path.join(dir, 'unreadable.jsonl')
+      writeFileSync(transcript, '{}\n')
+      const openSpy = vi
+        .spyOn(fsPromises, 'open')
+        .mockRejectedValueOnce(Object.assign(new Error('Permission denied'), { code: 'EACCES' }))
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0,
+          totalTokens: 0,
+          priceMissing: false,
+          usageIncomplete: true,
+        })
+      } finally {
+        openSpy.mockRestore()
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe('loadDailyUsageData — line splitting', () => {
+    // Transcripts are scanned as raw bytes and only usage-bearing lines are
+    // decoded, so line boundaries have to survive stream chunking without a
+    // string decoder in front of them. The stream reads 64KiB at a time.
+    const CHUNK_SIZE = 64 * 1024
+
+    function usageRow(overrides: { id: string; padding?: string; note?: string }) {
+      return JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-01-01T12:00:00.000Z',
+        padding: overrides.padding,
+        note: overrides.note,
+        message: {
+          id: overrides.id,
+          model: 'claude-sonnet-4-6',
+          usage: { input_tokens: 100, output_tokens: 10 },
+        },
+      })
+    }
+
+    it('reassembles rows that span stream chunk boundaries', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-chunk-spanning-'))
+      const transcript = path.join(dir, 'session.jsonl')
+      // Each row is wider than a chunk, so every row is reassembled from
+      // several chunks and no boundary lands on a newline.
+      const rows = ['a', 'b', 'c'].map((id) =>
+        usageRow({ id, padding: 'x'.repeat(CHUNK_SIZE + 137) }),
+      )
+      writeFileSync(transcript, `${rows.join('\n')}\n`)
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.00135,
+          totalTokens: 330,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('decodes multi-byte characters split across a chunk boundary', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-multibyte-'))
+      const transcript = path.join(dir, 'session.jsonl')
+      // "€" is three bytes; pad so its bytes straddle the 64KiB read boundary.
+      const note = '€ mid-boundary'
+      const buildRow = (paddingWidth: number) =>
+        usageRow({ id: 'multibyte', padding: 'x'.repeat(paddingWidth), note })
+      // Everything ahead of the note is ASCII, so one measurement is enough to
+      // solve for the padding that puts the first "€" byte at CHUNK_SIZE - 1.
+      const probe = buildRow(0)
+      const row = buildRow(CHUNK_SIZE - 1 - probe.indexOf(note))
+      expect(Buffer.from(row, 'utf-8').indexOf(Buffer.from(note, 'utf-8'))).toBe(CHUNK_SIZE - 1)
+      writeFileSync(transcript, `${row}\n`)
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.00045,
+          totalTokens: 110,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('counts a final row written without a trailing newline', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-no-trailing-newline-'))
+      const transcript = path.join(dir, 'session.jsonl')
+      writeFileSync(transcript, usageRow({ id: 'last' }))
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.00045,
+          totalTokens: 110,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('skips blank and CRLF-terminated separator lines without flagging the load', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-blank-lines-'))
+      const transcript = path.join(dir, 'session.jsonl')
+      writeFileSync(transcript, `\n   \n${usageRow({ id: 'crlf' })}\r\n\r\n`)
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.00045,
+          totalTokens: 110,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('ignores rows whose only "_tokens" match sits outside message.usage', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-marker-decoy-'))
+      const transcript = path.join(dir, 'session.jsonl')
+      const decoy = JSON.stringify({
+        type: 'user',
+        timestamp: '2026-01-01T12:00:00.000Z',
+        message: { content: 'reported "input_tokens" in the logs' },
+      })
+      writeFileSync(transcript, `${decoy}\n${usageRow({ id: 'real' })}\n`)
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.00045,
+          totalTokens: 110,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
     })
   })
 
@@ -414,6 +879,168 @@ describe('usage-service', () => {
     })
   })
 
+  describe('calculateCost — runtime model id aliases', () => {
+    it.each([
+      // Anthropic API canonical ids and pre-4.6 convenience aliases.
+      ['claude-sonnet-5', 3, 15],
+      ['claude-haiku-4-5-20251001', 1, 5],
+      ['claude-haiku-4-5', 1, 5],
+      // Provider-translated runtime ids observed in sanitized transcripts.
+      ['anthropic/claude-sonnet-5-20260630', 3, 15],
+      ['anthropic/claude-4.6-sonnet-20260217', 3, 15],
+      ['anthropic/claude-4.6-opus-20260205', 5, 25],
+      ['anthropic/claude-4.5-haiku-20251001', 1, 5],
+      // OpenRouter dotted Claude ids and Google Cloud @snapshot ids.
+      ['anthropic/claude-sonnet-4.6', 3, 15],
+      ['anthropic/claude-haiku-4.5', 1, 5],
+      ['claude-haiku-4-5@20251001', 1, 5],
+      // Current dateless Claude-in-Bedrock ids.
+      ['anthropic.claude-opus-4-8', 5, 25],
+      // OpenAI canonical ids, official snapshots, proxy snapshots, and aliases.
+      ['gpt-5.5', 5, 30],
+      ['gpt-5.6-sol', 5, 30],
+      ['openai/gpt-5.5-20260423', 5, 30],
+      ['gpt-5.5-2026-04-23', 5, 30],
+      ['openai/gpt-5.5-2026-04-23', 5, 30],
+      ['gpt-5.6', 5, 30],
+      ['openai/gpt-5.6', 5, 30],
+      // xAI canonical, provider-qualified, concrete runtime, and alias ids.
+      ['grok-4.5', 2, 6],
+      ['x-ai/grok-4.5', 2, 6],
+      ['x-ai/grok-4.5-20260708', 2, 6],
+      ['grok-4.5-latest', 2, 6],
+      ['x-ai/grok-4.5-latest', 2, 6],
+      ['grok-build-latest', 2, 6],
+      ['x-ai/grok-build-latest', 2, 6],
+    ])('prices %s through its canonical rate card', (model, inputRate, outputRate) => {
+      expect(calculateCost(model, 100_000, 1_000, 0, 0)).toBeCloseTo(
+        (100_000 * inputRate + 1_000 * outputRate) / 1_000_000,
+        9,
+      )
+    })
+
+    it.each(['us', 'eu', 'apac', 'jp', 'au', 'global'])(
+      'normalizes a %s Bedrock geographic inference-profile id',
+      (geography) => {
+        expect(
+          calculateCost(
+            `${geography}.anthropic.claude-sonnet-4-5-20250929-v1:0`,
+            100_000,
+            1_000,
+            0,
+            0,
+          ),
+        ).toBeCloseTo((100_000 * 3 + 1_000 * 15) / 1_000_000, 9)
+      },
+    )
+
+    it.each([
+      'anthropic.claude-sonnet-4-5-20250929-v1:0',
+      'us.anthropic.claude-opus-4-6-v1',
+    ])('normalizes the Bedrock version suffix in %s', (model) => {
+      const inputRate = model.includes('opus') ? 5 : 3
+      const outputRate = model.includes('opus') ? 25 : 15
+      expect(calculateCost(model, 100_000, 1_000, 0, 0)).toBeCloseTo(
+        (100_000 * inputRate + 1_000 * outputRate) / 1_000_000,
+        9,
+      )
+    })
+
+    it('does not inherit base pricing for an unmatched OpenRouter variant', () => {
+      expect(calculateCost('openai/gpt-5.5:free', 100_000, 1_000, 0, 0)).toBe(0)
+    })
+
+    it('uses exact catalog pricing for an OpenRouter variant', () => {
+      settingsMock.mockReturnValue({
+        modelCatalog: {
+          openrouter: {
+            overrides: [
+              {
+                id: 'openai/gpt-5.5:thinking',
+                label: 'GPT-5.5 Thinking',
+                supportedEfforts: ['low'],
+                pricing: { inputPerMtok: 7, outputPerMtok: 42 },
+              },
+            ],
+          },
+        },
+      })
+
+      expect(
+        calculateCost('openai/gpt-5.5:thinking', 100_000, 1_000, 0, 0, 'openrouter'),
+      ).toBeCloseTo((100_000 * 7 + 1_000 * 42) / 1_000_000, 9)
+    })
+
+    it('uses exact catalog pricing for an arbitrary Generic/private deployment id', () => {
+      settingsMock.mockReturnValue({
+        modelCatalog: {
+          generic: {
+            overrides: [
+              {
+                id: 'private-deployment-west',
+                label: 'Private Deployment',
+                supportedEfforts: ['low'],
+                pricing: { inputPerMtok: 8, outputPerMtok: 24 },
+              },
+            ],
+          },
+        },
+      })
+
+      expect(
+        calculateCost('private-deployment-west', 100_000, 1_000, 0, 0, 'generic'),
+      ).toBeCloseTo((100_000 * 8 + 1_000 * 24) / 1_000_000, 9)
+    })
+
+    it('applies a canonical catalog pricing override to a dated runtime id', () => {
+      settingsMock.mockReturnValue({
+        modelCatalog: {
+          anthropic: {
+            overrides: [{ id: 'claude-sonnet-5', pricing: { inputPerMtok: 6, outputPerMtok: 36 } }],
+          },
+        },
+      })
+
+      expect(
+        calculateCost(
+          'anthropic/claude-sonnet-5-20260630',
+          100_000,
+          1_000,
+          0,
+          0,
+          'anthropic',
+        ),
+      ).toBeCloseTo((100_000 * 6 + 1_000 * 36) / 1_000_000, 9)
+    })
+
+    it('respects an exact custom runtime id with intentionally absent pricing', () => {
+      settingsMock.mockReturnValue({
+        modelCatalog: {
+          anthropic: {
+            overrides: [
+              {
+                id: 'anthropic/claude-sonnet-5-20260630',
+                label: 'Unpriced Runtime Model',
+                supportedEfforts: ['low'],
+              },
+            ],
+          },
+        },
+      })
+
+      expect(
+        calculateCost(
+          'anthropic/claude-sonnet-5-20260630',
+          100_000,
+          1_000,
+          0,
+          0,
+          'anthropic',
+        ),
+      ).toBe(0)
+    })
+  })
+
   describe('loadDailyUsageData — edge cases', () => {
     const edgePath = getClaudePath('edge-cases')
 
@@ -495,6 +1122,159 @@ describe('usage-service', () => {
       expect(dec11!.inputTokens).toBe(600)
       expect(dec11!.cacheCreationTokens).toBe(100)
       expect(dec11!.cacheReadTokens).toBe(200)
+    })
+  })
+
+  describe('loadDailyUsageData — served speed tiers', () => {
+    let seq = 0
+
+    interface EntryOpts {
+      speed?: string
+      costUSD?: number
+      input?: number
+      output?: number
+      cacheCreation?: number
+      cacheRead?: number
+    }
+
+    function makeEntry(model: string, opts: EntryOpts = {}) {
+      seq += 1
+      return {
+        timestamp: '2026-07-01T12:00:00.000Z',
+        requestId: `req-${seq}`,
+        ...(opts.costUSD !== undefined ? { costUSD: opts.costUSD } : {}),
+        message: {
+          id: `msg-${seq}`,
+          model,
+          usage: {
+            input_tokens: opts.input ?? 100_000,
+            output_tokens: opts.output ?? 1_000,
+            ...(opts.cacheCreation !== undefined
+              ? { cache_creation_input_tokens: opts.cacheCreation }
+              : {}),
+            ...(opts.cacheRead !== undefined ? { cache_read_input_tokens: opts.cacheRead } : {}),
+            ...(opts.speed !== undefined ? { speed: opts.speed } : {}),
+          },
+        },
+      }
+    }
+
+    /** Load a single synthetic entry and return its total cost. */
+    async function costOf(
+      model: string,
+      opts: EntryOpts = {},
+      providerId?: 'platform' | 'anthropic',
+    ): Promise<number> {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-speed-'))
+      try {
+        mkdirSync(path.join(dir, 'projects'), { recursive: true })
+        writeFileSync(
+          path.join(dir, 'projects', 'session.jsonl'),
+          `${JSON.stringify(makeEntry(model, opts))}\n`,
+        )
+        const result = await loadDailyUsageDataLightweight({
+          claudePath: dir,
+          ...(providerId ? { providerId } : {}),
+        })
+        expect(result).toHaveLength(1)
+        return result[0].totalCost
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+
+    // gpt-5.4 base: $2.5/Mtok input, $15/Mtok output.
+    const GPT54_BASE = (100_000 * 2.5 + 1_000 * 15) / 1_000_000
+
+    it('bills a fast row at exactly 2x its no-speed twin (platform catalog)', async () => {
+      expect(await costOf('gpt-5.4', {}, 'platform')).toBeCloseTo(GPT54_BASE, 9)
+      expect(await costOf('gpt-5.4', { speed: 'fast' }, 'platform')).toBeCloseTo(GPT54_BASE * 2, 9)
+    })
+
+    it('bills a slow row at exactly 0.5x its no-speed twin', async () => {
+      expect(await costOf('gpt-5.4', { speed: 'slow' }, 'platform')).toBeCloseTo(GPT54_BASE * 0.5, 9)
+    })
+
+    it('bills unknown speed values at 1x (forward-compat)', async () => {
+      expect(await costOf('gpt-5.4', { speed: 'turbo' }, 'platform')).toBeCloseTo(GPT54_BASE, 9)
+    })
+
+    it('applies the multiplier via the static pricing table too (no provider), across all four rates', async () => {
+      // gpt-5.4 static: input 2.5, output 15, cacheCreation 2.5, cacheRead 0.25.
+      const base =
+        (100_000 * 2.5 + 1_000 * 15 + 10_000 * 2.5 + 50_000 * 0.25) / 1_000_000
+      expect(await costOf('gpt-5.4', { cacheCreation: 10_000, cacheRead: 50_000 })).toBeCloseTo(
+        base,
+        9,
+      )
+      expect(
+        await costOf('gpt-5.4', { speed: 'fast', cacheCreation: 10_000, cacheRead: 50_000 }),
+      ).toBeCloseTo(base * 2, 9)
+    })
+
+    it('composes the multiplier on top of the long-context cliff rates', async () => {
+      // 300K input trips the 272K cliff: gpt-5.4 reprices to $5 in / $22.5 out,
+      // then the fast tier doubles the whole thing.
+      const cliffed = (300_000 * 5 + 2_000 * 22.5) / 1_000_000
+      expect(await costOf('gpt-5.4', { input: 300_000, output: 2_000 }, 'platform')).toBeCloseTo(
+        cliffed,
+        9,
+      )
+      expect(
+        await costOf('gpt-5.4', { input: 300_000, output: 2_000, speed: 'fast' }, 'platform'),
+      ).toBeCloseTo(cliffed * 2, 9)
+    })
+
+    it('bills gpt-5.5 fast at 2.5x and Opus 4.8 / Grok fast at 2x', async () => {
+      const gpt55Base = (100_000 * 5 + 1_000 * 30) / 1_000_000
+      expect(await costOf('gpt-5.5', { speed: 'fast' }, 'platform')).toBeCloseTo(
+        gpt55Base * 2.5,
+        9,
+      )
+      const opusBase = (100_000 * 5 + 1_000 * 25) / 1_000_000
+      expect(await costOf('claude-opus-4-8', { speed: 'fast' }, 'platform')).toBeCloseTo(
+        opusBase * 2,
+        9,
+      )
+      // Anthropic serves fast mode natively, so its catalog carries the multiplier too.
+      expect(await costOf('claude-opus-4-8', { speed: 'fast' }, 'anthropic')).toBeCloseTo(
+        opusBase * 2,
+        9,
+      )
+      const grokBase = (100_000 * 2 + 1_000 * 6) / 1_000_000
+      expect(await costOf('grok-4.5', { speed: 'fast' }, 'platform')).toBeCloseTo(grokBase * 2, 9)
+    })
+
+    it('bills kimi-k3 on the Fireworks fast router at 1.5x', async () => {
+      const kimiBase = (100_000 * 3 + 1_000 * 15) / 1_000_000
+      expect(await costOf('kimi-k3', {}, 'platform')).toBeCloseTo(kimiBase, 9)
+      expect(await costOf('kimi-k3', { speed: 'fast' }, 'platform')).toBeCloseTo(kimiBase * 1.5, 9)
+      // No slow tier on Fireworks — an unmapped tier bills standard.
+      expect(await costOf('kimi-k3', { speed: 'slow' }, 'platform')).toBeCloseTo(kimiBase, 9)
+    })
+
+    it('prefers the local computation over tier-blind costUSD when a multiplier applies', async () => {
+      expect(await costOf('gpt-5.4', { speed: 'fast', costUSD: 9.99 }, 'platform')).toBeCloseTo(
+        GPT54_BASE * 2,
+        9,
+      )
+    })
+
+    it('keeps costUSD precedence when speed is absent or the model has no multipliers', async () => {
+      expect(await costOf('gpt-5.4', { costUSD: 9.99 }, 'platform')).toBeCloseTo(9.99, 9)
+      // claude-sonnet-5 has no speedMultipliers → costUSD still wins even with speed set.
+      expect(
+        await costOf('claude-sonnet-5', { speed: 'fast', costUSD: 9.99 }, 'platform'),
+      ).toBeCloseTo(9.99, 9)
+    })
+
+    it('bills a model with no speedMultipliers at 1x even for fast rows', async () => {
+      // claude-sonnet-5: $3/Mtok input, $15/Mtok output, no fast tier.
+      const sonnetBase = (100_000 * 3 + 1_000 * 15) / 1_000_000
+      expect(await costOf('claude-sonnet-5', { speed: 'fast' }, 'platform')).toBeCloseTo(
+        sonnetBase,
+        9,
+      )
     })
   })
 

@@ -45,7 +45,7 @@ export interface Question {
 
 export type UserRequestEvent =
   | {
-      type: 'user_question_request'
+      type: 'question_request'
       toolUseId: string
       questions: Question[]
       agentSlug?: string
@@ -111,6 +111,14 @@ export type UserRequestEvent =
       appName?: string
       agentSlug?: string
       autoApproved?: boolean
+    }
+  | {
+      type: 'capability_review_request'
+      toolUseId: string
+      capability: string
+      toolName?: string
+      input?: unknown
+      agentSlug?: string
     }
   | {
       type: 'tool_status'

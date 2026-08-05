@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
-import { RequestError } from './request-error'
+import { linkify } from '@renderer/lib/linkify'
+import { RequestItemErrorContext } from './request-item-actions'
 import { usePagination } from './pending-request-stack'
 import { StopSessionButton } from './stop-session-button'
 
@@ -90,7 +91,7 @@ export function RequestItemShell({
         </span>
       )}
       <div className="flex-1 min-w-0 text-sm font-medium leading-5 text-foreground whitespace-pre-line">
-        {title}
+        {typeof title === 'string' ? linkify(title) : title}
       </div>
     </div>
   )
@@ -161,7 +162,10 @@ export function RequestItemShell({
   const showStopButton = !!(sessionId && agentSlug)
 
   return (
-    <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" {...dataAttrs}>
+    <div
+      className="max-h-[50vh] overflow-y-auto border rounded-[12px] bg-muted/30 shadow-md text-sm"
+      {...dataAttrs}
+    >
       <div className="p-4">
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-3">
@@ -181,8 +185,9 @@ export function RequestItemShell({
             )}
           </div>
           {subtitleNode}
-          {children}
-          <RequestError message={error ?? null} />
+          <RequestItemErrorContext.Provider value={error ?? null}>
+            {children}
+          </RequestItemErrorContext.Provider>
         </div>
       </div>
     </div>

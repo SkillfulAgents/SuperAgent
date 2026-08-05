@@ -11,6 +11,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionMetadata: vi.fn(() => Promise.resolve()),
+  finalizeAutomationStatus: vi.fn(() => Promise.resolve('not-automation')),
 }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({
   notificationManager: {
@@ -157,7 +158,6 @@ function createReplayClient(): {
     getSession: vi.fn(() => Promise.resolve(null)),
     deleteSession: vi.fn(),
     sendMessage: vi.fn(),
-    getMessages: vi.fn(),
     interruptSession: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
@@ -238,6 +238,8 @@ interface ReplaySnapshot {
   bgCompletedIds: string[]
   // Cumulative count of session_idle events emitted so far.
   sessionIdleCount: number
+  // Cumulative subagent completions in emission order.
+  subagentCompletedParentIds: string[]
 }
 
 // Like replayFixture, but (a) marks the session active before subscribing — the
@@ -291,6 +293,9 @@ async function replayFixtureTracked(fixtureName: string): Promise<{
         .filter((e) => e['type'] === 'background_task_completed')
         .map((e) => e['taskId'] as string),
       sessionIdleCount: sseEvents.filter((e) => e['type'] === 'session_idle').length,
+      subagentCompletedParentIds: sseEvents
+        .filter((e) => e['type'] === 'subagent_completed')
+        .map((e) => e['parentToolId'] as string),
     })
   }
 
@@ -629,6 +634,67 @@ describe('subagent task_started / task_progress replay harness', () => {
       expect(completedIdx).toBeGreaterThanOrEqual(0)
       expect(turnEndIdx).toBeGreaterThanOrEqual(0)
       expect(completedIdx).toBeLessThan(turnEndIdx)
+    })
+  })
+
+  // Real capture (2026-07-28, SDK/CLI 2.1.219) of a completed foreground
+  // Agent being resumed in a later turn via SendMessage. The SDK reuses the
+  // stable task/agent id but assigns the resumed run a new tool_use id.
+  describe('SendMessage-resumed subagent (real capture)', () => {
+    it('pins task_started before the SendMessage acknowledgement', async () => {
+      const { meta, streamEntries } = await loadFixture('sendmessage-resumed-subagent')
+      const resumed = meta.subagents[1]
+
+      const taskStartedIdx = streamEntries.findIndex(({ message }) => {
+        const content = message.content as Record<string, unknown>
+        return content?.type === 'system' &&
+          content?.subtype === 'task_started' &&
+          content?.task_id === resumed.agentId &&
+          content?.tool_use_id === resumed.parentToolId
+      })
+      const ackIdx = streamEntries.findIndex(({ message }) => {
+        const content = message.content as Record<string, unknown>
+        const result = content?.tool_use_result as Record<string, unknown> | undefined
+        return content?.type === 'user' && result?.resumedAgentId === resumed.agentId
+      })
+
+      expect(taskStartedIdx).toBeGreaterThanOrEqual(0)
+      expect(ackIdx).toBeGreaterThan(taskStartedIdx)
+    })
+
+    it('keeps the resumed run open through its acknowledgement and completes it at terminal task events', async () => {
+      const { meta, timeline, sseEvents } = await replayFixtureTracked('sendmessage-resumed-subagent')
+      const original = meta.subagents[0]
+      const resumed = meta.subagents[1]
+
+      const { streamEntries } = await loadFixture('sendmessage-resumed-subagent')
+      const resumeAckIdx = streamEntries.findIndex(({ message }) => {
+        const content = message.content as Record<string, unknown>
+        const result = content?.tool_use_result as Record<string, unknown> | undefined
+        return content?.type === 'user' && result?.resumedAgentId === resumed.agentId
+      })
+      const terminalIdx = timeline.findIndex((snapshot) =>
+        snapshot.taskId === resumed.agentId &&
+        (
+          (snapshot.subtype === 'task_updated' && snapshot.patchStatus === 'completed') ||
+          (snapshot.subtype === 'task_notification' && snapshot.status === 'completed')
+        ) &&
+        snapshot.index > resumeAckIdx
+      )
+
+      expect(resumeAckIdx).toBeGreaterThanOrEqual(0)
+      expect(terminalIdx).toBeGreaterThan(resumeAckIdx)
+      expect(timeline[resumeAckIdx].subagentCompletedParentIds).toContain(original.parentToolId)
+      expect(timeline[resumeAckIdx].subagentCompletedParentIds).not.toContain(resumed.parentToolId)
+      expect(timeline[terminalIdx].subagentCompletedParentIds).toContain(resumed.parentToolId)
+
+      const resumedCompletions = sseEvents.filter(
+        (event) =>
+          event['type'] === 'subagent_completed' &&
+          event['parentToolId'] === resumed.parentToolId
+      )
+      expect(resumedCompletions).toHaveLength(1)
+      expect(resumedCompletions[0]['agentId']).toBe(resumed.agentId)
     })
   })
 

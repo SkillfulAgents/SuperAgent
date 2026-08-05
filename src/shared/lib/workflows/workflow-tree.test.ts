@@ -1,5 +1,5 @@
 /* eslint-disable no-template-curly-in-string -- these strings embed workflow-script SOURCE (literal `${expr}`), not interpolation */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as path from 'path'
 import * as os from 'os'
 import { promises as fs } from 'fs'
@@ -69,6 +69,38 @@ describe('buildWorkflowTree — real capture-probe fixture', () => {
   })
 })
 
+// Same contract against the newer capture taken on claude-agent-sdk 0.3.206 /
+// CLI 2.1.206 (the CLI that backgrounds subagents by default) — guards the
+// disk formats (journal, transcripts, script sidecar) against CLI drift.
+describe('buildWorkflowTree — sdk 0.3.206 capture fixture', () => {
+  const root = path.join(__dirname, '..', 'container', '__fixtures__', 'sdk206-workflow-probe')
+  const sid = '18762a15-e1e9-443c-ae5e-e55f138989ac'
+  const run = 'wf_255e9212-aaa'
+
+  it('joins both agents (incl. the interpolated prompt) via prompt-regex', async () => {
+    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: sid, runId: run })
+    expect(tree).not.toBeNull()
+    expect(tree!.name).toBe('capture-probe')
+    expect(tree!.phases.map((p) => p.title)).toEqual(['Run'])
+    expect(tree!.expectedAgents).toBe(2)
+
+    const byResult = new Map(tree!.agents.map((a) => [a.result, a]))
+    expect(byResult.get('wf-alpha')).toMatchObject({
+      phase: 'Run',
+      status: 'done',
+      resolved: 'prompt-regex',
+      prompt: 'Reply with exactly: wf-alpha',
+    })
+    // The template-literal call site — exact-string matching would miss it.
+    expect(byResult.get('alpha-beta')).toMatchObject({
+      phase: 'Run',
+      status: 'done',
+      resolved: 'prompt-regex',
+      prompt: 'Concatenate these two words with a dash and reply with only the result: alpha beta',
+    })
+  })
+})
+
 // --- synthetic on-disk runs for the harder join cases ----------------------
 
 const tmpDirs: string[] = []
@@ -79,7 +111,7 @@ afterEach(async () => {
 async function scaffold(opts: {
   script: string
   journal: Array<Record<string, unknown>>
-  agents: Array<{ agentId: string; firstPrompt: string }>
+  agents: Array<{ agentId: string; firstPrompt: string; extraLines?: Array<Record<string, unknown>> }>
 }): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'wf-tree-'))
   tmpDirs.push(root)
@@ -90,13 +122,11 @@ async function scaffold(opts: {
   await fs.mkdir(path.join(root, sid, 'workflows', 'scripts'), { recursive: true })
   await fs.writeFile(path.join(runDir, 'journal.jsonl'), opts.journal.map((j) => JSON.stringify(j)).join('\n'))
   for (const a of opts.agents) {
-    const line = JSON.stringify({
-      type: 'user',
-      isSidechain: true,
-      agentId: a.agentId,
-      message: { role: 'user', content: a.firstPrompt },
-    })
-    await fs.writeFile(path.join(runDir, `agent-${a.agentId}.jsonl`), line + '\n')
+    const lines = [
+      { type: 'user', isSidechain: true, agentId: a.agentId, message: { role: 'user', content: a.firstPrompt } },
+      ...(a.extraLines ?? []),
+    ]
+    await fs.writeFile(path.join(runDir, `agent-${a.agentId}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
   }
   await fs.writeFile(path.join(root, sid, 'workflows', 'scripts', `probe-${run}.js`), opts.script)
   return root
@@ -151,6 +181,106 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
     })
   })
 
+  it('falls back to the transcript-referenced script for scriptPath invocations', async () => {
+    // scriptPath runs persist nothing under <session>/workflows/scripts — the only
+    // pointer to the script is the Workflow tool result in the session transcript.
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'wf-tree-sp-'))
+    tmpDirs.push(tmp)
+    const workspace = path.join(tmp, 'workspace')
+    const sessionsDir = path.join(workspace, '.claude', 'projects', '-workspace')
+    const runDir = path.join(sessionsDir, 's1', 'subagents', 'workflows', 'wf_sp')
+    await fs.mkdir(runDir, { recursive: true })
+    await fs.writeFile(
+      path.join(runDir, 'journal.jsonl'),
+      JSON.stringify({ type: 'started', key: 'v2:1', agentId: 'k1' }) + '\n'
+    )
+    await fs.writeFile(
+      path.join(runDir, 'agent-k1.jsonl'),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'analyze v01' } }) + '\n'
+    )
+    const skillScripts = path.join(workspace, '.claude', 'skills', 'probe', 'scripts')
+    await fs.mkdir(skillScripts, { recursive: true })
+    await fs.writeFile(
+      path.join(skillScripts, 'wf.js'),
+      [
+        "export const meta = { name: 'probe', description: 'd', phases: [{ title: 'Analyze' }] }",
+        "phase('Analyze')",
+        'const r = await parallel(args.videos.map(v => () => agent(`analyze ${v}`, { label: `analyze:${v}`, phase: \'Analyze\' })))',
+        "const merged = await agent('merge it all', { label: 'merge' })",
+      ].join('\n')
+    )
+    // The invocation as it appears in the transcript: the assistant tool_use carries
+    // scriptPath + args; the paired tool_result names the script and the run id.
+    const toolUseLine = JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tu1',
+            name: 'Workflow',
+            input: {
+              scriptPath: '/workspace/.claude/skills/probe/scripts/wf.js',
+              args: { videos: ['v01', 'v02', 'v03'] },
+            },
+          },
+        ],
+      },
+    })
+    const toolResultLine = JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tu1',
+            content:
+              'Workflow launched in background.\nScript file: /workspace/.claude/skills/probe/scripts/wf.js\nRun ID: wf_sp',
+          },
+        ],
+      },
+    })
+    await fs.writeFile(path.join(sessionsDir, 's1.jsonl'), toolUseLine + '\n' + toolResultLine + '\n')
+    const tree = await buildWorkflowTree({ sessionsDir, sessionId: 's1', runId: 'wf_sp' })
+    expect(tree!.name).toBe('probe')
+    expect(tree!.phases.map((p) => p.title)).toEqual(['Analyze'])
+    // args.videos fan-out (3) + the single merge call site.
+    expect(tree!.expectedAgents).toBe(4)
+    expect(tree!.agents[0]).toMatchObject({ label: 'analyze:v01', phase: 'Analyze' })
+  })
+
+  it('rejects a transcript script path that escapes the workspace', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'wf-tree-esc-'))
+    tmpDirs.push(tmp)
+    const workspace = path.join(tmp, 'workspace')
+    const sessionsDir = path.join(workspace, '.claude', 'projects', '-workspace')
+    const runDir = path.join(sessionsDir, 's1', 'subagents', 'workflows', 'wf_esc')
+    await fs.mkdir(runDir, { recursive: true })
+    await fs.writeFile(
+      path.join(runDir, 'journal.jsonl'),
+      JSON.stringify({ type: 'started', key: 'v2:1', agentId: 'k1' }) + '\n'
+    )
+    // A script OUTSIDE the workspace that a traversal path would otherwise reach.
+    await fs.writeFile(
+      path.join(tmp, 'evil.js'),
+      "export const meta = { name: 'evil', description: 'd', phases: [] }"
+    )
+    await fs.writeFile(
+      path.join(sessionsDir, 's1.jsonl'),
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', content: 'Script file: /workspace/../evil.js\nRun ID: wf_esc' }],
+        },
+      }) + '\n'
+    )
+    const tree = await buildWorkflowTree({ sessionsDir, sessionId: 's1', runId: 'wf_esc' })
+    expect(tree!.name).toBeNull() // traversal path ignored → degraded (script-less) tree
+  })
+
   it('marks a still-running agent (started, no result yet) as running', async () => {
     const script = [
       "export const meta = { name: 'r', description: 'd', phases: [{ title: 'Go' }] }",
@@ -164,5 +294,130 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
     })
     const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({ label: 'worker', phase: 'Go', status: 'running', result: null })
+  })
+
+  it('marks a result-less agent whose transcript ends on an error frame as failed', async () => {
+    // The journal has no failure event — a dead agent is a `started` with no
+    // `result`. The durable marker is the trailing synthetic error entry.
+    const script = "export const meta = { name: 'f', description: 'd', phases: [] }\nawait agent('doomed', {})"
+    const root = await scaffold({
+      script,
+      journal: [{ type: 'started', key: 'v2:1', agentId: 'f1' }],
+      agents: [
+        {
+          agentId: 'f1',
+          firstPrompt: 'doomed',
+          extraLines: [
+            {
+              type: 'assistant',
+              agentId: 'f1',
+              message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'Request too large' }] },
+              error: 'invalid_request',
+              errorDetails: 'request_too_large: 413',
+            },
+          ],
+        },
+      ],
+    })
+    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    expect(tree!.agents[0]).toMatchObject({ status: 'failed', result: 'request_too_large: 413' })
+  })
+
+  it('does not fail an agent that recovered from a mid-transcript error', async () => {
+    const script = "export const meta = { name: 'f', description: 'd', phases: [] }\nawait agent('resilient', {})"
+    const root = await scaffold({
+      script,
+      journal: [{ type: 'started', key: 'v2:1', agentId: 'r1' }],
+      agents: [
+        {
+          agentId: 'r1',
+          firstPrompt: 'resilient',
+          extraLines: [
+            { type: 'assistant', agentId: 'r1', message: { model: '<synthetic>', role: 'assistant' }, error: 'overloaded' },
+            // A later entry means the agent kept going — the error was transient.
+            { type: 'assistant', agentId: 'r1', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } },
+          ],
+        },
+      ],
+    })
+    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    expect(tree!.agents[0]).toMatchObject({ status: 'running', result: null })
+  })
+
+  it('journal result always wins over a trailing error frame', async () => {
+    // A result on disk is definitive completion, whatever the transcript tail says.
+    const script = "export const meta = { name: 'f', description: 'd', phases: [] }\nawait agent('finisher', {})"
+    const root = await scaffold({
+      script,
+      journal: [
+        { type: 'started', key: 'v2:1', agentId: 'd1' },
+        { type: 'result', key: 'v2:1', agentId: 'd1', result: 'all good' },
+      ],
+      agents: [
+        {
+          agentId: 'd1',
+          firstPrompt: 'finisher',
+          extraLines: [{ type: 'assistant', agentId: 'd1', message: { model: '<synthetic>' }, error: 'overloaded' }],
+        },
+      ],
+    })
+    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    expect(tree!.agents[0]).toMatchObject({ status: 'done', result: 'all good' })
+  })
+})
+
+describe('buildWorkflowTree — transcript reads stay bounded', () => {
+  /**
+   * Open one agent transcript per handle and never more than the cap at a time.
+   * Peak memory tracks the number of transcripts in flight, so a wide run
+   * (hundreds of agents, each tens of MB) is only safe while this holds.
+   */
+  it('never holds more than 10 agent transcripts open at once', async () => {
+    const AGENT_COUNT = 40
+    const agentIds = Array.from({ length: AGENT_COUNT }, (_, i) => `c${i}`)
+    const root = await scaffold({
+      script: "export const meta = { name: 'wide', description: 'd', phases: [] }\nawait agent('work', {})",
+      journal: agentIds.map((agentId, i) => ({ type: 'started', key: `v2:${i}`, agentId })),
+      agents: agentIds.map((agentId) => ({
+        agentId,
+        firstPrompt: 'work',
+        // Multi-chunk transcripts, so a read is still in flight when its
+        // siblings start — a cap that only holds for tiny files proves nothing.
+        extraLines: [{ type: 'assistant', agentId, message: { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(200_000) }] } }],
+      })),
+    })
+
+    let open = 0
+    let maxOpen = 0
+    const realOpen = fs.open
+    const openSpy = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await (realOpen as typeof fs.open)(...(args as Parameters<typeof fs.open>))
+      open++
+      maxOpen = Math.max(maxOpen, open)
+      const realClose = handle.close.bind(handle)
+      // The read stream closes the handle too, so close() lands twice per
+      // handle — only the first one releases it.
+      let released = false
+      handle.close = async () => {
+        if (!released) {
+          released = true
+          open--
+        }
+        return realClose()
+      }
+      return handle
+    })
+
+    try {
+      const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+      expect(tree!.agents).toHaveLength(AGENT_COUNT)
+      // Sanity: the transcripts really were read concurrently, so the cap is
+      // what bounds this rather than the reads happening to serialize.
+      expect(maxOpen).toBeGreaterThan(1)
+      expect(maxOpen).toBeLessThanOrEqual(10)
+      expect(open).toBe(0) // every handle closed
+    } finally {
+      openSpy.mockRestore()
+    }
   })
 })

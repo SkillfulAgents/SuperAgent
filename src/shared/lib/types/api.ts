@@ -5,7 +5,7 @@
  * These types represent the "flattened" format returned by API routes.
  */
 
-import type { EffortLevel, HealthCheckResult } from '@shared/lib/container/types'
+import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/container/types'
 import type { SessionUsage } from '@shared/lib/types/agent'
 
 // ============================================================================
@@ -34,14 +34,7 @@ export interface ApiAgent {
   hasUnreadNotifications?: boolean
   sessionCount?: number
   lastActivityAt?: Date | null
-  scheduledTaskCount?: number
-  nextScheduledTaskAt?: Date | null
-  chatIntegrationCount?: number
-  dashboardCount?: number
-  dashboardNames?: string[]
-  dashboardSlugs?: string[]
   dashboards?: ApiAgentDashboard[]
-  autoDeleteInactiveDays?: number
 }
 
 export interface ApiAgentDashboard {
@@ -103,8 +96,15 @@ export interface ApiSession {
   webhookTriggerName?: string
   // Last effort level used on this session (seeds the composer selector)
   effort?: EffortLevel
+  // Last processing speed used on this session (seeds the composer selector)
+  speed?: SpeedLevel
   // Last model used on this session (seeds the composer selector)
   model?: string
+  // Present when the session has a pending scheduled wake (long sleep):
+  // it will auto-resume at pendingWakeAt with pendingWakeNote echoed back.
+  pendingWakeAt?: string
+  pendingWakeTaskId?: string
+  pendingWakeNote?: string
 }
 
 // ============================================================================
@@ -204,9 +204,21 @@ export interface ApiMemoryRecall {
 }
 
 /**
+ * Host-persisted informational banner in API response (e.g. a hook blocked a
+ * prompt before it reached the model)
+ */
+export interface ApiInformational {
+  id: string
+  type: 'informational'
+  content: string
+  level?: string
+  createdAt: Date
+}
+
+/**
  * Union type for all message-like items in the API response
  */
-export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall
+export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational
 
 // ============================================================================
 // Secret API Types
@@ -320,6 +332,7 @@ export interface ApiScheduledTask {
   timezone: string | null
   model: string | null
   effort: string | null
+  speed: string | null
   createdAt: Date
   cancelledAt: Date | null
   pausedAt: Date | null
@@ -342,35 +355,4 @@ export interface ApiNotification {
   isRead: boolean
   createdAt: Date
   readAt: Date | null
-}
-
-// ============================================================================
-// Connected Account API Types
-// ============================================================================
-
-/**
- * Provider info
- */
-export interface ApiProvider {
-  slug: string
-  displayName: string
-  icon?: string
-}
-
-/**
- * Connected account response
- */
-export interface ApiConnectedAccount {
-  id: string
-  providerConnectionId: string
-  providerName: string
-  toolkitSlug: string
-  displayName: string
-  status: 'active' | 'revoked' | 'expired'
-  createdAt: Date
-  updatedAt: Date
-  provider?: ApiProvider
-  // Only present when fetched for a specific agent
-  mappingId?: string
-  mappedAt?: Date
 }

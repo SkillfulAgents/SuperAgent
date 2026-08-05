@@ -1,4 +1,4 @@
-import { Settings, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User, Mic, Activity, Terminal, BadgeCheck, ClipboardList, Search } from 'lucide-react'
+import { Bolt, Cuboid, Bell, Layers, BarChart3, Blocks, Users, Shield, Route, User, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, Search, Sparkle, Workflow } from 'lucide-react'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
 import { type LinkProps } from '@tanstack/react-router'
 import { ProfileTab } from './profile-tab'
@@ -20,9 +20,10 @@ import { WebTab } from './web-tab'
 import { AnalyticsTab } from './analytics-tab'
 import { PlatformTab } from './platform-tab'
 import { ComputerUseTab } from './computer-use-tab'
+import { CapabilitiesTab } from './capabilities-tab'
 import { AuditLogTab } from './audit-log-tab'
 import { useUser } from '@renderer/context/user-context'
-import { isElectron } from '@renderer/lib/env'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
 
 interface GlobalSettingsPageProps {
   onClose: () => void
@@ -36,50 +37,67 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
   const { isAuthMode, isAdmin } = useUser()
   const showAdminSettings = !isAuthMode || isAdmin
   const showAuthAdmin = isAuthMode && isAdmin
-  const showSectionHeaders = isAuthMode && isAdmin
 
-  const userSections: SettingsPageSection[] = [
+  // Grouped by what the setting concerns (app-level vs agent behavior), not by
+  // who can edit it — admin-only sections are filtered per-item instead.
+  const appSections: SettingsPageSection[] = [
     ...(isAuthMode ? [{ id: 'profile', label: 'Profile & Login', icon: <User className="h-4 w-4" />, render: () => <ProfileTab /> }] : []),
-    { id: 'general', label: 'General', icon: <Settings className="h-4 w-4" />, render: () => <GeneralTab onOpenWizard={onOpenWizard} /> },
+    { id: 'general', label: 'General', icon: <Bolt className="h-4 w-4" />, render: () => <GeneralTab onOpenWizard={onOpenWizard} /> },
     { id: 'notifications', label: 'Notifications', icon: <Bell className="h-4 w-4" />, render: () => <NotificationsTab /> },
     { id: 'platform', label: 'Account', icon: <BadgeCheck className="h-4 w-4" />, render: () => <PlatformTab readOnly={isAuthMode} /> },
-    { id: 'connections', label: 'Connections', icon: <Plug className="h-4 w-4" />, render: () => <ConnectionsTab />, headerActions: <NewIntegrationButton /> },
-    { id: 'usage', label: 'Usage', icon: <BarChart3 className="h-4 w-4" />, render: () => <UsageTab /> },
+    ...(isAuthMode && showAdminSettings ? [{ id: 'analytics', label: 'Analytics', icon: <Activity className="h-4 w-4" />, render: () => <AnalyticsTab /> }] : []),
+    ...(showAdminSettings ? [{ id: 'admin', label: 'Admin', icon: <Shield className="h-4 w-4" />, render: () => <AdminTab /> }] : []),
+    ...(showAuthAdmin
+      ? [
+          { id: 'users', label: 'Users', icon: <Users className="h-4 w-4" />, render: () => <UsersTab /> },
+          { id: 'auth', label: 'Auth', icon: <Shield className="h-4 w-4" />, render: () => <AuthTab /> },
+        ]
+      : []),
   ]
 
-  const adminSections: SettingsPageSection[] = [
-    { id: 'llm', label: 'LLM Provider', icon: <Brain className="h-4 w-4" />, render: () => <LlmTab /> },
-    { id: 'runtime', label: 'Runtime', icon: <Container className="h-4 w-4" />, render: () => <RuntimeTab /> },
-    { id: 'browser', label: 'Browser Use', icon: <Globe className="h-4 w-4" />, render: () => <BrowserTab /> },
-    { id: 'web', label: 'Web', icon: <Search className="h-4 w-4" />, render: () => <WebTab /> },
-    ...(isElectron() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Terminal className="h-4 w-4" />, render: () => <ComputerUseTab /> }] : []),
-    { id: 'account-provider', label: 'Account Provider', icon: <ShieldEllipsis className="h-4 w-4" />, render: () => <AccountProviderTab /> },
-    { id: 'voice', label: 'Voice', icon: <Mic className="h-4 w-4" />, render: () => <VoiceTab /> },
-    { id: 'skillsets', label: 'Skillsets', icon: <Library className="h-4 w-4" />, render: () => <SkillsetsTab /> },
-    ...(isAuthMode ? [{ id: 'analytics', label: 'Analytics', icon: <Activity className="h-4 w-4" />, render: () => <AnalyticsTab /> }] : []),
-    { id: 'audit-log', label: 'Audit Log', icon: <ClipboardList className="h-4 w-4" />, render: () => <AuditLogTab /> },
-    { id: 'admin', label: 'Admin', icon: <Settings className="h-4 w-4" />, render: () => <AdminTab /> },
+  // What agents can do or reach — toggled and curated as needs change.
+  const capabilitySections: SettingsPageSection[] = [
+    { id: 'connections', label: 'Connections', icon: <Blocks className="h-4 w-4" />, render: () => <ConnectionsTab />, headerActions: <NewIntegrationButton /> },
+    ...(showAdminSettings
+      ? [
+          { id: 'skillsets', label: 'Skillsets', icon: <Layers className="h-4 w-4" />, render: () => <SkillsetsTab /> },
+          { id: 'web', label: 'Web Search', icon: <Search className="h-4 w-4" />, render: () => <WebTab /> },
+          { id: 'browser', label: 'Browser Use', icon: <MousePointer2 className="h-4 w-4" />, render: () => <BrowserTab /> },
+          // Computer Use drives the machine the agent runs on, and its whole
+          // UI — permission grants, the recovery link into System Settings — is
+          // written for that machine being yours. `isElectron()` stays true in
+          // cloud mode while execution moves to the deployment, so the tab would
+          // describe your laptop and govern someone else's.
+          ...(canUseHostFeatures() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Mouse className="h-4 w-4" />, render: () => <ComputerUseTab /> }] : []),
+          { id: 'capabilities', label: 'Subagents', icon: <Workflow className="h-4 w-4" />, render: () => <CapabilitiesTab /> },
+          { id: 'voice', label: 'Voice', icon: <Mic className="h-4 w-4" />, render: () => <VoiceTab /> },
+        ]
+      : []),
   ]
 
-  const authAdminSections: SettingsPageSection[] = [
-    { id: 'users', label: 'Users', icon: <Users className="h-4 w-4" />, render: () => <UsersTab /> },
-    { id: 'auth', label: 'Auth', icon: <Shield className="h-4 w-4" />, render: () => <AuthTab /> },
-  ]
-
-  const groups: SettingsPageSectionGroup[] = showSectionHeaders
+  // The plumbing agents run on — providers and runtime, mostly set-once.
+  const infrastructureSections: SettingsPageSection[] = showAdminSettings
     ? [
-        { label: 'My Settings', sections: userSections },
-        { label: 'Admin Settings', sections: [...adminSections, ...authAdminSections] },
+        { id: 'llm', label: 'Model Provider', icon: <Sparkle className="h-4 w-4" />, render: () => <LlmTab /> },
+        { id: 'account-provider', label: 'Account Provider', icon: <Route className="h-4 w-4" />, render: () => <AccountProviderTab /> },
+        { id: 'runtime', label: 'Container Runtime', icon: <Cuboid className="h-4 w-4" />, render: () => <RuntimeTab /> },
       ]
-    : [
-        {
-          sections: [
-            ...userSections,
-            ...(showAdminSettings ? adminSections : []),
-            ...(showAuthAdmin ? authAdminSections : []),
-          ],
-        },
-      ]
+    : []
+
+  // Read-only observability — places you check, not configure.
+  const activitySections: SettingsPageSection[] = [
+    { id: 'usage', label: 'Usage', icon: <BarChart3 className="h-4 w-4" />, render: () => <UsageTab /> },
+    ...(showAdminSettings ? [{ id: 'audit-log', label: 'Audit Log', icon: <Logs className="h-4 w-4" />, render: () => <AuditLogTab /> }] : []),
+  ]
+
+  // Empty groups (e.g. Infrastructure for non-admin auth users) would render
+  // an orphaned header, so filter them out.
+  const groups: SettingsPageSectionGroup[] = [
+    { label: 'App Settings', sections: appSections },
+    { label: 'Agent Capabilities', sections: capabilitySections },
+    { label: 'Agent Infrastructure', sections: infrastructureSections },
+    { label: 'Agent Activity', sections: activitySections },
+  ].filter((group) => group.sections.length > 0)
 
   return (
     <SettingsPage

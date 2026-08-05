@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { EFFORT_LEVELS } from '../container/types'
+import { EFFORT_LEVELS, SPEED_LEVELS } from '../container/types'
 
 /**
  * A concrete, versioned model offered by a provider's catalog.
@@ -25,21 +25,36 @@ export const modelDefinitionSchema = z.object({
    * family-keyed EFFORT_FAMILY_REQUIREMENTS — now declared per model.
    */
   supportedEfforts: z.array(z.enum(EFFORT_LEVELS)).min(1),
+  /**
+   * Processing-speed tiers this model accepts on its serving path (normalized
+   * to slow/normal/fast). Omit ⇒ ['normal'] — a speed knob is the exception,
+   * not the rule, so absence means "no speed choice". An explicit list MUST
+   * include 'normal': the speed UI treats it as the always-available reset
+   * target (useSpeedClamp snaps unsupported picks to it), so a list like
+   * ['fast'] would clamp to a speed the model rejects while the picker hides.
+   */
+  supportedSpeeds: z
+    .array(z.enum(SPEED_LEVELS))
+    .min(1)
+    .refine((speeds) => speeds.includes('normal'), {
+      message:
+        "supportedSpeeds must include 'normal' — the speed UI clamps unsupported picks to 'normal', so it must always be a valid choice",
+    })
+    .refine((speeds) => new Set(speeds).size === speeds.length, {
+      message: 'supportedSpeeds must not contain duplicate entries',
+    })
+    .optional(),
   /** Grouping key and bare alias for this lineage, e.g. 'opus'. */
   family: z.string().optional(),
   /** This id is what the bare `family` alias resolves to (newest in the family). */
   isLatest: z.boolean().optional(),
-  /**
-   * Whether this model supports the agent's web search / fetch path (the
-   * Anthropic-native server tools, which only work when Anthropic serves the
-   * request). Omit/undefined ⇒ supported (all Claude models). Set `false` for
-   * non-Claude models routed via OpenRouter so the picker can warn.
-   */
+  /** Concrete model selected when switching to this model vendor in the picker. */
+  isDefault: z.boolean().optional(),
+  // Omit/undefined ⇒ supported (Claude). false ⇒ OpenRouter non-Claude, etc.
   supportsWebSearch: z.boolean().optional(),
-  /**
-   * Whether the model accepts image input (vision). Populated from a provider's
-   * advertised input modalities during model search. Omit/undefined ⇒ unknown.
-   */
+  // Omit/undefined ⇒ follow supportsWebSearch. false when search works but fetch does not (Platform Responses).
+  supportsWebFetch: z.boolean().optional(),
+  // Vision. Populated from provider modalities during model search; omit ⇒ unknown.
   supportsImageInput: z.boolean().optional(),
   /** Extra system-prompt guidance needed by model families with weaker tool priors. */
   promptHints: z.array(z.string().min(1)).optional(),
@@ -51,6 +66,18 @@ export const modelDefinitionSchema = z.object({
     .object({
       inputPerMtok: z.number().nonnegative(),
       outputPerMtok: z.number().nonnegative(),
+      /**
+       * Served-tier billing multipliers for the slow/fast speed tiers (e.g.
+       * OpenAI flex 0.5x / priority 2x, Anthropic fast mode 2x). Applied on
+       * top of whichever rate set (base or long-context) a request lands on.
+       * An absent tier bills standard (1x).
+       */
+      speedMultipliers: z
+        .object({
+          slow: z.number().positive().optional(),
+          fast: z.number().positive().optional(),
+        })
+        .optional(),
     })
     .optional(),
   // Static context window (tokens) for non-Claude models. The SDK reports a

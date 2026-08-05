@@ -94,13 +94,16 @@ test.describe('Stop button interrupts the working agent', () => {
 
     // The aborted turn's tail never landed: no completion text, no steering
     // acknowledgements, no phantom reactivation, and the transcript holds
-    // exactly the warm-up turn and the two fresh follow-up turns.
+    // exactly the warm-up turn, the interrupted turn (its user message plus
+    // the "[Request interrupted by user]" marker the abort appended), and the
+    // two fresh follow-up turns.
     await expect(sessionPage.getAssistantMessages().filter({ hasText: 'Finished the slow work.' })).toHaveCount(0)
     await expect(sessionPage.getAssistantMessages().filter({ hasText: 'Adjusting based on:' })).toHaveCount(0)
     await expect(sessionPage.getAssistantMessages()).toHaveCount(3)
     await expect(sessionPage.getStopButton()).not.toBeVisible()
-    await sessionPage.waitForUserMessageCount(4)
+    await sessionPage.waitForUserMessageCount(5)
     await sessionPage.expectUserMessage('please work slowly for the stop test', 1)
+    await sessionPage.expectUserMessage('[Request interrupted by user]', 2)
   })
 
   test('stopping with a queued message rescues its text into the composer for resend', async ({ page }) => {
@@ -126,7 +129,7 @@ test.describe('Stop button interrupts the working agent', () => {
     // The queued message was never picked up — after the idle grace period its
     // ghost is removed and its text is restored into the composer draft
     await expect(ghost).not.toBeAttached({ timeout: 10000 })
-    await expect(sessionPage.getMessageInput()).toHaveValue(queuedText, { timeout: 10000 })
+    await expect(sessionPage.getMessageInput()).toHaveText(queuedText, { timeout: 10000 })
 
     // Resend the rescued text — it goes out as a fresh turn and persists as a
     // real user message
@@ -134,9 +137,11 @@ test.describe('Stop button interrupts the working agent', () => {
       .filter({ hasText: 'This is a delayed mock response.' })
     await sessionPage.getSendButton().click()
     await expect(delayedResponses).toHaveCount(1, { timeout: 15000 })
-    await sessionPage.waitForUserMessageCount(2, 15000)
+    // The abort appended the interrupt marker after the slow-work user message
+    await sessionPage.waitForUserMessageCount(3, 15000)
     await sessionPage.expectUserMessage('please work slowly for the draft rescue test', 0)
-    await sessionPage.expectUserMessage(queuedText, 1)
+    await sessionPage.expectUserMessage('[Request interrupted by user]', 1)
+    await sessionPage.expectUserMessage(queuedText, 2)
 
     // Chain two more 3s turns: with the resend gated on the 1.5s rescue grace,
     // finishing three chained turns is provably past both cancelled timers
@@ -152,10 +157,43 @@ test.describe('Stop button interrupts the working agent', () => {
     await expect(delayedResponses).toHaveCount(3, { timeout: 15000 })
 
     // Neither cancelled timer fired: no steering acknowledgement, no
-    // completion text, no duplicate of the rescued message.
+    // completion text, no duplicate of the rescued message. (5 = slow-work
+    // message + interrupt marker + rescued resend + the two check turns.)
     await expect(sessionPage.getAssistantMessages().filter({ hasText: 'Adjusting based on:' })).toHaveCount(0)
     await expect(sessionPage.getAssistantMessages().filter({ hasText: 'Finished the slow work.' })).toHaveCount(0)
-    await expect(sessionPage.getUserMessages()).toHaveCount(4)
+    await expect(sessionPage.getUserMessages()).toHaveCount(5)
     await expect(sessionPage.getStopButton()).not.toBeVisible()
+  })
+
+  test('stopping with two queued messages rescues both texts into the composer', async ({ page }) => {
+    await sessionPage.sendMessage('please work slowly for the double rescue test')
+    await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 10000 })
+
+    // Queue two messages mid-turn ('pickup after turn' = 8s steering delay, so
+    // the stop lands while both are still queued). The runtime names each dead
+    // uuid with a command_lifecycle 'discarded' frame; both ghosts must rescue.
+    const firstQueued = 'first rescue candidate pickup after turn'
+    const secondQueued = 'second rescue candidate pickup after turn'
+    await sessionPage.typeMessage(firstQueued)
+    await sessionPage.getSendButton().click()
+    await sessionPage.typeMessage(secondQueued)
+    await sessionPage.getSendButton().click()
+
+    const ghosts = page.locator('[data-testid="queued-user-message"]')
+    await expect(ghosts).toHaveCount(2, { timeout: 5000 })
+
+    await sessionPage.getStopButton().click()
+    await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 10000 })
+
+    // Both ghosts detach and both texts land in the composer draft (rescue
+    // batching may merge them in either order — assert presence, not order).
+    await expect(ghosts).toHaveCount(0, { timeout: 10000 })
+    const composer = sessionPage.getMessageInput()
+    await expect(composer).toHaveText(new RegExp('first rescue candidate'), { timeout: 10000 })
+    await expect(composer).toHaveText(new RegExp('second rescue candidate'))
+
+    // Neither queued message ever reached the transcript — only the original
+    // send and the interrupt marker the abort appended.
+    await expect(sessionPage.getUserMessages()).toHaveCount(2)
   })
 })

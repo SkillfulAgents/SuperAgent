@@ -415,7 +415,7 @@ export class LimaContainerClient extends BaseContainerClient {
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
     const envVars: Record<string, string | undefined> = {
-      ...getActiveLlmProvider().getContainerEnvVars(),
+      ...getActiveLlmProvider().getContainerEnvVars(this.agentIdentityForEnv()),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ...this.config.envVars,
       ...additionalEnvVars,
@@ -457,6 +457,19 @@ export class LimaContainerClient extends BaseContainerClient {
   }
 
   /**
+   * The bundled Lima VM's containerd store holds nothing but our images, so
+   * beyond removing the tagged image it's safe to prune unused images and
+   * build cache too — the corrupt layer content (e.g. a /etc/passwd truncated
+   * by disk exhaustion during unpack) can survive a bare `rmi` via the build
+   * cache or a shared parent layer and poison the rebuild. Running containers
+   * and bind mounts are untouched; volumes are not pruned.
+   */
+  protected async removeCorruptImage(image: string): Promise<void> {
+    await super.removeCorruptImage(image)
+    await execWithPath(`${this.getRunnerShellCommand()} system prune -af`)
+  }
+
+  /**
    * Handle run errors by provisioning the Lima VM if needed.
    */
   protected async handleRunError(error: any): Promise<boolean> {
@@ -475,13 +488,18 @@ export class LimaContainerClient extends BaseContainerClient {
       return false
     }
 
-    const isKnownVmIssue =
+    // Image create (pull/build) failures carry registry-level text ("ghcr.io/
+    // x/y:z: not found") that would false-match the VM-issue patterns below —
+    // for those, only the health probe may decide recovery.
+    const isImageCreateError = error?.isImageCreateError === true
+    const isKnownVmIssue = !isImageCreateError && (
       msg.includes('ENOENT') ||
       msg.includes('not found') ||
       msg.includes('does not exist') ||
       msg.includes('not running') ||
       msg.includes('No such file') ||
       msg.includes('EACCES')
+    )
 
     // Check if the VM is actually unusable — if so, recovery is worth attempting
     // even for unexpected error messages (e.g. "Bad port '0'"). Use the real
@@ -514,10 +532,14 @@ export class LimaContainerClient extends BaseContainerClient {
       }
     }
 
-    captureException(error, {
-      tags: { component: 'lima', operation: 'container-run' },
-      extra: { agentId: this.config.agentId, ...collectLimaDiagnostics() },
-    })
+    // Skip errors whose throw site already captured them (e.g. pullImage) —
+    // re-capturing here inflates event counts without adding signal.
+    if (!error?.sentryCaptured) {
+      captureException(error, {
+        tags: { component: 'lima', operation: 'container-run' },
+        extra: { agentId: this.config.agentId, ...collectLimaDiagnostics() },
+      })
+    }
     return false
   }
 

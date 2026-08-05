@@ -136,15 +136,22 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
             <SessionChatColumn
               sessionId={sessionId}
               agentSlug={agentSlug}
+              agentId={session?.agentSlug}
               pendingUserMessages={getPendingMessages(sessionId)}
               isViewOnly={isViewOnly}
               contextPercent={contextPercent}
               effort={session?.effort}
+              speed={session?.speed}
               model={session?.model}
               onPendingMessageAppeared={onPendingMessageAppeared}
               onMessageSent={onMessageSent}
               onMessageUuidAssigned={onMessageUuidAssigned}
               onMessageFailed={onPendingMessageAppeared}
+              lastActivityAt={session?.lastActivityAt ? new Date(session.lastActivityAt) : null}
+              contextUsage={contextUsage}
+              pendingWakeAt={session?.pendingWakeAt}
+              pendingWakeTaskId={session?.pendingWakeTaskId}
+              pendingWakeNote={session?.pendingWakeNote}
             />
           </div>
         </WorkflowProvider>

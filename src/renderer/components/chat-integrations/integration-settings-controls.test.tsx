@@ -12,7 +12,7 @@ const STD: EffortLevel[] = ['low', 'medium', 'high']
 
 const CATALOG: ModelDefinition[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD, supportedSpeeds: ['slow', 'normal', 'fast'] },
   { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL },
 ]
 
@@ -25,8 +25,9 @@ vi.mock('@renderer/hooks/use-chat-integrations', () => ({
   }),
 }))
 
-vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({
+vi.mock('@renderer/hooks/use-settings', () => {
+  // Built lazily — the hoisted factory runs before CATALOG is initialized.
+  const settings = () => ({
     data: {
       llmProvider: 'anthropic',
       llmProviderStatus: [{
@@ -35,8 +36,12 @@ vi.mock('@renderer/hooks/use-settings', () => ({
         defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
       }],
     },
-  }),
-}))
+  })
+  return {
+    useSettings: settings,
+    useModelSettings: settings,
+  }
+})
 
 describe('IntegrationModelEffort', () => {
   beforeEach(() => {
@@ -73,7 +78,6 @@ describe('IntegrationModelEffort', () => {
     render(<IntegrationModelEffort integration={makeIntegration({ model: 'sonnet' })} />)
 
     await user.click(screen.getByTestId('settings-model-trigger'))
-    await user.click(await screen.findByTestId('model-family-opus'))
     await user.click(await screen.findByTestId('model-latest-opus'))
 
     expect(mutateMock).toHaveBeenCalledWith({ id: 'int-1', model: 'opus' })
@@ -84,7 +88,6 @@ describe('IntegrationModelEffort', () => {
     render(<IntegrationModelEffort integration={makeIntegration({ model: 'sonnet' })} />)
 
     await user.click(screen.getByTestId('settings-model-trigger'))
-    await user.click(await screen.findByTestId('model-family-opus'))
     await user.click(await screen.findByTestId('model-pinned-claude-opus-4-8'))
 
     expect(mutateMock).toHaveBeenCalledWith({ id: 'int-1', model: 'claude-opus-4-8' })
@@ -100,12 +103,31 @@ describe('IntegrationModelEffort', () => {
     expect(mutateMock).toHaveBeenCalledWith({ id: 'int-1', effort: 'low' })
   })
 
+  it('calls mutate with speed when user selects a speed', async () => {
+    const user = userEvent.setup()
+    render(<IntegrationModelEffort integration={makeIntegration({ model: 'sonnet' })} />)
+
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    await user.click(await screen.findByTestId('speed-option-slow'))
+
+    expect(mutateMock).toHaveBeenCalledWith({ id: 'int-1', speed: 'slow' })
+  })
+
+  it('hides the speed picker for models without a speed choice', async () => {
+    const user = userEvent.setup()
+    render(<IntegrationModelEffort integration={makeIntegration({ model: 'opus' })} />)
+
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    await screen.findByTestId('effort-option-low')
+
+    expect(screen.queryByTestId('speed-option-normal')).not.toBeInTheDocument()
+  })
+
   it('uses the correct integration id in mutation calls', async () => {
     const user = userEvent.setup()
     render(<IntegrationModelEffort integration={makeIntegration({ id: 'custom-id', model: 'sonnet' })} />)
 
     await user.click(screen.getByTestId('settings-model-trigger'))
-    await user.click(await screen.findByTestId('model-family-haiku'))
     await user.click(await screen.findByTestId('model-latest-haiku'))
 
     expect(mutateMock).toHaveBeenCalledWith({ id: 'custom-id', model: 'haiku' })

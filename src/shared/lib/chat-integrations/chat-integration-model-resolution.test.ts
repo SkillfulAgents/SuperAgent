@@ -57,6 +57,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   registerSession: vi.fn().mockResolvedValue(undefined),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   getSessionMetadata: vi.fn().mockResolvedValue(null),
+  finalizeAutomationStatus: vi.fn().mockResolvedValue('not-automation'),
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -78,14 +79,20 @@ vi.mock('@shared/lib/services/agent-preferences-service', () => ({
   readAgentPreferences: (...args: unknown[]) => mockReadAgentPreferences(...args),
 }))
 
-// Mock telegram connector to return our MockChatClientConnector
-vi.mock('./telegram-connector', () => ({
-  TelegramConnector: class {
-    constructor() {
-      return mockConnector
-    }
-  },
-}))
+// Mock telegram connector to return our MockChatClientConnector. Keep the REAL
+// classifyChatId static so classification lookups still exercise production.
+vi.mock('./telegram-connector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./telegram-connector')>()
+  return {
+    ...actual,
+    TelegramConnector: class {
+      static classifyChatId = actual.TelegramConnector.classifyChatId
+      constructor() {
+        return mockConnector
+      }
+    },
+  }
+})
 
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
@@ -138,6 +145,10 @@ describe('chat integration model and effort resolution', () => {
 
     mockReadAgentPreferences.mockReset()
     mockReadAgentPreferences.mockResolvedValue({})
+
+    // connectIntegration cancels itself on a stopped manager; this harness
+    // drives addIntegration directly (no start()), so mark the manager running.
+    ;(chatIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
   })
 
   afterEach(async () => {
@@ -170,22 +181,31 @@ describe('chat integration model and effort resolution', () => {
   it('uses the global default when neither integration nor agent set one', async () => {
     const args = await startSession()
     expect(args.model).toBe('claude-sonnet-4-20250514')
-    // Effort must be omitted entirely, not sent as undefined.
+    // Effort/speed must be omitted entirely, not sent as undefined.
     expect('effort' in args).toBe(false)
+    expect('speed' in args).toBe(false)
   })
 
   it('falls back to the agent default over the global default', async () => {
-    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
+    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' })
     const args = await startSession()
     expect(mockReadAgentPreferences).toHaveBeenCalledWith('test-agent')
     expect(args.model).toBe('opus')
     expect(args.effort).toBe('high')
+    expect(args.speed).toBe('slow')
   })
 
   it('prefers the integration override over the agent default', async () => {
-    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
-    const args = await startSession({ model: 'claude-haiku-4-5-20251001', effort: 'low' })
+    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'fast' })
+    const args = await startSession({ model: 'claude-haiku-4-5-20251001', effort: 'low', speed: 'slow' })
     expect(args.model).toBe('claude-haiku-4-5-20251001')
     expect(args.effort).toBe('low')
+    expect(args.speed).toBe('slow')
+  })
+
+  it('a stored normal integration speed beats a non-normal agent default', async () => {
+    mockReadAgentPreferences.mockResolvedValue({ defaultSpeed: 'fast' })
+    const args = await startSession({ speed: 'normal' })
+    expect(args.speed).toBe('normal')
   })
 })

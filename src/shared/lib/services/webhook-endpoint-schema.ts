@@ -62,7 +62,7 @@ export const filterExpressionSchema = z.string().trim().min(1).max(2048)
 /**
  * Container tool inputs, validated host-side before anything is minted or
  * stored (the container is not a trusted boundary). Unknown keys are dropped;
- * model/effort reuse the shared runtime-options shape.
+ * model/effort/speed reuse the shared runtime-options shape.
  */
 export const createWebhookEndpointInputSchema = z.object({
   name: z.string().trim().min(1),
@@ -71,6 +71,7 @@ export const createWebhookEndpointInputSchema = z.object({
   filter_exp: filterExpressionSchema.nullish(),
   model: RuntimeOptionsSchema.shape.model,
   effort: RuntimeOptionsSchema.shape.effort,
+  speed: RuntimeOptionsSchema.shape.speed,
 })
 
 export const updateWebhookEndpointInputSchema = z.object({

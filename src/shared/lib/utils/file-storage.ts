@@ -354,47 +354,72 @@ export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]>
   return parseJsonl<T>(content)
 }
 
+const NEWLINE_BYTE = 0x0a
+
 /**
  * Stream-read JSONL file line by line (for large files)
  * Yields parsed objects one at a time
+ *
+ * Lines are split in the raw bytes rather than through a string decoder: agent
+ * transcripts are dominated by very large tool-result rows, and materializing a
+ * whole file (or even a whole chunk-spanning row twice) costs several times the
+ * file size in peak memory. Only ASCII whitespace is trimmed at the byte level,
+ * and every such byte is < 0x80, so a multi-byte UTF-8 sequence is never split.
  */
 export async function* streamJsonlFile<T = unknown>(
   filePath: string
 ): AsyncIterable<T> {
   const fileHandle = await fs.promises.open(filePath, 'r')
-  const stream = fileHandle.createReadStream({ encoding: 'utf-8' })
+  try {
+    const stream = fileHandle.createReadStream()
+    // Chunks holding the trailing, not-yet-terminated line. Concatenated only
+    // once its newline arrives, so a row spanning many chunks is joined once.
+    let pending: Buffer[] = []
 
-  let buffer = ''
-
-  for await (const chunk of stream) {
-    buffer += chunk
-    const lines = buffer.split(/\r?\n/)
-
-    // Keep the last potentially incomplete line in buffer
-    buffer = lines.pop() || ''
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-
-      try {
-        yield JSON.parse(trimmed) as T
-      } catch {
-        // Skip malformed lines
+    for await (const chunk of stream) {
+      let start = 0
+      let idx = chunk.indexOf(NEWLINE_BYTE)
+      while (idx !== -1) {
+        let line: Buffer
+        if (pending.length > 0) {
+          pending.push(chunk.subarray(start, idx))
+          line = Buffer.concat(pending)
+          pending = []
+        } else {
+          line = chunk.subarray(start, idx)
+        }
+        const parsed = parseJsonlLine<T>(line)
+        if (parsed !== undefined) yield parsed
+        start = idx + 1
+        idx = chunk.indexOf(NEWLINE_BYTE, start)
       }
+      if (start < chunk.length) pending.push(chunk.subarray(start))
     }
-  }
 
-  // Process any remaining content in buffer
-  if (buffer.trim()) {
-    try {
-      yield JSON.parse(buffer.trim()) as T
-    } catch {
-      // Skip malformed line
+    // Process any remaining content (file not terminated by a newline)
+    if (pending.length > 0) {
+      const parsed = parseJsonlLine<T>(Buffer.concat(pending))
+      if (parsed !== undefined) yield parsed
     }
+  } finally {
+    // Runs on early `break` from the consumer's for-await too, which the
+    // previous trailing close() silently skipped — leaking the descriptor.
+    await fileHandle.close()
   }
+}
 
-  await fileHandle.close()
+/**
+ * Decode and parse one JSONL line. Returns undefined for blank and malformed
+ * lines (common while the SDK is mid-write), which callers skip.
+ */
+function parseJsonlLine<T>(line: Buffer): T | undefined {
+  const trimmed = line.toString('utf-8').trim()
+  if (!trimmed) return undefined
+  try {
+    return JSON.parse(trimmed) as T
+  } catch {
+    return undefined
+  }
 }
 
 // ============================================================================
@@ -446,6 +471,29 @@ export function getAgentClaudeMdPath(slug: string): string {
 }
 
 /**
+ * Read an agent's display name straight from its CLAUDE.md frontmatter,
+ * synchronously. Lives here (not agent-service) so the container layer can
+ * resolve the name at env-build time without importing agent-service, which
+ * would close an import cycle back through container-manager.
+ */
+export function readAgentDisplayNameSync(slug: string): string | undefined {
+  try {
+    const content = fs.readFileSync(getAgentClaudeMdPath(slug), 'utf-8')
+    const { frontmatter } = parseMarkdownWithFrontmatter<{ name?: unknown }>(content)
+    // The frontmatter parser coerces YAML-ambiguous scalars ("123", "true") to
+    // number/boolean; those are still legitimate display names, so coerce back.
+    const raw = frontmatter.name
+    const name =
+      typeof raw === 'string' ? raw
+      : typeof raw === 'number' || typeof raw === 'boolean' ? String(raw)
+      : undefined
+    return name?.trim() ? name : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Get .env path for agent secrets
  * ~/.superagent/agents/{slug}/workspace/.env
  */
@@ -490,7 +538,12 @@ export function getAgentSessionsDir(slug: string): string {
  * ~/.superagent/agents/{slug}/workspace/.claude/projects/-workspace/{sessionId}.jsonl
  */
 export function getSessionJsonlPath(slug: string, sessionId: string): string {
-  return path.join(getAgentSessionsDir(slug), `${sessionId}.jsonl`)
+  const sessionsDir = getAgentSessionsDir(slug)
+  return assertPathWithinDir(
+    sessionsDir,
+    path.resolve(sessionsDir, `${sessionId}.jsonl`),
+    'Invalid session ID',
+  )
 }
 
 // ============================================================================

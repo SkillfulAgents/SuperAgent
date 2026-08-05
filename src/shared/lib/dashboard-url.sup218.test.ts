@@ -48,15 +48,27 @@ describe('buildDashboardArtifactPath (SUP-218)', () => {
 })
 
 describe('buildDashboardViewUrl (SUP-218)', () => {
-  it('prefixes the encoded view path with the localhost API origin', () => {
-    expect(buildDashboardViewUrl(3838, 'agent one', 'sales/report')).toBe(
+  it('prefixes the encoded view path with the API base URL', () => {
+    expect(buildDashboardViewUrl('http://localhost:3838', 'agent one', 'sales/report')).toBe(
       'http://localhost:3838/api/agents/agent%20one/artifacts/sales%2Freport/view',
     )
   })
 
   it('leaves a plain slug unchanged', () => {
-    expect(buildDashboardViewUrl(3838, 'sales-agent', 'weekly')).toBe(
+    expect(buildDashboardViewUrl('http://localhost:3838', 'sales-agent', 'weekly')).toBe(
       'http://localhost:3838/api/agents/sales-agent/artifacts/weekly/view',
     )
+  })
+})
+
+describe('buildDashboardViewUrl against a cloud workspace', () => {
+  // Popouts are built in the main process, which has no renderer to ask. Given a
+  // bare local origin they open the LOCAL deployment's dashboard for an agent
+  // slug belonging to the cloud one — a 404, or someone else's agent of the same
+  // name. The cloud base URL is the local origin plus the proxy prefix.
+  it('keeps the proxy prefix ahead of the encoded view path', () => {
+    expect(
+      buildDashboardViewUrl('http://localhost:3838/api/cloud-proxy/abc123', 'sales agent', 'weekly'),
+    ).toBe('http://localhost:3838/api/cloud-proxy/abc123/api/agents/sales%20agent/artifacts/weekly/view')
   })
 })

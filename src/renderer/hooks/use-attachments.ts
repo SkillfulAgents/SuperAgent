@@ -7,10 +7,17 @@ const MAX_WEB_FOLDER_SIZE = 500 * 1024 * 1024
 
 interface UseAttachmentsOptions {
   onFoldersReceived?: (folders: FolderGroup[]) => void
+  initialAttachments?: Attachment[]
 }
 
 export function useAttachments(options?: UseAttachmentsOptions) {
-  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [attachments, setAttachments] = useState<Attachment[]>(() =>
+    (options?.initialAttachments ?? []).map((attachment) =>
+      attachment.type === 'file' && attachment.file.type.startsWith('image/') && !attachment.preview
+        ? { ...attachment, preview: URL.createObjectURL(attachment.file) }
+        : attachment,
+    ),
+  )
   const [isDragOver, setIsDragOver] = useState(false)
 
   const addFiles = useCallback((files: FileWithPath[]) => {
@@ -64,6 +71,14 @@ export function useAttachments(options?: UseAttachmentsOptions) {
       hostPath: m.hostPath,
     }))
     setAttachments((prev) => [...prev, ...newAttachments])
+  }, [])
+
+  const setAttachmentError = useCallback((id: string, error: string | undefined) => {
+    setAttachments((prev) => prev.map((a) => (a.id === id ? { ...a, error } : a)))
+  }, [])
+
+  const clearAttachmentErrors = useCallback(() => {
+    setAttachments((prev) => (prev.some((a) => a.error) ? prev.map((a) => (a.error ? { ...a, error: undefined } : a)) : prev))
   }, [])
 
   const removeAttachment = useCallback((id: string) => {
@@ -151,6 +166,8 @@ export function useAttachments(options?: UseAttachmentsOptions) {
     addFiles,
     addFolders,
     addMounts,
+    setAttachmentError,
+    clearAttachmentErrors,
     removeAttachment,
     clearAttachments,
     handleFileSelect,

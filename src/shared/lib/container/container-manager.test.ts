@@ -38,11 +38,23 @@ vi.mock('./client-factory', () => ({
   clearRunnerAvailabilityCache: (...args: unknown[]) => mockClearRunnerAvailabilityCache(...args),
   getRunnerDisplayName: (runner: string) => runner,
   reconcileRunnerState: vi.fn().mockResolvedValue(false),
+  // Routed through the same statfs mock the old module-local helper used, so
+  // the per-test disk-space overrides below keep working.
+  getAvailableDiskSpace: async () => {
+    const stats = await mockStatfs()
+    return stats.bavail * stats.bsize
+  },
+  MIN_IMAGE_DISK_SPACE_BYTES: 5 * 1024 * 1024 * 1024,
 }))
 
 const mockGetOrCreateProxyToken = vi.fn()
 vi.mock('@shared/lib/proxy/token-store', () => ({
   getOrCreateProxyToken: (...args: unknown[]) => mockGetOrCreateProxyToken(...args),
+}))
+
+const mockGetOrCreateHostToken = vi.fn((..._args: unknown[]) => 'hostc_test-token')
+vi.mock('@shared/lib/container/host-token-store', () => ({
+  getOrCreateHostToken: (...args: unknown[]) => mockGetOrCreateHostToken(...args),
 }))
 
 const mockGetContainerHostUrl = vi.fn()
@@ -97,13 +109,23 @@ vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
 }))
 
+const mockSettingsState = {
+  containerRunner: 'docker' as string,
+}
+
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({ container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} }),
+  getSettings: () => ({
+    container: { agentImage: 'test-image', containerRunner: mockSettingsState.containerRunner },
+    app: {},
+  }),
   updateSettings: vi.fn(),
   // the runner auto-switch now persists via mutateSettings; apply the
   // mutator to a fresh snapshot and return it (matching the real return shape).
   mutateSettings: (mutator: (s: { container: { agentImage: string; containerRunner: string }; app: Record<string, unknown> }) => void) => {
-    const s = { container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} }
+    const s = {
+      container: { agentImage: 'test-image', containerRunner: mockSettingsState.containerRunner },
+      app: {},
+    }
     mutator(s)
     return s
   },
@@ -189,7 +211,13 @@ describe('containerManager.ensureRunning — env var construction', () => {
       status: string
       providerConnectionId: string
       providerName: string
-    }>
+    }>,
+    mcps: Array<{
+      id: string
+      name: string
+      status: string
+      toolsJson: string | null
+    }> = [],
   ) {
     // First db.select().from() call: connected accounts
     mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
@@ -199,7 +227,7 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
     // Second db.select().from() call: remote MCPs
     mockMcpInnerJoin.mockReturnValue({ where: mockMcpWhere })
-    mockMcpWhere.mockResolvedValue([])
+    mockMcpWhere.mockResolvedValue(mcps.map((mcp) => ({ mcp })))
   }
 
   it('sets PROXY_BASE_URL with correct format', async () => {
@@ -223,6 +251,16 @@ describe('containerManager.ensureRunning — env var construction', () => {
     const startOpts = mockStart.mock.calls[0][0]
     expect(startOpts.envVars.PROXY_TOKEN).toBe('custom-proxy-token')
     expect(mockGetOrCreateProxyToken).toHaveBeenCalledWith('test-agent')
+  })
+
+  it('sets SUPERAGENT_HOST_TOKEN so the container can authenticate host API calls', async () => {
+    setupAccountMocks([])
+
+    await containerManager.ensureRunning('test-agent')
+
+    const startOpts = mockStart.mock.calls[0][0]
+    expect(startOpts.envVars.SUPERAGENT_HOST_TOKEN).toBe('hostc_test-token')
+    expect(mockGetOrCreateHostToken).toHaveBeenCalledWith('test-agent')
   })
 
   it('CONNECTED_ACCOUNTS includes only active accounts, grouped by toolkitSlug', async () => {
@@ -281,6 +319,41 @@ describe('containerManager.ensureRunning — env var construction', () => {
     expect(metadata.gmail).toHaveLength(1)
     expect(metadata.gmail[0].name).toBe('active@gmail.com')
     expect(metadata.slack).toBeUndefined()
+  })
+
+  it('serializes connection projections in stable id order', async () => {
+    setupAccountMocks(
+      [
+        { id: 'slack-z', toolkitSlug: 'slack', displayName: 'Slack Z', status: 'active', providerConnectionId: 'c3', providerName: 'composio' },
+        { id: 'gmail-z', toolkitSlug: 'gmail', displayName: 'Gmail Z', status: 'active', providerConnectionId: 'c2', providerName: 'composio' },
+        { id: 'gmail-a', toolkitSlug: 'gmail', displayName: 'Gmail A', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
+      ],
+      [
+        {
+          id: 'mcp-z',
+          name: 'Zed',
+          status: 'active',
+          toolsJson: JSON.stringify([{ name: 'search' }, { invalid: true }]),
+        },
+        { id: 'mcp-disabled', name: 'Disabled', status: 'auth_required', toolsJson: null },
+        { id: 'mcp-a', name: 'Alpha', status: 'active', toolsJson: '[]' },
+      ],
+    )
+
+    await containerManager.ensureRunning('test-agent')
+
+    const envVars = mockStart.mock.calls[0][0].envVars
+    expect(JSON.parse(envVars.CONNECTED_ACCOUNTS)).toEqual({
+      gmail: [
+        { name: 'Gmail A', id: 'gmail-a' },
+        { name: 'Gmail Z', id: 'gmail-z' },
+      ],
+      slack: [{ name: 'Slack Z', id: 'slack-z' }],
+    })
+    const mcpConfigs = JSON.parse(envVars.REMOTE_MCPS)
+    expect(mcpConfigs.map((mcp: { id: string }) => mcp.id))
+      .toEqual(['mcp-a', 'mcp-z'])
+    expect(mcpConfigs[1].tools).toEqual([{ name: 'search' }])
   })
 
   it('sets TZ env var from resolveTimezoneForAgent', async () => {
@@ -625,7 +698,7 @@ describe('containerManager — health warnings', () => {
 // ensureImageReady — state machine (CHECKING -> READY / ERROR / RUNTIME_UNAVAILABLE)
 // ============================================================================
 
-import { checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage } from './client-factory'
+import { checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner } from './client-factory'
 
 describe('containerManager.ensureImageReady — state machine', () => {
   const originalE2eMock = process.env.E2E_MOCK
@@ -634,6 +707,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
     vi.clearAllMocks()
     containerManager.clearClients()
     delete process.env.E2E_MOCK
+    mockSettingsState.containerRunner = 'docker'
     // Default: plenty of disk space (100 GB)
     mockStatfs.mockResolvedValue({ bavail: 100 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
   })
@@ -685,6 +759,26 @@ describe('containerManager.ensureImageReady — state machine', () => {
     expect(readiness.message).toContain('docker')
   })
 
+  it('does not auto-provision apple-container when CLI is missing (no silent elevate)', async () => {
+    mockSettingsState.containerRunner = 'apple-container'
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      {
+        runner: 'apple-container',
+        installed: false,
+        running: false,
+        available: false,
+        canStart: true,
+        supportsCustomAgentImage: true,
+      },
+    ])
+
+    await containerManager.ensureImageReady()
+
+    expect(startRunner).not.toHaveBeenCalled()
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('RUNTIME_UNAVAILABLE')
+  })
+
   it('pulls image when runner available but image does not exist', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
       { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
@@ -733,6 +827,54 @@ describe('containerManager.ensureImageReady — state machine', () => {
     const readiness = containerManager.getReadiness()
     expect(readiness.status).toBe('ERROR')
     expect(readiness.message).toContain('Network timeout pulling image')
+  })
+
+  it('retries a stalled pull and reaches READY when the retry succeeds', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(false)
+    vi.mocked(pullImage)
+      .mockRejectedValueOnce(new Error('Image pull stalled: no progress output for 120s while pulling img'))
+      .mockResolvedValueOnce(undefined)
+
+    // Fake timers to skip the retry backoff delay
+    vi.useFakeTimers()
+    try {
+      const promise = containerManager.ensureImageReady()
+      await vi.advanceTimersByTimeAsync(10_000)
+      await promise
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(pullImage).toHaveBeenCalledTimes(2)
+    expect(containerManager.getReadiness().status).toBe('READY')
+  })
+
+  it('transitions to ERROR when the pull keeps stalling after all retries', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(false)
+    vi.mocked(pullImage).mockRejectedValue(new Error('Image pull stalled: no progress output for 120s while pulling img'))
+
+    vi.useFakeTimers()
+    try {
+      const promise = containerManager.ensureImageReady()
+      await vi.advanceTimersByTimeAsync(20_000)
+      await promise
+    } finally {
+      vi.useRealTimers()
+    }
+
+    // Initial attempt + MAX_PULL_RETRIES retries
+    expect(pullImage).toHaveBeenCalledTimes(3)
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('ERROR')
+    expect(readiness.message).toContain('Image pull stalled')
   })
 
   it('transitions to ERROR when build fails', async () => {
@@ -1035,6 +1177,35 @@ describe('containerManager.resetReadiness', () => {
     containerManager.resetReadiness()
 
     expect(containerManager.getReadiness().message).toBe('Restarting runtime...')
+  })
+})
+
+describe('containerManager start/fail guards vs PULLING_IMAGE', () => {
+  it.each([
+    {
+      label: 'markRuntimeUnavailable',
+      act: () => containerManager.markRuntimeUnavailable('should be ignored'),
+      assert: () => expect(containerManager.getReadiness().status).toBe('PULLING_IMAGE'),
+    },
+    {
+      label: 'updateStartProgress',
+      act: () =>
+        containerManager.updateStartProgress({
+          status: 'Downloading...',
+          percent: 50,
+          completedLayers: 0,
+          totalLayers: 0,
+        }),
+      assert: () => expect(containerManager.getReadiness().pullProgress?.percent).toBe(10),
+    },
+  ])('$label does NOT override PULLING_IMAGE', ({ act, assert }) => {
+    ;(containerManager as any)._readiness = {
+      status: 'PULLING_IMAGE',
+      message: 'Pulling...',
+      pullProgress: { status: 'layer', percent: 10, completedLayers: 1, totalLayers: 3 },
+    }
+    act()
+    assert()
   })
 })
 

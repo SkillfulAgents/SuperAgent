@@ -53,6 +53,10 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
   getOrCreateProxyToken: vi.fn().mockResolvedValue('test-token'),
 }))
 
+vi.mock('@shared/lib/container/host-token-store', () => ({
+  getOrCreateHostToken: vi.fn(() => 'test-host-token'),
+}))
+
 vi.mock('@shared/lib/proxy/host-url', () => ({
   getContainerHostUrl: () => '127.0.0.1',
   getAppPort: () => 3000,

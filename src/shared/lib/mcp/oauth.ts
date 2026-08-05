@@ -2,8 +2,42 @@ import crypto from 'crypto'
 import { db } from '@shared/lib/db'
 import { remoteMcpServers } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import type { OAuthMetadata, OAuthTokenResponse } from './types'
+
+/**
+ * OAuth setup failure whose message is safe to show in the UI verbatim. Carries
+ * the authorization server's own error/error_description (e.g. a dynamic client
+ * registration rejection reason) so users see why a connection failed instead
+ * of a generic "Failed to initiate OAuth flow".
+ */
+export class McpOAuthSetupError extends Error {}
+
+/**
+ * Summarize an OAuth error response body for a user-facing message: prefer the
+ * RFC 6749 error/error_description fields, fall back to the raw (truncated)
+ * body — some servers reject with a bare-text body (e.g. Figma's "Forbidden").
+ */
+async function describeOAuthErrorBody(res: Response): Promise<string> {
+  let text: string
+  try {
+    text = (await res.text()).trim()
+  } catch {
+    return ''
+  }
+  if (!text) return ''
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown; error_description?: unknown }
+    const detail = [parsed.error, parsed.error_description]
+      .filter((v): v is string => typeof v === 'string' && v.length > 0)
+      .join(': ')
+    if (detail) return `: ${detail}`
+  } catch {
+    // Not JSON — fall through to the raw body
+  }
+  return `: ${text.slice(0, 200)}`
+}
 
 /**
  * Build the candidate well-known metadata URLs for an authorization server.
@@ -66,7 +100,7 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
 } | null> {
   try {
     // Step 1: Make unauthenticated request to get 401
-    const probeResponse = await fetch(mcpUrl, {
+    const probeResponse = await mcpSafeFetch(mcpUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }),
@@ -96,13 +130,10 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
 
     if (resourceMetadataMatch) {
       // RFC 9728: Fetch Protected Resource Metadata.
-      // SSRF guard (SUP-235): this URL comes straight from the server-controlled
-      // WWW-Authenticate header, so apply the same private/loopback host policy
-      // as the entry path before fetching. Rejection throws -> discovery fails
-      // closed (returns null) instead of fetching an internal address.
+      // SSRF: server-controlled WWW-Authenticate URL — mcpSafeFetch rejects
+      // private/loopback (incl. DNS-rebind) before connecting.
       const resourceMetadataUrl = resourceMetadataMatch[1]
-      validateMcpDiscoveryUrl(resourceMetadataUrl)
-      const resourceRes = await fetch(resourceMetadataUrl)
+      const resourceRes = await mcpSafeFetch(resourceMetadataUrl)
       if (!resourceRes.ok) {
         throw new Error(`Failed to fetch resource metadata: ${resourceRes.status}`)
       }
@@ -135,17 +166,14 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
     // protected-resource metadata's authorization_servers[0] or the MCP
     // origin). Reject private/loopback auth servers before deriving and
     // fetching any well-known URLs from them; throwing fails discovery closed.
-    validateMcpDiscoveryUrl(authServerUrl)
+    await validateMcpDiscoveryUrl(authServerUrl)
 
     const wellKnownUrls = buildAuthServerMetadataUrls(authServerUrl)
 
     for (const url of wellKnownUrls) {
       try {
-        // Defense in depth: re-validate each generated URL so a future change
-        // to buildAuthServerMetadataUrls can never reintroduce an unchecked
-        // fetch. A rejected URL is skipped, not fetched.
-        validateMcpDiscoveryUrl(url)
-        const res = await fetch(url)
+        // mcpSafeFetch rejects private/loopback; catch skips to the next candidate.
+        const res = await mcpSafeFetch(url)
         if (res.ok) {
           const metadata = (await res.json()) as OAuthMetadata
           if (metadata.authorization_endpoint && metadata.token_endpoint) {
@@ -173,14 +201,16 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
 
 /**
  * Register a dynamic client with the authorization server (RFC 7591).
+ * Throws McpOAuthSetupError with the server's rejection reason on failure.
  */
 export async function registerDynamicClient(
   registrationEndpoint: string,
   redirectUri: string,
   clientName: string,
-): Promise<{ clientId: string; clientSecret?: string; scope?: string } | null> {
+): Promise<{ clientId: string; clientSecret?: string; scope?: string }> {
+  let res: Response
   try {
-    const res = await fetch(registrationEndpoint, {
+    res = await mcpSafeFetch(registrationEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -191,18 +221,27 @@ export async function registerDynamicClient(
         token_endpoint_auth_method: 'none',
       }),
     })
-
-    if (!res.ok) return null
-
-    const data = (await res.json()) as {
-      client_id: string
-      client_secret?: string
-      scope?: string
-    }
-    return { clientId: data.client_id, clientSecret: data.client_secret, scope: data.scope }
-  } catch {
-    return null
+  } catch (error) {
+    throw new McpOAuthSetupError(
+      `Could not reach the authorization server's registration endpoint: ${error instanceof Error ? error.message : String(error)}`,
+    )
   }
+
+  if (!res.ok) {
+    throw new McpOAuthSetupError(
+      `The authorization server rejected client registration (HTTP ${res.status})${await describeOAuthErrorBody(res)}`,
+    )
+  }
+
+  let data: { client_id: string; client_secret?: string; scope?: string }
+  try {
+    data = await res.json()
+  } catch {
+    throw new McpOAuthSetupError(
+      'The authorization server returned an invalid client registration response',
+    )
+  }
+  return { clientId: data.client_id, clientSecret: data.client_secret, scope: data.scope }
 }
 
 /**
@@ -219,14 +258,19 @@ async function registerDynamicClientWithFallback(
   registrationEndpoint: string,
   redirectCandidates: string[],
   clientName: string,
-): Promise<{ clientId: string; clientSecret?: string; scope?: string; redirectUri: string } | null> {
+): Promise<{ clientId: string; clientSecret?: string; scope?: string; redirectUri: string }> {
+  let lastError: McpOAuthSetupError | undefined
   for (const redirectUri of redirectCandidates) {
-    const registration = await registerDynamicClient(registrationEndpoint, redirectUri, clientName)
-    if (registration) {
+    try {
+      const registration = await registerDynamicClient(registrationEndpoint, redirectUri, clientName)
       return { ...registration, redirectUri }
+    } catch (error) {
+      if (!(error instanceof McpOAuthSetupError)) throw error
+      console.error(`[mcp/oauth] Dynamic registration failed for redirect ${redirectUri}:`, error.message)
+      lastError = error
     }
   }
-  return null
+  throw lastError ?? new McpOAuthSetupError('No redirect URLs available for client registration')
 }
 
 type PendingOAuthFlow = {
@@ -362,7 +406,9 @@ export async function initiateOAuthFlow(
   const supportedMethods = metadata.code_challenge_methods_supported || []
   if (supportedMethods.length > 0 && !supportedMethods.includes('S256')) {
     console.error('[mcp/oauth] Server does not support S256 PKCE')
-    return null
+    throw new McpOAuthSetupError(
+      `The authorization server does not support the required S256 PKCE method (supports: ${supportedMethods.join(', ')})`,
+    )
   }
 
   // Resolve client credentials: explicit override > dynamic registration > stored.
@@ -389,20 +435,25 @@ export async function initiateOAuthFlow(
     // self-heals which redirect the AS accepts (custom scheme vs http loopback)
     // and re-binds to the current loopback port, so a client first registered
     // against a rejected scheme or a stale port doesn't break reconnection.
-    const registration = await registerDynamicClientWithFallback(
-      metadata.registration_endpoint,
-      redirectCandidates,
-      clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
-    )
-    if (registration) {
+    try {
+      const registration = await registerDynamicClientWithFallback(
+        metadata.registration_endpoint,
+        redirectCandidates,
+        clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Gamut',
+      )
       clientId = registration.clientId
       clientSecret = registration.clientSecret
       registeredScope = registration.scope
       redirectUri = registration.redirectUri
-    } else if (existing?.oauthClientId) {
-      // Registration failed unexpectedly — fall back to the stored client.
-      clientId = existing.oauthClientId
-      clientSecret = existing.oauthClientSecret || undefined
+    } catch (error) {
+      if (!(error instanceof McpOAuthSetupError)) throw error
+      if (existing?.oauthClientId) {
+        // Registration failed unexpectedly — fall back to the stored client.
+        clientId = existing.oauthClientId
+        clientSecret = existing.oauthClientSecret || undefined
+      } else {
+        throw error
+      }
     }
   } else if (existing?.oauthClientId) {
     clientId = existing.oauthClientId
@@ -411,7 +462,9 @@ export async function initiateOAuthFlow(
 
   if (!clientId) {
     console.error('[mcp/oauth] No client_id available')
-    return null
+    throw new McpOAuthSetupError(
+      'The authorization server does not support automatic client registration — provide an OAuth Client ID in the advanced connection options',
+    )
   }
 
   // Generate PKCE and state
@@ -506,7 +559,9 @@ export async function initiateNewServerOAuth(
   const supportedMethods = metadata.code_challenge_methods_supported || []
   if (supportedMethods.length > 0 && !supportedMethods.includes('S256')) {
     console.error('[mcp/oauth] Server does not support S256 PKCE')
-    return null
+    throw new McpOAuthSetupError(
+      `The authorization server does not support the required S256 PKCE method (supports: ${supportedMethods.join(', ')})`,
+    )
   }
 
   let clientId: string | undefined
@@ -524,19 +579,19 @@ export async function initiateNewServerOAuth(
     const registration = await registerDynamicClientWithFallback(
       metadata.registration_endpoint,
       redirectCandidates,
-      clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
+      clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Gamut',
     )
-    if (registration) {
-      clientId = registration.clientId
-      clientSecret = registration.clientSecret
-      registeredScope = registration.scope
-      redirectUri = registration.redirectUri
-    }
+    clientId = registration.clientId
+    clientSecret = registration.clientSecret
+    registeredScope = registration.scope
+    redirectUri = registration.redirectUri
   }
 
   if (!clientId) {
     console.error('[mcp/oauth] No client_id available — provide an OAuth Client ID or use a server that supports dynamic registration')
-    return null
+    throw new McpOAuthSetupError(
+      'The authorization server does not support automatic client registration — provide an OAuth Client ID in the advanced connection options',
+    )
   }
 
   const { codeVerifier, codeChallenge } = generatePKCE()
@@ -631,7 +686,7 @@ export async function completeOAuthFlow(
       body.set('client_secret', flow.clientSecret)
     }
 
-    const res = await fetch(flow.tokenEndpoint, {
+    const res = await mcpSafeFetch(flow.tokenEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
@@ -720,7 +775,7 @@ export async function refreshMcpToken(mcpId: string): Promise<string | null> {
       body.set('resource', mcp.oauthResource)
     }
 
-    const res = await fetch(mcp.oauthTokenEndpoint, {
+    const res = await mcpSafeFetch(mcp.oauthTokenEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,

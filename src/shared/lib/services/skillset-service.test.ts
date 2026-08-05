@@ -13,6 +13,20 @@ import type {
 // Hoisted Mocks
 // ============================================================================
 
+const mockCaptureException = vi.hoisted(() => vi.fn())
+
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: mockCaptureException,
+  captureMessage: vi.fn(),
+  addErrorBreadcrumb: vi.fn(),
+  setErrorTag: vi.fn(),
+  setErrorContext: vi.fn(),
+  setErrorReportingUser: vi.fn(),
+  initErrorReporting: vi.fn(),
+  getErrorReporter: vi.fn(() => null),
+  flushErrorReporting: vi.fn(async () => true),
+}))
+
 const { mockExecFile, mockAnthropicCreate, mockGetApiKey, mockGetModels } = vi.hoisted(() => {
   const mockExecFile = vi.fn<
     (cmd: string, args: string[], opts?: unknown) =>
@@ -55,7 +69,13 @@ vi.mock('child_process', () => {
     const result = await mockExecFile(...callArgs)
     return { stdout: result?.stdout ?? '', stderr: result?.stderr ?? '' }
   }
-  return { execFile: execFileFn }
+  return {
+    execFile: execFileFn,
+    // The platform provider probes git availability with execFileSync at
+    // module load to pick git-clone vs archive caching. Succeed so tests
+    // exercise the git path, matching machines with git installed.
+    execFileSync: () => '',
+  }
 })
 
 vi.mock('@anthropic-ai/sdk', () => ({
@@ -78,6 +98,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 // Bypass retry delays in tests
 vi.mock('@shared/lib/utils/retry', () => ({
   withRetry: async (fn: () => Promise<unknown>) => fn(),
+  NonRetryableError: class NonRetryableError extends Error {},
 }))
 
 const mockGetPlatformAuthStatus = vi.fn(
@@ -732,10 +753,11 @@ Instructions here`
       expect(onDiskSkill).toBe(localContent)
     })
 
-    it('gitPull resolves origin/HEAD via set-head and refreshes via fetch+reset FETCH_HEAD', async () => {
+    it('gitPull trusts only its cache path while refreshing via fetch+reset FETCH_HEAD', async () => {
       const skillContent = '# Test Skill\nOriginal content'
       const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
       const config = buildSkillsetConfig()
+      const repoDir = getSkillsetRepoDir(config.id)
       const index = buildIndex({
         skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
       })
@@ -770,6 +792,18 @@ Instructions here`
       // No brittle hardcoded master fallback and no full-history reset by name.
       expect(cmdline).not.toContain('git checkout master')
       expect(cmdline.some((c) => c.startsWith('git reset --hard origin/'))).toBe(false)
+
+      const repoCalls = mockExecFile.mock.calls.filter((call) => {
+        const [command, , options] = call as [string, string[], { cwd?: string }]
+        return command === 'git' && options?.cwd === repoDir
+      })
+      expect(repoCalls.length).toBeGreaterThan(0)
+      for (const call of repoCalls) {
+        const options = call[2] as { env: Record<string, string | undefined> }
+        const safeConfigIndex = Number(options.env.GIT_CONFIG_COUNT) - 1
+        expect(options.env[`GIT_CONFIG_KEY_${safeConfigIndex}`]).toBe('safe.directory')
+        expect(options.env[`GIT_CONFIG_VALUE_${safeConfigIndex}`]).toBe(repoDir)
+      }
     })
 
     it('coalesces concurrent refreshes for the same cache directory', async () => {
@@ -845,7 +879,7 @@ Instructions here`
       expect(updated.originalContentHash).toBe(hashTestSkillPackage({ 'SKILL.md': skillContent }))
     })
 
-    it('gitPull reports unexpected fetch errors to Sentry', async () => {
+    it('gitPull keeps the stale cache quietly when the fetch fails offline', async () => {
       const skillContent = '# Test Skill\nOriginal content'
       const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
       const config = buildSkillsetConfig()
@@ -865,9 +899,287 @@ Instructions here`
         return { stdout: '', stderr: '' }
       })
 
+      // Remote unavailable is environmental — no Sentry report, refresh keeps
+      // serving the stale cache.
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+      expect(mockCaptureException).not.toHaveBeenCalled()
+    })
+
+    it('gitPull reports unexpected fetch errors to Sentry', async () => {
+      const skillContent = '# Test Skill\nOriginal content'
+      const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+      await createSkillDir('test-agent', 'test-skill', skillContent, meta)
+      await createSkillsetCache(config.id, index, { [meta.skillPath]: skillContent })
+
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'fetch') {
+          throw new Error('fatal: index-pack failed')
+        }
+        return { stdout: '', stderr: '' }
+      })
+
       // Unexpected errors are surfaced (captured + rethrown) but refreshAgentSkills
       // catches per-skillset so the overall call still resolves.
       await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+      expect(mockCaptureException).toHaveBeenCalled()
+    })
+  })
+
+  // ============================================================================
+  // Cache Corruption Recovery (nuke-and-reclone)
+  // ============================================================================
+
+  describe('skillset cache corruption recovery', () => {
+    function buildRef(config: SkillsetConfig) {
+      return {
+        skillsetId: config.id,
+        skillsetUrl: config.url,
+        provider: config.provider,
+        providerData: config.providerData,
+      }
+    }
+
+    /** Mock a clone that materializes a healthy repo (with index.json). */
+    function mockCloneMaterializing(index: SkillsetIndex | null, cloneCalls: string[]) {
+      return (cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'clone') {
+          const dest = args[4]
+          cloneCalls.push(dest)
+          fs.mkdirSync(path.join(dest, '.git'), { recursive: true })
+          if (index) {
+            fs.writeFileSync(path.join(dest, 'index.json'), JSON.stringify(index), 'utf-8')
+          }
+          return { stdout: '', stderr: '' }
+        }
+        return null
+      }
+    }
+
+    it('nukes and re-clones a half-cloned cache when origin/HEAD is unresolvable and the remote answers', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      // Half-cloned cache: .git exists but the tree is empty (no index.json).
+      const repoDir = getSkillsetRepoDir(config.id)
+      await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const cloneCalls: string[] = []
+      const clone = mockCloneMaterializing(index, cloneCalls)
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref')
+        }
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-head') {
+          throw new Error('error: Cannot determine remote HEAD')
+        }
+        return clone(cmd, args) ?? { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(buildRef(config))).resolves.toEqual(index)
+      expect(cloneCalls).toEqual([repoDir])
+      // The set-head failure is logged, not silently swallowed.
+      expect(warnSpy.mock.calls.some(
+        (c) => String(c[0]).includes('set-head') && String(c[1]).includes('Cannot determine remote HEAD'),
+      )).toBe(true)
+      warnSpy.mockRestore()
+    })
+
+    it('serves the stale cache without nuking when origin/HEAD is unresolvable offline', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      await createSkillsetCache(config.id, index)
+
+      const gitCalls: string[][] = []
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        gitCalls.push([cmd, ...args])
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref')
+        }
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-head') {
+          throw new Error("fatal: unable to access 'https://github.com/TestOrg/skills/': Could not resolve host: github.com")
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(buildRef(config))).resolves.toEqual(index)
+      expect(gitCalls.some((c) => c[1] === 'clone')).toBe(false)
+      expect(mockCaptureException).not.toHaveBeenCalled()
+    })
+
+    it('does not nuke an incomplete cache while the remote is unavailable, and skips Sentry', async () => {
+      const config = buildSkillsetConfig()
+      const repoDir = getSkillsetRepoDir(config.id)
+      await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+
+      const gitCalls: string[][] = []
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        gitCalls.push([cmd, ...args])
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref')
+        }
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-head') {
+          throw new Error("fatal: unable to access 'https://github.com/TestOrg/skills/': Could not resolve host: github.com")
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(buildRef(config))).rejects.toThrow(/remote is unreachable/)
+      // Cache untouched — recovery is deferred to a refresh with connectivity.
+      expect(fs.existsSync(path.join(repoDir, '.git'))).toBe(true)
+      expect(gitCalls.some((c) => c[1] === 'clone')).toBe(false)
+
+      // Through refreshAgentSkills the failure is per-skillset and not reported.
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+      expect(mockCaptureException).not.toHaveBeenCalled()
+    })
+
+    it('re-clones when a successful pull still leaves the cache without index.json', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      const repoDir = getSkillsetRepoDir(config.id)
+      await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+
+      const cloneCalls: string[] = []
+      const clone = mockCloneMaterializing(index, cloneCalls)
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        return clone(cmd, args) ?? { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(buildRef(config))).resolves.toEqual(index)
+      expect(cloneCalls).toEqual([repoDir])
+    })
+
+    it('throws a distinct error when the re-cloned repo still has no index.json', async () => {
+      const config = buildSkillsetConfig()
+      const repoDir = getSkillsetRepoDir(config.id)
+      await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+
+      const cloneCalls: string[] = []
+      // Clone "succeeds" but the repo genuinely has no index.json (e.g. an
+      // empty platform skillset repo) — that's a remote-content problem, not
+      // a cache problem, and must not loop into further re-clones.
+      const clone = mockCloneMaterializing(null, cloneCalls)
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref')
+        }
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-head') {
+          throw new Error('error: Cannot determine remote HEAD')
+        }
+        return clone(cmd, args) ?? { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(buildRef(config))).rejects.toThrow(/has no index\.json at its root/)
+      expect(cloneCalls).toEqual([repoDir])
+    })
+
+    it('treats a set-head killed by its timeout as remote-unavailable, not corruption', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      await createSkillsetCache(config.id, index)
+
+      const gitCalls: string[][] = []
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        gitCalls.push([cmd, ...args])
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref')
+        }
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-head') {
+          // Node's execFile timeout kill: bare "Command failed" message, the
+          // evidence lives only in killed/signal metadata.
+          throw Object.assign(new Error('Command failed: git remote set-head origin --auto\n'), {
+            killed: true,
+            signal: 'SIGTERM',
+            code: null,
+          })
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      // A hung network op must never delete a healthy cache.
+      await expect(refreshSkillset(buildRef(config))).resolves.toEqual(index)
+      expect(gitCalls.some((c) => c[1] === 'clone')).toBe(false)
+      expect(mockCaptureException).not.toHaveBeenCalled()
+    })
+
+    it('recovers a cache whose origin remote is missing via nuke-and-reclone', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      await createSkillsetCache(config.id, index)
+
+      const cloneCalls: string[] = []
+      const clone = mockCloneMaterializing(index, cloneCalls)
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-url') {
+          throw new Error("error: No such remote 'origin'")
+        }
+        return clone(cmd, args) ?? { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(buildRef(config))).resolves.toEqual(index)
+      expect(cloneCalls).toEqual([getSkillsetRepoDir(config.id)])
+    })
+
+    it('platform: offline git-url resolution skips Sentry and keeps the cache', async () => {
+      mockGetPlatformAuthStatus.mockReturnValue({ connected: true, source: 'settings', orgId: 'org_A' })
+      const config = buildSkillsetConfig({
+        id: 'platform--repo--test',
+        provider: 'platform',
+        providerData: { orgId: 'org_A', repoId: 'platform--repo' },
+      })
+      const index = buildIndex()
+      await createSkillsetCache('platform--repo', index)
+
+      const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      const proxyMod = await import('@shared/lib/platform-auth/config')
+      vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue('https://platform.example')
+
+      // Undici's offline shape: "fetch failed" with the errno only on cause.
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('getaddrinfo ENOTFOUND platform.example'), { code: 'ENOTFOUND' }),
+      })))
+
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+      vi.unstubAllGlobals()
+
+      expect(mockCaptureException).not.toHaveBeenCalled()
+      expect(fs.existsSync(path.join(getSkillsetRepoDir('platform--repo'), '.git'))).toBe(true)
+    })
+
+    it('platform: expired-auth git-url resolution (401) skips Sentry', async () => {
+      mockGetPlatformAuthStatus.mockReturnValue({ connected: true, source: 'settings', orgId: 'org_A' })
+      const config = buildSkillsetConfig({
+        id: 'platform--repo--test',
+        provider: 'platform',
+        providerData: { orgId: 'org_A', repoId: 'platform--repo' },
+      })
+      await createSkillsetCache('platform--repo', buildIndex())
+
+      const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      const proxyMod = await import('@shared/lib/platform-auth/config')
+      vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue('https://platform.example')
+
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: false, status: 401, statusText: 'Unauthorized',
+        json: async () => ({}), text: async () => '',
+      }))
+
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+      vi.unstubAllGlobals()
+
+      expect(mockCaptureException).not.toHaveBeenCalled()
     })
   })
 

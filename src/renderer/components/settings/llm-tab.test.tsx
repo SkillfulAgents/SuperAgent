@@ -10,6 +10,7 @@ const useProviderModelSearchMock = vi.fn()
 
 vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => useSettingsMock(),
+  useModelSettings: () => useSettingsMock(),
   useProviderModelSearch: (...args: unknown[]) => useProviderModelSearchMock(...args),
   useUpdateSettings: () => ({ mutate: mutateMock }),
 }))
@@ -322,6 +323,7 @@ describe('LlmTab model catalog editor', () => {
       icon: 'uploaded:test-icon.svg',
       blurb: 'A carried-through blurb.',
       contextWindow: 100000,
+      isDefault: true,
       supportsWebSearch: false,
       supportedEfforts: ['low'],
       pricing: { inputPerMtok: 1, outputPerMtok: 2 },
@@ -357,6 +359,7 @@ describe('LlmTab model catalog editor', () => {
               pricing: { inputPerMtok: 1, outputPerMtok: 2 },
               blurb: 'A carried-through blurb.',
               contextWindow: 100000,
+              isDefault: true,
               supportsWebSearch: false,
             },
           ],

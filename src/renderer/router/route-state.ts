@@ -14,6 +14,8 @@ export type AgentView =
   | { kind: 'chat'; integrationId: string; sessionId?: string }
   | { kind: 'dashboard'; slug: string }
   | { kind: 'apiLogs' }
+  | { kind: 'secrets' }
+  | { kind: 'xAgentPermissions' }
   | {
       kind: 'connections'
       /**
@@ -21,7 +23,7 @@ export type AgentView =
        * is where it was opened from — it decides the breadcrumb trail and where
        * Back leads (agent home vs. the connections list).
        */
-      detail?: { rowKey: string; source: 'home' | 'list' }
+      detail?: { rowKey: string; source: 'home' | 'list'; view?: 'logs' }
     }
   | { kind: 'notifications' }
 
@@ -84,11 +86,21 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
       return { to: '/agents/$slug/dashboards/$dashSlug', params: { slug, dashSlug: view.slug } }
     case 'apiLogs':
       return { to: '/agents/$slug/api-logs', params: { slug } }
+    case 'secrets':
+      return { to: '/agents/$slug/secrets', params: { slug } }
+    case 'xAgentPermissions':
+      return { to: '/agents/$slug/x-agent-permissions', params: { slug } }
     case 'connections':
       return {
         to: '/agents/$slug/connections',
         params: { slug },
-        search: view.detail ? { detail: view.detail.rowKey, source: view.detail.source } : {},
+        search: view.detail
+          ? {
+              detail: view.detail.rowKey,
+              source: view.detail.source,
+              ...(view.detail.view ? { connectionView: view.detail.view } : {}),
+            }
+          : {},
       }
     default:
       return assertNever(view)
@@ -128,12 +140,22 @@ export function decodeLocation(snap: RouteSnapshot): AppLocation {
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'dashboard', slug: p.dashSlug ?? '' } }
     case '/agents/$slug/api-logs':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'apiLogs' } }
+    case '/agents/$slug/secrets':
+      return { selectedAgentSlug: p.slug ?? null, view: { kind: 'secrets' } }
+    case '/agents/$slug/x-agent-permissions':
+      return { selectedAgentSlug: p.slug ?? null, view: { kind: 'xAgentPermissions' } }
     case '/agents/$slug/connections': {
       const detail = typeof search.detail === 'string' ? search.detail : undefined
       const source = search.source === 'home' || search.source === 'list' ? search.source : undefined
+      const detailView = search.connectionView === 'logs' ? 'logs' : undefined
       return {
         selectedAgentSlug: p.slug ?? null,
-        view: { kind: 'connections', ...(detail && source ? { detail: { rowKey: detail, source } } : {}) },
+        view: {
+          kind: 'connections',
+          ...(detail && source
+            ? { detail: { rowKey: detail, source, ...(detailView ? { view: detailView } : {}) } }
+            : {}),
+        },
       }
     }
     default:

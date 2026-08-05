@@ -228,7 +228,7 @@ describe('MockChatClientConnector', () => {
   it('records sent cards', async () => {
     const mock = new MockChatClientConnector()
     const event = {
-      type: 'user_question_request' as const,
+      type: 'question_request' as const,
       toolUseId: 'tu-1',
       questions: [{ question: 'Pick one' }],
     }
@@ -236,8 +236,8 @@ describe('MockChatClientConnector', () => {
     await mock.sendUserRequestCard('chat-1', event as any)
 
     expect(mock.sentCards.length).toBe(1)
-    expect(mock.getLastSentCard()?.type).toBe('user_question_request')
-    expect(mock.getCardsOfType('user_question_request').length).toBe(1)
+    expect(mock.getLastSentCard()?.type).toBe('question_request')
+    expect(mock.getCardsOfType('question_request').length).toBe(1)
   })
 
   it('tracks connection state', async () => {

@@ -52,10 +52,11 @@ import type { ChatClientConnector } from './base-connector'
 const INT = 'int-restore-test'
 
 interface ManagerTestSurface {
-  connectIntegration(integration: unknown): Promise<void>
+  connectIntegration(integration: unknown): Promise<boolean>
   subscribeChatSession(integrationId: string, chatId: string, sessionId: string): void
   createConnector(integration: unknown): Promise<ChatClientConnector>
   connections: Map<string, unknown>
+  isRunning: boolean
 }
 
 const mgr = chatIntegrationManager as unknown as ManagerTestSurface
@@ -127,10 +128,15 @@ describe('ChatIntegrationManager — reconnect restoration filter', () => {
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
     seedIntegration()
     vi.clearAllMocks()
+    // connectIntegration cancels itself on a stopped manager (a stop() racing
+    // an in-flight connect must not be resurrected); this harness drives it
+    // directly, so mark the manager running.
+    mgr.isRunning = true
   })
 
   afterEach(() => {
     mgr.connections.delete(INT)
+    mgr.isRunning = false
     testSqlite?.close()
   })
 

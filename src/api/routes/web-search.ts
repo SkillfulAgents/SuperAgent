@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { RequireProxyToken } from '../middleware/require-proxy-token'
+import { IsAgent } from '../middleware/auth'
 import { getActiveWebProvider } from '@shared/lib/web-provider'
 import { applyAllowedSites } from '@shared/lib/web-provider/allowed-sites'
 import { WebSearchRequestSchema } from '@shared/lib/web-provider/web-search-request-schema'
@@ -14,10 +14,8 @@ const MAX_SNIPPET_CHARS = 2000
 
 const webSearch = new Hono()
 
-// Own proxy-token gate. The local-mode-auth bypass for this container-facing route only skips the
-// IP check; it does NOT authenticate, and nothing is inherited from sibling routers — so this
-// router must declare its own gate or it ships open (design §4 auth must-do).
-webSearch.use('*', RequireProxyToken())
+// IsAgent: proxy-token gate + agent-owner attribution scope for billed proxy calls.
+webSearch.use('*', IsAgent())
 
 // POST /search — run the active vendor's search, enforce the operator allow/deny policy host-side.
 webSearch.post('/search', async (c) => {

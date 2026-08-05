@@ -15,6 +15,7 @@ import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
+import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
@@ -25,14 +26,15 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
-import { HomeDefaultModel } from './home-default-model'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
 import { HomeChatIntegrations } from './home-chat-integrations'
 import { HomeVolumes } from './home-volumes'
+import { HomeHooks } from './home-hooks'
 import { HomeBookmarks } from './home-bookmarks'
 import { DashboardCard } from '@renderer/components/home/dashboard-card'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
@@ -46,8 +48,11 @@ import {
 } from '@renderer/hooks/use-typewriter-placeholder'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
+import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
+import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
+import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
 
 interface AgentHomeProps {
   agent: ApiAgent
@@ -89,16 +94,21 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const { data: sessionsData } = useSessions(agent.slug)
   const { data: agentPrefs } = useAgentPreferences(agent.slug)
+  const carryover = useNewSessionCarryover(agent.slug)
   const composerOptions = useComposerOptions({
+    initialModel: carryover?.model,
+    initialEffort: carryover?.effort,
+    initialSpeed: carryover?.speed,
     agentDefaultModel: agentPrefs?.defaultModel,
     agentDefaultEffort: agentPrefs?.defaultEffort,
+    agentDefaultSpeed: agentPrefs?.defaultSpeed,
     agentKey: agent.slug,
     // The default-model card sits next to this composer; an untouched selection
     // must visibly track it, including a reset back to the global default.
     followDefaults: true,
   })
   const sessionSearchRef = useRef<HTMLInputElement>(null)
-  const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const composerTextareaRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
   // Reset when the message clears (e.g. after submit).
@@ -111,8 +121,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // so the post-submit deriveAgentName fallback doesn't clobber it.
   const nameAssignedRef = useRef(false)
   // Agent-scoped settings dialogs — opened from the settings button and
-  // HomeExtras (system-prompt/secrets). NOT the global /settings route; they
-  // stay local dialog state here.
+  // HomeExtras (system prompt). Secrets now have a standalone route; these
+  // settings remain local dialog state rather than global /settings routes.
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
@@ -124,7 +134,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     setSettingsTab(tab)
     setSettingsOpen(true)
   }, [])
-
   const sessions = useMemo(() => {
     if (!Array.isArray(sessionsData)) return []
     return sessionsData.map((s) => ({
@@ -187,6 +196,15 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
+    initialAttachments: carryover?.attachments,
+    initialSecuredSecrets: carryover?.securedSecrets,
+  })
+
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
+  useWarmStartOnType({
+    agentSlug: agent.slug,
+    message: composer.message,
+    enabled: warmStartEnabled,
   })
 
   // Reset the manual-collapse flag once the message clears.
@@ -205,10 +223,10 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     }
   }, [composer.message, isExpanded])
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      composer.handleSubmit(e)
+      void composer.handleSubmit(e)
     }
   }
 
@@ -275,32 +293,44 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
           </div>
         </div>
       )}
-      <div className={`grid gap-10 items-start ${showRightColumn ? 'grid-cols-1 xl:grid-cols-[1fr_minmax(320px,400px)] w-full max-w-6xl mx-auto' : 'max-w-2xl mx-auto'}`}>
+      <div
+        data-testid="agent-home-layout"
+        className={cn(
+          'grid gap-10 items-start w-full mx-auto',
+          showRightColumn
+            ? 'grid-cols-1 max-w-6xl xl:grid-cols-[1fr_minmax(320px,400px)]'
+            : 'xl:max-w-2xl',
+        )}
+      >
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <div className="flex items-center justify-between gap-2 intro-step intro-step-1">
-            <InlineEditableTitle
-              value={agent.name}
-              canEdit={isOwner}
-              isSaving={updateAgent.isPending}
-              onSave={async (name) => {
-                await updateAgent.mutateAsync({ slug: agent.slug, name })
-              }}
-              onError={(error) => {
-                console.error('Failed to rename agent:', error)
-                toast.error('Failed to rename agent', {
-                  description: error instanceof Error ? error.message : 'Please try again.',
-                })
-              }}
-              displayClassName="text-xl font-semibold"
-              inputClassName="h-9 text-xl font-semibold"
-              saveButtonClassName="h-8 w-8"
-              ariaLabel="Rename agent"
-              saveAriaLabel="Save name"
-              displayTestId="agent-name"
-              inputTestId="agent-name-input"
-              saveButtonTestId="agent-name-save"
-            />
+            <AgentContextMenu agent={agent}>
+              <div className="flex-1 min-w-0 cursor-context-menu">
+                <InlineEditableTitle
+                  value={agent.name}
+                  canEdit={isOwner}
+                  isSaving={updateAgent.isPending}
+                  onSave={async (name) => {
+                    await updateAgent.mutateAsync({ slug: agent.slug, name })
+                  }}
+                  onError={(error) => {
+                    console.error('Failed to rename agent:', error)
+                    toast.error('Failed to rename agent', {
+                      description: error instanceof Error ? error.message : 'Please try again.',
+                    })
+                  }}
+                  displayClassName="text-xl font-medium"
+                  inputClassName="h-9 text-xl font-medium"
+                  saveButtonClassName="h-8 w-8"
+                  ariaLabel="Rename agent"
+                  saveAriaLabel="Save name"
+                  displayTestId="agent-name"
+                  inputTestId="agent-name-input"
+                  saveButtonTestId="agent-name-save"
+                />
+              </div>
+            </AgentContextMenu>
             {/* AgentHome owns the settings dialog (no onOpenSettings prop), so the
                 gear opens the local handler rather than a parent-supplied one. */}
             <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => handleOpenSettings()} aria-label="Agent settings" data-testid="agent-settings-button">
@@ -344,7 +374,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   attachments={composer.attachments}
                   onRemoveAttachment={composer.removeAttachment}
                   value={composer.message}
-                  onChange={(e) => composer.setMessage(e.target.value)}
+                  onChange={composer.setMessage}
                   onKeyDown={handleKeyDown}
                   onPaste={composer.handlePaste}
                   placeholder={composerPlaceholder}
@@ -352,6 +382,14 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   rows={2}
                   autoFocus={!isMobile}
                   dataTestId="home-message-input"
+                  secureSecrets={{
+                    agentSlug: agent.slug,
+                    potentialSecrets: composer.potentialSecrets,
+                    securedSecrets: composer.securedSecrets,
+                    onDismiss: composer.dismissPotentialSecret,
+                    onSecure: composer.securePotentialSecret,
+                    onRemove: composer.removeSecuredSecrets,
+                  }}
                   textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[60px] max-h-[120px]'}`}
                   leftActions={(
                     <>
@@ -361,7 +399,17 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                         onRecentFileAttach={(file) => composer.addFiles([{ file }])}
                         disabled={isDisabled}
                       />
-                      <ComposerOptions state={composerOptions} disabled={isDisabled} />
+                      <ComposerOptions
+                        state={composerOptions}
+                        disabled={isDisabled}
+                        footer={
+                          <AgentDefaultFooter
+                            agentSlug={agent.slug}
+                            state={composerOptions}
+                            agentHomeLink={false}
+                          />
+                        }
+                      />
                     </>
                   )}
                   topRightActions={(
@@ -516,14 +564,13 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 const el = composerTextareaRef.current
                 if (el) {
                   el.focus()
-                  el.selectionStart = el.selectionEnd = text.length
                 }
               }, 0)
             }} />
             <HomeChatIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
             <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
-            <HomeDefaultModel className="intro-step intro-step-9" agentSlug={agent.slug} />
             <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
+            <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={isOwner} />
           </div>
         )}
       </div>

@@ -10,6 +10,11 @@ import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { readFile } from 'fs/promises'
 import { z } from 'zod'
 import { resizeScreenshot } from '../image-utils'
+import {
+  BROWSER_OPEN_LOCATIONS,
+  isLoopbackBrowserUrl,
+} from '../browser-location'
+import { hostAuthHeaders } from '../host-auth'
 import { tabManager } from '../tab-manager'
 import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
 
@@ -66,9 +71,11 @@ export function createBrowserTools(getSessionId: () => string | null) {
     body: Record<string, unknown>
   ): Promise<{ success: boolean; data?: unknown; error?: string }> {
     try {
+      // In-process self-call to our own server: needs the host token now that
+      // the API rejects unauthenticated callers.
       const response = await fetch(`${CONTAINER_URL}/browser/${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...hostAuthHeaders() },
         body: JSON.stringify({ sessionId: getSessionId(), ...body }),
       })
       const data = await response.json() as Record<string, unknown>
@@ -85,33 +92,42 @@ export function createBrowserTools(getSessionId: () => string | null) {
   'browser_open',
   `Open a headless browser and navigate to a URL. The user can see the browser live in their interface and interact with it directly.
 
-Use this to start browsing a website. The browser preserves cookies/sessions via a persistent profile, so the user only needs to log in once.`,
+Use this to start browsing a website. The browser preserves cookies/sessions via a persistent profile, so the user only needs to log in once.
+
+Omit location to keep using the current browser where it is; when no browser is live, the user's configured provider is used. Set location="container" for dashboards, development servers, and other URLs served inside the agent container. Set location="configured" to intentionally switch back to the user's configured provider. Changing location closes the current browser before opening the requested one.`,
   {
     url: z.string().describe('The URL to navigate to'),
+    location: z
+      .enum(BROWSER_OPEN_LOCATIONS)
+      .optional()
+      .describe('Where to run the browser. Omit to keep the current location (or use settings when no browser is live); "configured" explicitly selects the provider in settings; "container" forces bundled Chromium for private container ports.'),
   },
   async (args) => {
-    // Warn if the agent is trying to open a localhost URL — the browser runs outside
-    // the container and cannot reach servers running inside it (e.g. dashboards).
-    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(args.url)
-    const localhostWarning = isLocalhost
-      ? '\n\nWARNING: This is a localhost URL. The browser runs outside the container and cannot access servers running inside it. If you are trying to view a dashboard, stop — the user can already see dashboards through the Gamut UI. Use get_dashboard_logs to debug any issues instead.'
-      : ''
-
-    const result = await browserFetch('open', { url: args.url })
+    const result = await browserFetch('open', { url: args.url, location: args.location })
     if (!result.success) {
       return {
-        content: [{ type: 'text' as const, text: `Error: ${result.error}${localhostWarning}` }],
+        content: [{ type: 'text' as const, text: `Error: ${result.error}` }],
         isError: true,
       }
     }
     const data = result.data as Record<string, unknown> | undefined
+    const activeLocation = data?.location === 'container' ? 'container' : 'host'
+    const locationText = activeLocation === 'container'
+      ? 'bundled Chromium inside the agent container'
+      : 'the configured browser provider'
+    const switchText = data?.switchedFrom
+      ? ` The previous ${data.switchedFrom} browser was closed before switching locations.`
+      : ''
+    const localhostWarning = isLoopbackBrowserUrl(args.url) && activeLocation === 'host'
+      ? '\n\nWARNING: This URL points at the host browser\'s own loopback interface. If you meant a service inside the agent container, reopen it with location="container".'
+      : ''
 
     if (data?.switchedToExisting) {
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Switched to existing tab ${data.tabId} which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}`,
+            text: `Switched to existing tab ${data.tabId} in ${locationText}, which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}`,
           },
         ],
       }
@@ -121,7 +137,7 @@ Use this to start browsing a website. The browser preserves cookies/sessions via
       content: [
         {
           type: 'text' as const,
-          text: `Browser opened and navigating to ${args.url}. The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}`,
+          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}`,
         },
       ],
     }
@@ -463,6 +479,39 @@ The selector must target the actual file input element, such as input[type="file
   }
 )
 
+const browserDownloadTool = tool(
+  'browser_download',
+  `Download a file or page asset (image, PDF, CSV, ...) into the workspace THROUGH the browser — the browser's cookies and login state apply, so this works for assets behind a login that curl/fetch outside the browser cannot reach. The bytes travel over the browser connection, so it also works when the browser runs outside the container (host Chrome, remote providers).
+
+Files are saved under /workspace/downloads/ and the saved path is returned.
+
+- Get the asset URL from the page first: browser_snapshot with includeUrls, browser_run("get attr @eN src"), or browser_eval (e.g. document.querySelector('img.profile-photo').src).
+- Supports http(s) URLs, blob: URLs (files the page generated — fetched from the current page), and data: URLs.
+- Links/buttons that trigger a browser download can also just be clicked — those files land in /workspace/downloads/ too.`,
+  {
+    url: z.string().describe('URL of the file to download — an <img> src, <a> href, blob: or data: URL'),
+    filename: z
+      .string()
+      .optional()
+      .describe('Optional filename to save as (basename only). Derived from the URL/response headers when omitted.'),
+  },
+  async (args) => {
+    const result = await browserFetch('download', { url: args.url, filename: args.filename })
+    if (!result.success) return errorResult(result.error!)
+    const data = result.data as { file?: { name: string; path: string; size: number; contentType: string | null } }
+    const file = data.file
+    if (!file) return errorResult('Download did not return file info')
+
+    let text = `Downloaded to ${file.path} (${file.size} bytes${file.contentType ? `, ${file.contentType}` : ''}).`
+    if (file.contentType === 'text/html') {
+      text += '\nWARNING: the response is an HTML page, not a file asset — this is usually a login or error page. Check the URL or your session.'
+    }
+    return {
+      content: [{ type: 'text' as const, text }],
+    }
+  }
+)
+
 const browserTypeTool = tool(
   'browser_type',
   `Type text with REAL keystrokes into the currently focused element — or pass a ref to focus that element first.
@@ -646,6 +695,7 @@ const browserGetStateTool = tool(
     browserSelectTool,
     browserHoverTool,
     browserUploadTool,
+    browserDownloadTool,
     browserTypeTool,
     browserEvalTool,
     browserRunTool,

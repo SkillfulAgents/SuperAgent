@@ -91,6 +91,25 @@ describe('OpenRouterLlmProvider.searchModels — listing mapping', () => {
     })
   })
 
+  it('maps a Moonshot listing to the Kimi brand icon', async () => {
+    stubFetch({
+      data: [
+        {
+          id: 'moonshotai/kimi-k3',
+          name: 'MoonshotAI: Kimi K3',
+          description: 'Open frontier model.',
+          context_length: 1048576,
+          architecture: { input_modalities: ['text', 'image'] },
+          pricing: { prompt: '0.000003', completion: '0.000015' },
+        },
+      ],
+    })
+
+    const [model] = await provider.searchModels('kimi')
+
+    expect(model).toMatchObject({ id: 'moonshotai/kimi-k3', icon: 'kimi' })
+  })
+
   it('reports image-input support from advertised input modalities', async () => {
     stubFetch({
       data: [
@@ -135,6 +154,15 @@ describe('OpenRouterLlmProvider.searchModels — listing mapping', () => {
 
     expect(model.icon).toBe('zai')
     expect(model.family).toBe('glm')
+  })
+
+  it('maps the x-ai vendor to the xai icon', async () => {
+    stubFetch({ data: [{ id: 'x-ai/grok-4.5', name: 'xAI: Grok 4.5' }] })
+
+    const [model] = await provider.searchModels('grok')
+
+    expect(model.icon).toBe('xai')
+    expect(model.family).toBe('grok')
   })
 
   it('omits pricing unless both prompt and completion are present', async () => {

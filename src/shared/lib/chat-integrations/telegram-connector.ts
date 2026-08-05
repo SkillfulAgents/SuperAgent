@@ -12,8 +12,16 @@ import { Bot, type Context as GrammyContext } from 'grammy'
 import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
-import { ChatClientConnector, type OutgoingMessage } from './base-connector'
-import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
+import {
+  ChatClientConnector,
+  isMultiPartyChatType,
+  type ChatClassifyContext,
+  type ChatConversationType,
+  type OutgoingMessage,
+  type SystemPromptContext,
+} from './base-connector'
+import { buildSessionContextPrompt } from './chat-session-context'
+import { describeUnsupportedRequest, isUnsupportedInChat, withSessionUrl, type AppLinkContext } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from 'grammy/types'
@@ -105,10 +113,43 @@ export function markdownToTelegramHtml(md: string): string {
     .trim()
 }
 
+// ── Chat id classification ──────────────────────────────────────────────
+
+/**
+ * Telegram encodes the conversation type in the id sign: private chats are the
+ * user's own (positive) id, groups and supergroups are negative. Non-numeric ids
+ * are not Telegram ids; classify nothing rather than guessing.
+ */
+export function classifyTelegramChatId(chatId: string): ChatConversationType | undefined {
+  if (!/^-?[1-9]\d*$/.test(chatId)) return undefined
+  return chatId.startsWith('-') ? 'group' : 'dm'
+}
+
+export function classifyTelegramChat(chat: ChatClassifyContext): ChatConversationType | undefined {
+  return classifyTelegramChatId(chat.chatId)
+}
+
+export function buildTelegramSystemPrompt(message: SystemPromptContext): string {
+  const kind = classifyTelegramChat(message)
+  const whereDetail = kind === 'group'
+    ? `a group conversation (chat id: ${message.chatId})`
+    : kind === 'dm'
+      ? `a direct message (chat id: ${message.chatId})`
+      : 'a Telegram conversation'
+  return buildSessionContextPrompt({
+    surface: 'chat',
+    where: `a live Telegram conversation: you are responding inside ${whereDetail}`,
+    multiParty: isMultiPartyChatType(kind),
+  })
+}
+
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class TelegramConnector extends ChatClientConnector {
   readonly provider = 'telegram' as const
+
+  static generateSystemPrompt = buildTelegramSystemPrompt
+  static classifyChatId = classifyTelegramChat
 
   private bot: Bot | null = null
   private connected = false
@@ -166,7 +207,7 @@ export class TelegramConnector extends ChatClientConnector {
   // the current label even when it changes mid-turn (working → thinking → …).
   private workingActivity: Map<string, SessionActivity> = new Map()
 
-  constructor(private config: TelegramConfig) {
+  constructor(private config: TelegramConfig, private appLink?: AppLinkContext) {
     super()
   }
 
@@ -501,15 +542,16 @@ export class TelegramConnector extends ChatClientConnector {
 
   // ── User request cards ──────────────────────────────────────────────
 
-  async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
+  async sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
     if (!this.bot) throw new Error('Bot not connected')
+    const appLink = withSessionUrl(this.appLink, sessionId)
 
     if (isUnsupportedInChat(event)) {
-      return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event))}_`)
+      return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event, appLink))}_`)
     }
 
     switch (event.type) {
-      case 'user_question_request': {
+      case 'question_request': {
         let lastMessageId = ''
 
         // Track multi-question requests so we wait for all answers
@@ -602,7 +644,7 @@ export class TelegramConnector extends ChatClientConnector {
       }
 
       default:
-        return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event))}_`)
+        return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event, appLink))}_`)
     }
   }
 
@@ -893,7 +935,7 @@ export class TelegramConnector extends ChatClientConnector {
 
   /** Telegram private-chat ids are positive; groups/channels are negative. */
   private isPrivateChat(chatId: string): boolean {
-    return Number(chatId) > 0
+    return classifyTelegramChatId(chatId) === 'dm'
   }
 
   private get useRich(): boolean {

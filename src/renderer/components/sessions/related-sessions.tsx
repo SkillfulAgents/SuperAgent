@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
-import { MessageSquare, ChevronLeft, ChevronRight, MoreVertical, Pencil, ClipboardCopy, Trash2 } from 'lucide-react'
+import { MessageSquare, ChevronLeft, ChevronRight, MoreVertical, MoonStar, Pencil, ClipboardCopy, Trash2 } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { Button } from '@renderer/components/ui/button'
@@ -43,6 +44,7 @@ interface SessionItem {
   isActive?: boolean
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  pendingWakeAt?: string
 }
 
 interface RelatedSessionsProps {
@@ -104,7 +106,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
             {title ?? 'Related Sessions'}
           </h3>
           <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v as SortOrder); setPage(0) }}>
-            <SelectTrigger className="h-7 w-[130px] text-xs">
+            <SelectTrigger className="h-7 w-[130px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -248,6 +250,15 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
             ) : session.hasUnreadNotifications ? (
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
             ) : null}
+            {session.pendingWakeAt && !session.isActive && !session.isAwaitingInput && (
+              <span
+                className="flex items-center gap-1 shrink-0 text-muted-foreground font-normal"
+                title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt), { addSuffix: true })}`}
+              >
+                <MoonStar className="h-3 w-3" />
+                {formatDistanceToNow(new Date(session.pendingWakeAt), { addSuffix: true })}
+              </span>
+            )}
             {dateAsTitle ? (
               <>
                 <span>{formatDate(session.createdAt)}</span>

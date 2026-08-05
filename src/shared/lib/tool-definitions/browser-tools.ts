@@ -78,6 +78,16 @@ export const browserHoverDef: ToolDefinition = {
   getSummary: (input) => (input as { ref?: string }).ref ?? null,
 }
 
+export const browserDownloadDef: ToolDefinition = {
+  displayName: 'Download File',
+  getSummary: (input) => {
+    const { url, filename } = input as { url?: string; filename?: string }
+    if (filename) return filename
+    if (!url) return null
+    return url.length > 60 ? `${url.slice(0, 57)}...` : url
+  },
+}
+
 export const browserEvalDef: ToolDefinition = {
   displayName: 'Run JavaScript',
   getSummary: (input) => {

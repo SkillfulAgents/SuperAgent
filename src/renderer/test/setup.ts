@@ -1,6 +1,18 @@
 import '@testing-library/jest-dom/vitest'
-import { vi } from 'vitest'
+import { beforeEach, vi } from 'vitest'
 import { createElement } from 'react'
+import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
+
+// Auth mode is now derived from the resolved API target, and reading it before
+// boot settles that target throws by design (a wrong guess routes cloud traffic
+// to the laptop). Production settles it in `initApiBaseUrl()`; tests get the
+// local target here so everything that renders UserProvider behaves exactly as
+// it did when auth mode was a build-time constant. A test that needs the cloud
+// target resets and re-sets it in its own `beforeEach`, which runs after this.
+beforeEach(() => {
+  _resetApiTargetForTest()
+  setActiveTarget('local', null)
+})
 
 // jsdom has no matchMedia; components read it via useIsMobile() and
 // prefers-reduced-motion. Default to "no match" (desktop, motion allowed) with
@@ -18,6 +30,23 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   }) as unknown as MediaQueryList
 }
 
+// jsdom has no ResizeObserver; recharts' ResponsiveContainer (used by the home
+// page usage sparklines) needs it. Stub it as a no-op so chart-rendering
+// components can mount in tests.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+}
+
+// jsdom logs a "Not implemented" error whenever an otherwise unrelated
+// component probes canvas. Focused canvas tests spy on top of this default.
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = () => null
+}
+
 const signIn = {
   email: vi.fn(),
   oauth2: vi.fn(),
@@ -28,13 +57,14 @@ const signUp = {
 }
 
 // Mock auth-client globally — UserProvider imports it at module level.
-// When __AUTH_MODE__ is false the hooks are never called, but the import still runs.
+// Outside auth mode the hooks are never called, but the import still runs.
 vi.mock('@renderer/lib/auth-client', () => ({
   authClient: {},
   signIn,
   signUp,
   signOut: vi.fn(),
   useSession: () => ({ data: null, isPending: false }),
+  _resetAuthClientForTest: vi.fn(),
 }))
 
 // Mock server analytics globally — it imports `fs` via tenant-id.ts which
@@ -89,12 +119,18 @@ vi.mock('@renderer/components/ui/app-link', () => ({
 
 // DialogContext drives global settings via the router. Renderer unit
 // tests have no RouterProvider, so stub it — DialogProvider passes children
-// through and useDialogs returns no-ops. A file-level mock overrides where a test
-// needs to assert on these (e.g. app-sidebar.test).
-vi.mock('@renderer/context/dialog-context', () => ({
-  DialogProvider: ({ children }: { children: React.ReactNode }) => children,
-  useDialogs: () => ({ openSettings: vi.fn(), closeSettings: vi.fn(), openWizard: vi.fn() }),
-}))
+// through, useDialogs returns no-ops, and DialogContext is a real (null-
+// default) context so consumers reading it via useContext keep working and
+// tests can wrap a Provider around them. A file-level mock overrides where a
+// test needs to assert on these (e.g. app-sidebar.test).
+vi.mock('@renderer/context/dialog-context', async () => {
+  const { createContext } = await import('react')
+  return {
+    DialogContext: createContext(null),
+    DialogProvider: ({ children }: { children: React.ReactNode }) => children,
+    useDialogs: () => ({ openSettings: vi.fn(), closeSettings: vi.fn(), openWizard: vi.fn() }),
+  }
+})
 
 // Components read navigation state via `useRouteLocation()`. It calls
 // `useRouterState()`, which throws outside a RouterProvider — renderer unit

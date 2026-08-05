@@ -48,7 +48,7 @@ export function ForcePasswordChange() {
     <div className="flex items-center justify-center h-screen bg-background">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <h1 className="text-2xl font-bold">Change Your Password</h1>
+          <h1 className="text-2xl font-medium">Change Your Password</h1>
           <p className="text-sm text-muted-foreground mt-2">
             Your account requires a password change before you can continue.
           </p>

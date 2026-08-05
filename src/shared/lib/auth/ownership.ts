@@ -9,6 +9,7 @@
  *
  * These helpers encapsulate the `isAuthMode() && ... getCurrentUserId(c)`
  * boilerplate so call sites stay readable:
+ *   - getViewerUserId(c)       → acting user id, or null in non-auth mode
  *   - ownerScope(c, col)        → a WHERE fragment, or undefined in non-auth mode
  *   - isOwnedByCaller(c, record) → boolean (always true in non-auth mode)
  *
@@ -20,6 +21,11 @@ import { eq, type Column, type SQL } from 'drizzle-orm'
 import { isAuthMode } from './mode'
 import { getCurrentUserId } from './config'
 
+/** Acting user id in auth mode, or `null` in local/single-user mode. */
+export function getViewerUserId(c: Context): string | null {
+  return isAuthMode() ? getCurrentUserId(c) : null
+}
+
 /**
  * A drizzle WHERE fragment scoping `column` to the acting user — or `undefined`
  * in non-auth mode. `and()` ignores undefined, so spread it directly:
@@ -27,8 +33,8 @@ import { getCurrentUserId } from './config'
  *   .where(and(inArray(table.id, ids), ownerScope(c, table.userId)))
  */
 export function ownerScope(c: Context, column: Column): SQL | undefined {
-  if (!isAuthMode()) return undefined
-  return eq(column, getCurrentUserId(c))
+  const viewerUserId = getViewerUserId(c)
+  return viewerUserId === null ? undefined : eq(column, viewerUserId)
 }
 
 /**
@@ -41,6 +47,6 @@ export function isOwnedByCaller(
   c: Context,
   record: { userId?: string | null } | null | undefined,
 ): boolean {
-  if (!isAuthMode()) return true
-  return !!record && record.userId === getCurrentUserId(c)
+  const viewerUserId = getViewerUserId(c)
+  return viewerUserId === null || (!!record && record.userId === viewerUserId)
 }

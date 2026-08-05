@@ -177,6 +177,20 @@ describe('AttachmentPreview', () => {
     expect(screen.getByText('mounted, read-write')).toBeInTheDocument()
   })
 
+  it('renders "mount failed" instead of the success label when a mount has an error', () => {
+    const attachment: MountAttachment = {
+      type: 'mount',
+      id: 'mount-1',
+      folderName: 'my-data',
+      hostPath: '/Users/joe/my-data',
+      error: 'hostPath is required',
+    }
+    render(<AttachmentPreview attachments={[attachment]} onRemove={vi.fn()} />)
+    expect(screen.getByText('mount failed')).toBeInTheDocument()
+    expect(screen.getByText('mount failed')).toHaveAttribute('title', 'hostPath is required')
+    expect(screen.queryByText('mounted, read-write')).not.toBeInTheDocument()
+  })
+
   it('calls onRemove with mount id when remove button is clicked', async () => {
     const user = userEvent.setup()
     const onRemove = vi.fn()

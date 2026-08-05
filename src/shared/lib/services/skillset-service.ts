@@ -14,9 +14,8 @@ import fs from 'fs'
 import yaml from 'js-yaml'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
-import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
+import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
-import { withRetry } from '@shared/lib/utils/retry'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
   getAgentWorkspaceDir,
@@ -54,6 +53,17 @@ const GIT_ENV = {
   // Sentry noise; a translated locale would defeat that matching.
   LC_ALL: 'C',
   LANG: 'C',
+}
+
+function getRepoGitEnv(repoDir: string) {
+  const inheritedCount = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? '0', 10)
+  const configIndex = Number.isInteger(inheritedCount) && inheritedCount >= 0 ? inheritedCount : 0
+  return {
+    ...GIT_ENV,
+    GIT_CONFIG_COUNT: String(configIndex + 1),
+    [`GIT_CONFIG_KEY_${configIndex}`]: 'safe.directory',
+    [`GIT_CONFIG_VALUE_${configIndex}`]: repoDir,
+  }
 }
 
 const activeSkillsetRefreshes = new Map<string, Promise<SkillsetIndex>>()
@@ -439,17 +449,75 @@ function isExpectedGitDriftError(msg: string): boolean {
 }
 
 /**
+ * Git errors that mean the remote is unavailable to us right now — offline,
+ * DNS/connect failures, timeouts, or auth problems. These are environmental,
+ * not a sign the local cache is corrupt, so they must never trigger a
+ * nuke-and-reclone and are not worth reporting to Sentry per-refresh.
+ */
+function isRemoteUnavailableGitError(msg: string): boolean {
+  return /Could not resolve host|unable to access|Connection (timed out|refused|reset)|Network is unreachable|Could not read from remote|Failed to connect|Operation timed out|timed? ?out|Permission denied|Could not access repository|remote is unreachable|fetch failed|Failed to get platform Git URL: (401|403|407|408|429|5\d\d)|Not authorized to download platform skillset|Platform not connected|Platform server error while downloading/i.test(msg)
+}
+
+const NETWORK_ERROR_CODES = new Set([
+  'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT',
+  'ENETUNREACH', 'ENETDOWN', 'EHOSTUNREACH', 'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET',
+])
+
+/** Walk error → cause → AggregateError.errors looking for a network errno. */
+function hasNetworkErrorCode(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== 'object' || depth > 4) return false
+  const e = error as { code?: unknown; cause?: unknown; errors?: unknown }
+  if (typeof e.code === 'string' && NETWORK_ERROR_CODES.has(e.code)) return true
+  if (Array.isArray(e.errors) && e.errors.some((sub) => hasNetworkErrorCode(sub, depth + 1))) return true
+  return hasNetworkErrorCode(e.cause, depth + 1)
+}
+
+/**
+ * Object-aware remote-unavailability check. The message alone is not enough:
+ * an execFile timeout kills the child (`killed`/`signal` set) with a bare
+ * "Command failed: git …" message, and undici surfaces DNS failures as
+ * "fetch failed" with the errno only on `cause`.
+ */
+function isRemoteUnavailableError(error: unknown): boolean {
+  if (error && typeof error === 'object') {
+    const e = error as { killed?: unknown; signal?: unknown }
+    if (e.killed === true || (typeof e.signal === 'string' && e.signal.length > 0)) return true
+    if (hasNetworkErrorCode(error)) return true
+  }
+  const msg = error instanceof Error ? error.message : String(error)
+  return isRemoteUnavailableGitError(msg)
+}
+
+/**
+ * Thrown when the remote is reachable but the cache is unusable as a git
+ * clone (no resolvable origin/HEAD). Signals `refreshSkillsetCache` to nuke
+ * the directory and re-clone instead of failing every refresh forever.
+ */
+class SkillsetCacheCorruptError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SkillsetCacheCorruptError'
+  }
+}
+
+type DefaultBranchResolution =
+  | { branch: string }
+  | { branch: null; reason: 'offline' | 'unresolvable'; detail: string }
+
+/**
  * Resolve the repo's real default branch from its origin remote. Falls back to
  * `set-head --auto` (which queries the remote's HEAD) when the local
  * `refs/remotes/origin/HEAD` symref is missing — common on shallow clones.
- * Returns null if it can't be determined.
+ * When it can't be determined, says whether that's because the remote is
+ * unavailable (offline/auth) or the cache itself is unresolvable.
  */
-async function resolveDefaultBranch(repoDir: string): Promise<string | null> {
+async function resolveDefaultBranch(repoDir: string): Promise<DefaultBranchResolution> {
   const readSymref = async (): Promise<string | null> => {
     try {
       const { stdout } = await execFileAsync(
         'git', ['symbolic-ref', 'refs/remotes/origin/HEAD'],
-        { cwd: repoDir, timeout: 5000, env: GIT_ENV },
+        { cwd: repoDir, timeout: 5000, env: getRepoGitEnv(repoDir) },
       )
       const branch = stdout.trim().replace('refs/remotes/origin/', '')
       return branch || null
@@ -459,41 +527,64 @@ async function resolveDefaultBranch(repoDir: string): Promise<string | null> {
   }
 
   const existing = await readSymref()
-  if (existing) return existing
+  if (existing) return { branch: existing }
 
   // The symref isn't set locally — ask the remote for its HEAD once, then
-  // re-read. `set-head --auto` is a no-op if it can't reach the remote.
+  // re-read. The failure matters: it tells offline apart from a cache whose
+  // origin/HEAD genuinely can't be resolved (half-clone, empty repo). Keep
+  // the error object, not just its message — a hung set-head killed by the
+  // execFile timeout only carries `killed`/`signal`, not a network message.
+  let setHeadError: unknown = null
   try {
     await execFileAsync('git', ['remote', 'set-head', 'origin', '--auto'], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      cwd: repoDir, timeout: 10000, env: getRepoGitEnv(repoDir),
     })
-  } catch {
-    // Ignore — readSymref below will return null and the caller handles it.
+  } catch (err) {
+    setHeadError = err
+    console.warn(
+      `[resolveDefaultBranch] set-head --auto failed in ${repoDir}:`,
+      err instanceof Error ? err.message : String(err),
+    )
   }
-  return readSymref()
+
+  const branch = await readSymref()
+  if (branch) return { branch }
+
+  const detail = setHeadError instanceof Error
+    ? setHeadError.message
+    : setHeadError ? String(setHeadError) : 'origin/HEAD still unset after set-head --auto'
+  if (setHeadError && isRemoteUnavailableError(setHeadError)) {
+    return { branch: null, reason: 'offline', detail }
+  }
+  return { branch: null, reason: 'unresolvable', detail }
 }
 
-async function gitPull(repoDir: string): Promise<void> {
+type GitPullResult = 'pulled' | 'skipped-offline'
+
+async function gitPull(repoDir: string): Promise<GitPullResult> {
   // Resolve the repo's real default branch instead of guessing main/master.
   // After a PR flow the repo may be left on a detached HEAD, a stale branch,
   // or with a drifted branch.<name>.merge config.
-  const defaultBranch = await resolveDefaultBranch(repoDir)
+  const resolved = await resolveDefaultBranch(repoDir)
 
-  if (!defaultBranch) {
-    // Without a known default branch we can't deterministically refresh. This
-    // happens on caches whose origin/HEAD can't be resolved (offline, etc.).
-    const msg = `[gitPull] Could not resolve default branch in ${repoDir}`
-    console.warn(msg)
-    captureException(new Error(msg), {
-      tags: { area: 'skillset-git', op: 'resolve-default-branch' },
-      extra: { repoDir },
-    })
-    return
+  if (resolved.branch === null) {
+    if (resolved.reason === 'offline') {
+      // Remote unavailable — the cache is stale but usable; skip quietly.
+      console.warn(`[gitPull] Remote unavailable; skipping refresh in ${repoDir}:`, resolved.detail)
+      return 'skipped-offline'
+    }
+    // The remote answered (or the symref is simply broken) yet origin/HEAD is
+    // unresolvable — a half-cloned or corrupted cache that will never heal on
+    // its own. Let the caller nuke and re-clone.
+    throw new SkillsetCacheCorruptError(
+      `Could not resolve default branch in ${repoDir}: ${resolved.detail}`,
+    )
   }
+  const defaultBranch = resolved.branch
 
   try {
     await execFileAsync('git', ['checkout', defaultBranch], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      cwd: repoDir, timeout: 10000, env: getRepoGitEnv(repoDir),
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -513,10 +604,10 @@ async function gitPull(repoDir: string): Promise<void> {
   // would break `reset --hard origin/<branch>` / `git pull`.
   try {
     await execFileAsync('git', ['fetch', '--depth', '1', 'origin', defaultBranch], {
-      cwd: repoDir, timeout: 30000, env: GIT_ENV,
+      cwd: repoDir, timeout: 30000, env: getRepoGitEnv(repoDir),
     })
     await execFileAsync('git', ['reset', '--hard', 'FETCH_HEAD'], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      cwd: repoDir, timeout: 10000, env: getRepoGitEnv(repoDir),
     })
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
@@ -524,11 +615,17 @@ async function gitPull(repoDir: string): Promise<void> {
       // Expected drift on shallow single-branch caches — already handled, no
       // user-facing impact, so don't report to Sentry.
       console.warn(`[gitPull] fetch/reset drift (recoverable) in ${repoDir}:`, msg)
-      return
+      return 'pulled'
+    }
+    if (isRemoteUnavailableError(error)) {
+      // Offline/auth/timeout — the stale cache remains usable; skip quietly.
+      console.warn(`[gitPull] Remote unavailable; keeping stale cache in ${repoDir}:`, msg)
+      return 'skipped-offline'
     }
     captureException(error, { tags: { area: 'skillset-git', op: 'fetch-reset' }, extra: { repoDir } })
     throw error
   }
+  return 'pulled'
 }
 
 async function isGitRepo(dir: string): Promise<boolean> {
@@ -685,6 +782,25 @@ export async function refreshSkillset(ref: SkillsetRef): Promise<SkillsetIndex> 
   }
 }
 
+/**
+ * Nuke a corrupt git cache and re-clone it from scratch. A half-cloned cache
+ * (no resolvable origin/HEAD, or `.git` present with an empty tree) makes
+ * every refresh fail forever; the cache holds nothing of value, so recovery
+ * is a fresh clone. Throws a distinct error if the freshly cloned repo still
+ * has no index.json — that means the remote content itself is broken, not
+ * the cache.
+ */
+async function recloneSkillsetCache(ref: SkillsetRef, repoDir: string, cause: string): Promise<void> {
+  console.warn(`[refreshSkillset] Re-cloning corrupt skillset cache at ${repoDir}: ${cause}`)
+  await fs.promises.rm(repoDir, { recursive: true, force: true })
+  await ensureSkillsetCached(ref)
+  if (!fs.existsSync(path.join(repoDir, 'index.json'))) {
+    throw new Error(
+      `Skillset repository has no index.json at its root (re-cloned ${repoDir} after: ${cause})`,
+    )
+  }
+}
+
 async function refreshSkillsetCache(
   ref: SkillsetRef,
   hostingProvider: ReturnType<typeof getSkillsetProvider>,
@@ -700,12 +816,42 @@ async function refreshSkillsetCache(
     // For platform, the URL embeds a short-lived token that needs refreshing.
     // For github, set-url is a cheap no-op when unchanged.
     const freshUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
-    await execFileAsync('git', ['remote', 'set-url', 'origin', freshUrl], {
-      cwd: repoDir, timeout: 5000, env: GIT_ENV,
-    })
-    await gitPull(repoDir)
+
+    let pullResult: GitPullResult
+    try {
+      // A cache whose `origin` remote is missing entirely (interrupted clone,
+      // mangled config) fails set-url with "No such remote" — that's the same
+      // corrupt-cache shape as an unresolvable origin/HEAD, so it recovers
+      // through the same nuke-and-reclone.
+      await execFileAsync('git', ['remote', 'set-url', 'origin', freshUrl], {
+        cwd: repoDir, timeout: 5000, env: getRepoGitEnv(repoDir),
+      })
+      pullResult = await gitPull(repoDir)
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      const isCorrupt = error instanceof SkillsetCacheCorruptError || /No such remote/i.test(msg)
+      if (!isCorrupt) throw error
+      await recloneSkillsetCache(ref, repoDir, msg)
+      return readIndexJson(repoDir)
+    }
+
+    if (!fs.existsSync(path.join(repoDir, 'index.json'))) {
+      if (pullResult === 'skipped-offline') {
+        // The cache is incomplete but we can't re-clone right now. Don't nuke
+        // it while offline — retry on the next refresh instead.
+        throw new Error(
+          `Skillset cache at ${repoDir} has no index.json and the remote is unreachable; will retry on next refresh`,
+        )
+      }
+      await recloneSkillsetCache(ref, repoDir, 'index.json missing after successful pull')
+    }
   } else {
     await ensureSkillsetCached(ref)
+    if (!fs.existsSync(path.join(repoDir, 'index.json'))) {
+      throw new Error(
+        `Skillset repository has no index.json at its root (fresh clone at ${repoDir})`,
+      )
+    }
   }
 
   return readIndexJson(repoDir)
@@ -1063,7 +1209,7 @@ export async function refreshAgentSkills(
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
       const msg = error instanceof Error ? error.message : String(error)
-      if (!isExpectedGitDriftError(msg)) {
+      if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableError(error)) {
         captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
       }
     }
@@ -1122,7 +1268,7 @@ export async function refreshAgentSkills(
             await refreshSkillset(toSkillsetRefFromMeta(meta))
           } catch (error) {
             const msg = error instanceof Error ? error.message : String(error)
-            if (!isExpectedGitDriftError(msg)) {
+            if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableError(error)) {
               captureException(error, { tags: { area: 'skillset-refresh', op: 'queue-merged-pull' }, extra: { skillsetId: meta.skillsetId } })
             }
           }
@@ -1289,14 +1435,12 @@ async function generatePRSuggestions(
   try {
     const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
 
-    const response = await withRetry(() =>
-      client.messages.create({
-        model,
-        max_tokens: 500,
-        messages: [
-          {
-            role: 'user',
-            content: `You are analyzing changes to a skill definition file (SKILL.md). Compare the original and modified versions and generate a PR title, description, and new SemVer version.
+    const text = await createSummarizerText(client, {
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: `You are analyzing changes to a skill definition file (SKILL.md). Compare the original and modified versions and generate a PR title, description, and new SemVer version.
 
 Current version: ${meta.installedVersion}
 
@@ -1322,27 +1466,24 @@ Rules for the version bump:
 - PATCH (x.y.Z): bug fixes, typo corrections, minor wording tweaks
 - MINOR (x.Y.0): new features, added capabilities, significant improvements
 - MAJOR (X.0.0): breaking changes, fundamental restructuring`,
-          },
-        ],
-        output_config: {
-          format: {
-            type: 'json_schema' as const,
-            schema: {
-              type: 'object',
-              properties: {
-                title: { type: 'string', description: 'Concise imperative PR title' },
-                body: { type: 'string', description: 'Markdown description of what changed' },
-                version: { type: 'string', description: 'New SemVer version' },
-              },
-              required: ['title', 'body', 'version'],
-              additionalProperties: false,
+        },
+      ],
+      output_config: {
+        format: {
+          type: 'json_schema' as const,
+          schema: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Concise imperative PR title' },
+              body: { type: 'string', description: 'Markdown description of what changed' },
+              version: { type: 'string', description: 'New SemVer version' },
             },
+            required: ['title', 'body', 'version'],
+            additionalProperties: false,
           },
         },
-      })
-    )
-
-    const text = extractTextFromLlmResponse(response)
+      },
+    })
     if (!text) return fallback
 
     const parsed = JSON.parse(text)
@@ -1521,14 +1662,12 @@ async function generatePublishSuggestions(
   try {
     const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
 
-    const response = await withRetry(() =>
-      client.messages.create({
-        model,
-        max_tokens: 500,
-        messages: [
-          {
-            role: 'user',
-            content: `You are reviewing a new skill definition file (SKILL.md) that is being submitted to a shared skillset repository. Generate a PR title, description, and confirm the version.
+    const text = await createSummarizerText(client, {
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: `You are reviewing a new skill definition file (SKILL.md) that is being submitted to a shared skillset repository. Generate a PR title, description, and confirm the version.
 
 Skill name: ${skillName}
 
@@ -1541,27 +1680,24 @@ Generate:
 - A concise, imperative PR title (e.g. "Add NDA review skill")
 - A markdown description explaining what the skill does and its key capabilities
 - The version to use (use the version from the skill's metadata if present, otherwise "1.0.0")`,
-          },
-        ],
-        output_config: {
-          format: {
-            type: 'json_schema' as const,
-            schema: {
-              type: 'object',
-              properties: {
-                title: { type: 'string', description: 'Concise imperative PR title' },
-                body: { type: 'string', description: 'Markdown description of the skill' },
-                version: { type: 'string', description: 'SemVer version for the skill' },
-              },
-              required: ['title', 'body', 'version'],
-              additionalProperties: false,
+        },
+      ],
+      output_config: {
+        format: {
+          type: 'json_schema' as const,
+          schema: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Concise imperative PR title' },
+              body: { type: 'string', description: 'Markdown description of the skill' },
+              version: { type: 'string', description: 'SemVer version for the skill' },
             },
+            required: ['title', 'body', 'version'],
+            additionalProperties: false,
           },
         },
-      })
-    )
-
-    const text = extractTextFromLlmResponse(response)
+      },
+    })
     if (!text) return fallback
 
     const parsed = JSON.parse(text)

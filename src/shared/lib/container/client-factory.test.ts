@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { EventEmitter } from 'node:events'
 
 // ============================================================================
 // Mocks — must be set up before importing the module under test
@@ -36,16 +37,21 @@ vi.mock('./podman-container-client', () => ({
   },
 }))
 
+const mockEnsureAppleContainerReady = vi.fn()
+
 vi.mock('./apple-container-client', () => ({
   AppleContainerClient: {
-    isEligible: vi.fn(() => false),
+    // Eligible at module load so apple is in SUPPORTED_RUNNERS for availability tests.
+    isEligible: vi.fn(() => true),
     isAvailable: vi.fn(() => Promise.resolve(false)),
     isRunning: vi.fn(() => Promise.resolve(false)),
   },
+  ensureAppleContainerReady: (...args: unknown[]) => mockEnsureAppleContainerReady(...args),
 }))
 
 const mockStopWSL2Distro = vi.fn()
 const mockEnsureWSL2Ready = vi.fn()
+const mockKillWSL2PullProcesses = vi.fn()
 
 vi.mock('./wsl2-container-client', () => ({
   WSL2ContainerClient: {
@@ -56,6 +62,7 @@ vi.mock('./wsl2-container-client', () => ({
   getWSL2NerdctlWrapperPath: vi.fn(() => 'C:\\mock\\wsl-nerdctl.cmd'),
   ensureWSL2Ready: (...args: unknown[]) => mockEnsureWSL2Ready(...args),
   stopWSL2Distro: (...args: unknown[]) => mockStopWSL2Distro(...args),
+  killWSL2PullProcesses: (...args: unknown[]) => mockKillWSL2PullProcesses(...args),
 }))
 
 vi.mock('./mock-container-client', () => ({
@@ -100,16 +107,28 @@ vi.mock('os', () => ({
   platform: vi.fn(() => 'darwin'),
 }))
 
+const mockCaptureException = vi.fn()
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: (...args: unknown[]) => mockCaptureException(...args),
+  addErrorBreadcrumb: vi.fn(),
+}))
+
 // ============================================================================
 // Import module under test — AFTER mocks
 // ============================================================================
 
 import {
+  checkAllRunnersAvailability,
   clearRunnerAvailabilityCache,
+  pullImage,
+  PULL_STALL_TIMEOUT_MS,
+  KILL_STALLED_PULL_TIMEOUT_MS,
   reconcileRunnerState,
   restartRunner,
   shutdownActiveRunner,
+  startRunner,
 } from './client-factory'
+import { AppleContainerClient } from './apple-container-client'
 
 // ============================================================================
 // Tests
@@ -161,6 +180,51 @@ describe('shutdownActiveRunner', () => {
     await shutdownActiveRunner()
 
     expect(mockStopWSL2Distro).toHaveBeenCalledOnce()
+  })
+})
+
+describe('startRunner apple-container', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    clearRunnerAvailabilityCache()
+    mockEnsureAppleContainerReady.mockResolvedValue(undefined)
+  })
+
+  it('delegates to ensureAppleContainerReady with allowInstall', async () => {
+    const result = await startRunner('apple-container', undefined, { allowInstall: true })
+
+    expect(mockEnsureAppleContainerReady).toHaveBeenCalledWith(undefined, { allowInstall: true })
+    expect(result.success).toBe(true)
+    expect(result.message).toMatch(/running/i)
+  })
+
+  it('auto-start path does not allow install', async () => {
+    await startRunner('apple-container')
+
+    expect(mockEnsureAppleContainerReady).toHaveBeenCalledWith(undefined, { allowInstall: false })
+  })
+})
+
+describe('checkAllRunnersAvailability apple-container canStart', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    clearRunnerAvailabilityCache()
+    vi.mocked(AppleContainerClient.isEligible).mockReturnValue(true)
+  })
+
+  it('sets canStart true when CLI missing (provisionable)', async () => {
+    vi.mocked(AppleContainerClient.isAvailable).mockResolvedValue(false)
+    vi.mocked(AppleContainerClient.isRunning).mockResolvedValue(false)
+
+    const results = await checkAllRunnersAvailability()
+    const apple = results.find((r) => r.runner === 'apple-container')
+
+    expect(apple).toMatchObject({
+      installed: false,
+      running: false,
+      available: false,
+      canStart: true,
+    })
   })
 })
 
@@ -386,5 +450,121 @@ describe('image pull progress patterns', () => {
       const percent = total > 0 ? Math.round((0 / total) * 100) : null
       expect(percent).toBeNull()
     })
+  })
+})
+
+// ============================================================================
+// pullImage stall watchdog — silence beyond pullStallTimeoutMs kills the pull
+// (host proc + runner-side processes) and rejects so the caller can retry.
+// Only runners that opt in (nerdctl-based) have a timeout; docker/podman are
+// legitimately silent for minutes mid-layer and must never be killed.
+// ============================================================================
+
+describe('pullImage stall watchdog', () => {
+  class FakePullProc extends EventEmitter {
+    stdout = new EventEmitter()
+    stderr = new EventEmitter()
+    kill = vi.fn()
+  }
+
+  let proc: FakePullProc
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    proc = new FakePullProc()
+    mockSpawnWithPath.mockReturnValue(proc)
+    mockKillWSL2PullProcesses.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('kills a wsl2 pull and rejects after prolonged output silence', async () => {
+    const promise = pullImage('wsl2', 'ghcr.io/acme/agent:stall-1')
+    const assertion = expect(promise).rejects.toThrow('Image pull stalled')
+
+    await vi.advanceTimersByTimeAsync(PULL_STALL_TIMEOUT_MS + 1)
+    await assertion
+
+    expect(mockKillWSL2PullProcesses).toHaveBeenCalledOnce()
+    expect(proc.kill).toHaveBeenCalled()
+    expect(mockCaptureException).toHaveBeenCalledOnce()
+    expect(mockCaptureException.mock.calls[0][1]).toMatchObject({
+      tags: { component: 'container', operation: 'image-pull-stall' },
+    })
+  })
+
+  it('resets the stall timer whenever the CLI produces output', async () => {
+    const promise = pullImage('wsl2', 'ghcr.io/acme/agent:stall-2')
+
+    await vi.advanceTimersByTimeAsync(PULL_STALL_TIMEOUT_MS - 1000)
+    proc.stdout.emit('data', Buffer.from('layer-sha256:abc123: downloading\n'))
+    await vi.advanceTimersByTimeAsync(PULL_STALL_TIMEOUT_MS - 1000)
+    expect(proc.kill).not.toHaveBeenCalled()
+
+    proc.emit('close', 0)
+    await expect(promise).resolves.toBeUndefined()
+    expect(mockCaptureException).not.toHaveBeenCalled()
+  })
+
+  it('does not arm a watchdog for docker (silence is normal mid-layer)', async () => {
+    const promise = pullImage('docker', 'ghcr.io/acme/agent:stall-3')
+
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    expect(proc.kill).not.toHaveBeenCalled()
+    expect(mockKillWSL2PullProcesses).not.toHaveBeenCalled()
+
+    proc.emit('close', 0)
+    await expect(promise).resolves.toBeUndefined()
+  })
+
+  it('does not double-report when the killed process exits after the stall', async () => {
+    const promise = pullImage('wsl2', 'ghcr.io/acme/agent:stall-4')
+    const assertion = expect(promise).rejects.toThrow('Image pull stalled')
+
+    await vi.advanceTimersByTimeAsync(PULL_STALL_TIMEOUT_MS + 1)
+    proc.emit('close', 1)
+    await assertion
+
+    expect(mockCaptureException).toHaveBeenCalledOnce()
+  })
+
+  it('settles the pull even when killStalledPull hangs forever', async () => {
+    // Unresponsive WSL: the cleanup promise never settles
+    mockKillWSL2PullProcesses.mockReturnValue(new Promise(() => {}))
+
+    const promise = pullImage('wsl2', 'ghcr.io/acme/agent:stall-6')
+    const assertion = expect(promise).rejects.toThrow('Image pull stalled')
+
+    await vi.advanceTimersByTimeAsync(PULL_STALL_TIMEOUT_MS + 1)
+    // Pull must not be settled yet — cleanup is still within its time cap
+    expect(proc.kill).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(KILL_STALLED_PULL_TIMEOUT_MS + 1)
+    await assertion
+    expect(proc.kill).toHaveBeenCalled()
+  })
+
+  it('rejects with the stall error even when killStalledPull fails', async () => {
+    mockKillWSL2PullProcesses.mockRejectedValue(new Error('WSL has terminated'))
+
+    const promise = pullImage('wsl2', 'ghcr.io/acme/agent:stall-7')
+    const assertion = expect(promise).rejects.toThrow('Image pull stalled')
+
+    await vi.advanceTimersByTimeAsync(PULL_STALL_TIMEOUT_MS + 1)
+    await assertion
+    expect(proc.kill).toHaveBeenCalled()
+  })
+
+  it('still rejects with the exit-code error when a wsl2 pull fails before the timeout', async () => {
+    const promise = pullImage('wsl2', 'ghcr.io/acme/agent:stall-5')
+    const assertion = expect(promise).rejects.toThrow('Image pull failed with exit code 1')
+
+    proc.emit('close', 1)
+    await assertion
+
+    expect(mockKillWSL2PullProcesses).not.toHaveBeenCalled()
   })
 })

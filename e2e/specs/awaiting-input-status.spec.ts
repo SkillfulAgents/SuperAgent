@@ -8,6 +8,8 @@ import {
   gotoAgentHome,
   uniqueName,
   uniqueSuffix,
+  waitForCurrentSessionId,
+  waitForPendingProxyReview,
   type TestAgent,
   type TestSession,
 } from '../helpers/agents'
@@ -150,6 +152,49 @@ test.describe('Awaiting Input Status', () => {
     // Session should complete — status should clear
     await sessionPage.waitForInputEnabled(15000)
     await agentPage.waitForStatus('idle', 15000)
+  })
+
+  test('a parked proxy review flags a session that starts after it', async ({ page, request }, testInfo) => {
+    // Session 1 parks an agent-scoped proxy review (real ReviewManager).
+    // The review scenario persists its user message only after the decision,
+    // so wait on the session id from the URL, not on the transcript.
+    await sessionPage.sendMessage(`proxy review ${uniqueSuffix(testInfo)}`)
+    await waitForCurrentSessionId(page)
+    const review = await waitForPendingProxyReview(request, agent, {
+      xAgent: false,
+      toolkit: 'slack',
+      targetPath: 'api/chat.postMessage',
+    })
+    await agentPage.waitForStatus('awaiting_input', 15000)
+
+    // Start a NEW session while the review is still parked. The review is
+    // agent-scoped, so the fresh session must read as waiting on the human
+    // from its first moment — the waiting status derives from the open
+    // request, not from which sessions happened to be active when the review
+    // was raised. Assert via the sessions route (the status source for the
+    // sidebar and header): the slow-work turn holds the session active for
+    // ~5s, so the poll must land inside that window.
+    await gotoAgentHome(page, agent)
+    const session2 = await sendScenarioMessage(page, request, testInfo, 'work slowly')
+    await expect
+      .poll(async () => {
+        const res = await request.get(`/api/agents/${agent.slug}/sessions`)
+        if (!res.ok()) return undefined
+        const sessions = (await res.json()) as Array<{ id: string; isAwaitingInput: boolean }>
+        return sessions.find((s) => s.id === session2.id)?.isAwaitingInput
+      }, { timeout: 4000 })
+      .toBe(true)
+
+    // The agent keeps reading awaiting — session 1 is still parked on the
+    // review, whose card renders here too (it is agent-scoped). The composer
+    // stays gated behind the card, so allow FIRST, then expect the settle.
+    await agentPage.waitForStatus('awaiting_input', 15000)
+    await sessionPage.waitForProxyReviewRequestById(review.id, 35000)
+    await sessionPage.allowProxyReview(review.id)
+
+    // Session 1 unwinds and the whole agent settles.
+    await sessionPage.waitForInputEnabled(20000)
+    await agentPage.waitForStatus('idle', 20000)
   })
 
   test('sidebar session shows question mark icon when awaiting input', async ({ page, request }, testInfo) => {

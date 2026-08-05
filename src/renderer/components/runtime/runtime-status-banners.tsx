@@ -1,4 +1,4 @@
-import { AlertTriangle, Loader2, WifiOff } from 'lucide-react'
+import { AlertTriangle, Loader2, ShieldAlert, WifiOff } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { splitMessageSentences } from './sentence-split'
 
@@ -79,6 +79,38 @@ export function RuntimeUnavailableSidebarBanner({
         <div key={i}>{sentence}</div>
       ))}
       <div className="underline">Open settings →</div>
+    </DestructiveBannerCard>
+  )
+}
+
+export type FirewallFixUiState = 'idle' | 'fixing' | 'declined' | 'failed'
+
+/**
+ * Windows Firewall is blocking container→host connections (browser launch,
+ * tool proxies). The fix button triggers one UAC-elevated PowerShell run on
+ * the host; the states mirror how that prompt can play out.
+ */
+export function FirewallBlockedSidebarBanner({
+  fixState,
+  onFix,
+}: {
+  fixState: FirewallFixUiState
+  onFix: () => void
+}) {
+  return (
+    <DestructiveBannerCard icon={<ShieldAlert className="h-4 w-4" />}>
+      <div>Windows Firewall is blocking agent connections.</div>
+      <div>Browser and connected tools can&apos;t reach this app.</div>
+      {fixState === 'declined' && <div>Approval was declined — an administrator must click Yes.</div>}
+      {fixState === 'failed' && <div>Automatic fix failed. Allow this app through Windows Firewall manually.</div>}
+      <button
+        type="button"
+        onClick={onFix}
+        disabled={fixState === 'fixing'}
+        className="underline disabled:no-underline disabled:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
+      >
+        {fixState === 'fixing' ? 'Waiting for Windows approval…' : fixState === 'idle' ? 'Fix now →' : 'Try again →'}
+      </button>
     </DestructiveBannerCard>
   )
 }

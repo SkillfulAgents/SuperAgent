@@ -183,3 +183,65 @@ describe('deletes preserve siblings', () => {
     expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(corrupt)
   })
 })
+
+describe('finalizeAutomationStatus guards', () => {
+  it('finalizes a running automation session and reports updated', async () => {
+    const { registerSession, finalizeAutomationStatus, getSessionMetadata } = await importService()
+    makeAgent('agent')
+    await registerSession('agent', 'cron-run', 'Nightly report', {
+      isScheduledExecution: true,
+      scheduledTaskId: 'task-1',
+      automationStatus: 'running',
+    })
+
+    expect(await finalizeAutomationStatus('agent', 'cron-run', 'succeeded')).toBe('updated')
+    expect((await getSessionMetadata('agent', 'cron-run'))?.automationStatus).toBe('succeeded')
+  })
+
+  it('reports not-automation for a regular session and leaves it untouched', async () => {
+    const { registerSession, finalizeAutomationStatus, getSessionMetadata } = await importService()
+    makeAgent('agent')
+    await registerSession('agent', 'chat', 'Regular session')
+
+    expect(await finalizeAutomationStatus('agent', 'chat', 'succeeded')).toBe('not-automation')
+    expect((await getSessionMetadata('agent', 'chat'))?.automationStatus).toBeUndefined()
+  })
+
+  it('never overwrites a finalized outcome with a later turn result', async () => {
+    const { registerSession, finalizeAutomationStatus, getSessionMetadata } = await importService()
+    makeAgent('agent')
+    await registerSession('agent', 'webhook-run', 'Email handler', {
+      isWebhookExecution: true,
+      webhookTriggerId: 'trigger-1',
+      automationStatus: 'running',
+    })
+
+    expect(await finalizeAutomationStatus('agent', 'webhook-run', 'failed')).toBe('updated')
+    expect(await finalizeAutomationStatus('agent', 'webhook-run', 'succeeded')).toBe('already-final')
+    expect((await getSessionMetadata('agent', 'webhook-run'))?.automationStatus).toBe('failed')
+  })
+
+  it('does not attribute an interactive result to a promoted legacy automation session', async () => {
+    const { registerSession, finalizeAutomationStatus, updateSessionMetadata, getSessionMetadata } = await importService()
+    makeAgent('agent')
+    // Pre-outcome-tracking session: automation flags but no automationStatus.
+    await registerSession('agent', 'legacy', 'Old webhook run', {
+      isWebhookExecution: true,
+      webhookTriggerId: 'trigger-1',
+    })
+    await updateSessionMetadata('agent', 'legacy', { promotedToInteractive: true })
+
+    expect(await finalizeAutomationStatus('agent', 'legacy', 'failed')).toBe('not-automation')
+    expect((await getSessionMetadata('agent', 'legacy'))?.automationStatus).toBeUndefined()
+  })
+
+  it('aborts on corrupt metadata instead of clobbering it', async () => {
+    const { finalizeAutomationStatus } = await importService()
+    makeAgent('agent')
+    const corrupt = '{ "s0": { '
+    fs.writeFileSync(metadataPath('agent'), corrupt)
+
+    await expect(finalizeAutomationStatus('agent', 's0', 'succeeded')).rejects.toThrow()
+    expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(corrupt)
+  })
+})

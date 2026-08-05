@@ -37,6 +37,8 @@ const mockAttachments = {
   addFiles: vi.fn(),
   addFolders: vi.fn(),
   addMounts: vi.fn(),
+  setAttachmentError: vi.fn(),
+  clearAttachmentErrors: vi.fn(),
   removeAttachment: vi.fn(),
   clearAttachments: vi.fn(),
   handleFileSelect: vi.fn(),
@@ -122,6 +124,45 @@ describe('useMessageComposer', () => {
     act(() => result.current.setMessage('hello'))
     expect(result.current.message).toBe('hello')
     expect(result.current.canSubmit).toBe(true)
+  })
+
+  it('detects, dismisses, and re-detects a potential secret after it is removed', () => {
+    const opts = defaultOptions()
+    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+    const key = ['sk-', 'proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
+
+    act(() => result.current.setMessage(`Use ${key}`))
+    expect(result.current.potentialSecrets).toHaveLength(1)
+
+    act(() => result.current.dismissPotentialSecret(result.current.potentialSecrets[0]))
+    expect(result.current.potentialSecrets).toEqual([])
+
+    act(() => result.current.setMessage(''))
+    act(() => result.current.setMessage(key))
+    expect(result.current.potentialSecrets).toHaveLength(1)
+  })
+
+  it('replaces a secured key with a masked pill and submits only the .env placeholder', async () => {
+    const opts = defaultOptions()
+    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+    const key = ['gh', 'p_Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
+
+    act(() => result.current.setMessage(`Use ${key} please`))
+    act(() => result.current.securePotentialSecret(result.current.potentialSecrets[0], {
+      key: 'GitHub Token',
+      envVar: 'GITHUB_TOKEN',
+    }))
+
+    expect(result.current.message).toBe('Use [GitHub Token | *********] please')
+    expect(result.current.securedSecrets).toHaveLength(1)
+    expect(JSON.stringify(result.current.securedSecrets)).not.toContain(key)
+
+    await act(async () => {
+      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    })
+
+    expect(opts.onSubmit).toHaveBeenCalledWith('Use [Key saved to .env - GITHUB_TOKEN] please')
+    expect(opts.onSubmit).not.toHaveBeenCalledWith(expect.stringContaining(key))
   })
 
   // --- canSubmit ---
@@ -337,6 +378,27 @@ describe('useMessageComposer', () => {
     expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('[Mounted folders:]'))
   })
 
+  it('flags the mount chip and aborts submit when the mount request fails', async () => {
+    mockAttachments.attachments = [
+      { type: 'mount', folderName: 'data', hostPath: '/data/shared', id: 'm1' },
+    ]
+    mockAddMount.mutateAsync.mockRejectedValueOnce(new Error('hostPath is required'))
+    const opts = defaultOptions()
+    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+
+    act(() => result.current.setMessage('Mount this'))
+
+    await act(async () => {
+      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    })
+
+    expect(opts.onSubmit).not.toHaveBeenCalled()
+    expect(mockAttachments.setAttachmentError).toHaveBeenCalledWith('m1', 'hostPath is required')
+    expect(result.current.uploadError).toBe('hostPath is required')
+    // Stale chip errors are cleared at the start of the next attempt
+    expect(mockAttachments.clearAttachmentErrors).toHaveBeenCalled()
+  })
+
   it('appends mounts before files in content', async () => {
     const { appendMountedFolders, appendAttachedFiles } = await import('@shared/lib/utils/attached-files')
     mockAttachments.attachments = [
@@ -375,6 +437,8 @@ describe('useMessageComposer', () => {
     expect(opts.onSubmit).not.toHaveBeenCalled()
     // Message should NOT be cleared since upload failed
     expect(result.current.message).toBe('Will fail')
+    // The failing attachment's chip is flagged so it doesn't keep looking successful
+    expect(mockAttachments.setAttachmentError).toHaveBeenCalledWith('1', 'Network error')
   })
 
   it('preserves message when onSubmit fails', async () => {
@@ -486,6 +550,26 @@ describe('useMessageComposer', () => {
 
     expect(mockAttachments.addMounts).toHaveBeenCalledWith([{ folderName: 'dir', hostPath: '/p' }])
     expect(result.current.mountDialog.open).toBe(false)
+
+    delete (window as any).electronAPI
+  })
+
+  it('mount dialog mount choice falls back to upload for folders without a resolved path', () => {
+    ;(window as any).electronAPI = {}
+
+    const opts = defaultOptions()
+    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+
+    const withPath = { folderName: 'dir', folderPath: '/p', files: [] }
+    const withoutPath = { folderName: 'pathless', folderPath: undefined, files: [] }
+    act(() => {
+      capturedOnFoldersReceived!([withPath, withoutPath])
+    })
+
+    act(() => result.current.mountDialog.onChoice('mount'))
+
+    expect(mockAttachments.addMounts).toHaveBeenCalledWith([{ folderName: 'dir', hostPath: '/p' }])
+    expect(mockAttachments.addFolders).toHaveBeenCalledWith([withoutPath])
 
     delete (window as any).electronAPI
   })

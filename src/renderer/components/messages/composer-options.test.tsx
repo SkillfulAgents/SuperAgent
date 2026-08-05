@@ -3,12 +3,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useComposerOptions, type UseComposerOptionsArgs } from './composer-options'
 
-// Mutable settings the mocked useSettings reads at call time, so tests can
+// Mutable settings the mocked useModelSettings reads at call time, so tests can
 // simulate the query resolving (undefined → loaded) and later refetches.
 const state = vi.hoisted(() => ({ settings: undefined as unknown }))
 
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({ data: state.settings }),
+  useModelSettings: () => ({ data: state.settings }),
 }))
 
 const LOADED_SETTINGS = {
@@ -157,6 +157,15 @@ describe('useComposerOptions default adoption', () => {
     })
   })
 
+  it('serializes an explicitly picked speed so the dispatch payload carries it', () => {
+    const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
+    expect(result.current.toRuntimeOptions()).toEqual({})
+    act(() => {
+      result.current.setSpeed('fast')
+    })
+    expect(result.current.toRuntimeOptions()).toEqual({ speed: 'fast' })
+  })
+
   it('session-seeded initial values win over defaults', () => {
     const { result } = render({
       initialModel: 'claude-opus-4-6',
@@ -168,5 +177,13 @@ describe('useComposerOptions default adoption', () => {
     })
     expect(result.current.model).toBe('claude-opus-4-6')
     expect(result.current.effort).toBe('xhigh')
+  })
+})
+
+describe('useComposerOptions web provider', () => {
+  it('exposes the active webProvider from settings', () => {
+    state.settings = { ...LOADED_SETTINGS, webProvider: 'platform', webProviderIsDefault: true }
+    const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
+    expect(result.current.webProvider).toBe('platform')
   })
 })

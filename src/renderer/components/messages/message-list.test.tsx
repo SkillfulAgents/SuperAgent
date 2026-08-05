@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act } from '@testing-library/react'
+import { useState } from 'react'
 import { MessageList } from './message-list'
 import { useDraft } from '@renderer/context/drafts-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
@@ -51,18 +52,21 @@ const mockStreamState = {
   completedSubagents: null as Set<string> | null,
   typingUser: null as { id: string; name?: string } | null,
   peerUserMessages: [] as Array<{ uuid: string; receivedAt: number; content: string; sender: { id: string; name?: string; email?: string }; queued?: boolean }>,
+  discardedCommandUuids: [] as string[],
   thinkingBlocks: [] as Array<{ id: number; text: string; startedAt: number; endedAt: number | null }>,
 }
 
 const mockClearCompacting = vi.fn()
 const mockRemovePeerUserMessage = vi.fn()
 const mockClearPeerUserMessages = vi.fn()
+const mockConsumeDiscardedCommand = vi.fn()
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
   clearCompacting: (...args: unknown[]) => mockClearCompacting(...args),
   removePeerUserMessage: (...args: unknown[]) => mockRemovePeerUserMessage(...args),
   clearPeerUserMessages: (...args: unknown[]) => mockClearPeerUserMessages(...args),
+  consumeDiscardedCommand: (...args: unknown[]) => mockConsumeDiscardedCommand(...args),
 }))
 
 // Mock useUser — default no user, override per test
@@ -148,8 +152,13 @@ describe('MessageList', () => {
       completedSubagents: null,
       typingUser: null,
       peerUserMessages: [],
+      discardedCommandUuids: [],
       thinkingBlocks: [],
     })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   it('shows loading spinner', () => {
@@ -505,6 +514,57 @@ describe('MessageList', () => {
     expect(onAppeared).toHaveBeenCalledWith('uuid-1')
   })
 
+  it('does not restore /compact over a draft typed while manual compaction runs', async () => {
+    vi.useFakeTimers()
+    try {
+      mockMessagesData.data = []
+      mockStreamState.isActive = true
+
+      const CompactRaceHarness = () => {
+        const [pending, setPending] = useState([
+          { localId: 'compact-local', uuid: 'compact-server', text: '/compact', sentAt: Date.now() },
+        ])
+        const [draft, setDraft] = useDraft<string>('session:s-1')
+
+        return (
+          <>
+            <button onClick={() => setDraft('the next message')}>Type next message</button>
+            <MessageList
+              sessionId="s-1"
+              agentSlug="agent-1"
+              pendingUserMessages={pending}
+              onPendingMessageAppeared={(localId) => {
+                setPending((current) => current.filter((message) => message.localId !== localId))
+              }}
+            />
+            <div data-testid="draft-probe">{draft ?? ''}</div>
+          </>
+        )
+      }
+
+      const { rerender } = renderWithProviders(<CompactRaceHarness />)
+
+      // The user starts composing the next turn while /compact is active.
+      fireEvent.click(screen.getByRole('button', { name: 'Type next message' }))
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('the next message')
+
+      // Manual compaction persists a boundary, not a user message carrying the
+      // POST uuid. The compact command must still be considered delivered.
+      mockMessagesData.data = [createCompactBoundary({ createdAt: new Date() })]
+      mockStreamState.isActive = false
+      rerender(<CompactRaceHarness />)
+
+      await act(async () => {
+        vi.advanceTimersByTime(1500)
+      })
+
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('the next message')
+      expect(screen.getByTestId('draft-probe')).not.toHaveTextContent('/compact')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not call onPendingMessageAppeared when neither uuid nor text matches', () => {
     const onAppeared = vi.fn()
     const sentAt = new Date('2025-01-01T00:00:00Z').getTime()
@@ -731,6 +791,61 @@ describe('MessageList', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('rescues a queued ghost immediately when the runtime reports its command discarded', async () => {
+    // Deterministic path: a command_lifecycle discarded/cancelled frame named
+    // this uuid (e.g. killed by Stop). No idle, no grace timer — the session
+    // is even still ACTIVE — the rescue must fire right away.
+    const onAppeared = vi.fn()
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+    mockStreamState.discardedCommandUuids = ['u-dead']
+
+    const DraftProbe = () => {
+      const [draft] = useDraft<string>('session:s-1')
+      return <div data-testid="draft-probe">{draft ?? ''}</div>
+    }
+
+    renderWithProviders(
+      <>
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{ localId: 'l1', uuid: 'u-dead', text: 'killed by stop', sentAt: Date.now(), queued: true }]}
+          onPendingMessageAppeared={onAppeared}
+        />
+        <DraftProbe />
+      </>
+    )
+
+    await act(async () => {})
+
+    expect(onAppeared).toHaveBeenCalledWith('l1')
+    expect(screen.getByTestId('draft-probe')).toHaveTextContent('killed by stop')
+    expect(mockConsumeDiscardedCommand).toHaveBeenCalledWith('s-1', 'u-dead')
+  })
+
+  it('leaves a queued ghost alone when the discarded uuid belongs to a different command', async () => {
+    const onAppeared = vi.fn()
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+    mockStreamState.discardedCommandUuids = ['someone-else']
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'l1', uuid: 'u-alive', text: 'still queued', sentAt: Date.now(), queued: true }]}
+        onPendingMessageAppeared={onAppeared}
+      />
+    )
+
+    await act(async () => {})
+
+    expect(onAppeared).not.toHaveBeenCalled()
+    expect(screen.getByTestId('queued-user-message')).toHaveTextContent('still queued')
+    expect(mockConsumeDiscardedCommand).not.toHaveBeenCalled()
   })
 
   it('does not restore a non-queued pending whose POST is still in flight', async () => {
@@ -1768,6 +1883,170 @@ describe('MessageList', () => {
     })
   })
 
+  describe('new-turn scroll anchoring', () => {
+    const pending = { localId: 'pending-turn', text: 'What changed?', sentAt: Date.now() }
+
+    function mockTurnGeometry(el: HTMLElement, { reducedMotion = true } = {}) {
+      let naturalScrollHeight = 1300
+      let scrollTop = 700
+      const anchorDocumentTop = 1200
+      const spacer = screen.getByTestId('turn-anchor-spacer')
+
+      vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+        matches: reducedMotion && query === '(prefers-reduced-motion: reduce)',
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }) as unknown as MediaQueryList)
+
+      Object.defineProperty(el, 'scrollHeight', {
+        configurable: true,
+        get: () => naturalScrollHeight + (Number.parseFloat(spacer.style.height) || 0),
+      })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 600 })
+      Object.defineProperty(el, 'scrollTop', {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => { scrollTop = value },
+      })
+
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        const top = this === el
+          ? 0
+          : (this as HTMLElement).dataset.turnAnchorId
+            ? anchorDocumentTop - scrollTop
+            : 0
+        return {
+          x: 0,
+          y: top,
+          top,
+          bottom: top,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: 0,
+          toJSON: () => ({}),
+        }
+      })
+
+      return {
+        get scrollTop() { return scrollTop },
+        setScrollTop(value: number) { scrollTop = value },
+        setNaturalScrollHeight(value: number) { naturalScrollHeight = value },
+      }
+    }
+
+    it('places a newly sent message 100px from the top and reserves room below it', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      rerender(
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[pending]}
+        />,
+      )
+
+      const anchor = screen.getByText('What changed?').closest('[data-turn-anchor-id]') as HTMLElement
+      expect(anchor.getBoundingClientRect().top).toBe(100)
+      expect(geometry.scrollTop).toBe(1100)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+    })
+
+    it('animates the new turn to its reading line with eased progress', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el, { reducedMotion: false })
+      const frames: FrameRequestCallback[] = []
+      vi.spyOn(performance, 'now').mockReturnValue(0)
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+        frames.push(callback)
+        return frames.length
+      })
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+
+      expect(geometry.scrollTop).toBe(700)
+      expect(frames).toHaveLength(1)
+
+      act(() => frames.shift()!(110))
+      expect(geometry.scrollTop).toBeGreaterThan(700)
+      expect(geometry.scrollTop).toBeLessThan(1100)
+
+      act(() => frames.shift()!(220))
+      expect(geometry.scrollTop).toBe(1100)
+    })
+
+    it('spends the reserved room before following streamed content at the live edge', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const geometry = mockTurnGeometry(screen.getByTestId('message-list'))
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+
+      geometry.setNaturalScrollHeight(1550)
+      mockStreamState.streamingMessage = 'The response is growing'
+      mockStreamState.isStreaming = true
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(1100)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '150px' })
+
+      geometry.setNaturalScrollHeight(1800)
+      mockStreamState.streamingMessage = 'The response has reached the live edge and keeps growing'
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
+      expect(geometry.scrollTop).toBe(1200)
+    })
+
+    it('discards only the reserved room that the user scrolls past', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+
+      fireEvent.wheel(el, { deltaY: -80 })
+      geometry.setScrollTop(1020)
+      fireEvent.scroll(el)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '320px' })
+      expect(geometry.scrollTop).toBe(1020)
+
+      geometry.setScrollTop(700)
+      fireEvent.scroll(el)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
+
+      const releasedScrollTop = geometry.scrollTop
+      geometry.setNaturalScrollHeight(1900)
+      mockStreamState.streamingMessage = 'More output after the user took control'
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(releasedScrollTop)
+    })
+  })
+
   describe('thinking block dedup (live vs persisted)', () => {
     const liveBlock = (text: string, endedAt: number | null = null) =>
       ({ id: 1, text, startedAt: Date.now() - 5000, endedAt })
@@ -1828,6 +2107,43 @@ describe('MessageList', () => {
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
       expect(screen.queryByText('divergent streamed fragment')).not.toBeInTheDocument()
+    })
+
+    it('drops leftover live cards after an interrupt instead of clumping them below the marker', () => {
+      // Interrupting a turn appends a "[Request interrupted by user]" USER
+      // message to the transcript. The dedup scan must not treat it as the
+      // start of a new turn — otherwise it collects no persisted thinking and
+      // every live block from the interrupted turn re-renders at the end.
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({ content: { text: '' }, thinking: [{ text: 'first reasoning pass' }] }),
+        createAssistantMessage({ content: { text: '' }, thinking: [{ text: 'second reasoning pass' }] }),
+        createUserMessage({ content: { text: '[Request interrupted by user]' } }),
+      ]
+      mockStreamState.isActive = false
+      mockStreamState.thinkingBlocks = [
+        { id: 1, text: 'first reasoning pass', startedAt: Date.now() - 9000, endedAt: Date.now() - 7000 },
+        { id: 2, text: 'second reasoning pass', startedAt: Date.now() - 6000, endedAt: Date.now() - 4000 },
+      ]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      // Only the two persisted cards — the live copies must not double-render.
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(2)
+    })
+
+    it('drops a live card at idle after an interrupt even when its thinking never persisted', () => {
+      // Interrupted mid-first-block: the SDK discards the partial thinking, so
+      // there is no persisted counterpart and the live card would strand below
+      // the interrupt marker forever.
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createUserMessage({ content: { text: '[Request interrupted by user for tool use]' } }),
+      ]
+      mockStreamState.isActive = false
+      mockStreamState.thinkingBlocks = [liveBlock('partial discarded reasoning', Date.now())]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
     })
 
     it('keeps an empty-text live block while active but drops it at idle', () => {

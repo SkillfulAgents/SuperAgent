@@ -21,3 +21,10 @@ export interface DailyUsageEntry {
 export interface UsageResponse {
   daily: DailyUsageEntry[]
 }
+
+export interface SessionUsageTotals {
+  totalCost: number
+  totalTokens: number
+  priceMissing: boolean
+  usageIncomplete: boolean
+}

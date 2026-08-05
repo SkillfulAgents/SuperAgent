@@ -1,7 +1,12 @@
 import { apiFetch } from '@renderer/lib/api'
+import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
 
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import type {
+  AgentRemoteMcpDto,
+  PublicAgentRemoteMcp,
+} from '@shared/lib/agent-connections/public'
 
 export interface RemoteMcpServer {
   id: string
@@ -16,10 +21,7 @@ export interface RemoteMcpServer {
   updatedAt: string
 }
 
-export interface AgentRemoteMcp extends RemoteMcpServer {
-  mappingId: string
-  mappedAt: string
-}
+export type AgentRemoteMcp = PublicAgentRemoteMcp
 
 /**
  * Fetch all registered remote MCP servers
@@ -39,7 +41,7 @@ export function useRemoteMcps() {
  * Fetch remote MCPs assigned to a specific agent
  */
 export function useAgentRemoteMcps(agentSlug: string) {
-  return useQuery<{ mcps: AgentRemoteMcp[] }>({
+  return useQuery<{ mcps: AgentRemoteMcpDto[] }>({
     queryKey: ['agent-remote-mcps', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/remote-mcps`)
@@ -98,6 +100,7 @@ export function useRenameRemoteMcp() {
         const error = await res.json().catch(() => ({}))
         throw new Error(error.error || 'Failed to rename MCP server')
       }
+      warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
@@ -123,6 +126,7 @@ export function useDeleteRemoteMcp() {
         const error = await res.json()
         throw new Error(error.error || 'Failed to delete MCP server')
       }
+      warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     },
     onSuccess: (_, id) => {
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
@@ -151,6 +155,7 @@ export function useAssignMcpToAgent() {
         const error = await res.json()
         throw new Error(error.error || 'Failed to assign MCP to agent')
       }
+      warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     },
     onSuccess: (_, { mcpIds }) => {
       // Bare prefix (not keyed on agentSlug): the agent-home Connections card keys
@@ -180,6 +185,7 @@ export function useRemoveMcpFromAgent() {
         const error = await res.json()
         throw new Error(error.error || 'Failed to remove MCP from agent')
       }
+      warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     },
     onSuccess: (_, { mcpId }) => {
       // Bare prefix — see useAssignMcpToAgent: reaches the id-keyed home card too.
@@ -211,7 +217,7 @@ export function useDiscoverMcpTools() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    { tools: Array<{ name: string; description?: string }> },
+    { tools: Array<{ name: string; description?: string }>; liveRefresh?: boolean },
     Error,
     string
   >({
@@ -224,7 +230,9 @@ export function useDiscoverMcpTools() {
         const error = await res.json()
         throw new Error(error.error || 'Failed to discover tools')
       }
-      return res.json()
+      const result = await res.json()
+      warnIfLiveRefreshFailed(result)
+      return result
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
@@ -239,7 +247,7 @@ export function useDiscoverMcpTools() {
 export function useTestMcpConnection() {
   const queryClient = useQueryClient()
 
-  return useMutation<{ success: boolean; error?: string; needsAuth?: boolean }, Error, string>({
+  return useMutation<{ success: boolean; error?: string; needsAuth?: boolean; liveRefresh?: boolean }, Error, string>({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (mcpId) => {
       const res = await apiFetch(`/api/remote-mcps/${mcpId}/test-connection`, {
@@ -249,7 +257,9 @@ export function useTestMcpConnection() {
         const error = await res.json()
         throw new Error(error.error || 'Connection test failed')
       }
-      return res.json()
+      const result = await res.json()
+      warnIfLiveRefreshFailed(result)
+      return result
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })

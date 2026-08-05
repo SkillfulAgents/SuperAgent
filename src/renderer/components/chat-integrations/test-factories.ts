@@ -1,4 +1,5 @@
-import type { ChatIntegration, ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
+import type { ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
+import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
 
 /** Schema-complete ChatIntegration for component tests; override any field. */
 export function makeChatIntegration(overrides: Partial<ChatIntegration> = {}): ChatIntegration {
@@ -7,12 +8,14 @@ export function makeChatIntegration(overrides: Partial<ChatIntegration> = {}): C
     agentSlug: 'a',
     provider: 'telegram',
     name: 'Bot',
-    config: '{}',
+    hasCredentials: true,
+    settings: {},
     showToolCalls: false,
     requireApproval: false,
     sessionTimeout: null,
     model: null,
     effort: null,
+    speed: null,
     status: 'active',
     errorMessage: null,
     createdByUserId: null,

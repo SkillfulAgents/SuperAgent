@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { BrowserTabInfo } from '@renderer/components/browser/browser-tab-bar'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
-import { clearBrowserActive, useMessageStream } from '@renderer/hooks/use-message-stream'
+import { clearBrowserActive } from '@renderer/hooks/use-message-stream'
+import { usePendingBrowserInputRequests } from '@renderer/components/messages/use-pending-requests'
 import { useUser } from '@renderer/context/user-context'
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
@@ -44,10 +45,10 @@ export function useBrowserStream({
   autoFollowRef.current = autoFollow
 
   // Lifecycle refs for cleanup
-  const isMountedRef = useRef(true)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const { pendingBrowserInputRequests } = useMessageStream(sessionId, agentSlug)
+  const { requests: pendingBrowserInputRequests, dismiss: dismissBrowserInputRequest } =
+    usePendingBrowserInputRequests(sessionId, agentSlug, isActive)
   const needsAttention = browserActive && pendingBrowserInputRequests.length > 0 && !isViewOnly
   const latestRequestId = pendingBrowserInputRequests.length > 0
     ? pendingBrowserInputRequests[pendingBrowserInputRequests.length - 1].toolUseId
@@ -132,7 +133,6 @@ export function useBrowserStream({
       return
     }
 
-    isMountedRef.current = true
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
@@ -151,6 +151,7 @@ export function useBrowserStream({
     }
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws) return
       try {
         // During window resize, skip frame rendering entirely to keep resize smooth
         const resizing = isResizingWindowRef.current
@@ -210,13 +211,13 @@ export function useBrowserStream({
     }
 
     ws.onclose = () => {
-      if (!isMountedRef.current) return
+      if (wsRef.current !== ws) return
       setConnected(false)
       setPageLoading(false)
       apiFetch(`/api/agents/${agentSlug}/browser/status`)
         .then((res) => res.json())
         .then((status: { active?: boolean; sessionId?: string }) => {
-          if (!isMountedRef.current) return
+          if (wsRef.current !== ws) return
           if (!status.active || status.sessionId !== sessionId) {
             clearBrowserActive(sessionId)
           } else {
@@ -224,16 +225,15 @@ export function useBrowserStream({
           }
         })
         .catch(() => {
-          if (isMountedRef.current) clearBrowserActive(sessionId)
+          if (wsRef.current === ws) clearBrowserActive(sessionId)
         })
     }
 
     ws.onerror = () => {
-      if (isMountedRef.current) setConnected(false)
+      if (wsRef.current === ws) setConnected(false)
     }
 
     return () => {
-      isMountedRef.current = false
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current)
         reconnectTimerRef.current = null
@@ -513,6 +513,7 @@ export function useBrowserStream({
     needsAttention,
     showOverlay,
     pendingBrowserInputRequests,
+    dismissBrowserInputRequest,
     latestRequestId,
     // Canvas event handlers
     handleMouseDown,

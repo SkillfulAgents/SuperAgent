@@ -46,6 +46,12 @@ export const sessionMetadataSchema = z
     isWebhookExecution: z.boolean().optional(),
     webhookTriggerId: z.string().optional(),
     webhookTriggerName: z.string().optional(),
+    // Bare string/number (not enum / positive-int) for the same reason as
+    // `effort`/`model` below: a status value added by a newer build must not
+    // fail the whole map for an older reader. Consumers narrow at the point
+    // of use (see normalizeAutomationStatus in activity-aggregation).
+    automationStatus: z.string().optional(),
+    webhookInvocationCount: z.number().optional(),
     isChatIntegrationSession: z.boolean().optional(),
     chatIntegrationId: z.string().optional(),
     promotedToInteractive: z.boolean().optional(),
@@ -53,9 +59,10 @@ export const sessionMetadataSchema = z
     // here risks false-rejecting a valid file and refusing to persist names.
     lastUsage: sessionUsageSchema.optional(),
     slashCommands: z.array(slashCommandInfoSchema).optional(),
-    // `effort`/`model` are intentionally bare strings (not the EffortLevel enum)
+    // `effort`/`speed`/`model` are intentionally bare strings (not the enums)
     // so a newly-added level/id from a newer build never fails an older reader.
     effort: z.string().optional(),
+    speed: z.string().optional(),
     model: z.string().optional(),
     invokedByAgentSlug: z.string().optional(),
   })

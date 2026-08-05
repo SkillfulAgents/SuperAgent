@@ -1,0 +1,32 @@
+{
+  "sessionId": "a9f54589-e7cf-4c6f-9789-1d59ab7767f9",
+  "agentSlug": "capture",
+  "description": "Real capture (2026-07-09, SDK 0.3.206). Explicit run_in_background:true subagent that runs ~12s (Bash sleep inside). session_state_changed:idle fires at lead-turn end while the subagent is live; real completion arrives later. Guards the premature-idle suppression for background subagents on the new SDK, incl. background_tasks_changed snapshots.",
+  "sdkVersion": "0.3.206",
+  "cliVersion": "2.1.206",
+  "capturedAt": "2026-07-09",
+  "startActive": true,
+  "subagents": [],
+  "backgroundTasks": [
+    {
+      "taskId": "aaf319f9ae7889dd6",
+      "taskType": "local_agent",
+      "startedT": 259156,
+      "prematureIdleT": 260810,
+      "realCompletionT": 274818
+    },
+    {
+      "taskId": "b0vsyr1y9",
+      "taskType": "local_bash",
+      "startedT": 264419,
+      "prematureIdleT": null,
+      "realCompletionT": 273426
+    }
+  ],
+  "newFrameCounts": {
+    "background_tasks_changed": 2,
+    "result.terminal_reason:completed": 2,
+    "command_lifecycle:completed": 1
+  },
+  "totalEntries": 58
+}

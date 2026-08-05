@@ -52,6 +52,7 @@ const INTEGRATION: ListItem = {
   sessionTimeout: null,
   model: null,
   effort: null,
+  speed: null,
   status: 'active',
   errorMessage: null,
   createdByUserId: null,

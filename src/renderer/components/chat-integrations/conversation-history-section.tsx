@@ -5,7 +5,8 @@ import { useChatIntegrationAccess } from '@renderer/hooks/use-chat-integrations'
 import { buildChatRows, activeWindow, type ChatRow } from './chat-inbox-model'
 import { ChatListRow } from './chat-list-row'
 import { ConversationDetail } from './conversation-detail'
-import type { ChatIntegration, ChatIntegrationSession } from '@shared/lib/db/schema'
+import type { ChatIntegrationSession } from '@shared/lib/db/schema'
+import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
 
 interface ConversationHistorySectionProps {
   integration: ChatIntegration

@@ -412,7 +412,7 @@ describe('settle handlers clear instantly but defer the sleep to the tick', () =
       vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('awaiting')
 
       startIndicatorTick(managed, 'sess-q')
-      await processSSEEvent(managed, { type: 'user_question_request', toolUseId: 'tu-1', questions: [{ question: 'Which DB?' }] })
+      await processSSEEvent(managed, { type: 'question_request', toolUseId: 'tu-1', questions: [{ question: 'Which DB?' }] })
       expect(managed.sleepTimer).toBeFalsy()               // handler schedules nothing
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)  // tick arms the sleep (awaiting = non-busy)
       await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS)

@@ -148,7 +148,7 @@ export function GlobalNotificationHandler() {
         if (!res.ok && res.status !== 404) {
           console.error('[notification-action] Failed to submit proxy review decision:', res.status)
         }
-        queryClient.invalidateQueries({ queryKey: ['proxy-reviews', ctx.agentSlug] })
+        queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
       })
       .catch((err) => {
         console.error('[notification-action] Error submitting proxy review decision:', err)
@@ -347,12 +347,18 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['webhook-trigger-sessions'] })
             queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions'] })
 
-            // Proxy review created or resolved — refetch review list
-            if (eventAgentSlug && data.review) {
-              queryClient.invalidateQueries({ queryKey: ['proxy-reviews', eventAgentSlug] })
-            }
             break
           }
+
+          case 'user_request_created':
+          case 'user_request_resolved':
+            // Unified pending-request wire. Invalidation, not data: the
+            // refetch reads the server registry snapshot. This is the live
+            // path for agent-scoped reviews (they have no session stream) and
+            // the cross-tab/cross-session sync for everything else; the
+            // store's interval refetch is the safety net for a missed event.
+            queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
+            break
 
           case 'agent_status_changed':
             // Agent started/stopped - update agent list and artifacts
@@ -374,6 +380,23 @@ export function GlobalNotificationHandler() {
               queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', agentSlug] })
             }
             queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+          }
+
+          case 'session_updated': {
+            // Session-level state changed outside a session stream (e.g. a
+            // pending wake was created/cancelled/fired) — refresh session
+            // lists so sidebar badges and the resume banner stay current.
+            const agentSlug = data.agentSlug as string | undefined
+            const sessionId = data.sessionId as string | undefined
+            if (agentSlug) {
+              queryClient.invalidateQueries({ queryKey: ['sessions', agentSlug] })
+            } else {
+              queryClient.invalidateQueries({ queryKey: ['sessions'] })
+            }
+            if (sessionId) {
+              queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
+            }
             break
           }
 

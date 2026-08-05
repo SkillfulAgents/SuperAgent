@@ -17,6 +17,7 @@ import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgent } from '@shared/lib/services/agent-service'
 import { getSessionMetadata } from '@shared/lib/services/session-service'
+import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 
 class NotificationManager {
   /**
@@ -81,6 +82,19 @@ class NotificationManager {
   }): Promise<void> {
     const { type, sessionId, agentSlug, title, body, actions, actionContext, extra } = params
 
+    // A blocked automated session must become visible: session lists exclude
+    // non-promoted automated sessions, so a session_waiting notification on one
+    // would raise unread indicators pointing at nothing — and could never be
+    // cleared. Promote first (idempotent, no-op for non-automated sessions),
+    // and before the settings check: visibility isn't a notification pref.
+    if (type === 'session_waiting') {
+      try {
+        await messagePersister.promoteAutomatedSession(sessionId, agentSlug)
+      } catch (error) {
+        console.error('[NotificationManager] Failed to promote automated session:', error)
+      }
+    }
+
     // Skip if notification type is disabled in settings
     if (!this.isNotificationTypeEnabled(type)) {
       return
@@ -132,10 +146,7 @@ class NotificationManager {
     agentName?: string
   ): Promise<void> {
     const meta = await getSessionMetadata(agentSlug, sessionId)
-    if (
-      !meta?.promotedToInteractive &&
-      (meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession)
-    ) {
+    if (isHiddenAutomatedSession(meta)) {
       return
     }
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
@@ -154,7 +165,7 @@ class NotificationManager {
   async triggerSessionWaitingInput(
     sessionId: string,
     agentSlug: string,
-    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run' | 'computer_use',
+    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run' | 'computer_use' | 'capability_review_subagents' | 'capability_review_workflows',
     agentName?: string
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
@@ -183,6 +194,15 @@ class NotificationManager {
         break
       case 'computer_use':
         waitingMessage = 'wants to control your computer'
+        break
+      // Mirror the review card's terminology ("Run this workflow?" /
+      // "Launch a subagent?") so the notification names what actually needs
+      // approving.
+      case 'capability_review_subagents':
+        waitingMessage = 'wants to launch a subagent'
+        break
+      case 'capability_review_workflows':
+        waitingMessage = 'wants to run a workflow'
         break
     }
 
@@ -255,6 +275,31 @@ class NotificationManager {
       agentSlug,
       title: 'Scheduled Task Started',
       body: `${taskDisplay} started for ${displayName}`,
+      extra: { taskId },
+    })
+  }
+
+  /**
+   * Trigger notification when a scheduled wake resumes an existing session.
+   * Reuses the session_scheduled type — a wake is a scheduled execution whose
+   * target happens to be an existing session.
+   */
+  async triggerScheduledSessionResumed(
+    sessionId: string,
+    agentSlug: string,
+    taskId: string,
+    sessionName?: string,
+    agentName?: string
+  ): Promise<void> {
+    const displayName = agentName || await this.getAgentDisplayName(agentSlug)
+    const sessionDisplay = sessionName || 'Session'
+
+    await this.triggerNotification({
+      type: 'session_scheduled',
+      sessionId,
+      agentSlug,
+      title: 'Session Resumed',
+      body: `${sessionDisplay} resumed as scheduled for ${displayName}`,
       extra: { taskId },
     })
   }

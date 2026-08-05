@@ -1,9 +1,10 @@
 import type { Context, Next, MiddlewareHandler } from 'hono'
 import { and, eq } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { runWithRequestUser } from '@shared/lib/platform-attribution'
+import { runWithOptionalUser, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { db } from '@shared/lib/db'
 import { agentAcl, connectedAccounts, remoteMcpServers, notifications } from '@shared/lib/db/schema'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { resolveAgentId } from '@shared/lib/utils/file-storage'
 
@@ -20,6 +21,22 @@ async function getAuthLazy() {
 // Re-export from shared types so existing consumers (webhook-triggers.ts etc.) keep working
 export { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/agent'
 import { type AgentRole, hasMinRole } from '@shared/lib/types/agent'
+
+const AUTHORIZED_AGENT_ROLE_CONTEXT_KEY = 'authorizedAgentRole'
+
+function setAuthorizedAgentRole(c: Context, role: AgentRole): void {
+  c.set(AUTHORIZED_AGENT_ROLE_CONTEXT_KEY as never, role as never)
+}
+
+/**
+ * Read the role established by AgentRead/AgentUser/AgentAdmin or
+ * EntityAgentRole. Returns null when no role-aware middleware ran so callers
+ * can default to the least-privileged response shape.
+ */
+export function getAuthorizedAgentRole(c: Context): AgentRole | null {
+  const role = c.get(AUTHORIZED_AGENT_ROLE_CONTEXT_KEY as never) as AgentRole | undefined
+  return role ?? null
+}
 
 /**
  * Authenticated — verifies user session and attaches user to context.
@@ -106,15 +123,22 @@ function resolvedAgentSlug(c: Context): string {
  */
 export function AgentRead(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
+    if (isAdmin(user)) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
     const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
-    if (!hasMinRole(role, 'viewer')) {
+    if (!role || !hasMinRole(role, 'viewer')) {
       return c.json({ error: 'Forbidden' }, 403)
     }
+    setAuthorizedAgentRole(c, role)
     return next()
   }
 }
@@ -125,15 +149,22 @@ export function AgentRead(): MiddlewareHandler {
  */
 export function AgentUser(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
+    if (isAdmin(user)) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
     const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
-    if (!hasMinRole(role, 'user')) {
+    if (!role || !hasMinRole(role, 'user')) {
       return c.json({ error: 'Forbidden' }, 403)
     }
+    setAuthorizedAgentRole(c, role)
     return next()
   }
 }
@@ -144,15 +175,22 @@ export function AgentUser(): MiddlewareHandler {
  */
 export function AgentAdmin(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
+    if (isAdmin(user)) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
     const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
-    if (!hasMinRole(role, 'owner')) {
+    if (!role || !hasMinRole(role, 'owner')) {
       return c.json({ error: 'Forbidden' }, 403)
     }
+    setAuthorizedAgentRole(c, role)
     return next()
   }
 }
@@ -205,14 +243,18 @@ export function EntityAgentRole<T extends { agentSlug: string }>(opts: {
       }
       c.set(opts.contextKey as never, entity as never)
 
-      if (!isAuthMode()) return next()
+      if (!isAuthMode()) {
+        setAuthorizedAgentRole(c, 'owner')
+        return next()
+      }
 
       const user = getUser(c)
       const role = await getUserAgentRole(user.id, entity.agentSlug)
-      if (!hasMinRole(role, minRole)) {
+      if (!role || !hasMinRole(role, minRole)) {
         return c.json({ error: 'Forbidden' }, 403)
       }
 
+      setAuthorizedAgentRole(c, role)
       return next()
     }
   }
@@ -355,13 +397,9 @@ export function HasNotificationAccess(): MiddlewareHandler {
 // ---------------------------------------------------------------------------
 
 /**
- * IsAgent — validates synthetic bearer token from a container.
- * Works in both auth and non-auth modes (containers always use proxy tokens).
- *
- * Stashes the resolved agent slug on the context as `agentSlug` so route
- * handlers can bind their action to the token's agent instead of trusting an
- * attacker-controlled body/param (see SUP-216). Each agent has exactly one
- * proxy token, so the token uniquely identifies the agent.
+ * Gate for container→host routes. Validates the agent proxy token, stashes `agentSlug` (SUP-216),
+ * and runs under the agent owner's attribution scope so billed proxy calls (`/v1/browserbase`,
+ * `/v1/exa`) carry `token::memberId`. Single-user installs have no ACL row → null scope.
  */
 export function IsAgent(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
@@ -371,7 +409,7 @@ export function IsAgent(): MiddlewareHandler {
       return c.json({ error: 'Unauthorized' }, 401)
     }
     c.set('agentSlug' as never, agentSlug as never)
-    return next()
+    return runWithOptionalUser(getAgentOwnerUserId(agentSlug), () => next())
   }
 }
 

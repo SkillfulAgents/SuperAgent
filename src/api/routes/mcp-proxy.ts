@@ -10,6 +10,7 @@ import {
   mcpAuditLog,
 } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 
 async function logMcpAuditEntry(entry: {
   agentSlug: string
@@ -37,6 +38,15 @@ async function logMcpAuditEntry(entry: {
   } catch (error) {
     console.error('[mcp-proxy] Failed to write audit log:', error)
   }
+}
+
+// GET listen must be SSE or 405; 200+HTML (Attio) makes Claude Agent SDK reconnect forever.
+function isSseContentType(contentType: string | null): boolean {
+  return (contentType ?? '').toLowerCase().includes('text/event-stream')
+}
+
+function shouldRewriteNonSseGet(method: string, response: Response): boolean {
+  return method === 'GET' && response.status === 200 && !isSseContentType(response.headers.get('content-type'))
 }
 
 /**
@@ -68,7 +78,7 @@ async function tryRefreshToken(mcp: {
       body.set('resource', mcp.oauthResource)
     }
 
-    const res = await fetch(mcp.oauthTokenEndpoint, {
+    const res = await mcpSafeFetch(mcp.oauthTokenEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
@@ -345,8 +355,33 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   }
 
   try {
-    const response = await fetch(targetUrl, init)
+    const response = await mcpSafeFetch(targetUrl, init)
     const durationMs = Date.now() - startTime
+
+    if (shouldRewriteNonSseGet(method, response)) {
+      const upstreamType = response.headers.get('content-type') ?? 'missing'
+      try {
+        await response.body?.cancel()
+      } catch (err) {
+        console.warn('[mcp-proxy] Failed to cancel non-SSE GET body:', err)
+      }
+      logMcpAuditEntry({
+        agentSlug,
+        remoteMcpId: mcp.id,
+        remoteMcpName: mcp.name,
+        method,
+        requestPath: mcpMethodInfo,
+        statusCode: 405,
+        errorMessage: `rewrote non-SSE GET 200 (${upstreamType}) to 405`,
+        durationMs,
+        policyDecision: resolvedPolicyDecision,
+        matchedTool: toolName ?? undefined,
+      })
+      return new Response(null, {
+        status: 405,
+        headers: { Allow: 'POST' },
+      })
+    }
 
     // Fire-and-forget audit log
     logMcpAuditEntry({

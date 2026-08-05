@@ -19,3 +19,9 @@ export function AwaitingDot() {
     </span>
   )
 }
+
+export function UnreadDot() {
+  return (
+    <span className="h-1.5 w-1.5 rounded-full bg-blue-500 shrink-0" role="img" aria-label="unread notifications" />
+  )
+}

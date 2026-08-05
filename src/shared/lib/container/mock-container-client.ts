@@ -15,7 +15,7 @@ import type {
 } from './types'
 import type { RuntimeOptions } from './runtime-options'
 import { resolveContainerModel } from './resolve-model'
-import { getSessionJsonlPath } from '../utils/file-storage'
+import { getAgentWorkspaceDir, getSessionJsonlPath } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
 import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
@@ -230,6 +230,101 @@ export class ThinkingResponseScenario implements MockScenario {
 }
 
 /**
+ * Multi-pass extended-thinking scenario — streams several thinking blocks in
+ * one turn, persisting each block's assistant JSONL entry as it completes
+ * (the real CLI writes one transcript entry per assistant message mid-turn).
+ * Interrupting mid-turn therefore leaves the earlier passes in the transcript
+ * while the later ones die with the scenario epoch — the transcript shape
+ * behind the "thinking cards clump below the interrupt marker" regression.
+ */
+export class MultiPassThinkingScenario implements MockScenario {
+  constructor(
+    private passes: string[],
+    private responseText: string,
+    /** Delay between thinking chunks — sets how long each pass streams. */
+    private chunkDelayMs = 200
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, 10)
+
+    let offset = 20
+    for (const passText of this.passes) {
+      const passStart = offset
+      const chunks = passText.split(' ')
+      setTimeout(() => {
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'thinking' } } },
+        })
+      }, passStart)
+      chunks.forEach((word, i) => {
+        setTimeout(() => {
+          client.emitStreamMessage(sessionId, {
+            type: 'stream_event',
+            content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: (i > 0 ? ' ' : '') + word } } },
+          })
+        }, passStart + 10 + i * this.chunkDelayMs)
+      })
+      const passEnd = passStart + 20 + chunks.length * this.chunkDelayMs
+      setTimeout(() => {
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+        })
+        // Each pass persists as its own assistant entry, like the real CLI
+        client.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'thinking', thinking: passText, signature: 'mock-signature' }],
+          },
+          timestamp: new Date().toISOString(),
+        })
+      }, passEnd)
+      offset = passEnd + 100
+    }
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: this.responseText } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: this.responseText }] },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, offset)
+  }
+}
+
+/**
  * Slow scenario for message-queueing E2E tests: holds the session in the
  * working state long enough for the test to send mid-turn messages, which the
  * mock records as queued_command attachments (mirroring the real CLI's
@@ -353,6 +448,41 @@ export class DelayedTextResponseScenario implements MockScenario {
     setTimeout(() => {
       inner.execute(sessionId, client, userMessage)
     }, this.delayMs)
+  }
+}
+
+/**
+ * Hook-blocked prompt scenario — mirrors what the CLI emits when a workspace
+ * settings-file hook (e.g. UserPromptSubmit) blocks a prompt: a warning-level
+ * `informational` system message with prevent_continuation, then a success
+ * result with num_turns 0 and no API time. Crucially, the CLI writes NOTHING
+ * to the transcript JSONL for a blocked prompt — the host's message-persister
+ * is responsible for persisting the banner.
+ */
+export class HookBlockScenario implements MockScenario {
+  constructor(private reason: string) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: {
+          type: 'system',
+          subtype: 'informational',
+          uuid: randomUUID(),
+          content: `UserPromptSubmit operation blocked by hook:\n${this.reason}\n\nOriginal prompt: ${userMessage}`,
+          level: 'warning',
+          prevent_continuation: true,
+        },
+      })
+    }, 80)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success', num_turns: 0, duration_api_ms: 0 },
+      })
+    }, 160)
   }
 }
 
@@ -538,7 +668,10 @@ export interface UserInputTool {
 }
 
 export class UserInputRequestScenario implements MockScenario {
-  constructor(private tools: UserInputTool[]) {}
+  constructor(
+    private tools: UserInputTool[],
+    private opts?: { holdResultsUntilAll?: boolean },
+  ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     let delay = 10
@@ -555,7 +688,9 @@ export class UserInputRequestScenario implements MockScenario {
 
     // Register pending inputs BEFORE emitting any events, so that
     // resolve/reject calls from the API can find and decrement the count.
-    client.registerPendingInputs(sessionId, tools.length)
+    client.registerPendingInputs(sessionId, tools.length, {
+      holdResultsUntilAll: this.opts?.holdResultsUntilAll,
+    })
 
     // Write the user message entry immediately so the JSONL file exists on disk.
     // The backend's getSession() checks fileExists(jsonlPath) and returns 404 if
@@ -663,6 +798,152 @@ export class UserInputRequestScenario implements MockScenario {
         content: { type: 'assistant', message: { content: assistantContent } },
       })
     }, finalDelay)
+  }
+}
+
+/**
+ * A BACKGROUND subagent parks on request_browser_input while the main turn
+ * stays open: the request arrives as a sidechain assistant message
+ * (parent_tool_use_id set), not on the main stream. The card must appear AND
+ * the agent-level status must flip to awaiting_input — the sidebar/header
+ * orange dot reads the persister's awaiting flag, which only the main-stream
+ * path used to set. Replicates the stuck "working" session with an
+ * unanswerable browser card.
+ */
+export class SubagentBrowserInputScenario implements MockScenario {
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const parentToolId = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const subToolId = `subtool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+
+    // One pending input: resolving/declining the card ends the turn — after a
+    // gap long enough for tests to assert the agent-resumed (working, NOT
+    // awaiting) window between the user's answer and the session settling.
+    client.registerPendingInputs(sessionId, 1, { completionDelayMs: 2500 })
+    // The result must come back on the sidechain, like the real SDK delivers
+    // subagent tool results — a top-level result would bypass the sidechain
+    // bookkeeping this scenario exists to exercise.
+    client.registerSidechainToolParent(subToolId, parentToolId)
+
+    client.writeJsonlEntry(sessionId, {
+      type: 'user',
+      message: { content: userMessage },
+      timestamp: new Date().toISOString(),
+    })
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, 10)
+
+    // The subagent's request arrives as a complete sidechain assistant message
+    // (the SDK often delivers subagent tool calls without stream deltas).
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          parent_tool_use_id: parentToolId,
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: subToolId,
+                name: 'mcp__user-input__request_browser_input',
+                input: {
+                  message: 'Log in to GitHub to finish the submission.',
+                  requirements: ['Log in to GitHub', 'Complete 2FA if prompted'],
+                },
+              },
+            ],
+          },
+        },
+      })
+    }, 60)
+    // No 'result' here: the main turn stays open, matching the incident where
+    // the subagent parked mid-turn waiting on the user.
+  }
+}
+
+/**
+ * A background subagent parks on request_browser_input and then DIES — its
+ * sidechain 'result' arrives with no tool_result for the parked ask — while
+ * the main turn keeps running. The host must invalidate the orphaned request
+ * (card gone, status back to working) instead of leaving an unanswerable card
+ * until a turn boundary. The main turn ends on its own afterwards.
+ */
+export class DeadSubagentInputScenario implements MockScenario {
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const parentToolId = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const subToolId = `subtool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+
+    client.writeJsonlEntry(sessionId, {
+      type: 'user',
+      message: { content: userMessage },
+      timestamp: new Date().toISOString(),
+    })
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, 10)
+
+    // The subagent's request arrives as a complete sidechain assistant message.
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          parent_tool_use_id: parentToolId,
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: subToolId,
+                name: 'mcp__user-input__request_browser_input',
+                input: {
+                  message: 'Log in to GitHub to finish the submission.',
+                  requirements: ['Log in to GitHub'],
+                },
+              },
+            ],
+          },
+        },
+      })
+    }, 60)
+
+    // The subagent dies ~2.5s later: its terminal sidechain 'result' frame
+    // arrives while the browser_input has no tool_result. Long enough for a
+    // spec to assert the card + awaiting window first.
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: {
+          type: 'result',
+          parent_tool_use_id: parentToolId,
+          subtype: 'success',
+        },
+      })
+    }, 2500)
+
+    // The main turn continues briefly, then settles on its own — the parked
+    // ask must NOT be what ends it.
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'The subagent stopped; continuing without it.' }],
+        },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, 5000)
   }
 }
 
@@ -798,6 +1079,64 @@ export class ProxyReviewScenario implements MockScenario {
         })
       })
     }, capturedDelay)
+  }
+}
+
+/**
+ * Mixed cross-store pending requests: two container-side input asks (secret +
+ * question) stream in one turn while an agent-scoped proxy review parks in
+ * the real ReviewManager. The three waits live in DIFFERENT stores (persister
+ * pendingInputRequests × 2, ReviewManager pending × 1), so this scenario
+ * exercises the aggregation no single-store scenario can: the pending-request
+ * stack must show all three, and the awaiting indicator must survive until
+ * the LAST wait of either store resolves. The review decision deliberately
+ * does NOT end the turn — the input machinery does, once both inputs resolve.
+ */
+export class MixedPendingRequestsScenario implements MockScenario {
+  private inputScenario = new UserInputRequestScenario([
+    {
+      name: 'mcp__user-input__request_secret',
+      input: { secretName: 'MIXED_SECRET_KEY', reason: 'Needed alongside a review' },
+    },
+    {
+      name: 'AskUserQuestion',
+      input: {
+        questions: [{
+          question: 'Which database should we use?',
+          header: 'Database',
+          options: [
+            { label: 'PostgreSQL', description: 'Reliable relational database' },
+            { label: 'MongoDB', description: 'Flexible document store' },
+          ],
+          multiSelect: false,
+        }],
+      },
+    },
+  ])
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    this.inputScenario.execute(sessionId, client, userMessage)
+
+    const agentSlug = client.getAgentId()
+    const accountId = getMessageParam(userMessage, 'account_id') ?? MOCK_ACCOUNT_ID
+    // Kick the review after the input tool stream has finished (its delay
+    // budget is ~200ms for two tools); exact ordering is not load-bearing —
+    // specs wait for all three cards independently.
+    setTimeout(async () => {
+      await seedMockConnectedAccount(accountId)
+      reviewManager.requestReview({
+        agentSlug,
+        accountId,
+        toolkit: 'slack',
+        method: 'POST',
+        targetPath: 'api/chat.postMessage',
+        matchedScopes: ['chat:write'],
+        scopeDescriptions: { 'chat:write': 'Send messages to channels' },
+      }).catch(() => {
+        // Denied or timed out — the turn lifecycle is owned by the input
+        // machinery, so nothing to do here.
+      })
+    }, 400)
   }
 }
 
@@ -1134,6 +1473,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   static scenarios = new Map<string, MockScenario>([
     // Slow response window for message-queueing tests (send mid-turn → queued)
     ['work slowly', new SlowWorkScenario()],
+    // Several thinking passes persisted one-by-one — an interruptible thinking turn
+    ['think in passes', new MultiPassThinkingScenario(
+      [
+        'First pass: survey the problem space and list the moving parts before committing to anything.',
+        'Second pass: weigh the tradeoffs between the candidate approaches and pick the sturdiest one.',
+        'Third pass: sanity-check the chosen approach against the edge cases before answering.',
+      ],
+      'Done with all thinking passes — here is the answer.'
+    )],
     // Extended-thinking card in the transcript (expanded while streaming, then collapsed)
     ['think out loud', new ThinkingResponseScenario(
       'Let me reason about this. The user wants a demonstration of extended thinking, ' +
@@ -1149,6 +1497,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     )],
     // Register a background bash scenario for testing background task tracking
     ['run background', new BackgroundBashScenario(2000, 'done sleeping')],
+    // A workspace hook blocking the prompt before the model sees it
+    ['trip the breaker', new HookBlockScenario('Circuit breaker: too many messages without operator input')],
     // Register a slow response scenario for cross-session tests
     ['slow response', new DelayedTextResponseScenario(
       'This is a delayed mock response.',
@@ -1273,6 +1623,32 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         input: { method: 'apps', params: {}, permissionLevel: 'list_apps_windows' },
       },
     ])],
+    // Same request pair as 'ask parallel' below, but with real-CLI parallel
+    // semantics: no tool_result reaches the transcript until BOTH siblings
+    // settle. Pins the decision-route settle — without it a decided request
+    // stays open and a reload resurrects its card. Listed BEFORE 'ask
+    // parallel': scenario matching is first-substring-wins, and this key
+    // contains that one.
+    ['ask parallel holdback', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_secret',
+        input: { secretName: 'DATABASE_URL', reason: 'Connection string for the database' },
+      },
+      {
+        name: 'AskUserQuestion',
+        input: {
+          questions: [{
+            question: 'Which cloud provider do you prefer?',
+            header: 'Cloud',
+            options: [
+              { label: 'AWS', description: 'Amazon Web Services' },
+              { label: 'GCP', description: 'Google Cloud Platform' },
+            ],
+            multiSelect: false,
+          }],
+        },
+      },
+    ], { holdResultsUntilAll: true })],
     ['ask parallel', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_secret',
@@ -1293,7 +1669,42 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         },
       },
     ])],
+    // Capability review scenarios: the streamed Task/Workflow tool_use flows
+    // through the real MessagePersister policy gate (workflows default to
+    // review, subagents to allow), and the decision route answers via the
+    // mock's /inputs resolve/reject just like the real container.
+    ['launch workflow', new UserInputRequestScenario([
+      {
+        name: 'Workflow',
+        input: {
+          name: 'sample-audit',
+          script: [
+            "export const meta = {",
+            "  name: 'sample-audit',",
+            "  description: 'Audit the sample data set',",
+            "  phases: [",
+            "    { title: 'Scan', detail: 'collect candidates' },",
+            "    { title: 'Verify', detail: 'adversarially check each' },",
+            "  ],",
+            "}",
+            "const found = await parallel([() => agent('scan part one'), () => agent('scan part two')])",
+            "const verified = await agent('verify: ' + JSON.stringify(found))",
+            "return verified",
+          ].join('\n'),
+        },
+      },
+    ])],
+    ['launch subagent', new UserInputRequestScenario([
+      {
+        name: 'Task',
+        input: { subagent_type: 'Explore', description: 'Scan the repo', prompt: 'Look at the files and report back' },
+      },
+    ])],
+    ['subagent browser input', new SubagentBrowserInputScenario()],
+    ['dead subagent input', new DeadSubagentInputScenario()],
     // Proxy review scenario for E2E tests
+    // Cross-store mix: container input asks + a parked ReviewManager review
+    ['mixed pending', new MixedPendingRequestsScenario()],
     ['proxy review', new ProxyReviewScenario(
       'slack',
       'POST',
@@ -1373,9 +1784,27 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'File delivered successfully (size: 4096 bytes)',
       'Here is the demo clip.'
     )],
+    ['deliver audio', new ToolUseScenario(
+      'mcp__user-input__deliver_file',
+      { filePath: '/workspace/output/voice-note.mp3', description: 'Voice note' },
+      'File delivered successfully (size: 4096 bytes)',
+      'Here is the voice note.'
+    )],
     // API error scenarios
     ['auth error', new ApiErrorScenario('authentication_failed', 'Invalid API key')],
     ['rate limit error', new ApiErrorScenario('rate_limit', 'Rate limit exceeded, please try again later')],
+    // Schedule resume (session long-sleep) scenario — the host interceptor
+    // persists a real wake row targeting this session, so E2E can exercise the
+    // pending-wake banner, sidebar badge, and Wake now / Cancel actions.
+    ['schedule resume', new ToolUseScenario(
+      'mcp__user-input__schedule_resume',
+      {
+        wakeTime: 'at now + 2 hours',
+        note: 'Check whether the review has been approved',
+      },
+      'Scheduled this session to auto-resume in 2 hours.',
+      'I\'ll pause here and check back in 2 hours.'
+    )],
     // Schedule task scenario
     ['schedule task', new ToolUseScenario(
       'mcp__user-input__schedule_task',
@@ -1410,21 +1839,25 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     sessionId: string
     content: string
     effort?: string
+    speed?: string
     model?: string
   } | null = null
   static sendMessageCalls: Array<{
     sessionId: string
     content: string
     effort?: string
+    speed?: string
     model?: string
   }> = []
   static lastCreateSessionCall: {
     effort?: string
+    speed?: string
     model?: string
     initialMessage?: string
   } | null = null
   static createSessionCalls: Array<{
     effort?: string
+    speed?: string
     model?: string
     initialMessage?: string
   }> = []
@@ -1458,12 +1891,25 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   private running: boolean = false
   private activeBrowserSessionId: string | null = null
   private sessions: Map<string, ContainerSession> = new Map()
-  private sessionMessages: Map<string, unknown[]> = new Map()
   private streamCallbacks: Map<string, Set<(message: StreamMessage) => void>> = new Map()
   // Map from containerSessionId to our internal sessionId (which is the same as the API sessionId)
   private sessionToApiSession: Map<string, string> = new Map()
   // Track pending user input requests per session for auto-completion
   private pendingInputCounts: Map<string, number> = new Map()
+  // Delay between the last input resolving and the turn-ending 'result', per
+  // session (default 50ms). Scenarios that must expose the post-resolve window
+  // (agent resumed, not yet settled) register a longer one.
+  private inputCompletionDelays: Map<string, number> = new Map()
+
+  // Sessions whose parallel tool results are HELD until the last sibling
+  // resolves (matching the real CLI), plus the buffered result blocks.
+  private holdResultsSessions: Set<string> = new Set()
+  private heldToolResults: Map<string, Array<Record<string, unknown>>> = new Map()
+  // toolUseId → parent_tool_use_id for input requests that a SUBAGENT issued.
+  // The real SDK returns their tool_results on the sidechain (parent id set),
+  // which the persister routes through handleSidechainMessage — a top-level
+  // result here would exercise the wrong production path.
+  private sidechainToolParents: Map<string, string> = new Map()
 
   constructor(config: ContainerConfig) {
     super()
@@ -1559,10 +2005,34 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   /**
    * Register pending input count for a session. When all inputs are resolved/rejected
    * via fetch(), the session emits a result event to complete.
+   * `completionDelayMs` stretches the gap between the last resolve and that
+   * result, for tests that assert the agent-resumed-but-not-settled window.
    */
-  registerPendingInputs(sessionId: string, count: number): void {
+  registerPendingInputs(
+    sessionId: string,
+    count: number,
+    opts?: { completionDelayMs?: number; holdResultsUntilAll?: boolean },
+  ): void {
     this.pendingInputCounts.set(sessionId, count)
+    if (opts?.completionDelayMs !== undefined) {
+      this.inputCompletionDelays.set(sessionId, opts.completionDelayMs)
+    }
+    if (opts?.holdResultsUntilAll) {
+      // Parallel-sibling fidelity: the real CLI holds every parallel tool
+      // call's result until the LAST one resolves — the immediate-emit
+      // default hid the decided-but-unsettled window from E2E entirely.
+      this.holdResultsSessions.add(sessionId)
+    }
     console.log(`[MockContainerClient] Registered ${count} pending inputs for session ${sessionId}`)
+  }
+
+  /**
+   * Mark an input-request toolUseId as issued by a subagent under the given
+   * parent tool: its resolve/reject tool_result is then emitted as a SIDECHAIN
+   * user message (parent_tool_use_id preserved), matching the real SDK.
+   */
+  registerSidechainToolParent(toolUseId: string, parentToolId: string): void {
+    this.sidechainToolParents.set(toolUseId, parentToolId)
   }
 
   /**
@@ -1631,6 +2101,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return null
   }
 
+  // No runner network to probe from in mock mode.
+  async probeHostPortFromRunner(_host: string, _port: number): Promise<'reachable' | 'unreachable' | 'unknown'> {
+    return 'unknown'
+  }
+
   // Lifecycle management
 
   async start(options?: StartOptions): Promise<void> {
@@ -1657,7 +2132,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
     this.running = false
     this.sessions.clear()
-    this.sessionMessages.clear()
     this.streamCallbacks.clear()
     console.log(`[MockContainerClient] Stopped mock container for agent ${this.config.agentId}`)
     return { forceStopUsed: false, stopped: true }
@@ -1670,7 +2144,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
     this.running = false
     this.sessions.clear()
-    this.sessionMessages.clear()
     this.streamCallbacks.clear()
     console.log(`[MockContainerClient] Stopped mock container (sync) for agent ${this.config.agentId}`)
   }
@@ -1688,8 +2161,62 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return this.getInfoFromRuntime()
   }
 
-  async fetch(fetchPath: string, _init?: RequestInit): Promise<Response> {
+  getHostAuthHeaders(): Record<string, string> {
+    return {}
+  }
+
+  async fetch(fetchPath: string, init?: RequestInit): Promise<Response> {
     // Mock fetch - return appropriate empty responses based on path
+
+    // Workspace entry mutations are executed inside the real agent container.
+    // The E2E mock has no container namespace, so mirror the operation against
+    // its test workspace to keep the browser flow representative.
+    if (fetchPath === '/workspace/entries') {
+      try {
+        const body = JSON.parse(String(init?.body)) as {
+          path: string
+          name?: string
+          type: 'file' | 'directory'
+        }
+        const relativePath = path.posix.relative('/workspace', path.posix.normalize(body.path))
+        if (!relativePath || relativePath === '..' || relativePath.startsWith('../')) {
+          return new Response(JSON.stringify({ error: 'Invalid workspace path' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        const sourcePath = path.join(getAgentWorkspaceDir(this.config.agentId), ...relativePath.split('/'))
+
+        if (init?.method === 'PATCH' && body.name) {
+          const destinationPath = path.join(path.dirname(sourcePath), body.name)
+          await fs.promises.rename(sourcePath, destinationPath)
+          return new Response(JSON.stringify({
+            path: path.posix.join(path.posix.dirname(body.path), body.name),
+            name: body.name,
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+
+        if (init?.method === 'DELETE') {
+          if (body.type === 'directory') await fs.promises.rm(sourcePath, { recursive: true })
+          else await fs.promises.unlink(sourcePath)
+          return new Response(JSON.stringify({ success: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+
+        return new Response(JSON.stringify({ error: 'Invalid workspace operation' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        const status = code === 'ENOENT' ? 404 : code === 'EEXIST' ? 409 : 500
+        return new Response(JSON.stringify({
+          error: error instanceof Error ? error.message : 'Workspace operation failed',
+        }), { status, headers: { 'Content-Type': 'application/json' } })
+      }
+    }
 
     // Browser status — used by frontend when WebSocket closes to check if browser is still active
     if (fetchPath === '/browser/status') {
@@ -1744,18 +2271,58 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
             tool_use_id: toolUseId,
             content: resolveMatch[2] === 'resolve' ? 'User provided input' : 'User declined the request',
           }]
-          this.writeJsonlEntry(sessionId, {
-            type: 'user',
-            message: { content: toolResultBlocks },
-            timestamp: new Date().toISOString(),
-          })
-          this.emitStreamMessage(sessionId, {
-            type: 'user',
-            content: { type: 'user', message: { content: toolResultBlocks } },
-          })
+          const sidechainParent = this.sidechainToolParents.get(toolUseId)
+          if (sidechainParent) {
+            // Subagent-issued request: the result comes back on the sidechain
+            // (parent_tool_use_id set) and is persisted to the SUBAGENT
+            // transcript in production, so no main-transcript JSONL write here.
+            this.sidechainToolParents.delete(toolUseId)
+            this.emitStreamMessage(sessionId, {
+              type: 'user',
+              content: {
+                type: 'user',
+                parent_tool_use_id: sidechainParent,
+                message: { content: toolResultBlocks },
+              },
+            })
+          } else if (this.holdResultsSessions.has(sessionId)) {
+            // Parallel-sibling fidelity: hold this result until the last
+            // sibling settles, then release them all in ONE user message —
+            // the real CLI does not stream results for parallel tool calls
+            // individually. Host-side cleanup between decision and release
+            // must come from the decision routes' explicit settle.
+            const held = this.heldToolResults.get(sessionId) ?? []
+            held.push(...toolResultBlocks)
+            this.heldToolResults.set(sessionId, held)
+            if (remaining === 0) {
+              this.holdResultsSessions.delete(sessionId)
+              this.heldToolResults.delete(sessionId)
+              this.writeJsonlEntry(sessionId, {
+                type: 'user',
+                message: { content: held },
+                timestamp: new Date().toISOString(),
+              })
+              this.emitStreamMessage(sessionId, {
+                type: 'user',
+                content: { type: 'user', message: { content: held } },
+              })
+            }
+          } else {
+            this.writeJsonlEntry(sessionId, {
+              type: 'user',
+              message: { content: toolResultBlocks },
+              timestamp: new Date().toISOString(),
+            })
+            this.emitStreamMessage(sessionId, {
+              type: 'user',
+              content: { type: 'user', message: { content: toolResultBlocks } },
+            })
+          }
           if (remaining === 0) {
             this.pendingInputCounts.delete(sessionId)
-            // Complete the session after a short delay
+            // Complete the session after the configured delay (default: short)
+            const completionDelay = this.inputCompletionDelays.get(sessionId) ?? 50
+            this.inputCompletionDelays.delete(sessionId)
             setTimeout(() => {
               this.writeJsonlEntry(sessionId, {
                 type: 'assistant',
@@ -1768,7 +2335,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
                 type: 'result',
                 content: { type: 'result', subtype: 'success' },
               })
-            }, 50)
+            }, completionDelay)
           }
           break
         }
@@ -1824,11 +2391,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // Record for E2E test assertions
     MockContainerClient.lastCreateSessionCall = {
       effort: options.effort,
+      speed: options.speed,
       model,
       initialMessage: options.initialMessage,
     }
     MockContainerClient.createSessionCalls.push({
       effort: options.effort,
+      speed: options.speed,
       model,
       initialMessage: options.initialMessage,
     })
@@ -1836,6 +2405,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       type: 'createSession',
       agentSlug: this.config.agentId,
       effort: options.effort,
+      speed: options.speed,
       model,
       initialMessage: options.initialMessage,
       // Secret env var NAMES the host resolved from the agent .env and passed to
@@ -1863,7 +2433,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
 
     this.sessions.set(sessionId, session)
-    this.sessionMessages.set(sessionId, [])
     this.streamCallbacks.set(sessionId, new Set())
 
     console.log(`[MockContainerClient] Created session ${sessionId}`)
@@ -1876,14 +2445,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
           { uuid: options.initialMessageUuid, content: options.initialMessage },
         ])
       }
-      // Store user message
-      const userMessage = {
-        role: 'user',
-        content: options.initialMessage,
-        timestamp: new Date().toISOString(),
-      }
-      this.sessionMessages.get(sessionId)?.push(userMessage)
-
       // Delay message emission to give time for subscription
       // The API subscribes after createSession returns, so we need to wait
       setTimeout(() => {
@@ -1923,7 +2484,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   async deleteSession(sessionId: string): Promise<boolean> {
     const existed = this.sessions.has(sessionId)
     this.sessions.delete(sessionId)
-    this.sessionMessages.delete(sessionId)
     this.streamCallbacks.delete(sessionId)
     this.pendingUserMessageUuids.delete(sessionId)
     this.busySessions.delete(sessionId)
@@ -1947,12 +2507,14 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       sessionId,
       content,
       effort: options?.effort,
+      speed: options?.speed,
       model,
     }
     MockContainerClient.sendMessageCalls.push({
       sessionId,
       content,
       effort: options?.effort,
+      speed: options?.speed,
       model,
     })
     this.writeMockRecord({
@@ -1961,6 +2523,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       sessionId,
       content,
       effort: options?.effort,
+      speed: options?.speed,
       model,
       timestamp: new Date().toISOString(),
     })
@@ -1974,12 +2537,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
     // shouldQuery: false — append to transcript without triggering a response
     if (options?.shouldQuery === false) {
-      this.sessionMessages.get(sessionId)?.push({
-        role: 'user',
-        content,
-        timestamp: new Date().toISOString(),
-        shouldQuery: false,
-      })
       return
     }
 
@@ -2038,14 +2595,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       return
     }
 
-    // Store user message
-    const userMessage = {
-      role: 'user',
-      content,
-      timestamp: new Date().toISOString(),
-    }
-    this.sessionMessages.get(sessionId)?.push(userMessage)
-
     // Remember the uuid so the scenario's JSONL echo of this message gets it
     if (uuid) {
       const queue = this.pendingUserMessageUuids.get(sessionId) ?? []
@@ -2075,10 +2624,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.busySessions.add(sessionId)
     this.emitSessionState(sessionId, 'running')
     scenario.execute(sessionId, this.scenarioView(sessionId), content)
-  }
-
-  async getMessages(sessionId: string): Promise<unknown[]> {
-    return this.sessionMessages.get(sessionId) || []
   }
 
   async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {
@@ -2117,19 +2662,43 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     const session = this.sessions.get(sessionId)
     if (!session) return false
 
+    const hadTurnInFlight = this.busySessions.has(sessionId)
+
     // Supersede the in-flight scenario so its pending timers can't finish the
     // turn after the abort (see scenarioView), and let the next send start a
     // fresh turn instead of taking the mid-turn steering path.
     this.interruptEpochs.set(sessionId, (this.interruptEpochs.get(sessionId) ?? 0) + 1)
     this.busySessions.delete(sessionId)
 
+    // Aborting an active turn appends a "[Request interrupted by user]" USER
+    // entry to the transcript in the real CLI — it renders as the interrupt
+    // bubble and, being a user message, exercises turn-boundary logic in the
+    // renderer (e.g. thinking-card dedup). Mirror it so E2E sees the real
+    // post-interrupt transcript shape.
+    if (hadTurnInFlight) {
+      this.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: '[Request interrupted by user]' },
+        timestamp: new Date().toISOString(),
+      })
+    }
+
     // Queued steering messages die with the turn — the real CLI never picks
-    // them up after an abort; the renderer restores their text into the
-    // composer draft.
+    // them up after an abort. Mirror the real container: it names each dead
+    // uuid with a synthetic command_lifecycle 'discarded' frame (the SDK's own
+    // frames die with the aborted query), which the renderer uses to rescue
+    // the ghost's text into the composer deterministically.
     const timers = this.queuedSteeringTimers.get(sessionId)
     if (timers) {
+      const deadUuids = [...timers.keys()]
       for (const timer of timers.values()) clearTimeout(timer)
       timers.clear()
+      for (const uuid of deadUuids) {
+        this.emitStreamMessage(sessionId, {
+          type: 'command_lifecycle',
+          content: { type: 'command_lifecycle', command_uuid: uuid, state: 'discarded' },
+        })
+      }
     }
 
     this.emitStreamMessage(sessionId, {
@@ -2158,9 +2727,18 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // before any relayed message so the persister treats state events as the
     // idle authority from the first turn (the mock emits them — see
     // emitSessionState).
+    // process_instance is STABLE per session here: the mock never replaces a
+    // CLI process, so every reattach must name the same one. A fresh id per
+    // subscribe would make each reconnect look like a restart and drop
+    // background tasks that are still running.
     callback({
       type: 'system',
-      content: { type: 'system', subtype: 'capabilities', session_state_events: true },
+      content: {
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+        process_instance: `mock-process-${sessionId}`,
+      },
       timestamp: new Date(),
       sessionId,
     })

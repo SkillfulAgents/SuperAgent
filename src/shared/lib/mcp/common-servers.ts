@@ -123,6 +123,14 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     category: 'Communication',
   },
   {
+    slug: 'dialmcp',
+    displayName: 'DialMCP',
+    description: 'Place phone calls from your number with transcripts and recordings',
+    url: 'https://mcp.dialmcp.com/mcp',
+    authType: 'oauth',
+    category: 'Communication',
+  },
+  {
     slug: 'dialer',
     displayName: 'Dialer',
     description: 'Outbound phone calls',

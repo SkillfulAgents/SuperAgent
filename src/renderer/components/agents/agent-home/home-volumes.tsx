@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 import { HomeCollapsible } from './home-collapsible'
 import { useVolumesManager } from '@renderer/hooks/use-mounts'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { VolumeStatusBadge } from '../volume-status-badge'
 import type { AgentMountWithHealth } from '@shared/lib/types/mount'
 
@@ -33,6 +34,11 @@ interface HomeVolumesProps {
 
 export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
   const volumes = useVolumesManager(agentSlug)
+
+  // Nothing mounted and no way to mount anything (a cloud workspace, where the
+  // picker would browse the wrong machine): the section would be an empty box
+  // inviting you to do something this window cannot do.
+  if (!volumes.canAddMount && volumes.mounts.length === 0) return null
 
   return (
     <HomeCollapsible title="Volumes" className={className}>
@@ -78,7 +84,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
               </span>
             )}
           </div>
-        ) : (
+        ) : volumes.canAddMount ? (
           <div className="flex justify-end">
             <Button
               variant="ghost"
@@ -94,7 +100,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
               Add Mount
             </Button>
           </div>
-        )}
+        ) : null}
       </div>
     </HomeCollapsible>
   )
@@ -117,8 +123,13 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const fileManagerLabel = getFileManagerLabel()
+  // `hostPath` is a path on whichever machine runs the agent. Opening it in the
+  // file manager only works when that machine is this one; against a cloud
+  // workspace it either fails or, worse, opens a same-named folder of yours.
+  const canOpenInFileManager = canUseHostFeatures()
 
   const handleOpenInFinder = () => {
+    if (!canOpenInFileManager) return
     void window.electronAPI?.showInFolder(mount.hostPath)
   }
 
@@ -134,17 +145,24 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
   return (
     <>
       <div
-        role="button"
-        tabIndex={0}
-        className="group relative py-3 px-4 hover:bg-muted/50 transition-colors cursor-pointer"
-        onClick={handleOpenInFinder}
-        onKeyDown={(e) => {
-          if (e.target !== e.currentTarget) return
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault()
-            handleOpenInFinder()
+        // Not a button when there is nothing to open: an inert control that
+        // still takes focus and highlights on hover promises an action the
+        // window cannot perform.
+        {...(canOpenInFileManager
+          ? {
+            role: 'button',
+            tabIndex: 0,
+            onClick: handleOpenInFinder,
+            onKeyDown: (e: React.KeyboardEvent) => {
+              if (e.target !== e.currentTarget) return
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                handleOpenInFinder()
+              }
+            },
           }
-        }}
+          : {})}
+        className={`group relative py-3 px-4 transition-colors ${canOpenInFileManager ? 'hover:bg-muted/50 cursor-pointer' : ''}`}
       >
         <div className="flex items-center gap-2">
           <Folder className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -169,17 +187,19 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-40 p-1">
-              <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleOpenInFinder()
-                  setMenuOpen(false)
-                }}
-              >
-                <FolderOpen className="h-3.5 w-3.5" />
-                Open in {fileManagerLabel}
-              </button>
+              {canOpenInFileManager && (
+                <button
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handleOpenInFinder()
+                    setMenuOpen(false)
+                  }}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  Open in {fileManagerLabel}
+                </button>
+              )}
               <button
                 className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                 onClick={(e) => {

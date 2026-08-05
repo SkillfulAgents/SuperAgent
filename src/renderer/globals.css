@@ -22,7 +22,7 @@
     --destructive-foreground: 0 0% 98%;
     --border: 0 0% 89.8%;
     --input: 0 0% 89.8%;
-    --ring: 0 0% 3.9%;
+    --ring: 0 0% 63.9%;
     --radius: 0.5rem;
     --chart-1: 12 76% 61%;
     --chart-2: 173 58% 39%;
@@ -58,7 +58,7 @@
     --destructive-foreground: 0 0% 98%;
     --border: 0 0% 19%;
     --input: 0 0% 19%;
-    --ring: 0 0% 83.1%;
+    --ring: 0 0% 45%;
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
@@ -115,6 +115,112 @@
 */
 html[data-keyboard-open] [data-composer-footer] {
   padding-bottom: 0;
+}
+
+/* The composer uses a ProseMirror document model but its controlled value is
+   always serialized Markdown. Keep block spacing compact enough for chat while
+   still making each Markdown construct immediately legible as it is typed. */
+.markdown-composer-editor {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-font-variant-ligatures: normal;
+  font-variant-ligatures: normal;
+  font-feature-settings: normal;
+}
+
+.markdown-composer-editor[contenteditable="false"] {
+  cursor: not-allowed;
+  opacity: .5;
+}
+
+.markdown-composer-editor[data-empty="true"]::before {
+  position: absolute;
+  color: hsl(var(--muted-foreground));
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.markdown-composer-editor p,
+.markdown-composer-editor h1,
+.markdown-composer-editor h2,
+.markdown-composer-editor h3,
+.markdown-composer-editor h4,
+.markdown-composer-editor h5,
+.markdown-composer-editor h6 {
+  min-height: 1.25rem;
+  margin: 0;
+}
+
+.markdown-composer-editor > * + * {
+  margin-top: .25rem;
+}
+
+.markdown-composer-editor h1 { font-size: 1.25rem; line-height: 1.6rem; font-weight: 500; }
+.markdown-composer-editor h2 { font-size: 1.125rem; line-height: 1.5rem; font-weight: 500; }
+.markdown-composer-editor h3,
+.markdown-composer-editor h4,
+.markdown-composer-editor h5,
+.markdown-composer-editor h6 { font-size: 1rem; line-height: 1.4rem; font-weight: 500; }
+
+.markdown-composer-editor strong { font-weight: 500; }
+.markdown-composer-editor em { font-style: italic; }
+.markdown-composer-editor s { color: hsl(var(--muted-foreground)); }
+
+.markdown-composer-editor :not(pre) > code {
+  border-radius: .25rem;
+  background: hsl(var(--muted));
+  padding: .08rem .28rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: .88em;
+}
+
+.markdown-composer-editor pre {
+  overflow-x: auto;
+  border-radius: .5rem;
+  background: hsl(var(--muted));
+  padding: .5rem .65rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: .82rem;
+  line-height: 1.2rem;
+}
+
+.markdown-composer-editor blockquote {
+  margin: .2rem 0;
+  border-left: 2px solid hsl(var(--border));
+  padding-left: .65rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.markdown-composer-editor ul,
+.markdown-composer-editor ol {
+  margin: .15rem 0;
+  padding-left: 1.35rem;
+}
+
+.markdown-composer-editor ul { list-style: disc; }
+.markdown-composer-editor ol { list-style: decimal; }
+.markdown-composer-editor li > p { min-height: auto; }
+.markdown-composer-editor li::marker { color: hsl(var(--muted-foreground)); }
+
+.markdown-composer-editor a {
+  color: hsl(var(--foreground));
+  text-decoration: underline;
+  text-decoration-color: hsl(var(--muted-foreground) / .6);
+  text-underline-offset: 2px;
+}
+
+.markdown-composer-editor hr {
+  margin: .45rem 0;
+  border: 0;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.markdown-composer-editor img {
+  display: inline-block;
+  max-height: 5rem;
+  max-width: min(100%, 12rem);
+  border-radius: .35rem;
+  vertical-align: middle;
 }
 
 /* Force visible scrollbar on code blocks so users know content is scrollable */
@@ -181,6 +287,15 @@ html[data-keyboard-open] [data-composer-footer] {
   background: transparent !important;
 }
 
+/* The pre-app screens (session check, boot) cover the whole window, so an opaque
+   background there replaces the native material with a flat sheet — and since
+   the theme class is applied further down the tree, that sheet is light even in
+   dark mode. Keeping them transparent turns a switch into a pause rather than a
+   flash. */
+.electron-vibrancy [data-boot-surface] {
+  background: transparent !important;
+}
+
 /* Windows acrylic alone is too low-contrast against the app's palette, so lay a light
    tint over the entire vibrancy surface (rail + inset gutters). The opaque inset panel
    covers the tint over the main content area, so only the translucent regions see it. */
@@ -230,11 +345,77 @@ html[data-keyboard-open] [data-composer-footer] {
   -webkit-app-region: no-drag;
 }
 
+@keyframes home-card-jiggle {
+  from {
+    transform: rotate(-0.35deg) translateY(0);
+  }
+  to {
+    transform: rotate(0.35deg) translateY(-0.4px);
+  }
+}
+
+.home-card-jiggle {
+  transform-origin: 50% 55%;
+  animation: home-card-jiggle 160ms ease-in-out infinite alternate;
+}
+
+@keyframes home-title-ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.home-title-ticker {
+  animation: home-title-ticker 14s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-card-jiggle {
+    animation: none;
+  }
+
+  .home-title-ticker {
+    animation: none;
+  }
+}
+
 /* Windows: pad right side of main content headers to avoid overlapping with the custom
    window controls (144px wide at right-2, so 152px total reserved). */
 .electron-vibrancy-win main > div > header,
 .electron-vibrancy-win main > header {
   padding-right: 152px;
+}
+
+/* Windows: Chromium paints classic opaque scrollbars (arrow buttons, full-height
+   track) on every overflow container, unlike macOS's auto-hiding overlays.
+   Restyle them app-wide to the same thin muted thumb the app sidebar uses so
+   scrollable areas read the same on both platforms. Custom webkit scrollbars
+   are always painted when content overflows, so scrollability stays visible. */
+.electron-vibrancy-win ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+  background: transparent;
+}
+.electron-vibrancy-win ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.electron-vibrancy-win ::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: hsl(var(--muted-foreground) / 0.25);
+}
+.electron-vibrancy-win ::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--muted-foreground) / 0.4);
+}
+.electron-vibrancy-win ::-webkit-scrollbar-button {
+  display: none;
+}
+.electron-vibrancy-win ::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* Delivered file pill hover animation */
@@ -278,6 +459,116 @@ html[data-keyboard-open] [data-composer-footer] {
   will-change: opacity;
   box-shadow: inset 0 0 12px 4px rgba(37, 99, 235, 0.4), inset 0 0 28px 8px rgba(59, 130, 246, 0.2), inset 0 0 50px 12px rgba(96, 165, 250, 0.1);
   animation: browser-glow-pulse 4s ease-in-out infinite;
+}
+
+/* Effort slider — animated rainbow mesh overlaid on the right of the maxed-out
+   ("Max") fill. The mesh lives on a double-width ::before whose background tiles
+   every container-width; translating it by exactly one tile per loop (marquee
+   trick) gives a seamless, ALWAYS-LEFTWARD flow — emanating from the thumb, never
+   reversing, no hard line at the loop point. hue-rotate cycles the colors on top
+   (0deg == 360deg, also seamless). A left-fading mask on the host keeps the
+   rainbow from running the full width — it fades out around the Med–High marks.
+   GPU-friendly (transform + filter only). */
+@keyframes effort-rainbow-hue {
+  from { filter: hue-rotate(0deg) saturate(1.15); }
+  to   { filter: hue-rotate(360deg) saturate(1.15); }
+}
+@keyframes effort-rainbow-drift {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); } /* one tile — wraps invisibly */
+}
+/* Entry sweep, shared by the rainbow and the gray fill's inverse fade: both
+   masks are 200%-wide no-repeat gradients, so sliding mask-position 0%→100%
+   sweeps the reveal leftward from the thumb. At 0% the element reads the mask's
+   left half (rainbow: all transparent = hidden; gray: all opaque = untouched);
+   at 100% the right half = the steady-state fade profile (28%→58%). Runs once
+   per mount — the overlay mounts on selecting Max, so picking Max replays it. */
+@keyframes effort-mask-sweep {
+  from { -webkit-mask-position: 0% 0; mask-position: 0% 0; }
+  to   { -webkit-mask-position: 100% 0; mask-position: 100% 0; }
+}
+
+.effort-rainbow {
+  overflow: hidden;
+  /* Stops at 64%/79% of the 200%-wide mask == 28%/58% of the element once the
+     sweep lands at mask-position 100%. */
+  -webkit-mask-image: linear-gradient(to right, transparent 64%, #000 79%);
+  mask-image: linear-gradient(to right, transparent 64%, #000 79%);
+  -webkit-mask-size: 200% 100%;
+  mask-size: 200% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  will-change: filter;
+  /* Finite loop counts (~50s), not infinite: the popovers never dismiss on
+     pick, so an abandoned-open picker at Max would otherwise composite these
+     layers every frame indefinitely. Both loops end exactly where they start
+     (360deg == 0deg, one tile == origin), so the stop is a seamless freeze to
+     the static rainbow, never a visible jump. */
+  animation:
+    effort-rainbow-hue 6s linear 8,
+    effort-mask-sweep 4s cubic-bezier(0.22, 0.6, 0.36, 1) both;
+}
+
+.effort-rainbow::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 200%;
+  /* One full 360° hue sweep per tile, in wheel order — every neighboring pair
+     (including the wrap, magenta→magenta) is analogous, so blends stay clean:
+     no complementary adjacencies like red→green that mud into brown. The white
+     radial blobs add the organic vapor depth; white only tints, never muddies.
+     Blob extents stay inside [0%,100%] of the tile so tiles join seamlessly. */
+  background-image:
+    radial-gradient(20% 80% at 22% 30%, rgba(255, 255, 255, 0.28), transparent),
+    radial-gradient(18% 75% at 58% 70%, rgba(255, 255, 255, 0.22), transparent),
+    radial-gradient(15% 70% at 85% 35%, rgba(255, 255, 255, 0.18), transparent),
+    linear-gradient(
+      90deg,
+      #ff0080 0%,
+      #ff8c00 14%,
+      #ffd300 28%,
+      #35d435 42%,
+      #00cfcf 56%,
+      #2b6cff 70%,
+      #8a2be2 85%,
+      #ff0080 100%
+    );
+  /* Tile = half this double-width layer = one container width. */
+  background-size: 50% 100%;
+  background-repeat: repeat;
+  will-change: transform;
+  /* Matches the host's ~50s animation budget — see the comment there. */
+  animation: effort-rainbow-drift 5s linear 10;
+}
+
+/* Inverse of the rainbow's mask, applied to the gray base fill at Max: gray
+   fades out exactly where the rainbow fades in, a clean crossfade instead of
+   the rainbow blending over gray (which muddied its colors). Shares the entry
+   sweep so the crossfade travels leftward with the rainbow instead of the gray
+   vanishing instantly. */
+.effort-fill-fade {
+  -webkit-mask-image: linear-gradient(to right, #000 64%, transparent 79%);
+  mask-image: linear-gradient(to right, #000 64%, transparent 79%);
+  -webkit-mask-size: 200% 100%;
+  mask-size: 200% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  animation: effort-mask-sweep 4s cubic-bezier(0.22, 0.6, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .effort-rainbow,
+  .effort-rainbow::before,
+  .effort-fill-fade {
+    animation: none;
+    /* The sweep normally lands the mask here; without it, pin the end state so
+       the rainbow isn't stuck hidden behind the sweep's start position. */
+    -webkit-mask-position: 100% 0;
+    mask-position: 100% 0;
+  }
 }
 
 /* Voice agent orb — glowing sphere with radial depth and amp-driven reactivity.
@@ -466,6 +757,33 @@ html[data-keyboard-open] [data-composer-footer] {
 }
 
 /*
+  Long sidebar labels stay ellipsized until the user has briefly dwelled on
+  them, then ease into one pass that reveals the hidden end. Removing
+  data-scrolling on mouse leave removes the animation and restores the start
+  immediately, matching native sidebar marquee behavior.
+*/
+@keyframes hover-scroll-text {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-1 * var(--hover-scroll-distance))); }
+}
+
+.hover-scroll-text[data-scrolling="true"] .hover-scroll-text-content {
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  animation: hover-scroll-text var(--hover-scroll-duration) cubic-bezier(0.42, 0, 0.58, 1) forwards;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hover-scroll-text[data-scrolling="true"] .hover-scroll-text-content {
+    animation: none;
+  }
+}
+
+/*
   Installed-PWA full height (iOS). `h-screen`/`min-h-svh` resolve to the DYNAMIC viewport
   (100dvh/100svh) so mobile-BROWSER layouts track the URL bar — keep that. But in an
   installed PWA there's no URL bar, and iOS reports dvh/svh EXCLUDING the top safe area
@@ -480,4 +798,54 @@ html[data-keyboard-open] [data-composer-footer] {
   html, body { height: 100vh !important; height: 100lvh !important; }
   .h-screen { height: 100vh !important; height: 100lvh !important; }
   .min-h-svh { min-height: 100vh !important; min-height: 100lvh !important; }
+}
+
+/*
+  File previews can render in the agent body or in a smaller embedded session
+  mirror. A viewport or app-level query cannot describe both spaces. Make each
+  immediate tray host a query container. Above 768px, Session View keeps its
+  file tray in the flex layout while Agent Home opts into an overlay. Below the
+  breakpoint, both use the same full-width overlay.
+*/
+.file-preview-container {
+  container-type: inline-size;
+}
+
+.file-preview-wide-overlay {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  z-index: 30;
+}
+
+@container (max-width: 767px) {
+  .file-preview-responsive-overlay {
+    position: absolute;
+    inset-block: 0;
+    right: 0;
+    z-index: 30;
+    left: 0;
+    width: 100% !important; /* overrides the persisted inline drawer width */
+    border-left-width: 0;
+    box-shadow: none;
+    transform: translateX(0);
+    transition-property: transform;
+  }
+
+  .file-preview-responsive-overlay-closed {
+    transform: translateX(100%);
+    pointer-events: none;
+  }
+
+  .file-preview-responsive-resize-handle {
+    display: none;
+  }
+
+  .file-preview-compact-close {
+    display: inline-flex;
+  }
+
+  .file-preview-wide-close {
+    display: none;
+  }
 }

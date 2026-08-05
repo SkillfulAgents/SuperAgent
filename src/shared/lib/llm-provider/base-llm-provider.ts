@@ -1,10 +1,24 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
+import type { LlmProviderId } from './provider-types'
 
-export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock' | 'platform'
+export { LLM_PROVIDER_IDS } from './provider-types'
+export type { LlmProviderId } from './provider-types'
 
 export type ModelPurpose = 'agent' | 'summarizer' | 'browser' | 'dashboard'
+
+/**
+ * Identity of the agent a container belongs to, resolved at env-build time.
+ * Providers that attribute usage per agent (the platform proxy) fold it into
+ * the container env; others ignore it.
+ */
+export interface AgentIdentity {
+  /** The agent's unique id (folder slug, minted [a-z0-9]). */
+  id: string
+  /** Display name from frontmatter; free text, may be missing on parse failure. */
+  name?: string
+}
 
 export abstract class BaseLlmProvider {
   abstract readonly id: LlmProviderId
@@ -43,7 +57,8 @@ export abstract class BaseLlmProvider {
   /**
    * The provider's built-in catalog of concrete model ids (shipped in code).
    * Each entry is a wire-ready model id with display metadata, family grouping,
-   * and an `isLatest` flag marking what a bare family alias resolves to.
+   * an `isLatest` flag marking what a bare family alias resolves to, and an
+   * `isDefault` flag marking the picker default for each model vendor.
    * See ./model-catalog.ts for how a stored selection resolves against this.
    */
   abstract getBuiltinCatalog(): ModelDefinition[]
@@ -78,10 +93,16 @@ export abstract class BaseLlmProvider {
   }
 
   /** Get env vars to inject into agent containers. */
-  abstract getContainerEnvVars(): Record<string, string | undefined>
+  abstract getContainerEnvVars(agent?: AgentIdentity): Record<string, string | undefined>
 
-  /** Validate an API key. */
-  abstract validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }>
+  /**
+   * Validate an API key. `opts.baseUrl` is only meaningful for providers whose
+   * endpoint is user-supplied (the generic provider); others ignore it.
+   */
+  abstract validateKey(
+    apiKey: string,
+    opts?: { baseUrl?: string },
+  ): Promise<{ valid: boolean; error?: string }>
 
   /**
    * Search provider-native model catalogs and return normalized local-catalog

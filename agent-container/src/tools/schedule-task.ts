@@ -98,6 +98,12 @@ Avoid recurring intervals shorter than 15 minutes unless truly necessary: freque
       .describe(
         'Optional effort level for this task. If not specified, uses the global default.'
       ),
+    speed: z
+      .enum(['slow', 'normal', 'fast'])
+      .optional()
+      .describe(
+        'Optional processing-speed tier for this task. If not specified, uses the global default.'
+      ),
   },
   async (args) => {
     console.log(`[schedule_task] Scheduling ${args.scheduleType} task: ${args.scheduleExpression}`)

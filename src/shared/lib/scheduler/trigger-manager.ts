@@ -27,11 +27,8 @@ import {
   resolvePlatformMemberForCandidates,
 } from '@shared/lib/services/webhook-trigger-service'
 import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-service'
-import type { EffortLevel } from '@shared/lib/container/types'
-import {
-  registerSession,
-  updateSessionMetadata,
-} from '@shared/lib/services/session-service'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import { registerSession } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import {
@@ -336,7 +333,7 @@ class TriggerManager {
     ]
     const resolved = resolvePlatformMemberForCandidates(candidates)
     const ownerUserId = resolved?.userId ?? candidates.find((c) => c) ?? null
-    return runWithOptionalUser(ownerUserId, () => this.spawnSessionInner(trigger, events))
+    await runWithOptionalUser(ownerUserId, () => this.spawnSessionInner(trigger, events))
   }
 
   private async spawnSessionInner(
@@ -359,10 +356,11 @@ class TriggerManager {
     const client = await containerManager.ensureRunning(trigger.agentSlug)
     const availableEnvVars = await getSecretEnvVars(trigger.agentSlug)
 
-    // Model/effort preference order: trigger override > agent default > global default.
+    // Model/effort/speed preference order: trigger override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(trigger.agentSlug)
     const effort = trigger.effort ?? agentPrefs.defaultEffort
+    const speed = trigger.speed ?? agentPrefs.defaultSpeed
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: prompt,
@@ -371,16 +369,18 @@ class TriggerManager {
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },
       ...(effort ? { effort: effort as EffortLevel } : {}),
+      ...(speed ? { speed: speed as SpeedLevel } : {}),
     })
 
     const sessionId = containerSession.id
     const sessionName = trigger.name || `Webhook: ${trigger.triggerType}`
 
-    await registerSession(trigger.agentSlug, sessionId, sessionName)
-    await updateSessionMetadata(trigger.agentSlug, sessionId, {
+    await registerSession(trigger.agentSlug, sessionId, sessionName, {
       isWebhookExecution: true,
       webhookTriggerId: trigger.id,
       webhookTriggerName: trigger.name || undefined,
+      webhookInvocationCount: events.length,
+      automationStatus: 'running',
     })
 
     await messagePersister.subscribeToSession(

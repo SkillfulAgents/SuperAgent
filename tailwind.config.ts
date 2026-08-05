@@ -135,6 +135,12 @@ const config: Config = {
       // built-in; we're on 3.4, so register our own. The `touch` alias reads as
       // intent at the call sites; the query is the standard no-hover/coarse pair.)
       addVariant('touch', '@media (hover: none) and (pointer: coarse)')
+      // `has-touch:` — SOME pointer is coarse, including hybrids (touchscreen
+      // laptops) whose PRIMARY pointer is a fine hover-capable mouse and so
+      // never match `touch:`. For affordances that must account for fingers
+      // existing at all — e.g. hover-revealed controls that would otherwise be
+      // invisible-but-tappable ghosts under a finger.
+      addVariant('has-touch', '@media (any-pointer: coarse)')
     }),
   ],
 }

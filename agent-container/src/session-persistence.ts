@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import { writeFileAtomicSync } from './atomic-file';
-import type { EffortLevel } from './types';
+import type { AgentCapabilityPolicies, EffortLevel, SpeedLevel } from './types';
 
 interface SessionMetadata {
   sessionId: string;
@@ -22,9 +22,22 @@ interface SessionMetadata {
   maxBudgetUsd?: number;
   customEnvVars?: Record<string, string>;
   effort?: EffortLevel;
+  speed?: SpeedLevel;
+  // Must survive resume: doResumeSession starts the query straight from these
+  // options, so an unpersisted block policy would briefly re-expose the tools.
+  capabilityPolicies?: AgentCapabilityPolicies;
+  // "Allow for this session" review grants — session-scoped, so they must
+  // survive eviction+resume (the host's grant record assumes they do).
+  sessionCapabilityGrants?: Array<'subagents' | 'workflows'>;
+  // Session classification (e.g. isAutomated) — must survive resume so the
+  // idle-eviction class and browser-lock-on-result behavior stay correct.
+  metadata?: Record<string, unknown>;
 }
 
-const SESSIONS_FILE = '/workspace/.superagent-sessions.json';
+// Overridable so the session-GC E2E harness (which runs this stack on a dev
+// machine, where /workspace does not exist) gets working persistence.
+const SESSIONS_FILE =
+  process.env.SUPERAGENT_SESSIONS_FILE || '/workspace/.superagent-sessions.json';
 
 export class SessionPersistence {
   private sessions: Map<string, SessionMetadata> = new Map();
@@ -110,11 +123,49 @@ export class SessionPersistence {
     }
   }
 
+  updateSpeed(sessionId: string, speed: SpeedLevel | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.speed = speed;
+      this.save();
+    }
+  }
+
+  updateMetadata(sessionId: string, metadata: Record<string, unknown> | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.metadata = metadata;
+      this.save();
+    }
+  }
+
   updateModel(sessionId: string, model: string | undefined): void {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.model = model;
       this.save();
     }
+  }
+
+  updateCapabilityPolicies(sessionId: string, policies: AgentCapabilityPolicies | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.capabilityPolicies = policies;
+      this.save();
+    }
+  }
+
+  addSessionCapabilityGrant(sessionId: string, capability: 'subagents' | 'workflows'): void {
+    const session = this.sessions.get(sessionId);
+    if (session && !session.sessionCapabilityGrants?.includes(capability)) {
+      session.sessionCapabilityGrants = [...(session.sessionCapabilityGrants ?? []), capability];
+      this.save();
+    }
+  }
+
+  getSessionCapabilityGrants(sessionId: string): Array<'subagents' | 'workflows'> | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    return session.sessionCapabilityGrants ?? [];
   }
 }

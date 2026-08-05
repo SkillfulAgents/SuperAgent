@@ -9,6 +9,7 @@ import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
 import { useRemoteMcps } from '@renderer/hooks/use-remote-mcps'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
@@ -37,6 +38,8 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
   const scheduledTaskId = view.kind === 'task' ? view.id : null
   const webhookTriggerId = view.kind === 'webhook' ? view.id : null
   const apiLogsOpen = view.kind === 'apiLogs'
+  const secretsOpen = view.kind === 'secrets'
+  const xAgentPermissionsOpen = view.kind === 'xAgentPermissions'
   const connectionsOpen = view.kind === 'connections'
 
   const { data: agent } = useAgent(slug)
@@ -56,18 +59,33 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
     <>
       <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-1.5 min-w-0 flex-1">
         <div className="flex items-center gap-2 min-w-0">
-          <AppLink
-            to="/agents/$slug"
-            params={{ slug }}
-            activeOptions={{ exact: true }}
-            noDrag
-            // Route-derived leaf styling: foreground only when this link is the
-            // exact active route (`data-status=active`), muted/clickable otherwise.
-            className="text-sm font-light truncate transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground"
-            data-testid="agent-breadcrumb"
-          >
-            {agent?.name || 'Loading...'}
-          </AppLink>
+          {agent ? (
+            <AgentContextMenu agent={agent}>
+              <AppLink
+                to="/agents/$slug"
+                params={{ slug }}
+                activeOptions={{ exact: true }}
+                noDrag
+                // Route-derived leaf styling: foreground only when this link is the
+                // exact active route (`data-status=active`), muted/clickable otherwise.
+                className="text-sm font-light truncate transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground cursor-context-menu"
+                data-testid="agent-breadcrumb"
+              >
+                {agent.name}
+              </AppLink>
+            </AgentContextMenu>
+          ) : (
+            <AppLink
+              to="/agents/$slug"
+              params={{ slug }}
+              activeOptions={{ exact: true }}
+              noDrag
+              className="text-sm font-light truncate transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground"
+              data-testid="agent-breadcrumb"
+            >
+              Loading...
+            </AppLink>
+          )}
         </div>
         {(() => {
           const taskCrumbId = scheduledTaskId ?? (sessionId ? session?.scheduledTaskId ?? null : null)
@@ -152,6 +170,18 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
           <div className="flex items-center gap-1.5 min-w-0">
             <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
             <span className="truncate text-sm font-light text-foreground">API Logs</span>
+          </div>
+        )}
+        {secretsOpen && (
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+            <span className="truncate text-sm font-light text-foreground">Secrets</span>
+          </div>
+        )}
+        {xAgentPermissionsOpen && (
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+            <span className="truncate text-sm font-light text-foreground">Agent-to-agent Connections</span>
           </div>
         )}
         {connectionsOpen && (
@@ -349,13 +379,14 @@ function AgentHeaderMobileMenu({
  * an open detail view appends the connection name — including the
  * "Connections" segment (clickable, back to the list) only when the detail
  * was opened from the list, so a home-card deep link reads "Agent / Account".
+ * The logs subview makes the connection crumb clickable and appends "/ Logs".
  */
 function ConnectionsCrumbs({
   slug,
   detail,
 }: {
   slug: string
-  detail: { rowKey: string; source: 'home' | 'list' } | null
+  detail: { rowKey: string; source: 'home' | 'list'; view?: 'logs' } | null
 }) {
   const { data: accountsData } = useConnectedAccounts()
   const { data: mcpsData } = useRemoteMcps()
@@ -399,8 +430,26 @@ function ConnectionsCrumbs({
       )}
       <div className="flex items-center gap-1.5 min-w-0">
         {separator}
-        <span className="truncate text-sm font-light text-foreground">{connectionName}</span>
+        {detail.view === 'logs' ? (
+          <AppLink
+            to="/agents/$slug/connections"
+            params={{ slug }}
+            search={{ detail: detail.rowKey, source: detail.source }}
+            noDrag
+            className="truncate text-sm font-light text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {connectionName}
+          </AppLink>
+        ) : (
+          <span className="truncate text-sm font-light text-foreground">{connectionName}</span>
+        )}
       </div>
+      {detail.view === 'logs' && (
+        <div className="flex items-center gap-1.5 min-w-0">
+          {separator}
+          <span className="truncate text-sm font-light text-foreground">Logs</span>
+        </div>
+      )}
     </>
   )
 }

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
 
 // QuickDispatch wires the reused composer to the launcher's window IPC. These
 // tests exercise its OWN logic — default-agent selection, the Enter handler, and
@@ -92,6 +93,7 @@ vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
 vi.mock('@renderer/lib/upload', () => ({ uploadFileChunked: vi.fn() }))
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 
+import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 import { QuickDispatch } from './quick-dispatch'
 
 /** Install a window.electronAPI stub; returns captured main→renderer callbacks. */
@@ -174,6 +176,45 @@ describe('QuickDispatch', () => {
     expect(composerMock.handleSubmit).toHaveBeenCalledTimes(1)
   })
 
+  it('live-renders Markdown and keeps Markdown in composer state', async () => {
+    const user = userEvent.setup()
+    installElectronAPI()
+    render(<QuickDispatch />)
+    const input = await screen.findByTestId('quick-dispatch-input')
+
+    await user.type(input, '**important**')
+
+    expect(input.querySelector('strong')).toHaveTextContent('important')
+    expect(composerMock.setMessage).toHaveBeenLastCalledWith('**important**')
+  })
+
+  it('dispatches with Cmd+Enter from inside a rich list', async () => {
+    const user = userEvent.setup()
+    installElectronAPI()
+    render(<QuickDispatch />)
+    const input = await screen.findByTestId('quick-dispatch-input')
+
+    await user.type(input, '- item')
+    expect(input.querySelector('li')).toHaveTextContent('item')
+    composerMock.handleSubmit.mockClear()
+    await user.keyboard('{Meta>}{Enter}{/Meta}')
+
+    expect(composerMock.handleSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('focuses and selects all rich content when the launcher is shown again', async () => {
+    composerMock.message = '**important**'
+    const listeners = installElectronAPI()
+    render(<QuickDispatch />)
+    const input = await screen.findByTestId('quick-dispatch-input')
+    await waitFor(() => expect(listeners.shown).toBeTypeOf('function'))
+
+    act(() => listeners.shown())
+
+    expect(document.activeElement).toBe(input)
+    expect(window.getSelection()?.toString()).toBe('important')
+  })
+
   it('keeps the typed message in the input until the dispatch completes', () => {
     installElectronAPI()
     render(<QuickDispatch />)
@@ -241,5 +282,41 @@ describe('QuickDispatch', () => {
       listeners.attachPending()
     })
     expect(drain).toHaveBeenCalledTimes(2) // ping drain
+  })
+})
+
+describe('cloud workspace marking', () => {
+  // The launcher resolves the same target as the main window and can create a
+  // session on the organization's Superagent from a global shortcut. The main
+  // window's marker is mounted by the router, which this renderer does not have,
+  // so an unmarked launcher is a dispatch to production that looks local.
+  afterEach(() => {
+    _resetApiTargetForTest()
+  })
+
+  function renderOn(target: 'local' | 'cloud') {
+    _resetApiTargetForTest() // the global setup already settled it to 'local'
+    setActiveTarget(target, null)
+    installElectronAPI()
+    render(<QuickDispatch />)
+  }
+
+  it('marks the panel when dispatching to the cloud workspace', () => {
+    renderOn('cloud')
+
+    expect(screen.getByTestId('quick-dispatch-cloud-mode')).toBeInTheDocument()
+    expect(screen.getByText('Cloud workspace')).toBeInTheDocument()
+  })
+
+  it('shows nothing extra when dispatching locally', () => {
+    renderOn('local')
+
+    expect(screen.queryByTestId('quick-dispatch-cloud-mode')).not.toBeInTheDocument()
+  })
+
+  it('marks the panel itself, not just a label that can scroll away', () => {
+    renderOn('cloud')
+
+    expect(screen.getByTestId('quick-dispatch').className).toContain('ring-sky-500/70')
   })
 })

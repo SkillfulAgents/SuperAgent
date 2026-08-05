@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { BookmarksFileHook } from './bookmarks-hook'
+import { bookmarkSchema } from './bookmarks-schema'
 import { resolveToolFilePath } from './file-hook'
 
 const hook = new BookmarksFileHook()
@@ -69,10 +70,25 @@ describe('BookmarksFileHook.onWrite — valid', () => {
     expect(result.warning).toBeUndefined()
   })
 
+  it('accepts a workspace folder bookmark', () => {
+    const content = JSON.stringify([{ name: 'Reports', folder: '/workspace/reports' }])
+    const result = hook.onWrite('/workspace/bookmarks.json', content)
+    expect(result.error).toBeUndefined()
+    expect(result.warning).toBeUndefined()
+  })
+
+  it('canonicalizes trailing slashes on workspace folder bookmarks', () => {
+    const result = bookmarkSchema.safeParse({ name: 'Workspace', folder: '/workspace/' })
+
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.folder).toBe('/workspace')
+  })
+
   it('accepts a mix of link and file bookmarks', () => {
     const content = JSON.stringify([
       { name: 'Sheet', link: 'https://docs.google.com/spreadsheets/d/abc' },
       { name: 'Log', file: '/workspace/output/log.txt' },
+      { name: 'Output', folder: '/workspace/output' },
     ])
     const result = hook.onWrite('/workspace/bookmarks.json', content)
     expect(result.error).toBeUndefined()
@@ -94,6 +110,29 @@ describe('BookmarksFileHook.onWrite — invalid', () => {
     const result = hook.onWrite('/workspace/bookmarks.json', content)
     expect(result.error).toBeDefined()
     expect(result.error).toContain('exactly one')
+  })
+
+  it('rejects a bookmark with multiple resource fields', () => {
+    const content = JSON.stringify([{
+      name: 'Too many',
+      link: 'https://x.com',
+      file: '/workspace/file.txt',
+      folder: '/workspace/reports',
+    }])
+    const result = hook.onWrite('/workspace/bookmarks.json', content)
+    expect(result.error).toContain('exactly one')
+  })
+
+  it('rejects a folder outside the workspace', () => {
+    const content = JSON.stringify([{ name: 'Secrets', folder: '/etc' }])
+    const result = hook.onWrite('/workspace/bookmarks.json', content)
+    expect(result.error).toContain('inside /workspace')
+  })
+
+  it('rejects a workspace-prefixed folder that normalizes outside the workspace', () => {
+    const content = JSON.stringify([{ name: 'Secrets', folder: '/workspace/../../etc' }])
+    const result = hook.onWrite('/workspace/bookmarks.json', content)
+    expect(result.error).toContain('inside /workspace')
   })
 
   it('rejects a bookmark with neither link nor file', () => {

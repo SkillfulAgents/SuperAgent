@@ -285,6 +285,35 @@ test.describe('User Input Requests', () => {
     await sessionPage.waitForInputEnabled(15000)
   })
 
+  test('parallel holdback: a declined request stays settled across reload', async ({ page }) => {
+    // Real-CLI parallel semantics: no tool_result reaches the transcript
+    // until BOTH siblings settle, so cleanup must come from the decision
+    // route's explicit settle. Regression: the declined secret stayed open in
+    // the registry — the snapshot kept serving it, a reload resurrected the
+    // card, and the stale card could save a value despite the decline.
+    await sessionPage.sendMessage('ask parallel holdback')
+
+    await sessionPage.waitForSecretRequest('DATABASE_URL')
+    await sessionPage.waitForQuestionRequest()
+
+    await sessionPage.declineSecret('DATABASE_URL')
+    await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
+    // The sibling question is still parked — the turn is NOT over.
+    await expect(sessionPage.getQuestionRequests()).toHaveCount(1)
+
+    // Reload mid-park: the still-open question must come back from the
+    // snapshot; the declined secret must NOT.
+    await page.reload()
+    await sessionPage.waitForQuestionRequest()
+    await expect(sessionPage.getSecretRequests()).toHaveCount(0)
+
+    // Answering the survivor releases the held sibling results and the turn
+    // completes normally.
+    await sessionPage.answerQuestion('AWS')
+    await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
+    await sessionPage.waitForInputEnabled(15000)
+  })
+
   test('script run request: approve execution', async ({ page }) => {
     // No global toggle needed — permissions are now per-agent via ComputerUsePermissionManager
     // With no cached permission, the request will be shown to the user for approval

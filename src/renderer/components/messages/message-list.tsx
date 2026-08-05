@@ -8,8 +8,9 @@ import {
   clearCompacting,
   removePeerUserMessage,
   clearPeerUserMessages,
+  consumeDiscardedCommand,
 } from '@renderer/hooks/use-message-stream'
-import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
+import { isInterruptMarkerMessage, isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { MessageItem } from './message-item'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
@@ -17,17 +18,29 @@ import { SubAgentBlock } from './subagent-block'
 import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
+import { InformationalItem } from './informational-item'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
-import { useDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { appendToSessionDraft, useDraft, useDraftsStore } from '@renderer/context/drafts-context'
 import { useWorkflow } from '@renderer/context/workflow-context'
 import { useRenderTracker } from '@renderer/lib/perf'
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, Fragment, type ReactNode } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+  Fragment,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  type UIEvent as ReactUIEvent,
+} from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
-import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall } from '@shared/lib/types/api'
+import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts
@@ -42,6 +55,9 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
 // and is reset when the session changes.
 const BASE_WINDOW = 300
 const LOAD_STEP = 200
+const TURN_ANCHOR_TOP = 100
+const TURN_ANCHOR_ANIMATION_MS = 220
+const SCROLL_KEYS = new Set(['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '])
 
 function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; agentSlug: string }) {
   return (
@@ -63,9 +79,11 @@ interface MessageListProps {
   /** Read-only mirror (chat-integration replay): suppress edit/delete actions and
    *  lift the connector's inline sender prefix into a label. */
   readOnly?: boolean
+  /** Hide the scroll affordance while a footer popover overlaps it. */
+  suppressScrollToBottom?: boolean
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
@@ -135,6 +153,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     apiErrorCode,
     typingUser,
     peerUserMessages,
+    discardedCommandUuids,
     workflows,
     thinkingBlocks,
   } = useMessageStream(sessionId, agentSlug)
@@ -173,7 +192,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // mid-turn (queued/steering) are re-id'd by the CLI on enqueue (see
   // normalizeQueuedCommandEntry in session-service), so those — and sends
   // whose POST response hasn't arrived yet — match by trimmed text + arrival
-  // window, claiming each persisted id at most once.
+  // window, claiming each persisted id at most once. Manual /compact is the
+  // exception: the runtime persists its effect as a compact boundary rather
+  // than as a user message, so that boundary materializes the command ghost.
   useEffect(() => {
     if (!messages) return
     const claimed = claimedMessageIdsRef.current
@@ -193,6 +214,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       // re-ids them) and sends still awaiting their POST response.
       if (!match && (pending.queued || !pending.uuid)) {
         match = findTextMatch(pending.text, pending.sentAt - 5000)
+        if (match) claimed.add(match.id)
+      }
+      if (!match && /^\/compact(?:\s|$)/.test(pending.text.trim())) {
+        match = messages.find(
+          (m) =>
+            m.type === 'compact_boundary' &&
+            !claimed.has(m.id) &&
+            new Date(m.createdAt).getTime() >= pending.sentAt - 5000
+        )
         if (match) claimed.add(match.id)
       }
       if (match) {
@@ -218,6 +248,33 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
   }, [messages, pendingUserMessages, peerUserMessages, onPendingMessageAppeared, sessionId, user?.id])
 
+  // Deterministic ghost rescue: the runtime reported these queued messages
+  // dead via command_lifecycle discarded/cancelled (e.g. killed by Stop, or
+  // dropped by the interrupt-and-restart an MCP injection does). No grace
+  // race — the runtime named the uuid, so restore the ghost's text to the
+  // composer right away. Peer ghosts just drop (their own client restores
+  // their text). The idle-grace effect below stays as the fallback for
+  // runtimes that don't emit lifecycle frames.
+  useEffect(() => {
+    if (discardedCommandUuids.length === 0) return
+    const dead = new Set(discardedCommandUuids)
+    const rescued = (pendingUserMessages ?? []).filter((p) => p.uuid && dead.has(p.uuid))
+    if (rescued.length > 0) {
+      const restored = rescued.map((p) => p.text.trim()).filter(Boolean)
+      appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
+      for (const pending of rescued) {
+        onPendingMessageAppeared?.(pending.localId)
+        consumeDiscardedCommand(sessionId, pending.uuid!)
+      }
+    }
+    for (const peer of peerUserMessages) {
+      if (dead.has(peer.uuid)) {
+        removePeerUserMessage(sessionId, peer.uuid)
+        consumeDiscardedCommand(sessionId, peer.uuid)
+      }
+    }
+  }, [discardedCommandUuids, pendingUserMessages, peerUserMessages, sessionId, draftsStore, onPendingMessageAppeared])
+
   // Once the session goes idle, our messages still showing as pending are
   // treated as undelivered — the agent was interrupted before picking them
   // up, or the turn ended without consuming them. Restore their text to the
@@ -242,11 +299,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const undelivered = (pendingUserMessages ?? []).filter((p) => p.queued || p.uuid)
     const timerId = setTimeout(() => {
       if (undelivered.length > 0) {
-        const draftKey = `session:${sessionId}`
-        const existing = draftsStore.get<string>(draftKey)?.trim() ?? ''
         const restored = undelivered.map((p) => p.text.trim()).filter(Boolean)
-        const merged = [...restored, existing].filter(Boolean).join('\n\n')
-        draftsStore.set(draftKey, merged || undefined)
+        appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
         for (const pending of undelivered) onPendingMessageAppeared?.(pending.localId)
       }
       clearPeerUserMessages(sessionId)
@@ -255,6 +309,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
 
   const scrollRef = useRef<HTMLDivElement>(null)
+  const contentBodyRef = useRef<HTMLDivElement>(null)
+  const bottomSpacerRef = useRef<HTMLDivElement>(null)
+  const bottomSpacerHeightRef = useRef(0)
+  const anchoredTurnRef = useRef<{ localId: string; scrollTop: number } | null>(null)
+  const shouldAutoFollowRef = useRef(true)
+  const programmaticScrollTopRef = useRef<number | null>(null)
+  const userScrollIntentRef = useRef(false)
+  const lastScrollTopRef = useRef(0)
+  const scrollAnimationFrameRef = useRef<number | null>(null)
+  const animateNextTurnRef = useRef(false)
   const isScrolledToBottomRef = useRef(true)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
 
@@ -299,18 +363,142 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   useLayoutEffect(() => {
     const grown = visibleMessages.length - prevVisibleLenRef.current
     prevVisibleLenRef.current = visibleMessages.length
-    if (grown > 0 && !isScrolledToBottomRef.current) {
+    if (grown > 0 && (!isScrolledToBottomRef.current || anchoredTurnRef.current)) {
       setWindowSize((n) => n + grown)
     }
   }, [visibleMessages])
 
-  const handleScroll = useCallback(() => {
+  const setBottomSpacerHeight = useCallback((height: number) => {
+    const spacer = bottomSpacerRef.current
+    if (!spacer) return
+    const nextHeight = Math.max(0, Math.ceil(height))
+    bottomSpacerHeightRef.current = nextHeight
+    spacer.style.height = `${nextHeight}px`
+    spacer.hidden = nextHeight === 0
+  }, [])
+
+  const setScrollTop = useCallback((el: HTMLDivElement, scrollTop: number) => {
+    const nextScrollTop = Math.min(
+      Math.max(0, scrollTop),
+      Math.max(0, el.scrollHeight - el.clientHeight),
+    )
+    programmaticScrollTopRef.current = nextScrollTop
+    lastScrollTopRef.current = nextScrollTop
+    el.scrollTop = nextScrollTop
+  }, [])
+
+  const cancelScrollAnimation = useCallback(() => {
+    if (scrollAnimationFrameRef.current == null) return
+    cancelAnimationFrame(scrollAnimationFrameRef.current)
+    scrollAnimationFrameRef.current = null
+  }, [])
+
+  const animateScrollTop = useCallback((el: HTMLDivElement, targetScrollTop: number) => {
+    cancelScrollAnimation()
+    const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
+    const target = Math.min(Math.max(0, targetScrollTop), maxScrollTop)
+    const start = el.scrollTop
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduceMotion || Math.abs(target - start) <= 1) {
+      setScrollTop(el, target)
+      return
+    }
+
+    const startedAt = performance.now()
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / TURN_ANCHOR_ANIMATION_MS)
+      const eased = 1 - Math.pow(1 - progress, 3)
+      setScrollTop(el, start + (target - start) * eased)
+
+      if (progress < 1) {
+        scrollAnimationFrameRef.current = requestAnimationFrame(tick)
+        return
+      }
+
+      scrollAnimationFrameRef.current = null
+      const anchoredTurn = anchoredTurnRef.current
+      setScrollTop(el, anchoredTurn ? anchoredTurn.scrollTop : el.scrollHeight)
+    }
+    scrollAnimationFrameRef.current = requestAnimationFrame(tick)
+  }, [cancelScrollAnimation, setScrollTop])
+
+  useEffect(() => cancelScrollAnimation, [cancelScrollAnimation])
+
+  // Keep the newly-sent turn fixed at its reading line while the response uses
+  // up the reserved room below it. Once that room reaches zero, following the
+  // live edge naturally takes over.
+  const syncFollowPosition = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
+
+    const anchoredTurn = anchoredTurnRef.current
+    if (anchoredTurn) {
+      const naturalScrollHeight = el.scrollHeight - bottomSpacerHeightRef.current
+      const requiredSpacer = Math.max(
+        0,
+        anchoredTurn.scrollTop + el.clientHeight - naturalScrollHeight,
+      )
+      setBottomSpacerHeight(requiredSpacer)
+
+      const targetScrollTop = requiredSpacer > 0 ? anchoredTurn.scrollTop : el.scrollHeight
+      if (requiredSpacer === 0) {
+        // The response now fills the viewport. Retire the special turn state so
+        // long-thread windowing can return to its bounded trailing slice.
+        anchoredTurnRef.current = null
+      }
+
+      if (animateNextTurnRef.current) {
+        animateNextTurnRef.current = false
+        animateScrollTop(el, targetScrollTop)
+        return
+      }
+
+      if (!shouldAutoFollowRef.current || scrollAnimationFrameRef.current != null) return
+      setScrollTop(el, targetScrollTop)
+      return
+    }
+
+    animateNextTurnRef.current = false
+    if (!shouldAutoFollowRef.current || scrollAnimationFrameRef.current != null) return
+    setScrollTop(el, el.scrollHeight)
+  }, [animateScrollTop, setBottomSpacerHeight, setScrollTop])
+
+  const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
+    const el = event.currentTarget
+    const previousScrollTop = lastScrollTopRef.current
+    lastScrollTopRef.current = el.scrollTop
+    const programmaticTarget = programmaticScrollTopRef.current
+    const isProgrammatic =
+      scrollAnimationFrameRef.current != null ||
+      (programmaticTarget != null && Math.abs(el.scrollTop - programmaticTarget) <= 1)
+    const hasUserScrollIntent = userScrollIntentRef.current
+    userScrollIntentRef.current = false
+    if (isProgrammatic) {
+      programmaticScrollTopRef.current = null
+    }
+
+    // Blank reserve is one-way. When the reader moves upward, consume the same
+    // number of pixels from the spacer. The new scroll position becomes the
+    // reserve's live edge, so that discarded blank area cannot be revisited.
+    let discardedSpacer = false
+    const anchoredTurn = anchoredTurnRef.current
+    const upwardDelta = Math.max(0, previousScrollTop - el.scrollTop)
+    if (!isProgrammatic && anchoredTurn && upwardDelta > 0 && bottomSpacerHeightRef.current > 0) {
+      const discard = Math.min(upwardDelta, bottomSpacerHeightRef.current)
+      const remainingSpacer = bottomSpacerHeightRef.current - discard
+      anchoredTurn.scrollTop = Math.max(0, anchoredTurn.scrollTop - discard)
+      setBottomSpacerHeight(remainingSpacer)
+      discardedSpacer = discard > 0
+      if (remainingSpacer === 0) anchoredTurnRef.current = null
+    }
+
     // Consider "at bottom" if within 80px of the bottom edge
     const threshold = 80
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
     isScrolledToBottomRef.current = distanceFromBottom < threshold
+    if (!isProgrammatic && !discardedSpacer && !hasUserScrollIntent) {
+      shouldAutoFollowRef.current = isScrolledToBottomRef.current
+    }
     // Show "scroll to bottom" button when scrolled up more than 300px
     setShowScrollToBottom(distanceFromBottom > 300)
 
@@ -325,7 +513,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       isScrolledToBottomRef.current = false
       setWindowSize((n) => n + LOAD_STEP)
     }
-  }, [hiddenCount])
+  }, [hiddenCount, setBottomSpacerHeight])
 
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).
@@ -340,8 +528,13 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
+    cancelScrollAnimation()
+    anchoredTurnRef.current = null
+    shouldAutoFollowRef.current = true
+    animateNextTurnRef.current = false
+    setBottomSpacerHeight(0)
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-  }, [])
+  }, [cancelScrollAnimation, setBottomSpacerHeight])
 
   // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
   // messages, compaction is done and the SSE compact_complete event was missed.
@@ -399,8 +592,17 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const unpersistedThinkingBlocks = useMemo(() => {
     if (!thinkingBlocks.length || !messages?.length) return thinkingBlocks
     const persisted: string[] = []
+    let interrupted = false
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
+      // The "[Request interrupted by user]" marker is a user message that ENDS
+      // the interrupted turn — breaking on it would collect none of that
+      // turn's persisted thinking and let every live block re-render at the
+      // end. Keep scanning into the turn it terminated.
+      if (isInterruptMarkerMessage(m)) {
+        interrupted = true
+        continue
+      }
       if (isTurnStartingUserMessage(m)) break
       if (m.type === 'assistant' && Array.isArray((m as ApiMessage).thinking)) {
         for (const t of (m as ApiMessage).thinking!) {
@@ -413,7 +615,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // streamed text diverged from the transcript (e.g. an SSE reconnect
     // dropped deltas) — text matching would miss them and the leftover card
     // would strand below the persisted message, appearing to "jump" there.
-    if (!isActive && persisted.length) return []
+    // An interrupted turn is over even when nothing persisted: the SDK
+    // discarded whatever the leftover live blocks hold, so they'd strand.
+    if (!isActive && (persisted.length || interrupted)) return []
     return thinkingBlocks.filter(b => {
       const t = b.text.trim()
       // Blocks with no streamed text (display option off) have no persisted
@@ -546,32 +750,102 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return result
   }, [messages, isActive, hasTurnStartingPendingMessage])
 
-  // Re-pin to bottom when the user sends a new message. Track ids actually
-  // seen — not a count — so a send racing a ghost removal still re-pins, and
-  // a removal alone never yanks a scrolled-up reader back down.
+  // Detect actual sends by id (rather than list length, since materialization
+  // can remove one ghost as another arrives). A turn-starting send gets a
+  // stable reading line 100px from the viewport top; queued mid-turn sends
+  // retain the regular live-edge behavior.
   const seenPendingIdsRef = useRef(new Set<string>())
-  useEffect(() => {
+  useLayoutEffect(() => {
     const seen = seenPendingIdsRef.current
     let hasNewSend = false
+    let newestTurnStart: PendingMessage | undefined
     for (const pending of pendingUserMessages ?? []) {
       if (!seen.has(pending.localId)) {
         seen.add(pending.localId)
         hasNewSend = true
+        if (!pending.queued) newestTurnStart = pending
       }
     }
+
     if (hasNewSend) {
+      cancelScrollAnimation()
+      shouldAutoFollowRef.current = true
       isScrolledToBottomRef.current = true
       setShowScrollToBottom(false)
-    }
-  }, [pendingUserMessages])
 
-  // Auto-scroll to bottom when new messages arrive or requests appear,
-  // but only if the user hasn't scrolled up to read earlier content.
-  useEffect(() => {
-    if (scrollRef.current && isScrolledToBottomRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+      if (newestTurnStart) {
+        const viewport = scrollRef.current
+        const anchor = Array.from(
+          contentBodyRef.current?.querySelectorAll<HTMLElement>('[data-turn-anchor-id]') ?? [],
+        ).find((element) => element.dataset.turnAnchorId === newestTurnStart.localId)
+
+        if (viewport && anchor) {
+          lastScrollTopRef.current = viewport.scrollTop
+          const anchorTop =
+            anchor.getBoundingClientRect().top -
+            viewport.getBoundingClientRect().top +
+            viewport.scrollTop
+          anchoredTurnRef.current = {
+            localId: newestTurnStart.localId,
+            scrollTop: Math.max(0, anchorTop - TURN_ANCHOR_TOP),
+          }
+          animateNextTurnRef.current = true
+        } else {
+          anchoredTurnRef.current = null
+          animateNextTurnRef.current = false
+        }
+      } else {
+        anchoredTurnRef.current = null
+        animateNextTurnRef.current = false
+        setBottomSpacerHeight(0)
+      }
     }
-  }, [messages, pendingUserMessages, streamingMessage, streamingToolUses, thinkingBlocks, isCompacting, pendingRequestCount, activeSubagents])
+
+    syncFollowPosition()
+  }, [
+    messages,
+    pendingUserMessages,
+    streamingMessage,
+    streamingToolUses,
+    thinkingBlocks,
+    isCompacting,
+    pendingRequestCount,
+    activeSubagents,
+    syncFollowPosition,
+    setBottomSpacerHeight,
+    cancelScrollAnimation,
+  ])
+
+  // Markdown, images, and expanded tool cards can change height without a
+  // message-state update. Feed those layout changes through the same reserve
+  // calculation so they cannot make the anchored turn jump.
+  useEffect(() => {
+    const content = contentBodyRef.current
+    const viewport = scrollRef.current
+    if (!content || !viewport || typeof ResizeObserver === 'undefined') return
+    let frameId = 0
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frameId)
+      frameId = requestAnimationFrame(syncFollowPosition)
+    })
+    observer.observe(content)
+    observer.observe(viewport)
+    return () => {
+      cancelAnimationFrame(frameId)
+      observer.disconnect()
+    }
+  }, [syncFollowPosition])
+
+  const handleUserScrollIntent = useCallback(() => {
+    userScrollIntentRef.current = true
+    shouldAutoFollowRef.current = false
+    programmaticScrollTopRef.current = null
+    cancelScrollAnimation()
+  }, [cancelScrollAnimation])
+
+  const handleScrollKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (SCROLL_KEYS.has(event.key)) handleUserScrollIntent()
+  }, [handleUserScrollIntent])
 
   // Peer messages still worth showing optimistically: not our own, and the
   // persisted copy (by uuid, or — for queued/steering messages whose uuid the
@@ -727,8 +1001,32 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
   return (
     <div className="relative flex-1 min-h-0 overflow-hidden">
-      <div className="overflow-y-auto overscroll-contain h-full" style={{ overflowAnchor: 'none' }} ref={scrollRef} onScroll={handleScroll} data-testid="message-list" data-message-content-area>
-        <div className={`mx-auto w-full max-w-[720px] px-4 pb-4 space-y-4 ${readOnly ? 'pt-3' : 'pt-14'}`}>
+      {/* A labelled, focusable scroll region is intentional: keyboard users
+          need to be able to drive the transcript with its scroll keys. */}
+      {/* eslint-disable jsx-a11y/no-noninteractive-tabindex */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
+      <div
+        className="overflow-y-auto overscroll-contain h-full"
+        style={{ overflowAnchor: 'none' }}
+        ref={scrollRef}
+        onScroll={handleScroll}
+        onWheel={handleUserScrollIntent}
+        onTouchMove={handleUserScrollIntent}
+        onKeyDown={handleScrollKey}
+        role="region"
+        aria-label="Messages"
+        tabIndex={0}
+        data-testid="message-list"
+        data-message-content-area
+      >
+        <div className="mx-auto w-full max-w-[720px] px-4 pb-4">
+        <div
+          ref={contentBodyRef}
+          className={`space-y-4 ${readOnly ? 'pt-3' : 'pt-[100px]'}`}
+          role="log"
+          aria-relevant="additions"
+          aria-busy={isStreaming || undefined}
+        >
         {hiddenCount > 0 && (
           <div className="flex items-center justify-center py-3 text-xs text-muted-foreground">
             {hiddenCount} earlier {hiddenCount === 1 ? 'message' : 'messages'} hidden — scroll up to load
@@ -740,6 +1038,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               <MemoryRecallItem recall={item as ApiMemoryRecall} />
             ) : item.type === 'compact_boundary' ? (
               <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
+            ) : item.type === 'informational' ? (
+              <InformationalItem item={item as ApiInformational} />
             ) : (
               <>
                 <MessageErrorBoundary kind="message" raw={item} itemId={item.id}>
@@ -774,7 +1074,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             (sent mid-turn) render at the bottom instead, below the current
             turn's streaming output and running tools. */}
         {visiblePeerMessages.filter((p) => !p.queued).map(renderPeerGhost)}
-        {pendingUserMessages?.filter((p) => !p.queued).map(renderPendingGhost)}
+        {pendingUserMessages?.filter((p) => !p.queued).map((pending) => (
+          <div key={pending.localId} data-turn-anchor-id={pending.localId}>
+            {renderPendingGhost(pending)}
+          </div>
+        ))}
 
         {/* Typing indicator - shown when ANOTHER user is typing. The server echoes
             user_typing back to the sender too, so exclude our own id (mirrors the
@@ -917,8 +1221,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
         {/* Pending interactive requests render in the composer slot — see SessionChatColumn. */}
         </div>
+        <div
+          ref={bottomSpacerRef}
+          data-testid="turn-anchor-spacer"
+          aria-hidden="true"
+          hidden
+        />
+        </div>
       </div>
-      {showScrollToBottom && (
+      {/* eslint-enable jsx-a11y/no-noninteractive-tabindex */}
+      {showScrollToBottom && !suppressScrollToBottom && (
         <button
           onClick={scrollToBottom}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-3 py-1.5 text-xs font-medium shadow-lg hover:bg-primary/90 transition-opacity cursor-pointer"

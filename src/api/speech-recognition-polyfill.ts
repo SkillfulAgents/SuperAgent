@@ -1,3 +1,5 @@
+import { API_PREFIX_SNIPPET } from './polyfill-api-prefix'
+
 let cached: string | null = null
 
 export function getPolyfillJs(): string {
@@ -14,7 +16,7 @@ export function getPolyfillJs(): string {
 
 const POLYFILL_SOURCE = /* js */ `(function () {
   "use strict";
-
+${API_PREFIX_SNIPPET}
   // Always override — Chromium defines webkitSpeechRecognition but it fails with
   // "network" error because there's no Google Speech backend in Electron.
 
@@ -294,8 +296,9 @@ const POLYFILL_SOURCE = /* js */ `(function () {
       this._speechDetected = false;
       var self = this;
 
-      // Absolute path intentional — reaches the Superagent API, not the dashboard's own server
-      fetch("/api/stt/token")
+      // Absolute intentionally — reaches the Superagent API that served this
+      // document, not the dashboard's own server
+      fetch(apiPrefix + "/api/stt/token")
         .then(function (res) {
           if (!res.ok) {
             return res.json().catch(function () { return {}; }).then(function (body) {

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 // Type-only (erased at build — the preload bundle has no @shared alias).
 import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extensions'
+import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -8,6 +9,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // API configuration - get URL via IPC since port may vary
   getApiUrl: (): Promise<string> => {
     return ipcRenderer.invoke('get-api-url')
+  },
+  // Which Superagent this renderer drives, plus the finished base URL for it.
+  // Resolved in main so every window agrees, and because the cloud URL carries
+  // the per-boot proxy key — a secret that is fetched, never assembled here.
+  getApiTarget: (): Promise<ResolvedApiTarget> => {
+    return ipcRenderer.invoke('get-api-target')
+  },
+  // Records the choice for subsequent boots; the caller reloads.
+  setPreferredApiTarget: (target: ApiTarget): Promise<void> => {
+    return ipcRenderer.invoke('set-preferred-api-target', target)
   },
   platform: process.platform,
   osVersion: process.getSystemVersion(),
@@ -118,6 +129,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-external', url)
   },
 
+  openApplePasswordsExtension: (): Promise<void> => {
+    return ipcRenderer.invoke('open-apple-passwords-extension')
+  },
+
   // Launch an elevated PowerShell window with a whitelisted command (Windows only)
   launchPowershellAdmin: (command: string): Promise<void> => {
     return ipcRenderer.invoke('launch-powershell-admin', command)
@@ -186,9 +201,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('focus-window')
   },
 
-  // Notify main of sidebar collapsed state so it can reposition macOS traffic lights
-  setSidebarCollapsed: (collapsed: boolean) => {
-    ipcRenderer.send('set-sidebar-collapsed', collapsed)
+  // Cover the window before a target switch reloads it, and uncover it once the
+  // reloaded renderer has something on screen. The animation lives outside the
+  // document because the document is what the switch destroys — see
+  // main/target-switch-overlay.ts. Awaited: the band has to be up first.
+  beginTargetSwitch: (): Promise<void> => {
+    return ipcRenderer.invoke('begin-target-switch')
+  },
+  signalRendererPainted: () => {
+    ipcRenderer.send('renderer-painted')
   },
 
   // Tray visibility control
@@ -291,6 +312,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Reveal a path in the OS file manager (Finder / Explorer / Files)
   showInFolder: (hostPath: string): Promise<string | null> => {
     return ipcRenderer.invoke('show-in-folder', hostPath)
+  },
+
+  // Select a file or directory in Finder / Explorer / Files
+  revealInFolder: (hostPath: string): Promise<string | null> => {
+    return ipcRenderer.invoke('reveal-in-folder', hostPath)
   },
 
   // Get recently opened files from the OS
@@ -441,6 +467,9 @@ declare global {
   interface Window {
     electronAPI?: {
       getApiUrl: () => Promise<string>
+      // Optional: an older main process has no such handler (see env.ts).
+      getApiTarget?: () => Promise<ResolvedApiTarget>
+      setPreferredApiTarget?: (target: ApiTarget) => Promise<void>
       platform: string
       osVersion: string
       onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => () => void
@@ -459,6 +488,7 @@ declare global {
       onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => () => void
       removeWindowMaximizedChange: () => void
       openExternal: (url: string) => Promise<void>
+      openApplePasswordsExtension: () => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
       onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => () => void
       removeNavigateToAgent: () => void
@@ -468,7 +498,8 @@ declare global {
       removeOpenCreateAgent: () => void
       onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => () => void
       removeHistoryNavigationCommand: () => void
-      setSidebarCollapsed: (collapsed: boolean) => void
+      beginTargetSwitch: () => Promise<void>
+      signalRendererPainted: () => void
       setTrayVisible: (visible: boolean) => Promise<void>
       showNotification: (
         title: string,
@@ -500,6 +531,7 @@ declare global {
       getPathForFile: (file: File) => string
       openDirectory: () => Promise<string | null>
       showInFolder: (hostPath: string) => Promise<string | null>
+      revealInFolder: (hostPath: string) => Promise<string | null>
       getRecentFiles: (limit?: number) => Promise<{ name: string; path: string; thumbnail?: string }[]>
       readLocalFile: (filePath: string) => Promise<{ buffer: ArrayBuffer; name: string; type: string } | null>
       setKeepAwake: (enabled: boolean) => Promise<void>

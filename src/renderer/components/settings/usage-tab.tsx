@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Button } from '@renderer/components/ui/button'
+import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/alert'
 import {
   Select,
   SelectContent,
@@ -16,10 +17,12 @@ import {
   type ChartConfig,
 } from '@renderer/components/ui/chart'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts'
-import { RefreshCw, Loader2 } from 'lucide-react'
+import { AlertTriangle, ExternalLink, RefreshCw, Loader2 } from 'lucide-react'
 import { useUsageData } from '@renderer/hooks/use-usage'
+import { useSettings } from '@renderer/hooks/use-settings'
 import { useUser } from '@renderer/context/user-context'
 import { format, parseISO } from 'date-fns'
+import type { LlmProviderId } from '@shared/lib/config/settings'
 
 type Segmentation = 'total' | 'byModel' | 'byAgent'
 
@@ -40,8 +43,24 @@ const COLORS = [
   'hsl(320, 60%, 55%)',
 ]
 
+const PROVIDER_USAGE_LINKS: Partial<Record<LlmProviderId, { label: string; href: string }>> = {
+  anthropic: {
+    label: 'Anthropic API Console',
+    href: 'https://platform.claude.com/usage',
+  },
+  openrouter: {
+    label: 'OpenRouter Activity dashboard',
+    href: 'https://openrouter.ai/activity',
+  },
+  platform: {
+    label: 'Gamut Platform',
+    href: 'https://platform.gamutagents.com',
+  },
+}
+
 export function UsageTab() {
   const { isAuthMode, isAdmin } = useUser()
+  const { data: settings } = useSettings()
   const [days, setDays] = useState(7)
   const [globalView, setGlobalView] = useState(!isAuthMode || isAdmin)
   const [segmentation, setSegmentation] = useState<Segmentation>('total')
@@ -102,6 +121,9 @@ export function UsageTab() {
   }, [data, segmentation])
 
   const totalCost = data?.daily?.reduce((sum, d) => sum + d.totalCost, 0) ?? 0
+  const providerUsageLink = settings?.llmProvider
+    ? PROVIDER_USAGE_LINKS[settings.llmProvider]
+    : undefined
 
   return (
     <div className="space-y-4">
@@ -111,6 +133,29 @@ export function UsageTab() {
           Token costs across {isAuthMode && !globalView ? 'your' : 'all'} agents, computed from session logs.
         </p>
       </div>
+
+      <Alert className="border-amber-500/30 bg-amber-500/5">
+        <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+        <AlertTitle>Usage and cost estimates may be incomplete</AlertTitle>
+        <AlertDescription className="text-xs text-muted-foreground">
+          These estimates only include agents and sessions that haven&apos;t been deleted, so your
+          actual usage and costs may be higher. For definitive totals, check{' '}
+          {providerUsageLink ? (
+            <a
+              href={providerUsageLink.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 font-medium text-foreground underline underline-offset-4 hover:text-primary"
+            >
+              {providerUsageLink.label}
+              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+            </a>
+          ) : (
+            "your provider's billing dashboard"
+          )}
+          .
+        </AlertDescription>
+      </Alert>
 
       <div className="flex items-center gap-3">
         <Select value={String(days)} onValueChange={(v) => setDays(Number(v))}>

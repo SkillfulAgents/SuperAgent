@@ -15,14 +15,18 @@ import notifications from './routes/notifications'
 import platformNotifications from './routes/platform-notifications'
 import proxy from './routes/proxy'
 import mcpProxy from './routes/mcp-proxy'
+import cloudProxy, { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from './routes/cloud-proxy'
 import browser from './routes/browser'
 import skillsets from './routes/skillsets'
 import usage from './routes/usage'
 import remoteMcps from './routes/remote-mcps'
 import commonMcpServers from './routes/common-mcp-servers'
 import userSettingsRouter from './routes/user-settings'
+import homeGraph from './routes/home-graph'
+import homeCardHealth from './routes/home-card-health'
 import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
+import firewallRouter from './routes/firewall'
 import sttRouter from './routes/stt'
 import llmRouter from './routes/llm'
 import faviconRouter from './routes/favicon'
@@ -31,9 +35,13 @@ import { getLlmPolyfillJs } from './llm-polyfill'
 import { ANTHROPIC_SDK_BUNDLE } from './llm-sdk-bundle'
 import adminUsersRouter from './routes/admin-users'
 import auditLogRouter from './routes/audit-log'
+import connectionLogsRouter from './routes/connection-logs'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
+import platformSsoStart from './routes/platform-sso-start'
+import tokenExchange from './routes/token-exchange'
 import agentBootstrap from './routes/agent-bootstrap'
+import activityRouter from './routes/activity'
 import { initializeServices } from '@shared/lib/startup'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { sql } from 'drizzle-orm'
@@ -110,6 +118,26 @@ if (isAuthMode()) {
   app.use('/api/auth/*', authEnforcementMiddleware)
 }
 
+// The bearer plugin echoes the session token in a JS-readable `set-auth-token`
+// response header on every sign-in. This app's browser client is cookie-only
+// and token clients receive their token from the exchange endpoint's JSON body,
+// so the header is never consumed — strip it to keep the session credential out
+// of reach of a renderer XSS. (The bearer plugin has no option to suppress it.)
+if (isAuthMode()) {
+  app.use('/api/auth/*', async (c, next) => {
+    await next()
+    if (c.res.headers.has('set-auth-token')) {
+      c.res.headers.delete('set-auth-token')
+    }
+  })
+}
+
+// RFC 7523 token endpoint — registered before the Better Auth wildcard so it
+// wins the route match, after the rate limiter + enforcement middleware above.
+if (isAuthMode()) {
+  app.route('/api/auth/token', tokenExchange)
+}
+
 // Mount Better Auth handler (only when AUTH_MODE is enabled)
 if (isAuthMode()) {
   app.on(['POST', 'GET'], '/api/auth/*', async (c) => {
@@ -169,6 +197,7 @@ app.get('/api/llm/anthropic-sdk.js', (c) => {
 
 // Mount route handlers
 app.route('/api/agents', agents)
+app.route('/api/activity', activityRouter)
 app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)
 app.route('/api/web-search', webSearch)
@@ -190,15 +219,33 @@ app.route('/api/usage', usage)
 app.route('/api/remote-mcps', remoteMcps)
 app.route('/api/common-mcp-servers', commonMcpServers)
 app.route('/api/user-settings', userSettingsRouter)
+app.route('/api/home-graph', homeGraph)
+app.route('/api/home-card-health', homeCardHealth)
 app.route('/api/policies', policies)
 app.route('/api/runtime-status', runtimeStatusRouter)
+app.route('/api/firewall', firewallRouter)
 app.route('/api/admin/users', adminUsersRouter)
 app.route('/api/audit-log', auditLogRouter)
+app.route('/api/connection-logs', connectionLogsRouter)
 app.route('/api/platform-auth', platformAuth)
+if (isAuthMode()) {
+  // Public RP-initiated Platform SSO launcher (SUP-466). Outside /api so the
+  // Platform "Open Cloud Agents" link can target a stable deployment path.
+  app.route('/auth', platformSsoStart)
+}
 app.route('/api/stt', sttRouter)
 app.route('/api/llm', llmRouter)
 app.route('/api/favicon', faviconRouter)
 app.route('/api/debug', debugRouter)
+
+// Desktop → cloud-workspace forwarding. Mounted outside `/api` on purpose: it
+// is not an endpoint of this server but a different server's `/api` reached
+// through it, and the local-mode localhost middleware above is scoped to
+// `/api/*`. The route therefore runs its own (stricter) access checks — see
+// cloud-proxy.ts.
+if (isCloudProxyEnabled()) {
+  app.route(CLOUD_PROXY_PREFIX, cloudProxy)
+}
 
 // Global error handler
 app.onError((err, c) => {

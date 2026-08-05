@@ -4,7 +4,7 @@
  * Type definitions for file-based agent storage
  */
 
-import type { EffortLevel, SlashCommandInfo } from '../container/types'
+import type { EffortLevel, SlashCommandInfo, SpeedLevel } from '../container/types'
 
 // ============================================================================
 // Agent Roles
@@ -89,18 +89,28 @@ export interface SessionMetadata {
   isWebhookExecution?: boolean
   webhookTriggerId?: string
   webhookTriggerName?: string
+  // Lifecycle outcome for cron/webhook sessions. Set to running at session
+  // creation and finalized from the runtime's terminal result event.
+  automationStatus?: 'running' | 'succeeded' | 'failed'
+  // One webhook session can represent a batch of several claimed deliveries.
+  webhookInvocationCount?: number
   // Chat integration fields - present when session was created from an external chat
   isChatIntegrationSession?: boolean
   chatIntegrationId?: string
   // Set when an automated session is promoted to interactive (e.g. agent asked a user question).
   // The original automation flags above are preserved for provenance.
   promotedToInteractive?: boolean
+  // Last scheduled wake delivered to this session. Duplicate-fire guard: the
+  // scheduler skips re-sending a wake whose task id + execution slot match.
+  lastWake?: { taskId: string; executionAt: string }
   // Context window usage from the last completed turn
   lastUsage?: SessionUsage
   // Available slash commands from the agent SDK
   slashCommands?: SlashCommandInfo[]
   // Last effort level used by the user on this session (seeds the composer on reload)
   effort?: EffortLevel
+  // Last processing speed used by the user on this session (seeds the composer on reload)
+  speed?: SpeedLevel
   // Last model used by the user on this session (seeds the composer on reload).
   // Stored as the provider's pinned ID, not the family.
   model?: string
@@ -190,6 +200,9 @@ export interface JsonlSystemEntry {
     preTokens: number
   }
   memory_paths?: string[]
+  // Severity for `informational` entries (host-persisted loop banners, e.g. a
+  // hook blocking a prompt). Mirrors the SDK's informational message `level`.
+  level?: string
 }
 
 /**

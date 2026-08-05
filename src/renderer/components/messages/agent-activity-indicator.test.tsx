@@ -54,6 +54,18 @@ vi.mock('./insufficient-balance-card', () => ({
   InsufficientBalanceCard: () => <div data-testid="insufficient-balance-card" />,
 }))
 
+// Mock the unified pending-request store — the indicator derives awaiting
+// from its blocking projection (same predicate as the server status).
+type MockPendingRequest = { id: string; kind: string; blocking: boolean; autoApproved: boolean }
+let mockPendingUserRequests: MockPendingRequest[] = []
+vi.mock('@renderer/hooks/use-pending-user-requests', () => ({
+  usePendingUserRequests: () => ({ data: mockPendingUserRequests }),
+}))
+
+function blockingRequest(kind: string, overrides: Partial<MockPendingRequest> = {}): MockPendingRequest {
+  return { id: `req-${kind}`, kind, blocking: true, autoApproved: false, ...overrides }
+}
+
 describe('AgentActivityIndicator', () => {
   beforeEach(() => {
     // Reset to defaults
@@ -74,6 +86,7 @@ describe('AgentActivityIndicator', () => {
       backgroundTasks: [],
     })
     mockMessages.length = 0
+    mockPendingUserRequests = []
   })
 
   it('returns null when not active and no error', () => {
@@ -107,6 +120,16 @@ describe('AgentActivityIndicator', () => {
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Working...')).toBeInTheDocument()
     expect(screen.getByTestId('activity-indicator')).toBeInTheDocument()
+  })
+
+  it('stacks the active indicator behind the composer', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    const indicator = screen.getByTestId('activity-indicator')
+    expect(indicator).toHaveClass('rounded-t-2xl', 'border-b-0', 'pb-8')
+    expect(indicator.parentElement).toHaveClass('-mb-5')
   })
 
   it('shows elapsed timer when active', () => {
@@ -190,7 +213,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending secret requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'API_KEY' }]
+    mockPendingUserRequests = [blockingRequest('secret')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -200,10 +223,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending question requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingQuestionRequests = [{
-      toolUseId: 't1',
-      questions: [{ question: 'Pick one', header: 'DB', options: [], multiSelect: false }],
-    }]
+    mockPendingUserRequests = [blockingRequest('question')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -212,7 +232,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending connected account requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingConnectedAccountRequests = [{ toolUseId: 't1', toolkit: 'github' }]
+    mockPendingUserRequests = [blockingRequest('connected_account')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -221,7 +241,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending file requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingFileRequests = [{ toolUseId: 't1', description: 'Upload CSV' }]
+    mockPendingUserRequests = [blockingRequest('file')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -230,7 +250,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending remote MCP requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingRemoteMcpRequests = [{ toolUseId: 't1', url: 'https://example.com' }]
+    mockPendingUserRequests = [blockingRequest('remote_mcp')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -239,7 +259,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending browser input requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingBrowserInputRequests = [{ toolUseId: 't1', message: 'Login', requirements: [] }]
+    mockPendingUserRequests = [blockingRequest('browser_input')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -255,9 +275,52 @@ describe('AgentActivityIndicator', () => {
     expect(screen.queryByText('Waiting for input...')).not.toBeInTheDocument()
   })
 
+  it('shows "Waiting for input..." when a proxy review is pending', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockPendingUserRequests = [blockingRequest('proxy_review')]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
+    expect(screen.queryByText('Working...')).not.toBeInTheDocument()
+  })
+
+  it.each(['script_run', 'computer_use', 'capability_review'])(
+    'shows "Waiting for input..." for %s — kinds the per-type list used to omit',
+    (kind) => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockPendingUserRequests = [blockingRequest(kind)]
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
+      expect(screen.queryByText('Working...')).not.toBeInTheDocument()
+    },
+  )
+
+  it('a non-blocking entry is not a wait — the indicator keeps "Working..."', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockPendingUserRequests = [blockingRequest('secret', { blocking: false })]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('Working...')).toBeInTheDocument()
+    expect(screen.queryByText('Waiting for input...')).not.toBeInTheDocument()
+  })
+
+  it('an auto-approved entry is not a wait — the indicator keeps "Working..."', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockPendingUserRequests = [blockingRequest('script_run', { autoApproved: true })]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('Working...')).toBeInTheDocument()
+    expect(screen.queryByText('Waiting for input...')).not.toBeInTheDocument()
+  })
+
   it('does not show "Waiting for input..." when not active even if pending requests exist', () => {
     mockStreamState.isActive = false
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'KEY' }]
+    mockPendingUserRequests = [blockingRequest('secret')]
 
     const { container } = render(
       <AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />
@@ -304,7 +367,7 @@ describe('AgentActivityIndicator', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.isCompacting = true
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'KEY' }]
+    mockPendingUserRequests = [blockingRequest('secret')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -314,7 +377,7 @@ describe('AgentActivityIndicator', () => {
   it('"Waiting for input..." takes priority over TodoWrite activeForm', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'KEY' }]
+    mockPendingUserRequests = [blockingRequest('secret')]
     mockMessages.push({
       id: 'msg-1',
       type: 'assistant',
@@ -694,6 +757,216 @@ describe('AgentActivityIndicator', () => {
       renderWithSubagent({ result: 'done', completed: false })
       expect(screen.getByText('Explore')).toBeInTheDocument()
       expect(screen.getByText('✓')).toBeInTheDocument()
+    })
+
+    it('reopens the original subagent row while a SendMessage resume is running', () => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [
+        {
+          parentToolId: 'agent-tool',
+          agentId: 'agent-1',
+          subagentType: 'Explore',
+          description: 'Explore workspace',
+          progressSummary: null,
+        },
+        {
+          parentToolId: 'send-tool',
+          agentId: 'agent-1',
+          subagentType: 'Explore',
+          description: 'Explore workspace',
+          progressSummary: 'Checking follow-up files',
+        },
+      ]
+      mockStreamState.completedSubagents = new Set(['agent-tool'])
+      mockMessages.push({
+        id: 'msg-agent',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'agent-tool',
+          name: 'Agent',
+          input: { subagent_type: 'Explore', description: 'Explore workspace' },
+          result: 'FIRST_DONE',
+          subagent: { agentId: 'agent-1', status: 'completed' },
+        }],
+        createdAt: new Date(),
+      }, {
+        id: 'msg-send',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'send-tool',
+          name: 'SendMessage',
+          input: { to: 'agent-1', message: 'Continue exploring' },
+          result: '{"success":true,"resumedAgentId":"agent-1"}',
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByText('Explore')).toHaveLength(1)
+      expect(screen.getByText('Checking follow-up files')).toBeInTheDocument()
+      expect(screen.queryByText('✓')).not.toBeInTheDocument()
+    })
+
+    it('joins resumed runs when transient lifecycle entries are missing agentId', () => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [
+        {
+          parentToolId: 'agent-tool',
+          agentId: null,
+          subagentType: 'general-purpose',
+          description: 'Resume UI probe',
+          progressSummary: null,
+        },
+        {
+          parentToolId: 'send-tool',
+          agentId: null,
+          subagentType: 'general-purpose',
+          description: 'Resume UI probe',
+          progressSummary: 'Running follow-up',
+        },
+      ]
+      mockStreamState.completedSubagents = new Set(['agent-tool'])
+      mockMessages.push({
+        id: 'msg-agent',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'agent-tool',
+          name: 'Agent',
+          input: { subagent_type: 'general-purpose', description: 'Resume UI probe' },
+          result: 'FIRST_DONE',
+          subagent: { agentId: 'agent-1', status: 'completed' },
+        }],
+        createdAt: new Date(),
+      }, {
+        id: 'msg-send',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'send-tool',
+          name: 'SendMessage',
+          input: { to: 'agent-1', message: 'Continue' },
+          result: '{"success":true,"resumedAgentId":"agent-1"}',
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByText('general-purpose')).toHaveLength(1)
+      expect(screen.getByText('Running follow-up')).toBeInTheDocument()
+      expect(screen.queryByText('✓')).not.toBeInTheDocument()
+    })
+
+    it('uses resumedAgentId from a text-block result when SendMessage targets an agent name', () => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [
+        {
+          parentToolId: 'agent-tool',
+          agentId: null,
+          subagentType: 'general-purpose',
+          description: 'Resume UI probe',
+          progressSummary: null,
+        },
+        {
+          parentToolId: 'send-tool',
+          agentId: null,
+          subagentType: 'general-purpose',
+          description: 'Resume UI probe',
+          progressSummary: 'Running name-targeted follow-up',
+        },
+      ]
+      mockStreamState.completedSubagents = new Set(['agent-tool'])
+      mockMessages.push({
+        id: 'msg-agent',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'agent-tool',
+          name: 'Agent',
+          input: { subagent_type: 'general-purpose', description: 'Resume UI probe' },
+          result: 'FIRST_DONE',
+          subagent: { agentId: 'agent-1', status: 'completed' },
+        }],
+        createdAt: new Date(),
+      }, {
+        id: 'msg-send',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'send-tool',
+          name: 'SendMessage',
+          input: { to: 'resume-ui-probe', message: 'Continue' },
+          result: [{
+            type: 'text',
+            text: '{"success":true,"resumedAgentId":"agent-1"}',
+          }],
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByText('general-purpose')).toHaveLength(1)
+      expect(screen.getByText('Running name-targeted follow-up')).toBeInTheDocument()
+      expect(screen.queryByText('✓')).not.toBeInTheDocument()
+    })
+
+    it('joins a name-targeted resume before the SendMessage result is persisted', () => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [
+        {
+          parentToolId: 'agent-tool',
+          agentId: null,
+          subagentType: 'general-purpose',
+          description: 'Resume UI probe',
+          progressSummary: null,
+        },
+        {
+          parentToolId: 'send-tool',
+          agentId: null,
+          subagentType: 'general-purpose',
+          description: 'Resume UI probe',
+          progressSummary: 'Running before ack persistence',
+        },
+      ]
+      mockStreamState.completedSubagents = new Set(['agent-tool'])
+      mockMessages.push({
+        id: 'msg-agent',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'agent-tool',
+          name: 'Agent',
+          input: { subagent_type: 'general-purpose', description: 'Resume UI probe' },
+          result: 'FIRST_DONE',
+          subagent: { agentId: 'agent-1', status: 'completed' },
+        }],
+        createdAt: new Date(),
+      }, {
+        id: 'msg-send',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'send-tool',
+          name: 'SendMessage',
+          input: { to: 'resume-ui-probe', message: 'Continue' },
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByText('general-purpose')).toHaveLength(1)
+      expect(screen.getByText('Running before ack persistence')).toBeInTheDocument()
+      expect(screen.queryByText('✓')).not.toBeInTheDocument()
     })
   })
 })

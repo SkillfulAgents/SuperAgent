@@ -14,9 +14,9 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { agentAcl } from '@shared/lib/db/schema'
+import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -32,7 +32,9 @@ import {
   getSessionMessagesWithCompact,
   getSessionMetadata,
   registerSession,
+  reserveSessionOwnership,
   updateSessionMetadata,
+  sessionIsKnown,
 } from '@shared/lib/services/session-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -44,7 +46,10 @@ import {
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { captureException } from '@shared/lib/error-reporting'
 import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+
+const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 
 // Typed context variables for the x-agent router. Using Hono's generic instead
 // of `as never` casts gives us type safety on c.get/c.set.
@@ -88,6 +93,84 @@ async function getOwnersOfAgent(agentSlug: string): Promise<string[]> {
     .from(agentAcl)
     .where(and(eq(agentAcl.agentSlug, agentSlug), eq(agentAcl.role, 'owner')))
   return rows.map((r) => r.userId)
+}
+
+/**
+ * Resolve the user who sent the message currently driving an agent session.
+ * In shared sessions this can differ from the session creator, so invocation
+ * attribution must prefer the latest per-message author record.
+ */
+async function getLatestMessageAuthorUserId(
+  agentSlug: string,
+  sessionId: string,
+): Promise<string | undefined> {
+  try {
+    const rows = await db
+      .select({ userId: messageAuthor.userId })
+      .from(messageAuthor)
+      .where(and(
+        eq(messageAuthor.agentSlug, agentSlug),
+        eq(messageAuthor.sessionId, sessionId),
+      ))
+      .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
+      .limit(1)
+    return rows[0]?.userId
+  } catch (error) {
+    // Attribution is optional. A DB/read failure must never block the invoke.
+    console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {
+      agentSlug,
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return undefined
+  }
+}
+
+async function insertMessageAuthorBestEffort(params: {
+  id: string
+  sessionId: string
+  agentSlug: string
+  userId: string
+}): Promise<boolean> {
+  try {
+    await db.insert(messageAuthor).values(params)
+    return true
+  } catch (error) {
+    // Includes stale createdByUserId values whose user row has been deleted.
+    // The invocation remains usable; only the optional sender badge is lost.
+    console.warn('[x-agent] failed to record invoked message author; continuing unattributed', {
+      agentSlug: params.agentSlug,
+      sessionId: params.sessionId,
+      userId: params.userId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return false
+  }
+}
+
+async function deleteMessageAuthorBestEffort(messageUuid: string): Promise<void> {
+  try {
+    await db.delete(messageAuthor).where(eq(messageAuthor.id, messageUuid))
+  } catch (error) {
+    console.warn('[x-agent] failed to clean up invoked message attribution', {
+      messageUuid,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+async function getAgentDisplayNameBestEffort(agentSlug: string): Promise<string> {
+  try {
+    const agent = await getAgent(agentSlug)
+    return agent?.frontmatter.name || agentSlug
+  } catch (error) {
+    // Human-readable naming is cosmetic and must not gate agent invocation.
+    console.warn('[x-agent] failed to resolve caller display name; using slug', {
+      agentSlug,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return agentSlug
+  }
 }
 
 /**
@@ -426,6 +509,13 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
+  // Status and wait state live in the process-global persister. Validate the
+  // target/session pair before consulting it, not only before reading the
+  // target-scoped transcript below.
+  if (!(await sessionIsKnown(targetSlug, sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
   if (sync && messagePersister.isSessionActive(sessionId)) {
     try {
       await messagePersister.waitForIdle(sessionId)
@@ -471,8 +561,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   const callerSlug = getCallerSlug(c)
   const { slug: rawTargetSlug, prompt, sessionId: existingSessionId, sync, _callerSessionId } = c.req.valid('json')
 
-  // Resolve the model-supplied display slug to the canonical id and rebind, so
-  // the self-invoke guard and every ACL / policy / runtime call below use ids.
+  // Resolve display slug → canonical id so ACL / policy / runtime all use ids.
   const targetSlug = await resolveAgentId(rawTargetSlug)
   if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
@@ -480,9 +569,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     return c.json({ error: 'Agent cannot invoke itself' }, 400)
   }
 
-  // One-hop rule: a session that was started by another agent cannot itself
-  // start invocations into other agents. Prevents A→B→C chains and A→B→A
-  // cycles transitively. Hoisted out so attribution lookup below can reuse it.
+  // One-hop rule: sessions started by another agent cannot invoke further.
   const callerMeta = _callerSessionId
     ? await getSessionMetadata(callerSlug, _callerSessionId)
     : null
@@ -496,6 +583,14 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       403,
     )
   }
+
+  // Capture the triggering message's author before a review prompt can pause
+  // this request and newer messages can arrive in a shared caller session.
+  // This remains a best-effort "latest author" heuristic until the container
+  // can pass the exact driving message UUID.
+  const triggeringUserId = isAuthMode() && _callerSessionId
+    ? await getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
+    : undefined
 
   const target = await getAgent(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
@@ -515,126 +610,212 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
-  // Attribute to the originating user: caller session's creator → caller
-  // agent's first owner (legacy fallback for pre-attribution sessions).
-  let attributedUserId: string | undefined = callerMeta?.createdByUserId
+  // Attribute to the triggering message author. Session creator and caller
+  // owner remain compatibility fallbacks for old sessions without author rows.
+  let attributedUserId: string | undefined = triggeringUserId ?? callerMeta?.createdByUserId
   if (!attributedUserId && isAuthMode()) {
-    attributedUserId = (await getOwnersOfAgent(callerSlug))[0]
-  }
-
-  return runWithOptionalUser(attributedUserId, async () => {
-  // Existing session: must exist, must not be running
-  if (existingSessionId) {
-    if (messagePersister.isSessionActive(existingSessionId)) {
-      return c.json({ error: 'Target session is currently running' }, 409)
-    }
-    const client = await containerManager.ensureRunning(targetSlug)
-    if (!messagePersister.isSubscribed(existingSessionId)) {
-      await messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug)
-    }
-    messagePersister.markSessionActive(existingSessionId, targetSlug)
-    await client.sendMessage(existingSessionId, prompt)
-
-    if (sync) {
-      try {
-        await messagePersister.waitForIdle(existingSessionId)
-      } catch (error) {
-        return c.json({
-          sessionId: existingSessionId,
-          status: 'running',
-          error: error instanceof Error ? error.message : String(error),
-        })
-      }
-      const lastMessage = await readLastAssistantMessage(targetSlug, existingSessionId)
-      return c.json({
-        sessionId: existingSessionId,
-        status: 'completed',
-        lastMessage: lastMessage?.content,
-      })
-    }
-    return c.json({ sessionId: existingSessionId, status: 'running' })
-  }
-
-  // New session
-  const client = await containerManager.ensureRunning(targetSlug)
-  const availableEnvVars = await getSecretEnvVars(targetSlug)
-  const agentLimits = getEffectiveAgentLimits()
-  const customEnvVars = getCustomEnvVars()
-
-  // Model/effort preference order: target agent's default > global default.
-  const targetPrefs = await readAgentPreferences(targetSlug)
-
-  const containerSession = await client.createSession({
-    availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-    initialMessage: prompt,
-    model: targetPrefs.defaultModel ?? getEffectiveModels().agentModel,
-    browserModel: getEffectiveModels().browserModel,
-    dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,
-    ...(targetPrefs.defaultEffort ? { effort: targetPrefs.defaultEffort } : {}),
-    maxOutputTokens: agentLimits.maxOutputTokens,
-    maxThinkingTokens: agentLimits.maxThinkingTokens,
-    maxTurns: agentLimits.maxTurns,
-    maxBudgetUsd: agentLimits.maxBudgetUsd,
-    customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-    maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-  })
-  const newSessionId = containerSession.id
-  // Mark active synchronously before any await so waitForIdle has state to observe
-  // even if the SDK's 'result' event lands before subscribeToSession completes.
-  messagePersister.markSessionActive(newSessionId, targetSlug)
-
-  // Register on the host. If this fails, the container is already holding a
-  // running session — clean it up so we don't leave orphans burning model budget.
-  try {
-    await registerSession(targetSlug, newSessionId, `Invoked by ${callerSlug}`)
-  } catch (registerErr) {
-    console.error('[x-agent] registerSession failed; cleaning up container session', registerErr)
-    await client.deleteSession(newSessionId).catch((cleanupErr) => {
-      // Container was unreachable or session already gone — nothing more we can do
-      console.error('[x-agent] failed to clean up orphaned container session', newSessionId, cleanupErr)
-    })
-    messagePersister.unsubscribeFromSession(newSessionId)
-    return c.json(
-      { error: `Failed to register invoked session: ${registerErr instanceof Error ? registerErr.message : String(registerErr)}` },
-      500,
-    )
-  }
-
-  // Metadata write failure shouldn't fail the invoke (the session is still
-  // usable), but don't silently swallow — log so we can debug missing
-  // cross-agent provenance later.
-  try {
-    await updateSessionMetadata(targetSlug, newSessionId, {
-      invokedByAgentSlug: callerSlug,
-      ...(attributedUserId ? { createdByUserId: attributedUserId } : {}),
-    })
-  } catch (metaErr) {
-    console.warn('[x-agent] updateSessionMetadata failed (session usable, provenance not recorded)', metaErr)
-  }
-
-  await messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug)
-  if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-    messagePersister.setSlashCommands(newSessionId, containerSession.slashCommands)
-  }
-
-  if (sync) {
     try {
-      await messagePersister.waitForIdle(newSessionId)
+      attributedUserId = (await getOwnersOfAgent(callerSlug))[0]
     } catch (error) {
-      return c.json({
-        sessionId: newSessionId,
-        status: 'running',
+      // ACL checks already ran above; this second lookup is attribution-only.
+      console.warn('[x-agent] failed to resolve caller owner for attribution; continuing unattributed', {
+        callerSlug,
         error: error instanceof Error ? error.message : String(error),
       })
     }
-    const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)
-    return c.json({
-      sessionId: newSessionId,
-      status: 'completed',
-      lastMessage: lastMessage?.content,
-    })
   }
-  return c.json({ sessionId: newSessionId, status: 'running' })
+
+  return runWithOptionalUser(attributedUserId, async () => {
+    // Stages for runtime 500s: ensure_running → create_session / send_message.
+    let stage = 'ensure_running'
+    try {
+      if (existingSessionId) {
+        // Invoke rights on the target say nothing about the session id sent
+        // with them. The persister is keyed by session id alone, so a third
+        // agent's id would get re-pointed at the target's container here — and
+        // the target's transcript written under it.
+        if (!(await sessionIsKnown(targetSlug, existingSessionId))) {
+          return c.json({ error: 'Session not found' }, 404)
+        }
+        if (messagePersister.isSessionActive(existingSessionId)) {
+          return c.json({ error: 'Target session is currently running' }, 409)
+        }
+        stage = 'ensure_running'
+        const client = await containerManager.ensureRunning(targetSlug)
+        stage = 'subscribe'
+        if (!messagePersister.isSubscribed(existingSessionId)) {
+          await messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug)
+        }
+        messagePersister.markSessionActive(existingSessionId, targetSlug)
+        stage = 'send_message'
+        let messageUuid: string | undefined
+        if (isAuthMode() && attributedUserId) {
+          const candidateUuid = randomUUID()
+          const recorded = await insertMessageAuthorBestEffort({
+            id: candidateUuid,
+            sessionId: existingSessionId,
+            agentSlug: targetSlug,
+            userId: attributedUserId,
+          })
+          if (recorded) messageUuid = candidateUuid
+        }
+        try {
+          if (messageUuid) {
+            await client.sendMessage(existingSessionId, prompt, messageUuid)
+          } else {
+            await client.sendMessage(existingSessionId, prompt)
+          }
+        } catch (sendError) {
+          if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
+          throw sendError
+        }
+
+        if (sync) {
+          try {
+            stage = 'wait_for_idle'
+            await messagePersister.waitForIdle(existingSessionId)
+          } catch (error) {
+            return c.json({
+              sessionId: existingSessionId,
+              status: 'running',
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          const lastMessage = await readLastAssistantMessage(targetSlug, existingSessionId)
+          return c.json({
+            sessionId: existingSessionId,
+            status: 'completed',
+            lastMessage: lastMessage?.content,
+          })
+        }
+        return c.json({ sessionId: existingSessionId, status: 'running' })
+      }
+
+      stage = 'ensure_running'
+      const client = await containerManager.ensureRunning(targetSlug)
+      const availableEnvVars = await getSecretEnvVars(targetSlug)
+      const agentLimits = getEffectiveAgentLimits()
+      const customEnvVars = getCustomEnvVars()
+      const targetPrefs = await readAgentPreferences(targetSlug)
+      const callerName = await getAgentDisplayNameBestEffort(callerSlug)
+      const initialMessageUuid = isAuthMode() && attributedUserId
+        ? randomUUID()
+        : undefined
+
+      stage = 'create_session'
+      const containerSession = await client.createSession({
+        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: prompt,
+        ...(initialMessageUuid ? { initialMessageUuid } : {}),
+        model: targetPrefs.defaultModel ?? getEffectiveModels().agentModel,
+        browserModel: getEffectiveModels().browserModel,
+        dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,
+        ...(targetPrefs.defaultEffort ? { effort: targetPrefs.defaultEffort } : {}),
+        ...(targetPrefs.defaultSpeed ? { speed: targetPrefs.defaultSpeed } : {}),
+        maxOutputTokens: agentLimits.maxOutputTokens,
+        maxThinkingTokens: agentLimits.maxThinkingTokens,
+        maxTurns: agentLimits.maxTurns,
+        maxBudgetUsd: agentLimits.maxBudgetUsd,
+        customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
+        maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+      })
+      const newSessionId = containerSession.id
+      await reserveSessionOwnership(targetSlug, newSessionId)
+      // Mark active before any await so waitForIdle sees state if result arrives early.
+      messagePersister.markSessionActive(newSessionId, targetSlug)
+
+      const authorRecorded = initialMessageUuid && attributedUserId
+        ? await insertMessageAuthorBestEffort({
+            id: initialMessageUuid,
+            sessionId: newSessionId,
+            agentSlug: targetSlug,
+            userId: attributedUserId,
+          })
+        : false
+
+      stage = 'register_session'
+      try {
+        await registerSession(targetSlug, newSessionId, `Invoked by ${callerName}`)
+      } catch (registerErr) {
+        const message = registerErr instanceof Error ? registerErr.message : String(registerErr)
+        console.error('[x-agent] invoke failed', {
+          callerSlug,
+          targetSlug,
+          sessionId: newSessionId,
+          stage,
+          error: message,
+        })
+        captureException(registerErr, {
+          tags: { ...X_AGENT_SENTRY, stage },
+          extra: { callerSlug, targetSlug, sessionId: newSessionId },
+        })
+        await client.deleteSession(newSessionId).catch((cleanupErr) => {
+          console.error('[x-agent] failed to clean up orphaned container session', {
+            sessionId: newSessionId,
+            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          })
+        })
+        if (authorRecorded && initialMessageUuid) {
+          await deleteMessageAuthorBestEffort(initialMessageUuid)
+        }
+        messagePersister.unsubscribeFromSession(newSessionId)
+        return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
+      }
+
+      try {
+        await updateSessionMetadata(targetSlug, newSessionId, {
+          invokedByAgentSlug: callerSlug,
+          ...(authorRecorded && attributedUserId ? { createdByUserId: attributedUserId } : {}),
+        })
+      } catch (metaErr) {
+        console.warn('[x-agent] updateSessionMetadata failed (session usable, provenance not recorded)', {
+          callerSlug,
+          targetSlug,
+          sessionId: newSessionId,
+          error: metaErr instanceof Error ? metaErr.message : String(metaErr),
+        })
+      }
+
+      stage = 'subscribe'
+      await messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug)
+      if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
+        messagePersister.setSlashCommands(newSessionId, containerSession.slashCommands)
+      }
+
+      if (sync) {
+        try {
+          stage = 'wait_for_idle'
+          await messagePersister.waitForIdle(newSessionId)
+        } catch (error) {
+          return c.json({
+            sessionId: newSessionId,
+            status: 'running',
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+        const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)
+        return c.json({
+          sessionId: newSessionId,
+          status: 'completed',
+          lastMessage: lastMessage?.content,
+        })
+      }
+      return c.json({ sessionId: newSessionId, status: 'running' })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[x-agent] invoke failed', {
+        callerSlug,
+        targetSlug,
+        existingSessionId: existingSessionId ?? null,
+        stage,
+        error: message,
+      })
+      captureException(err, {
+        tags: { ...X_AGENT_SENTRY, stage },
+        extra: { callerSlug, targetSlug, existingSessionId: existingSessionId ?? null },
+      })
+      return c.json({ error: `Failed to invoke agent (${stage}): ${message}` }, 500)
+    }
   })
 })
 

@@ -1,7 +1,5 @@
 import path from 'path'
-import { statfs } from 'node:fs/promises'
-import os from 'os'
-import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, reconcileRunnerState, getRunnerDisplayName, getContainerClientClass, getCliCommand, type ContainerRunner } from './client-factory'
+import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, reconcileRunnerState, getRunnerDisplayName, getContainerClientClass, getCliCommand, getAvailableDiskSpace, MIN_IMAGE_DISK_SPACE_BYTES, type ContainerRunner } from './client-factory'
 import { ensureLimaReady } from './lima-container-client'
 import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, ImagePullProgress, RuntimeReadiness, StopOptions } from './types'
 import { healthMonitor } from './health-monitor'
@@ -9,6 +7,7 @@ import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts, agentRemoteMcps, remoteMcpServers } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
+import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
@@ -21,6 +20,10 @@ import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'
+import {
+  buildConnectedAccountsProjection,
+  buildRemoteMcpProjection,
+} from './connection-runtime-projections'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -34,8 +37,6 @@ const HEALTH_CHECK_INTERVAL_MS = parseInt(
   10
 ) * 1000
 
-/** Minimum free disk space (in bytes) required before pulling an image: 5 GB */
-const MIN_DISK_SPACE_BYTES = 5 * 1024 * 1024 * 1024
 
 /**
  * Max age (in ms) of a cached 'running' status before ensureRunning re-verifies
@@ -48,11 +49,6 @@ const RUNNING_STATUS_TTL_MS = parseInt(
   process.env.CONTAINER_RUNNING_STATUS_TTL_SECONDS || '10',
   10
 ) * 1000
-
-async function getAvailableDiskSpace(): Promise<number> {
-  const stats = await statfs(os.homedir())
-  return stats.bavail * stats.bsize
-}
 
 /** Cached container status */
 interface CachedContainerStatus {
@@ -112,6 +108,9 @@ class ContainerManager {
             })
           })
         },
+        // MicroVM dead-generation replace (and similar) must restart through the
+        // manager so starts share startingAgents and rebuild env from the DB.
+        restartAgent: () => this.restartAgent(agentId),
       }
 
       client = createContainerClient(config)
@@ -119,6 +118,36 @@ class ContainerManager {
     }
 
     return client
+  }
+
+  // Single-flight restart used by runtime clients that tear down a dead generation.
+  private async restartAgent(agentId: string): Promise<void> {
+    if (this.stoppingAgents.has(agentId)) {
+      throw new Error(`Cannot restart agent ${agentId} while it is stopping`)
+    }
+    const inflight = this.startingAgents.get(agentId)
+    if (inflight) {
+      await inflight
+      return
+    }
+
+    this.markAsStopped(agentId)
+    // Dead generation had live sessions; clear isActive before the new start
+    // (same as stopContainer — replace does not go through stopContainer).
+    messagePersister.markAllSessionsInactiveForAgent(agentId)
+    messagePersister.broadcastGlobal({
+      type: 'agent_status_changed',
+      agentSlug: agentId,
+      status: 'stopped',
+    })
+    const client = this.getClient(agentId)
+    const startPromise = this.doStartContainer(agentId, client)
+    this.startingAgents.set(agentId, startPromise)
+    try {
+      await startPromise
+    } finally {
+      this.startingAgents.delete(agentId)
+    }
   }
 
   /**
@@ -151,6 +180,8 @@ class ContainerManager {
    */
   markAsStopped(agentId: string): void {
     this.updateCachedStatus(agentId, 'stopped', null)
+    this.containerStartedAt.delete(agentId)
+    this.lastKeepAliveAt.delete(agentId)
   }
 
   /**
@@ -274,6 +305,12 @@ class ContainerManager {
     if (this.startingAgents.has(agentId)) return info
 
     this.updateCachedStatus(agentId, info.status, info.port)
+
+    // Host restart clears in-memory start times. Floor the idle clock at
+    // rediscovery so zero-session warm containers are still reaped.
+    if (info.status === 'running' && !this.containerStartedAt.has(agentId)) {
+      this.containerStartedAt.set(agentId, Date.now())
+    }
 
     // Broadcast if status changed (e.g., container was stopped externally)
     if (previousStatus && previousStatus !== info.status) {
@@ -525,6 +562,11 @@ class ContainerManager {
       envVars['SUPERAGENT_HOST_API_URL'] = `${hostApiBaseUrl}/api`
       envVars['SUPERAGENT_AGENT_SLUG'] = agentId
 
+      // Authenticates the HOST to the container API (the reverse direction of
+      // PROXY_TOKEN, which the agent legitimately holds). The container server
+      // strips this from its env before spawning the CLI.
+      envVars['SUPERAGENT_HOST_TOKEN'] = getOrCreateHostToken(agentId)
+
       // Fetch connected accounts for this agent
       const accountMappings = await db
         .select({
@@ -538,17 +580,9 @@ class ContainerManager {
         .where(eq(agentConnectedAccounts.agentSlug, agentId))
 
       // Build account metadata (names + IDs, no tokens)
-      const accountMetadata: Record<string, Array<{ name: string; id: string }>> = {}
-      for (const { account } of accountMappings) {
-        if (account.status !== 'active') continue
-        if (!accountMetadata[account.toolkitSlug]) {
-          accountMetadata[account.toolkitSlug] = []
-        }
-        accountMetadata[account.toolkitSlug].push({
-          name: account.displayName,
-          id: account.id,
-        })
-      }
+      const accountMetadata = buildConnectedAccountsProjection(
+        accountMappings.map(({ account }) => account),
+      )
       envVars['CONNECTED_ACCOUNTS'] = JSON.stringify(accountMetadata)
 
       // Fetch remote MCPs for this agent
@@ -558,21 +592,11 @@ class ContainerManager {
         .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
         .where(eq(agentRemoteMcps.agentSlug, agentId))
 
-      const mcpConfigs = mcpMappings
-        .filter(({ mcp }) => mcp.status === 'active')
-        .map(({ mcp }) => {
-          // Only pass tool names (not full schemas) to keep env var size small
-          let toolNames: Array<{ name: string }> = []
-          if (mcp.toolsJson) {
-            try { toolNames = JSON.parse(mcp.toolsJson).map((t: any) => ({ name: t.name })) } catch { /* ignore */ }
-          }
-          return {
-            id: mcp.id,
-            name: mcp.name,
-            proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${agentId}/${mcp.id}`,
-            tools: toolNames,
-          }
-        })
+      const mcpConfigs = buildRemoteMcpProjection(
+        mcpMappings.map(({ mcp }) => mcp),
+        agentId,
+        hostApiBaseUrl,
+      )
 
       if (mcpConfigs.length > 0) {
         envVars['REMOTE_MCPS'] = JSON.stringify(mcpConfigs)
@@ -811,6 +835,45 @@ class ContainerManager {
     })
   }
 
+  /**
+   * Clear a CHECKING banner after a failed start/install and broadcast.
+   * Skips if an image pull is in progress (same guard as resetReadiness).
+   */
+  markRuntimeUnavailable(message: string): void {
+    if (this._readiness.status === 'PULLING_IMAGE') {
+      return
+    }
+    this.setReadiness({
+      status: 'RUNTIME_UNAVAILABLE',
+      message,
+      pullProgress: null,
+    })
+  }
+
+  /**
+   * Broadcast start/install progress while status stays CHECKING.
+   * Reuses pullProgress so existing readiness UI can show phase + optional %.
+   * Skips no-op duplicates and never overrides an in-flight image pull.
+   */
+  updateStartProgress(progress: ImagePullProgress): void {
+    if (this._readiness.status === 'PULLING_IMAGE') {
+      return
+    }
+    const prev = this._readiness.pullProgress
+    if (
+      this._readiness.status === 'CHECKING' &&
+      prev?.status === progress.status &&
+      prev?.percent === progress.percent
+    ) {
+      return
+    }
+    this.setReadiness({
+      status: 'CHECKING',
+      message: progress.status,
+      pullProgress: progress,
+    })
+  }
+
   /** Update readiness state and broadcast change via SSE. */
   private setReadiness(readiness: RuntimeReadiness): void {
     this._readiness = readiness
@@ -989,9 +1052,9 @@ class ContainerManager {
     // Step 3: Pre-flight disk space check
     try {
       const availableBytes = await getAvailableDiskSpace()
-      if (availableBytes < MIN_DISK_SPACE_BYTES) {
+      if (availableBytes < MIN_IMAGE_DISK_SPACE_BYTES) {
         const availableGB = (availableBytes / (1024 * 1024 * 1024)).toFixed(1)
-        const requiredGB = (MIN_DISK_SPACE_BYTES / (1024 * 1024 * 1024)).toFixed(0)
+        const requiredGB = (MIN_IMAGE_DISK_SPACE_BYTES / (1024 * 1024 * 1024)).toFixed(0)
         captureMessage('Insufficient disk space for image pull', {
           level: 'info',
           tags: { component: 'runtime', operation: 'disk-space-check' },
@@ -1029,6 +1092,14 @@ class ContainerManager {
     const isTransientSshError = (error: unknown): boolean => {
       const msg = error instanceof Error ? error.message : String(error)
       return msg.includes('exit code 255') || msg.includes('kex_exchange_identification') || msg.includes('Connection reset by peer')
+    }
+
+    // Pulls killed by the stall watchdog (pullImage in client-factory) are
+    // retryable: the registry content store keeps completed layers, so a
+    // retry resumes roughly where the wedged download stopped.
+    const isRetryablePullError = (error: unknown): boolean => {
+      const msg = error instanceof Error ? error.message : String(error)
+      return isTransientSshError(error) || msg.includes('Image pull stalled')
     }
 
     const doImageAction = (onProgress: (progress: ImagePullProgress) => void) => {
@@ -1072,8 +1143,8 @@ class ContainerManager {
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error)
 
-        // Only retry transient SSH errors for pull operations (not builds)
-        if (!shouldBuild && attempt < MAX_PULL_RETRIES && isTransientSshError(error)) {
+        // Only retry transient errors for pull operations (not builds)
+        if (!shouldBuild && attempt < MAX_PULL_RETRIES && isRetryablePullError(error)) {
           console.warn(`[ContainerManager] Image pull failed (attempt ${attempt + 1}/${MAX_PULL_RETRIES + 1}), retrying in ${RETRY_DELAY_MS}ms:`, errMsg)
           addErrorBreadcrumb({ category: 'container', message: 'Image pull transient failure, will retry', data: { attempt, errMsg, runner: effectiveRunner } })
 
@@ -1097,9 +1168,11 @@ class ContainerManager {
           continue
         }
 
-        // Non-retryable or exhausted retries
+        // Non-retryable or exhausted retries. pullImage/buildImage capture
+        // their own failures at the throw site (flagged sentryCaptured) —
+        // don't emit a second event for the same error.
         console.error(`[ContainerManager] Failed to ${actionLabel.toLowerCase()} image ${image}:`, errMsg)
-        captureException(error, {
+        if (!(error as { sentryCaptured?: boolean })?.sentryCaptured) captureException(error, {
           tags: { component: 'runtime', operation: shouldBuild ? 'image-build' : 'image-pull' },
           extra: { image, runner: effectiveRunner, attempt },
         })
@@ -1130,4 +1203,3 @@ if (process.env.NODE_ENV !== 'production') {
 // Note: Graceful shutdown handlers are registered in the application entry point
 // (src/main/index.ts for Electron, src/web/server.ts for web)
 // This avoids side effects at module import time and allows proper cleanup coordination
-

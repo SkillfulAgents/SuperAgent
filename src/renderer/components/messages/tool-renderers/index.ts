@@ -11,6 +11,7 @@ import { askUserQuestionRenderer } from './ask-user-question'
 import { requestSecretRenderer } from './request-secret'
 import { requestConnectedAccountRenderer } from './request-connected-account'
 import { scheduleTaskRenderer } from './schedule-task'
+import { scheduleResumeRenderer } from './schedule-resume'
 import { deliverFileRenderer } from './deliver-file'
 import { deliverSessionRenderer } from './deliver-session'
 import { requestFileRenderer } from './request-file'
@@ -31,6 +32,7 @@ import {
   browserScreenshotRenderer,
   browserSelectRenderer,
   browserHoverRenderer,
+  browserDownloadRenderer,
   browserEvalRenderer,
   browserRunRenderer,
 } from './browser-tools'
@@ -98,6 +100,7 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__user-input__request_secret': requestSecretRenderer,
   'mcp__user-input__request_connected_account': requestConnectedAccountRenderer,
   'mcp__user-input__schedule_task': scheduleTaskRenderer,
+  'mcp__user-input__schedule_resume': scheduleResumeRenderer,
   'mcp__user-input__deliver_file': deliverFileRenderer,
   'mcp__user-input__deliver_session': deliverSessionRenderer,
   'mcp__user-input__request_file': requestFileRenderer,
@@ -118,6 +121,7 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__browser__browser_screenshot': browserScreenshotRenderer,
   'mcp__browser__browser_select': browserSelectRenderer,
   'mcp__browser__browser_hover': browserHoverRenderer,
+  'mcp__browser__browser_download': browserDownloadRenderer,
   'mcp__browser__browser_eval': browserEvalRenderer,
   'mcp__browser__browser_run': browserRunRenderer,
 

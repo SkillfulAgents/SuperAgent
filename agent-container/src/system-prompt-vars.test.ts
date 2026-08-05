@@ -40,6 +40,18 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('platform-dependent')).toBe(!composio && !webhook)    // disconnected fallback
   })
 
+  // The pause/resume guidance must always render: without it agents reach for
+  // schedule_task ("new session") when they mean "continue THIS conversation
+  // later", which loses the context the wait was for.
+  it('always teaches schedule_resume and how it differs from schedule_task', () => {
+    const out = generateSystemPrompt()
+    expect(out).toContain('## Pausing and Resuming This Session')
+    expect(out).toContain('mcp__user-input__schedule_resume')
+    // The decision rule both directions
+    expect(out).toContain('THIS SAME conversation')
+    expect(out).toContain('Use `schedule_task` only for genuinely independent work')
+  })
+
   // A heading whose body is entirely gated renders as a title with the next
   // heading directly beneath it. Some headings (`## File Handling`) are static
   // containers of subheadings and are bodyless in every render, which is fine --
@@ -164,5 +176,57 @@ describe('generateSystemPrompt rendering', () => {
   it('the template interpolates only through <% %>, never ${VAR}', () => {
     const template = readFileSync(__dirname + '/system-prompt.md', 'utf-8')
     expect(template).not.toMatch(/\$\{[A-Za-z_]+\}/)
+  })
+})
+
+describe('subagent capability gating', () => {
+  const render = (policies?: { subagents?: 'allow' | 'review' | 'block'; workflows?: 'allow' | 'review' | 'block' }) =>
+    generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, policies)
+
+  it.each([
+    { label: 'no policies', policies: undefined },
+    { label: 'subagents allow', policies: { subagents: 'allow' as const } },
+    { label: 'subagents review', policies: { subagents: 'review' as const } },
+  ])('$label: delegation sections render', ({ policies }) => {
+    const out = render(policies)
+    expect(out).toContain('Use the Agent tool with specialized agents')
+    expect(out).toContain('### Web Browser Agent (delegate browsing tasks)')
+    expect(out).toContain('## Dashboard Builder Agent')
+    expect(out).not.toContain('## Building Dashboards')
+    expect(out).not.toMatch(/<%|%>/)
+  })
+
+  it('subagents block: no delegation mention survives anywhere in the prompt', () => {
+    process.env.HOST_PLATFORM = 'darwin' // include the computer-use block too
+    const out = render({ subagents: 'block' })
+    expect(out).not.toMatch(/subagent/i)
+    expect(out).not.toContain('Agent tool')
+    expect(out).not.toContain('Task(')
+    // "don't delegate further" (cross-agent invocation) legitimately survives;
+    // every instruction TO delegate must not.
+    expect(out).not.toMatch(/delegate to the|Delegate:|delegating|delegations/i)
+    // Direct-work fallbacks take the delegation sections' place
+    expect(out).toContain('### Browsing Workflow')
+    expect(out).toContain('## Building Dashboards')
+    expect(out).not.toMatch(/<%|%>/)
+  })
+
+  it('workflow policy does not affect the prompt (the Workflow tool self-describes)', () => {
+    expect(render({ workflows: 'block' })).toBe(render(undefined))
+  })
+
+  it('blocking subagents orphans no heading', () => {
+    const bodyless = (prompt: string) => {
+      const lines = prompt.split('\n')
+      return lines.filter((line, i) => {
+        if (!/^#{1,4} /.test(line)) return false
+        const next = lines.slice(i + 1).find(l => l.trim() !== '')
+        return next !== undefined && /^#{1,4} /.test(next)
+      })
+    }
+    for (const desktop of [true, false]) {
+      process.env.HOST_PLATFORM = desktop ? 'darwin' : 'linux'
+      expect(bodyless(render({ subagents: 'block' }))).toEqual(bodyless(render(undefined)))
+    }
   })
 })

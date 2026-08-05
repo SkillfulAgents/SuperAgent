@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useAttachments } from './use-attachments'
 import { useVoiceInput } from './use-voice-input'
@@ -6,6 +6,15 @@ import { useAddMount } from './use-mounts'
 import { useDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
 import { zipFolderFiles, type FolderGroup } from '@renderer/lib/file-utils'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
+import type { Attachment } from '@renderer/components/messages/attachment-preview'
+import {
+  findPotentialSecrets,
+  replaceSecuredSecrets,
+  secretDisplayText,
+  type PotentialSecret,
+  type SecuredSecret,
+} from '@renderer/lib/secret-detection'
 
 interface UseMessageComposerOptions {
   agentSlug: string
@@ -21,13 +30,23 @@ interface UseMessageComposerOptions {
   keepMessageUntilComplete?: boolean
   /** If provided, the composer persists its draft under this key via DraftsContext so it survives unmount. */
   draftKey?: string
+  /** One-shot attachment seed, used when moving a draft into a new session. */
+  initialAttachments?: Attachment[]
+  /** One-shot secure-pill seed, used when moving a draft into a new session. */
+  initialSecuredSecrets?: SecuredSecret[]
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
   const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey } = options
 
   const [draft, setDraft] = useDraft<string>(draftKey)
+  const securedDraftKey = draftKey ? `${draftKey}:secured-secrets` : undefined
+  const [draftSecuredSecrets, setDraftSecuredSecrets] = useDraft<SecuredSecret[]>(securedDraftKey)
   const [message, setMessage] = useState(draft ?? '')
+  const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
+  const [securedSecrets, setSecuredSecrets] = useState<SecuredSecret[]>(
+    () => options.initialSecuredSecrets ?? draftSecuredSecrets ?? []
+  )
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const addMountMutation = useAddMount()
@@ -45,6 +64,10 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     setDraft(message || undefined)
   }, [message, setDraft])
 
+  useEffect(() => {
+    setDraftSecuredSecrets(securedSecrets.length > 0 ? securedSecrets : undefined)
+  }, [securedSecrets, setDraftSecuredSecrets])
+
   // Sync externally-injected drafts (e.g. voice feedback) into the local message.
   useEffect(() => {
     if (draft !== undefined && draft !== message) {
@@ -53,10 +76,59 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to external draft changes
   }, [draft])
 
+  // A dismissal lasts while that exact value remains in the draft. Removing it
+  // and pasting/typing it again is treated as a fresh safety signal.
+  useEffect(() => {
+    setDismissedSecretValues((current) => {
+      const next = new Set([...current].filter((value) => message.includes(value)))
+      if (next.size === current.size) return current
+      return next
+    })
+  }, [message])
+
+  const potentialSecrets = useMemo(
+    () => findPotentialSecrets(message).filter((candidate) => !dismissedSecretValues.has(candidate.value)),
+    [message, dismissedSecretValues]
+  )
+
+  const dismissPotentialSecret = useCallback((candidate: PotentialSecret) => {
+    setDismissedSecretValues((current) => {
+      const next = new Set(current)
+      next.add(candidate.value)
+      return next
+    })
+  }, [])
+
+  const securePotentialSecret = useCallback((
+    candidate: PotentialSecret,
+    savedSecret: { key: string; envVar: string }
+  ) => {
+    setMessage((current) => {
+      if (current.slice(candidate.start, candidate.end) !== candidate.value) return current
+      const displayText = secretDisplayText(savedSecret.key)
+      const securedSecret: SecuredSecret = {
+        id: `${candidate.id}:${savedSecret.envVar}`,
+        key: savedSecret.key,
+        envVar: savedSecret.envVar,
+        displayText,
+      }
+      setSecuredSecrets((existing) => [...existing, securedSecret])
+      return `${current.slice(0, candidate.start)}${displayText}${current.slice(candidate.end)}`
+    })
+  }, [])
+
+  const removeSecuredSecrets = useCallback((secrets: SecuredSecret[]) => {
+    const secretIds = new Set(secrets.map((secret) => secret.id))
+    setSecuredSecrets((current) => current.filter((secret) => !secretIds.has(secret.id)))
+  }, [])
+
   // Mount choice dialog state
   const [pendingFolders, setPendingFolders] = useState<FolderGroup[]>([])
   const [showMountDialog, setShowMountDialog] = useState(false)
-  const isElectron = !!window.electronAPI
+  // Whether a dropped folder can be offered as a *mount* rather than an upload.
+  // Mounting hands the agent's machine a path on this one, so it needs both the
+  // bridge and for the two to be the same machine.
+  const canOfferMount = canUseHostFeatures()
 
   const handleFoldersReceived = useCallback((folders: FolderGroup[]) => {
     setPendingFolders(folders)
@@ -69,12 +141,17 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     addFiles,
     addFolders: addFoldersDirectly,
     addMounts,
+    setAttachmentError,
+    clearAttachmentErrors,
     removeAttachment,
     clearAttachments,
     handleFileSelect,
     handleFolderSelect,
     dragHandlers,
-  } = useAttachments({ onFoldersReceived: isElectron ? handleFoldersReceived : undefined })
+  } = useAttachments({
+    onFoldersReceived: canOfferMount ? handleFoldersReceived : undefined,
+    initialAttachments: options.initialAttachments,
+  })
 
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {
@@ -87,15 +164,22 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     if (choice === 'upload') {
       addFoldersDirectly(pendingFolders)
     } else if (choice === 'mount') {
-      addMounts(pendingFolders.map((f) => ({
+      // A folder without a resolved absolute path can't be mounted — fall back
+      // to upload for it rather than POSTing a mount with no hostPath.
+      const mountable = pendingFolders.filter((f) => f.folderPath)
+      const pathless = pendingFolders.filter((f) => !f.folderPath)
+      addMounts(mountable.map((f) => ({
         folderName: f.folderName,
         hostPath: f.folderPath!,
       })))
+      if (pathless.length > 0) {
+        addFoldersDirectly(pathless)
+      }
     }
     setPendingFolders([])
   }, [pendingFolders, addFoldersDirectly, addMounts])
 
-  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLElement>) => {
     const items = e.clipboardData?.items
     if (!items) return
 
@@ -113,7 +197,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
   }, [addFiles])
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: Pick<React.FormEvent, 'preventDefault'>) => {
     e.preventDefault()
 
     // Stop voice recording first and await the final text: stopRecording flushes
@@ -134,11 +218,15 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     if (attachments.length > 0) {
       setIsUploading(true)
       setUploadError(null)
+      clearAttachmentErrors()
+      // Tracks the attachment being processed so the catch can flag its chip
+      let inFlightAttachment: Attachment | null = null
       try {
         const uploadResults: { path: string }[] = []
         const mountResults: { containerPath: string; hostPath: string }[] = []
 
         for (const a of attachments) {
+          inFlightAttachment = a
           if (a.type === 'mount') {
             const result = await addMountMutation.mutateAsync({ agentSlug, hostPath: a.hostPath, restart: true })
             mountResults.push({ containerPath: result.containerPath, hostPath: a.hostPath })
@@ -165,7 +253,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       } catch (error) {
         console.error('Failed to upload attachments:', error)
         captureRendererException(error, { tags: { source: 'attachment-upload' }, extra: { agentSlug } })
-        setUploadError(error instanceof Error ? error.message : 'Upload failed. Please try again.')
+        const message = error instanceof Error ? error.message : 'Upload failed. Please try again.'
+        if (inFlightAttachment) {
+          setAttachmentError(inFlightAttachment.id, message)
+        }
+        setUploadError(message)
         setIsUploading(false)
         return
       }
@@ -179,13 +271,16 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       clearAttachments()
     }
 
+    const editableContent = content
+    const submittedContent = replaceSecuredSecrets(content, securedSecrets)
+
     try {
-      await onSubmit(content)
+      await onSubmit(submittedContent)
     } catch (error) {
       console.error('Failed to submit:', error)
       if (!keepMessageUntilComplete) {
         // Restore message so the user doesn't lose their text
-        setMessage(content)
+        setMessage(editableContent)
       }
       return
     }
@@ -195,6 +290,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       setDraft(undefined)
       clearAttachments()
     }
+    setSecuredSecrets([])
   }
 
   const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !isUploading && !submitDisabled
@@ -203,6 +299,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     // Message state
     message,
     setMessage,
+    potentialSecrets,
+    securedSecrets,
+    dismissPotentialSecret,
+    securePotentialSecret,
+    removeSecuredSecrets,
 
     // Attachments
     attachments,

@@ -6,7 +6,7 @@
  */
 
 import { Hono } from 'hono'
-import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
+import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import {
   getScheduledTask,
@@ -34,11 +34,11 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
-import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
-import type { EffortLevel } from '@shared/lib/container/types'
-import { withRetry } from '@shared/lib/utils/retry'
+import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { deliverSessionWake } from '@shared/lib/scheduler/wake-delivery'
 import { Authenticated, EntityAgentRole } from '../middleware/auth'
 
 const scheduledTasksRouter = new Hono()
@@ -90,6 +90,16 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
     }
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'deleted' })
+
+    // Cancelling a session wake changes that session's list/badge state.
+    if (task!.resumeSessionId) {
+      messagePersister.broadcastGlobal({
+        type: 'session_updated',
+        sessionId: task!.resumeSessionId,
+        agentSlug: task!.agentSlug,
+      })
+      messagePersister.broadcastSessionUpdate(task!.resumeSessionId)
+    }
 
     return c.body(null, 204)
   } catch (error) {
@@ -235,19 +245,20 @@ scheduledTasksRouter.patch('/:taskId/timezone', TaskAgentRole('user'), async (c)
   }
 })
 
-// PATCH /api/scheduled-tasks/:taskId/runtime-options - Update model and/or effort
+// PATCH /api/scheduled-tasks/:taskId/runtime-options - Update model, effort, and/or speed
 scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), async (c) => {
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     const body = await c.req.json().catch(() => ({}))
-    const parsed = RuntimeOptionsSchema.partial().safeParse(body)
+    const parsed = RuntimeOptionsPatchSchema.safeParse(body)
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { model?: string | null; effort?: string | null } = {}
+    const updates: { model?: string | null; effort?: string | null; speed?: string | null } = {}
     if ('model' in body) updates.model = parsed.data.model ?? null
     if ('effort' in body) updates.effort = parsed.data.effort ?? null
+    if ('speed' in body) updates.speed = parsed.data.speed ?? null
 
     const updated = await updateTaskRuntimeOptions(task!.id, updates)
     if (!updated) {
@@ -271,12 +282,36 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       return c.json({ error: 'Task is not pending' }, 400)
     }
 
+    // Session wake ("Wake now"): resume the target session instead of creating
+    // a new one. deliverSessionWake is the same claimed path the scheduler
+    // uses, so a poll firing at the same instant can never double-deliver.
+    if (task.resumeSessionId) {
+      const result = await deliverSessionWake(task, 'manual')
+
+      if (result.outcome === 'delivered' || result.outcome === 'reconciled') {
+        const updated = await getScheduledTask(task.id)
+        return c.json({ sessionId: result.sessionId, agentSlug: task.agentSlug, task: updated }, 201)
+      }
+      if (result.outcome === 'in-flight') {
+        return c.json({ error: 'This wake is already being delivered' }, 409)
+      }
+      if (result.outcome === 'session-missing') {
+        return c.json({ error: 'The session this wake resumes no longer exists' }, 404)
+      }
+      if (result.outcome === 'agent-missing') {
+        return c.json({ error: 'Agent no longer exists' }, 404)
+      }
+      // not-pending: a concurrent delivery just finished, or the wake was cancelled
+      return c.json({ error: 'Task is not pending' }, 400)
+    }
+
     const client = await containerManager.ensureRunning(task.agentSlug)
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
-    // Model/effort preference order: task override > agent default > global default.
+    // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
     const effort = task.effort ?? agentPrefs.defaultEffort
+    const speed = task.speed ?? agentPrefs.defaultSpeed
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
@@ -285,6 +320,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       ...(effort ? { effort: effort as EffortLevel } : {}),
+      ...(speed ? { speed: speed as SpeedLevel } : {}),
     })
 
     const sessionId = containerSession.id
@@ -329,14 +365,12 @@ scheduledTasksRouter.post('/:taskId/describe-schedule', TaskAgentRole('viewer'),
     }
 
     const client = getConfiguredLlmClient()
-    const response = await withRetry(() =>
-      client.messages.create({
-        model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
-        max_tokens: 100,
-        messages: [
-          {
-            role: 'user',
-            content: `Translate the following crontab expression to a concise human-readable English description. Respond with ONLY the description, nothing else. No quotes, no explanation.
+    const description = await createSummarizerText(client, {
+      model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
+      messages: [
+        {
+          role: 'user',
+          content: `Translate the following crontab expression to a concise human-readable English description. Respond with ONLY the description, nothing else. No quotes, no explanation.
 
 Cron expression: ${task.scheduleExpression}
 
@@ -344,12 +378,9 @@ Examples:
 "0 9 * * 1-5" → "Every weekday at 9:00 AM"
 "*/15 * * * *" → "Every 15 minutes"
 "0 0 1 * *" → "First day of every month at midnight"`,
-          },
-        ],
-      })
-    )
-
-    const description = extractTextFromLlmResponse(response)
+        },
+      ],
+    })
     if (!description) {
       return c.json({ error: 'Failed to generate description' }, 500)
     }
@@ -376,14 +407,12 @@ scheduledTasksRouter.post('/:taskId/parse-schedule', TaskAgentRole('user'), asyn
     }
 
     const client = getConfiguredLlmClient()
-    const response = await withRetry(() =>
-      client.messages.create({
-        model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
-        max_tokens: 50,
-        messages: [
-          {
-            role: 'user',
-            content: `Convert the following English schedule description to a standard 5-field crontab expression (minute hour day-of-month month day-of-week). Respond with ONLY the cron expression, nothing else. No quotes, no explanation.
+    const expression = await createSummarizerText(client, {
+      model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
+      messages: [
+        {
+          role: 'user',
+          content: `Convert the following English schedule description to a standard 5-field crontab expression (minute hour day-of-month month day-of-week). Respond with ONLY the cron expression, nothing else. No quotes, no explanation.
 
 Description: ${body.description.trim()}
 
@@ -391,12 +420,9 @@ Examples:
 "Every weekday at 9:00 AM" → 0 9 * * 1-5
 "Every 15 minutes" → */15 * * * *
 "First day of every month at midnight" → 0 0 1 * *`,
-          },
-        ],
-      })
-    )
-
-    const expression = extractTextFromLlmResponse(response)
+        },
+      ],
+    })
     if (!expression) {
       return c.json({ error: 'Failed to generate cron expression' }, 500)
     }

@@ -10,6 +10,7 @@ import {
 } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
+import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
@@ -19,6 +20,13 @@ import {
   modelCatalogSettingsSchema,
   type ModelCatalogSettings,
 } from '../llm-provider/model-catalog-schema'
+import {
+  capabilityPolicySchema,
+  DEFAULT_AGENT_CAPABILITIES,
+  type AgentCapabilitySettings,
+} from './capability-policy-schema'
+
+export type { AgentCapabilitySettings, CapabilityPolicy } from './capability-policy-schema'
 
 export interface ContainerSettings {
   containerRunner: string
@@ -37,6 +45,10 @@ export interface ContainerSettings {
 export interface ApiKeySettings {
   anthropicApiKey?: string
   openrouterApiKey?: string
+  /** Generic (custom baseURL) provider key, sent as ANTHROPIC_AUTH_TOKEN. */
+  genericApiKey?: string
+  /** Generic provider endpoint (Anthropic-wire-compatible), e.g. a LiteLLM proxy. */
+  genericBaseUrl?: string
   bedrockApiKey?: string
   bedrockAccessKeyId?: string
   bedrockSecretAccessKey?: string
@@ -93,6 +105,8 @@ export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
   autoSleepTimeoutMinutes?: number
+  /** Pre-start the agent container when the user begins typing a first message. */
+  warmStartOnType?: boolean
   autoDeleteInactiveDays?: number
   setupCompleted?: boolean
   accountProvider?: AccountProviderType
@@ -108,6 +122,8 @@ export interface AppPreferences {
    */
   globalDispatchShortcut?: string
   maxBrowserTabs?: number
+  /** Password-manager providers the user has chosen in Browser Use settings. */
+  configuredPasswordManagers?: string[]
   faviconDataUrl?: string
   faviconUpdatedAt?: string
 
@@ -184,8 +200,8 @@ export interface AnalyticsTarget {
   enabled: boolean
 }
 
-export type { LlmProviderId } from '../llm-provider/base-llm-provider'
-import type { LlmProviderId } from '../llm-provider/base-llm-provider'
+export type { LlmProviderId } from '../llm-provider/provider-types'
+import type { LlmProviderId } from '../llm-provider/provider-types'
 export type { WebProviderId } from '../web-provider/types'
 import type { WebProviderId } from '../web-provider/types'
 
@@ -205,11 +221,28 @@ export interface PlatformAuthSettings {
   updatedAt: string
 }
 
+export interface CloudWorkspaceSettings {
+  deploymentUrl: string
+  orgId: string
+  /** Deployment session token (secret — never surfaced; use tokenPreview). */
+  token: string
+  tokenPreview: string
+  /** ISO expiry of the deployment token; re-minted within a refresh buffer. */
+  expiresAt: string
+  updatedAt: string
+  /** Platform user the deployment session belongs to (null on legacy records). */
+  userId: string | null
+  /** Per-org membership the deployment session belongs to. */
+  memberId: string | null
+  /** Fingerprint of the platform credential it was minted under; null ⇒ re-mint. */
+  tokenFingerprint: string | null
+}
+
 export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
   llmProvider?: LlmProviderId
-  webProvider?: WebProviderId // default 'native' (no host vendor; Claude's built-in web tools). One stored vendor backs both search + fetch.
+  webProvider?: WebProviderId // unset = Platform when Gamut login present, else native. A stored pin is sticky (no silent fallback). One vendor backs both search + fetch.
   webAllowedSites?: string[] // operator allow list; empty = allow all (host-side must-enforce, §8)
   webBlockedSites?: string[] // operator deny list; wins over allow
   app?: AppPreferences
@@ -226,6 +259,12 @@ export interface AppSettings {
   shareErrorReports?: boolean
   platformAuth?: PlatformAuthSettings
   /**
+   * Desktop-only: the maintained cloud-workspace deployment token + its bound
+   * deployment. Absent until the org has a deployed cloud workspace and the
+   * grant exchange succeeds. Cleared on platform disconnect / org change.
+   */
+  cloudWorkspace?: CloudWorkspaceSettings
+  /**
    * Desktop platform-notifications state: the OS-notification dedup watermark
    * (newest created_at already OS-notified). Content is never mirrored locally
    * — the inbox reads live from the platform.
@@ -233,6 +272,14 @@ export interface AppSettings {
   platformNotifications?: PlatformNotificationsSettings
   /** Anthropic SDK tool search — defaults on; passed as `ENABLE_TOOL_SEARCH` to the container. */
   enableToolSearch?: boolean
+  /** Launch policies for subagents (Task/Agent) and workflows (Workflow tool). */
+  agentCapabilities?: AgentCapabilitySettings
+  /**
+   * Desktop-only: whether the UI drives this machine or the org's cloud
+   * workspace. Main-owned rather than per-renderer so the main window and the
+   * quick-dispatch launcher can never disagree — see `api-target-preference.ts`.
+   */
+  apiTarget?: ApiTarget
 }
 
 export interface PlatformNotificationsSettings {
@@ -272,6 +319,8 @@ export type { LlmProviderInfo }
 
 export interface GlobalSettingsResponse {
   dataDir: string
+  /** Host machine's total physical memory — lets the UI warn about oversized VM memory picks. */
+  hostTotalMemoryBytes?: number
   container: ContainerSettings
   app: AppPreferences
   hasRunningAgents: boolean
@@ -279,12 +328,16 @@ export interface GlobalSettingsResponse {
   llmProvider: LlmProviderId
   llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
+  // GET: always the vendor the agent runs (pin when set; Platform-if-login / native when unset).
+  // PUT still writes the stored pin (or null to clear). `webProviderIsDefault` is true iff stored unset.
   webProvider: WebProviderId
+  webProviderIsDefault: boolean
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     openrouter: ApiKeyStatus
     bedrock: ApiKeyStatus
     platform: ApiKeyStatus
+    generic: ApiKeyStatus
     composio: ApiKeyStatus
     nango: ApiKeyStatus
     browserbase: ApiKeyStatus
@@ -293,6 +346,8 @@ export interface GlobalSettingsResponse {
     exa: ApiKeyStatus
   }
   composioUserId?: string
+  /** Saved generic-provider endpoint. Not a secret — echoed so the Settings UI can display/edit it. */
+  genericBaseUrl?: string
   accountProviderUserId?: string
   voice?: VoiceSettings
   models: ModelSettings
@@ -308,7 +363,20 @@ export interface GlobalSettingsResponse {
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports: boolean
   enableToolSearch: boolean
+  agentCapabilities: AgentCapabilitySettings
 }
+
+/**
+ * Picker-safe subset of {@link GlobalSettingsResponse} served to EVERY
+ * authenticated user (GET /api/settings/models). Choosing a model is not an
+ * admin action — only editing provider config/catalog is — so the composer and
+ * default-model pickers read this instead of the admin-gated full settings.
+ * Must stay free of secrets and infra state.
+ */
+export type ModelPickerSettingsResponse = Pick<
+  GlobalSettingsResponse,
+  'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider'
+>
 
 /**
  * Default container runner: Lima on macOS (bundled, no install needed),
@@ -335,6 +403,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   app: {
     showMenuBarIcon: true,
     autoSleepTimeoutMinutes: 30,
+    warmStartOnType: true,
     globalDispatchShortcut: DEFAULT_GLOBAL_DISPATCH_SHORTCUT,
     notifications: {
       enabled: true,
@@ -354,6 +423,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     agentEffort: 'medium',
   },
   enableToolSearch: true,
+  agentCapabilities: DEFAULT_AGENT_CAPABILITIES,
   skillsets: [DEFAULT_PUBLIC_SKILLSET],
 }
 
@@ -443,7 +513,8 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     // UI select wrote both old fields to the same value, so the legacy webSearchProvider is the
     // user's choice. Read-fallback (not a boot-time migration) keeps this merge pure; the next
     // PUT /settings persists it under webProvider and the stale key lingers harmlessly. An invalid
-    // stored value falls back to native at the factory's isVendorId narrow.
+    // stored value fails the factory's isVendorId narrow and resolves to the automatic default
+    // (which may be a vendor, not native).
     webProvider: loaded.webProvider ?? loaded.webSearchProvider,
     webAllowedSites: loaded.webAllowedSites,
     webBlockedSites: loaded.webBlockedSites,
@@ -478,8 +549,27 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     analyticsTargets: loaded.analyticsTargets,
     shareErrorReports: loaded.shareErrorReports,
     platformAuth: loaded.platformAuth,
+    cloudWorkspace: loaded.cloudWorkspace,
+    // Narrowed on read: an unrecognized value (hand-edited file, a future
+    // version's target) must resolve to local rather than to something that
+    // routes work off this machine.
+    apiTarget: coerceApiTarget(loaded.apiTarget),
     platformNotifications: loaded.platformNotifications,
     enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
+    // Sanitize per-field: an unknown tier (hand-edited file, future version)
+    // falls back to that field's default instead of poisoning the section —
+    // resetting the whole section would silently lift a valid 'block'.
+    agentCapabilities: (() => {
+      const out = structuredClone(DEFAULT_AGENT_CAPABILITIES)
+      for (const key of Object.keys(out) as (keyof AgentCapabilitySettings)[]) {
+        const raw = loaded.agentCapabilities?.[key]
+        if (raw === undefined) continue
+        const parsed = capabilityPolicySchema.safeParse(raw)
+        if (parsed.success) out[key] = parsed.data
+        else console.warn(`Invalid agentCapabilities.${key} in settings.json; using default:`, raw)
+      }
+      return out
+    })(),
   }
 }
 
@@ -805,6 +895,12 @@ export function getCustomEnvVars(): Record<string, string> {
 export function getVoiceSettings(): VoiceSettings {
   const settings = getSettings()
   return settings.voice ?? {}
+}
+
+/** Resolved launch policies for subagents/workflows (defaults applied). */
+export function getAgentCapabilitySettings(): AgentCapabilitySettings {
+  const settings = getSettings()
+  return settings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES
 }
 
 export { DEFAULT_SETTINGS }

@@ -1,9 +1,12 @@
 export { BaseLlmProvider } from './base-llm-provider'
-export type { LlmProviderId, ModelPurpose } from './base-llm-provider'
+export { LLM_PROVIDER_IDS } from './provider-types'
+export type { LlmProviderId } from './provider-types'
+export type { ModelPurpose } from './base-llm-provider'
 export { AnthropicLlmProvider } from './anthropic-provider'
 export { OpenRouterLlmProvider } from './openrouter-provider'
 export { BedrockLlmProvider } from './bedrock-provider'
 export { PlatformLlmProvider } from './platform-provider'
+export { GenericLlmProvider } from './generic-provider'
 export {
   modelDefinitionSchema,
   modelCatalogSchema,
@@ -29,7 +32,8 @@ export {
   resolveModelForProvider,
 } from './model-catalog'
 
-import type { LlmProviderId, ModelPurpose } from './base-llm-provider'
+import type { LlmProviderId } from './provider-types'
+import type { ModelPurpose } from './base-llm-provider'
 import { BaseLlmProvider } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
 import { getEffectiveCatalog, getProviderCatalog, resolveModelForProvider } from './model-catalog'
@@ -37,6 +41,7 @@ import { AnthropicLlmProvider } from './anthropic-provider'
 import { OpenRouterLlmProvider } from './openrouter-provider'
 import { BedrockLlmProvider } from './bedrock-provider'
 import { PlatformLlmProvider } from './platform-provider'
+import { GenericLlmProvider } from './generic-provider'
 import { getSettings } from '../config/settings'
 
 const providers: Record<LlmProviderId, BaseLlmProvider> = {
@@ -44,6 +49,7 @@ const providers: Record<LlmProviderId, BaseLlmProvider> = {
   openrouter: new OpenRouterLlmProvider(),
   bedrock: new BedrockLlmProvider(),
   platform: new PlatformLlmProvider(),
+  generic: new GenericLlmProvider(),
 }
 
 /** Get a specific provider by ID. */

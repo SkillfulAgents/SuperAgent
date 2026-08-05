@@ -1,0 +1,26 @@
+{
+  "sessionId": "ea98da5d-6a16-4a28-bc55-364f4b73553a",
+  "agentSlug": "capture",
+  "description": "Real capture (2026-07-09, SDK 0.3.206) replacing the semi-synthetic CLI-2.1.170 queued-message fixture. A 12s foreground turn receives a queued user message mid-turn. Includes the new command_lifecycle frames: queued -> started -> completed for the queued command_uuid, and completed for the initial command. Real-shape quirk: both commands merge into a SINGLE result message (one result, two command_lifecycle:completed). Guards queued-message idle accounting and (future) lifecycle-driven ghost states.",
+  "sdkVersion": "0.3.206",
+  "cliVersion": "2.1.206",
+  "capturedAt": "2026-07-09",
+  "startActive": true,
+  "subagents": [],
+  "backgroundTasks": [
+    {
+      "taskId": "bqgm8qovg",
+      "taskType": "local_bash",
+      "startedT": 312710,
+      "prematureIdleT": null,
+      "realCompletionT": 321710
+    }
+  ],
+  "newFrameCounts": {
+    "command_lifecycle:queued": 1,
+    "command_lifecycle:started": 1,
+    "command_lifecycle:completed": 2,
+    "result.terminal_reason:completed": 1
+  },
+  "totalEntries": 48
+}

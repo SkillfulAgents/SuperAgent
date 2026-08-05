@@ -6,7 +6,7 @@ import { HttpError } from '@renderer/lib/api'
 import { agentQuery } from '@renderer/hooks/query-options'
 import { AgentNotFound, AgentLoadError } from './route-fallbacks'
 import { lenient } from './zod-search'
-import { chatSearchSchema, connectionsSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
+import { chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
 import { NotificationsRoute } from '@renderer/components/layout/notifications-route'
@@ -14,10 +14,12 @@ import { NotificationDetailRoute } from '@renderer/components/layout/notificatio
 import { AgentShell } from '@renderer/components/layout/agent-shell'
 import {
   AgentHomeRoute,
+  XAgentPermissionsRoute,
   ApiLogsRoute,
   ChatRoute,
   ConnectionsRoute,
   DashboardRoute,
+  SecretsRoute,
   SessionRoute,
   SettingsLayout,
   SettingsIndexRoute,
@@ -56,6 +58,7 @@ export const appShellRoute = createRoute({
 export const homeRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: '/',
+  validateSearch: lenient(homeSearchSchema),
   component: HomePage,
 })
 
@@ -153,6 +156,18 @@ export const connectionsRoute = createRoute({
   component: ConnectionsRoute,
 })
 
+export const secretsRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'secrets',
+  component: SecretsRoute,
+})
+
+export const xAgentPermissionsRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'x-agent-permissions',
+  component: XAgentPermissionsRoute,
+})
+
 // ── SETTINGS: SIBLING of app-shell → replaces the whole shell (App.tsx) ───────
 // LAYOUT (just an <Outlet/>): so the `$tab` child renders. `?from=` close-target
 // (open-redirect-safe) lives here and is inherited by both children.
@@ -199,6 +214,8 @@ export const routeTree = rootRoute.addChildren([
       dashboardRoute,
       apiLogsRoute,
       connectionsRoute,
+      secretsRoute,
+      xAgentPermissionsRoute,
     ]),
   ]),
   settingsRoute.addChildren([settingsIndexRoute, settingsTabRoute]),
