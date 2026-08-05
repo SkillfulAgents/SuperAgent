@@ -123,6 +123,7 @@ import { configureDownloadNonceRecovery } from '@shared/lib/services/download-no
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
 import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
+import { getCloudWorkspace } from '@shared/lib/services/cloud-workspace-service'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer } from './api-target'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
@@ -490,6 +491,8 @@ function activeApiTarget() {
 // rather than assembling one, because half of the cloud prefix is the per-boot
 // proxy key, a secret owned by main (see cloud-proxy-key.ts).
 ipcMain.handle('get-api-target', () => activeApiTarget())
+
+ipcMain.handle('get-cloud-workspace', () => getCloudWorkspace())
 
 ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
   applyPreferredApiTarget(target)

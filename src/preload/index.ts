@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 // Type-only (erased at build — the preload bundle has no @shared alias).
 import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extensions'
 import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
+import type { CloudWorkspaceStatus } from '../shared/lib/services/cloud-workspace-service'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -15,6 +16,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // the per-boot proxy key — a secret that is fetched, never assembled here.
   getApiTarget: (): Promise<ResolvedApiTarget> => {
     return ipcRenderer.invoke('get-api-target')
+  },
+  // Desktop→cloud discovery status (main process). IPC so cloud-mode renderers
+  // still reach the laptop's maintained workspace record — HTTP would proxy.
+  getCloudWorkspace: (): Promise<CloudWorkspaceStatus> => {
+    return ipcRenderer.invoke('get-cloud-workspace')
   },
   // Records the choice for subsequent boots; the caller reloads.
   setPreferredApiTarget: (target: ApiTarget): Promise<void> => {
@@ -469,6 +475,7 @@ declare global {
       getApiUrl: () => Promise<string>
       // Optional: an older main process has no such handler (see env.ts).
       getApiTarget?: () => Promise<ResolvedApiTarget>
+      getCloudWorkspace?: () => Promise<CloudWorkspaceStatus>
       setPreferredApiTarget?: (target: ApiTarget) => Promise<void>
       platform: string
       osVersion: string

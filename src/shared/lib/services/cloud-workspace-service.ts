@@ -53,6 +53,8 @@ export interface CloudWorkspaceStatus {
    * may well already have.
    */
   discoveryFailed: boolean
+  /** Deployed SuperAgent version from platform discovery, or null if unknown. */
+  superagentVersion: string | null
 }
 
 // Frozen: these are returned directly to callers, so they must not become a
@@ -64,6 +66,7 @@ const NOT_AVAILABLE: CloudWorkspaceStatus = Object.freeze({
   orgId: null,
   hasValidToken: false,
   discoveryFailed: false,
+  superagentVersion: null,
 })
 
 const NOT_FOUND: CloudWorkspaceStatus = Object.freeze({ ...NOT_AVAILABLE, available: true })
@@ -414,6 +417,10 @@ export async function getCloudWorkspace(
     deployed,
     options.forceTokenRefresh,
   )
+  const superagentVersion =
+    typeof deployed.superagent_version === 'string' && deployed.superagent_version.trim()
+      ? deployed.superagent_version.trim()
+      : null
   return {
     available: true,
     found: true,
@@ -421,6 +428,7 @@ export async function getCloudWorkspace(
     orgId: deployed.org_id,
     hasValidToken,
     discoveryFailed: false,
+    superagentVersion,
   }
 }
 

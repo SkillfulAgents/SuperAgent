@@ -79,6 +79,7 @@ const DEPLOYED = {
   deployment_url: 'https://ws.example.com',
   authorization_server: 'https://ws.example.com',
   status: 'deployed',
+  superagent_version: 'v0.5.0',
 }
 
 const LOOPBACK = {
@@ -174,6 +175,7 @@ describe('getCloudWorkspace', () => {
       orgId: null,
       hasValidToken: false,
       discoveryFailed: false,
+      superagentVersion: null,
     })
     expect(mockFetchDeployments).not.toHaveBeenCalled()
   })
@@ -399,7 +401,27 @@ describe('getCloudWorkspace', () => {
       userId: PRINCIPAL.userId,
       memberId: PRINCIPAL.memberId,
     })
-    expect(status).toMatchObject({ found: true, deploymentUrl: DEPLOYED.deployment_url, hasValidToken: true })
+    expect(status).toMatchObject({
+      found: true,
+      deploymentUrl: DEPLOYED.deployment_url,
+      hasValidToken: true,
+      superagentVersion: 'v0.5.0',
+    })
+  })
+
+  it('returns null superagentVersion when discovery omits it', async () => {
+    mockFetchDeployments.mockResolvedValue([
+      {
+        org_id: 'org_1',
+        deployment_url: 'https://ws.example.com',
+        authorization_server: 'https://ws.example.com',
+        status: 'deployed',
+      },
+    ])
+    mockReadRecord.mockReturnValue(storedRecord())
+
+    const status = await getCloudWorkspace()
+    expect(status).toMatchObject({ found: true, superagentVersion: null })
   })
 
   it('reuses a valid stored token for the same deployment without minting', async () => {

@@ -16,26 +16,22 @@ export interface CloudWorkspaceResponse {
    * isn't one". Show a retry, never the create-a-workspace CTA.
    */
   discoveryFailed: boolean
+  /** Deployed SuperAgent version from platform discovery, or null if unknown. */
+  superagentVersion: string | null
 }
 
 /**
- * Cloud-workspace status for the Account screen. Fetches on mount (== refresh
- * on view, since the settings tab is lazily mounted); the GET also runs the
- * backend discover → ensure-deployment-token cycle. `enabled` should track
- * platform connectivity (and Electron — the card is desktop-only).
- *
- * `orgId` is part of the cache key, not just a parameter: the response carries a
- * deployment URL the user can click "Open" on, and a single global key would let
- * one account's workspace render under another's while the refetch is still in
- * flight (invalidation marks data stale but keeps serving it). Connect/reconnect
- * additionally *resets* this key — see `use-platform-auth` — so nothing is left
- * to serve at all.
+ * Cloud-workspace status. Prefers IPC in Electron (works in cloud mode); HTTP
+ * fallback for tests. `orgId` is a cache key so org A's URL can't flash under B.
  */
 export function useCloudWorkspace(enabled: boolean, orgId?: string | null) {
   return useQuery<CloudWorkspaceResponse>({
     queryKey: ['cloud-workspace', orgId ?? null],
     enabled,
     queryFn: async () => {
+      if (window.electronAPI?.getCloudWorkspace) {
+        return window.electronAPI.getCloudWorkspace()
+      }
       const res = await apiFetch('/api/platform-auth/deployments')
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
