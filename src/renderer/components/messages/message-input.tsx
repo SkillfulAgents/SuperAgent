@@ -267,6 +267,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         filter={slashFilter ?? ''}
       />
       <ChatComposerBox
+        className="border-border/70 bg-background/85 shadow-lg shadow-background/20 backdrop-blur-sm supports-[backdrop-filter]:bg-background/70"
         attachments={composer.attachments}
         onRemoveAttachment={composer.removeAttachment}
         textareaRef={textareaRef}

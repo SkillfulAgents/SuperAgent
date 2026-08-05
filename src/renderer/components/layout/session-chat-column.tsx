@@ -93,7 +93,8 @@ export function SessionChatColumn({
       pendingRequestCount={pendingRequestCount}
       onPendingMessageAppeared={onPendingMessageAppeared}
       suppressScrollToBottom={staleSession.learnMoreOpen}
-      footerClassName="bg-background max-w-[740px] mx-auto w-full"
+      overlayFooter
+      footerClassName="max-w-[740px] mx-auto w-full"
       footer={
         pendingRequestCount > 0 ? (
           <div className="px-4 pb-4" data-testid="pending-request-slot">
@@ -143,12 +144,20 @@ export function SessionChatColumn({
               initialModel={model}
               registerSnapshot={staleSession.registerSnapshot}
             />
-            <div className="flex justify-between items-center gap-1.5 px-6 py-3">
+            <div className="relative isolate flex items-center justify-between gap-1.5 overflow-hidden px-6 py-3">
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-y-0 left-0 z-0 w-[58%] bg-gradient-to-r from-background via-background/90 to-transparent backdrop-blur-sm"
+              />
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-y-0 right-0 z-0 w-[58%] bg-gradient-to-l from-background via-background/90 to-transparent backdrop-blur-sm"
+              />
               {contextPercent != null ? (
                 <TooltipProvider delayDuration={0}>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <div className="flex items-center gap-1.5 cursor-default">
+                      <div className="relative z-10 flex cursor-default items-center gap-1.5">
                         <span className="text-xs text-muted-foreground">Context Usage</span>
                         <DonutChart
                           percent={contextPercent}
@@ -164,9 +173,9 @@ export function SessionChatColumn({
                   </Tooltip>
                 </TooltipProvider>
               ) : (
-                <span />
+                <span className="relative z-10" />
               )}
-              <span className="text-xs text-muted-foreground flex items-center gap-1">
+              <span className="relative z-10 flex items-center gap-1 text-xs text-muted-foreground">
                 <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
                 <span>Send</span>
                 <span className="mx-1">·</span>

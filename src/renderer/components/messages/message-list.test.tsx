@@ -182,6 +182,16 @@ describe('MessageList', () => {
     expect(screen.getByText('Hello!')).toBeInTheDocument()
   })
 
+  it('reserves clearance for an overlaid session footer', () => {
+    mockMessagesData.data = []
+    renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" bottomInset={180} />
+    )
+
+    const content = screen.getByTestId('turn-anchor-spacer').parentElement
+    expect(content).toHaveStyle({ paddingBottom: '196px' })
+  })
+
   it('renders compact boundaries', () => {
     const boundary = createCompactBoundary({ summary: 'Compacted section' })
     mockMessagesData.data = [boundary as any]

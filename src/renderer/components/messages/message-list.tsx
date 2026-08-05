@@ -81,9 +81,11 @@ interface MessageListProps {
   readOnly?: boolean
   /** Hide the scroll affordance while a footer popover overlaps it. */
   suppressScrollToBottom?: boolean
+  /** Height of an overlaid footer that the live edge must remain above. */
+  bottomInset?: number
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
@@ -804,6 +806,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     syncFollowPosition,
     setBottomSpacerHeight,
     cancelScrollAnimation,
+    bottomInset,
   ])
 
   // Markdown, images, and expanded tool cards can change height without a
@@ -1007,7 +1010,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         data-testid="message-list"
         data-message-content-area
       >
-        <div className="mx-auto w-full max-w-[720px] px-4 pb-4">
+        <div
+          className="mx-auto w-full max-w-[720px] px-4 pb-4"
+          style={bottomInset > 0 ? { paddingBottom: bottomInset + 16 } : undefined}
+        >
         <div
           ref={contentBodyRef}
           className={`space-y-4 ${readOnly ? 'pt-3' : 'pt-[100px]'}`}
@@ -1222,6 +1228,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         <button
           onClick={scrollToBottom}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-3 py-1.5 text-xs font-medium shadow-lg hover:bg-primary/90 transition-opacity cursor-pointer"
+          style={bottomInset > 0 ? { bottom: bottomInset + 16 } : undefined}
         >
           <ArrowDown className="h-3.5 w-3.5" />
           Scroll to bottom
