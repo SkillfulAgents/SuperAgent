@@ -6,7 +6,6 @@ import fs from 'fs'
 import path from 'path'
 import { getDatabasePath, getDataDir } from '@shared/lib/config/data-dir'
 import { captureException } from '@shared/lib/error-reporting'
-import { markBoot } from '@shared/lib/boot-timing'
 
 // Run migrations on startup
 // This is safe to run on every start - it only applies pending migrations
@@ -65,8 +64,6 @@ function initDb() {
     })
     throw err
   }
-
-  markBoot('dbReady')
 }
 
 export const db = new Proxy({} as BetterSQLite3Database<typeof schema>, {

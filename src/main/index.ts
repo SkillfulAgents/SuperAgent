@@ -116,8 +116,7 @@ registerUpdateHandlers()
 // Now safe to import API (env var is set)
 import { serve } from '@hono/node-server'
 import api from '../api'
-import { initializeServices, shutdownServices } from '@shared/lib/startup'
-import { setupServerHandlers } from '@shared/lib/startup'
+import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
@@ -1499,10 +1498,7 @@ async function startApp() {
     return
   }
 
-  // Initialize all background services
-  initializeServices().catch((error) => {
-    console.error('Failed to initialize services:', error)
-  })
+  void afterBindInitialize()
 
   // Reconnect chat integrations after system sleep
   powerMonitor.on('resume', () => {

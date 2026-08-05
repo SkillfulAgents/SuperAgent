@@ -38,14 +38,11 @@ export default defineConfig({
             process.env.PORT = String(addr.port)
           }
         })
-        // Post-listen: WebSocket proxies + background services (same as web/server.ts).
         if (server.httpServer) {
           server.ssrLoadModule(path.resolve(__dirname, 'src/shared/lib/startup.ts')).then(
-            ({ setupServerHandlers, initializeServices }) => {
+            ({ setupServerHandlers, afterBindInitialize }) => {
               setupServerHandlers(server.httpServer as any)
-              initializeServices().catch((error: unknown) => {
-                console.error('Failed to initialize services:', error)
-              })
+              void afterBindInitialize()
             },
           )
         }

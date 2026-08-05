@@ -54,7 +54,12 @@ vi.mock('./error-reporting', () => ({
   setErrorReportingUser: vi.fn(),
 }))
 vi.mock('./config/version', () => ({ APP_VERSION: '0.0.0-test' }))
-vi.mock('./boot-timing', () => ({ markBoot: vi.fn() }))
+const markBoot = vi.fn()
+const logBootTiming = vi.fn()
+vi.mock('./boot-timing', () => ({
+  markBoot: (...args: unknown[]) => markBoot(...args),
+  logBootTiming: () => logBootTiming(),
+}))
 vi.mock('../../main/host-browser', () => ({
   getActiveProvider: () => null,
   stopAllProviders: () => Promise.resolve(),
@@ -105,6 +110,8 @@ describe('initializeServices post-bind critical path', () => {
     listAgents.mockClear()
     initializeAgents.mockClear()
     getSettings.mockClear()
+    markBoot.mockClear()
+    logBootTiming.mockClear()
     isAuthMode.mockReturnValue(true)
   })
 
@@ -131,6 +138,7 @@ describe('initializeServices post-bind critical path', () => {
     expect(order).toEqual(['reconcile', 'validateAuth', 'listAgents'])
     expect(reconcile).toHaveBeenCalledTimes(1)
     expect(validateAuth).toHaveBeenCalledTimes(1)
+    expect(markBoot).toHaveBeenCalledWith('dbReady')
   })
 
   it('is idempotent across concurrent callers', async () => {
@@ -146,5 +154,13 @@ describe('initializeServices post-bind critical path', () => {
     await initializeServices()
     expect(reconcile).toHaveBeenCalledTimes(1)
     expect(validateAuth).not.toHaveBeenCalled()
+  })
+
+  it('afterBindInitialize marks bound, inits, then logs timing', async () => {
+    const { afterBindInitialize } = await import('./startup')
+    await afterBindInitialize()
+    expect(markBoot).toHaveBeenCalledWith('bound')
+    expect(reconcile).toHaveBeenCalledTimes(1)
+    expect(logBootTiming).toHaveBeenCalledTimes(1)
   })
 })

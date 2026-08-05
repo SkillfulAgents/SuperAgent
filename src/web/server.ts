@@ -1,12 +1,11 @@
-// First import: origin for boot_timing processStart (cold-wake diagnosis).
-import { markBoot, logBootTiming } from '@shared/lib/boot-timing'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { existsSync } from 'fs'
 import api from '../api'
-import { initializeServices, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
-import { captureException } from '@shared/lib/error-reporting'
+import { afterBindInitialize, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
+import { markBoot } from '@shared/lib/boot-timing'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
+
 const app = new Hono()
 
 // Mount API routes
@@ -83,7 +82,6 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
 async function start() {
-  // Static imports of this entry finished before start(); mark module-graph load.
   markBoot('modulesLoaded')
 
   const defaultPort = parseInt(process.env.PORT || '47891', 10)
@@ -94,23 +92,11 @@ async function start() {
   const bound = await bindServerWithRetry(app.fetch, { startPort: defaultPort })
   server = bound.server
   process.env.PORT = String(bound.port)
-  // Early mark only — final boot_timing logs after post-bind init (settings/db).
-  markBoot('bound')
   console.log(`API server running on http://localhost:${bound.port}`)
 
-  // Set up server-level handlers (WebSocket proxies, etc.)
   setupServerHandlers(server)
-
-  // Auth validation + skillset reconcile + DB open run here (not at api import),
-  // so health probes that only need any HTTP response are not blocked.
-  // Non-fatal: keep serving (degraded) instead of flapping healthy → crash.
-  try {
-    await initializeServices()
-  } catch (error) {
-    console.error('Failed to initialize services:', error)
-    captureException(error, { tags: { component: 'startup', operation: 'initialize-services' } })
-  }
-  logBootTiming()
+  // Degraded on failure: health already passed; don't flap healthy → crash.
+  await afterBindInitialize({ degradedOnFailure: true })
 }
 
 start().catch((error) => {
