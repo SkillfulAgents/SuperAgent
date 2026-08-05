@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
+import { clearBusyAgentsForSettingsSave, waitForSettingsPutOk } from '../helpers/settings'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,9 +48,7 @@ async function pickSelectOption(page: Page, triggerId: string, optionText: strin
 
 /** Wait for a PUT /api/settings request to complete. */
 async function waitForSettingsSave(page: Page) {
-  await page.waitForResponse(
-    (res) => res.url().includes('/api/settings') && res.request().method() === 'PUT' && res.ok(),
-  )
+  await waitForSettingsPutOk(page)
 }
 
 /** Wait for a PUT /api/user-settings request to complete. */
@@ -66,21 +65,7 @@ async function settings(request: APIRequestContext) {
 }
 
 async function saveSettings(request: APIRequestContext, data: Record<string, unknown>) {
-  // Settings PUT blocks while any running agent is mid-turn. Parallel e2e
-  // workers share one server, so clear busy agents before saving.
-  const agentsRes = await request.get('/api/agents')
-  if (agentsRes.ok()) {
-    const agents = await agentsRes.json() as Array<{
-      slug: string
-      status: string
-      hasActiveSessions?: boolean
-    }>
-    for (const agent of agents) {
-      if (agent.status === 'running' && agent.hasActiveSessions) {
-        await request.post(`/api/agents/${agent.slug}/stop`)
-      }
-    }
-  }
+  await clearBusyAgentsForSettingsSave(request)
 
   const res = await request.put('/api/settings', { data })
   if (!res.ok()) {
