@@ -251,7 +251,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   return (
     <form
       onSubmit={composer.handleSubmit}
-      className={`relative px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       {...composer.dragHandlers}
     >
       <MountChoiceDialog
@@ -267,7 +267,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         filter={slashFilter ?? ''}
       />
       <ChatComposerBox
-        className="border-border/70 bg-background/85 shadow-lg shadow-background/20 backdrop-blur-sm supports-[backdrop-filter]:bg-background/70"
+        className="relative z-10 border-border/70 bg-background/85 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]"
         attachments={composer.attachments}
         onRemoveAttachment={composer.removeAttachment}
         textareaRef={textareaRef}

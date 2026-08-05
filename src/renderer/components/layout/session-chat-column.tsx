@@ -147,11 +147,19 @@ export function SessionChatColumn({
             <div className="relative isolate flex items-center justify-between gap-1.5 overflow-hidden px-6 py-3">
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute inset-y-0 left-0 z-0 w-[58%] bg-gradient-to-r from-background via-background/90 to-transparent backdrop-blur-sm"
+                className="pointer-events-none absolute inset-y-0 left-0 z-0 w-[52%] bg-gradient-to-r from-background via-background/75 to-transparent backdrop-blur-[2px]"
+                style={{
+                  maskImage: 'linear-gradient(to right, black 0%, black 55%, transparent 100%)',
+                  WebkitMaskImage: 'linear-gradient(to right, black 0%, black 55%, transparent 100%)',
+                }}
               />
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute inset-y-0 right-0 z-0 w-[58%] bg-gradient-to-l from-background via-background/90 to-transparent backdrop-blur-sm"
+                className="pointer-events-none absolute inset-y-0 right-0 z-0 w-[52%] bg-gradient-to-l from-background via-background/75 to-transparent backdrop-blur-[2px]"
+                style={{
+                  maskImage: 'linear-gradient(to left, black 0%, black 55%, transparent 100%)',
+                  WebkitMaskImage: 'linear-gradient(to left, black 0%, black 55%, transparent 100%)',
+                }}
               />
               {contextPercent != null ? (
                 <TooltipProvider delayDuration={0}>
