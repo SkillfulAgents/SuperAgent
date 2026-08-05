@@ -1,9 +1,10 @@
 import { useMemo } from 'react'
-import { Search } from 'lucide-react'
+import { Globe, Search } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { markdownUrlTransform, safeHref } from '@renderer/lib/markdown-url-transform'
-import { SiteFavicon } from '@renderer/components/ui/site-favicon'
+import { SiteFavicon, useVendorFavicon } from '@renderer/components/ui/site-favicon'
+import { TileStack } from '@renderer/components/ui/tile-stack'
 import { webSearchDef } from '@shared/lib/tool-definitions/web-search'
 import { flattenSnippet, hostnameOf, parseSearchResult, stripLeadingTitle } from './web-result-parse'
 import { NO_MARKDOWN_IMAGES, SourceMeta } from './shared'
@@ -14,6 +15,17 @@ const PROSE = 'prose prose-sm max-w-none dark:prose-invert text-xs prose-p:text-
 
 function snippetOf(source: { title: string; snippet?: string }): string {
   return source.snippet ? flattenSnippet(stripLeadingTitle(source.snippet, source.title)) : ''
+}
+
+/**
+ * What goes inside one collapsed-strip tile: the vetted favicon, or a globe for a source
+ * with no showable icon. The tile chrome comes from TileStack; the globe's gray is fixed
+ * because the tile stays light in both themes.
+ */
+function SourceTileIcon({ src }: { src?: string }) {
+  const { href, onError } = useVendorFavicon(src)
+  if (!href) return <Globe aria-hidden className="h-[11px] w-[11px] text-zinc-500" />
+  return <img src={href} alt="" className="h-3 w-3 object-contain" onError={onError} />
 }
 
 function SourceLink({ title, url }: { title: string; url: string }) {
@@ -36,20 +48,26 @@ function CollapsedContent({ result, isError }: CollapsedContentProps) {
   if (sources.length === 0) return null
   const shown = sources.slice(0, MAX_COLLAPSED_ICONS)
   return (
-    <span aria-hidden className="flex items-center gap-1 shrink-0">
+    <TileStack
+      size="xs"
+      className="shrink-0"
+      overflowLabel={sources.length > shown.length ? `+${sources.length - shown.length}` : undefined}
+    >
       {shown.map((s, i) => (
-        <SiteFavicon key={`${i}-${s.url}`} src={s.favicon} className="h-3.5 w-3.5" />
+        <SourceTileIcon key={`${i}-${s.url}`} src={s.favicon} />
       ))}
-      {sources.length > shown.length && (
-        <span className="text-2xs text-muted-foreground">+{sources.length - shown.length}</span>
-      )}
-    </span>
+    </TileStack>
   )
 }
 
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
   const { query } = webSearchDef.parseInput(input)
-  const { sources, leftover } = useMemo(() => parseSearchResult(result ?? ''), [result])
+  // Snippets are flattened at parse time, once per source, so the render below never
+  // re-derives them: `snippet` here is the display paragraph, not the parser's raw page text.
+  const { sources, leftover } = useMemo(() => {
+    const parsed = parseSearchResult(result ?? '')
+    return { ...parsed, sources: parsed.sources.map((s) => ({ ...s, snippet: snippetOf(s) })) }
+  }, [result])
 
   if (isError || !result) {
     return (
@@ -84,7 +102,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
                     <SourceLink title={s.title} url={s.url} />
                     <SourceMeta host={hostnameOf(s.url)} publishedDate={s.publishedDate} />
                   </div>
-                  {snippetOf(s) && (
+                  {s.snippet && (
                     // One paragraph, with the title repeat dropped: the raw snippet is page text
                     // that opens with the same title this row already links.
                     <div className={`${PROSE} mt-0.5 text-muted-foreground`}>
@@ -93,7 +111,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
                         urlTransform={markdownUrlTransform}
                         components={NO_MARKDOWN_IMAGES}
                       >
-                        {snippetOf(s)}
+                        {s.snippet}
                       </ReactMarkdown>
                     </div>
                   )}

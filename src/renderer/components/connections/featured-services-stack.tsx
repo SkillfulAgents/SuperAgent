@@ -1,4 +1,5 @@
 import { cn } from '@shared/lib/utils/cn'
+import { TileStack } from '@renderer/components/ui/tile-stack'
 
 export const FEATURED_SERVICE_SLUGS = [
   'gmail',
@@ -17,37 +18,18 @@ interface FeaturedServicesStackProps {
 }
 
 export function FeaturedServicesStack({ size = 'sm', className }: FeaturedServicesStackProps) {
-  const tile = size === 'md' ? 'h-9 w-9' : 'h-8 w-8'
   const icon = size === 'md' ? 'h-5 w-5' : 'h-4 w-4'
-  const overlap = size === 'md' ? -10 : -8
 
   return (
-    <div className={cn('flex items-center', className)} aria-hidden="true">
-      {FEATURED_SERVICE_SLUGS.map((slug, i) => (
-        <div
+    <TileStack size={size} overflowLabel="70+" className={className}>
+      {FEATURED_SERVICE_SLUGS.map((slug) => (
+        <img
           key={slug}
-          className={cn(
-            tile,
-            'rounded-lg border border-border bg-background dark:bg-zinc-200 flex items-center justify-center shadow-sm transition-transform duration-100 ease-out hover:scale-110 hover:z-10',
-          )}
-          style={{ marginLeft: i === 0 ? 0 : overlap, zIndex: i }}
-        >
-          <img
-            src={`${import.meta.env.BASE_URL}service-icons/${slug}.svg`}
-            alt=""
-            className={cn(icon, 'object-contain')}
-          />
-        </div>
+          src={`${import.meta.env.BASE_URL}service-icons/${slug}.svg`}
+          alt=""
+          className={cn(icon, 'object-contain')}
+        />
       ))}
-      <div
-        className={cn(
-          tile,
-          'rounded-lg border border-border bg-background dark:bg-zinc-200 flex items-center justify-center shadow-sm',
-        )}
-        style={{ marginLeft: overlap, zIndex: FEATURED_SERVICE_SLUGS.length }}
-      >
-        <span className="text-2xs font-medium text-muted-foreground/70 dark:text-zinc-500">70+</span>
-      </div>
-    </div>
+    </TileStack>
   )
 }
