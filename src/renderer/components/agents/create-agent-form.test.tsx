@@ -143,12 +143,14 @@ describe('CreateAgentForm', () => {
     expect(onAgentCreated).toHaveBeenCalled()
   })
 
-  it('does not seed when create fails', async () => {
+  it('rethrows on failure (so the composer keeps the typed text) and does not seed', async () => {
     mockCreateSession.mutateAsync.mockRejectedValueOnce(new Error('boom'))
     renderWithProviders(<CreateAgentForm />)
 
+    // Rejection is the keepMessageUntilComplete contract: useMessageComposer
+    // only preserves the typed prompt when onSubmit rejects.
     await act(async () => {
-      await capturedComposerOptions.onSubmit('Hello from wizard')
+      await expect(capturedComposerOptions.onSubmit('Hello from wizard')).rejects.toThrow('boom')
     })
 
     expect(takePendingSessionSeed('session-123')).toBeUndefined()

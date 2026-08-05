@@ -163,6 +163,9 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
         toast.error('Failed to create agent', {
           description: error instanceof Error ? error.message : 'Please try again.',
         })
+        // Rethrow so useMessageComposer's keepMessageUntilComplete path keeps
+        // the typed prompt instead of clearing it after the failure toast.
+        throw error
       } finally {
         setIsSubmitting(false)
       }
