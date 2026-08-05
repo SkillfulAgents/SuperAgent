@@ -313,9 +313,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const bottomSpacerRef = useRef<HTMLDivElement>(null)
   const bottomSpacerHeightRef = useRef(0)
   const anchoredTurnRef = useRef<{ localId: string; scrollTop: number } | null>(null)
-  const shouldAutoFollowRef = useRef(true)
   const programmaticScrollTopRef = useRef<number | null>(null)
-  const userScrollIntentRef = useRef(false)
   const lastScrollTopRef = useRef(0)
   const scrollAnimationFrameRef = useRef<number | null>(null)
   const animateNextTurnRef = useRef(false)
@@ -453,13 +451,13 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         return
       }
 
-      if (!shouldAutoFollowRef.current || scrollAnimationFrameRef.current != null) return
+      if (!isScrolledToBottomRef.current || scrollAnimationFrameRef.current != null) return
       setScrollTop(el, targetScrollTop)
       return
     }
 
     animateNextTurnRef.current = false
-    if (!shouldAutoFollowRef.current || scrollAnimationFrameRef.current != null) return
+    if (!isScrolledToBottomRef.current || scrollAnimationFrameRef.current != null) return
     setScrollTop(el, el.scrollHeight)
   }, [animateScrollTop, setBottomSpacerHeight, setScrollTop])
 
@@ -471,8 +469,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const isProgrammatic =
       scrollAnimationFrameRef.current != null ||
       (programmaticTarget != null && Math.abs(el.scrollTop - programmaticTarget) <= 1)
-    const hasUserScrollIntent = userScrollIntentRef.current
-    userScrollIntentRef.current = false
     if (isProgrammatic) {
       programmaticScrollTopRef.current = null
     }
@@ -480,7 +476,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // Blank reserve is one-way. When the reader moves upward, consume the same
     // number of pixels from the spacer. The new scroll position becomes the
     // reserve's live edge, so that discarded blank area cannot be revisited.
-    let discardedSpacer = false
     const anchoredTurn = anchoredTurnRef.current
     const upwardDelta = Math.max(0, previousScrollTop - el.scrollTop)
     if (!isProgrammatic && anchoredTurn && upwardDelta > 0 && bottomSpacerHeightRef.current > 0) {
@@ -488,17 +483,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       const remainingSpacer = bottomSpacerHeightRef.current - discard
       anchoredTurn.scrollTop = Math.max(0, anchoredTurn.scrollTop - discard)
       setBottomSpacerHeight(remainingSpacer)
-      discardedSpacer = discard > 0
       if (remainingSpacer === 0) anchoredTurnRef.current = null
     }
 
-    // Consider "at bottom" if within 80px of the bottom edge
+    // Proximity to the live edge is the auto-follow contract: moving beyond
+    // this threshold pauses following, and returning within it resumes.
     const threshold = 80
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
     isScrolledToBottomRef.current = distanceFromBottom < threshold
-    if (!isProgrammatic && !discardedSpacer && !hasUserScrollIntent) {
-      shouldAutoFollowRef.current = isScrolledToBottomRef.current
-    }
     // Show "scroll to bottom" button when scrolled up more than 300px
     setShowScrollToBottom(distanceFromBottom > 300)
 
@@ -530,7 +522,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     if (!el) return
     cancelScrollAnimation()
     anchoredTurnRef.current = null
-    shouldAutoFollowRef.current = true
     animateNextTurnRef.current = false
     setBottomSpacerHeight(0)
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
@@ -769,7 +760,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
     if (hasNewSend) {
       cancelScrollAnimation()
-      shouldAutoFollowRef.current = true
       isScrolledToBottomRef.current = true
       setShowScrollToBottom(false)
 
@@ -837,8 +827,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }, [syncFollowPosition])
 
   const handleUserScrollIntent = useCallback(() => {
-    userScrollIntentRef.current = true
-    shouldAutoFollowRef.current = false
     programmaticScrollTopRef.current = null
     cancelScrollAnimation()
   }, [cancelScrollAnimation])
