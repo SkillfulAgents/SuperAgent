@@ -76,11 +76,13 @@ EXPOSE 47891
 
 ENV NODE_ENV=production
 # V8 compile cache for cold-wake (Node 22+); warmup once at image build.
+# Exit 124 = the server was up until timeout killed it; anything else is a broken bundle.
 ENV NODE_COMPILE_CACHE=/app/.compile-cache
 RUN mkdir -p /app/.compile-cache \
-  && SUPERAGENT_DATA_DIR=/tmp/sa-compile-warmup E2E_MOCK=true PORT=39999 \
-       timeout 12s node dist/web/server.mjs \
-    || true \
+  && { SUPERAGENT_DATA_DIR=/tmp/sa-compile-warmup E2E_MOCK=true PORT=39999 \
+         timeout 12s node dist/web/server.mjs; test "$?" -eq 124; } \
+  && test -n "$(ls -A /app/.compile-cache)" \
+  && chmod -R a+rwX /app/.compile-cache \
   && rm -rf /tmp/sa-compile-warmup
 
 # umask 000: all files/dirs are world-readable/writable so agent containers

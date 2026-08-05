@@ -1,6 +1,5 @@
-// Optional cold-wake diagnosis: NODE_OPTIONS=--cpu-prof on one staging task (not default).
-// Shape: markBoot('bound') at listen; one final boot_timing after post-bind init
-// (settingsRead/dbReady may be null until then; totalMs = ready, bound = listen).
+// Boot phase timing: markBoot() per phase, one boot_timing log line after post-bind init.
+// bound = listen time; totalMs = ready (log) time; unmarked phases log as null.
 
 const originMs = performance.now()
 const processStartIso = new Date().toISOString()

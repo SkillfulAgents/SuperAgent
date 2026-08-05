@@ -5,6 +5,7 @@ import { Hono } from 'hono'
 import { existsSync } from 'fs'
 import api from '../api'
 import { initializeServices, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
+import { captureException } from '@shared/lib/error-reporting'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
 const app = new Hono()
 
@@ -101,8 +102,14 @@ async function start() {
   setupServerHandlers(server)
 
   // Auth validation + skillset reconcile + DB open run here (not at api import),
-  // so ECS probes that only need any HTTP response are not blocked.
-  await initializeServices()
+  // so health probes that only need any HTTP response are not blocked.
+  // Non-fatal: keep serving (degraded) instead of flapping healthy → crash.
+  try {
+    await initializeServices()
+  } catch (error) {
+    console.error('Failed to initialize services:', error)
+    captureException(error, { tags: { component: 'startup', operation: 'initialize-services' } })
+  }
   logBootTiming()
 }
 

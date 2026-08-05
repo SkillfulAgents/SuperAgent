@@ -37,22 +37,15 @@ import { credentialBroker } from '../../api/credentials/credential-broker'
 /**
  * Initialize all background services.
  *
- * Call AFTER HTTP bind on web/docker (see web/server.ts) so ECS health can
- * pass before settings/DB/auth work. Electron: main/index.ts after bind.
- * Vite: vite.config.ts configureServer (after the dev server listens).
+ * Call AFTER HTTP bind (web/server.ts, main/index.ts, vite.config.ts
+ * configureServer) so health probes pass before settings/DB/auth work.
+ * Idempotent: concurrent/repeat callers share one init run.
  */
 // TODO: this fires a lot of work on startup, which can create a big workload on initial start. We should defer some work and limit concurrency.
-// TODO(cold-wake): NODE_COMPILE_CACHE warmup in Docker image (tsup already noExternal).
 let servicesInitPromise: Promise<void> | null = null
 
 export function initializeServices(): Promise<void> {
-  if (!servicesInitPromise) {
-    servicesInitPromise = initializeServicesInner().catch((error) => {
-      // Allow a later retry if the first attempt failed before completing.
-      servicesInitPromise = null
-      throw error
-    })
-  }
+  servicesInitPromise ??= initializeServicesInner()
   return servicesInitPromise
 }
 
@@ -67,7 +60,6 @@ async function initializeServicesInner() {
   // Set platform auth user identity on error reports (if logged in)
   try {
     const settings = getSettings()
-    markBoot('settingsRead')
     if (settings.platformAuth?.token) {
       setErrorReportingUser({
         id: settings.platformAuth.tokenPreview,
@@ -75,7 +67,8 @@ async function initializeServicesInner() {
       })
     }
   } catch {
-    // Non-critical — still mark so cold-wake timings show settings were attempted.
+    // Non-critical
+  } finally {
     markBoot('settingsRead')
   }
 
@@ -85,7 +78,7 @@ async function initializeServicesInner() {
   // Register account providers (Composio, Nango if configured)
   registerAllAccountProviders()
 
-  // Post-bind on web: settings.json read+write on S3 Files — keep off the listen path.
+  // Post-bind on web: settings.json read+write can hit a network filesystem — keep off the listen path.
   try {
     reconcileSkillsetConfigsForCurrentAuth()
   } catch (error) {
