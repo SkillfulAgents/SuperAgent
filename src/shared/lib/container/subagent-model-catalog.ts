@@ -32,15 +32,15 @@ export const subagentModelCatalogSchema = z
 export type SubagentModelDefinition = z.infer<typeof subagentModelDefinitionSchema>
 
 export function getSubagentModelCatalog(providerId: LlmProviderId): SubagentModelDefinition[] {
-  const effectiveCatalog = getEffectiveCatalog(providerId)
-  if (effectiveCatalog.length > MAX_SUBAGENT_MODELS) {
+  const latestModels = getEffectiveCatalog(providerId).filter((model) => model.isLatest === true)
+  if (latestModels.length > MAX_SUBAGENT_MODELS) {
     console.warn(
-      `[SubagentModels] Provider "${providerId}" exposes ${effectiveCatalog.length} enabled models; only the first ${MAX_SUBAGENT_MODELS} are available to subagents.`,
+      `[SubagentModels] Provider "${providerId}" exposes ${latestModels.length} latest models; only the first ${MAX_SUBAGENT_MODELS} are available to subagents.`,
     )
   }
 
   return subagentModelCatalogSchema.parse(
-    effectiveCatalog
+    latestModels
       .slice(0, MAX_SUBAGENT_MODELS)
       .map((model) => ({
         id: model.id,

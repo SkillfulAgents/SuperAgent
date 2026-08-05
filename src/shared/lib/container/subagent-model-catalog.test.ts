@@ -18,15 +18,28 @@ beforeEach(() => {
 })
 
 describe('getSubagentModelCatalog', () => {
-  it('projects the active provider effective catalog in deterministic order', () => {
+  it('projects only latest models from the active provider in deterministic order', () => {
     const effective = getEffectiveCatalog('openrouter')
     const catalog = getSubagentModelCatalog('openrouter')
 
     expect(catalog.map((model) => model.id)).toEqual(
-      effective.slice(0, MAX_SUBAGENT_MODELS).map((model) => model.id),
+      effective
+        .filter((model) => model.isLatest === true)
+        .slice(0, MAX_SUBAGENT_MODELS)
+        .map((model) => model.id),
     )
+    expect(catalog.every((model) => model.isLatest === true)).toBe(true)
     expect(catalog.length).toBeLessThanOrEqual(MAX_SUBAGENT_MODELS)
     expect(subagentModelCatalogSchema.parse(catalog)).toEqual(catalog)
+  })
+
+  it('does not create separate subagents for older versions in a model family', () => {
+    const effective = getEffectiveCatalog('anthropic')
+    const catalog = getSubagentModelCatalog('anthropic')
+
+    expect(effective.some((model) => model.id === 'claude-opus-4-8')).toBe(true)
+    expect(catalog.some((model) => model.id === 'claude-opus-4-8')).toBe(false)
+    expect(catalog.some((model) => model.id === 'claude-opus-5')).toBe(true)
   })
 
   it('does not pass disabled catalog entries to the container', () => {
@@ -51,6 +64,8 @@ describe('getSubagentModelCatalog', () => {
           overrides: Array.from({ length: MAX_SUBAGENT_MODELS + 1 }, (_, index) => ({
             id: `custom/model-${index}`,
             label: `Custom ${index}`,
+            family: `custom-${index}`,
+            isLatest: true,
             supportedEfforts: ['low', 'medium', 'high'],
           })),
         },
