@@ -6,6 +6,8 @@
  * Lenient by design: anything unrecognized degrades to leftover/body text.
  */
 
+import { searchLinkSchema } from './web-result-schema'
+
 export interface SearchSource {
   title: string
   url: string
@@ -106,11 +108,19 @@ export function parseSearchResult(result: string): ParsedSearchResult {
   }
 
   const sources: SearchSource[] = []
+  // '' = the formatter said "no date"; undefined = a pre-`published` transcript (see the schema).
+  const linksDates: (string | undefined)[] = []
   for (const item of links) {
-    if (typeof item !== 'object' || item === null) continue
-    const { title, url, favicon } = item as { title?: unknown; url?: unknown; favicon?: unknown }
-    if (typeof title !== 'string' || typeof url !== 'string') continue
-    sources.push({ title, url, ...(typeof favicon === 'string' ? { favicon } : {}) })
+    const parsed = searchLinkSchema.safeParse(item)
+    if (!parsed.success) continue
+    const { title, url, favicon, published } = parsed.data
+    linksDates.push(published)
+    sources.push({
+      title,
+      url,
+      ...(favicon ? { favicon } : {}),
+      ...(published ? { publishedDate: published } : {}),
+    })
   }
 
   const body = result.slice((linksMatch.index ?? 0) + linksMatch[0].length)
@@ -137,8 +147,11 @@ export function parseSearchResult(result: string): ParsedSearchResult {
   //     under it is that link's url.
   // A multi-line title needs no separate check: `lines` comes from split('\n'), so no element can
   // ever equal a header string that contains a newline, and the equality below already fails.
+  // Counted against the raw link count, not the surviving sources: a schema-dropped trailing
+  // entry would otherwise leave its whole block inside the last source's snippet.
   const anchored =
-    starts.length === sources.length &&
+    starts.length === links.length &&
+    sources.length === links.length &&
     sources.every(
       (source, i) =>
         lines[starts[i]] === `${i + 1}. ${source.title}` &&
@@ -155,8 +168,16 @@ export function parseSearchResult(result: string): ParsedSearchResult {
     let start = starts[i] + 2
     const published = lines[start]?.match(PUBLISHED_RE)
     if (published) {
-      source.publishedDate = published[1]
-      start++
+      // Position alone can't tell the formatter's own Published line from page text that
+      // happens to open with one, so the Links entry arbitrates. Its date wins outright; a
+      // known-dateless entry ('') means this line is page-authored - leave it in the snippet.
+      const fromLinks = linksDates[i]
+      if (fromLinks === undefined) {
+        source.publishedDate = published[1]
+        start++
+      } else if (fromLinks !== '') {
+        start++
+      }
     }
     // To the next hit, so a snippet containing blank or numbered-looking lines stays whole
     // instead of stranding its tail as unattributed prose under the source list.

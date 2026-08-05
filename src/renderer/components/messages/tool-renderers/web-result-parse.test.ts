@@ -38,6 +38,55 @@ describe('parseSearchResult', () => {
     expect(sources[1]).toEqual({ title: 'T2', url: 'https://www.b.com/y' })
   })
 
+  it('prefers the Links-line date and consumes the formatter Published line', () => {
+    const links = `Links: [{"title":"T1","url":"https://a.com/x","published":"2026-07-31"}]`
+    const text = [links, '', '1. T1', '   https://a.com/x', '   Published: 2026-07-31', '   Snip.', ''].join('\n')
+    const { sources } = parseSearchResult(text)
+    expect(sources).toEqual([
+      { title: 'T1', url: 'https://a.com/x', publishedDate: '2026-07-31', snippet: 'Snip.' },
+    ])
+  })
+
+  it('refuses a page-planted Published line when the Links entry says the vendor gave no date', () => {
+    // The snippet's first line is page text shaped exactly like the formatter's date line.
+    // published:'' marks the new format, so position alone must not mint a date from it.
+    const links = `Links: [{"title":"T1","url":"https://a.com/x","published":""}]`
+    const text = [links, '', '1. T1', '   https://a.com/x', '   Published: 2030-01-01', 'Actual text.', ''].join('\n')
+    const { sources } = parseSearchResult(text)
+    expect(sources[0].publishedDate).toBeUndefined()
+    expect(sources[0].snippet).toBe('Published: 2030-01-01\nActual text.')
+  })
+
+  it('degrades instead of anchoring when a trailing Links entry was dropped', () => {
+    // With the last entry gone, every surviving header still matches its index - so anchoring
+    // must count against the raw link count, or b.com's whole block renders inside a.com's row.
+    const links = `Links: [{"title":"T1","url":"https://a.com/x","published":""},{"title":7,"url":"https://b.com/y","published":""}]`
+    const text = [links, '', '1. T1', '   https://a.com/x', '   Snippet one.', '', '2. 7', '   https://b.com/y', '   Snippet two.', ''].join('\n')
+    const { sources, leftover } = parseSearchResult(text)
+    expect(sources).toEqual([{ title: 'T1', url: 'https://a.com/x' }])
+    expect(sources[0].snippet).toBeUndefined()
+    expect(leftover).toContain('Snippet two.')
+  })
+
+  it('treats a malformed published marker as refuse, not as an old transcript', () => {
+    // published is the trust marker: present-but-malformed must not collapse into the absent
+    // case, which would let a page-planted Published line mint a date again.
+    const links = `Links: [{"title":"T1","url":"https://a.com/x","published":0}]`
+    const text = [links, '', '1. T1', '   https://a.com/x', '   Published: 2030-01-01', 'Text.', ''].join('\n')
+    const { sources } = parseSearchResult(text)
+    expect(sources[0].publishedDate).toBeUndefined()
+    expect(sources[0].snippet).toBe('Published: 2030-01-01\nText.')
+  })
+
+  it('drops a malformed Links entry alone, and a malformed favicon without its entry', () => {
+    const links = `Links: [{"title":"T1","url":"https://a.com/x","favicon":42},{"title":7,"url":"https://b.com"},{"title":"T3","url":"https://c.com"}]`
+    const { sources } = parseSearchResult(`${links}\nrest`)
+    expect(sources).toEqual([
+      { title: 'T1', url: 'https://a.com/x' },
+      { title: 'T3', url: 'https://c.com' },
+    ])
+  })
+
   it('degrades to leftover-only on malformed Links JSON', () => {
     const text = 'Links: [not json\n\n1. T\n   https://a.com\n'
     const { sources, leftover } = parseSearchResult(text)

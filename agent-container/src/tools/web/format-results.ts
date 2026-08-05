@@ -20,10 +20,14 @@ export interface WebSearchHostResult {
 
 export function formatWebSearchResults(data: WebSearchHostResult): string {
   // favicon rides on the Links line, not the numbered list: the renderer needs it and the model
-  // does not, so it stays out of the prose the model reasons over.
+  // does not, so it stays out of the prose the model reasons over. published is always present -
+  // the key's existence is what lets the renderer refuse a page-planted `Published:` line (a
+  // snippet can open with one), so "vendor gave no date" must stay distinguishable from "old
+  // formatter" and is written as ''.
   const links = data.hits.map((h) => ({
     title: h.title ?? h.url,
     url: h.url,
+    published: h.publishedDate ? oneLine(h.publishedDate) : '',
     ...(h.favicon ? { favicon: h.favicon } : {}),
   }))
   const lines: string[] = [`Links: ${JSON.stringify(links)}`, '']
@@ -34,7 +38,8 @@ export function formatWebSearchResults(data: WebSearchHostResult): string {
     data.hits.forEach((h, i) => {
       lines.push(`${i + 1}. ${h.title ?? h.url}`)
       lines.push(`   ${h.url}`)
-      if (h.publishedDate) lines.push(`   Published: ${h.publishedDate}`)
+      // Same one-field-one-line rule as the fetch header: the date is vendor-returned text.
+      if (h.publishedDate) lines.push(`   Published: ${oneLine(h.publishedDate)}`)
       if (h.snippet) lines.push(`   ${h.snippet}`)
       lines.push('')
     })
@@ -69,15 +74,16 @@ const oneLine = (value: string) => value.replace(/[\r\n]+/g, ' ')
  * (plus publish date when present) followed by the page's full content. Pure (no SDK / network).
  *
  * The header is positional - the reader takes line 0 as the title, line 1 as the url, and any
- * labelled lines after those as metadata. The page writes its own <title>, so a newline in it
- * would shift that window and let the page plant a `Favicon:`/`Published:` line the reader
- * attributes to the fetch. Flattening the two header fields keeps one field on one line.
+ * labelled lines after those as metadata. The page writes its own <title> and declares its own
+ * favicon URL, so a newline in either would shift that window and let the page plant a
+ * `Favicon:`/`Published:` line the reader attributes to the fetch. Flattening every header
+ * field keeps one field on one line.
  */
 export function formatWebFetchResult(data: WebFetchHostResult): string {
   const { result } = data
   const lines: string[] = [oneLine(result.title ?? result.url), oneLine(result.url)]
-  if (result.publishedDate) lines.push(`Published: ${result.publishedDate}`)
-  if (result.favicon) lines.push(`Favicon: ${result.favicon}`)
+  if (result.publishedDate) lines.push(`Published: ${oneLine(result.publishedDate)}`)
+  if (result.favicon) lines.push(`Favicon: ${oneLine(result.favicon)}`)
   lines.push('', result.content || '(no content returned)')
 
   if (data.warnings && data.warnings.length > 0) {
