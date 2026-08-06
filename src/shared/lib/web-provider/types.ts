@@ -14,6 +14,7 @@ export interface WebSearchHit {
   title: string | null // present on every vendor; value may be null
   snippet: string // short relevant excerpt (for Exa, normalized from highlights)
   publishedDate?: string // ISO 8601; omitted where the vendor returns none
+  favicon?: string // the page's DECLARED icon URL; omitted where the vendor returns none
 }
 
 export interface WebSearchResponse {
@@ -39,6 +40,7 @@ export interface WebFetchResult {
   title: string | null // present on every vendor; value may be null
   content: string // the page's extracted text (Exa `text`)
   publishedDate?: string // ISO 8601; omitted where the vendor returns none
+  favicon?: string // the page's DECLARED icon URL; omitted where the vendor returns none
   fetchedAt: string // HOST-STAMPED at fetch time (no vendor returns this)
 }
 

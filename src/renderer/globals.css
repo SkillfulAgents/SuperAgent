@@ -260,6 +260,28 @@ html[data-keyboard-open] [data-composer-footer] {
   background-color: rgba(120, 120, 130, .55);
 }
 
+/* Height-capped panels inside a chat card (e.g. the web-fetch page body). Same problem
+   as the reader surface above, one level in: the native overlay thumb is pale, full-height
+   and sits hard against the card edge over the text, so it reads as a foreign element on a
+   dark card. Same neutral thumb, sized down for a panel rather than a page. Add
+   `card-scrollbar` to any height-capped scroller inside a card to opt in. */
+.card-scrollbar::-webkit-scrollbar {
+  -webkit-appearance: none;
+  width: 8px;
+}
+.card-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.card-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: rgba(120, 120, 130, .35);
+}
+.card-scrollbar:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(120, 120, 130, .55);
+}
+
 /* Fix Radix ScrollArea viewport using display: table which causes content to expand */
 [data-radix-scroll-area-viewport] {
   display: block !important;

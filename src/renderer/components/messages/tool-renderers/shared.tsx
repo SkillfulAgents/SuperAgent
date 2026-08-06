@@ -1,4 +1,5 @@
 import { cn } from '@shared/lib/utils/cn'
+import { formatCompactDistance } from '@renderer/components/connections/utils'
 import type { ReactNode } from 'react'
 
 // Shared building blocks for tool-call renderers. Keeps the card typography
@@ -57,6 +58,42 @@ export function ResultBlock({ result, isError }: { result?: string | null; isErr
     <pre className={cn('whitespace-pre-wrap', BOX, isError ? 'text-red-800 dark:text-red-200' : 'text-foreground/90')}>
       {result}
     </pre>
+  )
+}
+
+/**
+ * Web tool results are written by the pages they came from, so any markdown in them can point
+ * an image anywhere. Loading one would issue an outbound request with a URL the page chose, on
+ * every card render. The alt text stands in instead, so a figure that carried meaning still
+ * reads as having been there. An empty alt is the page calling the image decorative, and real
+ * pages string several of those together, so those drop out entirely rather than leaving a run
+ * of placeholders. Links themselves survive - they go through markdownUrlTransform and need a
+ * click.
+ *
+ * Accepted edge: a link whose only content is an image with no alt renders as an empty anchor,
+ * so it is not visible or clickable. 8 results out of ~1,000 real transcripts have that shape.
+ * Detecting it needs an `a` override, which cost more complexity than the case is worth.
+ */
+export const NO_MARKDOWN_IMAGES = {
+  img: ({ alt }: { alt?: string }) =>
+    alt ? <span className="text-muted-foreground/70 italic">[image: {alt}]</span> : null,
+}
+
+/**
+ * Domain and relative publish age shown beside a web source title. Both web renderers
+ * use it, so the pair can't drift apart. An unparseable date yields '' and renders nothing.
+ */
+export function SourceMeta({ host, publishedDate }: { host: string | null; publishedDate?: string }) {
+  const age = publishedDate ? formatCompactDistance(new Date(publishedDate)) : ''
+  return (
+    <>
+      {host && <span className="text-muted-foreground shrink-0">{host}</span>}
+      {age && (
+        <span className="text-muted-foreground/70 shrink-0" title={publishedDate}>
+          {age}
+        </span>
+      )}
+    </>
   )
 }
 
