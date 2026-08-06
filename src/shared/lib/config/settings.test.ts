@@ -429,6 +429,25 @@ describe('loadSettings', () => {
       expect(result.skillsets).toEqual(skillsets)
     })
 
+    it('preserves skillset credentials without copying them into skillset metadata', () => {
+      const skillsetCredentials = {
+        skillcred_test: {
+          id: 'skillcred_test',
+          type: 'token',
+          token: 'github_pat_secret',
+          tokenPreview: '••••cret',
+          createdAt: '2026-08-06T00:00:00.000Z',
+          updatedAt: '2026-08-06T00:00:00.000Z',
+        },
+      }
+      mockSettingsFile(JSON.stringify({ skillsetCredentials }))
+
+      const result = loadSettings()
+
+      expect(result.skillsetCredentials).toEqual(skillsetCredentials)
+      expect(JSON.stringify(result.skillsets)).not.toContain('github_pat_secret')
+    })
+
     it('handles completely empty JSON object', () => {
       mockSettingsFile('{}')
 

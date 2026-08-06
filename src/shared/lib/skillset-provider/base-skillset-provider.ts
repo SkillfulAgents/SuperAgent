@@ -5,6 +5,7 @@ import type {
   InstalledSkillMetadata,
   SkillProvider,
   SkillsetConfig,
+  SkillsetCredentialInput,
   SkillsetProviderData,
 } from '@shared/lib/types/skillset'
 
@@ -22,6 +23,8 @@ export type SkillsetHostedUpdateInput = {
   skillsetUrl: string
   skillsetName?: string
   providerData?: SkillsetProviderData
+  /** Request-scoped secret for validation/add flows. Never serialize this ref. */
+  credential?: SkillsetCredentialInput
   targetName: string
   targetType: SkillsetHostedUpdateType
   files: SkillsetHostedUpdateFile[]
@@ -58,6 +61,8 @@ export type SkillsetProviderRef = {
   skillsetUrl?: string
   skillsetName?: string
   providerData?: SkillsetProviderData
+  /** Request-scoped secret for validation/add flows. Never serialize this ref. */
+  credential?: SkillsetCredentialInput
 }
 
 export type SkillsetSourceInfo = {
@@ -119,7 +124,23 @@ export abstract class BaseSkillsetProvider {
     return url
   }
 
-  async ensurePublishPreconditions(): Promise<void> {}
+  /** Add provider-specific authentication to a Git child process environment. */
+  getGitEnvironment(
+    _ref: SkillsetProviderRef,
+    baseEnvironment: NodeJS.ProcessEnv,
+  ): NodeJS.ProcessEnv {
+    return baseEnvironment
+  }
+
+  /** Add provider-specific authentication to a provider CLI child process. */
+  getCliEnvironment(
+    _ref: SkillsetProviderRef,
+    baseEnvironment: NodeJS.ProcessEnv,
+  ): NodeJS.ProcessEnv {
+    return baseEnvironment
+  }
+
+  async ensurePublishPreconditions(_ref?: SkillsetProviderRef): Promise<void> {}
 
   getRegistrationUrl(url: string): string {
     return url
