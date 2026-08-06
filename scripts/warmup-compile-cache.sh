@@ -6,9 +6,12 @@ set -eu
 CACHE_DIR="${NODE_COMPILE_CACHE:-/app/.compile-cache}"
 mkdir -p "$CACHE_DIR"
 
+# -k 5s: SIGTERM triggers the server's graceful shutdown; if that hangs (no
+# network in the build sandbox), SIGKILL after 5s fails the build (exit 137)
+# instead of hanging `docker build` forever.
 set +e
 SUPERAGENT_DATA_DIR=/tmp/sa-compile-warmup E2E_MOCK=true PORT=39999 \
-  timeout 12s node dist/web/server.mjs
+  timeout -k 5s 12s node dist/web/server.mjs
 status=$?
 set -e
 
