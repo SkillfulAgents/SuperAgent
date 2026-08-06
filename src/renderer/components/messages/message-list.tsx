@@ -577,14 +577,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // Filter live thinking blocks to only those NOT yet carried by a persisted
   // message (mirrors unpersistedStreamingToolUses). Once the refetched assistant
   // message arrives with its `thinking` array, the persisted card in MessageItem
-  // takes over and the ephemeral one must not double-render. Matched by text
-  // prefix in either direction since the stream can trail the transcript.
+  // takes over and the ephemeral one must not double-render. Modern runtimes
+  // match by stable message-id + content-index identity. Text-prefix matching
+  // remains only when either side predates that identity.
   // Only the current turn's persisted thinking is compared — live blocks are
   // reset on session_active, so a match against an older turn can only be a
   // false positive (the model reusing a stock opener suppresses the live card).
   const unpersistedThinkingBlocks = useMemo(() => {
     if (!thinkingBlocks.length || !messages?.length) return thinkingBlocks
-    const persisted: string[] = []
+    const persisted: Array<{ id?: string; text: string }> = []
     let interrupted = false
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
@@ -599,7 +600,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       if (isTurnStartingUserMessage(m)) break
       if (m.type === 'assistant' && Array.isArray((m as ApiMessage).thinking)) {
         for (const t of (m as ApiMessage).thinking!) {
-          if (typeof t?.text === 'string' && t.text.trim()) persisted.push(t.text.trim())
+          if (typeof t?.text === 'string' && t.text.trim()) {
+            persisted.push({
+              ...(typeof t.id === 'string' && t.id && { id: t.id }),
+              text: t.text.trim(),
+            })
+          }
         }
       }
     }
@@ -613,11 +619,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     if (!isActive && (persisted.length || interrupted)) return []
     return thinkingBlocks.filter(b => {
       const t = b.text.trim()
+      const matched = persisted.some(p => {
+        // When both sides have an identity, text must not override it: models
+        // legitimately reuse stock reasoning across different responses.
+        if (b.persistedId && p.id) return b.persistedId === p.id
+        // Legacy runtime/transcript fallback. Prefix matching tolerates a live
+        // stream that trails the completed transcript.
+        return !!t && (p.text.startsWith(t) || t.startsWith(p.text))
+      })
+      if (matched) return false
       // Blocks with no streamed text (display option off) have no persisted
       // counterpart to collide with — keep them while the turn runs, but don't
       // let them strand in an idle transcript.
       if (!t) return isActive
-      return !persisted.some(p => p.startsWith(t) || t.startsWith(p))
+      return true
     })
   }, [messages, thinkingBlocks, isActive])
 

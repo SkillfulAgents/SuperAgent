@@ -77,6 +77,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
+import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { SubagentCapture } from './subagent-capture'
 import * as path from 'path'
@@ -110,6 +111,8 @@ interface StreamingState {
   currentToolUse: { id: string; name: string } | null
   currentToolInput: string // Accumulated partial JSON input for current tool
   currentThinking?: boolean // True while an extended-thinking content block is streaming
+  currentAssistantMessageId?: string | null // SDK message id for stable live↔persisted block identity
+  currentThinkingBlockIndex?: number | null // Content index within currentAssistantMessageId
   isActive: boolean // True from user message until result received
   isInterrupted: boolean // True after user interrupts, prevents race conditions
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
@@ -1038,6 +1041,8 @@ class MessagePersister {
     // event) must not wedge the next turn's label. State is reused across turns.
     state.isCompacting = false
     state.currentThinking = false
+    state.currentAssistantMessageId = null
+    state.currentThinkingBlockIndex = null
     state.lastApiErrorCode = null // Clear previous API error on new message
     // Clear the previous turn's result subtype so a late idle from an
     // already-finished (or interrupted) run can't fire a stale "success"
@@ -2739,7 +2744,7 @@ class MessagePersister {
   // Handle stream events for SSE broadcasting (not for persistence)
   private handleStreamEvent(
     sessionId: string,
-    event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string; thinking?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
+    event: { type: string; index?: number; message?: { id?: string }; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string; thinking?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
     state: StreamingState
   ): void {
     switch (event.type) {
@@ -2748,6 +2753,8 @@ class MessagePersister {
         state.isStreaming = false // text hasn't started; set true at the first text token below
         state.currentToolUse = null
         state.currentThinking = false
+        state.currentAssistantMessageId = event.message?.id ?? null
+        state.currentThinkingBlockIndex = null
         state.isRetrying = false // the response is flowing now, so any retry resolved
         // 'streaming' is deferred to the first text token (set above) so a message that
         // opens with a tool call stays 'working' instead of flipping streaming→working.
@@ -2773,7 +2780,14 @@ class MessagePersister {
           // Reasoning text follows via thinking_delta (the agent requests
           // `display: 'summarized'`; without it newer models omit the text).
           state.currentThinking = true
-          this.broadcastToSSE(sessionId, { type: 'thinking_start' })
+          state.currentThinkingBlockIndex = Number.isInteger(event.index) ? event.index! : null
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_start',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
         }
         break
 
@@ -2788,9 +2802,16 @@ class MessagePersister {
           // message_start so a tool-first message never flips streaming→working).
           state.isStreaming = true
         } else if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
+          // A reconnect can miss content_block_start while retaining message_start;
+          // recover the index from the delta itself when available.
+          if (Number.isInteger(event.index)) state.currentThinkingBlockIndex = event.index!
           // Stream summarized reasoning text so the UI can accumulate it for "View thinking"
           this.broadcastToSSE(sessionId, {
             type: 'thinking_delta',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
             text: event.delta.thinking,
           })
         } else if (event.delta?.type === 'input_json_delta') {
@@ -2813,7 +2834,14 @@ class MessagePersister {
         // Thinking block finished streaming — flip back to "Working"
         if (state.currentThinking) {
           state.currentThinking = false
-          this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_stop',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
+          state.currentThinkingBlockIndex = null
         }
         // Tool use block finished streaming
         if (state.currentToolUse) {
@@ -3027,8 +3055,16 @@ class MessagePersister {
         // Defensive: ensure thinking state is cleared if a stop was missed
         if (state.currentThinking) {
           state.currentThinking = false
-          this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_stop',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
         }
+        state.currentAssistantMessageId = null
+        state.currentThinkingBlockIndex = null
         break
     }
   }

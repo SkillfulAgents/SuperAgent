@@ -508,18 +508,21 @@ describe('MessagePersister', () => {
       // With display:'summarized', thinking_delta carries text; signature_delta does not.
       sseEvents.length = 0
 
-      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
       mockClient._sendMessage({
         type: 'stream_event',
-        event: { type: 'content_block_start', content_block: { type: 'thinking' } },
+        event: { type: 'message_start', message: { id: 'msg-thinking-1' } },
       })
       mockClient._sendMessage({
         type: 'stream_event',
-        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Let me ' } },
+        event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
       })
       mockClient._sendMessage({
         type: 'stream_event',
-        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'consider.' } },
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Let me ' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'consider.' } },
       })
       mockClient._sendMessage({
         type: 'stream_event',
@@ -531,8 +534,11 @@ describe('MessagePersister', () => {
       const deltas = sseEvents.filter(e => e.type === 'thinking_delta')
       const stops = sseEvents.filter(e => e.type === 'thinking_stop')
       expect(starts).toHaveLength(1)
+      expect(starts[0].thinkingId).toBe('msg-thinking-1:0')
       expect(deltas.map(d => d.text)).toEqual(['Let me ', 'consider.'])
+      expect(deltas.map(d => d.thinkingId)).toEqual(['msg-thinking-1:0', 'msg-thinking-1:0'])
       expect(stops).toHaveLength(1)
+      expect(stops[0].thinkingId).toBe('msg-thinking-1:0')
     })
 
     it('does not emit thinking_stop for a tool_use content_block_stop', () => {
