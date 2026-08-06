@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import { markdownUrlTransform, safeHref } from '@renderer/lib/markdown-url-transform'
 import { SiteFavicon, useVendorFavicon } from '@renderer/components/ui/site-favicon'
 import { TileStack } from '@renderer/components/ui/tile-stack'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { webSearchDef } from '@shared/lib/tool-definitions/web-search'
 import { flattenSnippet, hostnameOf, parseSearchResult, stripLeadingTitle } from './web-result-parse'
 import { NO_MARKDOWN_IMAGES, SourceMeta } from './shared'
@@ -20,12 +21,28 @@ function snippetOf(source: { title: string; snippet?: string }): string {
 /**
  * What goes inside one collapsed-strip tile: the vetted favicon, or a globe for a source
  * with no showable icon. The tile chrome comes from TileStack; the globe's gray is fixed
- * because the tile stays light in both themes.
+ * because the tile stays light in both themes. The hostname rides a Radix tooltip, not a
+ * native `title` - this window doesn't reliably surface native tooltips. The trigger span
+ * fills the tile so the hover target is the whole 18px tile, not just the smaller icon.
  */
-function SourceTileIcon({ src }: { src?: string }) {
+function SourceTileIcon({ src, host }: { src?: string; host: string | null }) {
   const { href, onError } = useVendorFavicon(src)
-  if (!href) return <Globe aria-hidden className="h-[11px] w-[11px] text-zinc-500" />
-  return <img src={href} alt="" className="h-3 w-3 object-contain" onError={onError} />
+  const icon = href ? (
+    <img src={href} alt="" className="h-3 w-3 object-contain" onError={onError} />
+  ) : (
+    <Globe aria-hidden className="h-[11px] w-[11px] text-zinc-500" />
+  )
+  if (!host) return icon
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="flex h-full w-full items-center justify-center">{icon}</span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="px-2 py-1">
+        {host}
+      </TooltipContent>
+    </Tooltip>
+  )
 }
 
 function SourceLink({ title, url }: { title: string; url: string }) {
@@ -48,15 +65,17 @@ function CollapsedContent({ result, isError }: CollapsedContentProps) {
   if (sources.length === 0) return null
   const shown = sources.slice(0, MAX_COLLAPSED_ICONS)
   return (
-    <TileStack
-      size="xs"
-      className="shrink-0"
-      overflowLabel={sources.length > shown.length ? `+${sources.length - shown.length}` : undefined}
-    >
-      {shown.map((s, i) => (
-        <SourceTileIcon key={`${i}-${s.url}`} src={s.favicon} />
-      ))}
-    </TileStack>
+    <TooltipProvider delayDuration={300}>
+      <TileStack
+        size="xs"
+        className="shrink-0"
+        overflowLabel={sources.length > shown.length ? `+${sources.length - shown.length}` : undefined}
+      >
+        {shown.map((s, i) => (
+          <SourceTileIcon key={`${i}-${s.url}`} src={s.favicon} host={hostnameOf(s.url)} />
+        ))}
+      </TileStack>
+    </TooltipProvider>
   )
 }
 

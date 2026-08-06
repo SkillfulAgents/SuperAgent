@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { SiteFavicon } from '@renderer/components/ui/site-favicon'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { webFetchDef } from '@shared/lib/tool-definitions/web-fetch'
 import { hostnameOf, parseFetchResult, stripLeadingTitle } from './web-result-parse'
 import { FieldLabel, NO_MARKDOWN_IMAGES, SourceMeta } from './shared'
@@ -13,15 +14,28 @@ const BOX = 'bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow
 
 /** Site icon for the fetched page, mirroring the source strip on search rows. */
 function CollapsedContent({ result, isError }: CollapsedContentProps) {
-  const favicon = useMemo(
-    () => (result && !isError ? parseFetchResult(result).favicon : undefined),
-    [result, isError],
-  )
+  const { favicon, host } = useMemo(() => {
+    if (!result || isError) return { favicon: undefined, host: null }
+    const parsed = parseFetchResult(result)
+    return { favicon: parsed.favicon, host: parsed.url ? hostnameOf(parsed.url) : null }
+  }, [result, isError])
   if (!favicon) return null
-  return (
+  const icon = (
     <span aria-hidden className="flex items-center gap-1 shrink-0">
       <SiteFavicon src={favicon} className="h-3.5 w-3.5" fallback="none" />
     </span>
+  )
+  if (!host) return icon
+  // Radix rather than a native `title`: this window doesn't reliably surface native tooltips.
+  return (
+    <TooltipProvider delayDuration={300}>
+      <Tooltip>
+        <TooltipTrigger asChild>{icon}</TooltipTrigger>
+        <TooltipContent side="top" className="px-2 py-1">
+          {host}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
 
