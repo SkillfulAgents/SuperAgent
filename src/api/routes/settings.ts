@@ -42,6 +42,7 @@ import {
 } from '@shared/lib/config/settings-patch'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
+import { getReplicateKeyStatus, validateReplicateKey } from '@shared/lib/replicate/credentials'
 import {
   findWebProvider,
   getWebProvider,
@@ -400,6 +401,7 @@ function buildSettingsResponse(
       deepgram: getSttProvider('deepgram').getApiKeyStatus(),
       openai: getSttProvider('openai').getApiKeyStatus(),
       exa: getWebProvider('exa').getApiKeyStatus(),
+      replicate: getReplicateKeyStatus(),
     },
     models: getEffectiveModels(),
     agentLimits: getEffectiveAgentLimits(),
@@ -858,6 +860,21 @@ settings.post('/validate-web-key', async (c) => {
       return c.json({ valid: false, error: `Unknown web provider: ${provider}` }, 400)
     }
     const result = await webProvider.validateKey(apiKey)
+    return c.json(result)
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Validation failed'
+    return c.json({ valid: false, error: message })
+  }
+})
+
+// POST /api/settings/validate-replicate-key — validate a Replicate BYOK key against GET /v1/account.
+settings.post('/validate-replicate-key', async (c) => {
+  try {
+    const { apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+    const result = await validateReplicateKey(apiKey)
     return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Validation failed'

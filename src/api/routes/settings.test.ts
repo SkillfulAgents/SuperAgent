@@ -126,6 +126,15 @@ vi.mock('@shared/lib/stt', () => ({
   }),
 }))
 
+const mockValidateReplicateKey = vi.hoisted(() => vi.fn())
+const mockGetReplicateKeyStatus = vi.hoisted(() =>
+  vi.fn(() => ({ isConfigured: false, source: 'none' as const })),
+)
+vi.mock('@shared/lib/replicate/credentials', () => ({
+  validateReplicateKey: (apiKey: string) => mockValidateReplicateKey(apiKey),
+  getReplicateKeyStatus: () => mockGetReplicateKeyStatus(),
+}))
+
 // Auth middleware: no-op in tests (non-auth mode)
 vi.mock('../middleware/auth', () => ({
   Authenticated: () => mockAuthenticatedMiddleware,
@@ -1392,6 +1401,30 @@ describe('settings route', () => {
       const res = await validate({ apiKey: 'k', provider: 'platform' })
       expect(res.status).toBe(400)
       expect((await res.json()).error).toContain('Gamut login')
+    })
+  })
+
+  describe('POST /validate-replicate-key', () => {
+    async function validate(body: unknown) {
+      return app.request('http://localhost/api/settings/validate-replicate-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    }
+
+    it('returns 400 when apiKey is missing', async () => {
+      const res = await validate({})
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('API key is required')
+    })
+
+    it('returns the provider result on a valid key', async () => {
+      mockValidateReplicateKey.mockResolvedValueOnce({ valid: true })
+      const res = await validate({ apiKey: 'r8_good' })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ valid: true })
+      expect(mockValidateReplicateKey).toHaveBeenCalledWith('r8_good')
     })
   })
 

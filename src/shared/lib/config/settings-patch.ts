@@ -118,6 +118,7 @@ export const apiKeySettingsPatchSchema = z.object({
   nangoSecretKey: z.string(),
   accountProviderUserId: z.string(),
   exaApiKey: z.string(),
+  replicateApiKey: z.string(),
 }).partial().strict()
 
 const modelSettingsPatchSchema = z.object({

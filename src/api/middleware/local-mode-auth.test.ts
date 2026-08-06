@@ -48,6 +48,11 @@ describe('isContainerFacingPath', () => {
     expect(isContainerFacingPath('/api/web-search/search')).toBe(true)
   })
 
+  it('bypasses the replicate lane', () => {
+    expect(isContainerFacingPath('/api/replicate/catalog')).toBe(true)
+    expect(isContainerFacingPath('/api/replicate/v1/predictions')).toBe(true)
+  })
+
   it('does NOT bypass browser-facing API routes', () => {
     expect(isContainerFacingPath('/api/agents')).toBe(false)
     expect(isContainerFacingPath('/api/agents/foo/x-agent-policies')).toBe(false)

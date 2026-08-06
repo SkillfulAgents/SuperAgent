@@ -48,6 +48,7 @@ export default defineConfig({
   testMatch: [
     '**/getting-started-wizard.spec.ts',
     '**/provider-api-key.spec.ts',
+    '**/replicate-api-key.spec.ts',
   ],
   outputDir: playwrightOutputDir,
   fullyParallel: false,

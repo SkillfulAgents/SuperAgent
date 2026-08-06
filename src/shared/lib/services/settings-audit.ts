@@ -55,6 +55,7 @@ const SECTION_RULES: Array<[prefix: string, label: string]> = [
   ['apiKeys.deepgramApiKey', 'Voice'],
   ['apiKeys.openaiApiKey', 'Voice'],
   ['apiKeys.exaApiKey', 'Web Search'],
+  ['apiKeys.replicateApiKey', 'Media Generation'],
   ['apiKeys.', 'Model Provider'],
   ['llmProvider', 'Model Provider'],
   ['models', 'Model Provider'],

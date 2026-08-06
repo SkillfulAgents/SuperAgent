@@ -6,6 +6,7 @@ import { ClaudeCodeProcess } from './claude-code';
 import { SessionPersistence } from './session-persistence';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
+import * as path from 'path';
 import { releaseBrowserLock } from './browser-state';
 import { claudeSettingsSchema, SESSION_RETENTION_DAYS } from './claude-settings-schema';
 import { SessionSettlementTracker } from './session-settlement';
@@ -17,6 +18,11 @@ import {
   type WarmProfile,
 } from './warm-profile';
 import { subagentModelCatalogSchema } from './subagent-model-catalog';
+
+// Skills baked into the image that agents must be able to discover. Named rather than
+// globbed so a new directory under the image's skills root cannot silently start
+// appearing in every workspace.
+const BAKED_SKILL_NAMES = ['dashboards', 'replicate'];
 
 interface SessionData {
   session: Session;
@@ -148,7 +154,43 @@ export class SessionManager extends EventEmitter {
       fs.mkdirSync(skillsDir, { recursive: true });
     }
 
+    // Image-baked skills live under $HOME/.claude/skills, but the Agent SDK
+    // discovers skills from CLAUDE_CONFIG_DIR (/workspace/.claude) when set.
+    // Merge baked skills into the discovery path so listing-only skills appear.
+    this.ensureBakedSkills();
     this.ensureClaudeSettings();
+  }
+
+  /**
+   * Copy image-baked skills into `$CLAUDE_CONFIG_DIR/skills` so the Agent SDK can
+   * list them. The Dockerfile installs skills at `/home/claude/.claude/skills`;
+   * CLAUDE_CONFIG_DIR points at `/workspace/.claude`, so listing would otherwise
+   * miss them. Overwrites its own destination dirs on each start so image updates
+   * apply; leaves every other workspace skill alone.
+   *
+   * The destination is the same directory the app's Skills list reads and agent
+   * templates publish, so only the markdown a skill needs to be discovered is
+   * copied. Supporting payloads — the dashboard scaffold under `templates/` — stay
+   * in the image, where the tooling that uses them already reads from `$HOME`.
+   */
+  private ensureBakedSkills(): void {
+    const bakedRoot = process.env.BAKED_SKILLS_DIR || '/home/claude/.claude/skills';
+    const destRoot = path.join(this.baseWorkingDirectory, '.claude', 'skills');
+    if (!fs.existsSync(bakedRoot)) return;
+    try {
+      fs.mkdirSync(destRoot, { recursive: true });
+      for (const name of BAKED_SKILL_NAMES) {
+        const source = path.join(bakedRoot, name);
+        if (!fs.existsSync(source)) continue;
+        fs.cpSync(source, path.join(destRoot, name), {
+          recursive: true,
+          force: true,
+          filter: (src) => path.basename(src) !== 'templates',
+        });
+      }
+    } catch (error) {
+      console.error('Failed to merge baked skills into workspace:', error);
+    }
   }
 
   /**

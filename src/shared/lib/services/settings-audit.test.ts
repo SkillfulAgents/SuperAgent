@@ -45,6 +45,18 @@ describe('buildSettingsAuditDetails', () => {
     expect(details?.sections).toEqual(['Model Provider', 'Web Search'])
   })
 
+  it('labels replicateApiKey as Media Generation and redacts the value', () => {
+    const current = baseSettings()
+    const updated = baseSettings()
+    updated.apiKeys = { replicateApiKey: 'r8_secret_value' }
+
+    const details = buildSettingsAuditDetails(current, updated)
+
+    expect(details?.changes['apiKeys.replicateApiKey']).toBe('set')
+    expect(JSON.stringify(details)).not.toContain('r8_secret')
+    expect(details?.sections).toEqual(['Media Generation'])
+  })
+
   it('redacts custom env var values but keeps their names', () => {
     const current = baseSettings()
     current.customEnvVars = { MY_TOKEN: 'hunter2' }

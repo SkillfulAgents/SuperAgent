@@ -40,6 +40,9 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   'COMPOSIO_PLATFORM_MODE',
   'PLATFORM_AUTH_ACTIVE',
   'CLAUDE_CODE_ATTRIBUTION_HEADER',
+  // Source the container copies image-baked skills from; repointing it would seed a
+  // workspace's skills from an arbitrary path.
+  'BAKED_SKILLS_DIR',
 ])
 
 /** True when `key` is a reserved runtime env var that custom config must not override. */
