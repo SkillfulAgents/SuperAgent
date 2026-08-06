@@ -58,6 +58,7 @@ import {
   buildModelSubagentDefinitions,
   type SubagentModelDefinition,
 } from './subagent-model-catalog';
+import { mergeCanonicalSlashCommands } from './slash-commands';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
@@ -1163,10 +1164,15 @@ export class ClaudeCodeProcess extends EventEmitter {
           }
           console.log(`[Session ${this.sessionId}] Captured Claude session ID:`, this.claudeSessionId);
           this.emit('claude-session-id', this.claudeSessionId);
-          // Fetch rich slash command info from SDK
+          // The init list owns the executable names. supportedCommands adds
+          // descriptions/hints, but skill entries may use display titles there.
+          const canonicalCommandNames = Array.isArray(message.slash_commands)
+            ? message.slash_commands.filter((name): name is string => typeof name === 'string')
+            : [];
+          this.slashCommands = mergeCanonicalSlashCommands(canonicalCommandNames, []);
           try {
             const cmds = await this.queryInstance!.supportedCommands();
-            this.slashCommands = cmds.map(c => ({ name: c.name, description: c.description, argumentHint: c.argumentHint }));
+            this.slashCommands = mergeCanonicalSlashCommands(canonicalCommandNames, cmds);
           } catch (err) {
             console.error(`[Session ${this.sessionId}] Failed to fetch slash commands:`, err);
           }

@@ -39,6 +39,7 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
@@ -2260,8 +2261,12 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       if (slashCommands.length === 0) {
         const meta = await getSessionMetadata(agentSlug, sessionId)
         if (meta?.slashCommands && meta.slashCommands.length > 0) {
-          slashCommands = meta.slashCommands
+          const repaired = repairLegacySlashCommands(meta.slashCommands)
+          slashCommands = repaired.commands
           messagePersister.setSlashCommands(sessionId, slashCommands)
+          if (repaired.changed) {
+            updateSessionMetadata(agentSlug, sessionId, { slashCommands }).catch(console.error)
+          }
         }
       }
       const backgroundTasks = messagePersister.getActiveBackgroundTasks(sessionId)
