@@ -6,7 +6,6 @@ import { authClient } from '@renderer/lib/auth-client'
 import { useChangePasswordSchema } from '@renderer/lib/password-utils'
 import { useUser } from '@renderer/context/user-context'
 import { usePublicAuthConfig } from '@renderer/hooks/use-public-auth-config'
-import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { Input } from '@renderer/components/ui/input'
 import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
@@ -202,13 +201,12 @@ function ChangePasswordSection() {
 
 export function ProfileTab() {
   const { config: authConfig, isLoading: authConfigLoading } = usePublicAuthConfig()
-  const { data: platformAuth } = usePlatformAuthStatus()
-  // Platform / OIDC-only deployments have no local credential to change.
-  // allowLocalAuth comes from public /api/auth-config (non-admins cannot read /api/settings).
+  // Email/password controls follow the effective local-auth setting. Platform-managed
+  // deployments normally disable it, while migrated credential users remain manageable
+  // whenever local auth is intentionally kept on.
   const showChangePassword =
     !authConfigLoading &&
-    authConfig.allowLocalAuth &&
-    !platformAuth?.platformControlled
+    authConfig.allowLocalAuth
 
   return (
     <div className="space-y-6">

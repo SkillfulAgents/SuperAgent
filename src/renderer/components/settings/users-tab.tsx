@@ -20,6 +20,7 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import { authClient } from '@renderer/lib/auth-client'
 import { useUser } from '@renderer/context/user-context'
+import { usePublicAuthConfig } from '@renderer/hooks/use-public-auth-config'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2,
@@ -64,6 +65,7 @@ interface UsersTabProps {
 
 export function UsersTab({ platformControlled = false, platformInviteHref }: UsersTabProps) {
   const { user: currentUser } = useUser()
+  const { config: authConfig, isLoading: authConfigLoading } = usePublicAuthConfig()
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -132,6 +134,7 @@ export function UsersTab({ platformControlled = false, platformInviteHref }: Use
 
   const users = data?.users ?? []
   const adminCount = users.filter((u) => u.role === 'admin').length
+  const showPasswordManagement = !authConfigLoading && authConfig.allowLocalAuth
 
   const invalidateUsers = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['admin-users'] })
@@ -393,7 +396,7 @@ export function UsersTab({ platformControlled = false, platformInviteHref }: Use
                           <Ban className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
                         </Button>
                       )}
-                      {!platformControlled ? (
+                      {showPasswordManagement ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
@@ -469,13 +472,14 @@ export function UsersTab({ platformControlled = false, platformInviteHref }: Use
         />
       ) : null}
 
-      {/* Reset Password Dialog */}
-      <ResetPasswordDialog
-        open={!!resetPasswordUser}
-        onOpenChange={(open) => !open && setResetPasswordUser(null)}
-        user={resetPasswordUser}
-        onReset={invalidateUsers}
-      />
+      {showPasswordManagement ? (
+        <ResetPasswordDialog
+          open={!!resetPasswordUser}
+          onOpenChange={(open) => !open && setResetPasswordUser(null)}
+          user={resetPasswordUser}
+          onReset={invalidateUsers}
+        />
+      ) : null}
 
       {/* Confirmation Dialog */}
       <AlertDialog open={!!confirmAction} onOpenChange={(open) => !open && setConfirmAction(null)}>

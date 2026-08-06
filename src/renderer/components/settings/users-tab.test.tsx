@@ -3,8 +3,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { TooltipProvider } from '@renderer/components/ui/tooltip'
 
 const openExternalUrl = vi.fn()
+const publicAuthConfigMock = vi.fn()
+const listUsersMock = vi.fn()
 
 vi.mock('@renderer/lib/open-external', () => ({
   openExternalUrl: (...args: unknown[]) => openExternalUrl(...args),
@@ -14,10 +17,14 @@ vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({ user: { id: 'admin-1' } }),
 }))
 
+vi.mock('@renderer/hooks/use-public-auth-config', () => ({
+  usePublicAuthConfig: () => publicAuthConfigMock(),
+}))
+
 vi.mock('@renderer/lib/auth-client', () => ({
   authClient: {
     admin: {
-      listUsers: vi.fn(async () => ({ data: { users: [], total: 0 } })),
+      listUsers: (...args: unknown[]) => listUsersMock(...args),
       setRole: vi.fn(),
       banUser: vi.fn(),
       unbanUser: vi.fn(),
@@ -32,7 +39,9 @@ function renderUsers(props?: { platformControlled?: boolean; platformInviteHref?
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <UsersTab {...props} />
+      <TooltipProvider>
+        <UsersTab {...props} />
+      </TooltipProvider>
     </QueryClientProvider>,
   )
 }
@@ -40,6 +49,11 @@ function renderUsers(props?: { platformControlled?: boolean; platformInviteHref?
 describe('UsersTab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    publicAuthConfigMock.mockReturnValue({
+      config: { allowLocalAuth: true },
+      isLoading: false,
+    })
+    listUsersMock.mockResolvedValue({ data: { users: [], total: 0 } })
   })
 
   it('opens Platform Team for invite when platform-controlled with href', async () => {
@@ -68,5 +82,52 @@ describe('UsersTab', () => {
     await user.click(screen.getByTestId('users-invite-button'))
     expect(openExternalUrl).not.toHaveBeenCalled()
     expect(screen.getByText('Invite User')).toBeInTheDocument()
+  })
+
+  it('keeps Reset Password in platform-controlled mode when local auth is enabled', async () => {
+    listUsersMock.mockResolvedValue({
+      data: {
+        users: [
+          {
+            id: 'member-1',
+            name: 'Member',
+            email: 'member@example.com',
+            role: 'user',
+            createdAt: new Date(),
+          },
+        ],
+        total: 1,
+      },
+    })
+
+    renderUsers({ platformControlled: true, platformInviteHref: 'https://platform.example/team' })
+
+    expect(await screen.findByTitle('Reset password')).toBeInTheDocument()
+  })
+
+  it('hides Reset Password when local auth is disabled', async () => {
+    publicAuthConfigMock.mockReturnValue({
+      config: { allowLocalAuth: false },
+      isLoading: false,
+    })
+    listUsersMock.mockResolvedValue({
+      data: {
+        users: [
+          {
+            id: 'member-1',
+            name: 'Member',
+            email: 'member@example.com',
+            role: 'user',
+            createdAt: new Date(),
+          },
+        ],
+        total: 1,
+      },
+    })
+
+    renderUsers()
+
+    expect(await screen.findByTestId('user-row-member@example.com')).toBeInTheDocument()
+    expect(screen.queryByTitle('Reset password')).not.toBeInTheDocument()
   })
 })
