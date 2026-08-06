@@ -119,6 +119,7 @@ app.get('/sessions/:id', async (c) => {
   return c.json({
     ...session,
     isRunning: sessionManager.isSessionRunning(sessionId),
+    turnSettled: sessionManager.isTurnSettled(sessionId),
   });
 });
 

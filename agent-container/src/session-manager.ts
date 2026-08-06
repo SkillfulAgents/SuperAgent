@@ -946,6 +946,20 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Whether nothing is in flight for this session: turn over (result-gated
+   * idle), no live background work, past the completion-wake grace. The
+   * per-TURN answer, unlike isSessionRunning(), which reports the CLI process
+   * and stays true for the life of the query loop.
+   *
+   * An unknown session is not settled — "unknown" must never read as "finished".
+   */
+  isTurnSettled(sessionId: string): boolean {
+    const sessionData = this.sessions.get(sessionId);
+    if (!sessionData) return false;
+    return sessionData.settlement.isSettled();
+  }
+
+  /**
    * Terminal frames of the session's most recent turn, for a WebSocket
    * subscriber that attached after the turn already ended. Empty when the
    * session is live mid-turn (frames arrive normally) or cold.

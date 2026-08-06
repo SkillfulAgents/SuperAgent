@@ -51,6 +51,12 @@ export interface ContainerSession {
   lastActivity: string
   workingDirectory: string
   slashCommands?: SlashCommandInfo[]
+  /**
+   * Whether nothing is in flight for this session: turn over, no background
+   * work, past the completion-wake grace. Optional because an older container
+   * omits it — absent means "unknown", never "finished".
+   */
+  turnSettled?: boolean
 }
 
 export interface StreamMessage {

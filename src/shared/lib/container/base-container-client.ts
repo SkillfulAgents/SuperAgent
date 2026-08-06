@@ -1372,9 +1372,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       resolveReady = resolve
       rejectReady = reject
     })
+    let ownedSocket: WebSocket | null = null
+    let unsubscribed = false
 
     const setupWebSocket = async () => {
       const port = await this.getPortOrThrow()
+      if (unsubscribed) {
+        resolveReady()
+        return
+      }
 
       const existing = this.wsConnections.get(sessionId)
       if (existing) {
@@ -1385,6 +1391,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         `${this.getWebSocketBaseUrl(port)}/sessions/${sessionId}/stream`,
         { headers: this.getHostAuthHeaders() }
       )
+      ownedSocket = ws
 
       ws.on('open', () => {
         console.log(`WebSocket connected for session ${sessionId}`)
@@ -1409,7 +1416,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       ws.on('error', (error) => {
         // Only log and emit if this connection is still tracked (not cleaned up by stop())
-        if (this.wsConnections.has(sessionId)) {
+        if (this.wsConnections.get(sessionId) === ws) {
           console.error(`WebSocket error for session ${sessionId}:`, error)
           this.safeEmitError(error)
         }
@@ -1418,7 +1425,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       ws.on('close', () => {
         console.log(`WebSocket closed for session ${sessionId}`)
-        this.wsConnections.delete(sessionId)
+        if (this.wsConnections.get(sessionId) === ws) {
+          this.wsConnections.delete(sessionId)
+        }
         // Notify the callback that the connection was lost
         // This allows the message persister to handle the disconnection
         const closeMessage: StreamMessage = {
@@ -1434,6 +1443,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
 
     setupWebSocket().catch((error) => {
+      if (unsubscribed) {
+        resolveReady()
+        return
+      }
       console.error('Failed to set up WebSocket:', error)
       this.safeEmitError(error)
       // Notify the callback so the consumer (e.g. MessagePersister) can react to
@@ -1451,10 +1464,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     })
 
     const unsubscribe = () => {
-      const ws = this.wsConnections.get(sessionId)
-      if (ws) {
-        ws.close()
-        this.wsConnections.delete(sessionId)
+      unsubscribed = true
+      if (ownedSocket) {
+        ownedSocket.close()
+        if (this.wsConnections.get(sessionId) === ownedSocket) {
+          this.wsConnections.delete(sessionId)
+        }
       }
     }
 

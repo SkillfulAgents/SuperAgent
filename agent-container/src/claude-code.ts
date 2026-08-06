@@ -505,6 +505,10 @@ export class ClaudeCodeProcess extends EventEmitter {
   private lastTurnInformationals: SDKMessage[] = [];
   private lastResultMessage: SDKMessage | null = null;
   private lastSessionState: string | null = null;
+  // Latest authoritative background-task snapshot, replayed to a late joiner:
+  // a host holding a task whose terminal signal was lost would otherwise stay
+  // pinned forever (the live consumer self-heals when a snapshot arrives).
+  private lastBackgroundTasksChanged: SDKMessage | null = null;
   // Pre-spawned CLI subprocess from prewarm(), waiting for a prompt. Claimed
   // (once) by the next createQuery; see prewarm() for why the handle lives on
   // the process rather than in a detached pool.
@@ -1106,7 +1110,15 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.messageQueue = new MessageQueue();
     this.queryInstance = this.createQuery();
     this.isReady = true;
-    // Background tasks are process-local and die with the old process; the
+    // Late-join replay is process-local. Carrying a terminal frame across a
+    // replacement could settle the new process before it emits its own result;
+    // carrying a background task could pin it forever without a terminal frame.
+    this.currentTurnInformationals = [];
+    this.lastTurnInformationals = [];
+    this.lastResultMessage = null;
+    this.lastSessionState = null;
+    this.lastBackgroundTasksChanged = null;
+    // Background tasks are process-local and die with the old process too; the
     // SessionManager listens for this to reset its settlement bookkeeping —
     // a task id carried across the replacement would pin the session
     // unevictable forever (no terminal signal or snapshot ever comes).
@@ -1560,6 +1572,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.lastResultMessage = message;
       this.lastTurnInformationals = this.currentTurnInformationals;
       this.currentTurnInformationals = [];
+    } else if (msg.type === 'system' && msg.subtype === 'background_tasks_changed') {
+      this.lastBackgroundTasksChanged = message;
     } else if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
       this.lastSessionState = msg.state ?? null;
     }
@@ -1584,6 +1598,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     return [
       ...this.lastTurnInformationals,
       this.lastResultMessage,
+      ...(this.lastBackgroundTasksChanged ? [this.lastBackgroundTasksChanged] : []),
       {
         type: 'system',
         subtype: 'session_state_changed',

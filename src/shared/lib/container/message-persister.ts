@@ -1,4 +1,4 @@
-import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
+import type { ContainerClient, ContainerSession, StreamMessage, SlashCommandInfo } from './types'
 import type { SessionUsage, SessionActivity } from '@shared/lib/types/agent'
 import type { AskUserQuestionInput } from '@shared/lib/tool-definitions/ask-user-question'
 import type { RequestSecretInput } from '@shared/lib/tool-definitions/request-secret'
@@ -184,6 +184,16 @@ interface StreamingState {
   // Subtype of the most recent result — gates the completion notification when
   // idle arrives via session_state_changed (resume-exits pause, not finish).
   lastResultSubtype: string | null
+  // uuid of the most recent result processed LIVE. Replayed frames carry no
+  // turn identity, so this is what separates "my turn ended" from "an earlier
+  // turn ended and is being replayed at me".
+  lastProcessedResultUuid: string | null
+  // Set when the probe found the container settled while this host still
+  // believed a turn was running, and reattached to collect what it missed. A
+  // second such probe means that reattach produced nothing actionable, which
+  // bounds the recovery instead of leaving the turn active with nothing left
+  // to settle it.
+  sawSettledContainerWhileActive: boolean
   isRetrying: boolean // True while an API retry is in progress, cleared when the next message starts
 }
 
@@ -252,15 +262,41 @@ export function redactStreamedToolInput(toolName: string | undefined, partialInp
   return partialInput.replace(/("secret"\s*:\s*")(?:\\.|[^"\\])*/g, '$1***')
 }
 
+/**
+ * Whether a replayed result describes a turn this host already saw end. A
+ * result with no usable uuid cannot be proven new, so it counts as already
+ * processed: a false "already processed" costs a stuck indicator, a false "new"
+ * costs a completion notification and a persisted success for a turn never run.
+ */
+export function isReplayOfProcessedResult(
+  lastProcessedResultUuid: string | null,
+  resultUuid: unknown
+): boolean {
+  if (lastProcessedResultUuid === null) return false
+  if (typeof resultUuid !== 'string' || resultUuid.length === 0) return true
+  return resultUuid === lastProcessedResultUuid
+}
+
 // TODO this file is too big, this class is HUGE. Needs breaking up
+
+/**
+ * How often to ask the container whether a turn is still in flight, once its
+ * stream has gone quiet. A poll period, not a threshold: silence is never
+ * itself treated as the turn ending, so no measurement of "normal quiet"
+ * rides on this value.
+ */
+export const STREAM_SILENCE_REATTACH_MS = 30_000
+
 class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
+  private settleProbeTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
   // "Allow for this session" capability grants, keyed by sessionId. Display
   // bookkeeping ONLY — enforcement lives in the container (which persists its
   // copy with the session). Once granted, launches auto-allow container-side
   // with no pending entry, so we must stop broadcasting review cards for them.
   private sessionCapabilityGrants: Map<string, Set<'subagents' | 'workflows'>> = new Map()
   private subscriptions: Map<string, () => void> = new Map()
+  private streamTokens: Map<string, object> = new Map()
   private sseClients: Map<string, Set<(data: unknown) => void>> = new Map()
   // Per-run journal tailers driving the live workflow drawer, keyed `${sessionId}::${runId}`
   private workflowTailers: Map<string, WorkflowJournalTailer> = new Map()
@@ -421,15 +457,11 @@ class MessagePersister {
     const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
     const priorBackgroundTasks = prior?.activeBackgroundTasks ?? new Map()
     const priorSettledInputRequests = prior?.settledInputRequests ?? new Map()
-
-    // Detach only the transport if already subscribed. NOT unsubscribeFromSession:
-    // that is a full teardown — it drops the session's registry entries, which
-    // must outlive a transport reattach for the same live session.
-    const existingUnsubscribe = this.subscriptions.get(sessionId)
-    if (existingUnsubscribe) {
-      existingUnsubscribe()
-      this.subscriptions.delete(sessionId)
-    }
+    // Reply memory is settle-relevant and must survive a transport reattach:
+    // wiping it makes the next idle look like a stale idle from a prior turn,
+    // and the idle guard then discards it. Nothing was lost on the wire.
+    const priorLastResultSubtype = prior?.lastResultSubtype ?? null
+    const priorLastResultCleanSuccess = prior?.lastResultCleanSuccess ?? false
 
     // Initialize state
     this.streamingStates.set(sessionId, {
@@ -457,8 +489,11 @@ class MessagePersister {
       processInstanceId: prior?.processInstanceId ?? null,
       pendingDeliverFiles: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
-      lastResultSubtype: null,
-      lastResultCleanSuccess: false,
+      lastResultSubtype: priorLastResultSubtype,
+      lastResultCleanSuccess: priorLastResultCleanSuccess,
+      // Must survive a reattach — judging the replay it triggers is the point.
+      lastProcessedResultUuid: prior?.lastProcessedResultUuid ?? null,
+      sawSettledContainerWhileActive: prior?.sawSettledContainerWhileActive ?? false,
       isRetrying: false,
     })
 
@@ -466,12 +501,7 @@ class MessagePersister {
     this.containerClients.set(sessionId, client)
 
     // Subscribe to the container's message stream
-    const { unsubscribe, ready } = client.subscribeToStream(
-      containerSessionId,
-      (message) => this.handleMessage(sessionId, message)
-    )
-
-    this.subscriptions.set(sessionId, unsubscribe)
+    const ready = this.attachStreamTransport(sessionId, client, containerSessionId)
 
     if (this.capture && agentSlug) {
       const subagentsDir = path.join(getAgentSessionsDir(agentSlug), sessionId, 'subagents')
@@ -485,11 +515,8 @@ class MessagePersister {
 
   // Unsubscribe from a session
   unsubscribeFromSession(sessionId: string): void {
-    const unsubscribe = this.subscriptions.get(sessionId)
-    if (unsubscribe) {
-      unsubscribe()
-      this.subscriptions.delete(sessionId)
-    }
+    this.cancelSettleProbe(sessionId)
+    this.detachStreamTransport(sessionId)
     this.streamingStates.delete(sessionId)
     // Shadow registry (Phase 2): every session-scoped entry dies with the state.
     userInputRequestManager.dropSessionRequests(sessionId, 'invalidated')
@@ -499,10 +526,138 @@ class MessagePersister {
     this.sessionCapabilityGrants.delete(sessionId)
   }
 
+  /**
+   * Install the only current stream callback for a session. Every replacement
+   * installs its token before closing the old socket, so late frames from
+   * that socket cannot affect the replacement or start another recovery.
+   */
+  private attachStreamTransport(
+    sessionId: string,
+    client: ContainerClient,
+    containerSessionId: string
+  ): Promise<void> {
+    const streamToken = {}
+    this.streamTokens.set(sessionId, streamToken)
+
+    const existingUnsubscribe = this.subscriptions.get(sessionId)
+    existingUnsubscribe?.()
+
+    const { unsubscribe, ready } = client.subscribeToStream(containerSessionId, (message) => {
+      if (this.streamTokens.get(sessionId) !== streamToken) return
+      this.handleMessage(sessionId, message, streamToken)
+    })
+    this.subscriptions.set(sessionId, unsubscribe)
+    return ready
+  }
+
+  private detachStreamTransport(sessionId: string): void {
+    // Drop rather than replace: an absent entry fails the identity guard just
+    // as a fresh one does, and leaves nothing behind for callers that detach
+    // without tearing down (markAllSessionsInactiveForAgent).
+    this.streamTokens.delete(sessionId)
+    const existingUnsubscribe = this.subscriptions.get(sessionId)
+    if (!existingUnsubscribe) return
+    existingUnsubscribe()
+    if (this.subscriptions.get(sessionId) === existingUnsubscribe) {
+      this.subscriptions.delete(sessionId)
+    }
+  }
+
+  /** Returns the armed timer, which doubles as the probe's freshness token. */
+  private armSettleProbe(sessionId: string): ReturnType<typeof setTimeout> | null {
+    this.cancelSettleProbe(sessionId)
+    if (!this.streamingStates.get(sessionId)?.isActive) return null
+    const timer = setTimeout(() => {
+      this.settleProbeTimers.delete(sessionId)
+      this.reattachAfterSilence(sessionId).catch((err) => {
+        console.error(`[MessagePersister] Silence probe errored for session ${sessionId}:`, err)
+      })
+    }, STREAM_SILENCE_REATTACH_MS)
+    this.settleProbeTimers.set(sessionId, timer)
+    return timer
+  }
+
+  private cancelSettleProbe(sessionId: string): void {
+    const timer = this.settleProbeTimers.get(sessionId)
+    if (!timer) return
+    clearTimeout(timer)
+    this.settleProbeTimers.delete(sessionId)
+  }
+
+  /**
+   * The stream went quiet while we still believe a turn is running.
+   *
+   * Quiet is not evidence the turn ended — long builds and a session parked on
+   * a permission card are both silent for minutes — so ask the container, which
+   * answers per-turn. While it says a turn is running the socket is left alone:
+   * the stream is unbuffered fan-out, so a swap loses whatever is emitted in
+   * the close/open gap, permission requests included.
+   */
+  private async reattachAfterSilence(sessionId: string): Promise<void> {
+    if (!this.streamingStates.get(sessionId)?.isActive) return
+    const client = this.containerClients.get(sessionId)
+    if (!client) return
+
+    // Re-arm before the round trip: a container that accepts the connection but
+    // never answers is the half-open case this recovery exists for, and arming
+    // afterwards would let that hang leave the session unwatched. The armed
+    // timer is also this probe's freshness token — anything that re-arms while
+    // the request is in flight (a frame, a new turn) replaces it, and the
+    // answer this probe is holding is then about a window that has moved on.
+    const probeToken = this.armSettleProbe(sessionId)
+
+    let containerSession: ContainerSession | null
+    try {
+      containerSession = await client.getSession(sessionId)
+    } catch (err) {
+      // Unreachable is not evidence about the turn.
+      console.error(`[MessagePersister] Silence probe failed for session ${sessionId}:`, err)
+      return
+    }
+
+    // Re-read after the await: the turn may have settled, or been replaced by a
+    // later one, while the request was in flight.
+    if (this.settleProbeTimers.get(sessionId) !== probeToken) return
+    const state = this.streamingStates.get(sessionId)
+    if (!state?.isActive) return
+
+    if (!containerSession) {
+      console.log(`[MessagePersister] Session ${sessionId} gone from container during silence, marking inactive`)
+      this.markSessionInactive(sessionId, state)
+      return
+    }
+
+    // Unknown (a container predating the field) is not "finished".
+    if (containerSession.turnSettled !== true) {
+      state.sawSettledContainerWhileActive = false
+      return
+    }
+
+    if (state.sawSettledContainerWhileActive) {
+      // The previous reattach delivered nothing this host could act on — either
+      // no replay survived a container-side process replacement, or the replay
+      // described a turn already processed. Nothing further is coming, and
+      // reattaching again only re-runs the frame loss. A turn the container is
+      // not running and this host never saw end is a turn whose runtime went
+      // away, which markSessionInactive surfaces. Deliberately not a
+      // completion: nothing here proves the work succeeded.
+      console.log(`[MessagePersister] Session ${sessionId} settled container-side with nothing to replay, marking inactive`)
+      this.markSessionInactive(sessionId, state)
+      return
+    }
+
+    state.sawSettledContainerWhileActive = true
+    const ready = this.attachStreamTransport(sessionId, client, sessionId)
+    ready.catch((err) => {
+      console.error(`[MessagePersister] Silence reattach failed for session ${sessionId}:`, err)
+    })
+  }
+
   // Single idle finalizer — flips state and broadcasts to session + global
   // listeners. Used by the result handler (legacy result-driven idle), the
   // session_state_changed handler (authoritative idle), and markSessionInactive.
   private finalizeIdle(sessionId: string, state: StreamingState): void {
+    this.cancelSettleProbe(sessionId)
     // The session is truly settled: persist the automation outcome for a turn
     // that ended in a clean success. (Failures were already persisted at their
     // result — an error ends the turn immediately. Interrupts never set the
@@ -887,11 +1042,7 @@ class MessagePersister {
           this.markSessionInactive(sessionId, state)
         }
         // Clean up stale WebSocket subscription so next message re-subscribes to the new container
-        const unsubscribe = this.subscriptions.get(sessionId)
-        if (unsubscribe) {
-          unsubscribe()
-          this.subscriptions.delete(sessionId)
-        }
+        this.detachStreamTransport(sessionId)
         this.containerClients.delete(sessionId)
       }
     }
@@ -931,6 +1082,7 @@ class MessagePersister {
 
   // Mark a session as interrupted (not active)
   async markSessionInterrupted(sessionId: string): Promise<void> {
+    this.cancelSettleProbe(sessionId)
     const state = this.streamingStates.get(sessionId)
 
     // Set interrupted flag FIRST to prevent race conditions with incoming events
@@ -1017,6 +1169,8 @@ class MessagePersister {
         processInstanceId: null,
         pendingDeliverFiles: new Map(),
         stateEventsAuthority: false,
+        lastProcessedResultUuid: null,
+        sawSettledContainerWhileActive: false,
         lastResultSubtype: null,
       lastResultCleanSuccess: false,
         isRetrying: false,
@@ -1043,6 +1197,10 @@ class MessagePersister {
     // completion notification against the turn this message is starting.
     state.lastResultSubtype = null
     state.lastResultCleanSuccess = false
+    // NOT lastProcessedResultUuid: rejecting a replay of the previous turn is
+    // exactly what the new turn needs it for.
+    state.sawSettledContainerWhileActive = false
+    this.armSettleProbe(sessionId)
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
@@ -1354,11 +1512,21 @@ class MessagePersister {
   // Handle incoming message from container
   private handleMessage(
     sessionId: string,
-    message: StreamMessage
+    message: StreamMessage,
+    streamToken: object
   ): void {
     this.capture?.recordInput(sessionId, message)
     const state = this.streamingStates.get(sessionId)
     if (!state) return
+
+    this.armSettleProbe(sessionId)
+    // A LIVE frame proves the stream is delivering new work, so a pending
+    // reattach got its answer. Replayed frames are that reattach's own output
+    // and are the very thing being judged — an informational leading the replay
+    // batch must not clear the verdict before the result behind it is read.
+    if (!message.content?.replayed) {
+      state.sawSettledContainerWhileActive = false
+    }
 
     // Skip processing if session was interrupted (prevents race conditions)
     // Allow 'result' through as it indicates the container actually stopped.
@@ -1414,8 +1582,20 @@ class MessagePersister {
     // exists. Only act on them when this session actually missed the turn
     // (still marked active); a settled session already processed the live
     // copies, and replaying them would re-fire terminal broadcasts.
-    if (content.replayed && !state.isActive) {
-      return
+    if (content.replayed) {
+      if (!state.isActive) return
+      // A replayed result the host already processed must not re-arm the turn's
+      // result memory, or the idle behind it settles the CURRENT turn and
+      // reports a completion for work that never ran. Only the result is
+      // dropped, deliberately not the batch: the idle behind it is then judged
+      // by the existing guard, which settles only on a result seen for THIS
+      // turn — preserving a result delivered live whose idle was lost.
+      if (
+        content.type === 'result' &&
+        isReplayOfProcessedResult(state.lastProcessedResultUuid, content.uuid)
+      ) {
+        return
+      }
     }
 
     switch (content.type) {
@@ -1922,6 +2102,7 @@ class MessagePersister {
         if (isError || classification.isInterrupt) {
           state.isActive = false
           state.isAwaitingInput = false
+          this.cancelSettleProbe(sessionId)
         } else if (state.stateEventsAuthority || this.openBackgroundWorkCount(state) > 0) {
           this.syncSessionAwaiting(sessionId)
         } else {
@@ -1929,6 +2110,12 @@ class MessagePersister {
         }
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
+        // Turn identity for the replay guard. A replay reaching here is the
+        // first sighting of this turn's end, so recording it stops the next
+        // reattach from re-settling the same turn.
+        if (typeof content.uuid === 'string' && content.uuid.length > 0) {
+          state.lastProcessedResultUuid = content.uuid
+        }
 
         // A clean success with zero turns means the main loop never ran — the
         // signature of a settings-file hook blocking the prompt. (duration_api_ms
@@ -2085,7 +2272,7 @@ class MessagePersister {
         // WebSocket connection to container was lost
         // Check if session is still actually running in the container
         console.log(`[MessagePersister] Connection closed for session ${sessionId}, checking container state`)
-        this.handleConnectionClosed(sessionId, state)
+        this.handleConnectionClosed(sessionId, state, streamToken)
         break
 
       case 'stream_event':
@@ -2104,7 +2291,11 @@ class MessagePersister {
   }
 
   // Handle connection closed - check container and mark inactive if session is done
-  private handleConnectionClosed(sessionId: string, state: StreamingState): void {
+  private handleConnectionClosed(
+    sessionId: string,
+    state: StreamingState,
+    streamToken: object
+  ): void {
     const client = this.containerClients.get(sessionId)
     if (!client) {
       // No client reference, assume session is done
@@ -2115,6 +2306,9 @@ class MessagePersister {
     // Check container asynchronously
     client.getSession(sessionId)
       .then((containerSession) => {
+        if (this.streamTokens.get(sessionId) !== streamToken) {
+          return
+        }
         if (!containerSession) {
           // Session doesn't exist in container anymore
           console.log(`[MessagePersister] Session ${sessionId} not found in container, marking inactive`)
@@ -2128,11 +2322,7 @@ class MessagePersister {
         if (isRunning) {
           // Session still running, try to re-subscribe
           console.log(`[MessagePersister] Session ${sessionId} still running, re-subscribing`)
-          const { unsubscribe, ready } = client.subscribeToStream(
-            sessionId,
-            (message) => this.handleMessage(sessionId, message)
-          )
-          this.subscriptions.set(sessionId, unsubscribe)
+          const ready = this.attachStreamTransport(sessionId, client, sessionId)
           // Defense-in-depth: we don't await the re-subscribe here, so attach a
           // handler to the `ready` promise. A failed reconnect routes a
           // synthesized connection_closed message through the callback above;
@@ -2147,6 +2337,9 @@ class MessagePersister {
         }
       })
       .catch((error) => {
+        if (this.streamTokens.get(sessionId) !== streamToken) {
+          return
+        }
         // Can't reach container, assume session is done
         console.error(`[MessagePersister] Failed to check container for session ${sessionId}:`, error)
         this.markSessionInactive(sessionId, state)
@@ -2155,6 +2348,7 @@ class MessagePersister {
 
   // Mark a session as inactive and broadcast the update
   private markSessionInactive(sessionId: string, state: StreamingState): void {
+    this.cancelSettleProbe(sessionId)
     // A session that was mid-turn (user message sent, no result yet) and not
     // deliberately interrupted didn't finish — its runtime vanished (container
     // crash, guest OOM kill of the agent process, VM death). Surface that as an
