@@ -35,6 +35,7 @@ describe('GithubSkillsetProvider repository credentials', () => {
 
   it('resolves a stored token from an opaque providerData reference', () => {
     mockGetSettings.mockReturnValue({
+      skillsets: [],
       skillsetCredentials: {
         skillcred_1: { type: 'token', token: 'stored-secret' },
       },
@@ -47,6 +48,57 @@ describe('GithubSkillsetProvider repository credentials', () => {
     }, {})
 
     expect(environment.GH_TOKEN).toBe('stored-secret')
+  })
+
+  it('prefers the current skillset credential over an installed metadata snapshot', () => {
+    mockGetSettings.mockReturnValue({
+      skillsets: [{ id: 'private', providerData: { credentialId: 'skillcred_current' } }],
+      skillsetCredentials: {
+        skillcred_snapshot: { type: 'token', token: 'stale-secret' },
+        skillcred_current: { type: 'token', token: 'current-secret' },
+      },
+    })
+    const provider = new GithubSkillsetProvider()
+    const environment = provider.getCliEnvironment({
+      skillsetId: 'private',
+      skillsetUrl: 'https://github.com/Org/private.git',
+      providerData: { credentialId: 'skillcred_snapshot' },
+    }, {})
+
+    expect(environment.GH_TOKEN).toBe('current-secret')
+  })
+
+  it('uses a credential added after the skill was installed from a public repository', () => {
+    mockGetSettings.mockReturnValue({
+      skillsets: [{ id: 'private', providerData: { credentialId: 'skillcred_current' } }],
+      skillsetCredentials: {
+        skillcred_current: { type: 'token', token: 'new-secret' },
+      },
+    })
+    const provider = new GithubSkillsetProvider()
+    const environment = provider.getCliEnvironment({
+      skillsetId: 'private',
+      skillsetUrl: 'https://github.com/Org/private.git',
+    }, {})
+
+    expect(environment.GH_TOKEN).toBe('new-secret')
+  })
+
+  it('does not fall back to a stale snapshot after the current token is removed', () => {
+    mockGetSettings.mockReturnValue({
+      skillsets: [{ id: 'private' }],
+      skillsetCredentials: {
+        skillcred_snapshot: { type: 'token', token: 'stale-secret' },
+      },
+    })
+    const provider = new GithubSkillsetProvider()
+    const environment = provider.getCliEnvironment({
+      skillsetId: 'private',
+      skillsetUrl: 'https://github.com/Org/private.git',
+      providerData: { credentialId: 'skillcred_snapshot' },
+    }, {})
+
+    expect(environment.GH_TOKEN).toBeUndefined()
   })
 
   it('rejects embedded URL credentials', async () => {

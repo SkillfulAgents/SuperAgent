@@ -67,23 +67,53 @@ async function main(): Promise<void> {
       current.skillsets = [config]
       current.skillsetCredentials = { [credentialId]: credential }
     })
+    const installedMetadataProviderData = { ...config.providerData }
 
     // Force a second clone so the persisted opaque reference—not the transient
     // request credential—is what authenticates Git.
     await service.removeSkillsetCache({ skillsetId, provider: 'github', providerData: config.providerData })
-    const repoDir = await service.ensureSkillsetCached({
+    await service.ensureSkillsetCached({
       skillsetId,
       skillsetUrl: repoUrl,
       skillsetName: config.name,
       provider: 'github',
       providerData: config.providerData,
     })
+
+    // Simulate an installed skill retaining its install-time credential ID
+    // while the token is removed and re-added under a new ID in Settings.
+    const replacementCredentialId = `skillcred_${crypto.randomUUID()}`
+    settings.mutateSettings((current) => {
+      const currentConfig = current.skillsets?.find((item) => item.id === skillsetId)
+      if (!currentConfig) throw new Error('Skillset disappeared during credential replacement.')
+      currentConfig.providerData = { credentialId: replacementCredentialId }
+      current.skillsetCredentials = {
+        [replacementCredentialId]: {
+          ...credential,
+          id: replacementCredentialId,
+          updatedAt: new Date().toISOString(),
+        },
+      }
+    })
+
+    await service.removeSkillsetCache({
+      skillsetId,
+      provider: 'github',
+      providerData: installedMetadataProviderData,
+    })
+    const repoDir = await service.ensureSkillsetCached({
+      skillsetId,
+      skillsetUrl: repoUrl,
+      skillsetName: config.name,
+      provider: 'github',
+      providerData: installedMetadataProviderData,
+    })
     const refreshedIndex = await service.refreshSkillset({
       skillsetId,
       skillsetUrl: repoUrl,
       skillsetName: config.name,
       provider: 'github',
-      providerData: config.providerData,
+      providerData: installedMetadataProviderData,
     })
 
     const persisted = fs.readFileSync(path.join(dataDir, 'settings.json'), 'utf8')
@@ -112,6 +142,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({
       validated: true,
       clonedFromStoredCredential: true,
+      reboundCredentialFromCurrentSkillset: true,
       refreshed: true,
       skillCount: refreshedIndex.skills.length,
       agentCount: refreshedIndex.agents?.length ?? 0,

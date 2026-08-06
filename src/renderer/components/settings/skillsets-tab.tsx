@@ -32,6 +32,10 @@ export function SkillsetsTab() {
   const [tokenInput, setTokenInput] = useState('')
   const [editingCredentialId, setEditingCredentialId] = useState<string | null>(null)
   const [replacementToken, setReplacementToken] = useState('')
+  const [credentialError, setCredentialError] = useState<{
+    skillsetId: string
+    message: string
+  } | null>(null)
   const [validationResult, setValidationResult] = useState<{
     valid: boolean
     error?: string
@@ -65,15 +69,29 @@ export function SkillsetsTab() {
 
   const handleSaveCredential = async (id: string) => {
     if (!replacementToken.trim()) return
-    setValidationResult(null)
+    setCredentialError(null)
     try {
       await updateCredential.mutateAsync({ id, token: replacementToken.trim() })
       setReplacementToken('')
       setEditingCredentialId(null)
     } catch (error) {
-      setValidationResult({
-        valid: false,
-        error: error instanceof Error ? error.message : 'Failed to update repository token',
+      setCredentialError({
+        skillsetId: id,
+        message: error instanceof Error ? error.message : 'Failed to update repository token',
+      })
+    }
+  }
+
+  const handleRemoveCredential = async (id: string) => {
+    setCredentialError(null)
+    try {
+      await updateCredential.mutateAsync({ id, token: null })
+      setReplacementToken('')
+      setEditingCredentialId(null)
+    } catch (error) {
+      setCredentialError({
+        skillsetId: id,
+        message: error instanceof Error ? error.message : 'Failed to remove repository token',
       })
     }
   }
@@ -246,41 +264,55 @@ export function SkillsetsTab() {
                   </div>
                 )}
                 {editingCredentialId === ss.id && (
-                  <div className="flex items-center gap-2 mt-2">
-                    <Input
-                      type="password"
-                      autoComplete="off"
-                      aria-label={`Repository token for ${ss.name}`}
-                      placeholder={ss.credential ? 'Replace repository token' : 'Add repository token'}
-                      value={replacementToken}
-                      onChange={(e) => setReplacementToken(e.target.value)}
-                      className="h-8"
-                      disabled={updateCredential.isPending}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault()
-                          handleSaveCredential(ss.id)
-                        }
-                      }}
-                    />
-                    <Button
-                      size="sm"
-                      className="h-8"
-                      disabled={!replacementToken.trim() || updateCredential.isPending}
-                      onClick={() => handleSaveCredential(ss.id)}
-                    >
-                      Save
-                    </Button>
-                    {ss.credential && (
-                      <Button
-                        size="sm"
-                        variant="outline"
+                  <div className="mt-2 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="password"
+                        autoComplete="off"
+                        aria-label={`Repository token for ${ss.name}`}
+                        placeholder={ss.credential ? 'Replace repository token' : 'Add repository token'}
+                        value={replacementToken}
+                        onChange={(e) => {
+                          setReplacementToken(e.target.value)
+                          setCredentialError(null)
+                        }}
                         className="h-8"
                         disabled={updateCredential.isPending}
-                        onClick={() => updateCredential.mutate({ id: ss.id, token: null })}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            handleSaveCredential(ss.id)
+                          }
+                        }}
+                      />
+                      <Button
+                        size="sm"
+                        className="h-8"
+                        disabled={!replacementToken.trim() || updateCredential.isPending}
+                        onClick={() => handleSaveCredential(ss.id)}
                       >
-                        Remove
+                        Save
                       </Button>
+                      {ss.credential && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8"
+                          disabled={updateCredential.isPending}
+                          onClick={() => handleRemoveCredential(ss.id)}
+                        >
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                    {credentialError?.skillsetId === ss.id && (
+                      <div
+                        role="alert"
+                        className="flex items-start gap-1.5 text-xs text-destructive"
+                      >
+                        <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                        <span>{credentialError.message}</span>
+                      </div>
                     )}
                   </div>
                 )}
@@ -294,7 +326,7 @@ export function SkillsetsTab() {
                     const nextId = editingCredentialId === ss.id ? null : ss.id
                     setEditingCredentialId(nextId)
                     setReplacementToken('')
-                    setValidationResult(null)
+                    setCredentialError(null)
                   }}
                   disabled={updateCredential.isPending || (ss.provider ?? 'github') !== 'github'}
                   title={ss.credential ? 'Replace or remove repository token' : 'Add repository token'}

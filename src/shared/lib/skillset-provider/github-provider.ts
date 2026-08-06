@@ -51,10 +51,18 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
   private getToken(ref: SkillsetProviderRef): string | undefined {
     if (ref.credential?.type === 'token') return ref.credential.token
 
-    const credentialId = ref.providerData?.credentialId
+    const settings = getSettings()
+    const currentSkillset = settings.skillsets?.find((skillset) => skillset.id === ref.skillsetId)
+    // Installed skill/agent metadata is a historical snapshot. Prefer the
+    // live skillset binding so adding, removing, or replacing a credential
+    // takes effect without reinstalling. Fall back only when the skillset is
+    // no longer configured, preserving legacy metadata behavior.
+    const credentialId = currentSkillset
+      ? currentSkillset.providerData?.credentialId
+      : ref.providerData?.credentialId
     if (typeof credentialId !== 'string') return undefined
 
-    const credential = getSettings().skillsetCredentials?.[credentialId]
+    const credential = settings.skillsetCredentials?.[credentialId]
     if (!credential) {
       throw new Error('The repository credential is missing. Add the token again in Skillset settings.')
     }

@@ -386,6 +386,41 @@ describe('skillsets routes', () => {
     expect(responseBody).toContain('••••2222')
   })
 
+  it('PATCH /:id/credential returns 404 when the skillset is deleted concurrently', async () => {
+    let settingsState: Record<string, unknown> = {
+      skillsets: [{
+        id: 'private-repo',
+        url: 'https://github.com/Org/private-repo',
+        name: 'Private',
+        description: '',
+        addedAt: '2026-01-01T00:00:00.000Z',
+        provider: 'github',
+        providerData: { credentialId: 'skillcred_test' },
+      }],
+      skillsetCredentials: {
+        skillcred_test: {
+          id: 'skillcred_test', type: 'token', token: 'secret', tokenPreview: '••••cret',
+          createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    }
+    mockGetSettings.mockImplementation(() => settingsState)
+    mockUpdateSettings.mockImplementation(() => {
+      settingsState = { skillsets: [], skillsetCredentials: {} }
+    })
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    const res = await app.request('/api/skillsets/private-repo/credential', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: null }),
+    })
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Skillset not found' })
+  })
+
   it('DELETE / removes the credential owned by the skillset', async () => {
     const config = {
       id: 'private-repo',

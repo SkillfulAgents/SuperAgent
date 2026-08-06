@@ -229,9 +229,8 @@ skillsets.delete('/:id', IsAdmin(), async (c) => {
     const settings = getSettings()
     const existing = settings.skillsets || []
     const removed = existing.find((s) => s.id === id)
-    const filtered = existing.filter((s) => s.id !== id)
 
-    if (filtered.length === existing.length) {
+    if (!removed) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
 
@@ -249,7 +248,7 @@ skillsets.delete('/:id', IsAdmin(), async (c) => {
     })
 
     // Clean up cache
-    await removeSkillsetCache(toSkillsetRef(existing.find((s) => s.id === id)!))
+    await removeSkillsetCache(toSkillsetRef(removed))
 
     return c.body(null, 204)
   } catch (error) {
@@ -302,7 +301,8 @@ skillsets.patch('/:id/credential', IsAdmin(), async (c) => {
       })
     }
 
-    const updated = (getSettings().skillsets || []).find((item) => item.id === id)!
+    const updated = (getSettings().skillsets || []).find((item) => item.id === id)
+    if (!updated) return c.json({ error: 'Skillset not found' }, 404)
     const index = await getSkillsetIndex(toSkillsetRef(updated))
     return c.json(configToApiResponse(updated, index?.skills.length ?? 0, index?.agents?.length ?? 0))
   } catch (error) {

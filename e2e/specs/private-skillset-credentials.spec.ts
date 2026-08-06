@@ -40,4 +40,20 @@ test.describe('Private Git skillset credentials', () => {
     expect(body).not.toContain('github_pat_e2e_placeholder')
     expect(body).toContain('••••lder')
   })
+
+  test('shows remove-token failures beside the affected skillset', async ({ page }) => {
+    await page.route('**/api/skillsets/*/credential', async (route) => {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Simulated credential removal failure' }),
+      })
+    })
+
+    const privateRow = page.locator('div.flex.items-start.gap-3').filter({ hasText: 'E2E Test Skillset' })
+    await privateRow.getByTitle('Replace or remove repository token').click()
+    await privateRow.getByRole('button', { name: 'Remove', exact: true }).click()
+
+    await expect(privateRow.getByRole('alert')).toHaveText(/Simulated credential removal failure/)
+  })
 })
