@@ -1,7 +1,8 @@
-import { Bolt, Cuboid, Bell, Layers, BarChart3, Blocks, Users, Shield, Route, User, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, Search, Sparkle, Workflow } from 'lucide-react'
+import { Bolt, Cuboid, Bell, Layers, BarChart3, Blocks, Users, Shield, Route, User, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, Search, Smartphone, Sparkle, Workflow } from 'lucide-react'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
 import { type LinkProps } from '@tanstack/react-router'
 import { ProfileTab } from './profile-tab'
+import { MobileTab } from './mobile-tab'
 import { GeneralTab } from './general-tab'
 import { RuntimeTab } from './runtime-tab'
 import { AccountProviderTab } from './account-provider-tab'
@@ -23,6 +24,7 @@ import { ComputerUseTab } from './computer-use-tab'
 import { CapabilitiesTab } from './capabilities-tab'
 import { AuditLogTab } from './audit-log-tab'
 import { useUser } from '@renderer/context/user-context'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 
 interface GlobalSettingsPageProps {
@@ -33,15 +35,34 @@ interface GlobalSettingsPageProps {
   sectionLinkProps?: (id: string) => LinkProps
 }
 
+function platformInviteHref(platformBaseUrl: string, orgId: string | null | undefined): string {
+  const base = platformBaseUrl.replace(/\/+$/, '')
+  // orgId is JWKS-verified and may be null; still send admins somewhere useful.
+  return orgId
+    ? `${base}/dashboard/organizations/${orgId}?tab=team`
+    : `${base}/dashboard`
+}
+
 export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSectionChange, sectionLinkProps }: GlobalSettingsPageProps) {
   const { isAuthMode, isAdmin } = useUser()
+  const { data: platformAuth } = usePlatformAuthStatus()
   const showAdminSettings = !isAuthMode || isAdmin
   const showAuthAdmin = isAuthMode && isAdmin
+
+  // Same predicate as server isPlatformControlledAuth — not JWKS orgId.
+  const hideLocalAuthSections = Boolean(platformAuth?.platformControlled)
+  const platformTeamInviteHref =
+    hideLocalAuthSections && platformAuth?.platformBaseUrl
+      ? platformInviteHref(platformAuth.platformBaseUrl, platformAuth.orgId)
+      : undefined
 
   // Grouped by what the setting concerns (app-level vs agent behavior), not by
   // who can edit it — admin-only sections are filtered per-item instead.
   const appSections: SettingsPageSection[] = [
     ...(isAuthMode ? [{ id: 'profile', label: 'Profile & Login', icon: <User className="h-4 w-4" />, render: () => <ProfileTab /> }] : []),
+    // Pairing mints a session credential against THIS deployment's auth, so
+    // the tab only exists in auth mode — a local install has no session to pair.
+    ...(isAuthMode ? [{ id: 'mobile', label: 'Mobile', icon: <Smartphone className="h-4 w-4" />, render: () => <MobileTab /> }] : []),
     { id: 'general', label: 'General', icon: <Bolt className="h-4 w-4" />, render: () => <GeneralTab onOpenWizard={onOpenWizard} /> },
     { id: 'notifications', label: 'Notifications', icon: <Bell className="h-4 w-4" />, render: () => <NotificationsTab /> },
     { id: 'platform', label: 'Account', icon: <BadgeCheck className="h-4 w-4" />, render: () => <PlatformTab readOnly={isAuthMode} /> },
@@ -49,8 +70,25 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
     ...(showAdminSettings ? [{ id: 'admin', label: 'Admin', icon: <Shield className="h-4 w-4" />, render: () => <AdminTab /> }] : []),
     ...(showAuthAdmin
       ? [
-          { id: 'users', label: 'Users', icon: <Users className="h-4 w-4" />, render: () => <UsersTab /> },
-          { id: 'auth', label: 'Auth', icon: <Shield className="h-4 w-4" />, render: () => <AuthTab /> },
+          // Keep local role/ban/remove — Platform Team cannot write Better Auth columns.
+          // Invite goes to Platform when platform-controlled (local email invite is off).
+          {
+            id: 'users',
+            label: 'Users',
+            icon: <Users className="h-4 w-4" />,
+            render: () => (
+              <UsersTab
+                platformControlled={hideLocalAuthSections}
+                platformInviteHref={platformTeamInviteHref}
+              />
+            ),
+          },
+          {
+            id: 'auth',
+            label: 'Auth',
+            icon: <Shield className="h-4 w-4" />,
+            render: () => <AuthTab hideLocalAuthSections={hideLocalAuthSections} />,
+          },
         ]
       : []),
   ]

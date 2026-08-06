@@ -1739,10 +1739,28 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'src/index.ts\nsrc/utils.ts\nsrc/types.ts',
       'I found 3 TypeScript files.'
     )],
+    // Mirrors the real formatter output (agent-container/src/tools/web/format-results.ts):
+    // Links JSON contract line (title/url/published, optional favicon), then the numbered list.
     ['search web', new ToolUseScenario(
       'WebSearch',
       { query: 'TypeScript best practices 2025' },
-      'Web search results for query: TypeScript best practices 2025\n\n1. Use strict mode\n2. Prefer interfaces over types',
+      [
+        'Links: ' + JSON.stringify([
+          { title: 'TypeScript Handbook', url: 'https://www.typescriptlang.org/docs/handbook/intro.html', published: '2026-05-12', favicon: 'https://www.typescriptlang.org/favicon-32x32.png' },
+          { title: 'TypeScript Wiki', url: 'https://github.com/microsoft/TypeScript/wiki', published: '', favicon: 'https://github.com/favicon.ico' },
+          { title: 'Strict mode tips', url: 'https://stackoverflow.com/questions/tagged/typescript', published: '2026-03-02', favicon: 'https://stackoverflow.com/favicon.ico' },
+          { title: 'tsconfig reference', url: 'https://example.org/tsconfig', published: '' },
+          { title: 'Effective TypeScript', url: 'https://effectivetypescript.com/', published: '2026-01-20', favicon: 'https://effectivetypescript.com/favicon.ico' },
+          { title: 'Type-level tricks', url: 'https://example.net/tricks', published: '' },
+        ]),
+        '',
+        '1. TypeScript Handbook', '   https://www.typescriptlang.org/docs/handbook/intro.html', '   Published: 2026-05-12', '   Use strict mode from day one.', '',
+        '2. TypeScript Wiki', '   https://github.com/microsoft/TypeScript/wiki', '   Prefer interfaces over type aliases for public APIs.', '',
+        '3. Strict mode tips', '   https://stackoverflow.com/questions/tagged/typescript', '   Published: 2026-03-02', '   Common strictness pitfalls.', '',
+        '4. tsconfig reference', '   https://example.org/tsconfig', '   Every compiler flag explained.', '',
+        '5. Effective TypeScript', '   https://effectivetypescript.com/', '   Published: 2026-01-20', '   62 specific ways to improve your TypeScript.', '',
+        '6. Type-level tricks', '   https://example.net/tricks', '   Advanced conditional types.', '',
+      ].join('\n'),
       'Here are the search results.'
     )],
     // Connected account request scenario
@@ -1889,7 +1907,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   private config: ContainerConfig
   private running: boolean = false
-  private activeBrowserSessionId: string | null = null
+  // Agent-keyed, class-level: scenarios execute against a per-generation
+  // scenarioView (prototype-chained onto the client), so an instance field
+  // written through the view SHADOWS instead of mutating the underlying
+  // client — /browser/status (served by the map instance) would then always
+  // read null. Static state is immune to view shadowing.
+  private static activeBrowserSessions = new Map<string, string>()
   private sessions: Map<string, ContainerSession> = new Map()
   private streamCallbacks: Map<string, Set<(message: StreamMessage) => void>> = new Map()
   // Map from containerSessionId to our internal sessionId (which is the same as the API sessionId)
@@ -1941,7 +1964,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   }
 
   setActiveBrowserSession(sessionId: string | null): void {
-    this.activeBrowserSessionId = sessionId
+    if (sessionId === null) {
+      MockContainerClient.activeBrowserSessions.delete(this.config.agentId)
+    } else {
+      MockContainerClient.activeBrowserSessions.set(this.config.agentId, sessionId)
+    }
+  }
+
+  private get activeBrowserSessionId(): string | null {
+    return MockContainerClient.activeBrowserSessions.get(this.config.agentId) ?? null
   }
 
   /**
@@ -2128,7 +2159,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   async stop(_options?: StopOptions): Promise<{ forceStopUsed: boolean; stopped: boolean }> {
     if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
       cleanupBrowserSessionFn(this.activeBrowserSessionId)
-      this.activeBrowserSessionId = null
+      this.setActiveBrowserSession(null)
     }
     this.running = false
     this.sessions.clear()
@@ -2140,7 +2171,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   stopSync(): void {
     if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
       cleanupBrowserSessionFn(this.activeBrowserSessionId)
-      this.activeBrowserSessionId = null
+      this.setActiveBrowserSession(null)
     }
     this.running = false
     this.sessions.clear()
@@ -2216,6 +2247,33 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
           error: error instanceof Error ? error.message : 'Workspace operation failed',
         }), { status, headers: { 'Content-Type': 'application/json' } })
       }
+    }
+
+    // Browser close — mirror the real container: kill the scenario's Chrome,
+    // drop the active-session marker, and broadcast browser_active:false so
+    // connected clients dismiss their previews. Without this the generic
+    // catch-all 200 {} left the browser "active" forever.
+    if (fetchPath === '/browser/close' && init?.method === 'POST') {
+      let requestedSessionId: string | undefined
+      try {
+        requestedSessionId = (JSON.parse(String(init?.body ?? '{}')) as { sessionId?: string })
+          .sessionId
+      } catch {
+        // No/invalid body — fall back to whatever browser is active.
+      }
+      const sessionId = requestedSessionId ?? this.activeBrowserSessionId
+      if (sessionId) {
+        if (cleanupBrowserSessionFn) cleanupBrowserSessionFn(sessionId)
+        this.setActiveBrowserSession(null)
+        this.emitStreamMessage(sessionId, {
+          type: 'browser_active',
+          content: { type: 'browser_active', active: false, sessionId },
+        })
+      }
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
     }
 
     // Browser status — used by frontend when WebSocket closes to check if browser is still active

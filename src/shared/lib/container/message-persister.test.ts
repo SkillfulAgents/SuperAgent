@@ -2189,10 +2189,10 @@ describe('MessagePersister', () => {
       expect(stored[0].name).toBe('compact')
     })
 
-    it('does not overwrite rich slash commands with init event strings', () => {
-      // Pre-set rich commands (e.g. from container HTTP response)
+    it('uses init slugs without losing rich command details', () => {
+      // Pre-set rich commands (e.g. legacy metadata or a container HTTP response)
       const richCommands = [
-        { name: 'compact', description: 'Clear conversation history', argumentHint: '<instructions>' },
+        { name: 'Order Canvas Print', description: 'Order a framed canvas', argumentHint: '<image>' },
       ]
       messagePersister.setSlashCommands(SESSION_ID, richCommands)
 
@@ -2203,16 +2203,17 @@ describe('MessagePersister', () => {
         type: 'system',
         subtype: 'init',
         session_id: 'claude-session-1',
-        slash_commands: ['compact', 'review'],
+        slash_commands: ['order-canvas-print', 'review'],
       })
 
-      // Should still have the rich commands, NOT overwritten by strings
       const stored = messagePersister.getSlashCommands(SESSION_ID)
-      expect(stored).toEqual(richCommands)
+      expect(stored).toEqual([
+        { name: 'order-canvas-print', description: 'Order a framed canvas', argumentHint: '<image>' },
+        { name: 'review', description: '', argumentHint: '' },
+      ])
 
-      // stream_start should include the rich commands
       const streamStarts = sseEvents.filter(e => e.type === 'stream_start')
-      expect(streamStarts[0].slashCommands).toEqual(richCommands)
+      expect(streamStarts[0].slashCommands).toEqual(stored)
     })
 
     it('broadcasts slash commands in stream_start when available', () => {

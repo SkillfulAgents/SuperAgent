@@ -40,13 +40,15 @@ import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
 import platformSsoStart from './routes/platform-sso-start'
 import tokenExchange from './routes/token-exchange'
+import mobilePairing from './routes/mobile-pairing'
 import agentBootstrap from './routes/agent-bootstrap'
 import activityRouter from './routes/activity'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user as userTable } from '@shared/lib/db/schema'
-import { authEnforcementMiddleware, getAuthSettings } from './middleware/auth-enforcement'
+import { authEnforcementMiddleware } from './middleware/auth-enforcement'
+import { getAuthSettings } from '@shared/lib/auth/auth-settings'
 import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 
@@ -130,6 +132,12 @@ if (isAuthMode()) {
 // wins the route match, after the rate limiter + enforcement middleware above.
 if (isAuthMode()) {
   app.route('/api/auth/token', tokenExchange)
+}
+
+// Mobile pairing endpoints — same placement rationale as the token endpoint:
+// before the Better Auth wildcard, behind the /api/auth/* middleware stack.
+if (isAuthMode()) {
+  app.route('/api/auth/mobile', mobilePairing)
 }
 
 // Mount Better Auth handler (only when AUTH_MODE is enabled)

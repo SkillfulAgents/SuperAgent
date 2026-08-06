@@ -39,6 +39,7 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
@@ -902,30 +903,37 @@ async function generateAndUpdateSessionNameAsync(
   agentName: string
 ): Promise<void> {
   let sessionName: string | null = null
-  try {
-    const anthropic = getLlmClient()
-    sessionName = await createSummarizerText(anthropic, {
-      model: getSummarizerModel(),
-      messages: [
-        {
-          role: 'user',
-          content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
+  // The E2E mock avoids all real provider calls — but this host-direct SDK
+  // call bypassed it, so every test session made a doomed HTTPS round trip
+  // (plus SDK retries) and logged an auth-error stack. Skip straight to the
+  // truncated-message fallback below.
+  const skipProviderNaming = process.env.E2E_MOCK === 'true'
+  if (!skipProviderNaming) {
+    try {
+      const anthropic = getLlmClient()
+      sessionName = await createSummarizerText(anthropic, {
+        model: getSummarizerModel(),
+        messages: [
+          {
+            role: 'user',
+            content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
 
 "${message}"
 
 Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
-        },
-      ],
-    })
-  } catch (error) {
-    console.error('Failed to generate session name after retries:', error)
+          },
+        ],
+      })
+    } catch (error) {
+      console.error('Failed to generate session name after retries:', error)
+    }
   }
   try {
     // Naming can fail outright (misconfigured summarizer model) or return no
     // text (thinking-first ruminators like small qwen burn the whole budget);
     // fall back to the truncated first message so the session is still
     // identifiable in the sidebar instead of staying "New Session".
-    if (!sessionName) {
+    if (!sessionName && !skipProviderNaming) {
       console.warn(`Session name generation returned no text; falling back to truncated message for session ${sessionId}`)
     }
     const finalName = sessionName
@@ -2253,8 +2261,12 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       if (slashCommands.length === 0) {
         const meta = await getSessionMetadata(agentSlug, sessionId)
         if (meta?.slashCommands && meta.slashCommands.length > 0) {
-          slashCommands = meta.slashCommands
+          const repaired = repairLegacySlashCommands(meta.slashCommands)
+          slashCommands = repaired.commands
           messagePersister.setSlashCommands(sessionId, slashCommands)
+          if (repaired.changed) {
+            updateSessionMetadata(agentSlug, sessionId, { slashCommands }).catch(console.error)
+          }
         }
       }
       const backgroundTasks = messagePersister.getActiveBackgroundTasks(sessionId)

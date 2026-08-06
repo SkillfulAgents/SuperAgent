@@ -15,6 +15,7 @@ export const SESSION_CREATION_METHODS = [
   'password',
   'oidc',
   'token-exchange',
+  'mobile',
   'impersonation',
   'unknown',
 ] as const

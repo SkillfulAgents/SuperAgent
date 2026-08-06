@@ -16,6 +16,7 @@ import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { startBrowserProfileCleanup, stopBrowserProfileCleanup } from '../../main/host-browser/profile-maintenance'
 import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
+import { clearPendingApprovalBans } from './auth/clear-pending-approval-bans'
 import { validateAuthModeStartup } from './auth/startup-validation'
 import {
   decodeOrgIdFromToken,
@@ -107,6 +108,13 @@ async function initializeServicesInner() {
 
   if (isAuthMode()) {
     await validateAuthModeStartup()
+    try {
+      clearPendingApprovalBans()
+    } catch (error) {
+      captureException(error, {
+        tags: { component: 'startup', operation: 'clear-pending-approval-bans' },
+      })
+    }
   }
 
   // Install fetch interceptor for org JWTs (opaque keys don't need attribution).

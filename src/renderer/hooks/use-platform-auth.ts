@@ -15,6 +15,8 @@ export type { PlatformAuthSource }
 
 export interface PlatformAuthStatus extends SharedPlatformAuthStatus {
   platformBaseUrl: string
+  /** AUTH_MODE + PLATFORM_TOKEN — same predicate as server resolveAuthSettings. */
+  platformControlled?: boolean
 }
 
 export interface PlatformAuthCallbackParams {
