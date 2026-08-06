@@ -157,10 +157,19 @@ describe('initializeServices post-bind critical path', () => {
   })
 
   it('afterBindInitialize marks bound, inits, then logs timing', async () => {
-    const { afterBindInitialize } = await import('./startup')
+    const { afterBindInitialize, getServicesInitError } = await import('./startup')
     await afterBindInitialize()
     expect(markBoot).toHaveBeenCalledWith('bound')
     expect(reconcile).toHaveBeenCalledTimes(1)
+    expect(logBootTiming).toHaveBeenCalledTimes(1)
+    expect(getServicesInitError()).toBeNull()
+  })
+
+  it('records the init error for runtime-status when init fails degraded', async () => {
+    validateAuth.mockRejectedValueOnce(new Error('platform unreachable'))
+    const { afterBindInitialize, getServicesInitError } = await import('./startup')
+    await afterBindInitialize({ degradedOnFailure: true })
+    expect(getServicesInitError()).toBe('platform unreachable')
     expect(logBootTiming).toHaveBeenCalledTimes(1)
   })
 })

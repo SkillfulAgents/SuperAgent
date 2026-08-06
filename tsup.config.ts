@@ -42,8 +42,11 @@ export default defineConfig({
   outDir: 'dist/web',
   splitting: false,
   noExternal: dependencies.filter((name) => !isExternal(name)),
+  // Pass externalExact directly (not filtered through pkg.dependencies):
+  // require/import-in-the-middle are transitive deps of Sentry/OTel, so a
+  // dependency filter would silently drop them from esbuild's external list.
   external: [
-    ...dependencies.filter(isExternal),
+    ...externalExact,
     ...externalPrefix.map((p) => new RegExp(`^${p}`)),
   ],
   // Inlined CJS may call require('events'); give the ESM bundle a real require.

@@ -36,6 +36,12 @@ import { credentialBroker } from '../../api/credentials/credential-broker'
 
 // TODO: this fires a lot of work on startup; defer some work and limit concurrency.
 let servicesInitPromise: Promise<void> | null = null
+let servicesInitError: string | null = null
+
+/** Non-null when background-service init failed and the server runs degraded. */
+export function getServicesInitError(): string | null {
+  return servicesInitError
+}
 
 /** Idempotent; call only via afterBindInitialize (or tests). */
 export function initializeServices(): Promise<void> {
@@ -55,6 +61,7 @@ export async function afterBindInitialize(options: AfterBindInitOptions = {}): P
     await initializeServices()
   } catch (error) {
     console.error('Failed to initialize services:', error)
+    servicesInitError = error instanceof Error ? error.message : String(error)
     if (options.degradedOnFailure) {
       captureException(error, { tags: { component: 'startup', operation: 'initialize-services' } })
     }
