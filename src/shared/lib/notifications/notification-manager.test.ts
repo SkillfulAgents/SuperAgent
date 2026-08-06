@@ -39,6 +39,15 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     promoteAutomatedSession: mocks.promoteAutomatedSession,
   },
 }))
+// The web-push channel reads real push-subscription rows on deliver; stub it
+// so these tests never open a database. The client-broadcast channel stays
+// real — the broadcastGlobal assertions below are its contract.
+vi.mock('./channels/web-push-channel', () => ({
+  WebPushChannel: class {
+    id = 'web_push'
+    async deliver() {}
+  },
+}))
 
 const mockCreateNotification = mocks.createNotification
 const mockGetSessionMetadata = mocks.getSessionMetadata

@@ -12,6 +12,7 @@ import scheduledTasks from './routes/scheduled-tasks'
 import webhookTriggers from './routes/webhook-triggers'
 import chatIntegrationsRouter from './routes/chat-integrations'
 import notifications from './routes/notifications'
+import pushRouter from './routes/push'
 import platformNotifications from './routes/platform-notifications'
 import proxy from './routes/proxy'
 import mcpProxy from './routes/mcp-proxy'
@@ -217,6 +218,7 @@ app.route('/api/scheduled-tasks', scheduledTasks)
 app.route('/api/webhook-triggers', webhookTriggers)
 app.route('/api/chat-integrations', chatIntegrationsRouter)
 app.route('/api/notifications', notifications)
+app.route('/api/push', pushRouter)
 app.route('/api/platform-notifications', platformNotifications)
 app.route('/api/proxy', proxy)
 app.route('/api/agent-bootstrap', agentBootstrap)
