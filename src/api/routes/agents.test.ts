@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
+import { runInNewContext } from 'node:vm'
 
 // ============================================================================
 // Mocks — must be declared before import
@@ -601,6 +602,56 @@ async function postFormData(app: Hono, url: string, body: FormData): Promise<Res
     body,
   })
 }
+
+// ============================================================================
+// Standalone dashboard wrapper
+// ============================================================================
+
+describe('GET /:id/artifacts/:artifactSlug/view', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+  })
+
+  it('reuses the initial running status instead of entering the poll loop', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
+    const html = await res.text()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { slug: 'sales', name: 'Sales', status: 'running' },
+      ]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'running' }), { status: 200 }))
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+    const loadingRemove = vi.fn()
+    const appendChild = vi.fn()
+    const iframe: Record<string, string> = {}
+    const statusElement = { textContent: '', classList: { add: vi.fn() } }
+    const loadingElement = { remove: loadingRemove }
+    const document = {
+      title: '',
+      getElementById: (id: string) => id === 'status' ? statusElement : loadingElement,
+      createElement: () => iframe,
+      body: { appendChild },
+    }
+
+    expect(script).toBeDefined()
+    runInNewContext(script!, {
+      document,
+      fetch: fetchMock,
+      setTimeout,
+    })
+
+    await vi.waitFor(() => {
+      expect(appendChild).toHaveBeenCalledWith(iframe)
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/agents/test-agent/artifacts')
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/agents/test-agent')
+    expect(loadingRemove).toHaveBeenCalledOnce()
+    expect(iframe.src).toBe('/api/agents/test-agent/artifacts/sales/')
+  })
+})
 
 // ============================================================================
 // Shared-agent connection projections

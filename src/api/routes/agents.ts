@@ -5700,29 +5700,43 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
       document.title = (name || artifactSlug) + ' \\u2014 Gamut';
     }
 
-    async function fetchDashboardName() {
+    // undefined means the status check itself was inconclusive; null means
+    // it completed and the requested dashboard was absent.
+    async function fetchDashboard() {
       try {
         const res = await fetch(basePath + '/artifacts');
-        if (res.ok) {
-          const artifacts = await res.json();
-          const d = Array.isArray(artifacts) && artifacts.find(a => a.slug === artifactSlug);
-          if (d && d.name) { setTitle(d.name); return d.name; }
-        }
+        if (!res.ok) return undefined;
+        const artifacts = await res.json();
+        if (!Array.isArray(artifacts)) return undefined;
+        const dashboard = artifacts.find(a => a.slug === artifactSlug) || null;
+        if (dashboard && dashboard.name) setTitle(dashboard.name);
+        return dashboard;
       } catch {}
-      return null;
+      return undefined;
+    }
+
+    function showDashboard() {
+      loadingEl.remove();
+      const iframe = document.createElement('iframe');
+      iframe.src = dashboardUrl;
+      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
+      iframe.allow = 'microphone; camera';
+      document.body.appendChild(iframe);
     }
 
     async function run() {
       try {
-        // 1. Resolve dashboard name (works even when agent is stopped)
-        await fetchDashboardName();
+        // 1. Seed both dashboard metadata and live status. This works while the
+        // agent is stopped too, though that fallback reports stopped.
+        const initialDashboard = await fetchDashboard();
 
         // 2. Check agent status
         const agentRes = await fetch(basePath);
         if (!agentRes.ok) { throw new Error('Failed to fetch agent info'); }
         const agent = await agentRes.json();
+        const agentWasRunning = agent.status === 'running';
 
-        if (agent.status !== 'running') {
+        if (!agentWasRunning) {
           // 3. Start the agent
           statusEl.textContent = 'Starting agent…';
           const startRes = await fetch(basePath + '/start', { method: 'POST' });
@@ -5732,17 +5746,24 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
           }
         }
 
+        // The initial artifacts request already gave us a fresh status. When
+        // both processes were running, avoid flashing a redundant wait screen
+        // and let the iframe paint immediately.
+        if (agentWasRunning && initialDashboard !== undefined) {
+          if (!initialDashboard) { throw new Error('Dashboard not found.'); }
+          if (initialDashboard.status === 'crashed') { throw new Error('Dashboard crashed.'); }
+          if (initialDashboard.status === 'running') {
+            showDashboard();
+            return;
+          }
+        }
+
         // 4. Poll until dashboard is running
         statusEl.textContent = 'Waiting for dashboard…';
         await pollDashboard();
 
         // 5. Show the dashboard
-        loadingEl.remove();
-        const iframe = document.createElement('iframe');
-        iframe.src = dashboardUrl;
-        iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
-        iframe.allow = 'microphone; camera';
-        document.body.appendChild(iframe);
+        showDashboard();
       } catch (err) {
         statusEl.textContent = err.message;
         statusEl.classList.add('error');

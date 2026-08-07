@@ -24,7 +24,6 @@ export type DashboardViewStateInput = {
   canStart: boolean
   startFailed: boolean
   waitElapsedMs: number
-  iframeLoaded: boolean
 }
 
 function waiting(slow: boolean, pollFast: boolean): Extract<DashboardViewState, { kind: 'waiting' }> {
@@ -47,7 +46,6 @@ export function resolveDashboardViewState(input: DashboardViewStateInput): Dashb
     canStart,
     startFailed,
     waitElapsedMs,
-    iframeLoaded,
   } = input
 
   if (!agentRunning) {
@@ -85,9 +83,6 @@ export function resolveDashboardViewState(input: DashboardViewStateInput): Dashb
   }
 
   if (dashboard.status === 'running') {
-    if (!iframeLoaded) {
-      return waiting(slow, false)
-    }
     return { kind: 'ready' }
   }
 

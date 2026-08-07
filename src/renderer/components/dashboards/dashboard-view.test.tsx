@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardView } from './dashboard-view'
@@ -112,7 +112,7 @@ describe('DashboardView restart', () => {
     expect(mocks.start.mutateAsync).toHaveBeenCalledOnce()
   })
 
-  it('waits for the new document when the frame remounts after the agent left running', () => {
+  it('shows a running dashboard without waiting for the iframe load event', () => {
     mocks.dashboardStatus = 'running'
     const frame = () => document.querySelector('iframe')
     const waiting = () => screen.queryByText('Waiting for dashboard…')
@@ -120,7 +120,7 @@ describe('DashboardView restart', () => {
     const view = render(
       <DashboardView agentSlug="agent" dashboardSlug="dashboard" />,
     )
-    fireEvent.load(frame()!)
+    expect(frame()).not.toBeNull()
     expect(waiting()).toBeNull()
 
     // The agent leaves running through a control outside this view.
@@ -131,7 +131,8 @@ describe('DashboardView restart', () => {
     mocks.agentStatus = 'running'
     view.rerender(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
 
-    expect(waiting()).not.toBeNull()
+    expect(frame()).not.toBeNull()
+    expect(waiting()).toBeNull()
   })
 
   it('uses the canonical agent id for the mounted dashboard URL', () => {
