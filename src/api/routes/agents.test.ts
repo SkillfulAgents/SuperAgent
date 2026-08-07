@@ -1011,18 +1011,18 @@ describe('agent startup — POST /:id/start', () => {
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     status: 'running' as const,
     containerPort: 3456,
-    sessionCount: 2,
   }
 
   beforeEach(() => {
     vi.clearAllMocks()
     mockAgentExists.mockResolvedValue(true)
-    mockGetCachedInfo.mockReturnValue({ status: 'running', port: 3456 })
     vi.mocked(getAgentWithStatus).mockResolvedValue(runningAgent)
   })
 
   afterEach(() => {
-    vi.mocked(containerManager.ensureRunning).mockResolvedValue({} as never)
+    // Restore the file-level default so a pending/rejected mock from these
+    // tests doesn't leak into later describe blocks.
+    vi.mocked(containerManager.ensureRunning).mockReset()
   })
 
   it('does not resolve until the container has become healthy', async () => {
@@ -1041,6 +1041,9 @@ describe('agent startup — POST /:id/start', () => {
 
     await vi.waitFor(() => expect(containerManager.ensureRunning).toHaveBeenCalledWith('test-agent'))
     expect(settled).toBe(false)
+    // The identity read must wait for health so the response reflects the
+    // post-start status.
+    expect(getAgentWithStatus).not.toHaveBeenCalled()
 
     resolveStart({})
     const response = await responsePromise

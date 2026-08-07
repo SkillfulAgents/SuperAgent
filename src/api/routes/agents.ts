@@ -1429,22 +1429,15 @@ agents.post('/:id/start', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
 
-    // Read the lightweight response identity while the runtime starts. The
-    // full session summary can stat thousands of transcripts and every caller
-    // invalidates/refetches agent data after this command anyway.
-    const [agent] = await Promise.all([
-      getAgentWithStatus(slug, { includeSummary: false }),
-      containerManager.ensureRunning(slug),
-    ])
-    const info = containerManager.getCachedInfo(slug)
+    await containerManager.ensureRunning(slug)
+
+    // Skip the session-summary enrichment: it stats every transcript, and every
+    // caller of this command discards the body and refetches agent data anyway.
+    const agent = await getAgentWithStatus(slug, { includeSummary: false })
 
     // Note: agent_status_changed is broadcast by containerManager.ensureRunning()
 
-    return c.json(agent ? {
-      ...agent,
-      status: info.status,
-      containerPort: info.port,
-    } : agent)
+    return c.json(agent)
   } catch (error) {
     console.error('Failed to start agent:', error)
     const message = error instanceof Error ? error.message : 'Failed to start agent'
