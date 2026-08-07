@@ -2154,7 +2154,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       })
     }
     console.log(`[MockContainerClient] Started mock container for agent ${this.config.agentId}`)
-    return { status: 'running', port: 3000 }
+    return this.getInfoFromRuntime()
   }
 
   async stop(_options?: StopOptions): Promise<{ forceStopUsed: boolean; stopped: boolean }> {

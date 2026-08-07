@@ -690,11 +690,11 @@ class ContainerManager {
         },
       })
 
-      // Production runtimes return the port that just passed their health
-      // gate, so don't immediately spawn another inspect/API request for the
-      // same state. Lightweight/mock clients may omit it; preserve the
-      // runtime-query fallback for them. (Can't use syncAgentStatus here — it
-      // is guarded against updates during startup.)
+      // start() returns the port that just passed the runtime's health gate,
+      // so don't immediately spawn another inspect/API request for the same
+      // state. The runtime-query fallback covers clients that omit the
+      // return, which the ContainerClient contract still allows. (Can't use
+      // syncAgentStatus here — it is guarded against updates during startup.)
       const info = startedInfo ?? await client.getInfoFromRuntime()
       this.updateCachedStatus(agentId, info.status, info.port)
 
