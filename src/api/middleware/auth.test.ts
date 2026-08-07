@@ -39,16 +39,24 @@ vi.mock('drizzle-orm', () => ({
   and: (...args: unknown[]) => args,
 }))
 
-const mockValidateProxyToken = vi.fn<(token: string) => Promise<boolean>>()
+// Real return is string | null; some older cases still use boolean truthiness.
+const mockValidateProxyToken = vi.fn<(token: string) => Promise<string | null | boolean>>()
 vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (token: string) => mockValidateProxyToken(token),
 }))
 
+const mockRunWithOptionalUser = vi.fn(
+  (_userId: string | null | undefined, fn: () => unknown) => fn(),
+)
+const mockGetAgentOwnerUserId = vi.fn<(agentSlug: string) => string | null>(() => null)
 vi.mock('@shared/lib/platform-attribution', () => ({
   runWithRequestUser: (_userId: string, fn: () => unknown) => fn(),
-  runWithOptionalUser: (_userId: string | null | undefined, fn: () => unknown) => fn(),
+  runWithOptionalUser: (userId: string | null | undefined, fn: () => unknown) =>
+    mockRunWithOptionalUser(userId, fn),
 }))
-vi.mock('@shared/lib/services/agent-owner', () => ({ getAgentOwnerUserId: () => null }))
+vi.mock('@shared/lib/services/agent-owner', () => ({
+  getAgentOwnerUserId: (agentSlug: string) => mockGetAgentOwnerUserId(agentSlug),
+}))
 
 // Import after mocks
 import {
@@ -544,6 +552,37 @@ describe('Auth Middleware', () => {
         headers: { Authorization: 'Bearer bad-token' },
       })
       expect(res.status).toBe(401)
+    })
+
+    // SUP-351: IsAgent must set owner scope so Browserbase/Exa get token::memberId.
+    it('runs the handler under the token agent owner attribution scope', async () => {
+      mockValidateProxyToken.mockResolvedValue('agent-a')
+      mockGetAgentOwnerUserId.mockReturnValue('user-owner-1')
+      const app = new Hono()
+      app.get('/test', IsAgent(), (c) => c.json({ ok: true }))
+
+      const res = await app.request('http://localhost/test', {
+        headers: { Authorization: 'Bearer agent-a-token' },
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockGetAgentOwnerUserId).toHaveBeenCalledWith('agent-a')
+      expect(mockRunWithOptionalUser).toHaveBeenCalledWith('user-owner-1', expect.any(Function))
+    })
+
+    it('uses a null attribution scope when the agent has no owner', async () => {
+      mockValidateProxyToken.mockResolvedValue('orphan-agent')
+      mockGetAgentOwnerUserId.mockReturnValue(null)
+      const app = new Hono()
+      app.get('/test', IsAgent(), (c) => c.json({ ok: true }))
+
+      const res = await app.request('http://localhost/test', {
+        headers: { Authorization: 'Bearer orphan-token' },
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockGetAgentOwnerUserId).toHaveBeenCalledWith('orphan-agent')
+      expect(mockRunWithOptionalUser).toHaveBeenCalledWith(null, expect.any(Function))
     })
   })
 
