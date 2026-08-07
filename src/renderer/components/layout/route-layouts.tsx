@@ -1,5 +1,5 @@
 import { lazyRouteComponent, Outlet } from '@tanstack/react-router'
-import { Suspense, useState, useEffect, useRef } from 'react'
+import { Suspense, useCallback, useState, useEffect, useRef } from 'react'
 import { DialogProvider } from '@renderer/context/dialog-context'
 import { UpdateStatusProvider } from '@renderer/context/update-status-context'
 import { UpdateToastNotifier } from '@renderer/components/update-toast-notifier'
@@ -46,6 +46,9 @@ export function RootLayout() {
 
   const [wizardOpen, setWizardOpen] = useState(false)
   const [wizardAgentOnly, setWizardAgentOnly] = useState(false)
+  // Latched on first open so the dialog stays mounted afterwards — unmounting
+  // an open Radix dialog would skip its close animation and focus restore.
+  const [searchEverOpened, setSearchEverOpened] = useState(false)
   const { data: userSettings } = useUserSettings()
   const { data: globalSettings } = useSettings()
   const { isAuthMode, isAdmin, user } = useUser()
@@ -56,6 +59,35 @@ export function RootLayout() {
   useEffect(() => {
     identify()
   }, [identify])
+
+  useEffect(() => {
+    if (searchOpen) setSearchEverOpened(true)
+  }, [searchOpen])
+
+  // Warm the search chunk once boot settles so the first cmd/ctrl-K opens
+  // instantly instead of waiting on a network fetch. Off the critical path by
+  // construction: idle callback (or a timer where unsupported, e.g. Safari).
+  useEffect(() => {
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(() => {
+        void SearchDialog.preload?.()
+      })
+      return () => window.cancelIdleCallback(id)
+    }
+    const id = window.setTimeout(() => {
+      void SearchDialog.preload?.()
+    }, 2500)
+    return () => window.clearTimeout(id)
+  }, [])
+
+  // Load the wizard chunk BEFORE flipping wizardOpen: the wizard replaces
+  // <Outlet/> outright, so suspending after the flip would blank the whole
+  // window for the duration of the fetch (worst on first-boot onboarding over
+  // slow networks). preload() resolves even on failure — the render then hits
+  // lazyRouteComponent's reload-once / error path instead of never opening.
+  const openWizard = useCallback(() => {
+    void (GettingStartedWizard.preload?.() ?? Promise.resolve()).then(() => setWizardOpen(true))
+  }, [])
 
   const shareErrorReports = globalSettings?.shareErrorReports
   useEffect(() => {
@@ -81,20 +113,20 @@ export function RootLayout() {
     if (!isAuthMode) {
       hasAutoOpened.current = true
       setWizardAgentOnly(false)
-      setWizardOpen(true)
+      openWizard()
     } else if (!globalSettings.setupCompleted && isAdmin) {
       hasAutoOpened.current = true
       setWizardAgentOnly(false)
-      setWizardOpen(true)
+      openWizard()
     } else if (globalSettings.setupCompleted) {
       hasAutoOpened.current = true
       setWizardAgentOnly(true)
-      setWizardOpen(true)
+      openWizard()
     }
-  }, [userSettings, globalSettings, isAuthMode, isAdmin])
+  }, [userSettings, globalSettings, isAuthMode, isAdmin, openWizard])
 
   return (
-    <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
+    <DialogProvider onOpenWizard={openWizard}>
       <UpdateStatusProvider>
         <OnboardingProvider>
           {/* Real-time + native-nav handlers live HERE (root, above the
@@ -114,8 +146,9 @@ export function RootLayout() {
           <WindowControls />
           <UpdateToastNotifier />
           {/* Rendered here (inside the router) so it can use useNavigate. The
-              closed dialog stays off the boot graph entirely. */}
-          {searchOpen ? (
+              dialog stays off the boot graph until first opened, then stays
+              mounted (closed) so Radix can play its exit animation. */}
+          {searchOpen || searchEverOpened ? (
             <Suspense fallback={null}>
               <SearchDialog />
             </Suspense>
