@@ -105,10 +105,20 @@ function renderMcpOAuthCallbackHtml(payload: McpOAuthCallbackPayload, message: s
  * already completed server-side. It hands the result back into the app via the
  * custom scheme so the main process can notify the renderer over IPC.
  */
+// Only SuperAgent desktop deep-link schemes — never arbitrary URI schemes from the client.
+const DESKTOP_OAUTH_PROTOCOLS = new Set(['superagent', 'superagent-dev'])
+
+function resolveDesktopOAuthProtocol(candidate?: string): string {
+  if (candidate && DESKTOP_OAUTH_PROTOCOLS.has(candidate)) return candidate
+  const fromEnv = process.env.SUPERAGENT_PROTOCOL
+  if (fromEnv && DESKTOP_OAUTH_PROTOCOLS.has(fromEnv)) return fromEnv
+  return 'superagent'
+}
+
 function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload, desktopProtocol?: string): string {
   // Prefer the scheme recorded on the flow: a cloud deployment serving this
   // callback has no SUPERAGENT_PROTOCOL of its own (SUP-560).
-  const protocol = desktopProtocol || process.env.SUPERAGENT_PROTOCOL || 'superagent'
+  const protocol = resolveDesktopOAuthProtocol(desktopProtocol)
   const params = new URLSearchParams()
   params.set('success', payload.success ? 'true' : 'false')
   if (payload.mcpId) params.set('mcpId', payload.mcpId)
@@ -291,14 +301,11 @@ remoteMcps.post('/initiate-oauth', async (c) => {
   // fetches carry `Origin: null`. The AS redirects the external browser here to complete
   // the flow, so the URL must be one the local API server actually answers on.
   //
-  // The scheme comes from the client when it sends one (validated against the
-  // RFC 3986 scheme grammar): a cloud deployment serving a proxied Electron
-  // client has no SUPERAGENT_PROTOCOL of its own (SUP-560).
-  const clientProtocol =
-    typeof body.protocol === 'string' && /^[a-z][a-z0-9+.-]*$/i.test(body.protocol)
-      ? body.protocol
-      : undefined
-  const protocol = clientProtocol || process.env.SUPERAGENT_PROTOCOL || 'superagent'
+  // Scheme from the Electron client (allowlisted): a cloud deployment serving a
+  // proxied client has no SUPERAGENT_PROTOCOL of its own (SUP-560).
+  const protocol = resolveDesktopOAuthProtocol(
+    typeof body.protocol === 'string' ? body.protocol : undefined,
+  )
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const loopbackRedirect = `${new URL(c.req.url).origin}/api/remote-mcps/oauth-callback`
   const httpRedirect = body.electron

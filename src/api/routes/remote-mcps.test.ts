@@ -1073,6 +1073,30 @@ describe('SSRF protection', () => {
       const [, , candidates] = mockInitiateNewServerOAuth.mock.calls[0]
       expect(candidates[0]).toBe('superagent://mcp-oauth-callback')
     })
+
+    it('ignores well-formed but non-allowlisted schemes (file, vscode, …)', async () => {
+      mockInitiateNewServerOAuth.mockResolvedValue({
+        authorizationUrl: 'https://auth.example.com/auth',
+        state: 'state-xyz',
+      })
+
+      for (const protocol of ['file', 'vscode', 'http', 'https']) {
+        mockInitiateNewServerOAuth.mockClear()
+        await app.request('http://localhost/api/remote-mcps/initiate-oauth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Dev MCP',
+            url: 'https://mcp.example.com/mcp',
+            electron: true,
+            protocol,
+          }),
+        })
+
+        const [, , candidates] = mockInitiateNewServerOAuth.mock.calls[0]
+        expect(candidates[0]).toBe('superagent://mcp-oauth-callback')
+      }
+    })
   })
 
   describe('POST /initiate-oauth — surfaces OAuth setup failures', () => {
