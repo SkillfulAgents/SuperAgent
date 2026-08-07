@@ -40,6 +40,9 @@ export default defineConfig({
   entry: ['src/web/server.ts'],
   format: ['esm'],
   outDir: 'dist/web',
+  // The runtime-dependency check scans every bundle in outDir, so stale chunks
+  // from earlier builds must not survive.
+  clean: true,
   splitting: false,
   noExternal: dependencies.filter((name) => !isExternal(name)),
   // Pass externalExact directly (not filtered through pkg.dependencies):

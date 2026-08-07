@@ -54,7 +54,8 @@ async function listBundles(directory) {
 async function externalSpecifiers(bundlePath) {
   // Re-parsing the emitted bundle avoids source-level guesses. Package imports
   // and relative chunks stay external, so esbuild reports the exact runtime
-  // edges without resolving or executing them.
+  // edges without resolving or executing them. Only literal specifiers are
+  // visible: require(someVariable) never reaches the metafile.
   const result = await build({
     entryPoints: [bundlePath],
     bundle: true,
@@ -120,9 +121,10 @@ function productionClosure(packages, directDependencies) {
 }
 
 function closureContains(closure, packageName) {
-  return [...closure].some(
-    (key) => key === `node_modules/${packageName}` || key.endsWith(`/node_modules/${packageName}`),
-  )
+  // Bundles in dist/ resolve bare specifiers from the repo-root node_modules, so
+  // only a top-level install counts; a nested-only copy (node_modules/x/node_modules/y)
+  // is unreachable from the bundle even though it is in the closure.
+  return closure.has(`node_modules/${packageName}`)
 }
 
 const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'))
