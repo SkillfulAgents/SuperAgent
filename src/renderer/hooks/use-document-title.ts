@@ -22,6 +22,7 @@ const SETTINGS_TAB_TITLES = {
   runtime: 'Container Runtime',
   browser: 'Browser Use',
   web: 'Web Search',
+  media: 'Media Generation',
   capabilities: 'Subagents',
   'computer-use': 'Computer Use',
   'account-provider': 'Account Provider',

@@ -62,6 +62,7 @@ export interface ApiKeySettings {
   nangoSecretKey?: string
   accountProviderUserId?: string
   exaApiKey?: string
+  replicateApiKey?: string
 }
 
 export type SttProvider = 'deepgram' | 'openai' | 'platform'
@@ -349,6 +350,7 @@ export interface GlobalSettingsResponse {
     deepgram: ApiKeyStatus
     openai: ApiKeyStatus
     exa: ApiKeyStatus
+    replicate: ApiKeyStatus
   }
   composioUserId?: string
   /** Saved generic-provider endpoint. Not a secret — echoed so the Settings UI can display/edit it. */

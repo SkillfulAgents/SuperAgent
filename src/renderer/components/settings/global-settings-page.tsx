@@ -1,4 +1,4 @@
-import { Bolt, Cuboid, Bell, Layers, BarChart3, Blocks, Users, Shield, Route, User, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, Search, Smartphone, Sparkle, Workflow } from 'lucide-react'
+import { Bolt, Cuboid, Bell, Layers, BarChart3, Blocks, Users, Shield, Route, User, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, Search, Smartphone, Sparkle, Workflow, Clapperboard } from 'lucide-react'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
 import { type LinkProps } from '@tanstack/react-router'
 import { ProfileTab } from './profile-tab'
@@ -18,6 +18,7 @@ import { AuthTab } from './auth-tab'
 import { AdminTab } from './admin-tab'
 import { VoiceTab } from './voice-tab'
 import { WebTab } from './web-tab'
+import { MediaTab } from './media-tab'
 import { AnalyticsTab } from './analytics-tab'
 import { PlatformTab } from './platform-tab'
 import { ComputerUseTab } from './computer-use-tab'
@@ -100,6 +101,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
       ? [
           { id: 'skillsets', label: 'Skillsets', icon: <Layers className="h-4 w-4" />, render: () => <SkillsetsTab /> },
           { id: 'web', label: 'Web Search', icon: <Search className="h-4 w-4" />, render: () => <WebTab /> },
+          { id: 'media', label: 'Media Generation', icon: <Clapperboard className="h-4 w-4" />, render: () => <MediaTab /> },
           { id: 'browser', label: 'Browser Use', icon: <MousePointer2 className="h-4 w-4" />, render: () => <BrowserTab /> },
           // Computer Use drives the machine the agent runs on, and its whole
           // UI — permission grants, the recovery link into System Settings — is
