@@ -11,16 +11,9 @@ import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/us
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
 import { useCloudWorkspace } from '@renderer/hooks/use-cloud-workspace'
 import { isElectron } from '@renderer/lib/env'
+import { openExternalUrl } from '@renderer/lib/open-external'
 import { cn } from '@shared/lib/utils'
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
-
-async function openExternalUrl(url: string) {
-  if (window.electronAPI?.openExternal) {
-    await window.electronAPI.openExternal(url)
-    return
-  }
-  window.open(url, '_blank', 'noopener,noreferrer')
-}
 
 interface PlatformTabProps {
   readOnly?: boolean
@@ -96,12 +89,7 @@ function PlatformBillingCard({
 
   async function handleManageBilling() {
     if (!platformBaseUrl || !orgId) return
-    const url = `${platformBaseUrl}/dashboard/organizations/${orgId}?tab=billing`
-    if (window.electronAPI?.openExternal) {
-      await window.electronAPI.openExternal(url)
-      return
-    }
-    window.open(url, '_blank', 'noopener,noreferrer')
+    await openExternalUrl(`${platformBaseUrl}/dashboard/organizations/${orgId}?tab=billing`)
   }
 
   return (
@@ -480,11 +468,7 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
 
   async function handleOpenPlatform() {
     if (!data?.platformBaseUrl) return
-    if (window.electronAPI?.openExternal) {
-      await window.electronAPI.openExternal(data.platformBaseUrl)
-      return
-    }
-    window.open(data.platformBaseUrl, '_blank', 'noopener,noreferrer')
+    await openExternalUrl(data.platformBaseUrl)
   }
 
   if (isLoading) {

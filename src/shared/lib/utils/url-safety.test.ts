@@ -56,6 +56,10 @@ describe('isLocalhostHost', () => {
     'ip6-localhost',
     'ip6-loopback',
     '::ffff:127.0.0.1',
+    // Root label. isDeploymentUrlAllowed routes on this, so reading 'localhost.' as a public
+    // name sent it to the plain https branch and let it through in a shipped build.
+    'localhost.',
+    'foo.localhost.',
   ])('flags %s as localhost', (host) => {
     expect(isLocalhostHost(host)).toBe(true)
   })
@@ -70,6 +74,7 @@ describe('isLocalhostHost', () => {
     'box.local',
     'fd00::1',
     'fe80::1',
+    'example.com.', // stripping the root label must not turn a public name into loopback
   ])('does not flag %s as localhost', (host) => {
     expect(isLocalhostHost(host)).toBe(false)
   })
@@ -94,6 +99,8 @@ describe('isPrivateHost', () => {
     'fe80::1',
     'fea0::1', // fe80::/10 (not just fe80::/16)
     '::ffff:10.0.0.1',
+    'localhost.', // trailing dot is the root label, not a different host
+    'box.local.',
   ])('flags %s as private', (host) => {
     expect(isPrivateHost(host)).toBe(true)
   })
@@ -107,6 +114,7 @@ describe('isPrivateHost', () => {
     '172.15.0.1', // just outside the private range
     '172.32.0.1',
     '192.167.0.1',
+    'example.com.', // stripping the root label must not turn a public name private
   ])('does not flag %s', (host) => {
     expect(isPrivateHost(host)).toBe(false)
   })

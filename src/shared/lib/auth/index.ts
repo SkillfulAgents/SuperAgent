@@ -6,7 +6,9 @@ import { db } from '@shared/lib/db'
 import * as schema from '@shared/lib/db/schema'
 import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
-import { getSettings, DEFAULT_AUTH_SETTINGS } from '@shared/lib/config/settings'
+import { getSettings } from '@shared/lib/config/settings'
+import { resolveAuthSettings } from './auth-settings'
+import { PENDING_APPROVAL_BAN_REASON } from './clear-pending-approval-bans'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
 import { auditSessionCreated, resolveSessionCreationMethod } from './session-audit'
 import { getGenericOAuthProviderConfigs } from './provider-config'
@@ -42,7 +44,7 @@ export function getAuth() {
 function createAuthInstance() {
   const trustedOrigins = getTrustedOrigins()
   const settings = getSettings()
-  const authSettings = { ...DEFAULT_AUTH_SETTINGS, ...settings.auth }
+  const authSettings = resolveAuthSettings(settings.auth)
   const oauthProviders = getGenericOAuthProviderConfigs()
   const oauthPlugin = oauthProviders.length > 0
     ? genericOAuth({
@@ -152,13 +154,11 @@ function createAuthInstance() {
 
               // If admin approval is required and this is NOT the first user,
               // auto-ban them pending admin review.
-              // Read fresh settings so runtime changes are picked up without
-              // needing to recreate the Better Auth singleton.
-              const currentSettings = getSettings()
-              const currentAuth = { ...DEFAULT_AUTH_SETTINGS, ...currentSettings.auth }
+              // Fresh settings each time; platform-controlled forces approval off.
+              const currentAuth = resolveAuthSettings(getSettings().auth)
               if (result.changes === 0 && currentAuth.requireAdminApproval) {
                 db.update(schema.user)
-                  .set({ banned: true, banReason: 'Pending admin approval' })
+                  .set({ banned: true, banReason: PENDING_APPROVAL_BAN_REASON })
                   .where(eq(schema.user.id, createdUser.id))
                   .run()
                 console.log(`User ${createdUser.email} requires admin approval`)
@@ -221,8 +221,7 @@ function createAuthInstance() {
           },
           after: async (session, context) => {
             try {
-              const sessSettings = getSettings()
-              const sessAuth = { ...DEFAULT_AUTH_SETTINGS, ...sessSettings.auth }
+              const sessAuth = resolveAuthSettings(getSettings().auth)
               enforceMaxConcurrentSessions(session.userId, sessAuth.maxConcurrentSessions ?? 5)
             } catch (err) {
               console.error('Failed to enforce max concurrent sessions:', err)

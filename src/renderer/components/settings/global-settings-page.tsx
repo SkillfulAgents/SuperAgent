@@ -25,6 +25,7 @@ import { ComputerUseTab } from './computer-use-tab'
 import { CapabilitiesTab } from './capabilities-tab'
 import { AuditLogTab } from './audit-log-tab'
 import { useUser } from '@renderer/context/user-context'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 
 interface GlobalSettingsPageProps {
@@ -35,10 +36,26 @@ interface GlobalSettingsPageProps {
   sectionLinkProps?: (id: string) => LinkProps
 }
 
+function platformInviteHref(platformBaseUrl: string, orgId: string | null | undefined): string {
+  const base = platformBaseUrl.replace(/\/+$/, '')
+  // orgId is JWKS-verified and may be null; still send admins somewhere useful.
+  return orgId
+    ? `${base}/dashboard/organizations/${orgId}?tab=team`
+    : `${base}/dashboard`
+}
+
 export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSectionChange, sectionLinkProps }: GlobalSettingsPageProps) {
   const { isAuthMode, isAdmin } = useUser()
+  const { data: platformAuth } = usePlatformAuthStatus()
   const showAdminSettings = !isAuthMode || isAdmin
   const showAuthAdmin = isAuthMode && isAdmin
+
+  // Same predicate as server isPlatformControlledAuth — not JWKS orgId.
+  const hideLocalAuthSections = Boolean(platformAuth?.platformControlled)
+  const platformTeamInviteHref =
+    hideLocalAuthSections && platformAuth?.platformBaseUrl
+      ? platformInviteHref(platformAuth.platformBaseUrl, platformAuth.orgId)
+      : undefined
 
   // Grouped by what the setting concerns (app-level vs agent behavior), not by
   // who can edit it — admin-only sections are filtered per-item instead.
@@ -54,8 +71,25 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
     ...(showAdminSettings ? [{ id: 'admin', label: 'Admin', icon: <Shield className="h-4 w-4" />, render: () => <AdminTab /> }] : []),
     ...(showAuthAdmin
       ? [
-          { id: 'users', label: 'Users', icon: <Users className="h-4 w-4" />, render: () => <UsersTab /> },
-          { id: 'auth', label: 'Auth', icon: <Shield className="h-4 w-4" />, render: () => <AuthTab /> },
+          // Keep local role/ban/remove — Platform Team cannot write Better Auth columns.
+          // Invite goes to Platform when platform-controlled (local email invite is off).
+          {
+            id: 'users',
+            label: 'Users',
+            icon: <Users className="h-4 w-4" />,
+            render: () => (
+              <UsersTab
+                platformControlled={hideLocalAuthSections}
+                platformInviteHref={platformTeamInviteHref}
+              />
+            ),
+          },
+          {
+            id: 'auth',
+            label: 'Auth',
+            icon: <Shield className="h-4 w-4" />,
+            render: () => <AuthTab hideLocalAuthSections={hideLocalAuthSections} />,
+          },
         ]
       : []),
   ]
