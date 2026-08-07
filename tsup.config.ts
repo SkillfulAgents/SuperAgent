@@ -20,10 +20,39 @@ const rawLoaderPlugin: Plugin = {
   },
 }
 
+// Stay in node_modules: natives, Electron, and packages that patch require/import.
+const externalExact = new Set([
+  'better-sqlite3',
+  '@skillful-agents/agent-computer',
+  'electron',
+  'require-in-the-middle',
+  'import-in-the-middle',
+])
+const externalPrefix = ['@sentry/', '@opentelemetry/']
+
+function isExternal(name: string): boolean {
+  return externalExact.has(name) || externalPrefix.some((p) => name.startsWith(p))
+}
+
+const dependencies = Object.keys(pkg.dependencies ?? {})
+
 export default defineConfig({
   entry: ['src/web/server.ts'],
   format: ['esm'],
   outDir: 'dist/web',
+  splitting: false,
+  noExternal: dependencies.filter((name) => !isExternal(name)),
+  // Pass externalExact directly (not filtered through pkg.dependencies):
+  // require/import-in-the-middle are transitive deps of Sentry/OTel, so a
+  // dependency filter would silently drop them from esbuild's external list.
+  external: [
+    ...externalExact,
+    ...externalPrefix.map((p) => new RegExp(`^${p}`)),
+  ],
+  // Inlined CJS may call require('events'); give the ESM bundle a real require.
+  banner: {
+    js: "import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);",
+  },
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },

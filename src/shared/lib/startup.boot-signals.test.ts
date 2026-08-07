@@ -104,13 +104,27 @@ describe('production server boot signals', () => {
       }
     }
 
-    // 1. The real HTTP surface must come up.
+    // 1. Listen first (cold-wake): HTTP + "API server running" before boot_timing.
     await waitUntil('HTTP ready', () => {
       void fetch(`http://127.0.0.1:${port}/api/settings`)
         .then((r) => { if (r.ok) output += '\n__HTTP_READY__\n' })
         .catch(() => {})
       return output.includes('__HTTP_READY__')
     })
+    await waitUntil('boot_timing', () => output.includes('boot_timing '))
+    const runningIdx = output.indexOf('API server running')
+    const bootTimingIdx = output.indexOf('boot_timing ')
+    expect(runningIdx).toBeGreaterThanOrEqual(0)
+    expect(bootTimingIdx).toBeGreaterThan(runningIdx)
+    const bootLine = output.slice(bootTimingIdx).split('\n')[0]!
+    const bootPayload = JSON.parse(bootLine.slice('boot_timing '.length)) as {
+      bound: number | null
+      settingsRead: number | null
+    }
+    expect(typeof bootPayload.bound).toBe('number')
+    if (bootPayload.settingsRead != null) {
+      expect(bootPayload.settingsRead).toBeGreaterThanOrEqual(bootPayload.bound!)
+    }
 
     // 2. Every service's positive marker (start() calls are fire-and-forget,
     //    so markers can trail readiness).

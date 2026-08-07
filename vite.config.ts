@@ -38,11 +38,13 @@ export default defineConfig({
             process.env.PORT = String(addr.port)
           }
         })
-        // Set up server-level handlers (WebSocket proxies, etc.)
         if (server.httpServer) {
-          server.ssrLoadModule(path.resolve(__dirname, 'src/shared/lib/startup.ts')).then(({ setupServerHandlers }) => {
-            setupServerHandlers(server.httpServer as any)
-          })
+          server.ssrLoadModule(path.resolve(__dirname, 'src/shared/lib/startup.ts')).then(
+            ({ setupServerHandlers, afterBindInitialize }) => {
+              setupServerHandlers(server.httpServer as any)
+              void afterBindInitialize()
+            },
+          )
         }
         server.httpServer?.on('close', async () => {
           const { shutdownServices } = await server.ssrLoadModule(

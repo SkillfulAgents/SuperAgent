@@ -2,8 +2,10 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { existsSync } from 'fs'
 import api from '../api'
-import { shutdownServices, setupServerHandlers } from '@shared/lib/startup'
+import { afterBindInitialize, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
+import { markBoot } from '@shared/lib/boot-timing'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
+
 const app = new Hono()
 
 // Mount API routes
@@ -80,6 +82,8 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
 async function start() {
+  markBoot('modulesLoaded')
+
   const defaultPort = parseInt(process.env.PORT || '47891', 10)
 
   // Bind atomically, retrying on a port race (no probe-then-bind TOCTOU gap; an
@@ -90,11 +94,9 @@ async function start() {
   process.env.PORT = String(bound.port)
   console.log(`API server running on http://localhost:${bound.port}`)
 
-  // Services are initialized by api/index.ts (which we import above).
-  // No need to call initializeServices() here — it already ran at module load.
-
-  // Set up server-level handlers (WebSocket proxies, etc.)
   setupServerHandlers(server)
+  // Degraded on failure: health already passed; don't flap healthy → crash.
+  await afterBindInitialize({ degradedOnFailure: true })
 }
 
 start().catch((error) => {

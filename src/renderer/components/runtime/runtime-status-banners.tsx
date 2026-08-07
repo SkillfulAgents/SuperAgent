@@ -83,6 +83,19 @@ export function RuntimeUnavailableSidebarBanner({
   )
 }
 
+// Background services failed post-bind init: HTTP serves but schedulers,
+// triggers, chat integrations etc. never started. Restart is the only recovery.
+export function ServicesDegradedSidebarBanner({ message }: { message?: string | null }) {
+  return (
+    <DestructiveBannerCard icon={<AlertTriangle className="h-4 w-4" />}>
+      <div>Background services failed to start.</div>
+      <div>Scheduled tasks and triggers are not running.</div>
+      {message && <div className="break-words">{message}</div>}
+      <div>Restart the app to retry.</div>
+    </DestructiveBannerCard>
+  )
+}
+
 export type FirewallFixUiState = 'idle' | 'fixing' | 'declined' | 'failed'
 
 /**

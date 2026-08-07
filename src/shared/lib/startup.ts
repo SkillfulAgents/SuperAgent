@@ -32,17 +32,46 @@ import { shutdownAC } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
 import { initErrorReporting, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
+import { logBootTiming, markBoot } from './boot-timing'
 import { credentialBroker } from '../../api/credentials/credential-broker'
 
-/**
- * Initialize all background services.
- *
- * Called from two places:
- * - api/index.ts: for non-Electron environments (Vite dev server, standalone web server)
- * - main/index.ts: for Electron, after SUPERAGENT_DATA_DIR is set
- */
-// TODO: this fires a lot of work on startup, which can create a big workload on initial start. We should defer some work and limit concurrency.
-export async function initializeServices() {
+// TODO: this fires a lot of work on startup; defer some work and limit concurrency.
+let servicesInitPromise: Promise<void> | null = null
+let servicesInitError: string | null = null
+
+/** Non-null when background-service init failed and the server runs degraded. */
+export function getServicesInitError(): string | null {
+  return servicesInitError
+}
+
+/** Idempotent; call only via afterBindInitialize (or tests). */
+export function initializeServices(): Promise<void> {
+  servicesInitPromise ??= initializeServicesInner()
+  return servicesInitPromise
+}
+
+export type AfterBindInitOptions = {
+  /** Keep serving on failure (Docker/web). Default: log and continue without Sentry. */
+  degradedOnFailure?: boolean
+}
+
+/** Mark bound → init services → emit boot_timing. Shared by web / Electron / Vite. */
+export async function afterBindInitialize(options: AfterBindInitOptions = {}): Promise<void> {
+  markBoot('bound')
+  try {
+    await initializeServices()
+  } catch (error) {
+    console.error('Failed to initialize services:', error)
+    servicesInitError = error instanceof Error ? error.message : String(error)
+    if (options.degradedOnFailure) {
+      captureException(error, { tags: { component: 'startup', operation: 'initialize-services' } })
+    }
+  } finally {
+    logBootTiming()
+  }
+}
+
+async function initializeServicesInner() {
   // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
   // initErrorReporting is a no-op if already initialized, so this is safe.
   // Skip in dev mode — dev errors are too noisy and pollute Sentry.
@@ -61,6 +90,8 @@ export async function initializeServices() {
     }
   } catch {
     // Non-critical
+  } finally {
+    markBoot('settingsRead')
   }
 
   // Initialize server-side analytics version
@@ -69,17 +100,12 @@ export async function initializeServices() {
   // Register account providers (Composio, Nango if configured)
   registerAllAccountProviders()
 
-  // Drop any skillset configs invalid for the current auth state (e.g. a
-  // platform skillset left over from a previous org). Filesystem cleanup of
-  // installed skills happens lazily in the metadata readers, so we don't
-  // walk every agent workspace on startup.
   try {
     reconcileSkillsetConfigsForCurrentAuth()
   } catch (error) {
     captureException(error, { tags: { component: 'startup', operation: 'skillset-reconcile' } })
   }
 
-  // Validate auth mode startup requirements before anything else
   if (isAuthMode()) {
     await validateAuthModeStartup()
     try {
@@ -101,8 +127,8 @@ export async function initializeServices() {
     captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
   }
 
-  // Initialize container manager with all agents
   const agents = await listAgents()
+  markBoot('dbReady')
   const slugs = agents.map((a) => a.slug)
   await containerManager.initializeAgents(slugs)
 
@@ -181,14 +207,7 @@ export async function initializeServices() {
   platformService.start()
 }
 
-/**
- * Set up server-level handlers that require the HTTP server instance.
- *
- * Called from all entry points after creating the HTTP server:
- * - main/index.ts: Electron
- * - web/server.ts: standalone web server (Docker)
- * - vite.config.ts: Vite dev server
- */
+/** WebSocket proxies etc. Call after HTTP bind, before or with afterBindInitialize. */
 export function setupServerHandlers(server: ServerType): void {
   setupBrowserStreamProxy(server)
   setupArtifactStreamProxy(server)

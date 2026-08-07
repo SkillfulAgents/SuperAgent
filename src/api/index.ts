@@ -43,7 +43,6 @@ import tokenExchange from './routes/token-exchange'
 import mobilePairing from './routes/mobile-pairing'
 import agentBootstrap from './routes/agent-bootstrap'
 import activityRouter from './routes/activity'
-import { initializeServices } from '@shared/lib/startup'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
@@ -55,13 +54,8 @@ import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-au
 
 const app = new Hono()
 
-// Initialize services for non-Electron environments (Vite dev server).
-// In Electron, these are started in main/index.ts after SUPERAGENT_DATA_DIR is set.
-if (process.type !== 'browser') {
-  initializeServices().catch((error) => {
-    console.error('Failed to initialize services:', error)
-  })
-}
+// Background services start AFTER HTTP bind (web/server.ts, main/index.ts,
+// vite.config.ts) so cold-wake health is not gated on settings/DB/auth.
 
 // Enable CORS for all routes
 const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)
