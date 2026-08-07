@@ -106,6 +106,38 @@ describe('copyChromeProfileData', () => {
     )).not.toThrow()
   })
 
+  it('fails safe by re-seeding when the manifest is valid JSON of the wrong shape', async () => {
+    createProfile()
+    await copyChromeProfileData('Default', destination)
+    fs.writeFileSync(path.join(destination, 'Cookies'), 'agent-session-cookie')
+    fs.writeFileSync(
+      path.join(destination, '.superagent-profile-sync.json'),
+      JSON.stringify({ version: 2, files: 'nope' }),
+    )
+
+    await copyChromeProfileData('Default', destination)
+
+    expect(fs.readFileSync(path.join(destination, 'Cookies'), 'utf8')).toBe('source-cookie')
+  })
+
+  it('tolerates a transient source file that vanishes between fingerprinting and copy', async () => {
+    const profileDir = createProfile()
+    fs.writeFileSync(path.join(profileDir, 'Cookies-journal'), 'hot-journal')
+
+    const realCopyFile = fs.promises.copyFile.bind(fs.promises)
+    vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (src, dest, mode?) => {
+      if (String(src).endsWith('Cookies-journal')) {
+        fs.rmSync(path.join(profileDir, 'Cookies-journal'), { force: true })
+        throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' })
+      }
+      return realCopyFile(src, dest, mode)
+    })
+
+    expect(await copyChromeProfileData('Default', destination)).toBe(true)
+    expect(fs.readFileSync(path.join(destination, 'Cookies'), 'utf8')).toBe('source-cookie')
+    expect(fs.existsSync(path.join(destination, 'Cookies-journal'))).toBe(false)
+  })
+
   it('refuses a profile id that escapes Chrome user-data storage', async () => {
     fs.mkdirSync(chromeDataDir, { recursive: true })
     fs.mkdirSync(path.join(chromeDataDir, '..', 'outside'), { recursive: true })

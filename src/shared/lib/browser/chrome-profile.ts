@@ -2,6 +2,11 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { writeFileAtomic } from '@shared/lib/utils/file-storage'
+import {
+  ProfileSyncManifestSchema,
+  type ProfileFileFingerprint,
+  type ProfileSyncManifest,
+} from './chrome-profile-schema'
 
 export interface ChromeProfile {
   id: string
@@ -14,18 +19,6 @@ const PROFILE_FILES = ['Cookies', 'Cookies-journal', 'Login Data', 'Login Data-j
 const PROFILE_DIRS = ['Local Storage', 'Session Storage']
 const PROFILE_SYNC_MANIFEST = '.superagent-profile-sync.json'
 const COPY_CONCURRENCY = 16
-
-interface ProfileFileFingerprint {
-  size: number
-  mtimeMs: number
-  ctimeMs: number
-}
-
-interface ProfileSyncManifest {
-  version: 1
-  profileId: string
-  files: Record<string, ProfileFileFingerprint>
-}
 
 /**
  * Returns the platform-specific Chrome user data directory, or null if not found.
@@ -195,35 +188,24 @@ async function collectFile(
   }
 }
 
+// The manifest is advisory: any unreadable or invalid state resolves to null
+// so the sync falls back to a full re-seed instead of trusting stale data.
 async function readProfileSyncManifest(destDir: string): Promise<ProfileSyncManifest | null> {
+  let raw: string
   try {
-    const parsed = JSON.parse(
-      await fs.promises.readFile(path.join(destDir, PROFILE_SYNC_MANIFEST), 'utf8'),
-    ) as Partial<ProfileSyncManifest>
-    if (
-      parsed.version !== 1
-      || typeof parsed.profileId !== 'string'
-      || !parsed.files
-      || typeof parsed.files !== 'object'
-      || Array.isArray(parsed.files)
-    ) {
-      return null
-    }
-    for (const value of Object.values(parsed.files)) {
-      if (
-        !value
-        || typeof value.size !== 'number'
-        || typeof value.mtimeMs !== 'number'
-        || typeof value.ctimeMs !== 'number'
-      ) {
-        return null
-      }
-    }
-    return parsed as ProfileSyncManifest
+    raw = await fs.promises.readFile(path.join(destDir, PROFILE_SYNC_MANIFEST), 'utf8')
   } catch (error) {
-    if (isNotFound(error) || error instanceof SyntaxError) return null
+    if (isNotFound(error)) return null
     throw error
   }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  const result = ProfileSyncManifestSchema.safeParse(parsed)
+  return result.success ? result.data : null
 }
 
 async function isRegularFile(filePath: string): Promise<boolean> {
@@ -237,7 +219,15 @@ async function isRegularFile(filePath: string): Promise<boolean> {
 
 async function copyProfileFile(sourcePath: string, destinationPath: string): Promise<void> {
   await fs.promises.mkdir(path.dirname(destinationPath), { recursive: true })
-  await fs.promises.copyFile(sourcePath, destinationPath)
+  try {
+    await fs.promises.copyFile(sourcePath, destinationPath)
+  } catch (error) {
+    // A running Chrome deletes transient files (SQLite hot journals, leveldb
+    // tables) at any time, so a source that vanished after fingerprinting must
+    // not fail the sync — and with it the agent start. The next run's source
+    // scan simply won't include the file.
+    if (!isNotFound(error)) throw error
+  }
 }
 
 function fingerprintsEqual(
