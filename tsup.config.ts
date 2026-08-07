@@ -28,11 +28,19 @@ const lazyDashboardSdkPlugin: Plugin = {
   name: 'lazy-dashboard-sdk',
   setup(build) {
     const apiEntryPath = resolve('src/api/index.ts')
-    build.onResolve({ filter: /^\.\/llm-sdk-bundle$/ }, (args) => {
+    // Any specifier for the module (relative or aliased), but not the entry
+    // point itself — entries resolve with their .ts extension.
+    build.onResolve({ filter: /llm-sdk-bundle$/ }, (args) => {
       if (args.kind === 'dynamic-import' && resolve(args.importer) === apiEntryPath) {
         return { path: './llm-sdk-bundle.mjs', external: true }
       }
-      return undefined
+      // Any other import would silently inline the 170 KB payload back into
+      // the boot artifact — fail the build instead.
+      return {
+        errors: [{
+          text: `llm-sdk-bundle must only be loaded via the dynamic import in src/api/index.ts; found a ${args.kind} in ${args.importer}. Route it through that import (or extend lazy-dashboard-sdk in tsup.config.ts) so the payload stays out of the API boot artifact.`,
+        }],
+      }
     })
   },
 }
