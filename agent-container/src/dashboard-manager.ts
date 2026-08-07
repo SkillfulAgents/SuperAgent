@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
 import { captureDashboardScreenshot, type ScreenshotResult } from './dashboard-screenshot'
+import { notifyDashboardScreenshotReady } from './host-events'
 import { DashboardPackageSchema } from './dashboard-package-schema'
 
 const SCREENSHOT_FILENAME = 'screenshot.png'
@@ -187,7 +188,13 @@ class DashboardManager {
     }
     const outPath = path.join(ARTIFACTS_DIR, slug, SCREENSHOT_FILENAME)
     const url = getDashboardValidationUrl(slug, info.port, info.upstreamPathMode)
-    return captureDashboardScreenshot(url, outPath)
+    const result = await captureDashboardScreenshot(url, outPath)
+    if (result.ok) {
+      void notifyDashboardScreenshotReady(slug).catch((error) => {
+        console.warn(`[DashboardManager] Failed to publish screenshot event for ${slug}:`, error)
+      })
+    }
+    return result
   }
 
   private readPackageJson(slug: string): {

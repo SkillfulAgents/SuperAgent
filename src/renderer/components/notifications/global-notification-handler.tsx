@@ -22,6 +22,11 @@ import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
+import {
+  invalidateAgentArtifacts,
+  markDashboardScreenshotReady,
+  updateAgentRuntimeCache,
+} from '@renderer/lib/agent-cache'
 import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
 import {
   NotificationActionContextSchema,
@@ -370,11 +375,28 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
             break
 
-          case 'agent_status_changed':
-            // Agent started/stopped - update agent list and artifacts
-            queryClient.invalidateQueries({ queryKey: ['agents'] })
-            queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+          case 'agent_status_changed': {
+            // Status is already in the event; preserve cached summaries instead
+            // of refetching every agent. Artifact runtime state is agent-scoped.
+            const agentSlug = data.agentSlug as string | undefined
+            const status = data.status === 'running' || data.status === 'stopped'
+              ? data.status
+              : undefined
+            if (agentSlug && status) {
+              updateAgentRuntimeCache(queryClient, agentSlug, status)
+              invalidateAgentArtifacts(queryClient, agentSlug)
+            }
             break
+          }
+
+          case 'dashboard_screenshot_ready': {
+            const agentSlug = data.agentSlug as string | undefined
+            const dashboardSlug = data.dashboardSlug as string | undefined
+            if (agentSlug && dashboardSlug) {
+              markDashboardScreenshotReady(queryClient, agentSlug, dashboardSlug)
+            }
+            break
+          }
 
           case 'container_health_changed':
             // Container health warnings changed - update agent list
