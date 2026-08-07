@@ -51,7 +51,7 @@ export function InsufficientBalanceCard({
 
   return (
     <div
-      className="rounded-[12px] border bg-muted/30 shadow-md p-4"
+      className="rounded-[12px] border bg-card shadow-md p-4"
       data-testid={testId ?? 'insufficient-balance-card'}
     >
       <div className="flex items-start gap-3">

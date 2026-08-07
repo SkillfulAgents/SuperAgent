@@ -103,6 +103,8 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('LLM Provider Error')).toBeInTheDocument()
     expect(screen.getByText('API rate limit exceeded')).toBeInTheDocument()
     expect(screen.getByText(/external LLM provider API/)).toBeInTheDocument()
+    expect(screen.getByTestId('provider-error-card')).toHaveClass('bg-amber-50', 'dark:bg-amber-950')
+    expect(screen.getByTestId('provider-error-card')).not.toHaveClass('bg-amber-500/10')
   })
 
   it('shows generic error alert when no apiErrorCode', () => {
@@ -112,6 +114,8 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('Error')).toBeInTheDocument()
     expect(screen.getByText('The agent process was terminated unexpectedly.')).toBeInTheDocument()
     expect(screen.getByText('Send another message to retry.')).toBeInTheDocument()
+    expect(screen.getByTestId('error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
+    expect(screen.getByTestId('error-card')).not.toHaveClass('bg-destructive/10')
   })
 
   it('shows "Working..." status when active with no todo', () => {

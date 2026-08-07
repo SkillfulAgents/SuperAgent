@@ -61,7 +61,7 @@ export function PendingWakeBanner({
 
   return (
     <div
-      className="mx-4 mb-2 flex items-center gap-2 rounded-lg border bg-muted/50 px-3 py-2 text-xs text-muted-foreground"
+      className="mx-4 mb-2 flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs text-muted-foreground"
       data-testid="pending-wake-banner"
     >
       <MoonStar className="h-3.5 w-3.5 shrink-0" />
