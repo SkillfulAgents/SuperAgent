@@ -116,7 +116,12 @@ describe('declarative payload', () => {
     const [target, payloadJson, options] = mocks.sendNotification.mock.calls[0] as unknown as [
       { endpoint: string; keys: { p256dh: string; auth: string } },
       string,
-      { vapidDetails: { subject: string; publicKey: string; privateKey: string } },
+      {
+        vapidDetails: { subject: string; publicKey: string; privateKey: string }
+        TTL: number
+        topic: string
+        timeout: number
+      },
     ]
     expect(target).toEqual({
       endpoint: 'https://web.push.apple.com/abc',
@@ -135,6 +140,18 @@ describe('declarative payload', () => {
       publicKey: 'vapid-pub',
       privateKey: 'vapid-priv',
     })
+    // Never web-push's 4-week default TTL, a per-session coalescing topic
+    // (≤32 base64url chars), and a bounded socket timeout.
+    expect(options.TTL).toBe(60 * 60)
+    expect(options.topic).toBe('sess-1')
+    expect(options.topic.length).toBeLessThanOrEqual(32)
+    expect(options.timeout).toBe(10_000)
+  })
+
+  it('actionable session_waiting pushes carry a short TTL — stale prompts expire instead of arriving weeks late', async () => {
+    await channel.deliver(makeEvent({ type: 'session_waiting' }))
+    const options = mocks.sendNotification.mock.calls[0][2] as { TTL: number }
+    expect(options.TTL).toBe(10 * 60)
   })
 
   it('each subscription gets navigate built on its own origin', async () => {
@@ -175,7 +192,7 @@ describe('owner settings gate', () => {
     expect(mocks.sendNotification).toHaveBeenCalledTimes(1)
   })
 
-  it('resolves settings per owner — local sentinel for ownerless rows, user id otherwise', async () => {
+  it('resolves settings per owner — local sentinel in local mode, user id in auth mode', async () => {
     await channel.deliver(makeEvent())
     expect(mocks.getUserSettings).toHaveBeenCalledWith('local')
 
@@ -184,6 +201,16 @@ describe('owner settings gate', () => {
     mocks.listPushSubscriptions.mockReturnValue([makeSubscription({ userId: 'user-a' })])
     await channel.deliver(makeEvent())
     expect(mocks.getUserSettings).toHaveBeenCalledWith('user-a')
+  })
+
+  it('local mode ignores a userId retained from a previous auth-mode life — local settings govern', async () => {
+    mocks.listPushSubscriptions.mockReturnValue([makeSubscription({ userId: 'stale-auth-user' })])
+
+    await channel.deliver(makeEvent())
+
+    expect(mocks.getUserSettings).toHaveBeenCalledWith('local')
+    expect(mocks.getUserSettings).not.toHaveBeenCalledWith('stale-auth-user')
+    expect(mocks.sendNotification).toHaveBeenCalledTimes(1)
   })
 })
 

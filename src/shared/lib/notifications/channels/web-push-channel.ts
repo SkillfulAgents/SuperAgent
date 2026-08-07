@@ -24,6 +24,32 @@ import type { NotificationEvent } from '../notification-event'
 const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting'])
 
 /**
+ * How long the push service may hold an undelivered push for an offline
+ * device (web-push's default is FOUR WEEKS). An "Action Required" prompt is
+ * pointless once the review window has passed; a completion is stale after an
+ * hour — better dropped than delivered days later.
+ */
+const PUSH_TTL_SECONDS: Record<string, number> = {
+  session_waiting: 10 * 60,
+  session_complete: 60 * 60,
+}
+const DEFAULT_PUSH_TTL_SECONDS = 60 * 60
+
+/** Per-notification outbound bounds: batch size and per-request socket timeout. */
+const SEND_CONCURRENCY = 8
+const SEND_TIMEOUT_MS = 10_000
+
+/**
+ * Push-service coalescing topic (RFC 8030 §5.4, ≤32 base64url chars): one
+ * topic per session, so while the device is offline a newer push for the same
+ * session (e.g. session_complete) replaces an undelivered older one (a stale
+ * "Action Required") instead of queueing behind it.
+ */
+function topicForSession(sessionId: string): string {
+  return sessionId.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32)
+}
+
+/**
  * VAPID `sub` must be a mailto: or https: URL identifying the sender. The
  * subscription's own origin is both — except in dev, where a localhost origin
  * can be plain http; fall back to the project URL there.
@@ -67,11 +93,17 @@ export class WebPushChannel implements NotificationChannel {
     // Several subscriptions can share an owner — resolve agent access once per user.
     const accessCache = new Map<string, Promise<string[]>>()
 
-    await Promise.allSettled(
-      subscriptions.map((subscription) =>
-        this.sendToSubscription(event, subscription, vapidKeys, accessCache)
+    // Bounded fan-out: batches of SEND_CONCURRENCY rather than one socket per
+    // stored subscription at once.
+    for (let i = 0; i < subscriptions.length; i += SEND_CONCURRENCY) {
+      await Promise.allSettled(
+        subscriptions
+          .slice(i, i + SEND_CONCURRENCY)
+          .map((subscription) =>
+            this.sendToSubscription(event, subscription, vapidKeys, accessCache)
+          )
       )
-    )
+    }
   }
 
   private async sendToSubscription(
@@ -96,7 +128,10 @@ export class WebPushChannel implements NotificationChannel {
       }
     }
 
-    const ownerId = subscription.userId ?? 'local'
+    // In local mode the single local user's settings govern every device —
+    // including rows that retain a userId from a previous auth-mode life of
+    // this database (that user's old per-user settings row is stale there).
+    const ownerId = isAuthMode() ? (subscription.userId as string) : 'local'
     const settings = getUserSettings(ownerId)
     if (!isNotificationTypeEnabled(settings.notifications, event.type)) {
       return
@@ -117,6 +152,9 @@ export class WebPushChannel implements NotificationChannel {
             privateKey: vapidKeys.privateKey,
           },
           urgency: 'high',
+          TTL: PUSH_TTL_SECONDS[event.type] ?? DEFAULT_PUSH_TTL_SECONDS,
+          topic: topicForSession(event.sessionId),
+          timeout: SEND_TIMEOUT_MS,
         }
       )
     } catch (error) {

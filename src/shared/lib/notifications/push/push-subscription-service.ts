@@ -1,15 +1,26 @@
 import { randomUUID } from 'crypto'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, isNull, count } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { pushSubscriptions } from '@shared/lib/db/schema'
 
 export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect
 
 /**
+ * Ceiling on stored devices per owner. Real users have a handful of devices;
+ * the cap exists so an authenticated caller can't grow the table (and the
+ * per-notification send fan-out) without bound. Refreshing an existing
+ * endpoint never counts against it.
+ */
+export const MAX_PUSH_SUBSCRIPTIONS_PER_OWNER = 10
+
+/**
  * Insert or refresh a device's push subscription, keyed by endpoint. The
  * client re-upserts on every launch (declarative Web Push has no service
  * worker, hence no `pushsubscriptionchange` event), so this doubles as the
  * keep-alive that repairs a rotated endpoint or lost row.
+ *
+ * Returns false when the owner is at MAX_PUSH_SUBSCRIPTIONS_PER_OWNER and the
+ * endpoint is new (the route surfaces this as 429).
  */
 export function upsertPushSubscription(params: {
   endpoint: string
@@ -18,32 +29,57 @@ export function upsertPushSubscription(params: {
   origin: string
   userId: string | null
   deviceName?: string | null
-}): void {
+}): boolean {
   const now = new Date()
-  db.insert(pushSubscriptions)
-    .values({
-      id: randomUUID(),
-      endpoint: params.endpoint,
-      keysP256dh: params.p256dh,
-      keysAuth: params.auth,
-      origin: params.origin,
-      userId: params.userId,
-      deviceName: params.deviceName ?? null,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: pushSubscriptions.endpoint,
-      set: {
+  return db.transaction((tx) => {
+    const exists = tx
+      .select({ id: pushSubscriptions.id })
+      .from(pushSubscriptions)
+      .where(eq(pushSubscriptions.endpoint, params.endpoint))
+      .limit(1)
+      .all()
+
+    if (exists.length === 0) {
+      const ownerFilter =
+        params.userId === null
+          ? isNull(pushSubscriptions.userId)
+          : eq(pushSubscriptions.userId, params.userId)
+      const [{ ownerCount }] = tx
+        .select({ ownerCount: count() })
+        .from(pushSubscriptions)
+        .where(ownerFilter)
+        .all()
+      if (ownerCount >= MAX_PUSH_SUBSCRIPTIONS_PER_OWNER) {
+        return false
+      }
+    }
+
+    tx.insert(pushSubscriptions)
+      .values({
+        id: randomUUID(),
+        endpoint: params.endpoint,
         keysP256dh: params.p256dh,
         keysAuth: params.auth,
         origin: params.origin,
         userId: params.userId,
         deviceName: params.deviceName ?? null,
+        createdAt: now,
         updatedAt: now,
-      },
-    })
-    .run()
+      })
+      .onConflictDoUpdate({
+        target: pushSubscriptions.endpoint,
+        set: {
+          keysP256dh: params.p256dh,
+          keysAuth: params.auth,
+          origin: params.origin,
+          userId: params.userId,
+          deviceName: params.deviceName ?? null,
+          updatedAt: now,
+        },
+      })
+      .run()
+    return true
+  })
 }
 
 export function listPushSubscriptions(): PushSubscriptionRow[] {

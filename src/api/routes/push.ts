@@ -48,7 +48,7 @@ pushRouter.post('/subscriptions', async (c) => {
   const ownerUserId = getViewerUserId(c)
 
   const { subscription, origin, deviceName } = parsed.data
-  upsertPushSubscription({
+  const stored = upsertPushSubscription({
     endpoint: subscription.endpoint,
     p256dh: subscription.keys.p256dh,
     auth: subscription.keys.auth,
@@ -56,6 +56,9 @@ pushRouter.post('/subscriptions', async (c) => {
     userId: ownerUserId,
     deviceName: deviceName ?? null,
   })
+  if (!stored) {
+    return c.json({ error: 'Too many push subscriptions for this account' }, 429)
+  }
 
   return c.json({ success: true })
 })

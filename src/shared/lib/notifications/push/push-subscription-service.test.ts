@@ -22,6 +22,7 @@ import {
   listPushSubscriptions,
   deletePushSubscriptionById,
   deletePushSubscriptionByEndpoint,
+  MAX_PUSH_SUBSCRIPTIONS_PER_OWNER,
 } from './push-subscription-service'
 import { getVapidKeys, getOrCreateVapidKeys } from './vapid-keys'
 
@@ -81,6 +82,35 @@ describe('push-subscription-service', () => {
     deletePushSubscriptionById(row.id)
 
     expect(listPushSubscriptions()).toHaveLength(0)
+  })
+
+  describe('per-owner subscription cap', () => {
+    it('rejects a new endpoint once the owner is at the cap; refreshing an existing one still works', () => {
+      for (let i = 0; i < MAX_PUSH_SUBSCRIPTIONS_PER_OWNER; i++) {
+        expect(
+          upsertPushSubscription({ ...BASE_SUB, endpoint: `https://push.example/dev-${i}` })
+        ).toBe(true)
+      }
+
+      expect(
+        upsertPushSubscription({ ...BASE_SUB, endpoint: 'https://push.example/one-too-many' })
+      ).toBe(false)
+      expect(listPushSubscriptions()).toHaveLength(MAX_PUSH_SUBSCRIPTIONS_PER_OWNER)
+
+      // Re-upserting an endpoint that already exists is a refresh, not growth.
+      expect(
+        upsertPushSubscription({ ...BASE_SUB, endpoint: 'https://push.example/dev-0', p256dh: 'new' })
+      ).toBe(true)
+    })
+
+    it('the cap is per owner, not global', () => {
+      for (let i = 0; i < MAX_PUSH_SUBSCRIPTIONS_PER_OWNER; i++) {
+        upsertPushSubscription({ ...BASE_SUB, endpoint: `https://push.example/a-${i}`, userId: 'user-a' })
+      }
+      expect(
+        upsertPushSubscription({ ...BASE_SUB, endpoint: 'https://push.example/b-0', userId: 'user-b' })
+      ).toBe(true)
+    })
   })
 
   describe('deletePushSubscriptionByEndpoint owner scoping', () => {
