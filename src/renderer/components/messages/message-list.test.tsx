@@ -53,7 +53,7 @@ const mockStreamState = {
   typingUser: null as { id: string; name?: string } | null,
   peerUserMessages: [] as Array<{ uuid: string; receivedAt: number; content: string; sender: { id: string; name?: string; email?: string }; queued?: boolean }>,
   discardedCommandUuids: [] as string[],
-  thinkingBlocks: [] as Array<{ id: number; text: string; startedAt: number; endedAt: number | null }>,
+  thinkingBlocks: [] as Array<{ id: number; persistedId?: string; text: string; startedAt: number; endedAt: number | null }>,
 }
 
 const mockClearCompacting = vi.fn()
@@ -2097,8 +2097,8 @@ describe('MessageList', () => {
   })
 
   describe('thinking block dedup (live vs persisted)', () => {
-    const liveBlock = (text: string, endedAt: number | null = null) =>
-      ({ id: 1, text, startedAt: Date.now() - 5000, endedAt })
+    const liveBlock = (text: string, endedAt: number | null = null, persistedId?: string) =>
+      ({ id: 1, persistedId, text, startedAt: Date.now() - 5000, endedAt })
 
     it('renders a live thinking card while the turn streams', () => {
       mockMessagesData.data = [createUserMessage({ content: { text: 'Question' } })]
@@ -2124,6 +2124,63 @@ describe('MessageList', () => {
       // collapsed, so identify it by its "Thought" header (a live card reads "Thinking").
       expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
       expect(screen.getByTestId('thinking-block-toggle')).toHaveTextContent('Thought')
+    })
+
+    it('hands off by stable id while active even when streamed text diverges from the transcript', () => {
+      // Regression: a long-running turn can miss SSE reasoning deltas while a
+      // background agent keeps isActive=true. Text-prefix matching then leaves
+      // the completed live card stranded at the transcript tail indefinitely.
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({
+          content: { text: 'Persisted checkpoint' },
+          thinking: [{ id: 'msg-1:0', text: 'the full persisted reasoning' }],
+        }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = [
+        liveBlock('a suffix received after reconnect', Date.now(), 'msg-1:0'),
+      ]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
+      expect(screen.queryByText('a suffix received after reconnect')).not.toBeInTheDocument()
+      expect(screen.getByTestId('thinking-block-toggle')).toHaveTextContent('Thought')
+    })
+
+    it('hands off an empty live block by stable id while the session remains active', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({
+          content: { text: 'Persisted checkpoint' },
+          thinking: [{ id: 'msg-1:0', text: 'reasoning persisted despite omitted live deltas' }],
+        }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = [liveBlock('', Date.now(), 'msg-1:0')]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
+    })
+
+    it('does not suppress a different id merely because its text matches', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({
+          content: { text: '' },
+          thinking: [{ id: 'msg-old:0', text: 'reused stock reasoning' }],
+        }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = [
+        liveBlock('reused stock reasoning', null, 'msg-new:0'),
+      ]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(2)
     })
 
     it('does not suppress the live card when only an older turn has matching thinking', () => {

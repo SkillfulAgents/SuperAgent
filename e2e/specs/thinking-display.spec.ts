@@ -158,4 +158,21 @@ test.describe('Thinking Display', () => {
     await expect(body).toContainText('Let me reason about this')
     await expect(page.getByTestId('thinking-block')).toHaveCount(1)
   })
+
+  test('divergent live text hands off while the session remains active', async ({ page, request }, testInfo) => {
+    const { sessionPage } = await setupThinkingTest(page, request, testInfo, 'ActiveMismatch')
+
+    await sessionPage.sendMessage('please think with missing deltas')
+
+    // The mock persists the full thinking block but delays the terminal result,
+    // reproducing a long-running turn whose live stream only retained a suffix.
+    await expect(page.getByText('Persisted divergent-thinking checkpoint.')).toBeVisible({ timeout: 10000 })
+    await expect(sessionPage.getStopButton()).toBeVisible()
+
+    // String-prefix matching would leave both the persisted card and the
+    // divergent completed live card visible. Stable identity leaves one.
+    await expect(page.getByTestId('thinking-block')).toHaveCount(1)
+
+    await sessionPage.waitForInputEnabled(20000)
+  })
 })

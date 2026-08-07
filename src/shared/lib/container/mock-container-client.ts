@@ -230,6 +230,92 @@ export class ThinkingResponseScenario implements MockScenario {
 }
 
 /**
+ * Reproduces a live/persisted thinking mismatch while the session is still
+ * active. The stream intentionally begins mid-thought, but the JSONL contains
+ * the full block under the same stable message/index identity. The delayed
+ * result leaves enough time for E2E to assert the live card was handed off by
+ * identity rather than stranded at the transcript tail.
+ */
+export class ActiveDivergentThinkingScenario implements MockScenario {
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const messageId = `msg-active-divergent-${sessionId}`
+    const persistedThinking = 'The full persisted reasoning begins before the fragment delivered after reconnect.'
+    const responseText = 'Persisted divergent-thinking checkpoint.'
+
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: { type: 'message_start', message: { id: messageId } },
+        },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
+        },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'thinking_delta', thinking: 'fragment delivered after reconnect' },
+          },
+        },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+      })
+
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: {
+          id: messageId,
+          content: [
+            { type: 'thinking', thinking: persistedThinking, signature: 'mock-signature' },
+            { type: 'text', text: responseText },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          message: {
+            id: messageId,
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: persistedThinking, signature: 'mock-signature' },
+              { type: 'text', text: responseText },
+            ],
+          },
+        },
+      })
+    }, 20)
+
+    // Keep the session active well after the persisted message is visible.
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, 10_000)
+  }
+}
+
+/**
  * Multi-pass extended-thinking scenario — streams several thinking blocks in
  * one turn, persisting each block's assistant JSONL entry as it completes
  * (the real CLI writes one transcript entry per assistant message mid-turn).
@@ -1488,6 +1574,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'so I will stream a few sentences of summarized reasoning before replying.',
       'Done thinking — here is the answer.'
     )],
+    // Persist while active with deliberately divergent live text — regression
+    // for completed thinking cards stranding at the transcript tail.
+    ['think with missing deltas', new ActiveDivergentThinkingScenario()],
     // Register the "list files" scenario for tool use tests
     ['list files', new ToolUseScenario(
       'Bash',

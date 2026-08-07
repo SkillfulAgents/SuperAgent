@@ -166,7 +166,7 @@ export interface ApiMessage {
    * thinking-text persistence. `durationMs` is derived from transcript entry
    * timestamps and absent when underivable.
    */
-  thinking?: Array<{ text: string; durationMs?: number }>
+  thinking?: Array<{ id?: string; text: string; durationMs?: number }>
 }
 
 /**
