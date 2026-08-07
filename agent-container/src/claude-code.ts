@@ -260,6 +260,8 @@ export interface SystemPromptVars {
   composioTriggers: boolean;
   webhookEndpoints: boolean;
   anyTriggers: boolean;
+  /** Platform token present — host `/api/services/*` forward + media prompt section. */
+  platformServices: boolean;
   computerUse: boolean;
   hasModelHints: boolean;
   modelHints: string[];
@@ -289,6 +291,9 @@ export function buildSystemPromptVars(
 ): SystemPromptVars {
   const composioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true';
   const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
+  // Same gate as webhookEndpoints — do not tighten to also require proxy URL
+  // (PLATFORM_AUTH_ACTIVE also gates webhook tools in mcp-server.ts).
+  const platformServices = webhookEndpoints;
   const modelHints = modelPromptHints || [];
   const connectedAccounts = connectedAccountGroups();
   const remoteMcps = remoteMcpViews();
@@ -305,6 +310,7 @@ export function buildSystemPromptVars(
     composioTriggers,
     webhookEndpoints,
     anyTriggers: composioTriggers || webhookEndpoints,
+    platformServices,
     computerUse: isComputerUseHost(),
     hasModelHints: modelHints.length > 0,
     modelHints,
