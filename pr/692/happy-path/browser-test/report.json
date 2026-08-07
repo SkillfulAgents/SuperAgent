@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser-use feature successfully enables agent to open a browser, navigate to a specified URL, retrieve the page title, and report it back in the chat interface.",
+  "steps": [
+    "Step 1 - Navigate to http://localhost:47891 — Successfully loaded the Gamut interface with the agent list visible in the sidebar.",
+    "Step 2 - Find and click the \"QA-20260807-212930-n2wl\" agent in the sidebar — Successfully navigated to the agent's chat interface.",
+    "Step 3 - Send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully typed and sent the message via the chat input field.",
+    "Step 4 - Wait up to 3 minutes for a response — Response received within 10 seconds. The agent executed the following tools in sequence:",
+    "Step 5 - Verify the response mentions \"Example Domain\" and take a screenshot — VERIFIED. The agent's response clearly states: \"The page title is \\\"Example Domain\\\" — the page has a single heading with that text, a short paragraph about the domain being for documentation examples, and a 'Learn more' link. Browser is closed.\""
+  ],
+  "bugs": [],
+  "durationMs": 74659,
+  "sessionId": "3d42a6f4-ee61-4526-b703-6767ed3a34a1",
+  "cost": {
+    "inputTokens": 350,
+    "outputTokens": 11515,
+    "cacheCreationTokens": 75567,
+    "cacheReadTokens": 994221,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.251806
+  }
+}
