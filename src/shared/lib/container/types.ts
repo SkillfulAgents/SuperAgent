@@ -157,7 +157,10 @@ export type HostPortProbeResult = 'reachable' | 'unreachable' | 'unknown'
 
 export interface ContainerClient {
   // Lifecycle management
-  start(options?: StartOptions): Promise<void>
+  // Production runtimes return the state already proven by their health gate.
+  // `void` keeps lightweight/mock clients compatible; ContainerManager falls
+  // back to getInfoFromRuntime() only for those clients.
+  start(options?: StartOptions): Promise<ContainerInfo | void>
   stop(options?: StopOptions): Promise<StopResult>
   stopSync(): void // Synchronous stop for exit handlers
 

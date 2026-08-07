@@ -215,6 +215,16 @@ describe('ensureImageExists via start()', () => {
     expect(buildExecAttempted()).toBe(false)
   })
 
+  it('returns the health-validated port and clears stale state with one force-remove', async () => {
+    const info = await makeClient().start()
+
+    expect(info).toEqual({ status: 'running', port: 4000 })
+    const runIndex = execCommands.findIndex((command) => /\brun\s+-d\b/.test(command))
+    expect(runIndex).toBeGreaterThan(0)
+    expect(execCommands.slice(0, runIndex).filter((command) => /\b(?:stop|rm)\b/.test(command)))
+      .toEqual(['docker rm -f superagent-abc123'])
+  })
+
   it('pulls (never builds) when the image is missing and no build context exists (packaged app)', async () => {
     inspectScript = [IMAGE_MISSING_INSPECT_MSG]
 

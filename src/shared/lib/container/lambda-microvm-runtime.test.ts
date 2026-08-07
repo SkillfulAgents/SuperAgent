@@ -240,7 +240,9 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
   }
 
   it('start runs a MicroVM with image/role/connectors and becomes healthy', async () => {
-    await newClient().start()
+    const info = await newClient().start()
+    expect(info.status).toBe('running')
+    expect(typeof info.port).toBe('number')
     const runCall = sendMock.mock.calls.find((c) => c[0].type === 'Run')
     expect(runCall).toBeTruthy()
     const input = runCall![0].input
@@ -933,7 +935,7 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     let client!: LambdaMicroVmRuntimeClient
     const restartAgent = async () => {
       if (inflight) return inflight
-      inflight = client.start().finally(() => {
+      inflight = client.start().then(() => undefined).finally(() => {
         inflight = null
       })
       return inflight

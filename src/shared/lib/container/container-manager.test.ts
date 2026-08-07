@@ -242,6 +242,19 @@ describe('containerManager.ensureRunning — env var construction', () => {
     )
   })
 
+  it('caches the health-validated start result without another runtime query', async () => {
+    setupAccountMocks([])
+    mockStart.mockResolvedValue({ status: 'running', port: 4567 })
+
+    await containerManager.ensureRunning('test-agent')
+
+    expect(mockGetInfoFromRuntime).not.toHaveBeenCalled()
+    expect(containerManager.getCachedInfo('test-agent')).toEqual({
+      status: 'running',
+      port: 4567,
+    })
+  })
+
   it('sets PROXY_TOKEN from getOrCreateProxyToken return value', async () => {
     setupAccountMocks([])
     mockGetOrCreateProxyToken.mockResolvedValue('custom-proxy-token')
