@@ -99,7 +99,12 @@ export default defineConfig({
     },
   },
   root: './src/renderer',
-  build: { outDir: '../../dist/renderer' },
+  // outDir sits OUTSIDE the Vite root, so Vite does not clean it by default —
+  // consecutive builds would accumulate old hashed chunks, and the SW precache
+  // manifest globs the output dir, so stale generations would be precached as
+  // dead weight. (Docker builds were immune — fresh workspace — but local
+  // `npm run preview` and the PWA E2E suite were not.)
+  build: { outDir: '../../dist/renderer', emptyOutDir: true },
   server: {
     port: parseInt(process.env.PORT || '47891', 10),
     host: '0.0.0.0',
