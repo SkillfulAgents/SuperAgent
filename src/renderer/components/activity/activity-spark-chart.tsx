@@ -30,7 +30,7 @@ interface ActivitySparkChartProps {
   className?: string
 }
 
-function dayLabel(date: string): string {
+export function dayLabel(date: string): string {
   const parsed = new Date(`${date}T00:00:00.000Z`)
   return new Intl.DateTimeFormat('en-US', {
     month: 'short',
@@ -39,7 +39,7 @@ function dayLabel(date: string): string {
   }).format(parsed)
 }
 
-function plural(value: number, singular: string, multiple = `${singular}s`): string {
+export function plural(value: number, singular: string, multiple = `${singular}s`): string {
   return value === 1 ? singular : multiple
 }
 

@@ -7,7 +7,7 @@ import {
   type ChartConfig,
 } from '@renderer/components/ui/chart'
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
-import { summarizeDailyActivity } from './activity-spark-chart'
+import { dayLabel, plural, summarizeDailyActivity } from './activity-spark-chart'
 
 const activityChartConfig = {
   succeeded: {
@@ -24,19 +24,6 @@ interface ActivityBarChartProps {
   label: string
   data: DailyActivityPoint[]
   className?: string
-}
-
-function dayLabel(date: string): string {
-  const parsed = new Date(`${date}T00:00:00.000Z`)
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    timeZone: 'UTC',
-  }).format(parsed)
-}
-
-function plural(value: number, singular: string, multiple = `${singular}s`): string {
-  return value === 1 ? singular : multiple
 }
 
 /** Larger companion to ActivitySparkChart with a real date axis + hover data. */
