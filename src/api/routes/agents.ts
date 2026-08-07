@@ -5719,7 +5719,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
       loadingEl.remove();
       const iframe = document.createElement('iframe');
       iframe.src = dashboardUrl;
-      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
+      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads';
       iframe.allow = 'microphone; camera';
       document.body.appendChild(iframe);
     }

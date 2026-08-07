@@ -650,6 +650,7 @@ describe('GET /:id/artifacts/:artifactSlug/view', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/agents/test-agent')
     expect(loadingRemove).toHaveBeenCalledOnce()
     expect(iframe.src).toBe('/api/agents/test-agent/artifacts/sales/')
+    expect(iframe.sandbox).toContain('allow-downloads')
   })
 })
 

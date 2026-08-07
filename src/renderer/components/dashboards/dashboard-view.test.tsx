@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardView } from './dashboard-view'
@@ -146,5 +146,19 @@ describe('DashboardView restart', () => {
     expect(document.querySelector('iframe')?.getAttribute('src')).toBe(
       '/api/agents/abc1234567/artifacts/dashboard/',
     )
+  })
+
+  it('shows refresh progress until the new iframe document loads', async () => {
+    mocks.dashboardStatus = 'running'
+    render(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
+    const frame = document.querySelector('iframe')!
+
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh dashboard' }))
+
+    expect(screen.getByRole('button', { name: 'Refreshing dashboard' })).toBeDisabled()
+
+    fireEvent.load(frame)
+
+    expect(screen.getByRole('button', { name: 'Refresh dashboard' })).not.toBeDisabled()
   })
 })

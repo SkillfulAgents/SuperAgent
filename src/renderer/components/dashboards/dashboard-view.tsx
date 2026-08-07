@@ -27,6 +27,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const [pollFast, setPollFast] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const [restarting, setRestarting] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [restartError, setRestartError] = useState<string | null>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const waitStartedAtRef = useRef<number | null>(null)
@@ -90,6 +91,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
 
   const handleRefresh = useCallback(() => {
     if (iframeRef.current) {
+      setRefreshing(true)
       iframeRef.current.src = iframeSrc
     }
   }, [iframeSrc])
@@ -174,8 +176,17 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           <Button variant="ghost" size="sm" onClick={handlePopOut} title="Open in new window">
             <ExternalLink className="h-3 w-3" />
           </Button>
-          <Button variant="ghost" size="sm" onClick={handleRefresh} title="Refresh">
-            <RefreshCw className="h-3 w-3" />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title={refreshing ? 'Refreshing…' : 'Refresh'}
+            aria-label={refreshing ? 'Refreshing dashboard' : 'Refresh dashboard'}
+          >
+            {refreshing
+              ? <Loader2 className="h-3 w-3 animate-spin" />
+              : <RefreshCw className="h-3 w-3" />}
           </Button>
         </div>
       </div>
@@ -195,6 +206,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           title={dashboard?.name || dashboardSlug}
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
           allow="microphone; camera"
+          onLoad={() => setRefreshing(false)}
         />
       </div>
     </div>
