@@ -286,10 +286,15 @@ export function useInitiateMcpOAuth() {
   return useMutation<{ redirectUrl: string; state: string }, Error, { mcpId?: string; name?: string; url?: string; electron?: boolean; clientName?: string; clientId?: string; clientSecret?: string }>({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (data) => {
+      // The deep-link scheme travels with the request: a cloud deployment
+      // serving this initiate has no SUPERAGENT_PROTOCOL of its own (SUP-560).
+      const payload = data.electron
+        ? { protocol: window.electronAPI?.desktopProtocol, ...data }
+        : data
       const res = await apiFetch('/api/remote-mcps/initiate-oauth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify(payload),
       })
       if (!res.ok) {
         const error = await res.json()

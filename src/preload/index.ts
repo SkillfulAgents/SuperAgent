@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   platform: process.platform,
   osVersion: process.getSystemVersion(),
+  // The app's deep-link scheme (superagent / superagent-dev). Main assigns the
+  // env var before any window spawns, so the renderer's copy always has it.
+  desktopProtocol: process.env.SUPERAGENT_PROTOCOL || 'superagent',
 
   // OAuth callback handling - receives parsed callback params from main process.
   // Returns a per-listener unsubscribe so concurrent subscribers (multiple
@@ -472,6 +475,7 @@ declare global {
       setPreferredApiTarget?: (target: ApiTarget) => Promise<void>
       platform: string
       osVersion: string
+      desktopProtocol?: string
       onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => () => void
       removeOAuthCallback: () => void
       onMcpOAuthCallback: (callback: (params: { success: boolean; mcpId?: string | null; error?: string | null }) => void) => () => void
