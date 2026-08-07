@@ -49,7 +49,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "build:container": "docker build -t superagent-container ./agent-container",
-    "icons:download": "tsx scripts/download-service-icons.ts"
+    "icons:download": "tsx scripts/download-service-icons.ts",
+    "icons:optimize": "tsx scripts/optimize-service-icons.ts"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.32.0",
@@ -183,6 +184,7 @@
     "recharts": "^2.15.4",
     "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",
+    "svgo": "4.0.2",
     "tailwind-merge": "^2.6.0",
     "tailwindcss": "^3.4.0",
     "tailwindcss-animate": "^1.0.7",
