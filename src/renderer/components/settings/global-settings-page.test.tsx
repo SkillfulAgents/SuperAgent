@@ -45,6 +45,7 @@ vi.mock('./auth-tab', () => ({
 }))
 
 vi.mock('./profile-tab', () => ({ ProfileTab: () => null }))
+vi.mock('./mobile-tab', () => ({ MobileTab: () => null }))
 vi.mock('./general-tab', () => ({ GeneralTab: () => null }))
 vi.mock('./runtime-tab', () => ({ RuntimeTab: () => null }))
 vi.mock('./account-provider-tab', () => ({ AccountProviderTab: () => null }))
