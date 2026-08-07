@@ -33,7 +33,6 @@ import llmRouter from './routes/llm'
 import faviconRouter from './routes/favicon'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
-import { ANTHROPIC_SDK_BUNDLE } from './llm-sdk-bundle'
 import adminUsersRouter from './routes/admin-users'
 import auditLogRouter from './routes/audit-log'
 import connectionLogsRouter from './routes/connection-logs'
@@ -191,7 +190,8 @@ app.get('/api/llm/anthropic-polyfill.js', (c) => {
     'Cache-Control': 'public, max-age=3600',
   })
 })
-app.get('/api/llm/anthropic-sdk.js', (c) => {
+app.get('/api/llm/anthropic-sdk.js', async (c) => {
+  const { ANTHROPIC_SDK_BUNDLE } = await import('./llm-sdk-bundle')
   return c.body(ANTHROPIC_SDK_BUNDLE, 200, {
     'Content-Type': 'application/javascript; charset=utf-8',
     'Cache-Control': 'public, max-age=86400',
