@@ -210,6 +210,12 @@ describe('initializeServices post-bind critical path', () => {
     await vi.waitFor(() => expect(totalStarts()).toBe(3))
     expect(active).toBe(3)
 
+    // The user-facing connects (notifications, chat) must be in the first
+    // wave — they are cheap handshakes and must not queue behind the
+    // open-ended catch-up work (image pull, overdue tasks, webhook events).
+    expect(platformNotificationsStart).toHaveBeenCalledTimes(1)
+    expect(chatIntegrationStart).toHaveBeenCalledTimes(1)
+
     while (totalStarts() < starts.length) {
       const previous = totalStarts()
       releases.shift()?.()

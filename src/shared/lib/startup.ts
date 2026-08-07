@@ -178,6 +178,34 @@ async function initializeServicesInner() {
     }
   }
 
+  // Lane order is priority: the limiter grants slots FIFO, and the last three
+  // starts below are open-ended (image pull on fresh installs; the task
+  // scheduler's catch-up scan boots a container per overdue task; the trigger
+  // manager's initial poll processes claimed webhook events). The two
+  // user-facing connects are cheap handshakes — schedule them first so chat
+  // messages and notifications cannot go dark behind minutes of catch-up work.
+
+  // Desktop-only platform-notifications subscription (OS notifications from
+  // Supabase Realtime INSERTs). The manager self-gates on auth mode and
+  // platform connectivity; connect/disconnect after launch is handled by the
+  // platform auth-changed notifier.
+  scheduleStartupIo(
+    () => platformNotificationsManager.start(),
+    () => platformNotificationsManager.stop(),
+  ).catch((error) => {
+    console.error('Failed to start platform notifications manager:', error)
+  })
+
+  // Start chat integration manager
+  scheduleStartupIo(
+    () => chatIntegrationManager.start(),
+    () => chatIntegrationManager.stop(),
+  ).catch((error) => {
+    console.error('Failed to start chat integration manager:', error)
+    // TODO add exception capturing for all other services that start in this file
+    captureException(error, { tags: { component: 'chat-integration', operation: 'startup' } })
+  })
+
   // Check/pull container image (non-blocking, bounded with other startup I/O)
   scheduleStartupIo(() => containerManager.ensureImageReady()).catch((error) => {
     console.error('Failed to ensure image ready:', error)
@@ -208,27 +236,6 @@ async function initializeServicesInner() {
       console.error('Failed to start trigger manager:', error)
     })
   }
-
-  // Desktop-only platform-notifications subscription (OS notifications from
-  // Supabase Realtime INSERTs). The manager self-gates on auth mode and
-  // platform connectivity; connect/disconnect after launch is handled by the
-  // platform auth-changed notifier.
-  scheduleStartupIo(
-    () => platformNotificationsManager.start(),
-    () => platformNotificationsManager.stop(),
-  ).catch((error) => {
-    console.error('Failed to start platform notifications manager:', error)
-  })
-
-  // Start chat integration manager
-  scheduleStartupIo(
-    () => chatIntegrationManager.start(),
-    () => chatIntegrationManager.stop(),
-  ).catch((error) => {
-    console.error('Failed to start chat integration manager:', error)
-    // TODO add exception capturing for all other services that start in this file
-    captureException(error, { tags: { component: 'chat-integration', operation: 'startup' } })
-  })
 
   // Start auto-sleep monitor
   autoSleepMonitor.start().catch((error) => {
