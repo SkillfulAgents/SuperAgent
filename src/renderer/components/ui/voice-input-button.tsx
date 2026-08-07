@@ -100,9 +100,10 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
         buttonVariants({ variant: 'outline', size: 'icon' }),
         'overflow-hidden px-0 transition-[width,padding,background-color,border-color,color,border-radius] duration-200 ease-out',
         active
-          ? `${config.pill} gap-2 justify-between rounded-md border-input bg-background px-2 text-foreground hover:bg-zinc-100`
+          ? `${config.pill} gap-2 justify-between rounded-md border-primary/30 bg-primary/10 px-2 text-foreground hover:bg-primary/15 dark:border-primary/40 dark:bg-primary/15 dark:hover:bg-primary/20`
           : `gap-0 rounded-md ${config.button}`
       )}
+      aria-label={active ? 'Stop recording' : !hasVoiceConfigured ? 'Set up voice input' : 'Voice input'}
       title={
         active
           ? 'Stop recording'
@@ -117,7 +118,7 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
           active ? 'max-w-[64px] opacity-100' : 'max-w-0 opacity-0'
         )}
       >
-        <MiniWaveform analyserRef={voiceInput.analyserRef} color="black" {...config.waveform} />
+        <MiniWaveform analyserRef={voiceInput.analyserRef} color="currentColor" {...config.waveform} />
       </span>
       {busy ? (
         <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
