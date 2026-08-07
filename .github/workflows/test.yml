@@ -43,6 +43,40 @@ jobs:
           json-summary-path: ./coverage/coverage-summary.json
           json-final-path: ./coverage/coverage-final.json
 
+  # Builds both shipped targets and verifies every bare import in the emitted
+  # bundles is reachable from the production dependency closure, and that no
+  # direct production dependency goes unused. The packaging workflows
+  # (build-mac/build-win) run the electron half again via dist:mac/dist:win;
+  # this job is what gates PRs, since none of the packaging workflows run there.
+  runtime-dependency-closure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build server bundle
+        run: npm run build:api
+
+      - name: Build desktop bundles
+        run: npm run build:electron
+
+      - name: Check runtime dependency closure
+        run: npm run check:runtime-deps
+
   container-tests:
     runs-on: ubuntu-latest
     steps:
