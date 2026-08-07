@@ -540,7 +540,7 @@ import {
   exportSkill,
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
-import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
+import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
 import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
@@ -996,6 +996,77 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     expect(res.status).toBe(200)
     expect(sessionIsKnown).toHaveBeenCalledWith('authorized-agent', 'new-session')
     expect(mockStreamSSE).toHaveBeenCalledOnce()
+  })
+})
+
+// ============================================================================
+// Agent startup — POST /:id/start
+// ============================================================================
+
+describe('agent startup — POST /:id/start', () => {
+  const runningAgent = {
+    slug: 'test-agent',
+    displaySlug: 'test-agent',
+    name: 'Test Agent',
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    status: 'running' as const,
+    containerPort: 3456,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    vi.mocked(getAgentWithStatus).mockResolvedValue(runningAgent)
+  })
+
+  afterEach(() => {
+    // Restore the file-level default so a pending/rejected mock from these
+    // tests doesn't leak into later describe blocks.
+    vi.mocked(containerManager.ensureRunning).mockReset()
+  })
+
+  it('does not resolve until the container has become healthy', async () => {
+    let resolveStart!: (value: unknown) => void
+    vi.mocked(containerManager.ensureRunning).mockReturnValue(new Promise((resolve) => {
+      resolveStart = resolve
+    }) as never)
+
+    let settled = false
+    const responsePromise = Promise.resolve(createApp()
+      .request('http://localhost/api/agents/test-agent/start', { method: 'POST' }))
+      .then((response) => {
+        settled = true
+        return response
+      })
+
+    await vi.waitFor(() => expect(containerManager.ensureRunning).toHaveBeenCalledWith('test-agent'))
+    expect(settled).toBe(false)
+    // The identity read must wait for health so the response reflects the
+    // post-start status.
+    expect(getAgentWithStatus).not.toHaveBeenCalled()
+
+    resolveStart({})
+    const response = await responsePromise
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      slug: 'test-agent',
+      status: 'running',
+      containerPort: 3456,
+    })
+    expect(getAgentWithStatus).toHaveBeenCalledWith('test-agent', { includeSummary: false })
+  })
+
+  it('returns the startup error when container health never succeeds', async () => {
+    vi.mocked(containerManager.ensureRunning).mockRejectedValue(new Error('Container failed to become healthy'))
+
+    const response = await createApp().request(
+      'http://localhost/api/agents/test-agent/start',
+      { method: 'POST' },
+    )
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({ error: 'Container failed to become healthy' })
   })
 })
 

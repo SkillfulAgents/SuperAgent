@@ -1429,9 +1429,11 @@ agents.post('/:id/start', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
 
-
     await containerManager.ensureRunning(slug)
-    const agent = await getAgentWithStatus(slug)
+
+    // Skip the session-summary enrichment: it stats every transcript, and every
+    // caller of this command discards the body and refetches agent data anyway.
+    const agent = await getAgentWithStatus(slug, { includeSummary: false })
 
     // Note: agent_status_changed is broadcast by containerManager.ensureRunning()
 
