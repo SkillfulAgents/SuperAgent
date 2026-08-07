@@ -195,6 +195,9 @@ describe('TriggerManager', () => {
       const createArgs = mockCreateSession.mock.calls[0][0]
       expect(createArgs.initialMessage).toContain('Handle this email')
       expect(createArgs.initialMessage).toContain('"subject": "Hello"')
+      expect(createArgs.systemPrompt).toBe(
+        'This session was started by a webhook trigger, not by a person in a conversation. Your response goes to the session transcript, and writing it does not reach anyone. If you need to tell a person or agent something, that takes a tool.',
+      )
 
       // Verify trigger was marked as fired
       expect(mockMarkTriggerFired).toHaveBeenCalledWith('trigger_1', 'session_123')
@@ -368,6 +371,8 @@ describe('TriggerManager', () => {
         agentSlug: 'test-agent',
         composioTriggerId: 'ti_abc',
         prompt: 'Handle it',
+        triggerType: 'GMAIL_NEW_EMAIL',
+        name: null,
         status: 'active',
         fireCount: 0,
         model: null,

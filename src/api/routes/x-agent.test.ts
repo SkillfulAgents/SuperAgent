@@ -475,7 +475,10 @@ describe('/invoke', () => {
     expect(body).toEqual({ sessionId: 'new-sess-id', status: 'running' })
     expect(mockEnsureRunning).toHaveBeenCalledWith(TARGET_SLUG)
     expect(mockCreateSession).toHaveBeenCalledWith(
-      expect.objectContaining({ initialMessage: 'hello' }),
+      expect.objectContaining({
+        initialMessage: 'hello',
+        systemPrompt: 'This session was started by another agent. Your response is recorded in this session\'s transcript. Writing it is what records it, and no tool is needed. Put the answer in your final message rather than in interim narration.',
+      }),
     )
     expect(mockCreateSession.mock.calls[0][0]).not.toHaveProperty('initialMessageUuid')
     expect(mockReserveSessionOwnership).toHaveBeenCalledWith(TARGET_SLUG, 'new-sess-id')

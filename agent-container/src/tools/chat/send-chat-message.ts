@@ -18,9 +18,7 @@ export function makeSendChatMessageTool(getCallerSessionId: () => string) {
     'send_chat_message',
     `Proactively send a message to a chat through a connected chat integration (Telegram, Slack, or iMessage).
 
-Use this ONLY to initiate contact outside the current conversation — e.g. a scheduled or background run notifying someone, or messaging a DIFFERENT chat than the one this session is responding in (like DMing a specific person while working a channel thread).
-
-If this session was started by an incoming chat message, do NOT use this tool to reply to that conversation: everything you write in your response is already delivered to it automatically, and sending it here too would post it twice.
+Use this to message a chat — when you were asked to, or to reach a chat other than the one this session is already responding in. It is not how you deliver this session's own response; your session context states where that goes. If this session is itself a chat conversation, your response is already delivered there, so sending it here would post it twice.
 
 The destination is either a chat_id (an existing conversation or channel — see list_chat_integrations and list_chat_channels) or a user_id (a person from list_chat_users; the 1:1 conversation is opened automatically, so this works even if they never messaged the bot). Pass one or the other, never both. Omitting both works only when the integration has exactly one active chat. user_id is supported only where the integration's capabilities include dm_by_user_id.
 

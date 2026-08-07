@@ -31,6 +31,7 @@ import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import { registerSession } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
+import { buildSessionContextPrompt } from '@shared/lib/session-context'
 import {
   pollAndClaimEvents,
   acknowledgeEvents,
@@ -364,6 +365,10 @@ class TriggerManager {
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: prompt,
+      systemPrompt: buildSessionContextPrompt({
+        surface: 'automation',
+        kind: 'webhook-trigger',
+      }),
       model: trigger.model || agentPrefs.defaultModel || models.agentModel,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,

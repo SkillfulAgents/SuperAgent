@@ -31,6 +31,7 @@ import {
   updateRemoteMcpEnvironment,
 } from '@shared/lib/container/connection-runtime-sync'
 import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
+import { buildSessionContextPrompt } from '@shared/lib/session-context'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
@@ -1631,6 +1632,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
       initialMessageUuid,
+      systemPrompt: buildSessionContextPrompt({ surface: 'app' }),
       model: sessionModel,
       browserModel: getEffectiveModels().browserModel,
       dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,

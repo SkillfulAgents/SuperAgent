@@ -177,6 +177,12 @@ describe('generateSystemPrompt rendering', () => {
     const template = readFileSync(__dirname + '/system-prompt.md', 'utf-8')
     expect(template).not.toMatch(/\$\{[A-Za-z_]+\}/)
   })
+
+  // Global send licence. Delivery facts live in per-session orientation.
+  it('does not claim send_chat_message works outside a chat session', () => {
+    const template = readFileSync(__dirname + '/system-prompt.md', 'utf-8')
+    expect(template).not.toContain('This works even outside of a chat session.')
+  })
 })
 
 describe('subagent capability gating', () => {
