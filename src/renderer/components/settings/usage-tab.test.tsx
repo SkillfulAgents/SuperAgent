@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { UsageTab } from './usage-tab'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
@@ -24,7 +24,27 @@ vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({ isAuthMode: false, isAdmin: false }),
 }))
 
-describe('UsageTab estimate notice', () => {
+describe('UsageTab', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('relies on the query lifecycle instead of forcing a second mount refetch', () => {
+    useSettingsMock.mockReturnValue({ data: {} })
+
+    render(<UsageTab />)
+
+    expect(refetchMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps the explicit Refresh action', () => {
+    useSettingsMock.mockReturnValue({ data: {} })
+    render(<UsageTab />)
+    refetchMock.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+
+    expect(refetchMock).toHaveBeenCalledOnce()
+  })
+
   it('explains that deleted agents and sessions are excluded', () => {
     useSettingsMock.mockReturnValue({ data: { llmProvider: 'anthropic' } })
 

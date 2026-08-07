@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/alert'
 import {
@@ -65,10 +65,6 @@ export function UsageTab() {
   const [globalView, setGlobalView] = useState(!isAuthMode || isAdmin)
   const [segmentation, setSegmentation] = useState<Segmentation>('total')
   const { data, isLoading, isFetching, refetch } = useUsageData(days, globalView)
-
-  useEffect(() => {
-    refetch()
-  }, [days, globalView, refetch])
 
   const segments = useMemo(() => {
     if (segmentation === 'total') return [{ key: 'cost', label: 'Cost' }]
