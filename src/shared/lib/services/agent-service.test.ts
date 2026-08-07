@@ -179,6 +179,18 @@ Instructions
       expect(agent?.containerPort).toBe(3456)
     })
 
+    it('can omit filesystem session summaries for command responses', async () => {
+      await createTestAgent('command-agent', SAMPLE_CLAUDE_MD)
+
+      const agent = await getAgentWithStatus('command-agent', { includeSummary: false })
+
+      expect(agent).not.toBeNull()
+      expect(agent).not.toHaveProperty('sessionCount')
+      expect(agent).not.toHaveProperty('lastActivityAt')
+      expect(agent).not.toHaveProperty('hasActiveSessions')
+      expect(agent).not.toHaveProperty('hasSessionsAwaitingInput')
+    })
+
     it('surfaces awaiting input when agent has pending proxy reviews and no active sessions', async () => {
       await createTestAgent('review-agent', SAMPLE_CLAUDE_MD)
       mockGetPendingReviewsForAgent.mockReturnValueOnce([

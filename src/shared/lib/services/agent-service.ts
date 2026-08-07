@@ -130,7 +130,10 @@ export async function getAgent(slug: string): Promise<AgentConfig | null> {
  * Get a single agent with container status (returns API format)
  * Uses cached container status to avoid spawning docker processes.
  */
-export async function getAgentWithStatus(slug: string): Promise<ApiAgent | null> {
+export async function getAgentWithStatus(
+  slug: string,
+  options: { includeSummary?: boolean } = {},
+): Promise<ApiAgent | null> {
   const agent = await getAgent(slug)
   if (!agent) {
     return null
@@ -139,6 +142,11 @@ export async function getAgentWithStatus(slug: string): Promise<ApiAgent | null>
   // Use cached status to avoid spawning docker processes
   const info = containerManager.getCachedInfo(slug)
   const base = toApiAgent(agent, info.status, info.port)
+
+  // Command endpoints such as /start only need the identity + runtime state.
+  // Avoid restatting every transcript to populate optional summary fields that
+  // their callers discard; list/detail reads retain the enriched default.
+  if (options.includeSummary === false) return base
 
   // Compute session activity flags (same logic as the list endpoint)
   const sessionSummary = await getSessionSummary(slug)
