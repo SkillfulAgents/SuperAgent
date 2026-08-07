@@ -1,4 +1,3 @@
-import { zip } from 'fflate'
 import { canUseHostFeatures } from './host-features'
 
 /**
@@ -181,12 +180,20 @@ export function getFolderFromDirectoryInput(files: FileList): FolderGroup | null
 export async function zipFolderFiles(
   files: { file: File; relativePath: string }[]
 ): Promise<Blob> {
-  // Read files sequentially to avoid memory spikes from parallel reads
-  const data: Record<string, Uint8Array> = {}
-  for (const f of files) {
-    const buffer = await f.file.arrayBuffer()
-    data[f.relativePath] = new Uint8Array(buffer)
-  }
+  // Load the browser-only zipper on demand, in parallel with sequential file
+  // reads. Electron hands the host a folder path and never needs this module.
+  const [{ zip }, data] = await Promise.all([
+    import('./browser-zip'),
+    (async () => {
+      // Read files sequentially to avoid memory spikes from parallel reads.
+      const contents: Record<string, Uint8Array> = {}
+      for (const f of files) {
+        const buffer = await f.file.arrayBuffer()
+        contents[f.relativePath] = new Uint8Array(buffer)
+      }
+      return contents
+    })(),
+  ])
 
   const zipped = await new Promise<Uint8Array>((resolve, reject) => {
     zip(data, { level: 0 }, (err, result) => {
