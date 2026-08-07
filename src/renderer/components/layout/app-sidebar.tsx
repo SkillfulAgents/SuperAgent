@@ -8,7 +8,11 @@ import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { TargetSwitcher } from '@renderer/components/layout/target-switcher'
+import { SidebarVersion } from '@renderer/components/layout/sidebar-version'
 import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
+import { useCloudWorkspace } from '@renderer/hooks/use-cloud-workspace'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
+import { targetIsRemote } from '@renderer/lib/api-target'
 import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
@@ -70,7 +74,6 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { useUser } from '@renderer/context/user-context'
-import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useIsOnline } from '@renderer/context/connectivity-context'
@@ -729,8 +732,6 @@ export function AppSidebar() {
   useRenderTracker('AppSidebar')
   const { openSettings } = useDialogs()
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
-  const updateStatus = useUpdateStatus()
-  const updateAvailable = updateStatus.state === 'available' || updateStatus.state === 'downloaded'
 
   // The "New Agent" menu command is handled centrally by MenuCommandHandler
   // (which calls createUntitledAgent); the sidebar keeps the hook for its own
@@ -746,6 +747,11 @@ export function AppSidebar() {
   useEffect(() => {
     if (isMobile) setOpenMobile(false)
   }, [locationHref, isMobile, setOpenMobile])
+  const drivingCloud = isElectron() && targetIsRemote()
+  const { data: platformAuth } = usePlatformAuthStatus()
+  // Only needed while driving cloud (footer shows that deployment's version).
+  // IPC-backed so the query does not proxy to the remote host-app.
+  const { data: cloudWorkspace } = useCloudWorkspace(drivingCloud, platformAuth?.orgId)
   const { data: agents, isLoading, error } = useAgents()
   // Whether to offer Explore is two round trips deep — skillsets, and only then
   // the discoverable agents they contain — so the item arrives after the rest of
@@ -1040,18 +1046,11 @@ export function AppSidebar() {
             <Settings className="h-4 w-4" />
             <span>Settings</span>
           </SidebarMenuButton>
-          <button
-            type="button"
-            onClick={() => openSettings('general')}
-            className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
-            title={updateAvailable ? `Update available: v${updateStatus.version}` : undefined}
-            data-testid="sidebar-version"
-          >
-            {updateAvailable && (
-              <span className="h-2 w-2 rounded-full bg-blue-500" aria-label="Update available" />
-            )}
-            <span>v{__APP_VERSION__}</span>
-          </button>
+          <SidebarVersion
+            drivingCloud={drivingCloud}
+            cloudVersion={cloudWorkspace?.superagentVersion ?? null}
+            onOpenUpdates={() => openSettings('general')}
+          />
         </div>
       </SidebarFooter>
 

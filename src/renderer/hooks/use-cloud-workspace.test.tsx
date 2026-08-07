@@ -21,6 +21,7 @@ const WORKSPACE_A = {
   orgId: 'org_a',
   hasValidToken: true,
   discoveryFailed: false,
+  superagentVersion: 'v0.5.0',
 }
 
 function makeClient() {

@@ -92,11 +92,11 @@ describe('availability', () => {
     expect(result.current.current).toBe('cloud')
   })
 
-  it('does not even ask the deployment while in cloud mode', () => {
+  it('asks via IPC while in cloud mode (HTTP would proxy to the remote host)', () => {
     setActiveTarget('cloud', null)
     renderHook(() => useTargetSwitch())
-    // First arg is `enabled`.
-    expect(mockUseCloudWorkspace).toHaveBeenCalledWith(false, expect.anything())
+    // First arg is `enabled` — cloud mode is itself proof a workspace exists.
+    expect(mockUseCloudWorkspace).toHaveBeenCalledWith(true, expect.anything())
   })
 
   it('does not ask before the platform account is connected', () => {

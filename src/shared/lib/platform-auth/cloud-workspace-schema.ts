@@ -43,6 +43,8 @@ export const DeploymentDiscoveryEntrySchema = z.object({
   deployment_url: z.string(),
   authorization_server: z.string(),
   status: z.string(),
+  // Optional: older proxies omit it; null when the deployment row has no pin yet.
+  superagent_version: z.string().nullable().optional(),
 })
 export type DeploymentDiscoveryEntry = z.infer<typeof DeploymentDiscoveryEntrySchema>
 
