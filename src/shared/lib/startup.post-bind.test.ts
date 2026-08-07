@@ -4,9 +4,15 @@ const reconcile = vi.fn()
 const validateAuth = vi.fn().mockResolvedValue(undefined)
 const listAgents = vi.fn().mockResolvedValue([])
 const initializeAgents = vi.fn().mockResolvedValue(undefined)
+const ensureImageReady = vi.fn().mockResolvedValue(undefined)
+const taskSchedulerStart = vi.fn().mockResolvedValue(undefined)
+const triggerManagerStart = vi.fn().mockResolvedValue(undefined)
+const platformNotificationsStart = vi.fn().mockResolvedValue(undefined)
+const chatIntegrationStart = vi.fn().mockResolvedValue(undefined)
 const getSettings = vi.fn().mockReturnValue({})
 const getPlatformAccessToken = vi.fn().mockReturnValue(null)
 const isAuthMode = vi.fn().mockReturnValue(true)
+const clearPendingApprovalBans = vi.fn()
 
 vi.mock('./services/skillset-reconcile', () => ({
   reconcileSkillsetConfigsForCurrentAuth: () => reconcile(),
@@ -17,13 +23,16 @@ vi.mock('./auth/startup-validation', () => ({
 vi.mock('./auth/mode', () => ({
   isAuthMode: () => isAuthMode(),
 }))
+vi.mock('./auth/clear-pending-approval-bans', () => ({
+  clearPendingApprovalBans: () => clearPendingApprovalBans(),
+}))
 vi.mock('./services/agent-service', () => ({
   listAgents: () => listAgents(),
 }))
 vi.mock('./container/container-manager', () => ({
   containerManager: {
     initializeAgents: (...args: unknown[]) => initializeAgents(...args),
-    ensureImageReady: () => Promise.resolve(),
+    ensureImageReady: () => ensureImageReady(),
     startStatusSync: vi.fn(),
     startHealthMonitor: vi.fn(),
     onBeforeContainerStop: null,
@@ -72,16 +81,16 @@ vi.mock('../../main/browser-stream-proxy', () => ({ setupBrowserStreamProxy: vi.
 vi.mock('../../main/cloud-stream-proxy', () => ({ setupCloudStreamProxy: vi.fn() }))
 vi.mock('./proxy/review-manager', () => ({ reviewManager: { rejectAll: vi.fn() } }))
 vi.mock('./scheduler/task-scheduler', () => ({
-  taskScheduler: { start: () => Promise.resolve(), stop: vi.fn() },
+  taskScheduler: { start: () => taskSchedulerStart(), stop: vi.fn() },
 }))
 vi.mock('./scheduler/trigger-manager', () => ({
-  triggerManager: { start: () => Promise.resolve(), stop: vi.fn() },
+  triggerManager: { start: () => triggerManagerStart(), stop: vi.fn() },
 }))
 vi.mock('./scheduler/platform-notifications-manager', () => ({
-  platformNotificationsManager: { start: () => Promise.resolve(), stop: vi.fn() },
+  platformNotificationsManager: { start: () => platformNotificationsStart(), stop: vi.fn() },
 }))
 vi.mock('./chat-integrations/chat-integration-manager', () => ({
-  chatIntegrationManager: { start: () => Promise.resolve(), stop: vi.fn() },
+  chatIntegrationManager: { start: () => chatIntegrationStart(), stop: vi.fn() },
 }))
 vi.mock('./scheduler/auto-sleep-monitor', () => ({
   autoSleepMonitor: { start: () => Promise.resolve(), stop: vi.fn() },
@@ -105,11 +114,18 @@ vi.mock('./computer-use/executor', () => ({
 describe('initializeServices post-bind critical path', () => {
   beforeEach(() => {
     vi.resetModules()
-    reconcile.mockClear()
-    validateAuth.mockClear()
-    listAgents.mockClear()
-    initializeAgents.mockClear()
-    getSettings.mockClear()
+    reconcile.mockReset()
+    validateAuth.mockReset().mockResolvedValue(undefined)
+    listAgents.mockReset().mockResolvedValue([])
+    initializeAgents.mockReset().mockResolvedValue(undefined)
+    ensureImageReady.mockReset().mockResolvedValue(undefined)
+    taskSchedulerStart.mockReset().mockResolvedValue(undefined)
+    triggerManagerStart.mockReset().mockResolvedValue(undefined)
+    platformNotificationsStart.mockReset().mockResolvedValue(undefined)
+    chatIntegrationStart.mockReset().mockResolvedValue(undefined)
+    getSettings.mockReset().mockReturnValue({})
+    getPlatformAccessToken.mockReturnValue(null)
+    clearPendingApprovalBans.mockClear()
     markBoot.mockClear()
     logBootTiming.mockClear()
     isAuthMode.mockReturnValue(true)
@@ -141,6 +157,71 @@ describe('initializeServices post-bind critical path', () => {
     expect(markBoot).toHaveBeenCalledWith('dbReady')
   })
 
+  it('overlaps auth validation with agent discovery, then gates container init on both', async () => {
+    let finishAuth: (() => void) | undefined
+    let finishAgentList: ((agents: never[]) => void) | undefined
+    validateAuth.mockImplementation(() => new Promise<void>((resolve) => { finishAuth = resolve }))
+    listAgents.mockImplementation(() => new Promise<never[]>((resolve) => { finishAgentList = resolve }))
+
+    const { initializeServices } = await import('./startup')
+    const initializing = initializeServices()
+
+    await vi.waitFor(() => {
+      expect(validateAuth).toHaveBeenCalledTimes(1)
+      expect(listAgents).toHaveBeenCalledTimes(1)
+    })
+    expect(initializeAgents).not.toHaveBeenCalled()
+
+    finishAgentList?.([])
+    await Promise.resolve()
+    expect(initializeAgents).not.toHaveBeenCalled()
+
+    finishAuth?.()
+    await initializing
+    expect(initializeAgents).toHaveBeenCalledWith([])
+    expect(clearPendingApprovalBans).toHaveBeenCalledTimes(1)
+  })
+
+  it('bounds heavy startup I/O to three concurrent tasks', async () => {
+    getPlatformAccessToken.mockReturnValue('profile-token')
+    let active = 0
+    let peak = 0
+    const releases: Array<() => void> = []
+    const controlledStart = () => new Promise<void>((resolve) => {
+      active++
+      peak = Math.max(peak, active)
+      releases.push(() => {
+        active--
+        resolve()
+      })
+    })
+    const starts = [
+      ensureImageReady,
+      taskSchedulerStart,
+      triggerManagerStart,
+      platformNotificationsStart,
+      chatIntegrationStart,
+    ]
+    starts.forEach((start) => start.mockImplementation(controlledStart))
+    const totalStarts = () => starts.reduce((sum, start) => sum + start.mock.calls.length, 0)
+
+    const { initializeServices } = await import('./startup')
+    await initializeServices()
+    await vi.waitFor(() => expect(totalStarts()).toBe(3))
+    expect(active).toBe(3)
+
+    while (totalStarts() < starts.length) {
+      const previous = totalStarts()
+      releases.shift()?.()
+      await vi.waitFor(() => expect(totalStarts()).toBe(previous + 1))
+      expect(active).toBe(3)
+    }
+
+    for (const release of releases.splice(0)) release()
+    await vi.waitFor(() => expect(active).toBe(0))
+    expect(peak).toBe(3)
+  })
+
   it('is idempotent across concurrent callers', async () => {
     const { initializeServices } = await import('./startup')
     await Promise.all([initializeServices(), initializeServices()])
@@ -170,6 +251,7 @@ describe('initializeServices post-bind critical path', () => {
     const { afterBindInitialize, getServicesInitError } = await import('./startup')
     await afterBindInitialize({ degradedOnFailure: true })
     expect(getServicesInitError()).toBe('platform unreachable')
+    expect(initializeAgents).not.toHaveBeenCalled()
     expect(logBootTiming).toHaveBeenCalledTimes(1)
   })
 })

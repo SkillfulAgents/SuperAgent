@@ -1,4 +1,5 @@
 import type { ServerType } from '@hono/node-server'
+import pLimit from 'p-limit'
 import { containerManager } from './container/container-manager'
 import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
@@ -35,9 +36,32 @@ import { getSettings } from './config/settings'
 import { logBootTiming, markBoot } from './boot-timing'
 import { credentialBroker } from '../../api/credentials/credential-broker'
 
-// TODO: this fires a lot of work on startup; defer some work and limit concurrency.
+const STARTUP_IO_CONCURRENCY = 3
+const startupIoLimit = pLimit(STARTUP_IO_CONCURRENCY)
+let servicesShuttingDown = false
 let servicesInitPromise: Promise<void> | null = null
 let servicesInitError: string | null = null
+
+/**
+ * Start post-bind I/O through one shared lane so image inspection, overdue
+ * tasks, realtime handshakes, and chat connections do not all hit the host at
+ * once. Callers remain non-blocking, matching the previous startup contract.
+ */
+function scheduleStartupIo(
+  start: () => Promise<unknown>,
+  stop?: () => void,
+): Promise<unknown> {
+  return startupIoLimit(async () => {
+    if (servicesShuttingDown) return
+    try {
+      return await start()
+    } finally {
+      // A start already in flight can outlive shutdown. Give it a second stop
+      // after settling so it cannot resurrect intervals or sockets.
+      if (servicesShuttingDown) stop?.()
+    }
+  })
+}
 
 /** Non-null when background-service init failed and the server runs degraded. */
 export function getServicesInitError(): string | null {
@@ -106,28 +130,34 @@ async function initializeServicesInner() {
     captureException(error, { tags: { component: 'startup', operation: 'skillset-reconcile' } })
   }
 
-  if (isAuthMode()) {
-    await validateAuthModeStartup()
-    try {
-      clearPendingApprovalBans()
-    } catch (error) {
-      captureException(error, {
-        tags: { component: 'startup', operation: 'clear-pending-approval-bans' },
-      })
-    }
-  }
+  // Auth validation and agent discovery are independent reads. Run them
+  // together, then join before container initialization so a failed auth gate
+  // still prevents any runtime side effects.
+  const [, agents] = await Promise.all([
+    (async () => {
+      if (isAuthMode()) {
+        await validateAuthModeStartup()
+        try {
+          clearPendingApprovalBans()
+        } catch (error) {
+          captureException(error, {
+            tags: { component: 'startup', operation: 'clear-pending-approval-bans' },
+          })
+        }
+      }
 
-  // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
-  try {
-    const platformToken = getPlatformAccessToken()
-    if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
-      installPlatformFetchInterceptor()
-    }
-  } catch (error) {
-    captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
-  }
-
-  const agents = await listAgents()
+      // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
+      try {
+        const platformToken = getPlatformAccessToken()
+        if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
+          installPlatformFetchInterceptor()
+        }
+      } catch (error) {
+        captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
+      }
+    })(),
+    listAgents(),
+  ])
   markBoot('dbReady')
   const slugs = agents.map((a) => a.slug)
   await containerManager.initializeAgents(slugs)
@@ -148,8 +178,8 @@ async function initializeServicesInner() {
     }
   }
 
-  // Check/pull container image (non-blocking)
-  containerManager.ensureImageReady().catch((error) => {
+  // Check/pull container image (non-blocking, bounded with other startup I/O)
+  scheduleStartupIo(() => containerManager.ensureImageReady()).catch((error) => {
     console.error('Failed to ensure image ready:', error)
   })
 
@@ -158,7 +188,10 @@ async function initializeServicesInner() {
   containerManager.startHealthMonitor()
 
   // Start task scheduler
-  taskScheduler.start().catch((error) => {
+  scheduleStartupIo(
+    () => taskScheduler.start(),
+    () => taskScheduler.stop(),
+  ).catch((error) => {
     console.error('Failed to start task scheduler:', error)
   })
 
@@ -168,7 +201,10 @@ async function initializeServicesInner() {
   // delivery — same trap as the endpoint tool/teardown gating. The manager
   // itself no-ops per-poll when the token is missing.
   if (getPlatformAccessToken()) {
-    triggerManager.start().catch((error) => {
+    scheduleStartupIo(
+      () => triggerManager.start(),
+      () => triggerManager.stop(),
+    ).catch((error) => {
       console.error('Failed to start trigger manager:', error)
     })
   }
@@ -177,12 +213,18 @@ async function initializeServicesInner() {
   // Supabase Realtime INSERTs). The manager self-gates on auth mode and
   // platform connectivity; connect/disconnect after launch is handled by the
   // platform auth-changed notifier.
-  platformNotificationsManager.start().catch((error) => {
+  scheduleStartupIo(
+    () => platformNotificationsManager.start(),
+    () => platformNotificationsManager.stop(),
+  ).catch((error) => {
     console.error('Failed to start platform notifications manager:', error)
   })
 
   // Start chat integration manager
-  chatIntegrationManager.start().catch((error) => {
+  scheduleStartupIo(
+    () => chatIntegrationManager.start(),
+    () => chatIntegrationManager.stop(),
+  ).catch((error) => {
     console.error('Failed to start chat integration manager:', error)
     // TODO add exception capturing for all other services that start in this file
     captureException(error, { tags: { component: 'chat-integration', operation: 'startup' } })
@@ -224,6 +266,7 @@ export function setupServerHandlers(server: ServerType): void {
  * - vite.config.ts: Vite dev server close
  */
 export async function shutdownServices() {
+  servicesShuttingDown = true
   reviewManager.rejectAll()
   stopBrowserProfileCleanup()
   chatIntegrationManager.stop()
