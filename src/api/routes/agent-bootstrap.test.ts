@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const validateProxyToken = vi.fn(async (_token: string): Promise<string | null> => null)
+const broadcastGlobal = vi.fn()
 vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (t: string) => validateProxyToken(t),
+}))
+vi.mock('@shared/lib/container/message-persister', () => ({
+  messagePersister: { broadcastGlobal: (...args: unknown[]) => broadcastGlobal(...args) },
 }))
 
 import agentBootstrap from './agent-bootstrap'
@@ -12,8 +16,17 @@ function get(path: string, headers: Record<string, string> = {}) {
   return agentBootstrap.request(path, { headers })
 }
 
+function post(path: string, body: unknown, headers: Record<string, string> = {}) {
+  return agentBootstrap.request(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  })
+}
+
 beforeEach(() => {
   validateProxyToken.mockReset().mockResolvedValue(null)
+  broadcastGlobal.mockReset()
   resetBootstrapEnvStoreForTests()
 })
 
@@ -61,5 +74,50 @@ describe('GET /:agentSlug/env', () => {
     expect((await get('/agent-1/env', { Authorization: 'Bearer synth_x' })).status).toBe(200)
     clearBootstrapEnv('agent-1')
     expect((await get('/agent-1/env', { Authorization: 'Bearer synth_x' })).status).toBe(404)
+  })
+})
+
+describe('POST /:agentSlug/events/dashboard-screenshot-ready', () => {
+  it('broadcasts an authenticated screenshot event to renderer clients', async () => {
+    validateProxyToken.mockResolvedValue('agent-1')
+
+    const res = await post(
+      '/agent-1/events/dashboard-screenshot-ready',
+      { dashboardSlug: 'sales-dashboard' },
+      { Authorization: 'Bearer synth_x' },
+    )
+
+    expect(res.status).toBe(204)
+    expect(broadcastGlobal).toHaveBeenCalledWith({
+      type: 'dashboard_screenshot_ready',
+      agentSlug: 'agent-1',
+      dashboardSlug: 'sales-dashboard',
+    })
+  })
+
+  it('rejects a token belonging to another agent', async () => {
+    validateProxyToken.mockResolvedValue('agent-2')
+
+    const res = await post(
+      '/agent-1/events/dashboard-screenshot-ready',
+      { dashboardSlug: 'sales-dashboard' },
+      { Authorization: 'Bearer synth_other' },
+    )
+
+    expect(res.status).toBe(403)
+    expect(broadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  it('rejects unsafe dashboard slugs', async () => {
+    validateProxyToken.mockResolvedValue('agent-1')
+
+    const res = await post(
+      '/agent-1/events/dashboard-screenshot-ready',
+      { dashboardSlug: '../sales' },
+      { Authorization: 'Bearer synth_x' },
+    )
+
+    expect(res.status).toBe(400)
+    expect(broadcastGlobal).not.toHaveBeenCalled()
   })
 })

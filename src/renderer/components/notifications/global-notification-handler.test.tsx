@@ -473,4 +473,81 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
 
     expect(showOSNotification).not.toHaveBeenCalled()
   })
+
+  it('applies agent status events directly and refreshes only that agent\'s artifacts', () => {
+    queryClient.setQueryData(['agents'], [{
+      slug: 'agent-a',
+      displaySlug: 'agent-a-display',
+      name: 'Agent A',
+      status: 'stopped',
+      containerPort: null,
+      sessionCount: 9,
+    }])
+    queryClient.setQueryData(['agents', 'agent-a'], {
+      slug: 'agent-a',
+      displaySlug: 'agent-a-display',
+      name: 'Agent A',
+      status: 'stopped',
+      containerPort: null,
+      sessionCount: 9,
+    })
+    queryClient.setQueryData(['artifacts', 'agent-a'], [])
+    queryClient.setQueryData(['artifacts', 'agent-a-display'], [])
+    queryClient.setQueryData(['artifacts', 'agent-b'], [])
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'agent_status_changed',
+      agentSlug: 'agent-a',
+      status: 'running',
+    })
+
+    expect(queryClient.getQueryData<Array<{ status: string; sessionCount: number }>>(['agents'])?.[0])
+      .toMatchObject({ status: 'running', sessionCount: 9 })
+    expect(queryClient.getQueryData<{ status: string }>(['agents', 'agent-a'])?.status).toBe('running')
+    expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['artifacts', 'agent-a-display'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['artifacts', 'agent-b'])?.isInvalidated).toBe(false)
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agents'] })
+  })
+
+  it('marks only the announced dashboard thumbnail ready without a refetch', () => {
+    queryClient.setQueryData(['agents'], [{
+      slug: 'agent-a',
+      displaySlug: 'agent-a',
+      name: 'Agent A',
+      status: 'running',
+      containerPort: 3456,
+      dashboards: [
+        { slug: 'sales', name: 'Sales' },
+        { slug: 'support', name: 'Support' },
+      ],
+    }])
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'dashboard_screenshot_ready',
+      agentSlug: 'agent-a',
+      dashboardSlug: 'sales',
+    })
+
+    expect(queryClient.getQueryData<Array<{ dashboards: Array<Record<string, unknown>> }>>(['agents'])?.[0].dashboards)
+      .toEqual([
+        { slug: 'sales', name: 'Sales', hasScreenshot: true },
+        { slug: 'support', name: 'Support' },
+      ])
+    expect(invalidateSpy).not.toHaveBeenCalled()
+  })
 })

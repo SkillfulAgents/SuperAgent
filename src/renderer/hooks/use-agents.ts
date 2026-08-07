@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiAgent } from '@shared/lib/types/api'
+import { updateAgentRuntimeCache } from '@renderer/lib/agent-cache'
 
 // Re-export for convenience
 export type { ApiAgent }
@@ -174,14 +175,6 @@ export function useUpdateAgent() {
   })
 }
 
-// TODO: GROSS time based rechecks
-// Delays (ms) for re-invalidating ['agents'] after an agent starts. The
-// container's scanAndStartAll kicks off dashboard startup + screenshot capture
-// asynchronously after /start returns, so the first invalidation fires before
-// any new screenshot.png lands on disk. These follow-ups pick up the thumbnails
-// as they arrive without leaning on a poll loop.
-const AGENT_START_REINVALIDATE_DELAYS_MS = [5_000, 15_000, 30_000]
-
 export type StartAgentVars = string | { slug: string; source?: 'user' | 'warm-start' }
 
 function resolveStartAgentSlug(vars: StartAgentVars): string {
@@ -201,22 +194,25 @@ export function useStartAgent() {
         const body = await res.json().catch(() => ({}))
         throw new Error(body.error || 'Failed to start agent')
       }
-      return res.json()
+      return res.json() as Promise<ApiAgent | null>
     },
-    onSuccess: (_, vars) => {
-      const slug = resolveStartAgentSlug(vars)
+    onSuccess: (agent, vars) => {
       const source = typeof vars === 'string' ? 'user' : (vars.source ?? 'user')
       // Warm-start is background/speculative — don't inflate agent_started.
       if (source !== 'warm-start') {
         track('agent_started')
       }
-      queryClient.invalidateQueries({ queryKey: ['agents'] })
-      queryClient.invalidateQueries({ queryKey: ['agents', slug] })
-      for (const delay of AGENT_START_REINVALIDATE_DELAYS_MS) {
-        setTimeout(() => {
-          queryClient.invalidateQueries({ queryKey: ['agents'] })
-          queryClient.invalidateQueries({ queryKey: ['agents', slug] })
-        }, delay)
+      // The command response and agent_status_changed SSE carry the state we
+      // need. Keep optional summaries intact instead of refetching them; late
+      // dashboard thumbnails arrive through dashboard_screenshot_ready.
+      if (agent) {
+        updateAgentRuntimeCache(queryClient, agent.slug, agent.status, agent.containerPort)
+      } else {
+        // A concurrent delete can make the route's identity lookup return null.
+        // Preserve the old recovery behavior for that exceptional race.
+        const slug = resolveStartAgentSlug(vars)
+        queryClient.invalidateQueries({ queryKey: ['agents'] })
+        queryClient.invalidateQueries({ queryKey: ['agents', slug] })
       }
     },
   })
