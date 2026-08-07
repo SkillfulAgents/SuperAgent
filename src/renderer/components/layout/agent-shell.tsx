@@ -8,6 +8,7 @@ import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { PendingMessagesProvider, type PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
+import { takePendingSessionSeed } from '@renderer/context/pending-session-seed'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 import { ContentShell } from './content-shell'
 import { AgentHeader } from './agent-header'
@@ -51,8 +52,19 @@ export function AgentShell() {
   const [, forceUpdate] = useState(0)
 
   const getPendingMessages = useCallback(
-    (sessionId: string | null) =>
-      sessionId ? (pendingMessagesRef.current.get(sessionId) ?? EMPTY_PENDING_MESSAGES) : EMPTY_PENDING_MESSAGES,
+    (sessionId: string | null) => {
+      if (!sessionId) return EMPTY_PENDING_MESSAGES
+      const existing = pendingMessagesRef.current.get(sessionId)
+      if (existing) return existing
+      // Sync drain: wizard create seeds before AgentShell mounts.
+      const seeded = takePendingSessionSeed(sessionId)
+      if (seeded) {
+        const arr = [seeded]
+        pendingMessagesRef.current.set(sessionId, arr)
+        return arr
+      }
+      return EMPTY_PENDING_MESSAGES
+    },
     [],
   )
 
