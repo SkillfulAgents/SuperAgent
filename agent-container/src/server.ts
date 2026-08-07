@@ -16,6 +16,13 @@ import { promisify } from 'util';
 import { z } from 'zod';
 
 import { inputManager } from './input-manager';
+import {
+  setViewportChannel,
+  syncBrowserViewport,
+  detachViewportChannel,
+  requestDesktopWidth,
+  startBrowserViewportSync,
+} from './browser-viewport';
 import { resolveCdpIp } from './cdp-host';
 import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager, getDashboardBasePath } from './dashboard-manager';
@@ -2501,6 +2508,28 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
   cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow, pendingSelections: new Set(), mainFrameId: null as string | null };
   const state = cdpScreencast;
 
+  // Re-derive the handoff viewport on every attach. Tab switches, popups, and
+  // reconnects all re-enter this function, so a target opened mid-handoff picks
+  // up the override without any per-target bookkeeping.
+  const attachViewportToState = () => {
+    // A socket that was still connecting when a newer stream replaced us opens
+    // late. Without this it would claim the channel and drive the wrong target.
+    if (cdpScreencast !== state) return;
+    setViewportChannel({
+      sendCdp: (method, params) => {
+        if (state.cdpWs.readyState === WebSocket.OPEN) {
+          state.cdpWs.send(cdpMsg(state, method, params));
+        }
+      },
+      reportDesktopWidth: (enabled) => {
+        if (state.clientWs.readyState === WebSocket.OPEN) {
+          state.clientWs.send(JSON.stringify({ type: 'viewport_mode', desktopWidth: enabled }));
+        }
+      },
+    });
+    syncBrowserViewport();
+  };
+
   cdpWs.on('open', () => {
     if (requiresSession) {
       // Remote CDP: attach to target with flattened session first
@@ -2520,6 +2549,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       // top-level frame, not iframes/ads that load continuously.
       const frameTreeId = ++state.msgId;
       cdpWs.send(JSON.stringify({ id: frameTreeId, method: 'Page.getFrameTree', ...(state.cdpSessionId ? { sessionId: state.cdpSessionId } : {}) }));
+      attachViewportToState();
     }
   });
 
@@ -2540,6 +2570,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
         }));
         // Enable Page domain to receive navigation lifecycle events
         cdpWs.send(cdpMsg(state, 'Page.enable'));
+        attachViewportToState();
         return;
       }
 
@@ -2609,15 +2640,25 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
 function cleanupCdpScreencast() {
   if (!cdpScreencast) return;
   if (cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
+    // Unconditional, not derived. A handoff can still be pending here (the
+    // browser was closed under it), and the next process to attach must not
+    // inherit a narrowed page.
+    cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Emulation.clearDeviceMetricsOverride'));
     cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Page.stopScreencast'));
     cdpScreencast.cdpWs.close();
   }
+  // Unconditional CDP clear above. Detach keeps the escape flag when a handoff
+  // is still pending so a viewer reconnect can re-derive desktop width.
+  detachViewportChannel();
   cdpScreencast = null;
 }
 
 /** Switch the CDP screencast to a different target, keeping the client WS alive */
 function switchScreencastTarget(target: PageTarget, clientWs: WebSocket): void {
   if (cdpScreencast?.cdpWs.readyState === WebSocket.OPEN) {
+    // Clear before stopping: the target we are leaving keeps whatever override
+    // it was given, and nothing re-derives it once we stop watching it.
+    cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Emulation.clearDeviceMetricsOverride'));
     cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Page.stopScreencast'));
     cdpScreencast.cdpWs.close();
   }
@@ -2790,6 +2831,15 @@ function handleBrowserStreamConnection(ws: WebSocket) {
   ws.on('message', async (rawData) => {
     try {
       const data = JSON.parse(rawData.toString());
+
+      // Ahead of the screencast guard: the toggle is live as soon as the viewer
+      // socket opens, so a click in the gap before CDP attaches must be kept and
+      // derived at attach rather than dropped.
+      if (data.type === 'set_desktop_width') {
+        requestDesktopWidth(data.enabled === true);
+        return;
+      }
+
       if (!cdpScreencast) return;
 
       if (data.type === 'switch_tab' && data.targetId) {
@@ -2935,6 +2985,11 @@ dashboardManager.scanAndStartAll().catch((error) => {
 // forever — pinning dead tool-handler closures and, via the early-result
 // buffer, secret values. TTLs are type-aware inside cleanupStale.
 setInterval(() => inputManager.cleanupStale(), 60_000).unref();
+
+// Keep the streamed viewport in step with whatever is pending. Every route that
+// opens or clears a handoff flows through the input manager, including the sweep
+// above and session deletion, so this replaces a sync call at each of them.
+startBrowserViewportSync();
 
 // Pin agent-browser's screenshot directory and sweep stale files (boot +
 // hourly). Every screenshot is a uniquely named PNG nothing else deletes.

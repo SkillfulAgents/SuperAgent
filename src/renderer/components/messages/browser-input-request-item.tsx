@@ -31,6 +31,7 @@ export function BrowserInputRequestItem({
   const { status, submittingAction, error, complete, decline } = useBrowserInputActions({
     agentSlug,
     sessionId,
+    activeToolUseId: toolUseId,
     onResolved: onComplete,
   })
 
