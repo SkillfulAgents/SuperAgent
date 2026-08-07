@@ -675,7 +675,7 @@ class ContainerManager {
       // drops that one mount and the container still comes up. Surface the same
       // mount-health warning banner with a macOS-specific hint instead of
       // failing the whole agent.
-      await client.start({
+      const startedInfo = await client.start({
         envVars,
         additionalVolumes,
         onMountDropped: (hostPath) => {
@@ -692,9 +692,12 @@ class ContainerManager {
         },
       })
 
-      // Get actual port from runtime and update cache directly
-      // (can't use syncAgentStatus here — it's guarded against updates during startup)
-      const info = await client.getInfoFromRuntime()
+      // start() returns the port that just passed the runtime's health gate,
+      // so don't immediately spawn another inspect/API request for the same
+      // state. The runtime-query fallback covers clients that omit the
+      // return, which the ContainerClient contract still allows. (Can't use
+      // syncAgentStatus here — it is guarded against updates during startup.)
+      const info = startedInfo ?? await client.getInfoFromRuntime()
       this.updateCachedStatus(agentId, info.status, info.port)
 
       // Record start time so auto-sleep monitor doesn't immediately

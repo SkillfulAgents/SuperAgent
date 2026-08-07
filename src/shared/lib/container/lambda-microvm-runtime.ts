@@ -679,8 +679,9 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     return this.isAvailable()
   }
 
-  async start(options?: StartOptions): Promise<void> {
-    if ((await this.getInfoFromRuntime()).status === 'running') return
+  async start(options?: StartOptions): Promise<ContainerInfo> {
+    const info = await this.getInfoFromRuntime()
+    if (info.status === 'running') return info
 
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
@@ -748,6 +749,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       await this.teardown()
       throw error
     }
+
+    return { status: 'running', port: proxyPort }
   }
 
   // On connect-refused against a dead generation (lifetime-cap / stop race),
