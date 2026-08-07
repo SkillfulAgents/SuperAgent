@@ -610,13 +610,15 @@ class ContainerManager {
         envVars['AGENT_ID'] = agentId
       }
 
-      // Copy Chrome profile data into workspace if configured
+      // Seed the built-in container browser from the selected Chrome profile.
+      // A host-browser provider uses its own dedicated profile, so copying the
+      // same data into the mounted workspace would only delay container start.
       const chromeProfileId = settings.app?.chromeProfileId
-      if (chromeProfileId) {
+      if (chromeProfileId && !settings.app?.hostBrowserProvider) {
         const workspaceDir = getAgentWorkspaceDir(agentId)
         const browserProfileDir = path.join(workspaceDir, '.browser-profile')
-        if (copyChromeProfileData(chromeProfileId, browserProfileDir)) {
-          console.log(`[ContainerManager] Copied Chrome profile "${chromeProfileId}" to workspace`)
+        if (await copyChromeProfileData(chromeProfileId, browserProfileDir)) {
+          console.log(`[ContainerManager] Synchronized Chrome profile "${chromeProfileId}" to workspace`)
         }
       }
 
