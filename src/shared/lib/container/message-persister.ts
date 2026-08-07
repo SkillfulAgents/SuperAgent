@@ -66,6 +66,7 @@ import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -1411,6 +1412,20 @@ class MessagePersister {
     if (content.parent_tool_use_id != null) {
       this.handleSidechainMessage(sessionId, content, state)
       return
+    }
+
+    // Complete top-level frames correspond to durable parent-transcript writes.
+    // Keep the warm per-agent summary current without restatting every sibling.
+    // Replayed catch-up frames are excluded: SDK frames carry no timestamp on
+    // the wire, so the host stamps arrival time, and a late-join replay to an
+    // idle session would masquerade as fresh activity — the directory-mtime and
+    // TTL reconciliation already repair anything a missed turn-end left behind.
+    if (
+      state.agentSlug &&
+      !content.replayed &&
+      (content.type === 'assistant' || content.type === 'user' || content.type === 'result')
+    ) {
+      recordSessionActivity(state.agentSlug, sessionId, message.timestamp)
     }
 
     // Container late-join catch-up: the runtime replays the last turn's

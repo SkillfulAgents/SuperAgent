@@ -28,6 +28,10 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
+const mockRecordSessionActivity = vi.fn()
+vi.mock('@shared/lib/services/session-summary-cache', () => ({
+  recordSessionActivity: (...args: unknown[]) => mockRecordSessionActivity(...args),
+}))
 const mockAppendInformationalEntry = vi.fn((..._args: unknown[]) => Promise.resolve())
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: (...args: unknown[]) => mockAppendInformationalEntry(...args),
@@ -291,6 +295,46 @@ describe('MessagePersister', () => {
     sseCleanup()
     messagePersister.unsubscribeFromSession(SESSION_ID)
     vi.clearAllMocks()
+  })
+
+  describe('session summary activity', () => {
+    it('records complete top-level transcript frames with their source timestamp', () => {
+      const timestamp = new Date('2026-08-07T18:00:00.000Z')
+
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'assistant', message: { role: 'assistant', content: 'done' } },
+        timestamp,
+        sessionId: SESSION_ID,
+      })
+
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, timestamp)
+    })
+
+    it('ignores replayed catch-up frames whose host timestamp is arrival time', () => {
+      // On the wire, SDK result frames carry no timestamp field, so the host
+      // stamps Date.now() at arrival — a reconnect replay recorded here would
+      // fabricate recency for a session that did nothing.
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'result', subtype: 'success', replayed: true },
+        timestamp: new Date('2026-08-07T17:00:00.000Z'),
+        sessionId: SESSION_ID,
+      })
+
+      expect(mockRecordSessionActivity).not.toHaveBeenCalled()
+    })
+
+    it('does not attribute a sidechain transcript frame to the parent session', () => {
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'assistant', parent_tool_use_id: 'tool-1' },
+        timestamp: new Date('2026-08-07T19:00:00.000Z'),
+        sessionId: SESSION_ID,
+      })
+
+      expect(mockRecordSessionActivity).not.toHaveBeenCalled()
+    })
   })
 
   // ============================================================================

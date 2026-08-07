@@ -38,6 +38,9 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
+vi.mock('@shared/lib/services/session-summary-cache', () => ({
+  recordSessionActivity: vi.fn(),
+}))
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: vi.fn(() => Promise.resolve()),
 }))

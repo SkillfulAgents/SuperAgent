@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import type { JsonlSystemEntry } from '@shared/lib/types/agent'
+import { recordSessionActivity } from './session-summary-cache'
 
 /**
  * Append a host-authored `system`/`informational` entry to a session's JSONL
@@ -36,4 +37,5 @@ export async function appendInformationalEntry(
   }
   await fs.promises.mkdir(path.dirname(jsonlPath), { recursive: true })
   await fs.promises.appendFile(jsonlPath, JSON.stringify(jsonlEntry) + '\n', 'utf-8')
+  recordSessionActivity(agentSlug, sessionId)
 }
