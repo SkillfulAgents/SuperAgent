@@ -182,6 +182,8 @@ vi.mock('@shared/lib/db/schema', () => ({
   tokenExchangeJti: {},
   mobilePairingToken: {},
   mobileDevice: {},
+  pushSubscriptions: {},
+  pushVapidKeys: {},
 }))
 
 vi.mock('fs', () => ({
