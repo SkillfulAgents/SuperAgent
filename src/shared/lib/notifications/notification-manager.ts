@@ -2,10 +2,14 @@
  * Notification Manager
  *
  * Coordinates notification triggering:
- * 1. Checks if session is currently being viewed (skip if so)
- * 2. Checks notification settings (skip if disabled)
- * 3. Creates DB notification
- * 4. Broadcasts OS notification event via SSE
+ * 1. Checks notification settings (skip if disabled; auth mode defers to the
+ *    per-user gates in each delivery path)
+ * 2. Creates DB notification
+ * 3. Builds the canonical NotificationEvent and hands it to every registered
+ *    delivery channel (SSE client broadcast, Web Push, …). Viewed-session
+ *    suppression is a per-channel concern: the renderer applies it for the
+ *    client broadcast; Web Push currently has no presence signal and always
+ *    delivers (deliberate v1 scope).
  */
 
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -18,6 +22,9 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgent } from '@shared/lib/services/agent-service'
 import { getSessionMetadata } from '@shared/lib/services/session-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { getNotificationChannels } from './channels'
+import { isNotificationTypeEnabled } from './notification-preferences'
+import type { NotificationEvent } from './notification-event'
 
 class NotificationManager {
   /**
@@ -43,25 +50,7 @@ class NotificationManager {
       return true
     }
 
-    const settings = getUserSettings('local')
-    const notificationSettings = settings.notifications
-
-    // Check global toggle first
-    if (!notificationSettings.enabled) {
-      return false
-    }
-
-    // Check per-type toggle
-    switch (type) {
-      case 'session_complete':
-        return notificationSettings.sessionComplete !== false
-      case 'session_waiting':
-        return notificationSettings.sessionWaiting !== false
-      case 'session_scheduled':
-        return notificationSettings.sessionScheduled !== false
-      default:
-        return true
-    }
+    return isNotificationTypeEnabled(getUserSettings('local').notifications, type)
   }
 
   /**
@@ -117,20 +106,26 @@ class NotificationManager {
       ? { ...actionContext, notificationId }
       : undefined
 
-    // Broadcast OS notification event to all connected clients
-    // Frontend will decide whether to show based on tab visibility and selected session
-    messagePersister.broadcastGlobal({
-      type: 'os_notification',
+    const event: NotificationEvent = {
       notificationId,
-      notificationType: type,
+      type,
       sessionId,
       agentSlug,
       title,
       body,
+      navigatePath: `/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}`,
       ...(actions ? { actions } : {}),
       ...(stampedActionContext ? { actionContext: stampedActionContext } : {}),
-      ...extra,
-    })
+      ...(extra ? { extra } : {}),
+    }
+
+    // Fire-and-forget per channel: delivery to one backend (a slow push POST,
+    // a dead endpoint) must never block the trigger path or another channel.
+    for (const channel of getNotificationChannels()) {
+      void channel.deliver(event).catch((error) => {
+        console.error(`[NotificationManager] ${channel.id} delivery failed:`, error)
+      })
+    }
   }
 
   /**

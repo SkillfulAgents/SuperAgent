@@ -278,6 +278,43 @@ export const notifications = sqliteTable('notifications', {
   createdAtIdx: index('notifications_created_at_idx').on(table.createdAt),
 }))
 
+/**
+ * Web Push subscriptions — one row per browser/device that opted into push
+ * (installed-PWA "Enable on this device" flow). Unlike `notifications` above,
+ * these rows ARE per-user in auth mode: a subscription addresses one person's
+ * physical device, so `user_id` is the recipient whose settings and agent
+ * access gate each send. Plain text (no FK) because local mode has no user
+ * rows at all — null user_id means the single local user owns the device.
+ *
+ * `origin` is the origin the PWA was installed from (the host is reachable at
+ * several — localhost, LAN IP, tailnet name — but a subscription is bound to
+ * exactly one), and click-through `navigate` URLs must be absolute on it.
+ */
+export const pushSubscriptions = sqliteTable('push_subscriptions', {
+  id: text('id').primaryKey(),
+  endpoint: text('endpoint').notNull().unique(),
+  keysP256dh: text('keys_p256dh').notNull(),
+  keysAuth: text('keys_auth').notNull(),
+  origin: text('origin').notNull(),
+  userId: text('user_id'),
+  deviceName: text('device_name'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  userIdIdx: index('push_subscriptions_user_id_idx').on(table.userId),
+}))
+
+// Single-row VAPID keypair identifying this install to push services.
+// Must stay stable: browsers bind subscriptions to the public key, so a
+// regenerated pair invalidates every existing push_subscriptions row
+// (vapid-keys.ts drops them when it mints a fresh pair).
+export const pushVapidKeys = sqliteTable('push_vapid_keys', {
+  id: integer('id').primaryKey(),
+  publicKey: text('public_key').notNull(),
+  privateKey: text('private_key').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+})
+
 // Proxy tokens - synthetic tokens for agent-to-proxy authentication
 export const proxyTokens = sqliteTable('proxy_tokens', {
   id: text('id').primaryKey(),

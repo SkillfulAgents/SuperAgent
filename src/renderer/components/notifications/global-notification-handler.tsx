@@ -29,6 +29,11 @@ import {
   NotificationActionsArraySchema,
   NotificationMetadataSchema,
 } from '@shared/lib/notifications/notification-action-schema'
+import {
+  supportsDeclarativeWebPush,
+  revalidatePushSubscription,
+} from '@renderer/lib/push-notifications'
+import { isNotificationTypeEnabled as isTypeEnabledInPreferences } from '@shared/lib/notifications/notification-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
 
 function isNotificationTypeEnabled(
@@ -36,14 +41,10 @@ function isNotificationTypeEnabled(
   notificationType: string
 ): boolean {
   const n = settings?.notifications
-  if (!n?.enabled) return n === undefined // no settings loaded yet → allow; explicitly disabled → block
-  switch (notificationType) {
-    case 'session_complete': return n.sessionComplete !== false
-    case 'session_waiting': return n.sessionWaiting !== false
-    case 'session_scheduled': return n.sessionScheduled !== false
-    case 'platform_notification': return n.platformNotification !== false
-    default: return true
-  }
+  if (n === undefined) return true // no settings loaded yet → allow
+  // Type→toggle mapping is shared with the server-side gates
+  // (notification-preferences.ts) so the two can never drift.
+  return isTypeEnabledInPreferences(n, notificationType)
 }
 
 export function GlobalNotificationHandler() {
@@ -184,6 +185,15 @@ export function GlobalNotificationHandler() {
       }
     })
   }, [dispatchNotificationEvent, navigate])
+
+  // Web Push keep-alive: with no service worker there is no
+  // pushsubscriptionchange event, so re-upsert this device's subscription
+  // once per app launch to repair endpoint rotation or a lost server row.
+  useEffect(() => {
+    if (supportsDeclarativeWebPush()) {
+      void revalidatePushSubscription()
+    }
+  }, [])
 
   useEffect(() => {
     const baseUrl = getApiBaseUrl()
