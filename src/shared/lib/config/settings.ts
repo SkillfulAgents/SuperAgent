@@ -12,7 +12,7 @@ import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
-import type { SkillsetConfig } from '@shared/lib/types/skillset'
+import type { SkillsetConfig, SkillsetCredential } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
 import type { EffortLevel } from '@shared/lib/container/types'
@@ -254,6 +254,8 @@ export interface AppSettings {
   agentLimits?: AgentLimitsSettings
   customEnvVars?: Record<string, string>
   skillsets?: SkillsetConfig[]
+  /** Secrets keyed by opaque id; skillset providerData stores only the id. */
+  skillsetCredentials?: Record<string, SkillsetCredential>
   auth?: AuthSettings
   voice?: VoiceSettings
   computerUse?: ComputerUseSettings
@@ -542,6 +544,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     skillsets: loaded.skillsets !== undefined
       ? loaded.skillsets
       : structuredClone(DEFAULT_SETTINGS.skillsets),
+    skillsetCredentials: loaded.skillsetCredentials,
     auth: {
       ...DEFAULT_AUTH_SETTINGS,
       ...loaded.auth,

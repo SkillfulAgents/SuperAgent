@@ -305,6 +305,10 @@ export interface ApiSkillsetConfig {
   badgeLabel?: string
   showUrl: boolean
   publishMode: 'pull_request' | 'hosted_submit' | 'none'
+  credential?: {
+    type: 'token'
+    tokenPreview: string
+  }
   error?: string
 }
 
