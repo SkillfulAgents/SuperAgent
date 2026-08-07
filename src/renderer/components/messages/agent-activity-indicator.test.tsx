@@ -236,6 +236,18 @@ describe('AgentActivityIndicator', () => {
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
+
+    const indicator = screen.getByTestId('activity-indicator')
+    expect(indicator).toHaveClass(
+      'rounded-2xl',
+      'pb-3',
+      'border-border/70',
+      'bg-background/85',
+      'backdrop-blur-md',
+    )
+    expect(indicator).not.toHaveClass('border-b-0', 'pb-8')
+    expect(indicator.parentElement).toHaveClass('mb-2')
+    expect(indicator.parentElement).not.toHaveClass('-mb-5')
   })
 
   it('shows "Waiting for input..." when pending connected account requests exist', () => {

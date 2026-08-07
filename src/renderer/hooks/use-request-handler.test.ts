@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { useRequestHandler } from './use-request-handler'
+import { REQUEST_SUBMIT_TIMEOUT_MESSAGE, useRequestHandler } from './use-request-handler'
 
 describe('useRequestHandler', () => {
   it('starts with pending status and no error', () => {
@@ -77,5 +77,41 @@ describe('useRequestHandler', () => {
     })
     await act(() => result.current.submit(async () => {}, 'fetch-requested'))
     expect(result.current.status).toBe('fetch-requested')
+  })
+
+  it('aborts a timed-out request, resets to pending, and allows a retry', async () => {
+    vi.useFakeTimers()
+    try {
+      const onComplete = vi.fn()
+      const { result } = renderHook(() => useRequestHandler(onComplete, { timeoutMs: 100 }))
+      let submittedSignal: AbortSignal | undefined
+
+      let firstSubmit!: Promise<void>
+      act(() => {
+        firstSubmit = result.current.submit((signal) => {
+          submittedSignal = signal
+          return new Promise<void>(() => {})
+        }, 'provided')
+      })
+
+      expect(result.current.status).toBe('submitting')
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+        await firstSubmit
+      })
+
+      expect(submittedSignal?.aborted).toBe(true)
+      expect(result.current.status).toBe('pending')
+      expect(result.current.error).toBe(REQUEST_SUBMIT_TIMEOUT_MESSAGE)
+      expect(onComplete).not.toHaveBeenCalled()
+
+      await act(() => result.current.submit(async () => {}, 'provided'))
+      expect(result.current.status).toBe('provided')
+      expect(result.current.error).toBeNull()
+      expect(onComplete).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

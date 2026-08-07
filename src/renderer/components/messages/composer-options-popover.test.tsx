@@ -60,7 +60,10 @@ function Harness({
 describe('ComposerOptionsPopover', () => {
   it('renders the combined "Model · Effort" label, resolving a bare alias to its latest', () => {
     render(<Harness initialModel="opus" initialEffort="high" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.8 · High')
+    const trigger = screen.getByTestId('composer-options-trigger')
+    expect(trigger).toHaveTextContent('Opus 4.8 · High')
+    expect(trigger).toHaveClass('max-[420px]:w-[34px]')
+    expect(trigger.querySelector('span')).toHaveClass('max-[420px]:hidden')
   })
 
   it('falls back to Sonnet on the trigger when no model is set', () => {
