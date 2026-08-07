@@ -21,6 +21,7 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   // Cross-agent / host API wiring
   'SUPERAGENT_HOST_API_URL',
   'SUPERAGENT_AGENT_SLUG',
+  'SUPERAGENT_DASHBOARD_PRIORITY',
   // Host→container API auth (never agent-visible)
   'SUPERAGENT_HOST_TOKEN',
   // Agent identity for LLM-usage attribution (platform provider injects these;

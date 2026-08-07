@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { resolveRouteAgentId } from './use-agents'
+import { buildStartAgentRequestInit, resolveRouteAgentId } from './use-agents'
 
 // Minimal agent factory — only the id/displaySlug fields the resolver reads.
 function agent(slug: string, displaySlug: string): ApiAgent {
@@ -48,5 +48,26 @@ describe('resolveRouteAgentId', () => {
 
   it('returns undefined for no slug', () => {
     expect(resolveRouteAgentId(undefined, [renamed])).toBeUndefined()
+  })
+})
+
+describe('buildStartAgentRequestInit', () => {
+  it('sends dashboard intent only when one is present', () => {
+    expect(buildStartAgentRequestInit({
+      slug: 'agent-1',
+      dashboardSlug: 'sales-dashboard',
+    })).toEqual({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dashboardSlug: 'sales-dashboard' }),
+    })
+  })
+
+  it('keeps ordinary and warm starts body-free', () => {
+    expect(buildStartAgentRequestInit('agent-1')).toEqual({ method: 'POST' })
+    expect(buildStartAgentRequestInit({
+      slug: 'agent-1',
+      source: 'warm-start',
+    })).toEqual({ method: 'POST' })
   })
 })

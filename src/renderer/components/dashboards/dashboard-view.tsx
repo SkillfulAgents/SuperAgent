@@ -101,8 +101,8 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   }, [dashboardAgentSlug, dashboardSlug, dashboard?.name])
 
   const handleStartAgent = useCallback(() => {
-    startAgent.mutate(agentSlug)
-  }, [startAgent, agentSlug])
+    startAgent.mutate({ slug: agentSlug, dashboardSlug })
+  }, [startAgent, agentSlug, dashboardSlug])
 
   const handleRestartAgent = useCallback(async () => {
     // The deliberate stop must not re-trigger this view's auto-start effect.
@@ -114,22 +114,22 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
       if (isAgentRunning) {
         await stopAgent.mutateAsync(agentSlug)
       }
-      await startAgent.mutateAsync(agentSlug)
+      await startAgent.mutateAsync({ slug: agentSlug, dashboardSlug })
     } catch (error) {
       console.error('Failed to restart agent:', error)
       setRestartError(error instanceof Error ? error.message : 'Failed to restart agent')
     } finally {
       setRestarting(false)
     }
-  }, [isAgentRunning, stopAgent, startAgent, agentSlug])
+  }, [isAgentRunning, stopAgent, startAgent, agentSlug, dashboardSlug])
 
   useEffect(() => {
     if (autoStartedRef.current === agentSlug) return
     if (!agent || isAgentRunning || isAgentStarting || !canStart) return
     if (startAgent.isError) return
     autoStartedRef.current = agentSlug
-    startAgent.mutate(agentSlug)
-  }, [agent, agentSlug, isAgentRunning, isAgentStarting, canStart, startAgent])
+    startAgent.mutate({ slug: agentSlug, dashboardSlug })
+  }, [agent, agentSlug, dashboardSlug, isAgentRunning, isAgentStarting, canStart, startAgent])
 
   const showFrame = isAgentRunning && dashboard?.status === 'running'
   const actionPending = restarting || stopAgent.isPending || startAgent.isPending

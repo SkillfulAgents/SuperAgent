@@ -57,6 +57,11 @@ interface CachedContainerStatus {
   lastSyncedAt: number
 }
 
+export interface ContainerStartIntent {
+  /** Start this dashboard before the workspace's other dashboards. */
+  dashboardSlug?: string
+}
+
 // Singleton to manage all container clients
 class ContainerManager {
   private clients: Map<string, ContainerClient> = new Map()
@@ -503,7 +508,10 @@ class ContainerManager {
   // not passed as env vars. Only connected account tokens are injected.
   //
   // Parameter is agentId for backwards compatibility, but will be slug after migration
-  async ensureRunning(agentId: string): Promise<ContainerClient> {
+  async ensureRunning(
+    agentId: string,
+    intent?: ContainerStartIntent,
+  ): Promise<ContainerClient> {
     const inflight = this.startingAgents.get(agentId)
     if (inflight) return inflight
 
@@ -536,7 +544,7 @@ class ContainerManager {
       const racedInflight = this.startingAgents.get(agentId)
       if (racedInflight) return racedInflight
 
-      const startPromise = this.doStartContainer(agentId, client)
+      const startPromise = this.doStartContainer(agentId, client, intent)
       this.startingAgents.set(agentId, startPromise)
       try {
         await startPromise
@@ -548,7 +556,11 @@ class ContainerManager {
     return client
   }
 
-  private async doStartContainer(agentId: string, client: ContainerClient): Promise<ContainerClient> {
+  private async doStartContainer(
+    agentId: string,
+    client: ContainerClient,
+    intent?: ContainerStartIntent,
+  ): Promise<ContainerClient> {
       // Pass proxy config and account metadata (no raw tokens)
       const envVars: Record<string, string> = {}
 
@@ -561,6 +573,9 @@ class ContainerManager {
       // X-Agent Work: cross-agent calls. Container POSTs to host with PROXY_TOKEN.
       envVars['SUPERAGENT_HOST_API_URL'] = `${hostApiBaseUrl}/api`
       envVars['SUPERAGENT_AGENT_SLUG'] = agentId
+      if (intent?.dashboardSlug) {
+        envVars['SUPERAGENT_DASHBOARD_PRIORITY'] = intent.dashboardSlug
+      }
 
       // Authenticates the HOST to the container API (the reverse direction of
       // PROXY_TOKEN, which the agent legitimately holds). The container server

@@ -18,6 +18,7 @@ describe('reserved-env-vars', () => {
       'PROXY_TOKEN',
       'SUPERAGENT_HOST_API_URL',
       'SUPERAGENT_AGENT_SLUG',
+      'SUPERAGENT_DASHBOARD_PRIORITY',
       'CONNECTED_ACCOUNTS',
       'REMOTE_MCPS',
       'AGENT_BROWSER_USE_HOST',

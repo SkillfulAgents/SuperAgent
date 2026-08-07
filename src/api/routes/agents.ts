@@ -1428,9 +1428,25 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
 agents.post('/:id/start', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
+    const body = await c.req.json().catch(() => undefined) as {
+      dashboardSlug?: unknown
+    } | undefined
+    const dashboardSlug = body?.dashboardSlug
+    if (
+      dashboardSlug !== undefined
+      && (
+        typeof dashboardSlug !== 'string'
+        || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(dashboardSlug)
+      )
+    ) {
+      return c.json({ error: 'Invalid dashboard slug' }, 400)
+    }
 
-
-    await containerManager.ensureRunning(slug)
+    if (dashboardSlug) {
+      await containerManager.ensureRunning(slug, { dashboardSlug })
+    } else {
+      await containerManager.ensureRunning(slug)
+    }
     const agent = await getAgentWithStatus(slug)
 
     // Note: agent_status_changed is broadcast by containerManager.ensureRunning()
@@ -5739,7 +5755,11 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
         if (!agentWasRunning) {
           // 3. Start the agent
           statusEl.textContent = 'Starting agent…';
-          const startRes = await fetch(basePath + '/start', { method: 'POST' });
+          const startRes = await fetch(basePath + '/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dashboardSlug: artifactSlug }),
+          });
           if (!startRes.ok) {
             const err = await startRes.json().catch(() => ({}));
             throw new Error(err.error || 'Failed to start agent');

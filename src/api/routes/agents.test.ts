@@ -540,7 +540,7 @@ import {
   exportSkill,
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
-import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
+import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
 import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
@@ -651,6 +651,87 @@ describe('GET /:id/artifacts/:artifactSlug/view', () => {
     expect(loadingRemove).toHaveBeenCalledOnce()
     expect(iframe.src).toBe('/api/agents/test-agent/artifacts/sales/')
     expect(iframe.sandbox).toContain('allow-downloads')
+  })
+
+  it('includes the requested dashboard when starting a stopped agent', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
+    const html = await res.text()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { slug: 'sales', name: 'Sales', status: 'stopped' },
+      ]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'stopped' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'running' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { slug: 'sales', name: 'Sales', status: 'running' },
+      ]), { status: 200 }))
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+    const appendChild = vi.fn()
+    const document = {
+      title: '',
+      getElementById: (id: string) => id === 'status'
+        ? { textContent: '', classList: { add: vi.fn() } }
+        : { remove: vi.fn() },
+      createElement: () => ({}),
+      body: { appendChild },
+    }
+
+    expect(script).toBeDefined()
+    runInNewContext(script!, { document, fetch: fetchMock, setTimeout })
+
+    await vi.waitFor(() => expect(appendChild).toHaveBeenCalledOnce())
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/agents/test-agent/start',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dashboardSlug: 'sales' }),
+      },
+    )
+  })
+})
+
+// ============================================================================
+// Intent-aware container start
+// ============================================================================
+
+describe('POST /:id/start dashboard intent', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    vi.mocked(containerManager.ensureRunning).mockResolvedValue({} as never)
+    vi.mocked(getAgentWithStatus).mockResolvedValue({
+      slug: 'test-agent',
+      frontmatter: { name: 'Test Agent' },
+    } as never)
+  })
+
+  it('forwards a valid requested dashboard to the container manager', async () => {
+    const res = await postJson(createApp(), '/api/agents/test-agent/start', {
+      dashboardSlug: 'sales-dashboard',
+    })
+
+    expect(res.status).toBe(200)
+    expect(containerManager.ensureRunning).toHaveBeenCalledWith('test-agent', {
+      dashboardSlug: 'sales-dashboard',
+    })
+  })
+
+  it('keeps an ordinary start request backward compatible', async () => {
+    const res = await postJson(createApp(), '/api/agents/test-agent/start', {})
+
+    expect(res.status).toBe(200)
+    expect(containerManager.ensureRunning).toHaveBeenCalledWith('test-agent')
+  })
+
+  it('rejects an invalid dashboard slug before starting the container', async () => {
+    const res = await postJson(createApp(), '/api/agents/test-agent/start', {
+      dashboardSlug: '../other-agent',
+    })
+
+    expect(res.status).toBe(400)
+    expect(containerManager.ensureRunning).not.toHaveBeenCalled()
   })
 })
 

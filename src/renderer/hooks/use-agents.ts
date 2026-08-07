@@ -182,10 +182,28 @@ export function useUpdateAgent() {
 // as they arrive without leaning on a poll loop.
 const AGENT_START_REINVALIDATE_DELAYS_MS = [5_000, 15_000, 30_000]
 
-export type StartAgentVars = string | { slug: string; source?: 'user' | 'warm-start' }
+export type StartAgentVars = string | {
+  slug: string
+  source?: 'user' | 'warm-start'
+  /** Dashboard the user is actively waiting for during a cold container boot. */
+  dashboardSlug?: string
+}
 
 function resolveStartAgentSlug(vars: StartAgentVars): string {
   return typeof vars === 'string' ? vars : vars.slug
+}
+
+export function buildStartAgentRequestInit(vars: StartAgentVars): RequestInit {
+  const dashboardSlug = typeof vars === 'string' ? undefined : vars.dashboardSlug
+  return {
+    method: 'POST',
+    ...(dashboardSlug
+      ? {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dashboardSlug }),
+        }
+      : {}),
+  }
 }
 
 export function useStartAgent() {
@@ -196,7 +214,7 @@ export function useStartAgent() {
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (vars: StartAgentVars) => {
       const slug = resolveStartAgentSlug(vars)
-      const res = await apiFetch(`/api/agents/${slug}/start`, { method: 'POST' })
+      const res = await apiFetch(`/api/agents/${slug}/start`, buildStartAgentRequestInit(vars))
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
         throw new Error(body.error || 'Failed to start agent')

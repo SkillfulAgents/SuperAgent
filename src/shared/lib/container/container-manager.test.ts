@@ -263,6 +263,17 @@ describe('containerManager.ensureRunning — env var construction', () => {
     expect(mockGetOrCreateHostToken).toHaveBeenCalledWith('test-agent')
   })
 
+  it('passes a requested dashboard to the container as boot priority', async () => {
+    setupAccountMocks([])
+
+    await containerManager.ensureRunning('test-agent', {
+      dashboardSlug: 'sales-dashboard',
+    })
+
+    const startOpts = mockStart.mock.calls[0][0]
+    expect(startOpts.envVars.SUPERAGENT_DASHBOARD_PRIORITY).toBe('sales-dashboard')
+  })
+
   it('CONNECTED_ACCOUNTS includes only active accounts, grouped by toolkitSlug', async () => {
     setupAccountMocks([
       { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },

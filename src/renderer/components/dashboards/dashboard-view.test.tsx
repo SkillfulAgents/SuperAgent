@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardView } from './dashboard-view'
@@ -109,7 +109,24 @@ describe('DashboardView restart', () => {
 
     await act(async () => finishStop())
 
-    expect(mocks.start.mutateAsync).toHaveBeenCalledOnce()
+    expect(mocks.start.mutateAsync).toHaveBeenCalledWith({
+      slug: 'agent',
+      dashboardSlug: 'dashboard',
+    })
+  })
+
+  it('includes the requested dashboard when auto-starting a stopped agent', async () => {
+    mocks.agentStatus = 'stopped'
+    mocks.dashboardStatus = 'stopped'
+
+    render(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
+
+    await waitFor(() => {
+      expect(mocks.start.mutate).toHaveBeenCalledWith({
+        slug: 'agent',
+        dashboardSlug: 'dashboard',
+      })
+    })
   })
 
   it('shows a running dashboard without waiting for the iframe load event', () => {

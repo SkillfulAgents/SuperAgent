@@ -179,11 +179,13 @@ describe('truncateOversizedLog', () => {
 describe('DashboardManager log stream lifecycle', () => {
   let testDir: string
   let manager: {
+    scanAndStartAll(prioritySlug?: string): Promise<void>
     startDashboard(slug: string, opts?: { forceInstall?: boolean }): Promise<{
       status: string
       logStream: fs.WriteStream | null
       restartTimestamps: number[]
     }>
+    listDashboards(): Array<{ slug: string; status: string }>
     stopDashboard(slug: string): Promise<boolean>
     stopAll(): Promise<void>
     getDashboardUpstreamPathMode(slug: string): 'stripped' | 'mounted'
@@ -231,6 +233,38 @@ describe('DashboardManager log stream lifecycle', () => {
     await fs.promises.utimes(path.join(dir, 'node_modules'), future, future)
     return slug
   }
+
+  it('starts the requested dashboard first at boot and still starts every dashboard', async () => {
+    await scaffoldDashboard()
+    await scaffoldDashboard()
+    await scaffoldDashboard()
+    const diskOrder = (await fs.promises.readdir(testDir)).filter((name) => name.startsWith('dash-'))
+    const prioritySlug = diskOrder.at(-1)!
+    const startOrder: string[] = []
+    spawnHolder.impl = (_command, args, options) => {
+      const proc = new FakeChildProcess()
+      procs.push(proc)
+      if (args[0] === 'run') {
+        startOrder.push(path.basename((options as { cwd: string }).cwd))
+      }
+      return proc
+    }
+
+    process.env.SUPERAGENT_DASHBOARD_PRIORITY = prioritySlug
+    vi.useFakeTimers()
+    try {
+      await manager.scanAndStartAll()
+
+      expect(startOrder[0]).toBe(prioritySlug)
+      expect(new Set(startOrder)).toEqual(new Set(diskOrder))
+      expect(manager.listDashboards()).toEqual(expect.arrayContaining(
+        diskOrder.map((slug) => expect.objectContaining({ slug, status: 'running' })),
+      ))
+    } finally {
+      vi.useRealTimers()
+      delete process.env.SUPERAGENT_DASHBOARD_PRIORITY
+    }
+  })
 
   it('closes the log stream when the process exits cleanly', async () => {
     const slug = await scaffoldDashboard()

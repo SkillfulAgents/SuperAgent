@@ -132,10 +132,26 @@ class DashboardManager {
     stream?.end()
   }
 
-  async scanAndStartAll(): Promise<void> {
+  async scanAndStartAll(
+    prioritySlug: string | undefined = process.env.SUPERAGENT_DASHBOARD_PRIORITY,
+  ): Promise<void> {
     try {
       await fs.promises.mkdir(ARTIFACTS_DIR, { recursive: true })
       const entries = await fs.promises.readdir(ARTIFACTS_DIR, { withFileTypes: true })
+
+      // A dashboard view knows exactly which process is blocking its first
+      // paint. Preserve the filesystem order for every other dashboard, but
+      // move that one to the front instead of making it wait behind the whole
+      // workspace. Invalid or stale intent is simply ignored.
+      if (prioritySlug && SLUG_REGEX.test(prioritySlug)) {
+        const priorityIndex = entries.findIndex(
+          (entry) => entry.isDirectory() && entry.name === prioritySlug,
+        )
+        if (priorityIndex > 0) {
+          const [priorityEntry] = entries.splice(priorityIndex, 1)
+          entries.unshift(priorityEntry)
+        }
+      }
 
       const started: string[] = []
       for (const entry of entries) {
