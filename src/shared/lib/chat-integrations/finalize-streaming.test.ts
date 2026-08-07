@@ -440,9 +440,15 @@ describe('TelegramConnector.startWorking / stopWorking', () => {
       const second = (sendRichMessageDraft.mock.calls[1][0] as any).draft_id
       expect(second).toBe(first) // stable draft id, so the streaming response replaces it in place
 
+      // stopWorking is authoritative: with no stream to overwrite the placeholder it
+      // tears it down with a single blank draft on the SAME id (cleared in place). Still
+      // no self-heartbeat — advancing time re-sends nothing.
       await connector.stopWorking('999')
+      expect(sendRichMessageDraft).toHaveBeenCalledTimes(3) // one teardown send
+      expect((sendRichMessageDraft.mock.calls[2][0] as any).draft_id).toBe(first)
+      expect((sendRichMessageDraft.mock.calls[2][0] as any).rich_message).toEqual({ html: '' })
       await vi.advanceTimersByTimeAsync(5000)
-      expect(sendRichMessageDraft).toHaveBeenCalledTimes(2) // stop yields the draft; no further sends
+      expect(sendRichMessageDraft).toHaveBeenCalledTimes(3) // no self-heartbeat after teardown
     } finally {
       vi.useRealTimers()
     }
