@@ -779,6 +779,39 @@ html[data-keyboard-open] [data-composer-footer] {
 }
 
 /*
+  The collapsed activity summary stays in the status row. When its measured
+  width exceeds the available space, pause at the beginning before gently
+  panning to the hidden end, pause again, then return like a compact ticker.
+*/
+@keyframes activity-summary-ticker {
+  0%, 18% { transform: translateX(0); }
+  82%, 100% { transform: translateX(calc(-1 * var(--activity-summary-ticker-distance))); }
+}
+
+.activity-summary-ticker[data-overflowing="true"] .activity-summary-ticker-content {
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  animation: activity-summary-ticker var(--activity-summary-ticker-duration) ease-in-out 1.25s infinite alternate both;
+  will-change: transform;
+}
+
+.activity-summary-ticker:hover .activity-summary-ticker-content {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-summary-ticker[data-overflowing="true"] .activity-summary-ticker-content {
+    width: auto;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    animation: none;
+  }
+}
+
+/*
   Long sidebar labels stay ellipsized until the user has briefly dwelled on
   them, then ease into one pass that reveals the hidden end. Removing
   data-scrolling on mouse leave removes the animation and restores the start
