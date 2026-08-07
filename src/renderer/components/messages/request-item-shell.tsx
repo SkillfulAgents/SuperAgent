@@ -13,6 +13,10 @@ export const THEME_CLASSES: Record<RequestTheme, { waitBadge: string }> = {
   orange: { waitBadge: 'text-orange-600 dark:text-orange-400' },
 }
 
+// Pending requests sit on top of the scrolling transcript. Keep every shell
+// fully opaque so message content cannot bleed through interactive controls.
+const REQUEST_CARD_CLASS = 'border rounded-[12px] bg-card shadow-md text-sm'
+
 interface CompletedConfig {
   icon: ReactNode
   label: ReactNode
@@ -71,7 +75,7 @@ export function RequestItemShell({
 
   if (completed) {
     return (
-      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" {...dataAttrs}>
+      <div className={REQUEST_CARD_CLASS} {...dataAttrs}>
         <div className="flex items-center gap-2 p-4">
           {completed.icon}
           <span className="text-sm">{completed.label}</span>
@@ -103,7 +107,7 @@ export function RequestItemShell({
   if (readOnly) {
     const roConfig = typeof readOnly === 'object' ? readOnly : {}
     return (
-      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" {...dataAttrs}>
+      <div className={REQUEST_CARD_CLASS} {...dataAttrs}>
         <div className="flex items-start gap-3 p-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-3">
@@ -163,7 +167,7 @@ export function RequestItemShell({
 
   return (
     <div
-      className="max-h-[50vh] overflow-y-auto border rounded-[12px] bg-muted/30 shadow-md text-sm"
+      className={cn('max-h-[50vh] overflow-y-auto', REQUEST_CARD_CLASS)}
       {...dataAttrs}
     >
       <div className="p-4">

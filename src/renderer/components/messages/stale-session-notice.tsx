@@ -32,7 +32,10 @@ export function StaleSessionNotice({
 
   return (
     <div data-testid="stale-toast" className="mx-auto mb-2 w-full max-w-[740px] px-4">
-      <div className="flex items-center justify-between gap-4 rounded-2xl border bg-muted/50 p-4">
+      <div
+        className="flex items-center justify-between gap-4 rounded-2xl border bg-card p-4"
+        data-testid="stale-toast-card"
+      >
         <div className="flex min-w-0 max-w-[60%] flex-col gap-1.5">
           <p className="text-sm font-medium">Start a new conversation?</p>
           <p className="text-xs text-muted-foreground">

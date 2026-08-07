@@ -67,6 +67,8 @@ describe('InsufficientBalanceCard', () => {
     render(<InsufficientBalanceCard billingUrl="https://platform.example.com/billing" />)
 
     expect(screen.getByText('Insufficient balance')).toBeInTheDocument()
+    expect(screen.getByTestId('insufficient-balance-card')).toHaveClass('bg-card')
+    expect(screen.getByTestId('insufficient-balance-card')).not.toHaveClass('bg-muted/30')
     const button = screen.getByRole('button', { name: /go to billing/i })
     fireEvent.click(button)
     expect(openExternal).toHaveBeenCalledWith('https://platform.example.com/billing')

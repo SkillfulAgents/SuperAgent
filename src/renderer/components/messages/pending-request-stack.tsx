@@ -288,10 +288,11 @@ export function PendingRequestStack({ children }: PendingRequestStackProps) {
                   return (
                     <div
                       key={`peek-${depth}`}
-                      className="rounded-t-[12px] border-x border-t bg-muted/20"
+                      className="rounded-t-[12px] border-x border-t bg-card"
+                      aria-hidden="true"
+                      data-testid="request-stack-peek"
                       style={{
                         height: 10,
-                        opacity: Math.max(0.3, 1 - depth * 0.25),
                         marginLeft: depth * 8,
                         marginRight: depth * 8,
                       }}
