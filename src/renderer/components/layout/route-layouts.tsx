@@ -1,5 +1,5 @@
-import { Outlet } from '@tanstack/react-router'
-import { useState, useEffect, useRef } from 'react'
+import { lazyRouteComponent, Outlet } from '@tanstack/react-router'
+import { Suspense, useState, useEffect, useRef } from 'react'
 import { DialogProvider } from '@renderer/context/dialog-context'
 import { UpdateStatusProvider } from '@renderer/context/update-status-context'
 import { UpdateToastNotifier } from '@renderer/components/update-toast-notifier'
@@ -13,8 +13,7 @@ import { PackageImportHandler } from '@renderer/components/package-import-handle
 import { HistoryNavigationHandler } from '@renderer/components/history-navigation-handler'
 import { GlobalNotificationHandler } from '@renderer/components/notifications/global-notification-handler'
 import { OnboardingProvider } from '@renderer/context/onboarding-context'
-import { GettingStartedWizard } from '@renderer/components/wizard/getting-started-wizard'
-import { SearchDialog } from '@renderer/components/search/search-dialog'
+import { useSearch } from '@renderer/context/search-context'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { useTheme } from '@renderer/hooks/use-theme'
 import { useInsetRadius } from '@renderer/hooks/use-inset-radius'
@@ -24,6 +23,15 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useDocumentTitle } from '@renderer/hooks/use-document-title'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
+
+const SearchDialog = lazyRouteComponent(
+  () => import('@renderer/components/search/search-dialog'),
+  'SearchDialog',
+)
+const GettingStartedWizard = lazyRouteComponent(
+  () => import('@renderer/components/wizard/getting-started-wizard'),
+  'GettingStartedWizard',
+)
 
 /**
  * Root route: the always-mounted chrome (window controls, update toaster), the
@@ -41,6 +49,7 @@ export function RootLayout() {
   const { data: userSettings } = useUserSettings()
   const { data: globalSettings } = useSettings()
   const { isAuthMode, isAdmin, user } = useUser()
+  const { open: searchOpen } = useSearch()
   const { identify } = useAnalyticsTracking()
   const hasAutoOpened = useRef(false)
 
@@ -104,10 +113,17 @@ export function RootLayout() {
           <ContainerSetupHandler />
           <WindowControls />
           <UpdateToastNotifier />
-          {/* Rendered here (inside the router) so it can use useNavigate. */}
-          <SearchDialog />
+          {/* Rendered here (inside the router) so it can use useNavigate. The
+              closed dialog stays off the boot graph entirely. */}
+          {searchOpen ? (
+            <Suspense fallback={null}>
+              <SearchDialog />
+            </Suspense>
+          ) : null}
           {wizardOpen ? (
-            <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
+            <Suspense fallback={null}>
+              <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
+            </Suspense>
           ) : (
             <Outlet />
           )}
