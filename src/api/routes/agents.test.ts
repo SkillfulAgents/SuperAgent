@@ -4817,6 +4817,28 @@ describe('GET /api/agents (enriched summary)', () => {
     // Summary fields should be present even in auth mode
     expect(body[0]).toHaveProperty('hasActiveSessions')
     expect(body[0]).toHaveProperty('dashboards')
+    expect(getAgentWithStatus).toHaveBeenCalledWith('agent-1', { includeSummary: false })
+  })
+
+  it('loads a single agent without a redundant service summary pass', async () => {
+    const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
+    vi.mocked(getAgentWithStatus).mockResolvedValue(baseAgent)
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-1'],
+      sessionCount: 1,
+      lastActivityAt: new Date('2026-01-01T12:00:00Z'),
+    })
+
+    const res = await getReq(app, '/api/agents/agent-1')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      slug: 'agent-1',
+      sessionCount: 1,
+      lastActivityAt: '2026-01-01T12:00:00.000Z',
+    })
+    expect(getAgentWithStatus).toHaveBeenCalledWith('agent-1', { includeSummary: false })
+    expect(getSessionSummary).toHaveBeenCalledTimes(1)
   })
 
   it('sorts the auth-mode list newest-first', async () => {

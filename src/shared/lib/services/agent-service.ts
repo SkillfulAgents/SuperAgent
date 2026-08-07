@@ -143,9 +143,9 @@ export async function getAgentWithStatus(
   const info = containerManager.getCachedInfo(slug)
   const base = toApiAgent(agent, info.status, info.port)
 
-  // Command endpoints such as /start only need the identity + runtime state.
-  // Avoid restatting every transcript to populate optional summary fields that
-  // their callers discard; list/detail reads retain the enriched default.
+  // Routes that either discard the body (/start) or immediately run the richer
+  // enrichAgentsWithSummary pass (list/detail) skip this otherwise-duplicate
+  // O(session-count) stat scan; standalone callers keep the enriched default.
   if (options.includeSummary === false) return base
 
   // Compute session activity flags (same logic as the list endpoint)
