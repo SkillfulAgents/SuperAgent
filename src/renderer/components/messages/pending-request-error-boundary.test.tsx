@@ -50,6 +50,8 @@ describe('PendingRequestErrorBoundary', () => {
       </PendingRequestErrorBoundary>
     )
     expect(screen.getByTestId('pending-request-error-boundary')).toBeInTheDocument()
+    expect(screen.getByTestId('pending-request-error-boundary')).toHaveClass('dark:bg-amber-950')
+    expect(screen.getByTestId('pending-request-error-boundary')).not.toHaveClass('dark:bg-amber-950/30')
     expect(screen.getByText("This request couldn't be displayed")).toBeInTheDocument()
     spy.mockRestore()
   })
