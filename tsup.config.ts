@@ -20,6 +20,23 @@ const rawLoaderPlugin: Plugin = {
   },
 }
 
+// Keep the generated browser SDK as its own build entry. In development Vite
+// resolves the source dynamic import normally; the production server instead
+// points at the sibling emitted module so the 170 KB payload is not parsed at
+// API boot.
+const lazyDashboardSdkPlugin: Plugin = {
+  name: 'lazy-dashboard-sdk',
+  setup(build) {
+    const apiEntryPath = resolve('src/api/index.ts')
+    build.onResolve({ filter: /^\.\/llm-sdk-bundle$/ }, (args) => {
+      if (args.kind === 'dynamic-import' && resolve(args.importer) === apiEntryPath) {
+        return { path: './llm-sdk-bundle.mjs', external: true }
+      }
+      return undefined
+    })
+  },
+}
+
 // Stay in node_modules: natives, Electron, and packages that patch require/import.
 const externalExact = new Set([
   'better-sqlite3',
@@ -37,7 +54,10 @@ function isExternal(name: string): boolean {
 const dependencies = Object.keys(pkg.dependencies ?? {})
 
 export default defineConfig({
-  entry: ['src/web/server.ts'],
+  entry: {
+    server: 'src/web/server.ts',
+    'llm-sdk-bundle': 'src/api/llm-sdk-bundle.ts',
+  },
   format: ['esm'],
   outDir: 'dist/web',
   splitting: false,
@@ -56,5 +76,5 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
-  esbuildPlugins: [rawLoaderPlugin],
+  esbuildPlugins: [rawLoaderPlugin, lazyDashboardSdkPlugin],
 })
