@@ -1,0 +1,17 @@
+{
+  "storyId": "agent-chat",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: lete chat conversation with the user's question \"Hello! What is 2+2?\" on the right and the agent's response displaying \"4\" with \"Worked for 1s\" indicator below it. The response clearly contains the correct answer \"4\" to the math question.\n\n**All test requirements have been successfully completed.**\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 78802,
+  "sessionId": "f4de3c30-69a6-4b59-ab88-a100c5f1ded0",
+  "cost": {
+    "inputTokens": 458,
+    "outputTokens": 13141,
+    "cacheCreationTokens": 113735,
+    "cacheReadTokens": 1315161,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.339848
+  }
+}
