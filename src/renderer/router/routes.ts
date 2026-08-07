@@ -1,4 +1,4 @@
-import { createRootRouteWithContext, createRoute, notFound, redirect } from '@tanstack/react-router'
+import { createRootRouteWithContext, createRoute, lazyRouteComponent, notFound, redirect } from '@tanstack/react-router'
 import type { QueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 import type { UserContextValue } from '@renderer/context/user-context'
@@ -9,24 +9,36 @@ import { lenient } from './zod-search'
 import { chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
-import { NotificationsRoute } from '@renderer/components/layout/notifications-route'
-import { NotificationDetailRoute } from '@renderer/components/layout/notification-detail-route'
-import { AgentShell } from '@renderer/components/layout/agent-shell'
-import {
-  AgentHomeRoute,
-  XAgentPermissionsRoute,
-  ApiLogsRoute,
-  ChatRoute,
-  ConnectionsRoute,
-  DashboardRoute,
-  SecretsRoute,
-  SessionRoute,
-  SettingsLayout,
-  SettingsIndexRoute,
-  SettingsTabRoute,
-  TaskRoute,
-  WebhookRoute,
-} from './route-components'
+
+// Keep only the root shell and the default Home route on the boot graph. Route
+// components below are fetched together with their dependencies only when a
+// matching URL is entered; TanStack Router also knows how to preload these
+// components during a route transition.
+const NotificationsRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/notifications-route'),
+  'NotificationsRoute',
+)
+const NotificationDetailRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/notification-detail-route'),
+  'NotificationDetailRoute',
+)
+const AgentShell = lazyRouteComponent(
+  () => import('@renderer/components/layout/agent-shell'),
+  'AgentShell',
+)
+const AgentHomeRoute = lazyRouteComponent(() => import('./lazy-routes/agent-home-route'), 'AgentHomeRoute')
+const XAgentPermissionsRoute = lazyRouteComponent(() => import('./lazy-routes/x-agent-permissions-route'), 'XAgentPermissionsRoute')
+const ApiLogsRoute = lazyRouteComponent(() => import('./lazy-routes/api-logs-route'), 'ApiLogsRoute')
+const ChatRoute = lazyRouteComponent(() => import('./lazy-routes/chat-route'), 'ChatRoute')
+const ConnectionsRoute = lazyRouteComponent(() => import('./lazy-routes/connections-route'), 'ConnectionsRoute')
+const DashboardRoute = lazyRouteComponent(() => import('./lazy-routes/dashboard-route'), 'DashboardRoute')
+const SecretsRoute = lazyRouteComponent(() => import('./lazy-routes/secrets-route'), 'SecretsRoute')
+const SessionRoute = lazyRouteComponent(() => import('./lazy-routes/session-route'), 'SessionRoute')
+const TaskRoute = lazyRouteComponent(() => import('./lazy-routes/task-route'), 'TaskRoute')
+const WebhookRoute = lazyRouteComponent(() => import('./lazy-routes/webhook-route'), 'WebhookRoute')
+const SettingsLayout = lazyRouteComponent(() => import('./settings-route-components'), 'SettingsLayout')
+const SettingsIndexRoute = lazyRouteComponent(() => import('./settings-route-components'), 'SettingsIndexRoute')
+const SettingsTabRoute = lazyRouteComponent(() => import('./settings-route-components'), 'SettingsTabRoute')
 
 /**
  * Code-based route tree. No file-based codegen — the tree is small and fully
