@@ -600,7 +600,10 @@ async function buildSessionActivityMap(
   const limit = pLimit(10)
   const stats = await Promise.all(
     jsonlFiles.map((file) => limit(async () => {
-      const stat = await fs.promises.stat(path.join(sessionsDir, file))
+      // A transcript deleted between readdir and stat (deleteSession racing a
+      // scan) just drops out of this build instead of failing the whole scan.
+      const stat = await fs.promises.stat(path.join(sessionsDir, file)).catch(() => null)
+      if (!stat) return null
       const sessionId = path.basename(file, '.jsonl')
       if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return null
       return { sessionId, mtimeMs: stat.mtimeMs }

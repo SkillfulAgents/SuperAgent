@@ -181,6 +181,21 @@ describe('getSessionSummary cache', () => {
     expect(summary.lastActivityAt).toEqual(new Date('2026-01-01T00:00:00.000Z'))
   })
 
+  it('omits a transcript deleted between readdir and stat instead of failing the scan', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+    statProbe.beforeStat = async (file) => {
+      if (file === transcriptPath('session-b')) {
+        await fs.promises.rm(transcriptPath('session-b'), { force: true })
+      }
+    }
+
+    const summary = await getSessionSummary(agentSlug)
+
+    expect(summary.sessionIds).toEqual(['session-a'])
+    expect(summary.lastActivityAt).toEqual(new Date('2026-01-01T00:00:00.000Z'))
+  })
+
   it('periodically rebuilds unchanged directories to recover missed external writes', async () => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000)
     await createSession('session-a', '2026-01-01T00:00:00.000Z')

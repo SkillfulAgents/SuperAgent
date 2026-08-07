@@ -311,17 +311,18 @@ describe('MessagePersister', () => {
       expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, timestamp)
     })
 
-    it('uses replay timestamps to repair the cache without treating replay as new activity', () => {
-      const timestamp = new Date('2026-08-07T17:00:00.000Z')
-
+    it('ignores replayed catch-up frames whose host timestamp is arrival time', () => {
+      // On the wire, SDK result frames carry no timestamp field, so the host
+      // stamps Date.now() at arrival — a reconnect replay recorded here would
+      // fabricate recency for a session that did nothing.
       mockClient._messageCallback!({
         type: 'message',
         content: { type: 'result', subtype: 'success', replayed: true },
-        timestamp,
+        timestamp: new Date('2026-08-07T17:00:00.000Z'),
         sessionId: SESSION_ID,
       })
 
-      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, timestamp)
+      expect(mockRecordSessionActivity).not.toHaveBeenCalled()
     })
 
     it('does not attribute a sidechain transcript frame to the parent session', () => {

@@ -1410,11 +1410,14 @@ class MessagePersister {
     }
 
     // Complete top-level frames correspond to durable parent-transcript writes.
-    // Keep the warm per-agent summary current without restatting every sibling;
-    // replay uses the original timestamp, so reconnect repair cannot masquerade
-    // as new activity.
+    // Keep the warm per-agent summary current without restatting every sibling.
+    // Replayed catch-up frames are excluded: SDK frames carry no timestamp on
+    // the wire, so the host stamps arrival time, and a late-join replay to an
+    // idle session would masquerade as fresh activity — the directory-mtime and
+    // TTL reconciliation already repair anything a missed turn-end left behind.
     if (
       state.agentSlug &&
+      !content.replayed &&
       (content.type === 'assistant' || content.type === 'user' || content.type === 'result')
     ) {
       recordSessionActivity(state.agentSlug, sessionId, message.timestamp)
