@@ -22,6 +22,10 @@ function staticCacheControl(filePath: string): string {
   const p = filePath.replace(/\\/g, '/')
   if (p.includes('/assets/')) return 'public, max-age=31536000, immutable'
   if (p.endsWith('index.html')) return 'no-cache'
+  // The service worker script is the update trigger for the whole precached
+  // asset set — browsers revalidate it on their own schedule, but an explicit
+  // no-cache removes any intermediary-cache delay on picking up a deploy.
+  if (p.endsWith('/sw.js')) return 'no-cache'
   return 'public, max-age=3600, must-revalidate'
 }
 
