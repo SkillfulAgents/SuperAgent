@@ -165,6 +165,10 @@ Instructions
       expect(agent).not.toBeNull()
       expect(agent?.status).toBe('stopped')
       expect(agent?.containerPort).toBeNull()
+      expect(agent?.sessionCount).toBe(0)
+      expect(agent?.lastActivityAt).toBeNull()
+      expect(agent?.hasActiveSessions).toBe(false)
+      expect(agent?.hasSessionsAwaitingInput).toBe(false)
     })
 
     it('returns agent with running status when container is running', async () => {

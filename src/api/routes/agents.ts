@@ -967,7 +967,10 @@ agents.get('/', async (c) => {
         .where(eq(agentAcl.userId, userId))
       const agentLimit = pLimit(10)
       const agents = await Promise.all(
-        rows.map((r) => agentLimit(() => getAgentWithStatus(r.agentSlug)))
+        rows.map((r) => agentLimit(() => getAgentWithStatus(
+          r.agentSlug,
+          { includeSummary: false },
+        )))
       )
       agentList = agents.filter((a): a is ApiAgent => a !== null)
       // The ACL query has no ORDER BY, so rows arrive in index-scan order — i.e.
@@ -1016,7 +1019,7 @@ agents.post('/', async (c) => {
 agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const agent = await getAgentWithStatus(slug)
+    const agent = await getAgentWithStatus(slug, { includeSummary: false })
 
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
