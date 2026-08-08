@@ -98,4 +98,72 @@ describe('GET /auth/platform/start', () => {
     expect(res.headers.get('location')).toBe('/')
     expect(mockCaptureException).toHaveBeenCalled()
   })
+
+  it('warm session redirect carries validated prompt and model', async () => {
+    mockGetSession.mockResolvedValue({ session: { id: 's1' }, user: { id: 'u1' } })
+    const prompt = encodeURIComponent('build & ship https://x.com')
+    const res = await createApp().request(
+      `/auth/platform/start?return_to=%2F&prompt=${prompt}&model=claude-opus-5`,
+    )
+    expect(res.status).toBe(302)
+    const location = new URL(res.headers.get('location')!, 'http://internal')
+    expect(location.pathname).toBe('/')
+    expect(location.searchParams.get('prompt')).toBe('build & ship https://x.com')
+    expect(location.searchParams.get('model')).toBe('claude-opus-5')
+  })
+
+  it('cold path passes decorated return_to as callbackURL', async () => {
+    mockGetSession.mockResolvedValue(null)
+    mockSignInWithOAuth2.mockResolvedValue({
+      headers: new Headers(),
+      response: { url: 'https://auth.example.com/authorize?state=1', redirect: true },
+    })
+    await createApp().request(
+      '/auth/platform/start?return_to=%2F&prompt=hello&model=gpt-5.6-luna',
+    )
+    expect(mockSignInWithOAuth2).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          callbackURL: '/?prompt=hello&model=gpt-5.6-luna',
+          errorCallbackURL: '/',
+        }),
+      }),
+    )
+  })
+
+  it('drops a junk model and truncates an overlong prompt', async () => {
+    mockGetSession.mockResolvedValue({ session: { id: 's1' }, user: { id: 'u1' } })
+    const longPrompt = 'x'.repeat(500)
+    const res = await createApp().request(
+      `/auth/platform/start?return_to=%2F&prompt=${encodeURIComponent(longPrompt)}&model=not%20valid`,
+    )
+    const location = new URL(res.headers.get('location')!, 'http://internal')
+    expect(location.searchParams.get('prompt')).toHaveLength(400)
+    expect(location.searchParams.get('model')).toBeNull()
+  })
+
+  it('preserves existing return_to query and fragment when appending handoff', async () => {
+    mockGetSession.mockResolvedValue({ session: { id: 's1' }, user: { id: 'u1' } })
+    const res = await createApp().request(
+      `/auth/platform/start?return_to=${encodeURIComponent('/agents?tab=1#panel')}&prompt=hi&model=opus`,
+    )
+    const location = res.headers.get('location')!
+    expect(location.startsWith('/agents?')).toBe(true)
+    const url = new URL(location, 'http://internal')
+    expect(url.searchParams.get('tab')).toBe('1')
+    expect(url.searchParams.get('prompt')).toBe('hi')
+    expect(url.searchParams.get('model')).toBe('opus')
+    expect(url.hash).toBe('#panel')
+  })
+
+  it('keeps return_to sanitizing behavior unchanged for open redirects', async () => {
+    mockGetSession.mockResolvedValue({ session: { id: 's1' }, user: { id: 'u1' } })
+    const res = await createApp().request(
+      '/auth/platform/start?return_to=https://evil.example&prompt=hello&model=opus',
+    )
+    const location = new URL(res.headers.get('location')!, 'http://internal')
+    expect(location.pathname).toBe('/')
+    expect(location.searchParams.get('prompt')).toBe('hello')
+    expect(location.searchParams.get('model')).toBe('opus')
+  })
 })

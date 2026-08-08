@@ -12,6 +12,7 @@ import { useCreateAgent, useDeleteAgent, useUpdateAgent } from '@renderer/hooks/
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
+import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import {
   useTypewriterPlaceholder,
@@ -20,7 +21,8 @@ import {
 import { deriveAgentName } from '@renderer/lib/derive-agent-name'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
-import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
+import { useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
+import { findCatalogModel } from '@renderer/components/messages/composer-options'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
 
@@ -61,6 +63,9 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
   const { track } = useAnalyticsTracking()
   const startOnboardingSession = useStartOnboardingSession()
   const warmStartEnabled = useWarmStartOnTypeEnabled()
+  const { signupHandoff, setSignupHandoff } = useNavTransient()
+  const { data: modelSettings } = useModelSettings()
+  const [handoffModel, setHandoffModel] = useState<string | null>(null)
 
   // Warm-precreated Untitled agent; deleted on abandon unless submit consumes it.
   const warmSlugOwnedRef = useRef<string | null>(null)
@@ -134,13 +139,17 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
           ? await updateAgent.mutateAsync({ slug: warmSlug, name: agentName })
           : await createAgent.mutateAsync({ name: agentName })
         if (warmSlug) warmConsumedRef.current = true
+        const activeProvider = modelSettings?.llmProvider
+        const catalog = modelSettings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? []
+        // Carried marketing-handoff model, only when the effective catalog knows it —
+        // an unknown versioned id would be passed to the SDK as a pin and fail at the
+        // API. Resolved at submit time: the catalog is a separate query from settings
+        // and may not exist at mount. Falls back to today's behavior.
+        const model = (handoffModel && findCatalogModel(handoffModel, catalog)?.id) || 'opus'
         const session = await createSession.mutateAsync({
           agentSlug: newAgent.slug,
           message: content,
-          // Brand-new agents start their first session on Opus, mirroring
-          // AgentHome's first-session default. The container normalizes the
-          // family alias to the active provider's specific model.
-          model: 'opus',
+          model,
         })
         track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.displaySlug, sessionId: session.id } })
@@ -153,10 +162,10 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
       } finally {
         setIsSubmitting(false)
       }
-    }, [createAgent, updateAgent, createSession, navigate, track, onAgentCreated]),
+    }, [createAgent, updateAgent, createSession, navigate, track, onAgentCreated, handoffModel, modelSettings]),
   })
 
-  const { awaitWarmStart } = useWarmStartOnType({
+  const { awaitWarmStart, noteProgrammaticChange } = useWarmStartOnType({
     agentSlug: null,
     message: composer.message,
     enabled: warmStartEnabled,
@@ -165,6 +174,19 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
   useEffect(() => {
     awaitWarmStartRef.current = awaitWarmStart
   }, [awaitWarmStart])
+
+  useEffect(() => {
+    if (!signupHandoff) return
+    if (signupHandoff.prompt) {
+      // Seed warm-start baseline first so the prefill is not treated as typing
+      // (success criterion: prefill only — nothing auto-creates).
+      noteProgrammaticChange(signupHandoff.prompt)
+      composer.setMessage(signupHandoff.prompt)
+      setTimeout(() => textareaRef.current?.focus(), 0)
+    }
+    if (signupHandoff.model) setHandoffModel(signupHandoff.model)
+    setSignupHandoff(null) // one-shot
+  }, [signupHandoff, setSignupHandoff, composer, noteProgrammaticChange])
 
   // Abandon path: leave the create form without consuming the warm agent.
   // Ref + empty deps so mutation identity churn doesn't re-bind cleanup mid-edit.

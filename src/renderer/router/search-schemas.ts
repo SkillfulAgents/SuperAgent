@@ -55,8 +55,14 @@ export const rootSearchSchema = z.object({
 
 // Home view toggle (cards ⇄ graph). URL-driven so back/forward navigation and
 // reloads keep the selected view; absent = cards.
+// Marketing-site signup handoff (one-shot: consumed + stripped by
+// SignupHandoffConsumer). Per-field .catch so a bad model never drops a valid
+// prompt through lenient()'s all-or-nothing parse.
 export const homeSearchSchema = z.object({
-  view: z.enum(['cards', 'graph']).optional(),
+  // Per-field .catch: invalid view must not wipe prompt/model via lenient().
+  view: z.enum(['cards', 'graph']).optional().catch(undefined),
+  prompt: z.string().transform((s) => s.slice(0, 400)).optional().catch(undefined),
+  model: z.string().regex(/^[A-Za-z0-9._/-]{1,64}$/).optional().catch(undefined),
 })
 
 // Settings close-target: the path the gear was opened FROM, so closing returns

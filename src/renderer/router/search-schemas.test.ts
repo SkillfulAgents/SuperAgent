@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   chatSearchSchema,
   connectionsSearchSchema,
+  homeSearchSchema,
   rootSearchSchema,
   settingsSearchSchema,
   settingsTabSchema,
@@ -126,5 +127,29 @@ describe('rootSearchSchema.redirect == api.ts isSafeInternalPath (unified guard)
   it('still accepts a normal internal path and a deeper (non-leading) encoded separator', () => {
     expect(rootSearchSchema.safeParse({ redirect: '/agents/foo' }).success).toBe(true)
     expect(rootSearchSchema.safeParse({ redirect: '/settings/general?from=%2Fagents%2Ffoo' }).success).toBe(true)
+  })
+})
+
+describe('homeSearchSchema (signup handoff)', () => {
+  it('truncates an over-length prompt instead of dropping it', () => {
+    const parsed = lenient(homeSearchSchema)({ prompt: 'x'.repeat(500) })
+    expect(parsed.prompt).toHaveLength(400)
+  })
+
+  it('applies per-field catch: keeps a valid prompt when the model is junk', () => {
+    const parsed = lenient(homeSearchSchema)({ prompt: 'hello', model: 'not valid' })
+    expect(parsed.prompt).toBe('hello')
+    expect(parsed.model).toBeUndefined()
+    expect(lenient(homeSearchSchema)({ prompt: 1, model: '!!!' })).toEqual({})
+  })
+
+  it('keeps handoff params when view is invalid', () => {
+    expect(
+      lenient(homeSearchSchema)({
+        view: 'garbage',
+        prompt: 'hello',
+        model: 'claude-opus-5',
+      }),
+    ).toEqual({ prompt: 'hello', model: 'claude-opus-5' })
   })
 })
