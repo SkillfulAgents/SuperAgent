@@ -205,7 +205,7 @@ describe('CreateAgentForm signup handoff', () => {
       displaySlug: 'agent-1',
       name: 'Test Agent',
     })
-    mockCreateSession.mockResolvedValue({ id: 'session-1' })
+    mockCreateSession.mockResolvedValue({ id: 'session-1', initialMessageUuid: 'message-1' })
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
       cb(0)
       return 0

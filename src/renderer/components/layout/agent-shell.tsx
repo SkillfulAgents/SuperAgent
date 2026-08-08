@@ -1,5 +1,5 @@
 import { Outlet, useParams, useNavigate } from '@tanstack/react-router'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useUser } from '@renderer/context/user-context'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
@@ -8,6 +8,7 @@ import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { PendingMessagesProvider, type PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
+import { clearPendingSessionSeed, peekPendingSessionSeed } from '@renderer/context/pending-session-seed'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 import { ContentShell } from './content-shell'
 import { AgentHeader } from './agent-header'
@@ -48,13 +49,40 @@ export function AgentShell() {
   const needsTrafficLightPadding =
     isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
   const pendingMessagesRef = useRef(new Map<string, PendingMessage[]>())
+  const copiedSeedSessionIdsRef = useRef(new Set<string>())
   const [, forceUpdate] = useState(0)
 
   const getPendingMessages = useCallback(
-    (sessionId: string | null) =>
-      sessionId ? (pendingMessagesRef.current.get(sessionId) ?? EMPTY_PENDING_MESSAGES) : EMPTY_PENDING_MESSAGES,
-    [],
+    (sessionId: string | null) => {
+      if (!sessionId) return EMPTY_PENDING_MESSAGES
+      const existing = pendingMessagesRef.current.get(sessionId)
+      if (existing) return existing
+      // Read without consuming during render. StrictMode and concurrent React
+      // may discard this render, so the module-level seed is only cleared after
+      // the render that copied it into this shell's ref has committed.
+      const seeded = peekPendingSessionSeed(sessionId)
+      if (seeded) {
+        const arr = [
+          {
+            ...seeded,
+            sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : seeded.sender,
+          },
+        ]
+        pendingMessagesRef.current.set(sessionId, arr)
+        copiedSeedSessionIdsRef.current.add(sessionId)
+        return arr
+      }
+      return EMPTY_PENDING_MESSAGES
+    },
+    [isAuthMode, user],
   )
+
+  useEffect(() => {
+    for (const sessionId of copiedSeedSessionIdsRef.current) {
+      clearPendingSessionSeed(sessionId)
+    }
+    copiedSeedSessionIdsRef.current.clear()
+  })
 
   const onMessageSent = useCallback(
     (content: string, localId: string, queued: boolean) => {

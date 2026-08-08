@@ -12,6 +12,7 @@ import { useCreateAgent, useDeleteAgent, useUpdateAgent } from '@renderer/hooks/
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
+import { seedPendingSessionMessage } from '@renderer/context/pending-session-seed'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import {
@@ -193,34 +194,63 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
     // expose them in this layout so they're unreachable in practice.
     uploadFile: useCallback(async () => { throw new Error('Cannot upload before agent is created') }, []),
     uploadFolder: useCallback(async () => { throw new Error('Cannot upload before agent is created') }, []),
+    // Keep typed text visible while create runs; seed the session ghost before
+    // navigate so AgentShell (which mounts after the wizard closes) can show it.
+    keepMessageUntilComplete: true,
+    submitDisabled: isSubmitting,
     onSubmit: useCallback(async (content: string) => {
       // Local flag — do not key off createAgent.isPending; warm-start reuse of
       // that mutation would freeze the textarea while the user is still typing.
       setIsSubmitting(true)
       try {
-        const agentName = await deriveAgentName(content)
-        const warmSlug = await awaitWarmStartRef.current()
-        const newAgent = warmSlug
-          ? await updateAgent.mutateAsync({ slug: warmSlug, name: agentName })
-          : await createAgent.mutateAsync({ name: agentName })
-        if (warmSlug) warmConsumedRef.current = true
-        const session = await createSession.mutateAsync({
-          agentSlug: newAgent.slug,
-          message: content,
-          ...composerOptions.toRuntimeOptions(),
-          // An untouched model is omitted from the runtime options, but a brand
-          // new agent has no stored default for the server to resolve against —
-          // always send what the picker is showing.
-          model: composerOptions.model ?? DEFAULT_MODEL,
-        })
+        // Only failures before the session exists are retryable creation
+        // failures. Once the API has accepted the initial message, the composer
+        // must clear even if the wizard's follow-up persistence fails; otherwise
+        // retrying creates a duplicate agent and session.
+        const { newAgent, session } = await (async () => {
+          try {
+            const agentName = await deriveAgentName(content)
+            const warmSlug = await awaitWarmStartRef.current()
+            const newAgent = warmSlug
+              ? await updateAgent.mutateAsync({ slug: warmSlug, name: agentName })
+              : await createAgent.mutateAsync({ name: agentName })
+            if (warmSlug) warmConsumedRef.current = true
+            const session = await createSession.mutateAsync({
+              agentSlug: newAgent.slug,
+              message: content,
+              ...composerOptions.toRuntimeOptions(),
+              // An untouched model is omitted from the runtime options, but a brand
+              // new agent has no stored default for the server to resolve against —
+              // always send what the picker is showing.
+              model: composerOptions.model ?? DEFAULT_MODEL,
+            })
+            return { newAgent, session }
+          } catch (error) {
+            console.error('Failed to create agent:', error)
+            toast.error('Failed to create agent', {
+              description: error instanceof Error ? error.message : 'Please try again.',
+            })
+            // Rethrow so useMessageComposer keeps the typed prompt for a genuine
+            // create failure and the user can safely retry it.
+            throw error
+          }
+        })()
+
+        seedPendingSessionMessage(
+          session.id,
+          content,
+          session.initialMessageUuid,
+        )
         track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.displaySlug, sessionId: session.id } })
-        await onAgentCreated?.()
-      } catch (error) {
-        console.error('Failed to create agent:', error)
-        toast.error('Failed to create agent', {
-          description: error instanceof Error ? error.message : 'Please try again.',
-        })
+        try {
+          await onAgentCreated?.()
+        } catch (error) {
+          console.error('Agent created, but failed to finish setup:', error)
+          toast.error('Agent created, but setup could not be completed', {
+            description: error instanceof Error ? error.message : 'Please try finishing setup again.',
+          })
+        }
       } finally {
         setIsSubmitting(false)
       }
