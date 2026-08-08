@@ -55,9 +55,15 @@ export function AgentBanners({ slug, startAgent }: AgentBannersProps) {
       {/* Start error banner */}
       {startAgent.isError && (
         <div className="shrink-0 border-b bg-destructive/10 px-4 py-2">
-          <div className="flex items-center gap-2 text-xs text-destructive select-text">
-            <AlertCircle className="h-3 w-3 shrink-0" />
-            <span>Failed to start agent: {startAgent.error.message}</span>
+          {/* Start failures may carry multi-line remediation steps (e.g. an
+              unreachable local model naming the bind to change), so keep the
+              newlines and top-align the icon against the first line. Single-line
+              messages are unaffected. */}
+          <div className="flex items-start gap-2 text-xs text-destructive select-text">
+            <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+            <span className="whitespace-pre-line">
+              Failed to start agent: {startAgent.error.message}
+            </span>
           </div>
         </div>
       )}

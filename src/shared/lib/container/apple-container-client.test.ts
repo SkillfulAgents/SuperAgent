@@ -168,7 +168,8 @@ describe('AppleContainerClient host talk-back (host.docker.internal is NXDOMAIN 
     const client = new AppleContainerClient({ agentId: 'abc123' })
     expect(client.getHostApiBaseUrl()).toBe('http://192.168.64.1:47891')
     expect(client.getHostBridgeIp()).toBe('192.168.64.1')
-    // Cached: one inspect for both calls.
+    expect(client.getContainerHostAddress()).toBe('192.168.64.1')
+    // Cached: one inspect for all three calls.
     expect(mockExecSyncWithPath).toHaveBeenCalledOnce()
   })
 
@@ -176,6 +177,7 @@ describe('AppleContainerClient host talk-back (host.docker.internal is NXDOMAIN 
     mockExecSyncWithPath.mockImplementation(() => { throw new Error('network inspect failed') })
     const client = new AppleContainerClient({ agentId: 'abc123' })
     expect(() => client.getHostApiBaseUrl()).toThrow(/host gateway is unreachable/i)
+    expect(() => client.getContainerHostAddress()).toThrow(/host gateway is unreachable/i)
     expect(client.getHostBridgeIp()).toBeNull()
   })
 })
