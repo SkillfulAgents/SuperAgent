@@ -53,6 +53,9 @@ describe('TemplateInstallDialog handoffOrigin', () => {
     expect(input).toHaveFocus()
   })
 
+  // No handoffOrigin: the close-before-install ordering is shared by EVERY caller,
+  // including AgentTemplateBrowseDialog, whose onInstalled awaits a refetch and an
+  // onboarding session. Asserting it on the bare props keeps that caller covered.
   it('closes the install dialog before onInstalled so setup UI is not stacked', async () => {
     const user = userEvent.setup()
     const order: string[] = []
@@ -65,7 +68,6 @@ describe('TemplateInstallDialog handoffOrigin', () => {
     render(
       <TemplateInstallDialog
         template={template}
-        handoffOrigin
         onClose={() => {
           order.push('close')
         }}

@@ -155,11 +155,15 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     initialAttachments: options.initialAttachments,
   })
 
+  // Pulled off `options` so the dep is the callback itself. Depending on
+  // `options` instead would rebuild this every render — callers pass an inline
+  // object literal, so its identity is never stable.
+  const { onVoiceTranscript } = options
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {
-      options.onVoiceTranscript?.()
+      onVoiceTranscript?.()
       setMessage(text)
-    }, [options.onVoiceTranscript]),
+    }, [onVoiceTranscript]),
   })
 
   const handleMountChoice = useCallback((choice: 'upload' | 'mount' | 'cancel') => {

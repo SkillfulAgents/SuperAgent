@@ -28,6 +28,14 @@ import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-ag
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
 
+/**
+ * How long the signup template offer waits for the discoverable list before it
+ * gives up and hands the composer back to the user. Long enough to cover a cold
+ * skillset fetch, short enough that the create box is never dead for a
+ * noticeable beat.
+ */
+const HANDOFF_TEMPLATE_WAIT_MS = 5000
+
 export interface CreateAgentFormProps {
   /** Fires after an agent is successfully created (via any path). Parent uses this to close the overlay/wizard. */
   onAgentCreated?: () => Promise<void> | void
@@ -78,6 +86,14 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
   const forfeitHandoffTemplate = useCallback(() => {
     composerTouchedRef.current = true
     setHandoffTemplateSlug(null)
+  }, [])
+  // The editor reads autoFocus ONCE at create, so a slug armed on mount suppresses
+  // focus for good — flipping the prop back to true later does nothing. Every path
+  // that disarms without opening the dialog has to hand focus back by hand.
+  // Not called from forfeitHandoffTemplate: typing already holds focus, and an
+  // aid/mic forfeit is the user moving focus somewhere else on purpose.
+  const focusComposer = useCallback(() => {
+    setTimeout(() => textareaRef.current?.focus(), 0)
   }, [])
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
   const { data: discoverableAgents, isError: discoverableAgentsFailed } = useDiscoverableAgents()
@@ -211,9 +227,21 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
     // Fail-open: a broken list must not leave the offer armed forever.
     if (discoverableAgentsFailed) {
       setHandoffTemplateSlug(null)
+      focusComposer()
       return
     }
-    if (!discoverableAgents || discoverableAgents.length === 0) return // keep waiting
+    if (!discoverableAgents || discoverableAgents.length === 0) {
+      // Bounded wait. useDiscoverableAgents is `enabled: hasSkillsets`, so with no
+      // skillsets the query never runs: data stays undefined and isError stays false
+      // forever, and an unbounded wait would strand the composer unfocused. The timer
+      // also caps how late an offer may appear on a slow list — a dialog opening
+      // minutes after landing reads as a glitch, not an offer.
+      const timer = setTimeout(() => {
+        setHandoffTemplateSlug(null)
+        focusComposer()
+      }, HANDOFF_TEMPLATE_WAIT_MS)
+      return () => clearTimeout(timer)
+    }
     const match = discoverableAgents.find(
       (a) => a.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && slugFromAgentPath(a.path) === handoffTemplateSlug,
     )
@@ -222,8 +250,9 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
       setHandoffTemplateSlug(null)
     } else {
       setHandoffTemplateSlug(null) // settle: populated + no match
+      focusComposer()
     }
-  }, [discoverableAgents, discoverableAgentsFailed, handoffTemplateSlug])
+  }, [discoverableAgents, discoverableAgentsFailed, handoffTemplateSlug, focusComposer])
 
   // Abandon path: leave the create form without consuming the warm agent.
   // Ref + empty deps so mutation identity churn doesn't re-bind cleanup mid-edit.

@@ -312,6 +312,74 @@ describe('CreateAgentForm signup handoff', () => {
     )
   })
 
+  // The armed slug suppresses the editor's create-once autoFocus. Any path that
+  // disarms without opening the dialog owes the user focus back, or the create box
+  // sits dead until they click it.
+  it('hands focus back to the composer when the list settles with no match', async () => {
+    mockDiscoverableAgents = [discoverable('other')]
+    mockSignupHandoff = { template_slug: 'missing-slug' }
+    renderForm()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('create-agent-prompt')).toHaveFocus()
+    })
+  })
+
+  it('hands focus back to the composer when the discoverable query errors', async () => {
+    mockDiscoverableAgents = undefined
+    mockDiscoverableAgentsFailed = true
+    mockSignupHandoff = { template_slug: 'error-bot' }
+    renderForm()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('create-agent-prompt')).toHaveFocus()
+    })
+  })
+
+  // useDiscoverableAgents is `enabled: hasSkillsets` — with no skillsets the query
+  // never runs, so data stays undefined and isError stays false forever. Without a
+  // bounded wait the offer stays armed and the composer never gets focus.
+  it('settles after the bounded wait when the list never arrives', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      mockDiscoverableAgents = []
+      mockSignupHandoff = { template_slug: 'stranded-bot' }
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      })
+      const view = render(
+        <QueryClientProvider client={queryClient}>
+          <DraftsProvider>
+            <CreateAgentForm />
+          </DraftsProvider>
+        </QueryClientProvider>,
+      )
+      expect(lastComposerAutoFocus).toBe(false)
+      expect(screen.getByTestId('create-agent-prompt')).not.toHaveFocus()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6000)
+      })
+      expect(screen.getByTestId('create-agent-prompt')).toHaveFocus()
+
+      // Settled for good — a list that shows up afterwards must not pop the offer.
+      mockDiscoverableAgents = [discoverable('stranded-bot')]
+      view.rerender(
+        <QueryClientProvider client={queryClient}>
+          <DraftsProvider>
+            <CreateAgentForm />
+          </DraftsProvider>
+        </QueryClientProvider>,
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+      expect(screen.queryByTestId('template-install-dialog')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('settle clears slug permanently when populated list has no match', async () => {
     mockDiscoverableAgents = [discoverable('other')]
     mockSignupHandoff = { template_slug: 'missing-slug' }
