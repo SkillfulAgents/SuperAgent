@@ -12,7 +12,7 @@ import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { AttachmentPreview } from '@renderer/components/messages/attachment-preview'
-import { findCatalogModel, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { resolveDisplayModel, useComposerOptions } from '@renderer/components/messages/composer-options'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
 import { UploadError } from '@renderer/components/ui/upload-error'
@@ -103,10 +103,11 @@ export function QuickDispatch() {
   const createSession = useCreateSession()
   const editorRef = useRef<HTMLDivElement | null>(null)
 
-  const selectedModel =
-    findCatalogModel(composerOptions.model, composerOptions.catalog) ??
-    composerOptions.catalog.find((m) => m.family === 'sonnet' && m.isLatest) ??
-    composerOptions.catalog[0]
+  const selectedModel = resolveDisplayModel(
+    composerOptions.model,
+    composerOptions.catalog,
+    composerOptions.providerDefaultModel,
+  )
 
   const composer = useMessageComposer({
     agentSlug,

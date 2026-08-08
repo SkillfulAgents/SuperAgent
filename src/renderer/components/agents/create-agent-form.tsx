@@ -137,10 +137,9 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
         const session = await createSession.mutateAsync({
           agentSlug: newAgent.slug,
           message: content,
-          // Brand-new agents start their first session on Opus, mirroring
-          // AgentHome's first-session default. The container normalizes the
-          // family alias to the active provider's specific model.
-          model: 'opus',
+          // No model: an untouched first send carries none, exactly as AgentHome's
+          // composer does, so the host resolves the user's default rather than a
+          // pin this form invented.
         })
         track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.displaySlug, sessionId: session.id } })

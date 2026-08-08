@@ -1,11 +1,15 @@
 import type { LlmProviderId, ModelPurpose } from './base-llm-provider'
 import {
+  hasVersionSegment,
   modelDefinitionSchema,
   type CatalogOverrideEntry,
   type ModelDefinition,
 } from './model-catalog-schema'
 import { getLlmProvider } from './index'
 import { getModelCatalogSettings } from '../config/settings'
+
+/** Re-exported from the schema module, which renderer code can import safely. */
+export { hasVersionSegment }
 
 /**
  * Host-side source of truth for which concrete models a provider offers and
@@ -16,11 +20,6 @@ import { getModelCatalogSettings } from '../config/settings'
  *   - bare family alias ('opus')            → that family's isLatest id
  *   - concrete versioned id ('claude-opus-4-8') → pinned exactly
  */
-
-/** True when a string carries a version segment (a hyphen followed by a digit). */
-export function hasVersionSegment(s: string): boolean {
-  return /-\d/.test(s)
-}
 
 /**
  * Normalize a catalog so each family has at most one `isLatest` entry. When

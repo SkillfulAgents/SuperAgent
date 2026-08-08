@@ -96,6 +96,30 @@ describe('SettingsModelSelect (flat picker)', () => {
     expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Opus 4.8 · pinned')
   })
 
+  // The host resolver's two miss-paths differ, and the trigger has to match both:
+  // a bare alias this catalog lacks resolves to the provider's own default, while
+  // an unknown VERSIONED string is passed through as a pin. Falling back on the
+  // pin would label a model that never runs — and would let the effort clamp
+  // persist a rewrite based on that wrong model's capabilities.
+  it('falls back to the provider default for an unknown alias, never for a versioned pin', () => {
+    const { unmount } = render(<SettingsModelSelect model="gpt" onModelChange={vi.fn()} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Opus 4.8')
+    unmount()
+
+    const onEffortChange = vi.fn()
+    render(
+      <SettingsModelSelect
+        model="some-removed-model-9"
+        onModelChange={vi.fn()}
+        includeEffort
+        effort="max"
+        onEffortChange={onEffortChange}
+      />,
+    )
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Select model')
+    expect(onEffortChange).not.toHaveBeenCalled()
+  })
+
   it('does not render the effort section when includeEffort is false', async () => {
     const user = userEvent.setup()
     render(<SettingsModelSelect model="claude-haiku-4-5" onModelChange={vi.fn()} includeEffort={false} />)

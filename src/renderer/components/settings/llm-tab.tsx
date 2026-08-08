@@ -74,6 +74,8 @@ interface ModelEffortRowProps {
   name: string
   subtitle: string
   model: string | undefined
+  /** Provider-default purpose backing this row; see SettingsModelSelect. */
+  purpose?: 'agent' | 'summarizer' | 'browser' | 'dashboard'
   /** Reasoning effort; only surfaced when `includeEffort` is true. */
   effort?: EffortLevel
   includeEffort?: boolean
@@ -87,6 +89,7 @@ function ModelEffortRow({
   name,
   subtitle,
   model,
+  purpose,
   effort,
   includeEffort,
   disabled,
@@ -100,6 +103,7 @@ function ModelEffortRow({
       right={
         <SettingsModelSelect
           model={model}
+          purpose={purpose}
           onModelChange={onModelChange}
           includeEffort={includeEffort}
           effort={effort}
@@ -268,6 +272,7 @@ export function LlmTab() {
                     name="Summarizer model"
                     subtitle="Used for session name generation and API key validation"
                     model={settings?.models?.summarizerModel}
+                    purpose="summarizer"
                     includeEffort={false}
                     disabled={isLoading}
                     onModelChange={(model) => updateSettings.mutate({ models: { summarizerModel: model } })}
@@ -276,6 +281,7 @@ export function LlmTab() {
                     name="Dashboard model"
                     subtitle="Used by the dashboard-builder subagent that creates and edits artifacts"
                     model={settings?.models?.dashboardBuilderModel}
+                    purpose="dashboard"
                     includeEffort={false}
                     disabled={isLoading}
                     onModelChange={(model) => updateSettings.mutate({ models: { dashboardBuilderModel: model } })}

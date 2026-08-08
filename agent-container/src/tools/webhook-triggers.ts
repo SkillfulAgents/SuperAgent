@@ -165,7 +165,7 @@ Use get_available_triggers first to discover what triggers are available for an 
       .optional()
       .describe('Optional configuration for the trigger (depends on trigger type)'),
     model: z
-      .enum(['opus', 'sonnet', 'haiku'])
+      .enum(['grok', 'opus', 'sonnet', 'haiku'])
       .optional()
       .describe('Optional model family to use when this trigger fires. If not specified, uses the global default.'),
     effort: z
@@ -241,7 +241,7 @@ If the service reveals a signing secret only AFTER registration, attach it after
       .describe('Optional HMAC signature verification profile, if you already know the signing secret'),
     filter_exp: z.string().optional().describe(FILTER_EXP_DESCRIPTION),
     model: z
-      .enum(['opus', 'sonnet', 'haiku'])
+      .enum(['grok', 'opus', 'sonnet', 'haiku'])
       .optional()
       .describe('Optional model family to use when this endpoint fires. If not specified, uses the global default.'),
     effort: z

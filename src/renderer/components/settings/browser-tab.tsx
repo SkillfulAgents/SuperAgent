@@ -223,6 +223,7 @@ export function BrowserTab() {
             right={
               <SettingsModelSelect
                 model={settings?.models?.browserModel}
+                purpose="browser"
                 onModelChange={(value) => updateSettings.mutate({ models: { browserModel: value } })}
                 disabled={isLoading}
               />

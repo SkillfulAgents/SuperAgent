@@ -23,6 +23,7 @@ interface HarnessProps {
   initialEffort?: EffortLevel
   initialSpeed?: SpeedLevel
   initialModel?: string
+  providerDefaultModel?: string
   catalog?: ModelDefinition[]
   onState?: (state: ComposerOptionsState) => void
   disabled?: boolean
@@ -35,6 +36,7 @@ function Harness({
   initialEffort = 'high',
   initialSpeed = 'normal',
   initialModel,
+  providerDefaultModel = 'sonnet',
   catalog = CATALOG,
   onState,
   disabled,
@@ -51,6 +53,7 @@ function Harness({
     model,
     setModel,
     catalog,
+    providerDefaultModel,
     toRuntimeOptions: () => ({ effort, speed, ...(model ? { model } : {}) }),
   }
   onState?.(state)
@@ -66,8 +69,16 @@ describe('ComposerOptionsPopover', () => {
     expect(trigger.querySelector('span')).toHaveClass('max-[420px]:hidden')
   })
 
-  it('falls back to Sonnet on the trigger when no model is set', () => {
-    render(<Harness initialModel={undefined} initialEffort="medium" />)
+  // The host resolver's last rung is the active provider's own agent default, so
+  // the trigger has to land there too. A selection naming a family this provider
+  // does not carry (e.g. 'gpt' on a Claude-only provider) is the case that bites:
+  // display and wire must agree, or the picker shows a model that never runs.
+  it('falls back to the provider default when the selection is unset or unresolvable', () => {
+    const { unmount } = render(<Harness initialModel={undefined} initialEffort="medium" />)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · Medium')
+    unmount()
+
+    render(<Harness initialModel="gpt" initialEffort="medium" />)
     expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · Medium')
   })
 

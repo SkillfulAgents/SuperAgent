@@ -11,12 +11,19 @@ import { ModelFamilyList, findCatalogModel, familyDisplayName } from '@renderer/
 import { EFFORT_LABELS, EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
 import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from '@renderer/components/messages/speed-section'
 import { EFFORT_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
+import { hasVersionSegment } from '@shared/lib/llm-provider/model-catalog-schema'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 interface SettingsModelSelectProps {
   /** Currently-selected model — a concrete id (pinned) or a bare family alias (latest); undefined while loading. */
   model: string | undefined
   onModelChange: (model: string) => void
+  /**
+   * Which provider default backs this row when the selection is a family the
+   * active provider's catalog does not carry. Matches the purpose the host
+   * resolver uses for the same setting, so the label tracks the wire.
+   */
+  purpose?: 'agent' | 'summarizer' | 'browser' | 'dashboard'
   /** Show the effort picker alongside the model. Off by default for model-only knobs. */
   includeEffort?: boolean
   effort?: EffortLevel
@@ -60,6 +67,7 @@ interface SettingsModelSelectProps {
 function SettingsModelSelectImpl({
   model,
   onModelChange,
+  purpose = 'agent',
   includeEffort = false,
   effort = 'medium',
   onEffortChange,
@@ -79,8 +87,19 @@ function SettingsModelSelectImpl({
     [settings, activeProvider],
   )
 
-  // Resolve the current selection for the trigger label.
-  const resolved = findCatalogModel(model, catalog)
+  // Resolve the current selection for the trigger label. A stored selection this
+  // provider's catalog cannot carry (e.g. 'gpt' on a Claude-only provider) still
+  // runs — the host resolver falls back to the provider's own default — so show
+  // THAT model instead of an empty trigger, matching what the wire will send.
+  // Only for a NON-versioned selection: the host treats an unknown versioned
+  // string as a deliberate pin and sends it verbatim, so falling back there
+  // would label a model that never runs — and would let the effort/speed clamps
+  // below persist a rewrite based on the wrong model's capabilities.
+  const direct = findCatalogModel(model, catalog)
+  const providerFallback = !direct && model && !hasVersionSegment(model)
+    ? findCatalogModel(settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.defaultModels?.[purpose], catalog)
+    : undefined
+  const resolved = direct ?? providerFallback
   const isLatestSelected = model !== undefined && catalog.some((m) => m.family === model)
   const selectedFamily = isLatestSelected ? model : resolved?.family
 
@@ -94,6 +113,8 @@ function SettingsModelSelectImpl({
 
   let triggerLabel: string | undefined
   if (isLatestSelected && selectedFamily) triggerLabel = `${familyDisplayName(selectedFamily)} · latest`
+  // A provider fallback is neither a pin nor a family-latest pick — label it plainly.
+  else if (providerFallback) triggerLabel = providerFallback.label
   else if (resolved?.family) triggerLabel = `${resolved.label} · pinned`
   else if (resolved) triggerLabel = resolved.label
 

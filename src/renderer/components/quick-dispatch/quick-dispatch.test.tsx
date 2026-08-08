@@ -73,7 +73,7 @@ vi.mock('@renderer/components/messages/composer-options', () => ({
     setEffort: vi.fn(),
     toRuntimeOptions: () => ({}),
   }),
-  findCatalogModel: () => ({ label: 'Sonnet', icon: 'sonnet' }),
+  resolveDisplayModel: () => ({ label: 'Sonnet', icon: 'sonnet' }),
 }))
 
 // The inline menus + heavy children pull in their own deps; stub them since these
