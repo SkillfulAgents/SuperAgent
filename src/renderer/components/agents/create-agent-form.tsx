@@ -29,12 +29,17 @@ import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-p
 import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 /**
- * How long the signup template offer waits for the discoverable list before it
- * gives up and hands the composer back to the user. Long enough to cover a cold
- * skillset fetch, short enough that the create box is never dead for a
- * noticeable beat.
+ * Ceiling, not a delay: the offer resolves the instant the discoverable list
+ * lands, and this only fires when nothing ever arrives. A cold skillset sync
+ * measured ~1.4s on a fast connection, so the margin here is for slow links.
+ *
+ * Erring long is close to free — a larger value never delays the happy path,
+ * it only extends how long the composer stays unfocused in the already-broken
+ * case. Erring short is not: the offer would settle before a slow list arrives
+ * and no dialog would ever appear, silently, for exactly the cold first-run
+ * installs this handoff targets.
  */
-const HANDOFF_TEMPLATE_WAIT_MS = 5000
+const HANDOFF_TEMPLATE_WAIT_MS = 10000
 
 export interface CreateAgentFormProps {
   /** Fires after an agent is successfully created (via any path). Parent uses this to close the overlay/wizard. */

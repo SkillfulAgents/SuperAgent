@@ -357,6 +357,14 @@ describe('CreateAgentForm signup handoff', () => {
       expect(lastComposerAutoFocus).toBe(false)
       expect(screen.getByTestId('create-agent-prompt')).not.toHaveFocus()
 
+      // Still armed well past a cold sync. Probe autoFocus, not focus itself:
+      // clearing the slug flips this prop in the same commit, whereas the focus
+      // call lands in a nested 0ms timer that a single advance does not drain.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(lastComposerAutoFocus).toBe(false)
+
       await act(async () => {
         await vi.advanceTimersByTimeAsync(6000)
       })
