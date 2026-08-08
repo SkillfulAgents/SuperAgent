@@ -12,6 +12,7 @@ import { MenuCommandHandler } from '@renderer/components/menu-command-handler'
 import { PackageImportHandler } from '@renderer/components/package-import-handler'
 import { HistoryNavigationHandler } from '@renderer/components/history-navigation-handler'
 import { GlobalNotificationHandler } from '@renderer/components/notifications/global-notification-handler'
+import { SignupHandoffConsumer } from '@renderer/components/signup-handoff-consumer'
 import { OnboardingProvider } from '@renderer/context/onboarding-context'
 import { useSearch } from '@renderer/context/search-context'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
@@ -153,6 +154,9 @@ export function RootLayout() {
               <SearchDialog />
             </Suspense>
           ) : null}
+          {/* Above the wizard ternary: the wizard replaces the outlet, so a
+              consumer inside the outlet may never commit an effect. */}
+          <SignupHandoffConsumer />
           {wizardOpen ? (
             <Suspense fallback={null}>
               <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />

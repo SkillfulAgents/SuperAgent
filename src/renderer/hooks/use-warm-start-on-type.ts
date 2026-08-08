@@ -37,8 +37,13 @@ export function useWarmStartOnType({
   const ensureAgentRef = useRef(ensureAgent)
   ensureAgentRef.current = ensureAgent
 
-  // Mount-time baseline — restored drafts must not count as "typing".
+  // Mount-time baseline — restored drafts / programmatic prefills must not
+  // count as "typing". Call noteProgrammaticChange(next) before setMessage(next).
   const baselineRef = useRef(message)
+
+  const noteProgrammaticChange = useCallback((next: string) => {
+    baselineRef.current = next
+  }, [])
 
   useEffect(() => {
     if (agentSlug) slugRef.current = agentSlug
@@ -106,5 +111,5 @@ export function useWarmStartOnType({
     return null
   }, [enabled, isReady, message, run])
 
-  return { awaitWarmStart }
+  return { awaitWarmStart, noteProgrammaticChange }
 }

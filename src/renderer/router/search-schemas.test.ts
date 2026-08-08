@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   chatSearchSchema,
   connectionsSearchSchema,
+  homeSearchSchema,
   rootSearchSchema,
   settingsSearchSchema,
   settingsTabSchema,
@@ -126,5 +127,45 @@ describe('rootSearchSchema.redirect == api.ts isSafeInternalPath (unified guard)
   it('still accepts a normal internal path and a deeper (non-leading) encoded separator', () => {
     expect(rootSearchSchema.safeParse({ redirect: '/agents/foo' }).success).toBe(true)
     expect(rootSearchSchema.safeParse({ redirect: '/settings/general?from=%2Fagents%2Ffoo' }).success).toBe(true)
+  })
+})
+
+describe('homeSearchSchema (signup handoff)', () => {
+  it('truncates an over-length prompt instead of dropping it', () => {
+    const parsed = lenient(homeSearchSchema)({ prompt: 'x'.repeat(500) })
+    expect(parsed.prompt).toHaveLength(400)
+  })
+
+  it('applies per-field catch: keeps a valid prompt when the model is junk', () => {
+    const parsed = lenient(homeSearchSchema)({ prompt: 'hello', model: 'not valid' })
+    expect(parsed.prompt).toBe('hello')
+    expect(parsed.model).toBeUndefined()
+    expect(lenient(homeSearchSchema)({ prompt: 1, model: '!!!' })).toEqual({})
+  })
+
+  it('keeps handoff params when view is invalid', () => {
+    expect(
+      lenient(homeSearchSchema)({
+        view: 'garbage',
+        prompt: 'hello',
+        model: 'claude-opus-5',
+      }),
+    ).toEqual({ prompt: 'hello', model: 'claude-opus-5' })
+  })
+
+  // Parity with withSignupHandoff (platform-sso-start.ts): a directly-visited
+  // URL skips the SSO hop, so the schema has to be the same gate on its own.
+  it('strips control characters and trims, matching the SSO hop', () => {
+    expect(lenient(homeSearchSchema)({ prompt: '  build\r\nand ship\0  ' }).prompt)
+      .toBe('buildand ship')
+  })
+
+  it('strips before capping so control characters do not eat the budget', () => {
+    const parsed = lenient(homeSearchSchema)({ prompt: `${'\n'.repeat(200)}${'x'.repeat(500)}` })
+    expect(parsed.prompt).toBe('x'.repeat(400))
+  })
+
+  it('collapses an all-whitespace prompt to falsy so consumers read it as absent', () => {
+    expect(lenient(homeSearchSchema)({ prompt: '   \r\n  ' }).prompt).toBe('')
   })
 })
