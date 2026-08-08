@@ -20,10 +20,15 @@ let mockDiscoverableAgentsFailed = false
 let lastDialogProps: { template: unknown; handoffOrigin?: boolean } | null = null
 let latestTranscriptUpdate: ((text: string) => void) | null = null
 let lastComposerAutoFocus: boolean | undefined
-let mockCatalog = [
-  { id: 'claude-opus-5', family: 'opus', label: 'Opus 5', isLatest: true },
-  { id: 'kimi-k3', family: 'kimi', label: 'Kimi K3', isLatest: true },
+// The model popover reads icon/supportedEfforts unconditionally, and the
+// override test needs a second model inside one vendor tab to pick.
+const EFFORTS = ['low', 'medium', 'high']
+const catalogFixture = () => [
+  { id: 'claude-opus-5', family: 'opus', label: 'Opus 5', isLatest: true, icon: 'anthropic', supportedEfforts: EFFORTS },
+  { id: 'claude-sonnet-4-6', family: 'sonnet', label: 'Sonnet 4.6', isLatest: true, icon: 'anthropic', supportedEfforts: EFFORTS },
+  { id: 'kimi-k3', family: 'kimi', label: 'Kimi K3', isLatest: true, icon: 'kimi', supportedEfforts: EFFORTS },
 ]
+let mockCatalog = catalogFixture()
 
 vi.mock('@renderer/context/nav-transient-context', () => ({
   useNavTransient: () => ({
@@ -194,10 +199,7 @@ describe('CreateAgentForm signup handoff', () => {
     latestTranscriptUpdate = null
     lastComposerAutoFocus = undefined
     lastDialogProps = null
-    mockCatalog = [
-      { id: 'claude-opus-5', family: 'opus', label: 'Opus 5', isLatest: true },
-      { id: 'kimi-k3', family: 'kimi', label: 'Kimi K3', isLatest: true },
-    ]
+    mockCatalog = catalogFixture()
     mockCreateAgent.mockResolvedValue({
       slug: 'agent-1',
       displaySlug: 'agent-1',
@@ -261,6 +263,58 @@ describe('CreateAgentForm signup handoff', () => {
       )
     })
     expect(mockSetSignupHandoff).not.toHaveBeenCalled()
+  })
+
+  it('seeds the model picker from the carried model', async () => {
+    mockSignupHandoff = { prompt: 'hello', model: 'claude-sonnet-4-6' }
+    const user = userEvent.setup()
+    renderForm()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6')
+    })
+    await user.click(screen.getByTestId('create-agent-submit'))
+
+    await waitFor(() => {
+      expect(mockCreateSession).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'claude-sonnet-4-6' }),
+      )
+    })
+  })
+
+  it('submits the picked model when the user overrides the carried one', async () => {
+    mockSignupHandoff = { prompt: 'hello', model: 'claude-opus-5' }
+    const user = userEvent.setup()
+    renderForm()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 5')
+    })
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    await user.click(await screen.findByTestId('model-pinned-claude-sonnet-4-6'))
+    await waitFor(() => {
+      expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6')
+    })
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByTestId('create-agent-submit'))
+
+    await waitFor(() => {
+      expect(mockCreateSession).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'claude-sonnet-4-6' }),
+      )
+    })
+  })
+
+  it('shows the default model in the picker when the carried model is unknown', async () => {
+    mockSignupHandoff = { prompt: 'hello', model: 'kimi-k2' }
+    renderForm()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('create-agent-prompt')).toHaveTextContent('hello')
+    })
+    // 'opus' resolves through the catalog to its latest for display, which is
+    // what the unchanged fallback puts on the wire.
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 5')
   })
 
   it('row5: prefill with warm-start enabled does not create an agent until edit', async () => {
