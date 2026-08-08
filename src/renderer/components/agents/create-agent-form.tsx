@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
@@ -22,7 +22,11 @@ import { deriveAgentName } from '@renderer/lib/derive-agent-name'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
-import { findCatalogModel } from '@renderer/components/messages/composer-options'
+import {
+  ComposerOptions,
+  findCatalogModel,
+  useComposerOptions,
+} from '@renderer/components/messages/composer-options'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
@@ -40,6 +44,9 @@ import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
  * installs this handoff targets.
  */
 const HANDOFF_TEMPLATE_WAIT_MS = 10000
+
+/** The create flow's own default — no agent exists yet to supply one. */
+const DEFAULT_MODEL = 'opus'
 
 export interface CreateAgentFormProps {
   /** Fires after an agent is successfully created (via any path). Parent uses this to close the overlay/wizard. */
@@ -102,6 +109,27 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
   }, [])
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
   const { data: discoverableAgents, isError: discoverableAgentsFailed } = useDiscoverableAgents()
+
+  const activeProvider = modelSettings?.llmProvider
+  const catalog = useMemo(
+    () => modelSettings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
+    [modelSettings, activeProvider],
+  )
+  // Seed from the carried marketing-handoff model only when the effective
+  // catalog knows it — an unknown versioned id would be passed to the SDK as a
+  // pin and fail at the API. Resolved as the catalog lands: it's a separate
+  // query from settings and may not have answered at mount, so the picker seeds
+  // once it does.
+  const handoffSeedModel = useMemo(
+    () => (handoffModel ? findCatalogModel(handoffModel, catalog)?.id : undefined),
+    [handoffModel, catalog],
+  )
+  const composerOptions = useComposerOptions({
+    initialModel: handoffSeedModel,
+    // No agent exists yet, so there are no per-agent defaults to fall back to;
+    // this pins the create flow's own default above the app-wide one.
+    agentDefaultModel: DEFAULT_MODEL,
+  })
 
   // Warm-precreated Untitled agent; deleted on abandon unless submit consumes it.
   const warmSlugOwnedRef = useRef<string | null>(null)
@@ -176,17 +204,14 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
           ? await updateAgent.mutateAsync({ slug: warmSlug, name: agentName })
           : await createAgent.mutateAsync({ name: agentName })
         if (warmSlug) warmConsumedRef.current = true
-        const activeProvider = modelSettings?.llmProvider
-        const catalog = modelSettings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? []
-        // Carried marketing-handoff model, only when the effective catalog knows it —
-        // an unknown versioned id would be passed to the SDK as a pin and fail at the
-        // API. Resolved at submit time: the catalog is a separate query from settings
-        // and may not exist at mount. Falls back to today's behavior.
-        const model = (handoffModel && findCatalogModel(handoffModel, catalog)?.id) || 'opus'
         const session = await createSession.mutateAsync({
           agentSlug: newAgent.slug,
           message: content,
-          model,
+          ...composerOptions.toRuntimeOptions(),
+          // An untouched model is omitted from the runtime options, but a brand
+          // new agent has no stored default for the server to resolve against —
+          // always send what the picker is showing.
+          model: composerOptions.model ?? DEFAULT_MODEL,
         })
         track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.displaySlug, sessionId: session.id } })
@@ -199,7 +224,7 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
       } finally {
         setIsSubmitting(false)
       }
-    }, [createAgent, updateAgent, createSession, navigate, track, onAgentCreated, handoffModel, modelSettings]),
+    }, [createAgent, updateAgent, createSession, navigate, track, onAgentCreated, composerOptions]),
   })
 
   const { awaitWarmStart, noteProgrammaticChange } = useWarmStartOnType({
@@ -325,11 +350,14 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
             dataTestId="create-agent-prompt"
             textareaClassName="min-h-[60px]"
             leftActions={(
-              <AttachmentPicker
-                onFileSelect={composer.handleFileSelect}
-                onFolderSelect={composer.handleFolderSelect}
-                disabled={isDisabled}
-              />
+              <>
+                <AttachmentPicker
+                  onFileSelect={composer.handleFileSelect}
+                  onFolderSelect={composer.handleFolderSelect}
+                  disabled={isDisabled}
+                />
+                <ComposerOptions state={composerOptions} disabled={isDisabled} />
+              </>
             )}
             rightActions={(
               <>
