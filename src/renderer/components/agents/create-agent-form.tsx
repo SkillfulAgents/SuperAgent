@@ -24,20 +24,33 @@ import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { findCatalogModel } from '@renderer/components/messages/composer-options'
 import { captureRendererException } from '@renderer/lib/error-reporting'
+import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
+import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
+
+/**
+ * Ceiling, not a delay: the offer resolves the instant the discoverable list
+ * lands, and this only fires when nothing ever arrives. A cold skillset sync
+ * measured ~1.4s on a fast connection, so the margin here is for slow links.
+ *
+ * Erring long is close to free — a larger value never delays the happy path,
+ * it only extends how long the composer stays unfocused in the already-broken
+ * case. Erring short is not: the offer would settle before a slow list arrives
+ * and no dialog would ever appear, silently, for exactly the cold first-run
+ * installs this handoff targets.
+ */
+const HANDOFF_TEMPLATE_WAIT_MS = 10000
 
 export interface CreateAgentFormProps {
   /** Fires after an agent is successfully created (via any path). Parent uses this to close the overlay/wizard. */
   onAgentCreated?: () => Promise<void> | void
-  /** Pre-selects a template and jumps straight to the "name the agent" step. */
-  initialTemplate?: ApiDiscoverableAgent | null
   /** Form max width in the layout. Defaults to no cap (wrapper decides). */
   className?: string
   /** When true, play the reverse (exit) animation on the same items. */
   exiting?: boolean
 }
 
-export function CreateAgentForm({ onAgentCreated, initialTemplate, className, exiting = false }: CreateAgentFormProps) {
+export function CreateAgentForm({ onAgentCreated, className, exiting = false }: CreateAgentFormProps) {
   // Staggered reveal: items start hidden on first render, flip to visible on the next frame,
   // then flip back to hidden when `exiting` becomes true. Reverse the stagger on exit.
   const [revealed, setRevealed] = useState(false)
@@ -66,6 +79,29 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
   const { signupHandoff, setSignupHandoff } = useNavTransient()
   const { data: modelSettings } = useModelSettings()
   const [handoffModel, setHandoffModel] = useState<string | null>(null)
+  // Arm synchronously so mount-time composer autoFocus sees an armed slug
+  // (MarkdownComposerEditor focuses once on create; a later autoFocus=false is a no-op).
+  // Prompt-wins matches the take effect: a prompt in the one-shot never arms the offer.
+  const [handoffTemplateSlug, setHandoffTemplateSlug] = useState<string | null>(() =>
+    signupHandoff && !signupHandoff.prompt ? (signupHandoff.template_slug ?? null) : null,
+  )
+  const composerTouchedRef = useRef(false)
+  // Sync forfeit: ref closes the paint→effect gap so an aid click cannot lose to a
+  // resolve effect still holding the armed slug from the prior commit.
+  const forfeitHandoffTemplate = useCallback(() => {
+    composerTouchedRef.current = true
+    setHandoffTemplateSlug(null)
+  }, [])
+  // The editor reads autoFocus ONCE at create, so a slug armed on mount suppresses
+  // focus for good — flipping the prop back to true later does nothing. Every path
+  // that disarms without opening the dialog has to hand focus back by hand.
+  // Not called from forfeitHandoffTemplate: typing already holds focus, and an
+  // aid/mic forfeit is the user moving focus somewhere else on purpose.
+  const focusComposer = useCallback(() => {
+    setTimeout(() => textareaRef.current?.focus(), 0)
+  }, [])
+  const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
+  const { data: discoverableAgents, isError: discoverableAgentsFailed } = useDiscoverableAgents()
 
   // Warm-precreated Untitled agent; deleted on abandon unless submit consumes it.
   const warmSlugOwnedRef = useRef<string | null>(null)
@@ -123,6 +159,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
 
   const composer = useMessageComposer({
     agentSlug: '',
+    onVoiceTranscript: forfeitHandoffTemplate,
     // Attachments/uploads aren't available in the create-agent flow — the agent
     // doesn't exist yet. These throw if invoked, but AttachmentPicker doesn't
     // expose them in this layout so they're unreachable in practice.
@@ -185,8 +222,42 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
       setTimeout(() => textareaRef.current?.focus(), 0)
     }
     if (signupHandoff.model) setHandoffModel(signupHandoff.model)
+    // PROMPT WINS AT ARM TIME:
+    setHandoffTemplateSlug(signupHandoff.prompt ? null : signupHandoff.template_slug ?? null)
     setSignupHandoff(null) // one-shot
   }, [signupHandoff, setSignupHandoff, composer, noteProgrammaticChange])
+
+  useEffect(() => {
+    if (!handoffTemplateSlug || composerTouchedRef.current) return
+    // Fail-open: a broken list must not leave the offer armed forever.
+    if (discoverableAgentsFailed) {
+      setHandoffTemplateSlug(null)
+      focusComposer()
+      return
+    }
+    if (!discoverableAgents || discoverableAgents.length === 0) {
+      // Bounded wait. useDiscoverableAgents is `enabled: hasSkillsets`, so with no
+      // skillsets the query never runs: data stays undefined and isError stays false
+      // forever, and an unbounded wait would strand the composer unfocused. The timer
+      // also caps how late an offer may appear on a slow list — a dialog opening
+      // minutes after landing reads as a glitch, not an offer.
+      const timer = setTimeout(() => {
+        setHandoffTemplateSlug(null)
+        focusComposer()
+      }, HANDOFF_TEMPLATE_WAIT_MS)
+      return () => clearTimeout(timer)
+    }
+    const match = discoverableAgents.find(
+      (a) => a.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && slugFromAgentPath(a.path) === handoffTemplateSlug,
+    )
+    if (match) {
+      setTemplateToInstall(match)
+      setHandoffTemplateSlug(null)
+    } else {
+      setHandoffTemplateSlug(null) // settle: populated + no match
+      focusComposer()
+    }
+  }, [discoverableAgents, discoverableAgentsFailed, handoffTemplateSlug, focusComposer])
 
   // Abandon path: leave the create form without consuming the warm agent.
   // Ref + empty deps so mutation identity churn doesn't re-bind cleanup mid-edit.
@@ -201,12 +272,6 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
       void discardWarmAgentRef.current()
     }
   }, [])
-
-  const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(initialTemplate ?? null)
-
-  useEffect(() => {
-    if (initialTemplate) setTemplateToInstall(initialTemplate)
-  }, [initialTemplate])
 
   const handleVoiceResult = useCallback(
     ({ prompt }: { name: string; prompt: string }) => {
@@ -247,13 +312,16 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
             attachments={composer.attachments}
             onRemoveAttachment={composer.removeAttachment}
             value={composer.message}
-            onChange={composer.setMessage}
+            onChange={(value) => {
+              forfeitHandoffTemplate()
+              composer.setMessage(value)
+            }}
             onKeyDown={handleKeyDown}
             onPaste={composer.handlePaste}
             placeholder={displayedPlaceholder}
             disabled={isDisabled}
             rows={3}
-            autoFocus
+            autoFocus={!templateToInstall && !handoffTemplateSlug}
             dataTestId="create-agent-prompt"
             textareaClassName="min-h-[60px]"
             leftActions={(
@@ -292,12 +360,14 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
           <AgentCreationAids
             onVoiceResult={handleVoiceResult}
             onImportComplete={handleImportComplete}
+            onAidOpened={forfeitHandoffTemplate}
           />
         </div>
       </div>
 
       <TemplateInstallDialog
         template={templateToInstall}
+        handoffOrigin
         onClose={() => setTemplateToInstall(null)}
         onInstalled={(agent, { hasOnboarding }) => finishCreatedAgent(agent, 'skillset', hasOnboarding)}
       />

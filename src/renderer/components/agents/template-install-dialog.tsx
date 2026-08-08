@@ -18,6 +18,8 @@ interface TemplateInstallDialogProps {
   onClose: () => void
   /** Called after the agent is fully installed. */
   onInstalled: (agent: ApiAgent, meta: { hasOnboarding?: boolean }) => void | Promise<void>
+  /** Signup handoff: softer name-field focus (no autofocus steal). */
+  handoffOrigin?: boolean
 }
 
 /**
@@ -25,7 +27,7 @@ interface TemplateInstallDialogProps {
  * on success — callers decide what to do with the new agent (select it,
  * track, kick off onboarding, etc).
  */
-export function TemplateInstallDialog({ template, onClose, onInstalled }: TemplateInstallDialogProps) {
+export function TemplateInstallDialog({ template, onClose, onInstalled, handoffOrigin }: TemplateInstallDialogProps) {
   const [name, setName] = useState('')
   const install = useInstallAgentFromSkillset()
 
@@ -50,8 +52,10 @@ export function TemplateInstallDialog({ template, onClose, onInstalled }: Templa
           agentVersion: template.version,
         })
 
-        await onInstalled(agent, { hasOnboarding: agent.hasOnboarding })
+        // Close before onInstalled — that path may open the onboarding
+        // "Setting up your agent..." dialog; stacking both looks broken.
         onClose()
+        await onInstalled(agent, { hasOnboarding: agent.hasOnboarding })
       } catch (error) {
         console.error('Failed to install agent from skillset:', error)
       }
@@ -73,7 +77,7 @@ export function TemplateInstallDialog({ template, onClose, onInstalled }: Templa
             placeholder="Agent name"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            autoFocus
+            autoFocus={!handoffOrigin}
             disabled={install.isPending}
           />
           {install.error && (

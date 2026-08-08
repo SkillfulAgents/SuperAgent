@@ -78,6 +78,44 @@ describe('SignupHandoffConsumer', () => {
     })
   })
 
+  it('moves template_slug into the one-shot and strips it alongside prompt and model', async () => {
+    const router = makeRouter('/?prompt=hello&model=claude-opus-5&template_slug=my-bot')
+    const { getByTestId } = render(
+      <NavTransientProvider>
+        <RouterProvider router={router} />
+      </NavTransientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(JSON.parse(getByTestId('handoff').textContent ?? 'null')).toEqual({
+        prompt: 'hello',
+        model: 'claude-opus-5',
+        template_slug: 'my-bot',
+      })
+    })
+    await waitFor(() => {
+      const search = router.state.location.search as Record<string, unknown>
+      expect(search.prompt).toBeUndefined()
+      expect(search.model).toBeUndefined()
+      expect(search.template_slug).toBeUndefined()
+    })
+  })
+
+  it('slug-only URL moves template_slug into the one-shot', async () => {
+    const router = makeRouter('/?template_slug=research-agent')
+    const { getByTestId } = render(
+      <NavTransientProvider>
+        <RouterProvider router={router} />
+      </NavTransientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(JSON.parse(getByTestId('handoff').textContent ?? 'null')).toEqual({
+        template_slug: 'research-agent',
+      })
+    })
+  })
+
   it('is a no-op when neither handoff param is present', async () => {
     const router = makeRouter('/?view=cards')
     const { getByTestId } = render(

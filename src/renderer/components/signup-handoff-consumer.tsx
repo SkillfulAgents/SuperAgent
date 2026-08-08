@@ -17,19 +17,24 @@ export function SignupHandoffConsumer() {
   const navigate = useNavigate()
   const { setSignupHandoff } = useNavTransient()
 
-  const { prompt, model } = lenient(homeSearchSchema)(search)
+  const { prompt, model, template_slug } = lenient(homeSearchSchema)(search)
   useEffect(() => {
-    if (!prompt && !model) return
-    setSignupHandoff({ prompt, model })
+    if (!prompt && !model && !template_slug) return
+    setSignupHandoff({ prompt, model, template_slug })
     // Explicit '/' — the params live on homeSearchSchema, registered only on the
     // home route (routes.ts:57); the sibling search mutation uses to: '/' too
     // (home-page.tsx:922).
     void navigate({
       to: '/',
-      search: (prev: Record<string, unknown>) => ({ ...prev, prompt: undefined, model: undefined }),
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        prompt: undefined,
+        model: undefined,
+        template_slug: undefined,
+      }),
       replace: true,
     })
-  }, [prompt, model, setSignupHandoff, navigate])
+  }, [prompt, model, template_slug, setSignupHandoff, navigate])
 
   return null
 }

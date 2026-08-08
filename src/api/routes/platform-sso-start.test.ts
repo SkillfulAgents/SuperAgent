@@ -103,13 +103,14 @@ describe('GET /auth/platform/start', () => {
     mockGetSession.mockResolvedValue({ session: { id: 's1' }, user: { id: 'u1' } })
     const prompt = encodeURIComponent('build & ship https://x.com')
     const res = await createApp().request(
-      `/auth/platform/start?return_to=%2F&prompt=${prompt}&model=claude-opus-5`,
+      `/auth/platform/start?return_to=%2F&prompt=${prompt}&model=claude-opus-5&template_slug=my-template`,
     )
     expect(res.status).toBe(302)
     const location = new URL(res.headers.get('location')!, 'http://internal')
     expect(location.pathname).toBe('/')
     expect(location.searchParams.get('prompt')).toBe('build & ship https://x.com')
     expect(location.searchParams.get('model')).toBe('claude-opus-5')
+    expect(location.searchParams.get('template_slug')).toBe('my-template')
   })
 
   it('cold path passes decorated return_to as callbackURL', async () => {
@@ -119,12 +120,12 @@ describe('GET /auth/platform/start', () => {
       response: { url: 'https://auth.example.com/authorize?state=1', redirect: true },
     })
     await createApp().request(
-      '/auth/platform/start?return_to=%2F&prompt=hello&model=gpt-5.6-luna',
+      '/auth/platform/start?return_to=%2F&prompt=hello&model=gpt-5.6-luna&template_slug=research-bot',
     )
     expect(mockSignInWithOAuth2).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.objectContaining({
-          callbackURL: '/?prompt=hello&model=gpt-5.6-luna',
+          callbackURL: '/?prompt=hello&model=gpt-5.6-luna&template_slug=research-bot',
           errorCallbackURL: '/',
         }),
       }),
@@ -135,17 +136,29 @@ describe('GET /auth/platform/start', () => {
     mockGetSession.mockResolvedValue({ session: { id: 's1' }, user: { id: 'u1' } })
     const longPrompt = 'x'.repeat(500)
     const res = await createApp().request(
-      `/auth/platform/start?return_to=%2F&prompt=${encodeURIComponent(longPrompt)}&model=not%20valid`,
+      `/auth/platform/start?return_to=%2F&prompt=${encodeURIComponent(longPrompt)}&model=not%20valid&template_slug=${encodeURIComponent('bad slug')}`,
     )
     const location = new URL(res.headers.get('location')!, 'http://internal')
     expect(location.searchParams.get('prompt')).toHaveLength(400)
     expect(location.searchParams.get('model')).toBeNull()
+    expect(location.searchParams.get('template_slug')).toBeNull()
+  })
+
+  it('drops a junk template_slug while a valid prompt survives', async () => {
+    mockGetSession.mockResolvedValue({ session: { id: 's1' }, user: { id: 'u1' } })
+    const res = await createApp().request(
+      `/auth/platform/start?return_to=%2F&prompt=hello&model=opus&template_slug=${encodeURIComponent('bad slug')}`,
+    )
+    const location = new URL(res.headers.get('location')!, 'http://internal')
+    expect(location.searchParams.get('prompt')).toBe('hello')
+    expect(location.searchParams.get('model')).toBe('opus')
+    expect(location.searchParams.get('template_slug')).toBeNull()
   })
 
   it('preserves existing return_to query and fragment when appending handoff', async () => {
     mockGetSession.mockResolvedValue({ session: { id: 's1' }, user: { id: 'u1' } })
     const res = await createApp().request(
-      `/auth/platform/start?return_to=${encodeURIComponent('/agents?tab=1#panel')}&prompt=hi&model=opus`,
+      `/auth/platform/start?return_to=${encodeURIComponent('/agents?tab=1#panel')}&prompt=hi&model=opus&template_slug=foo.bar`,
     )
     const location = res.headers.get('location')!
     expect(location.startsWith('/agents?')).toBe(true)
@@ -153,17 +166,19 @@ describe('GET /auth/platform/start', () => {
     expect(url.searchParams.get('tab')).toBe('1')
     expect(url.searchParams.get('prompt')).toBe('hi')
     expect(url.searchParams.get('model')).toBe('opus')
+    expect(url.searchParams.get('template_slug')).toBe('foo.bar')
     expect(url.hash).toBe('#panel')
   })
 
   it('keeps return_to sanitizing behavior unchanged for open redirects', async () => {
     mockGetSession.mockResolvedValue({ session: { id: 's1' }, user: { id: 'u1' } })
     const res = await createApp().request(
-      '/auth/platform/start?return_to=https://evil.example&prompt=hello&model=opus',
+      '/auth/platform/start?return_to=https://evil.example&prompt=hello&model=opus&template_slug=valid-slug',
     )
     const location = new URL(res.headers.get('location')!, 'http://internal')
     expect(location.pathname).toBe('/')
     expect(location.searchParams.get('prompt')).toBe('hello')
     expect(location.searchParams.get('model')).toBe('opus')
+    expect(location.searchParams.get('template_slug')).toBe('valid-slug')
   })
 })
