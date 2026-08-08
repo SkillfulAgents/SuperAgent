@@ -145,6 +145,12 @@ test.describe('home connections graph', () => {
   })
 
   test('drawing an edge between agents creates the invoke permission; deleting it revokes', async ({ page, request }, testInfo) => {
+    // This case deliberately retries imprecise canvas gestures while sibling
+    // workers keep reshaping the shared graph. The bounded retry paths can
+    // legitimately exceed Playwright's 30s default on CI; all three attempts in
+    // the observed failure exhausted that global budget at different actions.
+    test.slow()
+
     const source = await createAgent(request, uniqueName(testInfo, 'Graph Draw Src'))
     const target = await createAgent(request, uniqueName(testInfo, 'Graph Draw Dst'))
 
