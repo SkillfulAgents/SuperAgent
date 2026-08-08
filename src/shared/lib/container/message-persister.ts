@@ -1,4 +1,5 @@
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
+import { mergeCanonicalSlashCommands } from './slash-commands'
 import type { SessionUsage, SessionActivity } from '@shared/lib/types/agent'
 import type { AskUserQuestionInput } from '@shared/lib/tool-definitions/ask-user-question'
 import type { RequestSecretInput } from '@shared/lib/tool-definitions/request-secret'
@@ -65,6 +66,7 @@ import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -76,6 +78,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
+import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { SubagentCapture } from './subagent-capture'
 import * as path from 'path'
@@ -109,6 +112,8 @@ interface StreamingState {
   currentToolUse: { id: string; name: string } | null
   currentToolInput: string // Accumulated partial JSON input for current tool
   currentThinking?: boolean // True while an extended-thinking content block is streaming
+  currentAssistantMessageId?: string | null // SDK message id for stable live↔persisted block identity
+  currentThinkingBlockIndex?: number | null // Content index within currentAssistantMessageId
   isActive: boolean // True from user message until result received
   isInterrupted: boolean // True after user interrupts, prevents race conditions
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
@@ -445,7 +450,7 @@ class MessagePersister {
       lastAssistantUsage: null,
       completedSubagentIds: new Set(),
       activeSubagents: new Map(),
-      slashCommands: [],
+      slashCommands: prior?.slashCommands ?? [],
       isAwaitingInput: priorIsAwaitingInput,
       settledInputRequests: priorSettledInputRequests,
       cancelledCapabilityReviews: new Set(),
@@ -1037,6 +1042,8 @@ class MessagePersister {
     // event) must not wedge the next turn's label. State is reused across turns.
     state.isCompacting = false
     state.currentThinking = false
+    state.currentAssistantMessageId = null
+    state.currentThinkingBlockIndex = null
     state.lastApiErrorCode = null // Clear previous API error on new message
     // Clear the previous turn's result subtype so a late idle from an
     // already-finished (or interrupted) run can't fire a stale "success"
@@ -1407,6 +1414,20 @@ class MessagePersister {
       return
     }
 
+    // Complete top-level frames correspond to durable parent-transcript writes.
+    // Keep the warm per-agent summary current without restatting every sibling.
+    // Replayed catch-up frames are excluded: SDK frames carry no timestamp on
+    // the wire, so the host stamps arrival time, and a late-join replay to an
+    // idle session would masquerade as fresh activity — the directory-mtime and
+    // TTL reconciliation already repair anything a missed turn-end left behind.
+    if (
+      state.agentSlug &&
+      !content.replayed &&
+      (content.type === 'assistant' || content.type === 'user' || content.type === 'result')
+    ) {
+      recordSessionActivity(state.agentSlug, sessionId, message.timestamp)
+    }
+
     // Container late-join catch-up: the runtime replays the last turn's
     // terminal frames (informational/result/idle, marked `replayed: true`)
     // when a WebSocket attaches after the turn already ended — e.g. a
@@ -1583,13 +1604,13 @@ class MessagePersister {
       case 'system':
         // System messages (init, etc.)
         if (content.subtype === 'init') {
-          // Capture slash commands from init event as fallback (e.g. resumed sessions)
-          if (state.slashCommands.length === 0 && Array.isArray(content.slash_commands)) {
-            state.slashCommands = content.slash_commands.map((name: string) => ({
-              name,
-              description: '',
-              argumentHint: '',
-            }))
+          // The init strings are the executable names. Reconcile even when we
+          // already have rich/persisted commands so display titles cannot win.
+          if (Array.isArray(content.slash_commands)) {
+            state.slashCommands = mergeCanonicalSlashCommands(
+              content.slash_commands.filter((name: unknown): name is string => typeof name === 'string'),
+              state.slashCommands,
+            )
           }
           this.broadcastToSSE(sessionId, {
             type: 'stream_start',
@@ -2738,7 +2759,7 @@ class MessagePersister {
   // Handle stream events for SSE broadcasting (not for persistence)
   private handleStreamEvent(
     sessionId: string,
-    event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string; thinking?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
+    event: { type: string; index?: number; message?: { id?: string }; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string; thinking?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
     state: StreamingState
   ): void {
     switch (event.type) {
@@ -2747,6 +2768,8 @@ class MessagePersister {
         state.isStreaming = false // text hasn't started; set true at the first text token below
         state.currentToolUse = null
         state.currentThinking = false
+        state.currentAssistantMessageId = event.message?.id ?? null
+        state.currentThinkingBlockIndex = null
         state.isRetrying = false // the response is flowing now, so any retry resolved
         // 'streaming' is deferred to the first text token (set above) so a message that
         // opens with a tool call stays 'working' instead of flipping streaming→working.
@@ -2772,7 +2795,14 @@ class MessagePersister {
           // Reasoning text follows via thinking_delta (the agent requests
           // `display: 'summarized'`; without it newer models omit the text).
           state.currentThinking = true
-          this.broadcastToSSE(sessionId, { type: 'thinking_start' })
+          state.currentThinkingBlockIndex = Number.isInteger(event.index) ? event.index! : null
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_start',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
         }
         break
 
@@ -2787,9 +2817,16 @@ class MessagePersister {
           // message_start so a tool-first message never flips streaming→working).
           state.isStreaming = true
         } else if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
+          // A reconnect can miss content_block_start while retaining message_start;
+          // recover the index from the delta itself when available.
+          if (Number.isInteger(event.index)) state.currentThinkingBlockIndex = event.index!
           // Stream summarized reasoning text so the UI can accumulate it for "View thinking"
           this.broadcastToSSE(sessionId, {
             type: 'thinking_delta',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
             text: event.delta.thinking,
           })
         } else if (event.delta?.type === 'input_json_delta') {
@@ -2812,7 +2849,14 @@ class MessagePersister {
         // Thinking block finished streaming — flip back to "Working"
         if (state.currentThinking) {
           state.currentThinking = false
-          this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_stop',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
+          state.currentThinkingBlockIndex = null
         }
         // Tool use block finished streaming
         if (state.currentToolUse) {
@@ -3026,8 +3070,16 @@ class MessagePersister {
         // Defensive: ensure thinking state is cleared if a stop was missed
         if (state.currentThinking) {
           state.currentThinking = false
-          this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_stop',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
         }
+        state.currentAssistantMessageId = null
+        state.currentThinkingBlockIndex = null
         break
     }
   }

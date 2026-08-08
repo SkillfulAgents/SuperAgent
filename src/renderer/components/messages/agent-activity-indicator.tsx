@@ -9,8 +9,8 @@ import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-b
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import { isTurnStartingUserMessage } from './pending-message'
 import { cn } from '@shared/lib/utils'
-import { AlertTriangle, Monitor, X } from 'lucide-react'
-import { useCallback, useMemo, useState } from 'react'
+import { AlertTriangle, ChevronDown, Monitor, X } from 'lucide-react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import { deriveTaskList, Todo } from '@shared/lib/utils/derive-task-list'
 
@@ -58,6 +58,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
   const [showAllTodos, setShowAllTodos] = useState(false)
+  const [isCollapsed, setIsCollapsed] = useState(false)
 
   // Non-null only for a platform billing 402 the workspace can act on (see hook).
   const billingUrl = usePlatformBillingUrl(error ?? '')
@@ -248,6 +249,21 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     [messages]
   )
 
+  const visibleBackgroundTasks = backgroundTasks.filter((task) => !task.isSubagent)
+  const backgroundWorkflowCount = visibleBackgroundTasks.filter((task) => task.isWorkflow).length
+  const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount
+  const activeSubagentCount = subagentItems.filter((item) => item.status === 'running').length
+  const pendingTaskCount = todos?.filter((todo) => todo.status !== 'completed').length ?? 0
+  const hasExpandableDetails = subagentItems.length > 0
+    || visibleBackgroundTasks.length > 0
+    || pendingTaskCount > 0
+  const collapsedSummary = [
+    formatActivityCount(backgroundProcessCount, 'background process', 'background processes'),
+    formatActivityCount(backgroundWorkflowCount, 'background workflow', 'background workflows'),
+    formatActivityCount(activeSubagentCount, 'subagent', 'subagents'),
+    formatActivityCount(pendingTaskCount, 'pending task', 'pending tasks'),
+  ].filter(Boolean).join(', ')
+
   // Show error if present
   if (error) {
     const isProviderError = apiErrorCode != null && PROVIDER_ERROR_CODES.has(apiErrorCode)
@@ -258,7 +274,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         ) : isProviderError ? (
           <ProviderErrorCard message={error} data-testid="provider-error-card" />
         ) : (
-          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 select-text" data-testid="error-card">
+          <div className="rounded-lg border border-destructive/50 bg-red-50 p-3 select-text dark:bg-red-950" data-testid="error-card">
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-destructive" />
               <span className="text-sm font-medium text-destructive">Error</span>
@@ -289,13 +305,41 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
           : (activeItem?.activeForm || 'Working...')
 
   return (
-    <div className="mx-auto -mb-5 w-full max-w-[740px] px-4">
+    <div className={cn(
+      'mx-auto w-full max-w-[740px] px-4',
+      isAwaitingInput ? 'mb-2' : '-mb-5',
+    )}>
       {/* Capped and scrolled in place: a long action list must not grow the
           card until it pushes the chat history off screen. */}
-      <div className="max-h-[30vh] overflow-y-auto rounded-t-2xl border border-b-0 bg-muted/50 px-3 pt-3 pb-8" data-testid="activity-indicator">
+      <div
+        className={cn(
+          'relative max-h-[30vh] overflow-y-auto border border-border/70 bg-background/85 px-3 pt-3 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]',
+          isAwaitingInput
+            ? 'rounded-2xl pb-3'
+            : 'rounded-t-2xl border-b-0 pb-8',
+        )}
+        data-testid="activity-indicator"
+      >
+        {hasExpandableDetails && (
+          <button
+            type="button"
+            onClick={() => setIsCollapsed((collapsed) => !collapsed)}
+            className="absolute right-2.5 top-2.5 z-10 cursor-pointer rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-expanded={!isCollapsed}
+            aria-label={isCollapsed ? 'Expand activity details' : 'Collapse activity details'}
+          >
+            <ChevronDown
+              className={cn('h-4 w-4 transition-transform', !isCollapsed && 'rotate-180')}
+              aria-hidden="true"
+            />
+          </button>
+        )}
         {/* Header with pulsing indicator */}
-        <div className="flex items-center gap-2">
-          <span className="relative flex h-3 w-3">
+        <div
+          className={cn('flex min-w-0 items-center gap-2', hasExpandableDetails && 'pr-7')}
+          data-testid="activity-indicator-header"
+        >
+          <span className="relative flex h-3 w-3 shrink-0">
             <span className={cn(
               "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
               (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
@@ -305,9 +349,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
               (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
             )}></span>
           </span>
-          <span className="text-sm font-medium">{statusText}</span>
+          <span className="min-w-0 truncate text-sm font-medium">{statusText}</span>
           {computerUseApp && (
-            <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
+            <span className="inline-flex shrink-0 items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
               {computerUseAppIcon ? (
                 <img src={`data:image/png;base64,${computerUseAppIcon}`} alt="" className="h-4 w-4" />
               ) : (
@@ -328,7 +372,10 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
             </span>
           )}
           {elapsed && (
-            <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>
+            <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{elapsed}</span>
+          )}
+          {isCollapsed && collapsedSummary && (
+            <ActivitySummaryTicker text={collapsedSummary} />
           )}
         </div>
 
@@ -336,7 +383,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
             (see ThinkingBlockItem) — only the "Thinking..." status shows here. */}
 
         {/* Active subagents */}
-        {subagentItems.length > 0 && (
+        {!isCollapsed && subagentItems.length > 0 && (
           <ul className="mt-2 space-y-1 text-sm pl-5">
             {subagentItems.map((item) => (
               <li key={item.id} className="flex flex-col gap-0.5">
@@ -374,12 +421,12 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         {/* Active background processes. Background subagents are excluded: they
             already render as named subagent rows above, and counting them here
             would show the same work twice. */}
-        {backgroundTasks.some((t) => !t.isSubagent) && (
-          <BackgroundTasksSection tasks={backgroundTasks.filter((t) => !t.isSubagent)} />
+        {!isCollapsed && visibleBackgroundTasks.length > 0 && (
+          <BackgroundTasksSection tasks={visibleBackgroundTasks} />
         )}
 
         {/* Todo list if available and at least one item is not completed */}
-        {todos && todos.length > 0 && todos.some((t) => t.status !== 'completed') && (() => {
+        {!isCollapsed && todos && todos.length > 0 && pendingTaskCount > 0 && (() => {
           const MAX_VISIBLE = 5
           const needsTruncation = todos.length > MAX_VISIBLE && !showAllTodos
 
@@ -452,6 +499,68 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         })()}
       </div>
     </div>
+  )
+}
+
+function formatActivityCount(count: number, singular: string, plural: string): string {
+  if (count === 0) return ''
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+type ActivitySummaryTickerStyle = CSSProperties & {
+  '--activity-summary-ticker-distance': string
+  '--activity-summary-ticker-duration': string
+}
+
+function ActivitySummaryTicker({ text }: { text: string }) {
+  const viewportRef = useRef<HTMLSpanElement>(null)
+  const contentRef = useRef<HTMLSpanElement>(null)
+  const [scrollDistance, setScrollDistance] = useState(0)
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current
+    const content = contentRef.current
+    if (!viewport || !content) return
+
+    const measure = () => {
+      const nextDistance = Math.max(0, Math.ceil(content.scrollWidth - viewport.clientWidth))
+      setScrollDistance((currentDistance) => currentDistance === nextDistance ? currentDistance : nextDistance)
+    }
+
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(viewport)
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [text])
+
+  // The middle 64% of each animation leg is motion; the remaining time pauses
+  // at either end so the summary can be read before it pans and before it resets.
+  const durationSeconds = Math.max(5, scrollDistance / 20)
+  const style: ActivitySummaryTickerStyle = {
+    '--activity-summary-ticker-distance': `${scrollDistance}px`,
+    '--activity-summary-ticker-duration': `${Math.round(durationSeconds * 100) / 100}s`,
+  }
+
+  return (
+    <span
+      ref={viewportRef}
+      className="activity-summary-ticker min-w-0 flex-1 overflow-hidden whitespace-nowrap text-xs italic text-muted-foreground"
+      data-overflowing={scrollDistance > 0}
+      data-testid="activity-summary-ticker"
+      style={style}
+      title={text}
+    >
+      <span
+        ref={contentRef}
+        className="activity-summary-ticker-content block truncate"
+        data-activity-summary-ticker-content
+      >
+        {text}
+      </span>
+    </span>
   )
 }
 

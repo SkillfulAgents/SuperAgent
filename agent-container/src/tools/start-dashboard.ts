@@ -2,7 +2,11 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
-import { dashboardManager, ARTIFACTS_DIR } from '../dashboard-manager'
+import {
+  dashboardManager,
+  ARTIFACTS_DIR,
+  getDashboardValidationUrl,
+} from '../dashboard-manager'
 import { resizeScreenshot } from '../image-utils'
 import { lintDashboardDir, formatUrlFindings } from '../dashboard-url-lint'
 
@@ -27,9 +31,14 @@ The dashboard must exist at /workspace/artifacts/<slug>/ with a valid package.js
       const content: ToolContentBlock[] = []
 
       if (info.status === 'running') {
+        const validationUrl = getDashboardValidationUrl(
+          args.slug,
+          info.port,
+          info.upstreamPathMode,
+        )
         text += '\n\nThe dashboard is accessible to the user through the Gamut UI.'
         text +=
-          `\n\nFor interactive validation, open http://localhost:${info.port} with browser_open using location="container". This forces the bundled Chromium that can reach the dashboard's private container port.`
+          `\n\nFor interactive validation, open ${validationUrl} with browser_open using location="container". This forces the bundled Chromium that can reach the dashboard's private container port.`
 
         // Await screenshot so the agent can sanity-check rendering in the same
         // tool result. Best-effort: if capture fails we still return success.

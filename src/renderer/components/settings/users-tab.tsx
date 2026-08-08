@@ -20,6 +20,7 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import { authClient } from '@renderer/lib/auth-client'
 import { useUser } from '@renderer/context/user-context'
+import { usePublicAuthConfig } from '@renderer/hooks/use-public-auth-config'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2,
@@ -36,9 +37,11 @@ import {
   ChevronRight,
   ChevronsUpDown,
   KeyRound,
+  ExternalLink,
 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { openExternalUrl } from '@renderer/lib/open-external'
 import { InviteUserDialog } from './invite-user-dialog'
 import { ResetPasswordDialog } from './reset-password-dialog'
 
@@ -53,8 +56,16 @@ interface AdminUser {
   createdAt: Date
 }
 
-export function UsersTab() {
+interface UsersTabProps {
+  /** Same gate as AuthTab hideLocalAuthSections — not the invite URL. */
+  platformControlled?: boolean
+  /** Opens Platform Team for invite; may be undefined if base URL is missing. */
+  platformInviteHref?: string
+}
+
+export function UsersTab({ platformControlled = false, platformInviteHref }: UsersTabProps) {
   const { user: currentUser } = useUser()
+  const { config: authConfig, isLoading: authConfigLoading } = usePublicAuthConfig()
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -123,6 +134,7 @@ export function UsersTab() {
 
   const users = data?.users ?? []
   const adminCount = users.filter((u) => u.role === 'admin').length
+  const showPasswordManagement = !authConfigLoading && authConfig.allowLocalAuth
 
   const invalidateUsers = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['admin-users'] })
@@ -188,11 +200,33 @@ export function UsersTab() {
 
   return (
     <div className="space-y-4">
-      {/* Header with Invite button */}
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">Users</span>
-        <Button variant="outline" size="sm" onClick={() => setInviteOpen(true)}>
-          <UserPlus className="h-4 w-4 mr-1.5" />
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <span className="text-sm font-medium">Users</span>
+          {platformControlled ? (
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Invite members on Platform. Role, ban, and remove stay here.
+            </p>
+          ) : null}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          data-testid="users-invite-button"
+          disabled={platformControlled && !platformInviteHref}
+          onClick={() => {
+            if (platformControlled) {
+              if (platformInviteHref) void openExternalUrl(platformInviteHref)
+              return
+            }
+            setInviteOpen(true)
+          }}
+        >
+          {platformControlled ? (
+            <ExternalLink className="h-4 w-4 mr-1.5" />
+          ) : (
+            <UserPlus className="h-4 w-4 mr-1.5" />
+          )}
           Invite
         </Button>
       </div>
@@ -362,20 +396,22 @@ export function UsersTab() {
                           <Ban className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
                         </Button>
                       )}
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 w-6 p-0"
-                            onClick={() => setResetPasswordUser(user)}
-                            title="Reset password"
-                          >
-                            <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Reset password</TooltipContent>
-                      </Tooltip>
+                      {showPasswordManagement ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0"
+                              onClick={() => setResetPasswordUser(user)}
+                              title="Reset password"
+                            >
+                              <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Reset password</TooltipContent>
+                        </Tooltip>
+                      ) : null}
                       <Button
                         variant="ghost"
                         size="sm"
@@ -428,20 +464,22 @@ export function UsersTab() {
         </div>
       )}
 
-      {/* Invite Dialog */}
-      <InviteUserDialog
-        open={inviteOpen}
-        onOpenChange={setInviteOpen}
-        onInvited={invalidateUsers}
-      />
+      {!platformControlled ? (
+        <InviteUserDialog
+          open={inviteOpen}
+          onOpenChange={setInviteOpen}
+          onInvited={invalidateUsers}
+        />
+      ) : null}
 
-      {/* Reset Password Dialog */}
-      <ResetPasswordDialog
-        open={!!resetPasswordUser}
-        onOpenChange={(open) => !open && setResetPasswordUser(null)}
-        user={resetPasswordUser}
-        onReset={invalidateUsers}
-      />
+      {showPasswordManagement ? (
+        <ResetPasswordDialog
+          open={!!resetPasswordUser}
+          onOpenChange={(open) => !open && setResetPasswordUser(null)}
+          user={resetPasswordUser}
+          onReset={invalidateUsers}
+        />
+      ) : null}
 
       {/* Confirmation Dialog */}
       <AlertDialog open={!!confirmAction} onOpenChange={(open) => !open && setConfirmAction(null)}>

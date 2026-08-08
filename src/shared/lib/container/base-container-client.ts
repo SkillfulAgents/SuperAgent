@@ -30,6 +30,7 @@ import { resolveContainerModel, getContainerModelPromptHints } from './resolve-m
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { getOrCreateHostToken } from './host-token-store'
+import { getSubagentModelCatalog } from './subagent-model-catalog'
 
 const execAsync = promisify(exec)
 
@@ -625,11 +626,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     })
   }
 
-  async start(options?: StartOptions): Promise<void> {
+  async start(options?: StartOptions): Promise<ContainerInfo> {
     const info = await this.getInfo()
     if (info.status === 'running') {
       console.log(`Container ${this.getContainerName()} is already running on port ${info.port}`)
-      return
+      return info
     }
 
     addErrorBreadcrumb({ category: 'container', message: 'Starting container', data: { agentId: this.config.agentId } })
@@ -680,8 +681,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Bounded retry loop. Each recovery path makes exactly one attempt of
       // progress so the loop can't spin: dropping a mount shrinks `volumes`,
       // re-picking a port is capped by portRetries, and VM provisioning and
-      // image re-creation each run once. A fresh stop+rm precedes every
-      // attempt so we never double-start.
+      // image re-creation each run once. A fresh force-remove precedes every
+      // attempt so we never double-start, using one runtime process instead
+      // of a redundant stop followed by rm.
       const MAX_PORT_RETRIES = 3
       let portRetries = 0
       const triedPorts = new Set<number>([port])
@@ -690,8 +692,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       let stdout: string
       try {
         for (;;) {
-          await execWithPathSilent(`${runner} stop ${containerName}`)
-          await execWithPathSilent(`${runner} rm ${containerName}`)
+          await execWithPathSilent(`${runner} rm -f ${containerName}`)
 
           try {
             ({ stdout } = await execWithPath(buildRunCmd(), { timeoutMs: this.getRunExecTimeoutMs() }))
@@ -800,6 +801,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
 
       console.log(`Container ${containerName} is now running on port ${port}`)
+      return { status: 'running', port }
     } catch (error: any) {
       // Only capture if not already captured (health check errors are captured
       // above; image pull/build failures are captured at their throw site —
@@ -1109,6 +1111,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
     const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
     const modelPromptHints = getContainerModelPromptHints(resolvedModel)
+    const subagentModels = getSubagentModelCatalog(getActiveLlmProvider().id)
     // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
     // Resolved once here from global settings so every session-creation caller inherits it. One
     // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
@@ -1140,6 +1143,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           model: resolvedModel,
           browserModel: resolvedBrowserModel,
           dashboardBuilderModel: resolvedDashboardBuilderModel,
+          subagentModels,
           webSearchProvider,
           webFetchProvider,
           maxOutputTokens: options.maxOutputTokens,

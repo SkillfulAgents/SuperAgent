@@ -39,6 +39,14 @@ import {
   ContentBlock,
 } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
+import {
+  getSessionSummaryCacheSlot,
+  invalidateSessionSummaryCache,
+  recordSessionActivity,
+  removeSessionFromSummaryCache,
+  SESSION_SUMMARY_CACHE_TTL_MS,
+  type SessionSummaryCacheValue,
+} from './session-summary-cache'
 
 // Session transcripts and metadata live inside the agent workspace, which is
 // bind-mounted read/write into its container. They are therefore evidence that
@@ -150,20 +158,24 @@ async function claimSessionOwnership(agentSlug: string, sessionId: string): Prom
     }
     return false
   })
+  if (newlyClaimed) invalidateSessionSummaryCache(agentSlug)
   return newlyClaimed
 }
 
 async function releaseSessionOwnership(agentSlug: string, sessionIds: string[]): Promise<void> {
+  const released: string[] = []
   await mutateSessionOwnership((owners) => {
     let changed = false
     for (const sessionId of sessionIds) {
       if (owners[sessionId] === agentSlug) {
         delete owners[sessionId]
+        released.push(sessionId)
         changed = true
       }
     }
     return changed
   })
+  for (const sessionId of released) removeSessionFromSummaryCache(agentSlug, sessionId)
 }
 
 async function resolveSessionOwner(sessionId: string): Promise<string | null | undefined> {
@@ -549,9 +561,67 @@ function resolveSessionCreatedAt(
 // Session Operations
 // ============================================================================
 
+function summaryFromActivityMap(activityBySession: Map<string, number>): {
+  sessionIds: string[]
+  sessionCount: number
+  lastActivityAt: Date | null
+} {
+  const sessionIds = [...activityBySession.keys()]
+  let latestMs: number | null = null
+  for (const activityAtMs of activityBySession.values()) {
+    if (latestMs === null || activityAtMs > latestMs) latestMs = activityAtMs
+  }
+  return {
+    sessionIds,
+    sessionCount: sessionIds.length,
+    lastActivityAt: latestMs === null ? null : new Date(latestMs),
+  }
+}
+
+async function getSessionsDirectoryMtime(sessionsDir: string): Promise<number | null> {
+  try {
+    const stat = await fs.promises.stat(sessionsDir)
+    return stat.isDirectory() ? stat.mtimeMs : null
+  } catch {
+    // Preserve directoryExists()'s existing fail-soft behavior.
+    return null
+  }
+}
+
+async function buildSessionActivityMap(
+  agentSlug: string,
+  sessionsDir: string,
+  directoryMtimeMs: number | null,
+): Promise<Map<string, number>> {
+  if (directoryMtimeMs === null) return new Map()
+
+  const files = await fs.promises.readdir(sessionsDir)
+  const jsonlFiles = files.filter((file) => file.endsWith('.jsonl'))
+  const limit = pLimit(10)
+  const stats = await Promise.all(
+    jsonlFiles.map((file) => limit(async () => {
+      // A transcript deleted between readdir and stat (deleteSession racing a
+      // scan) just drops out of this build instead of failing the whole scan.
+      const stat = await fs.promises.stat(path.join(sessionsDir, file)).catch(() => null)
+      if (!stat) return null
+      const sessionId = path.basename(file, '.jsonl')
+      if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return null
+      return { sessionId, mtimeMs: stat.mtimeMs }
+    })),
+  )
+
+  const activityBySession = new Map<string, number>()
+  for (const entry of stats) {
+    if (entry) activityBySession.set(entry.sessionId, entry.mtimeMs)
+  }
+  return activityBySession
+}
+
 /**
  * Lightweight session summary from filesystem stats only (no JSONL parsing).
- * Returns session IDs, count, and latest activity time.
+ * Returns session IDs, count, and latest activity time. The first read (and
+ * structural/TTL reconciliation) stats every transcript; warm reads validate
+ * the directory with one stat and use stream-maintained per-session mtimes.
  */
 export async function getSessionSummary(agentSlug: string): Promise<{
   sessionIds: string[]
@@ -559,36 +629,63 @@ export async function getSessionSummary(agentSlug: string): Promise<{
   lastActivityAt: Date | null
 }> {
   const sessionsDir = getAgentSessionsDir(agentSlug)
-
-  if (!(await directoryExists(sessionsDir))) {
-    return { sessionIds: [], sessionCount: 0, lastActivityAt: null }
+  const slot = getSessionSummaryCacheSlot(sessionsDir)
+  const directoryMtimeMs = await getSessionsDirectoryMtime(sessionsDir)
+  const now = Date.now()
+  if (
+    slot.value &&
+    slot.value.directoryMtimeMs === directoryMtimeMs &&
+    now - slot.value.builtAtMs < SESSION_SUMMARY_CACHE_TTL_MS
+  ) {
+    return summaryFromActivityMap(slot.value.activityBySession)
   }
 
-  const files = await fs.promises.readdir(sessionsDir)
-  const jsonlFiles = files.filter((f) => f.endsWith('.jsonl'))
-
-  const limit = pLimit(10)
-  const stats = await Promise.all(
-    jsonlFiles.map((file) => limit(async () => {
-      const stat = await fs.promises.stat(path.join(sessionsDir, file))
-      const sessionId = path.basename(file, '.jsonl')
-      if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return null
-      return { sessionId, mtimeMs: stat.mtimeMs }
-    }))
-  )
-
-  let lastActivityAt: Date | null = null
-  const sessionIds: string[] = []
-  for (const entry of stats) {
-    if (!entry) continue
-    const { sessionId, mtimeMs } = entry
-    sessionIds.push(sessionId)
-    if (!lastActivityAt || mtimeMs > lastActivityAt.getTime()) {
-      lastActivityAt = new Date(mtimeMs)
+  if (slot.loading) {
+    const loaded = await slot.loading
+    if (
+      slot.value === loaded &&
+      loaded.directoryMtimeMs === directoryMtimeMs &&
+      Date.now() - loaded.builtAtMs < SESSION_SUMMARY_CACHE_TTL_MS
+    ) {
+      return summaryFromActivityMap(loaded.activityBySession)
     }
+    return getSessionSummary(agentSlug)
   }
 
-  return { sessionIds, sessionCount: sessionIds.length, lastActivityAt }
+  const revision = slot.revision
+  const loading = buildSessionActivityMap(agentSlug, sessionsDir, directoryMtimeMs)
+    .then((activityBySession): SessionSummaryCacheValue => {
+      if (slot.revision !== revision) {
+        if (slot.loading === loading) slot.loading = undefined
+        return { directoryMtimeMs, builtAtMs: Date.now(), revision, activityBySession }
+      }
+      for (const [sessionId, mutation] of slot.pending) {
+        if (mutation.deleted) {
+          activityBySession.delete(sessionId)
+        } else if (mutation.activityAtMs !== undefined && activityBySession.has(sessionId)) {
+          activityBySession.set(
+            sessionId,
+            Math.max(activityBySession.get(sessionId)!, mutation.activityAtMs),
+          )
+        }
+      }
+      slot.pending.clear()
+      const value = { directoryMtimeMs, builtAtMs: Date.now(), revision, activityBySession }
+      slot.value = value
+      // Clear the in-flight marker before awaiters resume. Any subsequent
+      // mutation can update the completed value directly and need not linger
+      // in the pending map until the next TTL rebuild.
+      if (slot.loading === loading) slot.loading = undefined
+      return value
+    })
+  slot.loading = loading
+  try {
+    const loaded = await loading
+    if (slot.value !== loaded) return getSessionSummary(agentSlug)
+    return summaryFromActivityMap(loaded.activityBySession)
+  } finally {
+    if (slot.loading === loading) slot.loading = undefined
+  }
 }
 
 /**
@@ -1082,6 +1179,7 @@ export async function removeMessage(
   // Write back
   const jsonl = filtered.map((e) => JSON.stringify(e)).join('\n') + (filtered.length > 0 ? '\n' : '')
   await writeFile(jsonlPath, jsonl)
+  recordSessionActivity(agentSlug, sessionId)
   return true
 }
 
@@ -1148,6 +1246,7 @@ export async function removeToolCall(
 
   const jsonl = filtered.map((e) => JSON.stringify(e)).join('\n') + (filtered.length > 0 ? '\n' : '')
   await writeFile(jsonlPath, jsonl)
+  recordSessionActivity(agentSlug, sessionId)
   return true
 }
 

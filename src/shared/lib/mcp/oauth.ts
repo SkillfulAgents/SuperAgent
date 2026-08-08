@@ -289,6 +289,9 @@ type PendingOAuthFlow = {
   // the winning redirect is the custom app scheme, this tells the callback route
   // how to hand the result back (see completeOAuthFlow's return).
   electron?: boolean
+  // The desktop app's deep-link scheme, kept on the flow because the callback
+  // may be served by a cloud deployment with no SUPERAGENT_PROTOCOL of its own.
+  desktopProtocol?: string
 }
 
 type OAuthIssuerValidationResult =
@@ -308,11 +311,18 @@ const pendingOAuthFlows = new Map<string, PendingOAuthFlow>()
 function flowDeliveryFlags(flow: PendingOAuthFlow): {
   electron: boolean
   redirectWasScheme: boolean
+  desktopProtocol?: string
 } {
   return {
     electron: flow.electron === true,
     redirectWasScheme: !/^https?:/i.test(flow.redirectUri),
+    desktopProtocol: flow.desktopProtocol,
   }
+}
+
+// The custom app scheme candidate (if any) names the desktop deep-link protocol.
+function desktopProtocolFromCandidates(redirectCandidates: string[]): string | undefined {
+  return redirectCandidates.find((c) => !/^https?:/i.test(c))?.split('://')[0]
 }
 
 function validateAuthorizationResponseIssuer(
@@ -352,7 +362,11 @@ function validateAuthorizationResponseIssuer(
 export function validateAndConsumeOAuthErrorResponse(
   state: string | null | undefined,
   iss: string | null | undefined,
-): OAuthIssuerValidationResult & { electron?: boolean; redirectWasScheme?: boolean } {
+): OAuthIssuerValidationResult & {
+  electron?: boolean
+  redirectWasScheme?: boolean
+  desktopProtocol?: string
+} {
   if (!state) {
     return {
       valid: false,
@@ -496,6 +510,7 @@ export async function initiateOAuthFlow(
     clientSecret,
     mcpId,
     electron,
+    desktopProtocol: desktopProtocolFromCandidates(redirectCandidates),
   })
 
   // Build authorization URL
@@ -610,6 +625,7 @@ export async function initiateNewServerOAuth(
     newServer: { name, url: mcpUrl },
     userId,
     electron,
+    desktopProtocol: desktopProtocolFromCandidates(redirectCandidates),
   })
 
   let authUrl: URL
@@ -652,7 +668,13 @@ export async function completeOAuthFlow(
   state: string,
   code: string,
   iss?: string | null,
-): Promise<{ success: boolean; mcpId?: string; electron?: boolean; redirectWasScheme?: boolean }> {
+): Promise<{
+  success: boolean
+  mcpId?: string
+  electron?: boolean
+  redirectWasScheme?: boolean
+  desktopProtocol?: string
+}> {
   const flow = pendingOAuthFlows.get(state)
   if (!flow) {
     console.error('[mcp/oauth] No pending flow for state:', state)
@@ -663,12 +685,12 @@ export async function completeOAuthFlow(
   // path is fetched+parsed by the Electron main process (parseable HTML), while
   // the http loopback path is loaded in the external browser (needs a hand-off
   // back to the app).
-  const { electron, redirectWasScheme } = flowDeliveryFlags(flow)
+  const delivery = flowDeliveryFlags(flow)
 
   const issuerValidation = validateAuthorizationResponseIssuer(flow, iss)
   if (!issuerValidation.valid) {
     console.error('[mcp/oauth] Authorization response issuer validation failed:', issuerValidation.error)
-    return { success: false, electron, redirectWasScheme }
+    return { success: false, ...delivery }
   }
 
   pendingOAuthFlows.delete(state)
@@ -695,7 +717,7 @@ export async function completeOAuthFlow(
     if (!res.ok) {
       const errorBody = await res.text()
       console.error('[mcp/oauth] Token exchange failed:', res.status, errorBody)
-      return { success: false, electron, redirectWasScheme }
+      return { success: false, ...delivery }
     }
 
     const tokens: OAuthTokenResponse = await res.json()
@@ -724,7 +746,7 @@ export async function completeOAuthFlow(
         createdAt: now,
         updatedAt: now,
       })
-      return { success: true, mcpId: id, electron, redirectWasScheme }
+      return { success: true, mcpId: id, ...delivery }
     } else if (flow.mcpId) {
       // Existing server: UPDATE with tokens
       await db
@@ -738,13 +760,13 @@ export async function completeOAuthFlow(
           updatedAt: now,
         })
         .where(eq(remoteMcpServers.id, flow.mcpId))
-      return { success: true, mcpId: flow.mcpId, electron, redirectWasScheme }
+      return { success: true, mcpId: flow.mcpId, ...delivery }
     }
 
-    return { success: false, electron, redirectWasScheme }
+    return { success: false, ...delivery }
   } catch (error) {
     console.error('[mcp/oauth] Token exchange error:', error)
-    return { success: false, electron, redirectWasScheme }
+    return { success: false, ...delivery }
   }
 }
 

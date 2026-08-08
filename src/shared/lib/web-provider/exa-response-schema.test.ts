@@ -41,6 +41,19 @@ describe('ExaSearchResponseSchema', () => {
     expect(parsed.results[0].publishedDate).toBeUndefined()
   })
 
+  it('accepts an optional favicon URL when Exa returns one', () => {
+    const parsed = ExaSearchResponseSchema.parse({
+      results: [
+        {
+          url: 'https://example.com/d',
+          title: 'D',
+          favicon: 'https://example.com/favicon.ico',
+        },
+      ],
+    })
+    expect(parsed.results[0].favicon).toBe('https://example.com/favicon.ico')
+  })
+
   it('rejects a result missing the url', () => {
     expect(() =>
       ExaSearchResponseSchema.parse({ results: [{ title: 'no url' }] })

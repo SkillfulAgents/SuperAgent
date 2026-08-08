@@ -103,6 +103,8 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('LLM Provider Error')).toBeInTheDocument()
     expect(screen.getByText('API rate limit exceeded')).toBeInTheDocument()
     expect(screen.getByText(/external LLM provider API/)).toBeInTheDocument()
+    expect(screen.getByTestId('provider-error-card')).toHaveClass('bg-amber-50', 'dark:bg-amber-950')
+    expect(screen.getByTestId('provider-error-card')).not.toHaveClass('bg-amber-500/10')
   })
 
   it('shows generic error alert when no apiErrorCode', () => {
@@ -112,6 +114,8 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('Error')).toBeInTheDocument()
     expect(screen.getByText('The agent process was terminated unexpectedly.')).toBeInTheDocument()
     expect(screen.getByText('Send another message to retry.')).toBeInTheDocument()
+    expect(screen.getByTestId('error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
+    expect(screen.getByTestId('error-card')).not.toHaveClass('bg-destructive/10')
   })
 
   it('shows "Working..." status when active with no todo', () => {
@@ -120,15 +124,24 @@ describe('AgentActivityIndicator', () => {
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Working...')).toBeInTheDocument()
     expect(screen.getByTestId('activity-indicator')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /activity details/i })).not.toBeInTheDocument()
   })
 
-  it('stacks the active indicator behind the composer', () => {
+  it('stacks the active indicator behind the composer with a frosted surface', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
 
     const indicator = screen.getByTestId('activity-indicator')
-    expect(indicator).toHaveClass('rounded-t-2xl', 'border-b-0', 'pb-8')
+    expect(indicator).toHaveClass(
+      'rounded-t-2xl',
+      'border-b-0',
+      'border-border/70',
+      'bg-background/85',
+      'backdrop-blur-md',
+      'supports-[backdrop-filter]:bg-background/65',
+      'pb-8',
+    )
     expect(indicator.parentElement).toHaveClass('-mb-5')
   })
 
@@ -227,6 +240,18 @@ describe('AgentActivityIndicator', () => {
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
+
+    const indicator = screen.getByTestId('activity-indicator')
+    expect(indicator).toHaveClass(
+      'rounded-2xl',
+      'pb-3',
+      'border-border/70',
+      'bg-background/85',
+      'backdrop-blur-md',
+    )
+    expect(indicator).not.toHaveClass('border-b-0', 'pb-8')
+    expect(indicator.parentElement).toHaveClass('mb-2')
+    expect(indicator.parentElement).not.toHaveClass('-mb-5')
   })
 
   it('shows "Waiting for input..." when pending connected account requests exist', () => {
@@ -716,6 +741,122 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('1 background process')).toBeInTheDocument()
   })
 
+  it('collapses activity details into an active-only summary', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg-1', startedAt: Date.now() - 5000 },
+      { taskId: 'bg-2', startedAt: Date.now() - 4000 },
+      { taskId: 'wf-1', startedAt: Date.now() - 3000, isWorkflow: true },
+      { taskId: 'subagent-bg', startedAt: Date.now() - 2000, isSubagent: true },
+    ]
+    mockStreamState.activeSubagents = [
+      { parentToolId: 'tc-running', agentId: 'agent-running', progressSummary: null },
+      { parentToolId: 'tc-completed', agentId: 'agent-completed', progressSummary: null },
+    ]
+    mockStreamState.completedSubagents = new Set(['tc-completed'])
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [
+        {
+          id: 'tc-running',
+          name: 'Agent',
+          input: { subagent_type: 'Explore', description: 'Running subagent' },
+          subagent: { agentId: 'agent-running', status: 'async_launched' },
+        },
+        {
+          id: 'tc-completed',
+          name: 'Agent',
+          input: { subagent_type: 'Review', description: 'Finished subagent' },
+          subagent: { agentId: 'agent-completed', status: 'async_launched' },
+        },
+        {
+          id: 'tc-todos',
+          name: 'TodoWrite',
+          input: {
+            todos: [
+              { content: 'Pending one', status: 'pending', activeForm: 'Pending one' },
+              { content: 'Pending two', status: 'pending', activeForm: 'Pending two' },
+              { content: 'In progress', status: 'in_progress', activeForm: 'Doing work' },
+              { content: 'Already done', status: 'completed', activeForm: 'Already done' },
+            ],
+          },
+          result: 'ok',
+        },
+      ],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    const collapseButton = screen.getByRole('button', { name: 'Collapse activity details' })
+    expect(collapseButton).toHaveAttribute('aria-expanded', 'true')
+    expect(collapseButton).toHaveClass('absolute', 'right-2.5', 'top-2.5')
+    expect(collapseButton.querySelector('svg')).toHaveClass('rotate-180')
+    expect(screen.getByText('Running subagent')).toBeInTheDocument()
+    expect(screen.getByText('Finished subagent')).toBeInTheDocument()
+    expect(screen.getByText('Already done')).toBeInTheDocument()
+    expect(screen.queryByText('2 background processes, 1 background workflow, 1 subagent, 3 pending tasks')).not.toBeInTheDocument()
+
+    act(() => { collapseButton.click() })
+
+    const expandButton = screen.getByRole('button', { name: 'Expand activity details' })
+    expect(expandButton).toHaveAttribute('aria-expanded', 'false')
+    expect(expandButton.querySelector('svg')).not.toHaveClass('rotate-180')
+    const summary = screen.getByTestId('activity-summary-ticker')
+    expect(summary).toHaveTextContent('2 background processes, 1 background workflow, 1 subagent, 3 pending tasks')
+    expect(summary).toHaveClass('text-xs', 'italic', 'whitespace-nowrap')
+    expect(summary).toHaveAttribute('data-overflowing', 'false')
+    expect(summary.parentElement).toBe(screen.getByTestId('activity-indicator-header'))
+    expect(screen.queryByText('Running subagent')).not.toBeInTheDocument()
+    expect(screen.queryByText('Finished subagent')).not.toBeInTheDocument()
+    expect(screen.queryByText('Already done')).not.toBeInTheDocument()
+
+    act(() => { expandButton.click() })
+
+    expect(screen.getByRole('button', { name: 'Collapse activity details' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Running subagent')).toBeInTheDocument()
+  })
+
+  it('turns an overflowing collapsed summary into a measured ticker', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-todos',
+        name: 'TodoWrite',
+        input: {
+          todos: [{ content: 'A pending task', status: 'pending', activeForm: 'Working' }],
+        },
+        result: 'ok',
+      }],
+      createdAt: new Date(),
+    })
+
+    const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute('data-testid') === 'activity-summary-ticker' ? 100 : 0
+    })
+    const scrollWidth = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-activity-summary-ticker-content') ? 260 : 0
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    act(() => { screen.getByRole('button', { name: 'Collapse activity details' }).click() })
+
+    const ticker = screen.getByTestId('activity-summary-ticker')
+    expect(ticker).toHaveAttribute('data-overflowing', 'true')
+    expect(ticker.style.getPropertyValue('--activity-summary-ticker-distance')).toBe('160px')
+    expect(ticker.style.getPropertyValue('--activity-summary-ticker-duration')).toBe('8s')
+
+    clientWidth.mockRestore()
+    scrollWidth.mockRestore()
+  })
+
   describe('subagent status', () => {
     const renderWithSubagent = (opts: { result?: unknown; subagentStatus?: string; completed?: boolean }) => {
       mockStreamState.isActive = true
@@ -750,6 +891,16 @@ describe('AgentActivityIndicator', () => {
       renderWithSubagent({ result: { status: 'async_launched' }, subagentStatus: 'async_launched', completed: true })
       expect(screen.getByText('Explore')).toBeInTheDocument()
       expect(screen.getByText('✓')).toBeInTheDocument()
+    })
+
+    it('shows no collapsed summary when every detail is completed', () => {
+      renderWithSubagent({ result: { status: 'async_launched' }, subagentStatus: 'async_launched', completed: true })
+
+      act(() => { screen.getByRole('button', { name: 'Collapse activity details' }).click() })
+
+      expect(screen.queryByTestId('activity-summary-ticker')).not.toBeInTheDocument()
+      expect(screen.queryByText('No active items')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Expand activity details' })).toBeInTheDocument()
     })
 
     it('marks a foreground subagent completed when its tool result lands', () => {

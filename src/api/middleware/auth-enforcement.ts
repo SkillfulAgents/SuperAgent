@@ -1,8 +1,8 @@
 import type { Context, Next } from 'hono'
 import { sql } from 'drizzle-orm'
-import { getSettings, DEFAULT_AUTH_SETTINGS, type AuthSettings } from '@shared/lib/config/settings'
 import { db } from '@shared/lib/db'
 import { user } from '@shared/lib/db/schema'
+import { getAuthSettings } from '@shared/lib/auth/auth-settings'
 
 // Per-email failed login attempt tracking
 const accountLockouts = new Map<string, { count: number; lockedUntil: number }>()
@@ -10,11 +10,6 @@ const accountLockouts = new Map<string, { count: number; lockedUntil: number }>(
 /** Exported for testing: clear all lockout state */
 export function clearLockouts() {
   accountLockouts.clear()
-}
-
-export function getAuthSettings(): AuthSettings {
-  const settings = getSettings()
-  return { ...DEFAULT_AUTH_SETTINGS, ...settings.auth }
 }
 
 export function validatePasswordComplexity(password: string): string | null {

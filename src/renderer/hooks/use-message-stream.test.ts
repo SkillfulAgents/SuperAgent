@@ -2587,13 +2587,13 @@ describe('useMessageStream — extended thinking blocks', () => {
   it('opens a block on thinking_start and accumulates deltas onto it', async () => {
     const { result, es } = await setup()
 
-    act(() => { es().simulateMessage({ type: 'thinking_start' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_start', thinkingId: 'msg-1:0' }) })
     expect(result.current.isThinking).toBe(true)
     expect(result.current.thinkingBlocks).toHaveLength(1)
-    expect(result.current.thinkingBlocks[0]).toMatchObject({ text: '', endedAt: null })
+    expect(result.current.thinkingBlocks[0]).toMatchObject({ persistedId: 'msg-1:0', text: '', endedAt: null })
 
-    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'Let me ' }) })
-    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'reason.' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_delta', thinkingId: 'msg-1:0', text: 'Let me ' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_delta', thinkingId: 'msg-1:0', text: 'reason.' }) })
     expect(result.current.thinkingBlocks).toHaveLength(1)
     expect(result.current.thinkingBlocks[0].text).toBe('Let me reason.')
     expect(result.current.thinkingBlocks[0].endedAt).toBeNull()
@@ -2615,11 +2615,28 @@ describe('useMessageStream — extended thinking blocks', () => {
   it('a bare thinking_delta opens a block (missed start after reconnect)', async () => {
     const { result, es } = await setup()
 
-    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'resumed mid-block' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_delta', thinkingId: 'msg-2:0', text: 'resumed mid-block' }) })
 
     expect(result.current.isThinking).toBe(true)
     expect(result.current.thinkingBlocks).toHaveLength(1)
-    expect(result.current.thinkingBlocks[0]).toMatchObject({ text: 'resumed mid-block', endedAt: null })
+    expect(result.current.thinkingBlocks[0]).toMatchObject({ persistedId: 'msg-2:0', text: 'resumed mid-block', endedAt: null })
+  })
+
+  it('compact_complete retires completed live blocks that may never persist', async () => {
+    const { result, es } = await setup()
+
+    act(() => { es().simulateMessage({ type: 'connected', isActive: true }) })
+    act(() => { es().simulateMessage({ type: 'thinking_start' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'internal compaction reasoning' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_stop' }) })
+    expect(result.current.thinkingBlocks).toHaveLength(1)
+
+    act(() => { es().simulateMessage({ type: 'compact_start' }) })
+    act(() => { es().simulateMessage({ type: 'compact_complete' }) })
+
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.isThinking).toBe(false)
+    expect(result.current.thinkingBlocks).toEqual([])
   })
 
   it('a new thinking_start closes the previous block so at most one is live', async () => {

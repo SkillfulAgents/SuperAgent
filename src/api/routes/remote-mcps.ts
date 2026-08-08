@@ -105,8 +105,20 @@ function renderMcpOAuthCallbackHtml(payload: McpOAuthCallbackPayload, message: s
  * already completed server-side. It hands the result back into the app via the
  * custom scheme so the main process can notify the renderer over IPC.
  */
-function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload): string {
-  const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
+// Only SuperAgent desktop deep-link schemes — never arbitrary URI schemes from the client.
+const DESKTOP_OAUTH_PROTOCOLS = new Set(['superagent', 'superagent-dev'])
+
+function resolveDesktopOAuthProtocol(candidate?: string): string {
+  if (candidate && DESKTOP_OAUTH_PROTOCOLS.has(candidate)) return candidate
+  const fromEnv = process.env.SUPERAGENT_PROTOCOL
+  if (fromEnv && DESKTOP_OAUTH_PROTOCOLS.has(fromEnv)) return fromEnv
+  return 'superagent'
+}
+
+function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload, desktopProtocol?: string): string {
+  // Prefer the scheme recorded on the flow: a cloud deployment serving this
+  // callback has no SUPERAGENT_PROTOCOL of its own (SUP-560).
+  const protocol = resolveDesktopOAuthProtocol(desktopProtocol)
   const params = new URLSearchParams()
   params.set('success', payload.success ? 'true' : 'false')
   if (payload.mcpId) params.set('mcpId', payload.mcpId)
@@ -136,10 +148,10 @@ function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload): string {
 function mcpOAuthCallbackBody(
   payload: McpOAuthCallbackPayload,
   message: string,
-  delivery: { electron?: boolean; redirectWasScheme?: boolean },
+  delivery: { electron?: boolean; redirectWasScheme?: boolean; desktopProtocol?: string },
 ): string {
   if (delivery.electron && delivery.redirectWasScheme === false) {
-    return renderMcpOAuthHandoffHtml(payload)
+    return renderMcpOAuthHandoffHtml(payload, delivery.desktopProtocol)
   }
   return renderMcpOAuthCallbackHtml(payload, message)
 }
@@ -260,6 +272,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     name?: string
     url?: string
     electron?: boolean
+    protocol?: string
     clientName?: string
     clientId?: string
     clientSecret?: string
@@ -287,7 +300,12 @@ remoteMcps.post('/initiate-oauth', async (c) => {
   // not getAppBaseUrlFromRequest: the packaged renderer is served from file://, so its
   // fetches carry `Origin: null`. The AS redirects the external browser here to complete
   // the flow, so the URL must be one the local API server actually answers on.
-  const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
+  //
+  // Scheme from the Electron client (allowlisted): a cloud deployment serving a
+  // proxied client has no SUPERAGENT_PROTOCOL of its own (SUP-560).
+  const protocol = resolveDesktopOAuthProtocol(
+    typeof body.protocol === 'string' ? body.protocol : undefined,
+  )
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const loopbackRedirect = `${new URL(c.req.url).origin}/api/remote-mcps/oauth-callback`
   const httpRedirect = body.electron
@@ -389,7 +407,11 @@ remoteMcps.get('/oauth-callback', async (c) => {
   }
 
   const result = await completeOAuthFlow(state, code, iss)
-  const delivery = { electron: result.electron, redirectWasScheme: result.redirectWasScheme }
+  const delivery = {
+    electron: result.electron,
+    redirectWasScheme: result.redirectWasScheme,
+    desktopProtocol: result.desktopProtocol,
+  }
 
   if (!result.success || !result.mcpId) {
     return c.html(mcpOAuthCallbackBody(

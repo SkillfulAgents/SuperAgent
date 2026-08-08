@@ -34,6 +34,8 @@ interface UseMessageComposerOptions {
   initialAttachments?: Attachment[]
   /** One-shot secure-pill seed, used when moving a draft into a new session. */
   initialSecuredSecrets?: SecuredSecret[]
+  /** Fires on composer-mic transcript updates (before message state changes). */
+  onVoiceTranscript?: () => void
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
@@ -153,10 +155,15 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     initialAttachments: options.initialAttachments,
   })
 
+  // Pulled off `options` so the dep is the callback itself. Depending on
+  // `options` instead would rebuild this every render — callers pass an inline
+  // object literal, so its identity is never stable.
+  const { onVoiceTranscript } = options
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {
+      onVoiceTranscript?.()
       setMessage(text)
-    }, []),
+    }, [onVoiceTranscript]),
   })
 
   const handleMountChoice = useCallback((choice: 'upload' | 'mount' | 'cancel') => {

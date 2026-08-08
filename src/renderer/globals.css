@@ -260,6 +260,28 @@ html[data-keyboard-open] [data-composer-footer] {
   background-color: rgba(120, 120, 130, .55);
 }
 
+/* Height-capped panels inside a chat card (e.g. the web-fetch page body). Same problem
+   as the reader surface above, one level in: the native overlay thumb is pale, full-height
+   and sits hard against the card edge over the text, so it reads as a foreign element on a
+   dark card. Same neutral thumb, sized down for a panel rather than a page. Add
+   `card-scrollbar` to any height-capped scroller inside a card to opt in. */
+.card-scrollbar::-webkit-scrollbar {
+  -webkit-appearance: none;
+  width: 8px;
+}
+.card-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.card-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: rgba(120, 120, 130, .35);
+}
+.card-scrollbar:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(120, 120, 130, .55);
+}
+
 /* Fix Radix ScrollArea viewport using display: table which causes content to expand */
 [data-radix-scroll-area-viewport] {
   display: block !important;
@@ -754,6 +776,39 @@ html[data-keyboard-open] [data-composer-footer] {
   /* Keep the fade, drop the glide for users who prefer reduced motion. */
   @keyframes search-fade-up-in { from { opacity: 0; } to { opacity: 1; } }
   @keyframes search-fade-up-out { from { opacity: 1; } to { opacity: 0; } }
+}
+
+/*
+  The collapsed activity summary stays in the status row. When its measured
+  width exceeds the available space, pause at the beginning before gently
+  panning to the hidden end, pause again, then return like a compact ticker.
+*/
+@keyframes activity-summary-ticker {
+  0%, 18% { transform: translateX(0); }
+  82%, 100% { transform: translateX(calc(-1 * var(--activity-summary-ticker-distance))); }
+}
+
+.activity-summary-ticker[data-overflowing="true"] .activity-summary-ticker-content {
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  animation: activity-summary-ticker var(--activity-summary-ticker-duration) ease-in-out 1.25s infinite alternate both;
+  will-change: transform;
+}
+
+.activity-summary-ticker:hover .activity-summary-ticker-content {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-summary-ticker[data-overflowing="true"] .activity-summary-ticker-content {
+    width: auto;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    animation: none;
+  }
 }
 
 /*

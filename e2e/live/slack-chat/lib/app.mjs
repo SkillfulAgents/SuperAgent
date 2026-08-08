@@ -10,8 +10,8 @@
  *              branch and links to the SUPERAGENT_PROTOCOL scheme
  *              (superagent-dev:// in a dev build).
  *
- * Both run the same services: api/index.ts calls initializeServices() outside
- * Electron, main/index.ts calls it inside — either way the chat integration
+ * Both run the same services via afterBindInitialize() after HTTP bind
+ * (web/server.ts, Vite, main/index.ts) — either way the chat integration
  * manager comes up and connects to Slack for real.
  */
 

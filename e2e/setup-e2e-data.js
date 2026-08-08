@@ -41,6 +41,8 @@ try { fs.rmSync(path.join(resolvedDir, 'agents'), { recursive: true }) } catch {
 // up the directory tree and operates on the project's repo instead, silently
 // rewriting our actual origin URL. Real `git init` keeps git scoped here.
 const SKILLSET_ID = 'e2e-test-skillset'
+const SKILLSET_CREDENTIAL_ID = 'skillcred_e2e-private'
+const SKILLSET_TEST_TOKEN = 'github_pat_e2e_placeholder'
 const SKILLSET_REPO_DIR = path.join(resolvedDir, 'skillset-cache', SKILLSET_ID)
 const SKILLSET_FAKE_URL = 'https://localhost.invalid/e2e-test-skillset'
 fs.rmSync(SKILLSET_REPO_DIR, { recursive: true, force: true })
@@ -171,6 +173,7 @@ const settings = {
       description: 'Fake skillset seeded for Playwright tests',
       addedAt: new Date().toISOString(),
       provider: 'github',
+      providerData: { credentialId: SKILLSET_CREDENTIAL_ID },
     },
     {
       id: PUBLIC_SKILLSET_ID,
@@ -181,6 +184,16 @@ const settings = {
       provider: 'public',
     },
   ],
+  skillsetCredentials: {
+    [SKILLSET_CREDENTIAL_ID]: {
+      id: SKILLSET_CREDENTIAL_ID,
+      type: 'token',
+      token: SKILLSET_TEST_TOKEN,
+      tokenPreview: '••••lder',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+  },
 }
 
 if (process.env.AUTH_MODE === 'true') {

@@ -16,6 +16,7 @@ import {
   warmProfileKey,
   type WarmProfile,
 } from './warm-profile';
+import { subagentModelCatalogSchema } from './subagent-model-catalog';
 
 interface SessionData {
   session: Session;
@@ -212,6 +213,7 @@ export class SessionManager extends EventEmitter {
     // interpolated into the ANTHROPIC_CUSTOM_HEADERS string.
     const capabilityPolicies = agentCapabilityPoliciesSchema.parse(request.capabilityPolicies);
     const speed = speedLevelSchema.parse(request.speed);
+    const subagentModels = subagentModelCatalogSchema.parse(request.subagentModels);
 
     // Ensure working directory exists
     if (!fs.existsSync(workingDirectory)) {
@@ -223,7 +225,13 @@ export class SessionManager extends EventEmitter {
     // default must not look like two different profiles). The session's own
     // shape decides whether a parked process fits; the host's default shape
     // decides what to warm next.
-    const normalized = { ...request, speed, capabilityPolicies, workingDirectory };
+    const normalized = {
+      ...request,
+      speed,
+      capabilityPolicies,
+      subagentModels,
+      workingDirectory,
+    };
     const sessionProfile = sessionProfileFromRequest(normalized);
     const nextProfile = nextWarmProfileFromRequest(normalized);
     const process =
@@ -237,6 +245,7 @@ export class SessionManager extends EventEmitter {
         model: request.model,
         browserModel: request.browserModel,
         dashboardBuilderModel: request.dashboardBuilderModel,
+        subagentModels,
         webSearchProvider: request.webSearchProvider,
         webFetchProvider: request.webFetchProvider,
         maxOutputTokens: request.maxOutputTokens,
@@ -372,6 +381,7 @@ export class SessionManager extends EventEmitter {
       model: request.model,
       browserModel: request.browserModel,
       dashboardBuilderModel: request.dashboardBuilderModel,
+      subagentModels,
       webSearchProvider: request.webSearchProvider,
       webFetchProvider: request.webFetchProvider,
       maxOutputTokens: request.maxOutputTokens,
@@ -467,6 +477,7 @@ export class SessionManager extends EventEmitter {
         model: profile.model,
         browserModel: profile.browserModel,
         dashboardBuilderModel: profile.dashboardBuilderModel,
+        subagentModels: profile.subagentModels,
         webSearchProvider: profile.webSearchProvider,
         webFetchProvider: profile.webFetchProvider,
         maxOutputTokens: profile.maxOutputTokens,
@@ -579,6 +590,7 @@ export class SessionManager extends EventEmitter {
         model: persisted.model,
         browserModel: persisted.browserModel,
         dashboardBuilderModel: persisted.dashboardBuilderModel,
+        subagentModels: persisted.subagentModels,
         webSearchProvider: persisted.webSearchProvider,
         webFetchProvider: persisted.webFetchProvider,
         maxOutputTokens: persisted.maxOutputTokens,

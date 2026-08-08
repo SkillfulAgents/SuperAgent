@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   seedPendingSessionMessage,
-  takePendingSessionSeed,
+  peekPendingSessionSeed,
+  clearPendingSessionSeed,
   clearPendingSessionSeeds,
 } from './pending-session-seed'
 
@@ -10,15 +11,17 @@ describe('pending-session-seed', () => {
     clearPendingSessionSeeds()
   })
 
-  it('stores a seed that takePendingSessionSeed returns once', () => {
+  it('keeps a seed available until it is explicitly cleared', () => {
     seedPendingSessionMessage('sess-1', 'Hello agent', 'msg-uuid')
-    const first = takePendingSessionSeed('sess-1')
+    const first = peekPendingSessionSeed('sess-1')
     expect(first).toMatchObject({
       localId: 'msg-uuid',
       uuid: 'msg-uuid',
       text: 'Hello agent',
     })
-    expect(takePendingSessionSeed('sess-1')).toBeUndefined()
+    expect(peekPendingSessionSeed('sess-1')).toBe(first)
+    clearPendingSessionSeed('sess-1')
+    expect(peekPendingSessionSeed('sess-1')).toBeUndefined()
   })
 
   it('includes optional sender', () => {
@@ -27,7 +30,7 @@ describe('pending-session-seed', () => {
       name: 'Ada',
       email: 'ada@example.com',
     })
-    expect(takePendingSessionSeed('sess-1')?.sender).toEqual({
+    expect(peekPendingSessionSeed('sess-1')?.sender).toEqual({
       id: 'user-1',
       name: 'Ada',
       email: 'ada@example.com',
@@ -35,6 +38,6 @@ describe('pending-session-seed', () => {
   })
 
   it('returns undefined for an unknown session', () => {
-    expect(takePendingSessionSeed('missing')).toBeUndefined()
+    expect(peekPendingSessionSeed('missing')).toBeUndefined()
   })
 })

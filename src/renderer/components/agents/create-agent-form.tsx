@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
@@ -12,8 +12,8 @@ import { useCreateAgent, useDeleteAgent, useUpdateAgent } from '@renderer/hooks/
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import { useUser } from '@renderer/context/user-context'
 import { seedPendingSessionMessage } from '@renderer/context/pending-session-seed'
+import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import {
   useTypewriterPlaceholder,
@@ -22,22 +22,43 @@ import {
 import { deriveAgentName } from '@renderer/lib/derive-agent-name'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
-import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
+import { useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
+import {
+  ComposerOptions,
+  findCatalogModel,
+  useComposerOptions,
+} from '@renderer/components/messages/composer-options'
 import { captureRendererException } from '@renderer/lib/error-reporting'
+import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
+import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
+
+/**
+ * Ceiling, not a delay: the offer resolves the instant the discoverable list
+ * lands, and this only fires when nothing ever arrives. A cold skillset sync
+ * measured ~1.4s on a fast connection, so the margin here is for slow links.
+ *
+ * Erring long is close to free — a larger value never delays the happy path,
+ * it only extends how long the composer stays unfocused in the already-broken
+ * case. Erring short is not: the offer would settle before a slow list arrives
+ * and no dialog would ever appear, silently, for exactly the cold first-run
+ * installs this handoff targets.
+ */
+const HANDOFF_TEMPLATE_WAIT_MS = 10000
+
+/** The create flow's own default — no agent exists yet to supply one. */
+const DEFAULT_MODEL = 'opus'
 
 export interface CreateAgentFormProps {
   /** Fires after an agent is successfully created (via any path). Parent uses this to close the overlay/wizard. */
   onAgentCreated?: () => Promise<void> | void
-  /** Pre-selects a template and jumps straight to the "name the agent" step. */
-  initialTemplate?: ApiDiscoverableAgent | null
   /** Form max width in the layout. Defaults to no cap (wrapper decides). */
   className?: string
   /** When true, play the reverse (exit) animation on the same items. */
   exiting?: boolean
 }
 
-export function CreateAgentForm({ onAgentCreated, initialTemplate, className, exiting = false }: CreateAgentFormProps) {
+export function CreateAgentForm({ onAgentCreated, className, exiting = false }: CreateAgentFormProps) {
   // Staggered reveal: items start hidden on first render, flip to visible on the next frame,
   // then flip back to hidden when `exiting` becomes true. Reverse the stagger on exit.
   const [revealed, setRevealed] = useState(false)
@@ -61,9 +82,55 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
   const createSession = useCreateSession()
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
-  const { user, isAuthMode } = useUser()
   const startOnboardingSession = useStartOnboardingSession()
   const warmStartEnabled = useWarmStartOnTypeEnabled()
+  const { signupHandoff, setSignupHandoff } = useNavTransient()
+  const { data: modelSettings } = useModelSettings()
+  const [handoffModel, setHandoffModel] = useState<string | null>(null)
+  // Arm synchronously so mount-time composer autoFocus sees an armed slug
+  // (MarkdownComposerEditor focuses once on create; a later autoFocus=false is a no-op).
+  // Prompt-wins matches the take effect: a prompt in the one-shot never arms the offer.
+  const [handoffTemplateSlug, setHandoffTemplateSlug] = useState<string | null>(() =>
+    signupHandoff && !signupHandoff.prompt ? (signupHandoff.template_slug ?? null) : null,
+  )
+  const composerTouchedRef = useRef(false)
+  // Sync forfeit: ref closes the paint→effect gap so an aid click cannot lose to a
+  // resolve effect still holding the armed slug from the prior commit.
+  const forfeitHandoffTemplate = useCallback(() => {
+    composerTouchedRef.current = true
+    setHandoffTemplateSlug(null)
+  }, [])
+  // The editor reads autoFocus ONCE at create, so a slug armed on mount suppresses
+  // focus for good — flipping the prop back to true later does nothing. Every path
+  // that disarms without opening the dialog has to hand focus back by hand.
+  // Not called from forfeitHandoffTemplate: typing already holds focus, and an
+  // aid/mic forfeit is the user moving focus somewhere else on purpose.
+  const focusComposer = useCallback(() => {
+    setTimeout(() => textareaRef.current?.focus(), 0)
+  }, [])
+  const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
+  const { data: discoverableAgents, isError: discoverableAgentsFailed } = useDiscoverableAgents()
+
+  const activeProvider = modelSettings?.llmProvider
+  const catalog = useMemo(
+    () => modelSettings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
+    [modelSettings, activeProvider],
+  )
+  // Seed from the carried marketing-handoff model only when the effective
+  // catalog knows it — an unknown versioned id would be passed to the SDK as a
+  // pin and fail at the API. Resolved as the catalog lands: it's a separate
+  // query from settings and may not have answered at mount, so the picker seeds
+  // once it does.
+  const handoffSeedModel = useMemo(
+    () => (handoffModel ? findCatalogModel(handoffModel, catalog)?.id : undefined),
+    [handoffModel, catalog],
+  )
+  const composerOptions = useComposerOptions({
+    initialModel: handoffSeedModel,
+    // No agent exists yet, so there are no per-agent defaults to fall back to;
+    // this pins the create flow's own default above the app-wide one.
+    agentDefaultModel: DEFAULT_MODEL,
+  })
 
   // Warm-precreated Untitled agent; deleted on abandon unless submit consumes it.
   const warmSlugOwnedRef = useRef<string | null>(null)
@@ -121,6 +188,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
 
   const composer = useMessageComposer({
     agentSlug: '',
+    onVoiceTranscript: forfeitHandoffTemplate,
     // Attachments/uploads aren't available in the create-agent flow — the agent
     // doesn't exist yet. These throw if invoked, but AttachmentPicker doesn't
     // expose them in this layout so they're unreachable in practice.
@@ -135,44 +203,61 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
       // that mutation would freeze the textarea while the user is still typing.
       setIsSubmitting(true)
       try {
-        const agentName = await deriveAgentName(content)
-        const warmSlug = await awaitWarmStartRef.current()
-        const newAgent = warmSlug
-          ? await updateAgent.mutateAsync({ slug: warmSlug, name: agentName })
-          : await createAgent.mutateAsync({ name: agentName })
-        if (warmSlug) warmConsumedRef.current = true
-        const session = await createSession.mutateAsync({
-          agentSlug: newAgent.slug,
-          message: content,
-          // Brand-new agents start their first session on Opus, mirroring
-          // AgentHome's first-session default. The container normalizes the
-          // family alias to the active provider's specific model.
-          model: 'opus',
-        })
+        // Only failures before the session exists are retryable creation
+        // failures. Once the API has accepted the initial message, the composer
+        // must clear even if the wizard's follow-up persistence fails; otherwise
+        // retrying creates a duplicate agent and session.
+        const { newAgent, session } = await (async () => {
+          try {
+            const agentName = await deriveAgentName(content)
+            const warmSlug = await awaitWarmStartRef.current()
+            const newAgent = warmSlug
+              ? await updateAgent.mutateAsync({ slug: warmSlug, name: agentName })
+              : await createAgent.mutateAsync({ name: agentName })
+            if (warmSlug) warmConsumedRef.current = true
+            const session = await createSession.mutateAsync({
+              agentSlug: newAgent.slug,
+              message: content,
+              ...composerOptions.toRuntimeOptions(),
+              // An untouched model is omitted from the runtime options, but a brand
+              // new agent has no stored default for the server to resolve against —
+              // always send what the picker is showing.
+              model: composerOptions.model ?? DEFAULT_MODEL,
+            })
+            return { newAgent, session }
+          } catch (error) {
+            console.error('Failed to create agent:', error)
+            toast.error('Failed to create agent', {
+              description: error instanceof Error ? error.message : 'Please try again.',
+            })
+            // Rethrow so useMessageComposer keeps the typed prompt for a genuine
+            // create failure and the user can safely retry it.
+            throw error
+          }
+        })()
+
         seedPendingSessionMessage(
           session.id,
           content,
           session.initialMessageUuid,
-          isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
         )
         track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.displaySlug, sessionId: session.id } })
-        await onAgentCreated?.()
-      } catch (error) {
-        console.error('Failed to create agent:', error)
-        toast.error('Failed to create agent', {
-          description: error instanceof Error ? error.message : 'Please try again.',
-        })
-        // Rethrow so useMessageComposer's keepMessageUntilComplete path keeps
-        // the typed prompt instead of clearing it after the failure toast.
-        throw error
+        try {
+          await onAgentCreated?.()
+        } catch (error) {
+          console.error('Agent created, but failed to finish setup:', error)
+          toast.error('Agent created, but setup could not be completed', {
+            description: error instanceof Error ? error.message : 'Please try finishing setup again.',
+          })
+        }
       } finally {
         setIsSubmitting(false)
       }
-    }, [createAgent, updateAgent, createSession, navigate, track, onAgentCreated, isAuthMode, user]),
+    }, [createAgent, updateAgent, createSession, navigate, track, onAgentCreated, composerOptions]),
   })
 
-  const { awaitWarmStart } = useWarmStartOnType({
+  const { awaitWarmStart, noteProgrammaticChange } = useWarmStartOnType({
     agentSlug: null,
     message: composer.message,
     enabled: warmStartEnabled,
@@ -181,6 +266,53 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
   useEffect(() => {
     awaitWarmStartRef.current = awaitWarmStart
   }, [awaitWarmStart])
+
+  useEffect(() => {
+    if (!signupHandoff) return
+    if (signupHandoff.prompt) {
+      // Seed warm-start baseline first so the prefill is not treated as typing
+      // (success criterion: prefill only — nothing auto-creates).
+      noteProgrammaticChange(signupHandoff.prompt)
+      composer.setMessage(signupHandoff.prompt)
+      setTimeout(() => textareaRef.current?.focus(), 0)
+    }
+    if (signupHandoff.model) setHandoffModel(signupHandoff.model)
+    // PROMPT WINS AT ARM TIME:
+    setHandoffTemplateSlug(signupHandoff.prompt ? null : signupHandoff.template_slug ?? null)
+    setSignupHandoff(null) // one-shot
+  }, [signupHandoff, setSignupHandoff, composer, noteProgrammaticChange])
+
+  useEffect(() => {
+    if (!handoffTemplateSlug || composerTouchedRef.current) return
+    // Fail-open: a broken list must not leave the offer armed forever.
+    if (discoverableAgentsFailed) {
+      setHandoffTemplateSlug(null)
+      focusComposer()
+      return
+    }
+    if (!discoverableAgents || discoverableAgents.length === 0) {
+      // Bounded wait. useDiscoverableAgents is `enabled: hasSkillsets`, so with no
+      // skillsets the query never runs: data stays undefined and isError stays false
+      // forever, and an unbounded wait would strand the composer unfocused. The timer
+      // also caps how late an offer may appear on a slow list — a dialog opening
+      // minutes after landing reads as a glitch, not an offer.
+      const timer = setTimeout(() => {
+        setHandoffTemplateSlug(null)
+        focusComposer()
+      }, HANDOFF_TEMPLATE_WAIT_MS)
+      return () => clearTimeout(timer)
+    }
+    const match = discoverableAgents.find(
+      (a) => a.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && slugFromAgentPath(a.path) === handoffTemplateSlug,
+    )
+    if (match) {
+      setTemplateToInstall(match)
+      setHandoffTemplateSlug(null)
+    } else {
+      setHandoffTemplateSlug(null) // settle: populated + no match
+      focusComposer()
+    }
+  }, [discoverableAgents, discoverableAgentsFailed, handoffTemplateSlug, focusComposer])
 
   // Abandon path: leave the create form without consuming the warm agent.
   // Ref + empty deps so mutation identity churn doesn't re-bind cleanup mid-edit.
@@ -195,12 +327,6 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
       void discardWarmAgentRef.current()
     }
   }, [])
-
-  const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(initialTemplate ?? null)
-
-  useEffect(() => {
-    if (initialTemplate) setTemplateToInstall(initialTemplate)
-  }, [initialTemplate])
 
   const handleVoiceResult = useCallback(
     ({ prompt }: { name: string; prompt: string }) => {
@@ -241,21 +367,27 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
             attachments={composer.attachments}
             onRemoveAttachment={composer.removeAttachment}
             value={composer.message}
-            onChange={composer.setMessage}
+            onChange={(value) => {
+              forfeitHandoffTemplate()
+              composer.setMessage(value)
+            }}
             onKeyDown={handleKeyDown}
             onPaste={composer.handlePaste}
             placeholder={displayedPlaceholder}
             disabled={isDisabled}
             rows={3}
-            autoFocus
+            autoFocus={!templateToInstall && !handoffTemplateSlug}
             dataTestId="create-agent-prompt"
             textareaClassName="min-h-[60px]"
             leftActions={(
-              <AttachmentPicker
-                onFileSelect={composer.handleFileSelect}
-                onFolderSelect={composer.handleFolderSelect}
-                disabled={isDisabled}
-              />
+              <>
+                <AttachmentPicker
+                  onFileSelect={composer.handleFileSelect}
+                  onFolderSelect={composer.handleFolderSelect}
+                  disabled={isDisabled}
+                />
+                <ComposerOptions state={composerOptions} disabled={isDisabled} />
+              </>
             )}
             rightActions={(
               <>
@@ -286,12 +418,14 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
           <AgentCreationAids
             onVoiceResult={handleVoiceResult}
             onImportComplete={handleImportComplete}
+            onAidOpened={forfeitHandoffTemplate}
           />
         </div>
       </div>
 
       <TemplateInstallDialog
         template={templateToInstall}
+        handoffOrigin
         onClose={() => setTemplateToInstall(null)}
         onInstalled={(agent, { hasOnboarding }) => finishCreatedAgent(agent, 'skillset', hasOnboarding)}
       />

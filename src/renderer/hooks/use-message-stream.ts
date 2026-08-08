@@ -123,6 +123,8 @@ const sessionSlashCommands = new Map<string, SlashCommandInfo[]>()
 // hook mirror can bail out of re-renders with a reference check.
 export interface ThinkingBlock {
   id: number
+  /** Stable identity shared with the persisted transcript block, when available. */
+  persistedId?: string
   text: string
   startedAt: number
   /** null while this block is still streaming */
@@ -822,19 +824,36 @@ function getOrCreateEventSource(
         // its stop (dropped event), close it now so at most one block is live.
         const t = sessionThinking.get(sessionId) ?? EMPTY_THINKING
         const blocks = closeOpenThinkingBlocks(t.blocks)
-        blocks.push({ id: nextThinkingBlockId++, text: '', startedAt: Date.now(), endedAt: null })
+        const persistedId = typeof data.thinkingId === 'string' && data.thinkingId
+          ? data.thinkingId
+          : undefined
+        blocks.push({ id: nextThinkingBlockId++, persistedId, text: '', startedAt: Date.now(), endedAt: null })
         sessionThinking.set(sessionId, { blocks, isThinking: true })
       }
       else if (data.type === 'thinking_delta') {
         // Accumulate streamed (summarized) reasoning text on the live block.
         // A delta with no open block (missed start after reconnect) opens one.
         const t = sessionThinking.get(sessionId) ?? EMPTY_THINKING
-        const blocks = [...t.blocks]
+        const persistedId = typeof data.thinkingId === 'string' && data.thinkingId
+          ? data.thinkingId
+          : undefined
+        let blocks = [...t.blocks]
         const last = blocks[blocks.length - 1]
-        if (last && last.endedAt === null) {
-          blocks[blocks.length - 1] = { ...last, text: last.text + (data.text ?? '') }
+        // If a reconnect dropped thinking_start, an indexed delta can identify
+        // a new block even while an unrelated stale block is still open.
+        const belongsToOpenBlock =
+          last &&
+          last.endedAt === null &&
+          (!persistedId || !last.persistedId || last.persistedId === persistedId)
+        if (belongsToOpenBlock) {
+          blocks[blocks.length - 1] = {
+            ...last,
+            ...(persistedId && !last.persistedId && { persistedId }),
+            text: last.text + (data.text ?? ''),
+          }
         } else {
-          blocks.push({ id: nextThinkingBlockId++, text: data.text ?? '', startedAt: Date.now(), endedAt: null })
+          blocks = closeOpenThinkingBlocks(blocks)
+          blocks.push({ id: nextThinkingBlockId++, persistedId, text: data.text ?? '', startedAt: Date.now(), endedAt: null })
         }
         sessionThinking.set(sessionId, { blocks, isThinking: true })
       }
@@ -879,6 +898,13 @@ function getOrCreateEventSource(
       }
       else if (data.type === 'compact_start') {
         // Context compaction started
+        const thinkingAtCompact = sessionThinking.get(sessionId)
+        if (thinkingAtCompact) {
+          sessionThinking.set(sessionId, {
+            blocks: closeOpenThinkingBlocks(thinkingAtCompact.blocks),
+            isThinking: false,
+          })
+        }
         if (current) {
           streamStates.set(sessionId, {
             ...current,
@@ -888,6 +914,10 @@ function getOrCreateEventSource(
       }
       else if (data.type === 'compact_complete') {
         // Context compaction finished — messages_updated will trigger refetch
+        // Compactor reasoning is not a user-visible assistant message and may
+        // never persist. Retire all pre-boundary live blocks; historical cards
+        // now belong to the transcript read path.
+        sessionThinking.delete(sessionId)
         if (current) {
           streamStates.set(sessionId, {
             ...current,

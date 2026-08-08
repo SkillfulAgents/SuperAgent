@@ -28,6 +28,10 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
+const mockRecordSessionActivity = vi.fn()
+vi.mock('@shared/lib/services/session-summary-cache', () => ({
+  recordSessionActivity: (...args: unknown[]) => mockRecordSessionActivity(...args),
+}))
 const mockAppendInformationalEntry = vi.fn((..._args: unknown[]) => Promise.resolve())
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: (...args: unknown[]) => mockAppendInformationalEntry(...args),
@@ -293,6 +297,46 @@ describe('MessagePersister', () => {
     vi.clearAllMocks()
   })
 
+  describe('session summary activity', () => {
+    it('records complete top-level transcript frames with their source timestamp', () => {
+      const timestamp = new Date('2026-08-07T18:00:00.000Z')
+
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'assistant', message: { role: 'assistant', content: 'done' } },
+        timestamp,
+        sessionId: SESSION_ID,
+      })
+
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, timestamp)
+    })
+
+    it('ignores replayed catch-up frames whose host timestamp is arrival time', () => {
+      // On the wire, SDK result frames carry no timestamp field, so the host
+      // stamps Date.now() at arrival — a reconnect replay recorded here would
+      // fabricate recency for a session that did nothing.
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'result', subtype: 'success', replayed: true },
+        timestamp: new Date('2026-08-07T17:00:00.000Z'),
+        sessionId: SESSION_ID,
+      })
+
+      expect(mockRecordSessionActivity).not.toHaveBeenCalled()
+    })
+
+    it('does not attribute a sidechain transcript frame to the parent session', () => {
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'assistant', parent_tool_use_id: 'tool-1' },
+        timestamp: new Date('2026-08-07T19:00:00.000Z'),
+        sessionId: SESSION_ID,
+      })
+
+      expect(mockRecordSessionActivity).not.toHaveBeenCalled()
+    })
+  })
+
   // ============================================================================
   // Informational banners (hook feedback, e.g. UserPromptSubmit blocks)
   // ============================================================================
@@ -508,18 +552,21 @@ describe('MessagePersister', () => {
       // With display:'summarized', thinking_delta carries text; signature_delta does not.
       sseEvents.length = 0
 
-      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
       mockClient._sendMessage({
         type: 'stream_event',
-        event: { type: 'content_block_start', content_block: { type: 'thinking' } },
+        event: { type: 'message_start', message: { id: 'msg-thinking-1' } },
       })
       mockClient._sendMessage({
         type: 'stream_event',
-        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Let me ' } },
+        event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
       })
       mockClient._sendMessage({
         type: 'stream_event',
-        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'consider.' } },
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Let me ' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'consider.' } },
       })
       mockClient._sendMessage({
         type: 'stream_event',
@@ -531,8 +578,11 @@ describe('MessagePersister', () => {
       const deltas = sseEvents.filter(e => e.type === 'thinking_delta')
       const stops = sseEvents.filter(e => e.type === 'thinking_stop')
       expect(starts).toHaveLength(1)
+      expect(starts[0].thinkingId).toBe('msg-thinking-1:0')
       expect(deltas.map(d => d.text)).toEqual(['Let me ', 'consider.'])
+      expect(deltas.map(d => d.thinkingId)).toEqual(['msg-thinking-1:0', 'msg-thinking-1:0'])
       expect(stops).toHaveLength(1)
+      expect(stops[0].thinkingId).toBe('msg-thinking-1:0')
     })
 
     it('does not emit thinking_stop for a tool_use content_block_stop', () => {
@@ -2189,10 +2239,10 @@ describe('MessagePersister', () => {
       expect(stored[0].name).toBe('compact')
     })
 
-    it('does not overwrite rich slash commands with init event strings', () => {
-      // Pre-set rich commands (e.g. from container HTTP response)
+    it('uses init slugs without losing rich command details', () => {
+      // Pre-set rich commands (e.g. legacy metadata or a container HTTP response)
       const richCommands = [
-        { name: 'compact', description: 'Clear conversation history', argumentHint: '<instructions>' },
+        { name: 'Order Canvas Print', description: 'Order a framed canvas', argumentHint: '<image>' },
       ]
       messagePersister.setSlashCommands(SESSION_ID, richCommands)
 
@@ -2203,16 +2253,17 @@ describe('MessagePersister', () => {
         type: 'system',
         subtype: 'init',
         session_id: 'claude-session-1',
-        slash_commands: ['compact', 'review'],
+        slash_commands: ['order-canvas-print', 'review'],
       })
 
-      // Should still have the rich commands, NOT overwritten by strings
       const stored = messagePersister.getSlashCommands(SESSION_ID)
-      expect(stored).toEqual(richCommands)
+      expect(stored).toEqual([
+        { name: 'order-canvas-print', description: 'Order a framed canvas', argumentHint: '<image>' },
+        { name: 'review', description: '', argumentHint: '' },
+      ])
 
-      // stream_start should include the rich commands
       const streamStarts = sseEvents.filter(e => e.type === 'stream_start')
-      expect(streamStarts[0].slashCommands).toEqual(richCommands)
+      expect(streamStarts[0].slashCommands).toEqual(stored)
     })
 
     it('broadcasts slash commands in stream_start when available', () => {

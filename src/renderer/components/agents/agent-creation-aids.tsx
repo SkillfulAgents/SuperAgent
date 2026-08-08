@@ -33,6 +33,8 @@ export interface AgentCreationAidsProps {
   onImportComplete: (result: ImportResult) => void | Promise<void>
   /** Optional className forwarded to the cards wrapper. */
   className?: string
+  /** Fires when the user opens browse / voice / import (forfeits signup template handoff). */
+  onAidOpened?: () => void
 }
 
 /**
@@ -41,7 +43,7 @@ export interface AgentCreationAidsProps {
  * home state. Callers decide what to do with the voice result / imported
  * agent — this component is pure UI + dialog plumbing.
  */
-export function AgentCreationAids({ onVoiceResult, onImportComplete, className }: AgentCreationAidsProps) {
+export function AgentCreationAids({ onVoiceResult, onImportComplete, className, onAidOpened }: AgentCreationAidsProps) {
   const hasVoiceConfigured = useIsVoiceAgentConfigured()
   const { data: discoverableAgents } = useDiscoverableAgents()
   const hasMarketplace = !!(discoverableAgents && discoverableAgents.length > 0)
@@ -52,6 +54,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
   const [voiceAgentConfig, setVoiceAgentConfig] = useState<VoiceAgentConfig | null>(null)
 
   const startVoiceAgent = useCallback(async () => {
+    onAidOpened?.()
     try {
       const res = await apiFetch('/api/stt/voice-agent-prompt?name=create-agent')
       if (!res.ok) throw new Error('Failed to load voice agent prompt')
@@ -80,7 +83,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
         description: error instanceof Error ? error.message : 'Please try again.',
       })
     }
-  }, [])
+  }, [onAidOpened])
 
   const handleVoiceAgentResult = useCallback(
     (_name: string, argsJson: string) => {
@@ -177,7 +180,10 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
             title="Browse Templates"
             icon={<Shapes className="h-4 w-4" />}
             ariaDescription="Opens the agent template marketplace"
-            onClick={() => setShowTemplatesDialog(true)}
+            onClick={() => {
+              onAidOpened?.()
+              setShowTemplatesDialog(true)
+            }}
           />
         )}
 
@@ -194,7 +200,10 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
           title="Import an Agent"
           icon={<ArrowDownToLine className="h-4 w-4" />}
           ariaDescription="Import an agent from a .agent or .zip template file"
-          onClick={() => setShowImportDialog(true)}
+          onClick={() => {
+            onAidOpened?.()
+            setShowImportDialog(true)
+          }}
         />
       </div>
 

@@ -111,12 +111,17 @@ vi.mock('drizzle-orm', () => ({
 
 const mockSettingsState = {
   containerRunner: 'docker' as string,
+  chromeProfileId: undefined as string | undefined,
+  hostBrowserProvider: undefined as string | undefined,
 }
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({
     container: { agentImage: 'test-image', containerRunner: mockSettingsState.containerRunner },
-    app: {},
+    app: {
+      chromeProfileId: mockSettingsState.chromeProfileId,
+      hostBrowserProvider: mockSettingsState.hostBrowserProvider,
+    },
   }),
   updateSettings: vi.fn(),
   // the runner auto-switch now persists via mutateSettings; apply the
@@ -149,8 +154,9 @@ vi.mock('./health-monitor', () => ({
   },
 }))
 
+const mockCopyChromeProfileData = vi.fn().mockReturnValue(false)
 vi.mock('@shared/lib/browser/chrome-profile', () => ({
-  copyChromeProfileData: vi.fn().mockReturnValue(false),
+  copyChromeProfileData: (...args: unknown[]) => mockCopyChromeProfileData(...args),
 }))
 
 vi.mock('@shared/lib/services/agent-service', () => ({}))
@@ -187,6 +193,8 @@ describe('containerManager.ensureRunning — env var construction', () => {
     vi.clearAllMocks()
     // Clear internal state by removing the client
     containerManager.removeClient('test-agent')
+    mockSettingsState.chromeProfileId = undefined
+    mockSettingsState.hostBrowserProvider = undefined
 
     mockGetOrCreateProxyToken.mockResolvedValue('synth-token-123')
     mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
@@ -242,6 +250,19 @@ describe('containerManager.ensureRunning — env var construction', () => {
     )
   })
 
+  it('caches the health-validated start result without another runtime query', async () => {
+    setupAccountMocks([])
+    mockStart.mockResolvedValue({ status: 'running', port: 4567 })
+
+    await containerManager.ensureRunning('test-agent')
+
+    expect(mockGetInfoFromRuntime).not.toHaveBeenCalled()
+    expect(containerManager.getCachedInfo('test-agent')).toEqual({
+      status: 'running',
+      port: 4567,
+    })
+  })
+
   it('sets PROXY_TOKEN from getOrCreateProxyToken return value', async () => {
     setupAccountMocks([])
     mockGetOrCreateProxyToken.mockResolvedValue('custom-proxy-token')
@@ -261,6 +282,37 @@ describe('containerManager.ensureRunning — env var construction', () => {
     const startOpts = mockStart.mock.calls[0][0]
     expect(startOpts.envVars.SUPERAGENT_HOST_TOKEN).toBe('hostc_test-token')
     expect(mockGetOrCreateHostToken).toHaveBeenCalledWith('test-agent')
+  })
+
+  it('waits for an asynchronous Chrome profile sync before starting the container', async () => {
+    setupAccountMocks([])
+    mockSettingsState.chromeProfileId = 'Default'
+    let finishProfileSync!: (copied: boolean) => void
+    mockCopyChromeProfileData.mockReturnValueOnce(new Promise<boolean>((resolve) => {
+      finishProfileSync = resolve
+    }))
+
+    const startPromise = containerManager.ensureRunning('test-agent')
+    await vi.waitFor(() => expect(mockCopyChromeProfileData).toHaveBeenCalledWith(
+      'Default',
+      '/workspace/test-agent/.browser-profile',
+    ))
+
+    expect(mockStart).not.toHaveBeenCalled()
+    finishProfileSync(true)
+    await startPromise
+    expect(mockStart).toHaveBeenCalledOnce()
+  })
+
+  it('does not copy a local profile into a workspace that uses the host browser', async () => {
+    setupAccountMocks([])
+    mockSettingsState.chromeProfileId = 'Default'
+    mockSettingsState.hostBrowserProvider = 'chrome'
+
+    await containerManager.ensureRunning('test-agent')
+
+    expect(mockCopyChromeProfileData).not.toHaveBeenCalled()
+    expect(mockStart.mock.calls[0][0].envVars.AGENT_BROWSER_USE_HOST).toBe('1')
   })
 
   it('CONNECTED_ACCOUNTS includes only active accounts, grouped by toolkitSlug', async () => {

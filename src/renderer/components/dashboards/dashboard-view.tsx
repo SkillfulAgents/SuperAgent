@@ -24,10 +24,10 @@ interface DashboardViewProps {
 export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) {
   useRenderTracker('DashboardView')
   const [dockDialogOpen, setDockDialogOpen] = useState(false)
-  const [iframeLoaded, setIframeLoaded] = useState(false)
   const [pollFast, setPollFast] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const [restarting, setRestarting] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [restartError, setRestartError] = useState<string | null>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const waitStartedAtRef = useRef<number | null>(null)
@@ -48,7 +48,6 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const trackingWait = isAgentRunning && (
     !artifactsLoaded
     || (dashboard != null && (dashboard.status === 'starting' || dashboard.status === 'stopped'))
-    || (dashboard?.status === 'running' && !iframeLoaded)
   )
 
   const waitElapsedMs = waitStartedAtRef.current === null
@@ -76,7 +75,6 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     canStart,
     startFailed: startAgent.isError,
     waitElapsedMs,
-    iframeLoaded,
   })
 
   const nextPollFast = viewState.kind === 'waiting' && viewState.pollFast
@@ -91,13 +89,9 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const dashboardAgentSlug = agent?.slug ?? agentSlug
   const iframeSrc = `${baseUrl}${buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)}`
 
-  useEffect(() => {
-    setIframeLoaded(false)
-  }, [iframeSrc])
-
   const handleRefresh = useCallback(() => {
-    setIframeLoaded(false)
     if (iframeRef.current) {
+      setRefreshing(true)
       iframeRef.current.src = iframeSrc
     }
   }, [iframeSrc])
@@ -115,7 +109,6 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     autoStartedRef.current = agentSlug
     setRestarting(true)
     setRestartError(null)
-    setIframeLoaded(false)
     waitStartedAtRef.current = Date.now()
     try {
       if (isAgentRunning) {
@@ -139,14 +132,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   }, [agent, agentSlug, isAgentRunning, isAgentStarting, canStart, startAgent])
 
   const showFrame = isAgentRunning && dashboard?.status === 'running'
-  const showOverlay = viewState.kind !== 'ready'
   const actionPending = restarting || stopAgent.isPending || startAgent.isPending
-
-  // The iframe unmounts whenever the frame is hidden, so its load state must not
-  // outlive it and mark the next mount ready before that document loads.
-  useEffect(() => {
-    if (!showFrame) setIframeLoaded(false)
-  }, [showFrame])
 
   if (!showFrame) {
     return (
@@ -190,8 +176,17 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           <Button variant="ghost" size="sm" onClick={handlePopOut} title="Open in new window">
             <ExternalLink className="h-3 w-3" />
           </Button>
-          <Button variant="ghost" size="sm" onClick={handleRefresh} title="Refresh">
-            <RefreshCw className="h-3 w-3" />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title={refreshing ? 'Refreshing…' : 'Refresh'}
+            aria-label={refreshing ? 'Refreshing dashboard' : 'Refresh dashboard'}
+          >
+            {refreshing
+              ? <Loader2 className="h-3 w-3 animate-spin" />
+              : <RefreshCw className="h-3 w-3" />}
           </Button>
         </div>
       </div>
@@ -204,20 +199,6 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
         dashboardName={dashboard?.name || dashboardSlug}
       />
       <div className="flex-1 min-h-0 relative">
-        {showOverlay && (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-background text-muted-foreground p-8">
-            <DashboardStatusBody
-              viewState={viewState}
-              startErrorMessage={startAgent.error?.message}
-              restartErrorMessage={restartError ?? undefined}
-              onRetry={handleStartAgent}
-              onRestart={handleRestartAgent}
-              retryPending={startAgent.isPending}
-              restartPending={actionPending}
-              canStart={canStart}
-            />
-          </div>
-        )}
         <iframe
           ref={iframeRef}
           src={iframeSrc}
@@ -225,7 +206,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           title={dashboard?.name || dashboardSlug}
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
           allow="microphone; camera"
-          onLoad={() => setIframeLoaded(true)}
+          onLoad={() => setRefreshing(false)}
         />
       </div>
     </div>

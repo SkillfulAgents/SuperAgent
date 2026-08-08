@@ -39,6 +39,7 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
@@ -902,30 +903,37 @@ async function generateAndUpdateSessionNameAsync(
   agentName: string
 ): Promise<void> {
   let sessionName: string | null = null
-  try {
-    const anthropic = getLlmClient()
-    sessionName = await createSummarizerText(anthropic, {
-      model: getSummarizerModel(),
-      messages: [
-        {
-          role: 'user',
-          content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
+  // The E2E mock avoids all real provider calls — but this host-direct SDK
+  // call bypassed it, so every test session made a doomed HTTPS round trip
+  // (plus SDK retries) and logged an auth-error stack. Skip straight to the
+  // truncated-message fallback below.
+  const skipProviderNaming = process.env.E2E_MOCK === 'true'
+  if (!skipProviderNaming) {
+    try {
+      const anthropic = getLlmClient()
+      sessionName = await createSummarizerText(anthropic, {
+        model: getSummarizerModel(),
+        messages: [
+          {
+            role: 'user',
+            content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
 
 "${message}"
 
 Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
-        },
-      ],
-    })
-  } catch (error) {
-    console.error('Failed to generate session name after retries:', error)
+          },
+        ],
+      })
+    } catch (error) {
+      console.error('Failed to generate session name after retries:', error)
+    }
   }
   try {
     // Naming can fail outright (misconfigured summarizer model) or return no
     // text (thinking-first ruminators like small qwen burn the whole budget);
     // fall back to the truncated first message so the session is still
     // identifiable in the sidebar instead of staying "New Session".
-    if (!sessionName) {
+    if (!sessionName && !skipProviderNaming) {
       console.warn(`Session name generation returned no text; falling back to truncated message for session ${sessionId}`)
     }
     const finalName = sessionName
@@ -959,7 +967,10 @@ agents.get('/', async (c) => {
         .where(eq(agentAcl.userId, userId))
       const agentLimit = pLimit(10)
       const agents = await Promise.all(
-        rows.map((r) => agentLimit(() => getAgentWithStatus(r.agentSlug)))
+        rows.map((r) => agentLimit(() => getAgentWithStatus(
+          r.agentSlug,
+          { includeSummary: false },
+        )))
       )
       agentList = agents.filter((a): a is ApiAgent => a !== null)
       // The ACL query has no ORDER BY, so rows arrive in index-scan order — i.e.
@@ -1008,7 +1019,7 @@ agents.post('/', async (c) => {
 agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const agent = await getAgentWithStatus(slug)
+    const agent = await getAgentWithStatus(slug, { includeSummary: false })
 
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
@@ -1421,9 +1432,11 @@ agents.post('/:id/start', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
 
-
     await containerManager.ensureRunning(slug)
-    const agent = await getAgentWithStatus(slug)
+
+    // Skip the session-summary enrichment: it stats every transcript, and every
+    // caller of this command discards the body and refetches agent data anyway.
+    const agent = await getAgentWithStatus(slug, { includeSummary: false })
 
     // Note: agent_status_changed is broadcast by containerManager.ensureRunning()
 
@@ -2253,8 +2266,12 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       if (slashCommands.length === 0) {
         const meta = await getSessionMetadata(agentSlug, sessionId)
         if (meta?.slashCommands && meta.slashCommands.length > 0) {
-          slashCommands = meta.slashCommands
+          const repaired = repairLegacySlashCommands(meta.slashCommands)
+          slashCommands = repaired.commands
           messagePersister.setSlashCommands(sessionId, slashCommands)
+          if (repaired.changed) {
+            updateSessionMetadata(agentSlug, sessionId, { slashCommands }).catch(console.error)
+          }
         }
       }
       const backgroundTasks = messagePersister.getActiveBackgroundTasks(sessionId)
@@ -5688,29 +5705,43 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
       document.title = (name || artifactSlug) + ' \\u2014 Gamut';
     }
 
-    async function fetchDashboardName() {
+    // undefined means the status check itself was inconclusive; null means
+    // it completed and the requested dashboard was absent.
+    async function fetchDashboard() {
       try {
         const res = await fetch(basePath + '/artifacts');
-        if (res.ok) {
-          const artifacts = await res.json();
-          const d = Array.isArray(artifacts) && artifacts.find(a => a.slug === artifactSlug);
-          if (d && d.name) { setTitle(d.name); return d.name; }
-        }
+        if (!res.ok) return undefined;
+        const artifacts = await res.json();
+        if (!Array.isArray(artifacts)) return undefined;
+        const dashboard = artifacts.find(a => a.slug === artifactSlug) || null;
+        if (dashboard && dashboard.name) setTitle(dashboard.name);
+        return dashboard;
       } catch {}
-      return null;
+      return undefined;
+    }
+
+    function showDashboard() {
+      loadingEl.remove();
+      const iframe = document.createElement('iframe');
+      iframe.src = dashboardUrl;
+      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads';
+      iframe.allow = 'microphone; camera';
+      document.body.appendChild(iframe);
     }
 
     async function run() {
       try {
-        // 1. Resolve dashboard name (works even when agent is stopped)
-        await fetchDashboardName();
+        // 1. Seed both dashboard metadata and live status. This works while the
+        // agent is stopped too, though that fallback reports stopped.
+        const initialDashboard = await fetchDashboard();
 
         // 2. Check agent status
         const agentRes = await fetch(basePath);
         if (!agentRes.ok) { throw new Error('Failed to fetch agent info'); }
         const agent = await agentRes.json();
+        const agentWasRunning = agent.status === 'running';
 
-        if (agent.status !== 'running') {
+        if (!agentWasRunning) {
           // 3. Start the agent
           statusEl.textContent = 'Starting agent…';
           const startRes = await fetch(basePath + '/start', { method: 'POST' });
@@ -5720,17 +5751,24 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
           }
         }
 
+        // The initial artifacts request already gave us a fresh status. When
+        // both processes were running, avoid flashing a redundant wait screen
+        // and let the iframe paint immediately.
+        if (agentWasRunning && initialDashboard !== undefined) {
+          if (!initialDashboard) { throw new Error('Dashboard not found.'); }
+          if (initialDashboard.status === 'crashed') { throw new Error('Dashboard crashed.'); }
+          if (initialDashboard.status === 'running') {
+            showDashboard();
+            return;
+          }
+        }
+
         // 4. Poll until dashboard is running
         statusEl.textContent = 'Waiting for dashboard…';
         await pollDashboard();
 
         // 5. Show the dashboard
-        loadingEl.remove();
-        const iframe = document.createElement('iframe');
-        iframe.src = dashboardUrl;
-        iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
-        iframe.allow = 'microphone; camera';
-        document.body.appendChild(iframe);
+        showDashboard();
       } catch (err) {
         statusEl.textContent = err.message;
         statusEl.classList.add('error');

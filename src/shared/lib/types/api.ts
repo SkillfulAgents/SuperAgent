@@ -166,7 +166,7 @@ export interface ApiMessage {
    * thinking-text persistence. `durationMs` is derived from transcript entry
    * timestamps and absent when underivable.
    */
-  thinking?: Array<{ text: string; durationMs?: number }>
+  thinking?: Array<{ id?: string; text: string; durationMs?: number }>
 }
 
 /**
@@ -305,6 +305,10 @@ export interface ApiSkillsetConfig {
   badgeLabel?: string
   showUrl: boolean
   publishMode: 'pull_request' | 'hosted_submit' | 'none'
+  credential?: {
+    type: 'token'
+    tokenPreview: string
+  }
   error?: string
 }
 

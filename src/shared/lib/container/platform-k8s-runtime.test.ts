@@ -417,6 +417,18 @@ describe('PlatformK8sRuntimeClient operability', () => {
     mockCaptureException.mockClear()
   })
 
+  it('returns the ready pod state from start()', async () => {
+    installHttpsMock(() => ({
+      statusCode: 200,
+      body: JSON.stringify({
+        status: { phase: 'Running', containerStatuses: [{ name: 'agent', ready: true }] },
+      }),
+    }))
+    const client = new PlatformK8sRuntimeClient({ agentId: 'agent-a', envVars: {} })
+
+    await expect(client.start()).resolves.toEqual({ status: 'running', port: 3000 })
+  })
+
   it('fetches pod logs via the Kubernetes log API', async () => {
     installHttpsMock((path) => {
       expect(path).toContain('/log?container=agent&tailLines=20')

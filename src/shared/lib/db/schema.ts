@@ -29,6 +29,27 @@ export const user = sqliteTable('user', {
   mustChangePassword: integer('must_change_password', { mode: 'boolean' }).default(false),
 })
 
+/**
+ * Stable installed-mobile-device identity. Access sessions rotate underneath
+ * this row; the refresh secret is stored only as a SHA-256 hash and deleting
+ * the row revokes every session in the device family through the FK below.
+ */
+export const mobileDevice = sqliteTable('mobile_device', {
+  id: text('id').primaryKey(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  refreshTokenHash: text('refresh_token_hash').notNull().unique(),
+  deviceName: text('device_name'),
+  platform: text('platform'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  userIdIdx: index('mobile_device_user_id_idx').on(table.userId),
+  expiresAtIdx: index('mobile_device_expires_at_idx').on(table.expiresAt),
+}))
+
 export const authSession = sqliteTable('session', {
   id: text('id').primaryKey(),
   expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
@@ -52,8 +73,15 @@ export const authSession = sqliteTable('session', {
    * would be a claim we cannot make about them.
    */
   creationMethod: text('creation_method'),
+  /**
+   * Stable mobile-device family for an access session. Null for browser and
+   * desktop token-exchange sessions. Deleting the device revokes all access
+   * sessions minted from its refresh credential.
+   */
+  deviceId: text('device_id').references(() => mobileDevice.id, { onDelete: 'cascade' }),
 }, (table) => ({
   userIdIdx: index('session_userId_idx').on(table.userId),
+  deviceIdIdx: index('session_device_id_idx').on(table.deviceId),
 }))
 
 export const authAccount = sqliteTable('account', {
@@ -91,6 +119,22 @@ export const tokenExchangeJti = sqliteTable('token_exchange_jti', {
   expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   expiresAtIdx: index('token_exchange_jti_expires_at_idx').on(table.expiresAt),
+}))
+
+// Single-use pairing tokens for the mobile app connect flow. Only the sha256
+// hex of the token is stored — the plaintext (`mp_…`) exists solely in the QR
+// code / deep link handed to the phone. Redemption is an atomic
+// DELETE … RETURNING on the hash, so a token can mint at most one session.
+// Rows are short-lived (5-minute TTL) and swept opportunistically on mint.
+export const mobilePairingToken = sqliteTable('mobile_pairing_token', {
+  tokenHash: text('token_hash').primaryKey(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  expiresAtIdx: index('mobile_pairing_token_expires_at_idx').on(table.expiresAt),
 }))
 
 export const verification = sqliteTable('verification', {
@@ -233,6 +277,43 @@ export const notifications = sqliteTable('notifications', {
   sessionIdIdx: index('notifications_session_id_idx').on(table.sessionId),
   createdAtIdx: index('notifications_created_at_idx').on(table.createdAt),
 }))
+
+/**
+ * Web Push subscriptions — one row per browser/device that opted into push
+ * (installed-PWA "Enable on this device" flow). Unlike `notifications` above,
+ * these rows ARE per-user in auth mode: a subscription addresses one person's
+ * physical device, so `user_id` is the recipient whose settings and agent
+ * access gate each send. Plain text (no FK) because local mode has no user
+ * rows at all — null user_id means the single local user owns the device.
+ *
+ * `origin` is the origin the PWA was installed from (the host is reachable at
+ * several — localhost, LAN IP, tailnet name — but a subscription is bound to
+ * exactly one), and click-through `navigate` URLs must be absolute on it.
+ */
+export const pushSubscriptions = sqliteTable('push_subscriptions', {
+  id: text('id').primaryKey(),
+  endpoint: text('endpoint').notNull().unique(),
+  keysP256dh: text('keys_p256dh').notNull(),
+  keysAuth: text('keys_auth').notNull(),
+  origin: text('origin').notNull(),
+  userId: text('user_id'),
+  deviceName: text('device_name'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  userIdIdx: index('push_subscriptions_user_id_idx').on(table.userId),
+}))
+
+// Single-row VAPID keypair identifying this install to push services.
+// Must stay stable: browsers bind subscriptions to the public key, so a
+// regenerated pair invalidates every existing push_subscriptions row
+// (vapid-keys.ts drops them when it mints a fresh pair).
+export const pushVapidKeys = sqliteTable('push_vapid_keys', {
+  id: integer('id').primaryKey(),
+  publicKey: text('public_key').notNull(),
+  privateKey: text('private_key').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+})
 
 // Proxy tokens - synthetic tokens for agent-to-proxy authentication
 export const proxyTokens = sqliteTable('proxy_tokens', {
@@ -576,6 +657,10 @@ export type UserSettingsRow = typeof userSettings.$inferSelect
 export type NewUserSettingsRow = typeof userSettings.$inferInsert
 export type User = typeof user.$inferSelect
 export type AuthSession = typeof authSession.$inferSelect
+export type MobileDevice = typeof mobileDevice.$inferSelect
+export type NewMobileDevice = typeof mobileDevice.$inferInsert
+export type MobilePairingToken = typeof mobilePairingToken.$inferSelect
+export type NewMobilePairingToken = typeof mobilePairingToken.$inferInsert
 export type AuthAccount = typeof authAccount.$inferSelect
 export type Verification = typeof verification.$inferSelect
 export type ApiScopePolicy = typeof apiScopePolicies.$inferSelect

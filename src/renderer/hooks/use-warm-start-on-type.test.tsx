@@ -90,6 +90,30 @@ describe('useWarmStartOnType', () => {
     })
   })
 
+  it('does not start from a programmatic prefill until the user edits further', async () => {
+    const { result, rerender } = renderHook(
+      ({ message }) =>
+        useWarmStartOnType({ agentSlug: 'agent-1', message, enabled: true }),
+      { wrapper, initialProps: { message: '' } },
+    )
+
+    act(() => {
+      result.current.noteProgrammaticChange('marketing prompt')
+    })
+    rerender({ message: 'marketing prompt' })
+
+    await act(async () => {})
+    expect(mutate).not.toHaveBeenCalled()
+
+    rerender({ message: 'marketing prompt edited' })
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledWith(
+        { slug: 'agent-1', source: 'warm-start' },
+        expect.any(Object),
+      )
+    })
+  })
+
   it('creates then starts when ensureAgent is provided', async () => {
     const { rerender } = renderHook(
       ({ message }) =>

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
+import { runInNewContext } from 'node:vm'
 
 // ============================================================================
 // Mocks — must be declared before import
@@ -539,7 +540,7 @@ import {
   exportSkill,
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
-import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
+import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
 import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
@@ -601,6 +602,57 @@ async function postFormData(app: Hono, url: string, body: FormData): Promise<Res
     body,
   })
 }
+
+// ============================================================================
+// Standalone dashboard wrapper
+// ============================================================================
+
+describe('GET /:id/artifacts/:artifactSlug/view', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+  })
+
+  it('reuses the initial running status instead of entering the poll loop', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
+    const html = await res.text()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { slug: 'sales', name: 'Sales', status: 'running' },
+      ]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'running' }), { status: 200 }))
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+    const loadingRemove = vi.fn()
+    const appendChild = vi.fn()
+    const iframe: Record<string, string> = {}
+    const statusElement = { textContent: '', classList: { add: vi.fn() } }
+    const loadingElement = { remove: loadingRemove }
+    const document = {
+      title: '',
+      getElementById: (id: string) => id === 'status' ? statusElement : loadingElement,
+      createElement: () => iframe,
+      body: { appendChild },
+    }
+
+    expect(script).toBeDefined()
+    runInNewContext(script!, {
+      document,
+      fetch: fetchMock,
+      setTimeout,
+    })
+
+    await vi.waitFor(() => {
+      expect(appendChild).toHaveBeenCalledWith(iframe)
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/agents/test-agent/artifacts')
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/agents/test-agent')
+    expect(loadingRemove).toHaveBeenCalledOnce()
+    expect(iframe.src).toBe('/api/agents/test-agent/artifacts/sales/')
+    expect(iframe.sandbox).toContain('allow-downloads')
+  })
+})
 
 // ============================================================================
 // Shared-agent connection projections
@@ -944,6 +996,77 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     expect(res.status).toBe(200)
     expect(sessionIsKnown).toHaveBeenCalledWith('authorized-agent', 'new-session')
     expect(mockStreamSSE).toHaveBeenCalledOnce()
+  })
+})
+
+// ============================================================================
+// Agent startup — POST /:id/start
+// ============================================================================
+
+describe('agent startup — POST /:id/start', () => {
+  const runningAgent = {
+    slug: 'test-agent',
+    displaySlug: 'test-agent',
+    name: 'Test Agent',
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    status: 'running' as const,
+    containerPort: 3456,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    vi.mocked(getAgentWithStatus).mockResolvedValue(runningAgent)
+  })
+
+  afterEach(() => {
+    // Restore the file-level default so a pending/rejected mock from these
+    // tests doesn't leak into later describe blocks.
+    vi.mocked(containerManager.ensureRunning).mockReset()
+  })
+
+  it('does not resolve until the container has become healthy', async () => {
+    let resolveStart!: (value: unknown) => void
+    vi.mocked(containerManager.ensureRunning).mockReturnValue(new Promise((resolve) => {
+      resolveStart = resolve
+    }) as never)
+
+    let settled = false
+    const responsePromise = Promise.resolve(createApp()
+      .request('http://localhost/api/agents/test-agent/start', { method: 'POST' }))
+      .then((response) => {
+        settled = true
+        return response
+      })
+
+    await vi.waitFor(() => expect(containerManager.ensureRunning).toHaveBeenCalledWith('test-agent'))
+    expect(settled).toBe(false)
+    // The identity read must wait for health so the response reflects the
+    // post-start status.
+    expect(getAgentWithStatus).not.toHaveBeenCalled()
+
+    resolveStart({})
+    const response = await responsePromise
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      slug: 'test-agent',
+      status: 'running',
+      containerPort: 3456,
+    })
+    expect(getAgentWithStatus).toHaveBeenCalledWith('test-agent', { includeSummary: false })
+  })
+
+  it('returns the startup error when container health never succeeds', async () => {
+    vi.mocked(containerManager.ensureRunning).mockRejectedValue(new Error('Container failed to become healthy'))
+
+    const response = await createApp().request(
+      'http://localhost/api/agents/test-agent/start',
+      { method: 'POST' },
+    )
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({ error: 'Container failed to become healthy' })
   })
 })
 
@@ -4694,6 +4817,28 @@ describe('GET /api/agents (enriched summary)', () => {
     // Summary fields should be present even in auth mode
     expect(body[0]).toHaveProperty('hasActiveSessions')
     expect(body[0]).toHaveProperty('dashboards')
+    expect(getAgentWithStatus).toHaveBeenCalledWith('agent-1', { includeSummary: false })
+  })
+
+  it('loads a single agent without a redundant service summary pass', async () => {
+    const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
+    vi.mocked(getAgentWithStatus).mockResolvedValue(baseAgent)
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-1'],
+      sessionCount: 1,
+      lastActivityAt: new Date('2026-01-01T12:00:00Z'),
+    })
+
+    const res = await getReq(app, '/api/agents/agent-1')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      slug: 'agent-1',
+      sessionCount: 1,
+      lastActivityAt: '2026-01-01T12:00:00.000Z',
+    })
+    expect(getAgentWithStatus).toHaveBeenCalledWith('agent-1', { includeSummary: false })
+    expect(getSessionSummary).toHaveBeenCalledTimes(1)
   })
 
   it('sorts the auth-mode list newest-first', async () => {

@@ -54,6 +54,13 @@ const authProjects = [
     dataDir: path.join(e2eDataDir, 'session-scope'),
     viteCacheDir: path.join(e2eDataDir, '.vite', 'session-scope'),
   },
+  {
+    name: 'auth-mobile-pairing',
+    testMatch: '**/mobile-pairing.spec.ts',
+    port: e2ePort + 6,
+    dataDir: path.join(e2eDataDir, 'mobile-pairing'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'mobile-pairing'),
+  },
 ].map((project, index) => ({
   ...project,
   baseURL: index === 0 && process.env.E2E_BASE_URL

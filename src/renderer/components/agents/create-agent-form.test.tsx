@@ -4,7 +4,7 @@ import { act } from '@testing-library/react'
 import { CreateAgentForm } from './create-agent-form'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import {
-  takePendingSessionSeed,
+  peekPendingSessionSeed,
   clearPendingSessionSeeds,
 } from '@renderer/context/pending-session-seed'
 
@@ -39,10 +39,30 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
 
 vi.mock('@renderer/hooks/use-settings', () => ({
   useWarmStartOnTypeEnabled: () => false,
+  useModelSettings: () => ({ data: undefined }),
 }))
 
 vi.mock('@renderer/hooks/use-warm-start-on-type', () => ({
-  useWarmStartOnType: () => ({ awaitWarmStart: async () => null }),
+  useWarmStartOnType: () => ({ awaitWarmStart: async () => null, noteProgrammaticChange: vi.fn() }),
+}))
+
+vi.mock('@renderer/context/nav-transient-context', () => ({
+  useNavTransient: () => ({ signupHandoff: null, setSignupHandoff: vi.fn() }),
+}))
+
+vi.mock('@renderer/components/messages/composer-options', () => ({
+  ComposerOptions: () => null,
+  findCatalogModel: () => undefined,
+  useComposerOptions: () => ({
+    model: 'opus',
+    catalog: [],
+    toRuntimeOptions: () => ({}),
+  }),
+}))
+
+vi.mock('@renderer/hooks/use-agent-templates', () => ({
+  useDiscoverableAgents: () => ({ data: [], isError: false }),
+  slugFromAgentPath: vi.fn(),
 }))
 
 vi.mock('@renderer/hooks/use-start-onboarding-session', () => ({
@@ -131,7 +151,7 @@ describe('CreateAgentForm', () => {
         model: 'opus',
       }),
     )
-    expect(takePendingSessionSeed('session-123')).toMatchObject({
+    expect(peekPendingSessionSeed('session-123')).toMatchObject({
       localId: 'srv-msg-uuid',
       uuid: 'srv-msg-uuid',
       text: 'Hello from wizard',
@@ -153,7 +173,20 @@ describe('CreateAgentForm', () => {
       await expect(capturedComposerOptions.onSubmit('Hello from wizard')).rejects.toThrow('boom')
     })
 
-    expect(takePendingSessionSeed('session-123')).toBeUndefined()
+    expect(peekPendingSessionSeed('session-123')).toBeUndefined()
     expect(mockNavigate).not.toHaveBeenCalled()
+  })
+
+  it('does not make a created session retryable when wizard finalization fails', async () => {
+    const onAgentCreated = vi.fn().mockRejectedValue(new Error('settings failed'))
+    renderWithProviders(<CreateAgentForm onAgentCreated={onAgentCreated} />)
+
+    await act(async () => {
+      await expect(capturedComposerOptions.onSubmit('Hello from wizard')).resolves.toBeUndefined()
+    })
+
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledTimes(1)
+    expect(peekPendingSessionSeed('session-123')).toBeDefined()
+    expect(mockNavigate).toHaveBeenCalled()
   })
 })

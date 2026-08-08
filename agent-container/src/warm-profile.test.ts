@@ -52,6 +52,23 @@ describe('warmProfileKey', () => {
     expect(a).not.toBe(b)
   })
 
+  it('separates profiles whose model-backed subagent catalogs differ', () => {
+    const gpt = warmProfileKey(
+      warmProfileSchema.parse({
+        ...base,
+        subagentModels: [{ id: 'openai/gpt-5.5', label: 'GPT 5.5' }],
+      })
+    )
+    const grok = warmProfileKey(
+      warmProfileSchema.parse({
+        ...base,
+        subagentModels: [{ id: 'x-ai/grok-4.5', label: 'Grok 4.5' }],
+      })
+    )
+
+    expect(gpt).not.toBe(grok)
+  })
+
   it('treats an absent field and an explicitly undefined one as the same profile', () => {
     const absent = warmProfileKey(warmProfileSchema.parse({ model: 'm' }))
     const undef = warmProfileKey(warmProfileSchema.parse({ model: 'm', effort: undefined, speed: undefined }))

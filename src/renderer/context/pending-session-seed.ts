@@ -1,6 +1,7 @@
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 
-// Wizard/CreateAgentForm run outside AgentShell; shell drains this on first read.
+// Wizard/CreateAgentForm run outside AgentShell; the shell copies a seed during
+// render and clears it only after that render commits.
 const seeds = new Map<string, PendingMessage>()
 
 export function seedPendingSessionMessage(
@@ -18,12 +19,14 @@ export function seedPendingSessionMessage(
   })
 }
 
-/** Take and clear a seed written before AgentShell mounted. */
-export function takePendingSessionSeed(sessionId: string): PendingMessage | undefined {
-  const seeded = seeds.get(sessionId)
-  if (!seeded) return undefined
+/** Read a seed without consuming it so render retries see the same value. */
+export function peekPendingSessionSeed(sessionId: string): PendingMessage | undefined {
+  return seeds.get(sessionId)
+}
+
+/** Clear a seed only after the AgentShell render that copied it has committed. */
+export function clearPendingSessionSeed(sessionId: string): void {
   seeds.delete(sessionId)
-  return seeded
 }
 
 /** Test-only: drop leftover seeds between cases. */

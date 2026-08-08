@@ -27,7 +27,7 @@ export function ProviderErrorCard({ message, 'data-testid': testId }: ProviderEr
 
   return (
     <div
-      className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3"
+      className="rounded-lg border border-amber-500/50 bg-amber-50 p-3 dark:bg-amber-950"
       data-testid={testId ?? 'provider-error-card'}
     >
       <div className="flex items-center gap-2">

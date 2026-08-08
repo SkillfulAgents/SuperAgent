@@ -7,6 +7,44 @@ import { PendingRequestStack } from './pending-request-stack'
 import { HelpCircle, Key, Terminal } from 'lucide-react'
 
 describe('RequestItemShell', () => {
+  describe('opaque card background', () => {
+    it.each([
+      {
+        state: 'pending',
+        props: {},
+      },
+      {
+        state: 'read-only',
+        props: { readOnly: {} },
+      },
+      {
+        state: 'completed',
+        props: {
+          completed: {
+            icon: <Key />,
+            label: 'API_KEY',
+            statusLabel: 'Provided',
+            isSuccess: true,
+          },
+        },
+      },
+    ])('uses the opaque card token in the $state state', ({ props }) => {
+      render(
+        <RequestItemShell
+          title="Test Request"
+          theme="blue"
+          data-testid="request-card"
+          {...props}
+        >
+          <div>Content</div>
+        </RequestItemShell>
+      )
+
+      expect(screen.getByTestId('request-card')).toHaveClass('bg-card')
+      expect(screen.getByTestId('request-card')).not.toHaveClass('bg-muted/30')
+    })
+  })
+
   describe('pending state (default)', () => {
     it('renders title chip and children', () => {
       render(

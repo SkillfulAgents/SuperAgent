@@ -63,7 +63,10 @@ function isPrivateIPv6(host: string): boolean {
 }
 
 export function isLocalhostHost(hostname: string): boolean {
-  const lower = hostname.toLowerCase()
+  // Root label stripped for the same reason as isPrivateHost below. The two must agree on what
+  // counts as loopback: isDeploymentUrlAllowed routes on this one, and a host it calls public
+  // while isPrivateHost calls it private falls through to the plain https check.
+  const lower = hostname.toLowerCase().replace(/\.$/, '')
   if (lower === 'localhost' || lower.endsWith('.localhost')) return true
   if (lower === 'ip6-localhost' || lower === 'ip6-loopback') return true
   if (lower === '0.0.0.0') return true
@@ -76,7 +79,9 @@ export function isLocalhostHost(hostname: string): boolean {
 }
 
 export function isPrivateHost(hostname: string): boolean {
-  const lower = hostname.toLowerCase()
+  // A trailing dot is the root label, so 'localhost.' is the same name to a resolver and
+  // survives URL parsing. Strip it before every check rather than treating it as another host.
+  const lower = hostname.toLowerCase().replace(/\.$/, '')
   if (PRIVATE_HOSTNAMES.has(lower)) return true
   if (lower.endsWith('.localhost')) return true
   if (lower.endsWith('.local')) return true

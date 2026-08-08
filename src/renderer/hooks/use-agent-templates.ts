@@ -8,6 +8,11 @@ import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import type { ApiAgent, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
 import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 
+/** Normalize discoverable agent path `agents/<dir>/` → `<dir>` (website template_slug). */
+export function slugFromAgentPath(path: string): string {
+  return path.replace(/^agents\//, '').replace(/\/$/, '')
+}
+
 // Alias preserves the prior export name for downstream consumers while we
 // route everything through the canonical `ApiItemStatus`.
 type ApiAgentTemplateStatus = ApiItemStatus

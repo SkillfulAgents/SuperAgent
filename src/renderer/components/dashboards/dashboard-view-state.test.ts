@@ -13,7 +13,6 @@ function input(overrides: Partial<DashboardViewStateInput> = {}): DashboardViewS
     canStart: true,
     startFailed: false,
     waitElapsedMs: 0,
-    iframeLoaded: false,
     ...overrides,
   }
 }
@@ -60,22 +59,10 @@ describe('resolveDashboardViewState', () => {
     })
   })
 
-  it('keeps waiting (no fast poll) until the iframe has painted after status is running', () => {
-    const beforePaint = resolveDashboardViewState(
-      input({ dashboard: { status: 'running' }, iframeLoaded: false }),
-    )
-    const afterPaint = resolveDashboardViewState(
-      input({ dashboard: { status: 'running' }, iframeLoaded: true }),
-    )
-
-    expect(beforePaint).toEqual({
-      kind: 'waiting',
-      message: 'Waiting for dashboard…',
-      showSpinner: true,
-      slow: false,
-      pollFast: false,
-    })
-    expect(afterPaint).toEqual({ kind: 'ready' })
+  it('is ready as soon as dashboard status is running', () => {
+    expect(
+      resolveDashboardViewState(input({ dashboard: { status: 'running' } })),
+    ).toEqual({ kind: 'ready' })
   })
 
   it('treats starting the same as queued: one wait label', () => {
@@ -105,11 +92,6 @@ describe('resolveDashboardViewState', () => {
       condition: 'the dashboard is queued',
       overrides: { dashboard: { status: 'stopped' as const } },
       pollFastBeforeBound: true,
-    },
-    {
-      condition: 'the iframe has not loaded',
-      overrides: { dashboard: { status: 'running' as const }, iframeLoaded: false },
-      pollFastBeforeBound: false,
     },
   ])('acknowledges every slow wait after 120s when $condition', ({
     overrides,

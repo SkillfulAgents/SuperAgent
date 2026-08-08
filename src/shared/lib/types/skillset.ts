@@ -36,6 +36,22 @@ export type SkillProvider = 'github' | 'platform' | 'public'
 /** Provider-specific serialized data owned by the concrete provider */
 export type SkillsetProviderData = Record<string, unknown>
 
+/** A secret credential stored separately from skillset/provider metadata. */
+export interface SkillsetCredential {
+  id: string
+  type: 'token'
+  token: string
+  tokenPreview: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** Request-scoped credential used while validating a repository. Never persisted. */
+export type SkillsetCredentialInput = {
+  type: 'token'
+  token: string
+}
+
 /** A configured skillset in user settings */
 export interface SkillsetConfig {
   id: string // deterministic slug from URL

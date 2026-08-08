@@ -41,6 +41,7 @@ import {
   RuntimeUnavailableSidebarBanner,
   RuntimeCheckingSidebarBanner,
   RuntimePullingSidebarBanner,
+  ServicesDegradedSidebarBanner,
   SidebarBannerStack,
   type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
@@ -825,6 +826,7 @@ export function AppSidebar() {
       : 'idle'
 
   const readiness = runtimeStatus?.runtimeReadiness
+  const servicesInitError = runtimeStatus?.servicesInitError ?? null
   const isRuntimeUnavailable = readiness?.status === 'RUNTIME_UNAVAILABLE' || readiness?.status === 'ERROR'
   const isPullingOrBuilding = readiness?.status === 'PULLING_IMAGE'
   const isChecking = readiness?.status === 'CHECKING'
@@ -914,9 +916,10 @@ export function AppSidebar() {
                 SidebarBannerStack wrapper owns horizontal padding, inter-banner
                 gap, and trailing space; render it only when at least one banner
                 is visible to avoid a stray padded div. */}
-            {(!isOnline || isRuntimeUnavailable || isChecking || isPullingOrBuilding || isFirewallBlocked) && (
+            {(!isOnline || isRuntimeUnavailable || isChecking || isPullingOrBuilding || isFirewallBlocked || servicesInitError) && (
               <SidebarBannerStack>
                 {!isOnline && <OfflineSidebarBanner />}
+                {servicesInitError && <ServicesDegradedSidebarBanner message={servicesInitError} />}
                 {isRuntimeUnavailable && (
                   <RuntimeUnavailableSidebarBanner
                     message={readiness?.message}

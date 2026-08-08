@@ -610,13 +610,15 @@ class ContainerManager {
         envVars['AGENT_ID'] = agentId
       }
 
-      // Copy Chrome profile data into workspace if configured
+      // Seed the built-in container browser from the selected Chrome profile.
+      // A host-browser provider uses its own dedicated profile, so copying the
+      // same data into the mounted workspace would only delay container start.
       const chromeProfileId = settings.app?.chromeProfileId
-      if (chromeProfileId) {
+      if (chromeProfileId && !settings.app?.hostBrowserProvider) {
         const workspaceDir = getAgentWorkspaceDir(agentId)
         const browserProfileDir = path.join(workspaceDir, '.browser-profile')
-        if (copyChromeProfileData(chromeProfileId, browserProfileDir)) {
-          console.log(`[ContainerManager] Copied Chrome profile "${chromeProfileId}" to workspace`)
+        if (await copyChromeProfileData(chromeProfileId, browserProfileDir)) {
+          console.log(`[ContainerManager] Synchronized Chrome profile "${chromeProfileId}" to workspace`)
         }
       }
 
@@ -673,7 +675,7 @@ class ContainerManager {
       // drops that one mount and the container still comes up. Surface the same
       // mount-health warning banner with a macOS-specific hint instead of
       // failing the whole agent.
-      await client.start({
+      const startedInfo = await client.start({
         envVars,
         additionalVolumes,
         onMountDropped: (hostPath) => {
@@ -690,9 +692,12 @@ class ContainerManager {
         },
       })
 
-      // Get actual port from runtime and update cache directly
-      // (can't use syncAgentStatus here — it's guarded against updates during startup)
-      const info = await client.getInfoFromRuntime()
+      // start() returns the port that just passed the runtime's health gate,
+      // so don't immediately spawn another inspect/API request for the same
+      // state. The runtime-query fallback covers clients that omit the
+      // return, which the ContainerClient contract still allows. (Can't use
+      // syncAgentStatus here — it is guarded against updates during startup.)
+      const info = startedInfo ?? await client.getInfoFromRuntime()
       this.updateCachedStatus(agentId, info.status, info.port)
 
       // Record start time so auto-sleep monitor doesn't immediately
