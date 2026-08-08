@@ -152,4 +152,20 @@ describe('homeSearchSchema (signup handoff)', () => {
       }),
     ).toEqual({ prompt: 'hello', model: 'claude-opus-5' })
   })
+
+  // Parity with withSignupHandoff (platform-sso-start.ts): a directly-visited
+  // URL skips the SSO hop, so the schema has to be the same gate on its own.
+  it('strips control characters and trims, matching the SSO hop', () => {
+    expect(lenient(homeSearchSchema)({ prompt: '  build\r\nand ship\0  ' }).prompt)
+      .toBe('buildand ship')
+  })
+
+  it('strips before capping so control characters do not eat the budget', () => {
+    const parsed = lenient(homeSearchSchema)({ prompt: `${'\n'.repeat(200)}${'x'.repeat(500)}` })
+    expect(parsed.prompt).toBe('x'.repeat(400))
+  })
+
+  it('collapses an all-whitespace prompt to falsy so consumers read it as absent', () => {
+    expect(lenient(homeSearchSchema)({ prompt: '   \r\n  ' }).prompt).toBe('')
+  })
 })

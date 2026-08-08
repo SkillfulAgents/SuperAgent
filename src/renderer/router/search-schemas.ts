@@ -61,7 +61,14 @@ export const rootSearchSchema = z.object({
 export const homeSearchSchema = z.object({
   // Per-field .catch: invalid view must not wipe prompt/model via lenient().
   view: z.enum(['cards', 'graph']).optional().catch(undefined),
-  prompt: z.string().transform((s) => s.slice(0, 400)).optional().catch(undefined),
+  // Same gate as the SSO hop's withSignupHandoff (platform-sso-start.ts): a URL
+  // typed or shared directly, with no SSO hop in front of it, has to be cleaned
+  // to the same shape. Strip/trim BEFORE the cap so control characters can't eat
+  // into the 400 budget. An all-whitespace prompt collapses to '' — falsy, so
+  // every consumer reads it as absent.
+  prompt: z.string()
+    .transform((s) => s.replace(/[\r\n\0]/g, '').trim().slice(0, 400))
+    .optional().catch(undefined),
   model: z.string().regex(/^[A-Za-z0-9._/-]{1,64}$/).optional().catch(undefined),
 })
 
