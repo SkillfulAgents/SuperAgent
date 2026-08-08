@@ -20,6 +20,7 @@ let mockDiscoverableAgentsFailed = false
 let lastDialogProps: { template: unknown; handoffOrigin?: boolean } | null = null
 let latestTranscriptUpdate: ((text: string) => void) | null = null
 let lastComposerAutoFocus: boolean | undefined
+let mockAgentModel = 'opus'
 // The model popover reads icon/supportedEfforts unconditionally, and the
 // override test needs a second model inside one vendor tab to pick.
 const EFFORTS = ['low', 'medium', 'high']
@@ -48,7 +49,12 @@ vi.mock('@renderer/hooks/use-settings', () => ({
   useModelSettings: () => ({
     data: {
       llmProvider: 'anthropic',
-      llmProviderStatus: [{ id: 'anthropic', catalog: mockCatalog }],
+      models: { agentModel: mockAgentModel },
+      llmProviderStatus: [{
+        id: 'anthropic',
+        catalog: mockCatalog,
+        defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+      }],
     },
   }),
   useWarmStartOnTypeEnabled: () => mockWarmStartEnabled,
@@ -200,6 +206,7 @@ describe('CreateAgentForm signup handoff', () => {
     lastComposerAutoFocus = undefined
     lastDialogProps = null
     mockCatalog = catalogFixture()
+    mockAgentModel = 'opus'
     mockCreateAgent.mockResolvedValue({
       slug: 'agent-1',
       displaySlug: 'agent-1',
@@ -231,7 +238,7 @@ describe('CreateAgentForm signup handoff', () => {
     })
   })
 
-  it('falls back to opus when the carried model is unknown', async () => {
+  it('falls back to the global default when the carried model is unknown', async () => {
     mockSignupHandoff = { prompt: 'hello', model: 'kimi-k2' }
     const user = userEvent.setup()
     renderForm()
@@ -248,7 +255,7 @@ describe('CreateAgentForm signup handoff', () => {
     })
   })
 
-  it('uses opus with no behavior change when there is no handoff', async () => {
+  it('uses the global default when there is no handoff', async () => {
     const user = userEvent.setup()
     renderForm()
 
@@ -263,6 +270,23 @@ describe('CreateAgentForm signup handoff', () => {
       )
     })
     expect(mockSetSignupHandoff).not.toHaveBeenCalled()
+  })
+
+  it('does not hard-code Opus above a different global default', async () => {
+    mockAgentModel = 'sonnet'
+    const user = userEvent.setup()
+    renderForm()
+
+    const prompt = screen.getByTestId('create-agent-prompt')
+    await user.click(prompt)
+    await user.keyboard('from scratch')
+    await user.click(screen.getByTestId('create-agent-submit'))
+
+    await waitFor(() => {
+      expect(mockCreateSession).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'sonnet', message: 'from scratch' }),
+      )
+    })
   })
 
   it('seeds the model picker from the carried model', async () => {
@@ -312,8 +336,7 @@ describe('CreateAgentForm signup handoff', () => {
     await waitFor(() => {
       expect(screen.getByTestId('create-agent-prompt')).toHaveTextContent('hello')
     })
-    // 'opus' resolves through the catalog to its latest for display, which is
-    // what the unchanged fallback puts on the wire.
+    // The global 'opus' alias resolves through the catalog to its latest for display.
     expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 5')
   })
 

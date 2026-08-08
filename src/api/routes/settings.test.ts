@@ -1047,6 +1047,19 @@ describe('settings route', () => {
       })
     })
 
+    it('resets the global agent model to Grok when switching to Platform', async () => {
+      const res = await putSettings({ llmProvider: 'platform' })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.models).toEqual({
+        summarizerModel: 'haiku',
+        agentModel: 'grok',
+        browserModel: 'sonnet',
+        dashboardBuilderModel: 'opus',
+      })
+    })
+
     it('keeps an explicit models payload even when the provider changes', async () => {
       const res = await putSettings({
         llmProvider: 'bedrock',

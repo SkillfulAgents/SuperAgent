@@ -23,6 +23,7 @@ interface HarnessProps {
   initialEffort?: EffortLevel
   initialSpeed?: SpeedLevel
   initialModel?: string
+  defaultModel?: string
   catalog?: ModelDefinition[]
   onState?: (state: ComposerOptionsState) => void
   disabled?: boolean
@@ -35,6 +36,7 @@ function Harness({
   initialEffort = 'high',
   initialSpeed = 'normal',
   initialModel,
+  defaultModel,
   catalog = CATALOG,
   onState,
   disabled,
@@ -51,6 +53,7 @@ function Harness({
     model,
     setModel,
     catalog,
+    defaultModel,
     toRuntimeOptions: () => ({ effort, speed, ...(model ? { model } : {}) }),
   }
   onState?.(state)
@@ -66,9 +69,9 @@ describe('ComposerOptionsPopover', () => {
     expect(trigger.querySelector('span')).toHaveClass('max-[420px]:hidden')
   })
 
-  it('falls back to Sonnet on the trigger when no model is set', () => {
-    render(<Harness initialModel={undefined} initialEffort="medium" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · Medium')
+  it('uses the provider catalog default on the trigger when no model is set', () => {
+    render(<Harness initialModel={undefined} defaultModel="opus" initialEffort="medium" />)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.8 · Medium')
   })
 
   it('displays the exact pinned version (does not collapse to the family latest)', () => {

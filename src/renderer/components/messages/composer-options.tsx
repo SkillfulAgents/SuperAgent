@@ -31,6 +31,8 @@ export interface ComposerOptionsState {
   setModel: (m: string) => void
   /** The active provider's flat catalog of concrete model ids. */
   catalog: ModelDefinition[]
+  /** Effective catalog/provider fallback used while a model selection is unresolved. */
+  defaultModel?: string
   /** Active host web-provider id (settings-derived), so the model picker's web-tools availability
    *  warning knows a configured vendor makes those tools work on any model. Undefined = native. */
   webProvider?: string
@@ -153,15 +155,13 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   )
   const catalog = useMemo(() => providerInfo?.catalog ?? [], [providerInfo])
   // Fallback hierarchy: the agent's own default → user's "Default Model" →
-  // provider's agent default → the catalog's latest Sonnet → first catalog
-  // entry. The first non-empty wins. Aliases and concrete ids are both valid
-  // wire values, so any of these is a usable selection string.
+  // provider's catalog default → first catalog entry. The first non-empty
+  // wins. Aliases and concrete ids are both valid selection strings.
   const fallbackModel = useMemo(
     () =>
       agentDefaultModel ??
       settings?.models?.agentModel ??
       providerInfo?.defaultModels?.agent ??
-      catalog.find((m) => m.family === 'sonnet' && m.isLatest)?.id ??
       catalog[0]?.id,
     [agentDefaultModel, settings, providerInfo, catalog],
   )
@@ -258,10 +258,11 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       model,
       setModel,
       catalog,
+      defaultModel: fallbackModel,
       webProvider: settings?.webProvider,
       toRuntimeOptions,
     }),
-    [effort, setEffort, speed, setSpeed, model, setModel, catalog, settings, toRuntimeOptions],
+    [effort, setEffort, speed, setSpeed, model, setModel, catalog, fallbackModel, settings, toRuntimeOptions],
   )
 }
 

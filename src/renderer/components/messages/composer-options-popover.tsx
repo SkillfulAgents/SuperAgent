@@ -20,15 +20,14 @@ interface ComposerOptionsPopoverProps {
 }
 
 function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, footer }: ComposerOptionsPopoverProps) {
-  const { effort, setEffort, speed, setSpeed, model, setModel, catalog, webProvider } = state
+  const { effort, setEffort, speed, setSpeed, model, setModel, catalog, defaultModel, webProvider } = state
 
   // Trigger display fallback for the brief window before useComposerOptions
   // seeds `model`. Order: resolve the selection against the catalog (exact id
-  // or family-latest) → the catalog's latest Sonnet (codebase-wide default,
-  // beats falling through to the first entry) → first entry.
+  // or family-latest) → the active provider's catalog default → first entry.
   const selectedModel =
     findCatalogModel(model, catalog)
-    ?? catalog.find((m) => m.family === 'sonnet' && m.isLatest)
+    ?? findCatalogModel(defaultModel, catalog)
     ?? catalog[0]
 
   useEffortClamp(includeEffort ? selectedModel : undefined, effort, setEffort)

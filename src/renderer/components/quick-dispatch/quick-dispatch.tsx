@@ -105,7 +105,7 @@ export function QuickDispatch() {
 
   const selectedModel =
     findCatalogModel(composerOptions.model, composerOptions.catalog) ??
-    composerOptions.catalog.find((m) => m.family === 'sonnet' && m.isLatest) ??
+    findCatalogModel(composerOptions.defaultModel, composerOptions.catalog) ??
     composerOptions.catalog[0]
 
   const composer = useMessageComposer({

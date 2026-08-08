@@ -1,8 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { BaseLlmProvider, type AgentIdentity, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider, type AgentIdentity } from './base-llm-provider'
 import { rewriteLoopbackForContainer } from './container-url'
 import type { ModelDefinition } from './model-catalog-schema'
-import { PLATFORM_CATALOG } from './builtin-catalogs'
+import { PLATFORM_CATALOG, PLATFORM_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
+import { PLATFORM_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
 import { attribution } from '@shared/lib/platform-attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
@@ -21,6 +22,8 @@ export function sanitizeAgentName(name: string): string {
 export class PlatformLlmProvider extends BaseLlmProvider {
   readonly id = 'platform' as const
   readonly name = 'Platform'
+  readonly defaultModelOptions = PLATFORM_DEFAULT_MODEL_OPTIONS
+  readonly catalogDefaultModels = PLATFORM_CATALOG_DEFAULT_MODELS
   // Not used — getApiKeyStatus/getEffectiveApiKey are both overridden to
   // read the platform token instead of a settings-stored API key.
   protected readonly settingsKeyField = 'anthropicApiKey' as const
@@ -53,15 +56,6 @@ export class PlatformLlmProvider extends BaseLlmProvider {
 
   getBuiltinCatalog(): ModelDefinition[] {
     return PLATFORM_CATALOG
-  }
-
-  getDefaultModel(purpose: ModelPurpose): string {
-    switch (purpose) {
-      case 'summarizer': return 'haiku'
-      case 'agent': return 'opus'
-      case 'browser': return 'sonnet'
-      case 'dashboard': return 'opus'
-    }
   }
 
   getContainerEnvVars(agent?: AgentIdentity): Record<string, string | undefined> {

@@ -1,11 +1,14 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
-import { CLAUDE_BARE_CATALOG } from './builtin-catalogs'
+import { CLAUDE_BARE_CATALOG, CLAUDE_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
+import { ANTHROPIC_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
 
 export class AnthropicLlmProvider extends BaseLlmProvider {
   readonly id = 'anthropic' as const
   readonly name = 'Anthropic'
+  readonly defaultModelOptions = CLAUDE_DEFAULT_MODEL_OPTIONS
+  readonly catalogDefaultModels = ANTHROPIC_CATALOG_DEFAULT_MODELS
   protected readonly settingsKeyField = 'anthropicApiKey' as const
   protected readonly envVarName = 'ANTHROPIC_API_KEY'
 
@@ -17,15 +20,6 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
 
   getBuiltinCatalog(): ModelDefinition[] {
     return CLAUDE_BARE_CATALOG
-  }
-
-  getDefaultModel(purpose: ModelPurpose): string {
-    switch (purpose) {
-      case 'summarizer': return 'haiku'
-      case 'agent': return 'opus'
-      case 'browser': return 'sonnet'
-      case 'dashboard': return 'opus'
-    }
   }
 
   getContainerEnvVars(): Record<string, string | undefined> {

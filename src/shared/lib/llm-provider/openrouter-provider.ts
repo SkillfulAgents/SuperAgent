@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider } from './base-llm-provider'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
-import { OPENROUTER_CATALOG } from './builtin-catalogs'
+import { CLAUDE_DEFAULT_MODEL_OPTIONS, OPENROUTER_CATALOG } from './builtin-catalogs'
+import { OPENROUTER_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
 import type { EffortLevel } from '../container/types'
 import { GPT_TOOL_USE_PROMPT_HINTS } from './model-prompt-hints'
 
@@ -132,6 +133,8 @@ function mapOpenRouterModel(model: OpenRouterModelListing): ModelSearchResult | 
 export class OpenRouterLlmProvider extends BaseLlmProvider {
   readonly id = 'openrouter' as const
   readonly name = 'OpenRouter'
+  readonly defaultModelOptions = CLAUDE_DEFAULT_MODEL_OPTIONS
+  readonly catalogDefaultModels = OPENROUTER_CATALOG_DEFAULT_MODELS
   override readonly supportsModelSearch = true
   protected readonly settingsKeyField = 'openrouterApiKey' as const
   protected readonly envVarName = 'OPENROUTER_API_KEY'
@@ -151,15 +154,6 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
 
   getBuiltinCatalog(): ModelDefinition[] {
     return OPENROUTER_CATALOG
-  }
-
-  getDefaultModel(purpose: ModelPurpose): string {
-    switch (purpose) {
-      case 'summarizer': return 'haiku'
-      case 'agent': return 'sonnet'
-      case 'browser': return 'sonnet'
-      case 'dashboard': return 'opus'
-    }
   }
 
   getContainerEnvVars(): Record<string, string | undefined> {

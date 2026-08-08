@@ -1230,6 +1230,18 @@ describe('getEffectiveModels', () => {
       agentEffort: 'medium',
     })
   })
+
+  it('uses the selected provider catalog defaults when model fields are missing', () => {
+    mockSettingsFile(JSON.stringify({ llmProvider: 'platform' }))
+
+    expect(getEffectiveModels()).toEqual({
+      summarizerModel: 'haiku',
+      agentModel: 'grok',
+      browserModel: 'sonnet',
+      dashboardBuilderModel: 'opus',
+      agentEffort: 'medium',
+    })
+  })
 })
 
 // ============================================================================

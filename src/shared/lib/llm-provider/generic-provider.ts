@@ -4,16 +4,19 @@ import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { EffortLevel } from '../container/types'
 import { getSettings, getModelCatalogSettings, type ApiKeyStatus } from '../config/settings'
 import { isHostOnlyHostname, rewriteLoopbackForContainer } from './container-url'
+import {
+  GENERIC_CATALOG_DEFAULT_MODELS,
+  getCatalogDefaultModels,
+} from './model-catalog-defaults'
 
 const BASE_URL_ENV = 'GENERIC_BASE_URL'
-const DEFAULT_MODEL_ENV = 'GENERIC_DEFAULT_MODEL'
 
 /**
  * Ultimate fallback model id when the user has added no models and set no
  * GENERIC_DEFAULT_MODEL. A placeholder — the generic provider is only usable
  * once the user adds at least one model via the catalog editor (SUP-276).
  */
-export const GENERIC_FALLBACK_MODEL = 'default'
+export { GENERIC_FALLBACK_MODEL } from './model-catalog-defaults'
 
 /**
  * A user-pointed provider for any Anthropic-wire-compatible endpoint: a
@@ -81,6 +84,8 @@ function mapRemoteModel(model: RemoteModelListing): ModelSearchResult | null {
 export class GenericLlmProvider extends BaseLlmProvider {
   readonly id = 'generic' as const
   readonly name = 'Generic'
+  readonly defaultModelOptions = []
+  readonly catalogDefaultModels = GENERIC_CATALOG_DEFAULT_MODELS
   override readonly supportsModelSearch = true
   protected readonly settingsKeyField = 'genericApiKey' as const
   protected readonly envVarName = 'GENERIC_API_KEY'
@@ -122,10 +127,7 @@ export class GenericLlmProvider extends BaseLlmProvider {
   getDefaultModel(_purpose: ModelPurpose): string {
     // No built-in catalog: default to the first user-added model, then an
     // env-configurable default, then a placeholder the user overrides.
-    const firstUserModel = (getModelCatalogSettings()[this.id]?.overrides ?? [])
-      .find((entry) => entry.disabled !== true)?.id
-    if (firstUserModel) return firstUserModel
-    return process.env[DEFAULT_MODEL_ENV]?.trim() || GENERIC_FALLBACK_MODEL
+    return getCatalogDefaultModels(this.id, getModelCatalogSettings()).agentModel
   }
 
   getContainerEnvVars(): Record<string, string | undefined> {
