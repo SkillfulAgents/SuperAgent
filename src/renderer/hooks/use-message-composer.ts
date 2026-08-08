@@ -34,6 +34,8 @@ interface UseMessageComposerOptions {
   initialAttachments?: Attachment[]
   /** One-shot secure-pill seed, used when moving a draft into a new session. */
   initialSecuredSecrets?: SecuredSecret[]
+  /** Fires on composer-mic transcript updates (before message state changes). */
+  onVoiceTranscript?: () => void
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
@@ -155,8 +157,9 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {
+      options.onVoiceTranscript?.()
       setMessage(text)
-    }, []),
+    }, [options.onVoiceTranscript]),
   })
 
   const handleMountChoice = useCallback((choice: 'upload' | 'mount' | 'cancel') => {

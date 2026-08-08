@@ -26,9 +26,13 @@ const mockVoiceInput = {
   startRecording: vi.fn(),
   stopRecording: vi.fn(),
 }
+let capturedTranscriptUpdate: ((text: string) => void) | undefined
 
 vi.mock('@renderer/hooks/use-voice-input', () => ({
-  useVoiceInput: () => mockVoiceInput,
+  useVoiceInput: ({ onTranscriptUpdate }: { onTranscriptUpdate: (text: string) => void }) => {
+    capturedTranscriptUpdate = onTranscriptUpdate
+    return mockVoiceInput
+  },
 }))
 
 const mockAttachments = {
@@ -104,6 +108,7 @@ describe('useMessageComposer', () => {
     mockVoiceInput.isConnecting = false
     mockVoiceInput.stopRecording.mockReturnValue(undefined)
     capturedOnFoldersReceived = undefined
+    capturedTranscriptUpdate = undefined
   })
 
   // --- Basic state ---
@@ -124,6 +129,19 @@ describe('useMessageComposer', () => {
     act(() => result.current.setMessage('hello'))
     expect(result.current.message).toBe('hello')
     expect(result.current.canSubmit).toBe(true)
+  })
+
+  it('calls onVoiceTranscript before applying a mic transcript', () => {
+    const onVoiceTranscript = vi.fn()
+    const opts = { ...defaultOptions(), onVoiceTranscript }
+    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+
+    expect(capturedTranscriptUpdate).toBeTypeOf('function')
+    act(() => {
+      capturedTranscriptUpdate?.('spoken')
+    })
+    expect(onVoiceTranscript).toHaveBeenCalledTimes(1)
+    expect(result.current.message).toBe('spoken')
   })
 
   it('detects, dismisses, and re-detects a potential secret after it is removed', () => {

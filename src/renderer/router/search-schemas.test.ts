@@ -168,4 +168,17 @@ describe('homeSearchSchema (signup handoff)', () => {
   it('collapses an all-whitespace prompt to falsy so consumers read it as absent', () => {
     expect(lenient(homeSearchSchema)({ prompt: '   \r\n  ' }).prompt).toBe('')
   })
+
+  it('drops a junk template_slug and keeps a valid prompt', () => {
+    const parsed = lenient(homeSearchSchema)({
+      prompt: 'hello',
+      template_slug: 'not valid!',
+    })
+    expect(parsed.prompt).toBe('hello')
+    expect(parsed.template_slug).toBeUndefined()
+  })
+
+  it('accepts a valid template_slug', () => {
+    expect(lenient(homeSearchSchema)({ template_slug: 'my.agent-v2' }).template_slug).toBe('my.agent-v2')
+  })
 })

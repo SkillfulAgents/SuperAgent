@@ -3,6 +3,7 @@ import { getAuth } from '@shared/lib/auth/index'
 import { getGenericOAuthProviderConfigs } from '@shared/lib/auth/provider-config'
 import { sanitizeReturnTo } from '@shared/lib/auth/safe-return-to'
 import { captureException } from '@shared/lib/error-reporting'
+import { TEMPLATE_SLUG_RE } from '@shared/lib/signup-handoff-params'
 
 const PLATFORM_PROVIDER_ID = 'platform'
 const HANDOFF_PROMPT_MAX = 400
@@ -21,12 +22,14 @@ function withSignupHandoff(
   returnTo: string,
   prompt: string | undefined,
   model: string | undefined,
+  templateSlug: string | undefined,
 ): string {
   try {
     const url = new URL(returnTo, 'http://internal')
     const cleanPrompt = prompt?.replace(/[\r\n\0]/g, '').trim().slice(0, HANDOFF_PROMPT_MAX)
     if (cleanPrompt) url.searchParams.set('prompt', cleanPrompt)
     if (model && HANDOFF_MODEL_RE.test(model)) url.searchParams.set('model', model)
+    if (templateSlug && TEMPLATE_SLUG_RE.test(templateSlug)) url.searchParams.set('template_slug', templateSlug)
     // hash included: sanitizeReturnTo permits fragments and returns them verbatim.
     return `${url.pathname}${url.search}${url.hash}`
   } catch {
@@ -52,7 +55,12 @@ const platformSsoStart = new Hono()
 
 platformSsoStart.get('/platform/start', async (c) => {
   const returnTo = sanitizeReturnTo(c.req.query('return_to'))
-  const target = withSignupHandoff(returnTo, c.req.query('prompt'), c.req.query('model'))
+  const target = withSignupHandoff(
+    returnTo,
+    c.req.query('prompt'),
+    c.req.query('model'),
+    c.req.query('template_slug'),
+  )
   const providerId = resolvePlatformProviderId()
   if (!providerId) {
     return c.redirect('/', 302)

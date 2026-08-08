@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { isSafeInternalPath } from '@renderer/lib/api'
+import { TEMPLATE_SLUG_RE } from '@shared/lib/signup-handoff-params'
 
 /**
  * Zod schemas for the router's URL boundary (search params + the settings tab
@@ -70,6 +71,7 @@ export const homeSearchSchema = z.object({
     .transform((s) => s.replace(/[\r\n\0]/g, '').trim().slice(0, 400))
     .optional().catch(undefined),
   model: z.string().regex(/^[A-Za-z0-9._/-]{1,64}$/).optional().catch(undefined),
+  template_slug: z.string().regex(TEMPLATE_SLUG_RE).optional().catch(undefined),
 })
 
 // Settings close-target: the path the gear was opened FROM, so closing returns

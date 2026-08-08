@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
 
-export type SignupHandoff = { prompt?: string; model?: string }
+export type SignupHandoff = { prompt?: string; model?: string; template_slug?: string }
 
 interface NavTransientValue {
   justCreatedSlug: string | null

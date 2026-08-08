@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DraftsProvider } from '@renderer/context/drafts-context'
 import type { SignupHandoff } from '@renderer/context/nav-transient-context'
+import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
+import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 const mockCreateSession = vi.fn()
 const mockCreateAgent = vi.fn()
@@ -13,6 +15,11 @@ const mockStartAgent = vi.fn()
 const mockSetSignupHandoff = vi.fn()
 let mockSignupHandoff: SignupHandoff | null = null
 let mockWarmStartEnabled = false
+let mockDiscoverableAgents: ApiDiscoverableAgent[] | undefined = []
+let mockDiscoverableAgentsFailed = false
+let lastDialogProps: { template: unknown; handoffOrigin?: boolean } | null = null
+let latestTranscriptUpdate: ((text: string) => void) | null = null
+let lastComposerAutoFocus: boolean | undefined
 let mockCatalog = [
   { id: 'claude-opus-5', family: 'opus', label: 'Opus 5', isLatest: true },
   { id: 'kimi-k3', family: 'kimi', label: 'Kimi K3', isLatest: true },
@@ -89,11 +96,47 @@ vi.mock('@renderer/hooks/use-typewriter-placeholder', () => ({
 }))
 
 vi.mock('@renderer/components/agents/agent-creation-aids', () => ({
-  AgentCreationAids: () => null,
+  AgentCreationAids: ({ onAidOpened }: { onAidOpened?: () => void }) => (
+    <button type="button" data-testid="aid-opened" onClick={() => onAidOpened?.()}>
+      aid
+    </button>
+  ),
+}))
+
+vi.mock('@renderer/hooks/use-agent-templates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/hooks/use-agent-templates')>()
+  return {
+    ...actual,
+    useDiscoverableAgents: () => ({
+      data: mockDiscoverableAgents,
+      isError: mockDiscoverableAgentsFailed,
+    }),
+  }
+})
+
+vi.mock('@renderer/hooks/use-voice-input', () => ({
+  useVoiceInput: ({ onTranscriptUpdate }: { onTranscriptUpdate: (text: string) => void }) => {
+    latestTranscriptUpdate = onTranscriptUpdate
+    return {
+      state: 'idle',
+      isRecording: false,
+      isConnecting: false,
+      isFinalizing: false,
+      error: null,
+      clearError: vi.fn(),
+      isSupported: true,
+      analyserRef: { current: null },
+      startRecording: vi.fn(),
+      stopRecording: vi.fn(),
+    }
+  },
 }))
 
 vi.mock('@renderer/components/agents/template-install-dialog', () => ({
-  TemplateInstallDialog: () => null,
+  TemplateInstallDialog: (props: { template: unknown; handoffOrigin?: boolean }) => {
+    lastDialogProps = props
+    return props.template ? <div data-testid="template-install-dialog" /> : null
+  },
 }))
 
 vi.mock('@renderer/components/ui/attachment-picker', () => ({
@@ -105,7 +148,28 @@ vi.mock('@renderer/components/ui/voice-input-button', () => ({
   VoiceInputError: () => null,
 }))
 
+vi.mock('@renderer/components/messages/chat-composer-box', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/components/messages/chat-composer-box')>()
+  return {
+    ChatComposerBox: (props: Parameters<typeof actual.ChatComposerBox>[0]) => {
+      lastComposerAutoFocus = props.autoFocus
+      return actual.ChatComposerBox(props)
+    },
+  }
+})
+
 import { CreateAgentForm } from './create-agent-form'
+
+function discoverable(slug: string, skillsetId: string = DEFAULT_PUBLIC_SKILLSET.id): ApiDiscoverableAgent {
+  return {
+    skillsetId,
+    skillsetName: 'Public',
+    name: `Template ${slug}`,
+    description: '',
+    version: '1.0.0',
+    path: `agents/${slug}/`,
+  }
+}
 
 function renderForm() {
   const queryClient = new QueryClient({
@@ -125,6 +189,11 @@ describe('CreateAgentForm signup handoff', () => {
     vi.clearAllMocks()
     mockSignupHandoff = null
     mockWarmStartEnabled = false
+    mockDiscoverableAgents = []
+    mockDiscoverableAgentsFailed = false
+    latestTranscriptUpdate = null
+    lastComposerAutoFocus = undefined
+    lastDialogProps = null
     mockCatalog = [
       { id: 'claude-opus-5', family: 'opus', label: 'Opus 5', isLatest: true },
       { id: 'kimi-k3', family: 'kimi', label: 'Kimi K3', isLatest: true },
@@ -206,5 +275,279 @@ describe('CreateAgentForm signup handoff', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(mockCreateAgent).not.toHaveBeenCalled()
     expect(mockStartAgent).not.toHaveBeenCalled()
+  })
+
+  it('opens install dialog with matched public template and handoffOrigin', async () => {
+    mockDiscoverableAgents = [discoverable('research-bot')]
+    mockSignupHandoff = { template_slug: 'research-bot' }
+    renderForm()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('template-install-dialog')).toBeTruthy()
+    })
+    expect(lastDialogProps?.handoffOrigin).toBe(true)
+    expect(lastDialogProps?.template).toEqual(discoverable('research-bot'))
+  })
+
+  it('suppresses composer autoFocus when a template slug is armed on mount', () => {
+    mockDiscoverableAgents = []
+    mockSignupHandoff = { template_slug: 'focus-bot' }
+    renderForm()
+    expect(lastComposerAutoFocus).toBe(false)
+  })
+
+  it('matches only the public skillset when paths collide', async () => {
+    mockDiscoverableAgents = [
+      discoverable('same-slug', 'private-skillset'),
+      discoverable('same-slug', DEFAULT_PUBLIC_SKILLSET.id),
+    ]
+    mockSignupHandoff = { template_slug: 'same-slug' }
+    renderForm()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('template-install-dialog')).toBeTruthy()
+    })
+    expect((lastDialogProps?.template as ApiDiscoverableAgent).skillsetId).toBe(
+      DEFAULT_PUBLIC_SKILLSET.id,
+    )
+  })
+
+  it('settle clears slug permanently when populated list has no match', async () => {
+    mockDiscoverableAgents = [discoverable('other')]
+    mockSignupHandoff = { template_slug: 'missing-slug' }
+    const view = renderForm()
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('template-install-dialog')).toBeNull()
+    })
+
+    mockDiscoverableAgents = [discoverable('missing-slug')]
+    view.rerender(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    await new Promise((r) => setTimeout(r, 50))
+    expect(screen.queryByTestId('template-install-dialog')).toBeNull()
+  })
+
+  it('waits on empty discoverable list then opens when a match arrives', async () => {
+    mockDiscoverableAgents = []
+    mockSignupHandoff = { template_slug: 'late-bot' }
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    await new Promise((r) => setTimeout(r, 50))
+    expect(screen.queryByTestId('template-install-dialog')).toBeNull()
+
+    mockDiscoverableAgents = [discoverable('late-bot')]
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('template-install-dialog')).toBeTruthy()
+    })
+  })
+
+  it('typing in the composer forfeits template handoff including type-then-delete', async () => {
+    mockDiscoverableAgents = []
+    mockSignupHandoff = { template_slug: 'forfeit-bot' }
+    const user = userEvent.setup()
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    const prompt = screen.getByTestId('create-agent-prompt')
+    await user.click(prompt)
+    await user.keyboard('x')
+    await user.keyboard('{Backspace}')
+
+    mockDiscoverableAgents = [discoverable('forfeit-bot')]
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    await new Promise((r) => setTimeout(r, 50))
+    expect(screen.queryByTestId('template-install-dialog')).toBeNull()
+  })
+
+  it('prompt plus slug seeds composer and never opens install dialog', async () => {
+    mockDiscoverableAgents = [discoverable('ignored-bot')]
+    mockSignupHandoff = { prompt: 'from marketing', template_slug: 'ignored-bot' }
+    renderForm()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('create-agent-prompt')).toHaveTextContent('from marketing')
+    })
+    expect(screen.queryByTestId('template-install-dialog')).toBeNull()
+  })
+
+  it('settles when the populated list only has a private skillset twin', async () => {
+    mockDiscoverableAgents = [discoverable('private-only', 'private-skillset')]
+    mockSignupHandoff = { template_slug: 'private-only' }
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('template-install-dialog')).toBeNull()
+    })
+
+    mockDiscoverableAgents = [
+      discoverable('private-only', 'private-skillset'),
+      discoverable('private-only', DEFAULT_PUBLIC_SKILLSET.id),
+    ]
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    await new Promise((r) => setTimeout(r, 50))
+    expect(screen.queryByTestId('template-install-dialog')).toBeNull()
+  })
+
+  it('model plus slug still opens the install offer', async () => {
+    mockDiscoverableAgents = [discoverable('model-bot')]
+    mockSignupHandoff = { model: 'claude-opus-5', template_slug: 'model-bot' }
+    renderForm()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('template-install-dialog')).toBeTruthy()
+    })
+    expect(lastDialogProps?.handoffOrigin).toBe(true)
+  })
+
+  it('opening a creation aid forfeits before a late match can open the dialog', async () => {
+    mockDiscoverableAgents = []
+    mockSignupHandoff = { template_slug: 'aid-bot' }
+    const user = userEvent.setup()
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    await user.click(screen.getByTestId('aid-opened'))
+
+    mockDiscoverableAgents = [discoverable('aid-bot')]
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    await new Promise((r) => setTimeout(r, 50))
+    expect(screen.queryByTestId('template-install-dialog')).toBeNull()
+  })
+
+  it('composer mic transcript forfeits template handoff', async () => {
+    mockDiscoverableAgents = []
+    mockSignupHandoff = { template_slug: 'voice-bot' }
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(latestTranscriptUpdate).toBeTypeOf('function')
+    })
+    act(() => {
+      latestTranscriptUpdate?.('spoken prompt')
+    })
+
+    mockDiscoverableAgents = [discoverable('voice-bot')]
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    await new Promise((r) => setTimeout(r, 50))
+    expect(screen.queryByTestId('template-install-dialog')).toBeNull()
+  })
+
+  it('discoverable query error clears the template offer', async () => {
+    mockDiscoverableAgents = undefined
+    mockDiscoverableAgentsFailed = true
+    mockSignupHandoff = { template_slug: 'error-bot' }
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('template-install-dialog')).toBeNull()
+    })
+
+    mockDiscoverableAgentsFailed = false
+    mockDiscoverableAgents = [discoverable('error-bot')]
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <DraftsProvider>
+          <CreateAgentForm />
+        </DraftsProvider>
+      </QueryClientProvider>,
+    )
+
+    await new Promise((r) => setTimeout(r, 50))
+    expect(screen.queryByTestId('template-install-dialog')).toBeNull()
   })
 })
