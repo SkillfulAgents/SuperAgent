@@ -9,8 +9,10 @@ import type { SignupHandoff } from '@renderer/context/nav-transient-context'
 
 const mockCreateSession = vi.fn()
 const mockCreateAgent = vi.fn()
+const mockStartAgent = vi.fn()
 const mockSetSignupHandoff = vi.fn()
 let mockSignupHandoff: SignupHandoff | null = null
+let mockWarmStartEnabled = false
 let mockCatalog = [
   { id: 'claude-opus-5', family: 'opus', label: 'Opus 5', isLatest: true },
   { id: 'kimi-k3', family: 'kimi', label: 'Kimi K3', isLatest: true },
@@ -37,7 +39,13 @@ vi.mock('@renderer/hooks/use-settings', () => ({
       llmProviderStatus: [{ id: 'anthropic', catalog: mockCatalog }],
     },
   }),
-  useWarmStartOnTypeEnabled: () => false,
+  useWarmStartOnTypeEnabled: () => mockWarmStartEnabled,
+}))
+
+vi.mock('@renderer/hooks/use-runtime-status', () => ({
+  useRuntimeStatus: () => ({
+    data: { runtimeReadiness: { status: 'READY' } },
+  }),
 }))
 
 vi.mock('@renderer/hooks/use-start-onboarding-session', () => ({
@@ -58,7 +66,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
     isPending: false,
   }),
   useStartAgent: () => ({
-    mutate: vi.fn(),
+    mutate: mockStartAgent,
     mutateAsync: vi.fn(),
     isPending: false,
   }),
@@ -116,6 +124,7 @@ describe('CreateAgentForm signup handoff', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockSignupHandoff = null
+    mockWarmStartEnabled = false
     mockCatalog = [
       { id: 'claude-opus-5', family: 'opus', label: 'Opus 5', isLatest: true },
       { id: 'kimi-k3', family: 'kimi', label: 'Kimi K3', isLatest: true },
@@ -183,5 +192,19 @@ describe('CreateAgentForm signup handoff', () => {
       )
     })
     expect(mockSetSignupHandoff).not.toHaveBeenCalled()
+  })
+
+  it('row5: prefill with warm-start enabled does not create an agent until edit', async () => {
+    mockWarmStartEnabled = true
+    mockSignupHandoff = { prompt: 'marketing prompt', model: 'claude-opus-5' }
+    renderForm()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('create-agent-prompt')).toHaveTextContent('marketing prompt')
+    })
+    // Allow warm-start effect to run if it were going to.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(mockCreateAgent).not.toHaveBeenCalled()
+    expect(mockStartAgent).not.toHaveBeenCalled()
   })
 })
