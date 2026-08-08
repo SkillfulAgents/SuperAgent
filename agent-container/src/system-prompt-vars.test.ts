@@ -52,6 +52,18 @@ describe('generateSystemPrompt rendering', () => {
     expect(out).toContain('Use `schedule_task` only for genuinely independent work')
   })
 
+  it('keeps expired assigned accounts visible and directs the agent through proxy re-auth', () => {
+    process.env.CONNECTED_ACCOUNTS = JSON.stringify({
+      notion: [{ name: 'Notion', id: 'account-notion', status: 'expired' }],
+    })
+
+    const out = generateSystemPrompt()
+    expect(out).toContain('## Connected Accounts (Assigned)')
+    expect(out).toContain('Notion (ID: `account-notion`, status: `expired`)')
+    expect(out).toContain('Make the intended proxy call')
+    expect(out).toContain('Do NOT report them as missing')
+  })
+
   // A heading whose body is entirely gated renders as a title with the next
   // heading directly beneath it. Some headings (`## File Handling`) are static
   // containers of subheadings and are bodyless in every render, which is fine --

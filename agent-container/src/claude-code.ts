@@ -98,6 +98,7 @@ const DASHBOARD_BUILDER_AGENT_PROMPT = loadPrompt('dashboard-builder-agent-promp
 interface RemoteMcpConfig {
   id: string;
   name: string;
+  status?: 'active' | 'auth_required';
   proxyUrl: string;
   tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
 }
@@ -143,18 +144,33 @@ function runtimeConnectionConfigSnapshot(): string {
 
 /**
  * Parses connected accounts metadata from the CONNECTED_ACCOUNTS env var.
- * Format: {"toolkit": [{"name": "Display Name", "id": "uuid"}, ...]}
+ * Format: {"toolkit": [{"name": "Display Name", "id": "uuid", "status": "active"}, ...]}
  */
-function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string }>> {
-  const accounts = new Map<string, Array<{ name: string; id: string }>>();
+type ConnectedAccountStatus = 'active' | 'expired' | 'revoked';
+interface ConnectedAccountConfig {
+  name: string;
+  id: string;
+  status?: ConnectedAccountStatus;
+}
+interface ConnectedAccountView extends ConnectedAccountConfig {
+  status: ConnectedAccountStatus;
+}
+
+function parseConnectedAccounts(): Map<string, ConnectedAccountView[]> {
+  const accounts = new Map<string, ConnectedAccountView[]>();
   const raw = process.env.CONNECTED_ACCOUNTS;
   if (!raw) return accounts;
 
   try {
-    const parsed = JSON.parse(raw) as Record<string, Array<{ name: string; id: string }>>;
+    const parsed = JSON.parse(raw) as Record<string, ConnectedAccountConfig[]>;
     for (const [toolkit, entries] of Object.entries(parsed)) {
       if (entries.length > 0) {
-        accounts.set(toolkit, entries);
+        // Older hosts did not serialize status; treat those entries as active
+        // so upgrading a running container remains backward-compatible.
+        accounts.set(toolkit, entries.map((entry) => ({
+          ...entry,
+          status: entry.status ?? 'active',
+        })));
       }
     }
   } catch {
@@ -167,7 +183,7 @@ function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string 
 /** One toolkit's connected accounts, as the template's `connectedAccounts` list. */
 interface ConnectedAccountGroup {
   displayName: string;
-  entries: Array<{ name: string; id: string }>;
+  entries: ConnectedAccountView[];
 }
 
 /** One remote MCP server, as the template's `remoteMcps` list. */
@@ -616,12 +632,11 @@ export class ClaudeCodeProcess extends EventEmitter {
    * model believes it, calls mcp__<server>__<tool>, and gets "No such tool
    * available": the exact symptom of a connection that never arrived.
    *
-   * Only the connection-config-changed path calls this. An unchanged config
-   * means no re-query at all, hence no handshake in flight and nothing to wait
-   * for. The other re-query triggers (effort/speed/capability change, cold-start
-   * restart) race the same handshake, but there the user has not just connected
-   * a server they are about to ask about — and gating every wake-from-idle would
-   * tax a far more common path for a far rarer payoff.
+   * Active connection changes call this. Auth-required servers are excluded
+   * from the gate because the host deliberately parks their handshake while a
+   * person completes OAuth; holding the user message on that handshake would
+   * freeze every turn. Other re-query triggers (effort/speed/capability change)
+   * also do not wait because the remote MCP set itself did not change.
    */
   private async waitForRemoteMcpsReady(
     timeoutMs: number = REMOTE_MCP_READY_TIMEOUT_MS
@@ -1265,6 +1280,9 @@ export class ClaudeCodeProcess extends EventEmitter {
     const model = options?.model;
     const runtimeConnectionConfigChanged =
       runtimeConnectionConfigSnapshot() !== this.runtimeConnectionSnapshot;
+    const hasMcpAwaitingReauth = parseRemoteMcps().some(
+      (mcp) => mcp.status === 'auth_required'
+    );
 
     if (runtimeConnectionConfigChanged) {
       // The prompt's connected-account and remote-MCP sections are generated
@@ -1336,7 +1354,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         await this.currentStop.catch(() => undefined);
       }
       await this.restart();
-    } else if (effortChanged || speedChanged || capabilityBlockChanged || runtimeConnectionConfigChanged) {
+    } else if (
+      effortChanged ||
+      speedChanged ||
+      capabilityBlockChanged ||
+      runtimeConnectionConfigChanged
+    ) {
       // Effort can only be set at query creation time — the SDK has no setEffort
       // facility — so any effort change forces an interrupt + re-query. Speed
       // lives in the query env (ANTHROPIC_CUSTOM_HEADERS), which is likewise
@@ -1370,7 +1393,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     // restart() and the interrupt() re-query rebuild the query with the new
     // connection set, so both race the handshake. Guarded by the flag rather
     // than by the branch, so an effort- or speed-only re-query pays nothing.
-    if (runtimeConnectionConfigChanged) {
+    if (runtimeConnectionConfigChanged && !hasMcpAwaitingReauth) {
       await this.waitForRemoteMcpsReady();
     }
 

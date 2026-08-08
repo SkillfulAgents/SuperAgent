@@ -38,27 +38,29 @@ export function useOAuthReconnect() {
           reconnectAccountId: accountId,
         }),
       })
-      if (canceled) return
+      if (canceled) return false
       if (!res.ok) {
         popup.close()
         const data = await res.json()
         console.error('Failed to initiate reconnection:', data.error)
         setPendingAccountId(null)
-        return
+        return false
       }
       const data = await res.json()
-      if (canceled) return
+      if (canceled) return false
       if (!data.redirectUrl) {
         popup.close()
         setPendingAccountId(null)
-        return
+        return false
       }
 
       await popup.navigate(data.redirectUrl)
-      if (canceled) return
+      if (canceled) return false
+
+      let reconnectSucceeded = false
 
       if (window.electronAPI) {
-        await new Promise<void>((resolve) => {
+        reconnectSucceeded = await new Promise<boolean>((resolve) => {
           let settled = false
           let timeout: number | undefined
           let unsubscribe: (() => void) | undefined
@@ -74,14 +76,14 @@ export function useOAuthReconnect() {
           abortReconnectRef.current = () => {
             canceled = true
             popup.close()
-            if (settle()) resolve()
+            if (settle()) resolve(false)
           }
           // Bound the wait: if the user abandons the OAuth window (or only
           // mismatched-toolkit callbacks ever arrive), settle anyway so we don't
           // leak the listener or hang reconnect() forever. The channel-wide
           // reset that used to sweep orphaned listeners is gone (SUP-215).
           timeout = window.setTimeout(() => {
-            if (settle()) resolve()
+            if (settle()) resolve(false)
           }, OAUTH_RECONNECT_TIMEOUT_MS)
           unsubscribe = window.electronAPI!.onOAuthCallback(async (params) => {
             // Ignore callbacks for other toolkits; keep waiting for ours.
@@ -89,21 +91,27 @@ export function useOAuthReconnect() {
             // Remove only this reconnect listener; other OAuth subscribers stay.
             if (!settle()) return
             if (params.connectionId && params.toolkit) {
-              await apiFetch('/api/connected-accounts/complete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  connectionId: params.connectionId,
-                  toolkit: params.toolkit,
-                  reconnectAccountId: accountId,
-                }),
-              }).catch(() => {})
+              try {
+                const completeRes = await apiFetch('/api/connected-accounts/complete', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    connectionId: params.connectionId,
+                    toolkit: params.toolkit,
+                    reconnectAccountId: accountId,
+                  }),
+                })
+                resolve(completeRes.ok)
+              } catch {
+                resolve(false)
+              }
+              return
             }
-            resolve()
+            resolve(false)
           })
         })
       } else {
-        await new Promise<void>((resolve) => {
+        reconnectSucceeded = await new Promise<boolean>((resolve) => {
           let settled = false
           let timeout: number | undefined
 
@@ -118,27 +126,30 @@ export function useOAuthReconnect() {
           function handleMessage(event: MessageEvent) {
             if (event.origin !== window.location.origin) return
             if (event.data?.type === 'oauth-callback') {
-              if (settle()) resolve()
+              if (settle()) resolve(event.data?.success === true)
             }
           }
           abortReconnectRef.current = () => {
             canceled = true
             popup.close()
-            if (settle()) resolve()
+            if (settle()) resolve(false)
           }
           timeout = window.setTimeout(() => {
-            if (settle()) resolve()
+            if (settle()) resolve(false)
           }, OAUTH_RECONNECT_TIMEOUT_MS)
           window.addEventListener('message', handleMessage)
         })
       }
 
-      if (canceled) return
+      if (canceled) return false
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
       queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
+      queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
+      return reconnectSucceeded
     } catch (err) {
       popup.close()
       console.error('Reconnect failed:', err)
+      return false
     } finally {
       abortReconnectRef.current = null
       setPendingAccountId(null)

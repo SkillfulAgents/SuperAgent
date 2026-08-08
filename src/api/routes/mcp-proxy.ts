@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { resolveMcpPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
+import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { db } from '@shared/lib/db'
 import {
   remoteMcpServers,
@@ -109,6 +110,8 @@ async function tryRefreshToken(mcp: {
       })
       .where(eq(remoteMcpServers.id, mcp.id))
 
+    mcpReauthManager.completeMcp(mcp.id)
+
     return data.access_token
   } catch {
     return null
@@ -141,39 +144,55 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   }
 
   // 2. Verify agent-MCP mapping exists
-  const mappings = await db
-    .select({ mcp: remoteMcpServers })
-    .from(agentRemoteMcps)
-    .innerJoin(
-      remoteMcpServers,
-      eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id)
-    )
-    .where(
-      and(
-        eq(agentRemoteMcps.agentSlug, agentSlug),
-        eq(agentRemoteMcps.remoteMcpId, mcpId)
+  const loadMappedMcp = async () => {
+    const [mapping] = await db
+      .select({ mcp: remoteMcpServers })
+      .from(agentRemoteMcps)
+      .innerJoin(
+        remoteMcpServers,
+        eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id)
       )
-    )
-    .limit(1)
+      .where(
+        and(
+          eq(agentRemoteMcps.agentSlug, agentSlug),
+          eq(agentRemoteMcps.remoteMcpId, mcpId)
+        )
+      )
+      .limit(1)
+    return mapping?.mcp ?? null
+  }
 
-  if (mappings.length === 0) {
+  let mcp = await loadMappedMcp()
+  if (!mcp) {
     return c.json({ error: 'MCP server not found or not assigned to this agent' }, 404)
   }
 
-  const mcp = mappings[0].mcp
   const method = c.req.method
 
   // 2.5 Parse JSON-RPC body early for policy enforcement and audit logging
   let bodyBuffer: ArrayBuffer | undefined
   let mcpMethodInfo = rest || '/'
   let toolName: string | null = null
+  let jsonRpcId: string | number | null = null
+  let requestedProtocolVersion = '2025-03-26'
   if (method !== 'GET' && method !== 'HEAD') {
     bodyBuffer = await c.req.arrayBuffer()
     try {
       const text = new TextDecoder().decode(bodyBuffer)
       const jsonRpc = JSON.parse(text) as {
+        id?: string | number | null
         method?: string
-        params?: { name?: string }
+        params?: { name?: string; protocolVersion?: string }
+      }
+      if (
+        typeof jsonRpc.id === 'string' ||
+        typeof jsonRpc.id === 'number' ||
+        jsonRpc.id === null
+      ) {
+        jsonRpcId = jsonRpc.id
+      }
+      if (typeof jsonRpc.params?.protocolVersion === 'string') {
+        requestedProtocolVersion = jsonRpc.params.protocolVersion
       }
       if (jsonRpc.method) {
         mcpMethodInfo = jsonRpc.method
@@ -185,6 +204,148 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     } catch {
       // Not JSON or not JSON-RPC — keep the HTTP path
     }
+  }
+
+  type ReauthResult =
+    | { ok: true }
+    | { ok: false; reason: 'timeout' | 'missing' | 'inactive' }
+
+  const holdForReauth = async (): Promise<ReauthResult> => {
+    try {
+      await mcpReauthManager.requestReauth({
+        agentSlug,
+        mcpId,
+        mcpName: mcp!.name,
+        authType: mcp!.authType,
+      }, c.req.raw.signal)
+    } catch {
+      return { ok: false, reason: 'timeout' }
+    }
+
+    const refreshed = await loadMappedMcp()
+    if (!refreshed) return { ok: false, reason: 'missing' }
+    if (refreshed.status !== 'active') return { ok: false, reason: 'inactive' }
+    mcp = refreshed
+    return { ok: true }
+  }
+
+  const reauthFailureResponse = async (
+    result: Exclude<ReauthResult, { ok: true }>,
+  ) => {
+    const statusCode = result.reason === 'timeout'
+      ? 408
+      : result.reason === 'missing'
+        ? 404
+        : 502
+    const message = result.reason === 'timeout'
+      ? 'The request timed out while waiting for the MCP server to be reconnected.'
+      : result.reason === 'missing'
+        ? 'The MCP server disappeared while re-authenticating.'
+        : 'The MCP server did not become active after re-authentication.'
+
+    await logMcpAuditEntry({
+      agentSlug,
+      remoteMcpId: mcpId,
+      remoteMcpName: mcp?.name ?? mcpId,
+      method,
+      requestPath: mcpMethodInfo,
+      statusCode,
+      errorMessage: message,
+      durationMs: Date.now() - startTime,
+      matchedTool: toolName ?? undefined,
+    })
+
+    return c.json({
+      error: result.reason === 'timeout' ? 'mcp_reauth_timeout' : 'mcp_reauth_failed',
+      message,
+      mcpStatus: 'auth_required',
+    }, statusCode)
+  }
+
+  const markAuthRequired = async (errorMessage: string) => {
+    await db
+      .update(remoteMcpServers)
+      .set({
+        status: 'auth_required',
+        errorMessage,
+        updatedAt: new Date(),
+      })
+      .where(eq(remoteMcpServers.id, mcpId))
+  }
+
+  const cachedTools = () => {
+    if (!mcp?.toolsJson) return []
+    try {
+      const parsed = JSON.parse(mcp.toolsJson) as unknown
+      if (!Array.isArray(parsed)) return []
+      return parsed.flatMap((tool) => {
+        if (
+          typeof tool !== 'object' ||
+          tool === null ||
+          !('name' in tool) ||
+          typeof tool.name !== 'string'
+        ) {
+          return []
+        }
+        const description = 'description' in tool && typeof tool.description === 'string'
+          ? tool.description
+          : undefined
+        const inputSchema = 'inputSchema' in tool &&
+          typeof tool.inputSchema === 'object' &&
+          tool.inputSchema !== null
+          ? tool.inputSchema
+          : { type: 'object', additionalProperties: true }
+        return [{ name: tool.name, description, inputSchema }]
+      })
+    } catch {
+      return []
+    }
+  }
+
+  // Let the SDK complete its eager MCP handshake without contacting an
+  // upstream server whose credentials are known to be invalid. We advertise
+  // cached tool definitions, then park only the eventual tools/call. This
+  // preserves a seamless reconnect/resume flow without freezing session init
+  // or unrelated chat turns.
+  const authRequiredProtocolResponse = (): Response | null => {
+    if ((method === 'GET' || method === 'HEAD') && !rest) {
+      return new Response(null, { status: 405, headers: { Allow: 'POST' } })
+    }
+    if (mcpMethodInfo.startsWith('notifications/')) {
+      return new Response(null, { status: 202 })
+    }
+    if (mcpMethodInfo === 'initialize') {
+      return c.json({
+        jsonrpc: '2.0',
+        id: jsonRpcId,
+        result: {
+          protocolVersion: requestedProtocolVersion,
+          capabilities: { tools: { listChanged: false } },
+          serverInfo: { name: mcp!.name, version: '1.0.0' },
+        },
+      })
+    }
+    if (mcpMethodInfo === 'tools/list') {
+      return c.json({
+        jsonrpc: '2.0',
+        id: jsonRpcId,
+        result: { tools: cachedTools() },
+      })
+    }
+    if (mcpMethodInfo === 'ping') {
+      return c.json({ jsonrpc: '2.0', id: jsonRpcId, result: {} })
+    }
+    return null
+  }
+
+  // A previously failed request may already have marked this server. Complete
+  // eager protocol discovery locally; park only an actual invocation (or an
+  // unknown non-protocol request), then reload the fresh token.
+  if (mcp.status === 'auth_required') {
+    const protocolResponse = authRequiredProtocolResponse()
+    if (protocolResponse) return protocolResponse
+    const reauthResult = await holdForReauth()
+    if (!reauthResult.ok) return reauthFailureResponse(reauthResult)
   }
 
   // 2.6 Policy enforcement
@@ -290,32 +451,24 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     ) {
       accessToken = await tryRefreshToken(mcp)
       if (!accessToken) {
-        await db
-          .update(remoteMcpServers)
-          .set({
-            status: 'auth_required',
-            errorMessage: 'Token refresh failed',
-            updatedAt: new Date(),
-          })
-          .where(eq(remoteMcpServers.id, mcp.id))
-
-        await logMcpAuditEntry({
-          agentSlug,
-          remoteMcpId: mcp.id,
-          remoteMcpName: mcp.name,
-          method: c.req.method,
-          requestPath: rest,
-          errorMessage: 'Token refresh failed',
-          policyDecision: resolvedPolicyDecision,
-          matchedTool: toolName ?? undefined,
-        })
-
-        return c.json({ error: 'MCP server requires re-authentication' }, 401)
+        await markAuthRequired('Token refresh failed')
+        const protocolResponse = authRequiredProtocolResponse()
+        if (protocolResponse) return protocolResponse
+        const reauthResult = await holdForReauth()
+        if (!reauthResult.ok) return reauthFailureResponse(reauthResult)
+        accessToken = mcp.accessToken
+        if (!accessToken) return reauthFailureResponse({ ok: false, reason: 'inactive' })
       }
     }
 
     if (!accessToken) {
-      return c.json({ error: 'MCP server has no access token configured' }, 401)
+      await markAuthRequired('MCP server has no access token configured')
+      const protocolResponse = authRequiredProtocolResponse()
+      if (protocolResponse) return protocolResponse
+      const reauthResult = await holdForReauth()
+      if (!reauthResult.ok) return reauthFailureResponse(reauthResult)
+      accessToken = mcp.accessToken
+      if (!accessToken) return reauthFailureResponse({ ok: false, reason: 'inactive' })
     }
   }
 
@@ -344,18 +497,34 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     }
   })
 
-  // Add real auth header
-  if (accessToken) {
-    forwardHeaders.set('Authorization', `Bearer ${accessToken}`)
-  }
-
-  const init: RequestInit = { method, headers: forwardHeaders }
-  if (bodyBuffer) {
-    init.body = bodyBuffer
+  const forwardRequest = () => {
+    const headers = new Headers(forwardHeaders)
+    if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+    const init: RequestInit = { method, headers }
+    if (bodyBuffer) init.body = bodyBuffer
+    return mcpSafeFetch(targetUrl, init)
   }
 
   try {
-    const response = await mcpSafeFetch(targetUrl, init)
+    let response = await forwardRequest()
+
+    // A live server can discover token revocation only when it handles the
+    // request. Hold the original call, reconnect, then retry it exactly once.
+    if (response.status === 401) {
+      try {
+        await response.body?.cancel()
+      } catch (err) {
+        console.warn('[mcp-proxy] Failed to cancel unauthorized response body:', err)
+      }
+      await markAuthRequired('Remote server returned 401')
+      const protocolResponse = authRequiredProtocolResponse()
+      if (protocolResponse) return protocolResponse
+      const reauthResult = await holdForReauth()
+      if (!reauthResult.ok) return reauthFailureResponse(reauthResult)
+      accessToken = mcp.accessToken
+      response = await forwardRequest()
+    }
+
     const durationMs = Date.now() - startTime
 
     if (shouldRewriteNonSseGet(method, response)) {
@@ -396,16 +565,10 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       matchedTool: toolName ?? undefined,
     })
 
-    // If 401, mark MCP as auth_required
+    // A failed retry stays marked, but is returned rather than opening an
+    // unbounded second reconnect loop for the same proxy request.
     if (response.status === 401) {
-      db.update(remoteMcpServers)
-        .set({
-          status: 'auth_required',
-          errorMessage: 'Remote server returned 401',
-          updatedAt: new Date(),
-        })
-        .where(eq(remoteMcpServers.id, mcp.id))
-        .catch(() => {})
+      markAuthRequired('Remote server returned 401').catch(() => {})
     }
 
     // Pass response through (including SSE streams)

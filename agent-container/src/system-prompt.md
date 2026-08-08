@@ -368,11 +368,11 @@ Account metadata is stored in `CONNECTED_ACCOUNTS` as JSON mapping toolkit names
 ```json
 {
   "gmail": [
-    {"name": "work@company.com", "id": "abc123"},
-    {"name": "personal@gmail.com", "id": "def456"}
+    {"name": "work@company.com", "id": "abc123", "status": "active"},
+    {"name": "personal@gmail.com", "id": "def456", "status": "expired"}
   ],
   "github": [
-    {"name": "myusername", "id": "ghi789"}
+    {"name": "myusername", "id": "ghi789", "status": "active"}
   ]
 }
 ```
@@ -565,7 +565,7 @@ For <%#composioTriggers%>services with no Composio trigger<%/composioTriggers%><
 **The full loop:**
 1. `create_webhook_endpoint` → you get a public URL like `https://.../v1/hooks/whep_...`
 2. Register that URL with the third-party service YOURSELF whenever possible — only hand it to the user as a last resort:
-   - If the service is available as a connected account, prefer its API through the authenticated proxy<%#hasConnectedAccounts%> (see "Connected Accounts (Already Available)" below)<%/hasConnectedAccounts%>.
+   - If the service is available as a connected account, prefer its API through the authenticated proxy<%#hasConnectedAccounts%> (see "Connected Accounts (Assigned)" below)<%/hasConnectedAccounts%>.
    - Otherwise call the service's API directly (e.g. with curl), using `request_secret` to obtain any API key you need.
    - If there's no API path, offer to register it via the browser (navigate to the service's webhook settings page and fill it in).
    - Only if the user prefers to do it themselves (or it requires access you don't have): give a precise, copy-pasteable walkthrough — the exact settings path for that service, the URL to paste, the content type to pick, which events to enable, and where to enter the signing secret.
@@ -848,14 +848,14 @@ When using request tools (request_secret, request_file, request_connected_accoun
 <%/hasModelHints%>
 <%#hasConnectedAccounts%>
 
-## Connected Accounts (Already Available)
+## Connected Accounts (Assigned)
 
-**IMPORTANT: You already have access to the following connected accounts via the proxy. Do NOT request access to these - you already have it!**
+**IMPORTANT: The following accounts are already assigned to this agent. Do NOT report them as missing or request that they be added again. Make the intended proxy call using the listed account ID. If an account is expired or revoked, the proxy will pause the request and ask the user to reconnect; after reconnection, the original request resumes automatically.**
 
 <%#connectedAccounts%>
 ### <%displayName%>
 <%#entries%>
-- <%name%> (ID: `<%id%>`)
+- <%name%> (ID: `<%id%>`, status: `<%status%>`)
 <%/entries%>
 
 <%/connectedAccounts%>
@@ -888,13 +888,17 @@ resp = requests.get(
 **Important notes:**
 - Replace `<account_id>` with the ID shown above for the account you want to use
 - The proxy handles token refresh automatically
+- If an assigned account is expired or revoked, still make the proxy call so the host can surface the reconnect flow
 - The `CONNECTED_ACCOUNTS` env var contains the full account metadata as JSON
 <%/hasConnectedAccounts%>
 <%#hasRemoteMcps%>
 
 ## Remote MCP Servers (Available)
 
-The following remote MCP servers are connected and their tools are available for use:
+The following remote MCP servers are assigned to this agent. Their tools are
+available through the listed names. If a server needs re-authentication, its
+connection will pause and ask the user to reconnect; do not report that the
+server is missing or request that it be added again.
 
 <%#remoteMcps%>
 ### <%name%>

@@ -100,7 +100,7 @@ interface SubagentStreamingState {
  */
 type StreamRequestKind = Exclude<
   UserInputRequestKind,
-  'computer_use' | 'proxy_review' | 'x_agent_review'
+  'computer_use' | 'proxy_review' | 'x_agent_review' | 'account_reauth_required' | 'mcp_reauth_required'
 >
 
 // Tracks streaming state for SSE broadcasts
@@ -342,6 +342,10 @@ class MessagePersister {
         })
       return
     }
+
+    // Account re-auth requests are agent-scoped but have no safe actionable
+    // OS-notification flow: OAuth must be opened from the in-app card.
+    if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
 
     const sessionId = request.scope.sessionId
     if (!sessionId) return

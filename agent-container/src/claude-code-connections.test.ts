@@ -171,13 +171,16 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     expect(calls[2].options.systemPrompt).not.toContain('Team Calendar')
 
     process.env.CONNECTED_ACCOUNTS = JSON.stringify({
-      gmail: [{ name: 'Work Gmail', id: 'account-gmail' }],
+      gmail: [{ name: 'Work Gmail', id: 'account-gmail', status: 'expired' }],
     })
     await claudeProcess.sendMessage('Check the connected Gmail account')
 
     expect(calls).toHaveLength(4)
     expect(calls[3].options.systemPrompt).toContain('Work Gmail')
     expect(calls[3].options.systemPrompt).toContain('account-gmail')
+    expect(calls[3].options.systemPrompt).toContain('status: `expired`')
+    expect(calls[3].options.systemPrompt).toContain('Make the intended proxy call')
+    expect(calls[3].options.systemPrompt).toContain('Do NOT report them as missing')
 
     process.env.CONNECTED_ACCOUNTS = '{}'
     await claudeProcess.sendMessage('Continue without Gmail')
@@ -211,6 +214,16 @@ describe('ClaudeCodeProcess remote MCP handshake gate', () => {
     {
       id: 'mcp-calendar',
       name: 'Team Calendar',
+      proxyUrl: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
+      tools: [{ name: 'list_events' }],
+    },
+  ])
+
+  const AUTH_REQUIRED_CALENDAR = JSON.stringify([
+    {
+      id: 'mcp-calendar',
+      name: 'Team Calendar',
+      status: 'auth_required',
       proxyUrl: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
       tools: [{ name: 'list_events' }],
     },
@@ -257,6 +270,35 @@ describe('ClaudeCodeProcess remote MCP handshake gate', () => {
     // rather than delivering into a half-connected session.
     expect(calls).toHaveLength(2)
     expect(mcpServerStatusCalls).toBe(3)
+  })
+
+  it('does not restart or block ordinary messages for an assigned MCP that needs re-authentication', async () => {
+    process.env.REMOTE_MCPS = AUTH_REQUIRED_CALENDAR
+    const claude = await startProcess('test-handshake-gate-reauth')
+    mcpServerStatusImpl = async () => [
+      { name: 'team_calendar', status: 'pending' },
+    ]
+
+    await claude.sendMessage('Draft an unrelated note')
+
+    expect(calls).toHaveLength(1)
+    expect(mcpServerStatusCalls).toBe(0)
+    expect(calls[0].options.mcpServers).toHaveProperty('team_calendar')
+    expect(calls[0].options.systemPrompt).toContain('do not report that the')
+  })
+
+  it('restarts for a newly projected auth-required MCP without waiting on its parked handshake', async () => {
+    const claude = await startProcess('test-handshake-gate-new-reauth')
+    mcpServerStatusImpl = async () => [
+      { name: 'team_calendar', status: 'pending' },
+    ]
+
+    process.env.REMOTE_MCPS = AUTH_REQUIRED_CALENDAR
+    await claude.sendMessage('Draft an unrelated note')
+
+    expect(calls).toHaveLength(2)
+    expect(mcpServerStatusCalls).toBe(0)
+    expect(calls[1].options.mcpServers).toHaveProperty('team_calendar')
   })
 
   it('does not wait on MCP servers from other setting scopes', async () => {

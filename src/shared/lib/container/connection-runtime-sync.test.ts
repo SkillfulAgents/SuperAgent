@@ -57,7 +57,7 @@ describe('connection runtime synchronization', () => {
     mockFetch.mockResolvedValue(new Response(null, { status: 200 }))
   })
 
-  it('writes the active remote MCP projection with stable ordering', async () => {
+  it('writes active and auth-required MCPs with stable ordering', async () => {
     mockWhere.mockResolvedValue([
       {
         mcp: {
@@ -83,6 +83,14 @@ describe('connection runtime synchronization', () => {
           toolsJson: JSON.stringify([{ name: 'list' }]),
         },
       },
+      {
+        mcp: {
+          id: 'mcp-error',
+          name: 'Broken',
+          status: 'error',
+          toolsJson: null,
+        },
+      },
     ])
 
     await updateRemoteMcpEnvironment('agent-1', {
@@ -97,19 +105,28 @@ describe('connection runtime synchronization', () => {
       {
         id: 'mcp-a',
         name: 'Alpha',
+        status: 'active',
         proxyUrl: 'http://10.20.30.40:3000/api/mcp-proxy/agent-1/mcp-a',
         tools: [{ name: 'list' }],
       },
       {
+        id: 'mcp-disabled',
+        name: 'Disabled',
+        status: 'auth_required',
+        proxyUrl: 'http://10.20.30.40:3000/api/mcp-proxy/agent-1/mcp-disabled',
+        tools: [],
+      },
+      {
         id: 'mcp-z',
         name: 'Zed',
+        status: 'active',
         proxyUrl: 'http://10.20.30.40:3000/api/mcp-proxy/agent-1/mcp-z',
         tools: [{ name: 'search' }],
       },
     ])
   })
 
-  it('writes active connected-account metadata grouped by toolkit', async () => {
+  it('writes active and reconnectable connected-account metadata grouped by toolkit', async () => {
     mockWhere.mockResolvedValue([
       {
         account: {
@@ -146,8 +163,11 @@ describe('connection runtime synchronization', () => {
     const payload = JSON.parse(init.body as string)
     expect(payload.key).toBe('CONNECTED_ACCOUNTS')
     expect(JSON.parse(payload.value)).toEqual({
-      gmail: [{ name: 'Work Gmail', id: 'gmail-1' }],
-      slack: [{ name: 'Work Slack', id: 'slack-1' }],
+      gmail: [
+        { name: 'Work Gmail', id: 'gmail-1', status: 'active' },
+        { name: 'Old Gmail', id: 'gmail-expired', status: 'expired' },
+      ],
+      slack: [{ name: 'Work Slack', id: 'slack-1', status: 'active' }],
     })
   })
 

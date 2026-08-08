@@ -193,6 +193,8 @@ interface UnifiedProjection {
   buckets: PendingRequestBuckets
   capabilityReviews: UnifiedCapabilityReview[]
   reviews: PendingReview[]
+  accountReauthRequests: PendingAccountReauth[]
+  mcpReauthRequests: PendingMcpReauth[]
   /**
    * Ids the server auto-approved and is ALREADY executing, per suppressible
    * kind. They are deliberately absent from the buckets — no card is owed for
@@ -234,6 +236,24 @@ export interface PendingReview {
     operation: 'list' | 'read' | 'invoke' | 'create'
     preview?: string
   }
+}
+
+export interface PendingAccountReauth {
+  id: string
+  agentSlug: string
+  accountId: string
+  toolkit: string
+  accountStatus: 'expired' | 'revoked'
+  proxyRequestId: string
+}
+
+export interface PendingMcpReauth {
+  id: string
+  agentSlug: string
+  mcpId: string
+  mcpName: string
+  authType: 'none' | 'oauth' | 'bearer'
+  proxyRequestId: string
 }
 
 // Rebuild the PendingReview shape from a review envelope. The payload carries
@@ -299,6 +319,8 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
   const buckets = createPendingRequestBuckets()
   const capabilityReviews: UnifiedCapabilityReview[] = []
   const reviews: PendingReview[] = []
+  const accountReauthRequests: PendingAccountReauth[] = []
+  const mcpReauthRequests: PendingMcpReauth[] = []
   const autoApprovedScriptRunIds = new Set<string>()
   const autoApprovedComputerUseIds = new Set<string>()
 
@@ -418,6 +440,40 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
         if (review) reviews.push(review)
         break
       }
+      case 'account_reauth_required':
+        if (
+          typeof payload.accountId === 'string' &&
+          typeof payload.toolkit === 'string' &&
+          (payload.accountStatus === 'expired' || payload.accountStatus === 'revoked')
+        ) {
+          accountReauthRequests.push({
+            id: request.id,
+            agentSlug: request.scope.agentSlug ?? '',
+            accountId: payload.accountId,
+            toolkit: payload.toolkit,
+            accountStatus: payload.accountStatus,
+            proxyRequestId:
+              typeof payload.proxyRequestId === 'string' ? payload.proxyRequestId : request.id,
+          })
+        }
+        break
+      case 'mcp_reauth_required':
+        if (
+          typeof payload.mcpId === 'string' &&
+          typeof payload.mcpName === 'string' &&
+          (payload.authType === 'none' || payload.authType === 'oauth' || payload.authType === 'bearer')
+        ) {
+          mcpReauthRequests.push({
+            id: request.id,
+            agentSlug: request.scope.agentSlug ?? '',
+            mcpId: payload.mcpId,
+            mcpName: payload.mcpName,
+            authType: payload.authType,
+            proxyRequestId:
+              typeof payload.proxyRequestId === 'string' ? payload.proxyRequestId : request.id,
+          })
+        }
+        break
     }
   }
 
@@ -425,6 +481,8 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
     buckets,
     capabilityReviews,
     reviews,
+    accountReauthRequests,
+    mcpReauthRequests,
     autoApprovedScriptRunIds,
     autoApprovedComputerUseIds,
   }
@@ -484,6 +542,8 @@ export type PendingRequestDescriptor =
   | { kind: 'capability_review'; key: string; toolUseId: string; capability: 'subagents' | 'workflows'; toolName: string; input: Record<string, unknown>; onComplete: () => void }
   | { kind: 'proxy_review'; key: string; reviewId: string; accountId: string; toolkit: string; method: string; targetPath: string; matchedScopes: string[]; scopeDescriptions: Record<string, string>; displayText?: string; onComplete: () => void }
   | { kind: 'x_agent_review'; key: string; reviewId: string; xAgent: NonNullable<PendingReview['xAgent']>; onComplete: () => void }
+  | { kind: 'account_reauth_required'; key: string; proxyRequestId: string; accountId: string; toolkit: string; accountStatus: 'expired' | 'revoked'; onComplete: () => void }
+  | { kind: 'mcp_reauth_required'; key: string; proxyRequestId: string; mcpId: string; mcpName: string; authType: 'none' | 'oauth' | 'bearer'; onComplete: () => void }
 
 interface UsePendingRequestsResult {
   items: PendingRequestDescriptor[]
@@ -526,6 +586,8 @@ export function usePendingRequests({
     )
   }, [unifiedRequestsData, isActive])
   const pendingProxyReviews = unified.reviews
+  const pendingAccountReauthRequests = unified.accountReauthRequests
+  const pendingMcpReauthRequests = unified.mcpReauthRequests
 
   // Derive pending requests from message history (for page refresh recovery).
   // Tool calls without a result are still pending, but only if there are no
@@ -673,11 +735,15 @@ export function usePendingRequests({
       for (const req of arr) ids.push(req.toolUseId)
     }
     for (const review of pendingProxyReviews) ids.push(review.id)
+    for (const request of pendingAccountReauthRequests) ids.push(request.id)
+    for (const request of pendingMcpReauthRequests) ids.push(request.id)
     return ids
   }, [
     merged.secretRequests, merged.connectedAccountRequests, merged.remoteMcpRequests,
     merged.questionRequests, merged.fileRequests, merged.browserInputRequests,
     merged.scriptRunRequests, merged.computerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
+    pendingAccountReauthRequests,
+    pendingMcpReauthRequests,
   ])
 
   // Effect — not useMemo — because we mutate refs. useMemo may re-run for the
@@ -831,11 +897,35 @@ export function usePendingRequests({
         })
       }
     }
+    for (const request of pendingAccountReauthRequests) {
+      all.push({
+        kind: 'account_reauth_required',
+        key: request.id,
+        proxyRequestId: request.proxyRequestId,
+        accountId: request.accountId,
+        toolkit: request.toolkit,
+        accountStatus: request.accountStatus,
+        onComplete: handleProxyReviewComplete,
+      })
+    }
+    for (const request of pendingMcpReauthRequests) {
+      all.push({
+        kind: 'mcp_reauth_required',
+        key: request.id,
+        proxyRequestId: request.proxyRequestId,
+        mcpId: request.mcpId,
+        mcpName: request.mcpName,
+        authType: request.authType,
+        onComplete: handleProxyReviewComplete,
+      })
+    }
     return all.sort((a, b) => getArrivalOrder(a.key) - getArrivalOrder(b.key))
   }, [
     merged.secretRequests, merged.connectedAccountRequests, merged.remoteMcpRequests,
     merged.questionRequests, merged.fileRequests, merged.browserInputRequests,
     merged.scriptRunRequests, merged.computerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
+    pendingAccountReauthRequests,
+    pendingMcpReauthRequests,
     getArrivalOrder, handleRequestComplete, handleProxyReviewComplete,
   ])
 

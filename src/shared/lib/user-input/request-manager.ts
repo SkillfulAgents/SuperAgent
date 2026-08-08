@@ -266,7 +266,7 @@ export class UserInputRequestManager {
     return [...this.requests.values()].filter((r) => r.scope.agentSlug === agentSlug)
   }
 
-  /** Agent-scoped only (no sessionId) — today: proxy / x-agent reviews. */
+  /** Agent-scoped only (no sessionId) — reviews and account re-auth requests. */
   getAgentScopedRequests(agentSlug: string): PendingUserInputRequest[] {
     return [...this.requests.values()].filter(
       (r) => r.scope.agentSlug === agentSlug && r.scope.sessionId === undefined,
