@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { selectActivePageTarget } from './active-page-target';
+import { tabManager } from './tab-manager';
 
-const urlsMatch = (left: string, right: string) => left === right;
+const urlsMatch = (left: string, right: string) => tabManager.urlsMatch(left, right);
 const targets = [
   { id: 'background', url: 'about:blank', marker: 'wrong' },
   { id: 'pge', url: 'https://myaccount.pge.com/myaccount/s/login/', marker: 'right' },
@@ -28,13 +29,17 @@ describe('selectActivePageTarget', () => {
 
   it('keeps the viewer authoritative even when the daemon matches another tab', () => {
     const duplicateUrlTargets = [
-      { id: 'background', url: 'https://myaccount.pge.com/myaccount/s/login/' },
-      { id: 'viewer', url: 'https://myaccount.pge.com/myaccount/s/login/' },
+      { id: 'background', url: 'https://myaccount.pge.com/myaccount/s/login/?language=en_US#background' },
+      { id: 'viewer', url: 'https://myaccount.pge.com/myaccount/s/login?language=en_US#viewer' },
     ];
+    const normalizedDaemonUrl = 'https://myaccount.pge.com/myaccount/s/login?language=en_US';
+
+    expect(urlsMatch(duplicateUrlTargets[0].url, normalizedDaemonUrl)).toBe(true);
+    expect(urlsMatch(duplicateUrlTargets[1].url, normalizedDaemonUrl)).toBe(true);
 
     expect(selectActivePageTarget(
       duplicateUrlTargets,
-      [{ url: duplicateUrlTargets[0].url, active: true }],
+      [{ url: normalizedDaemonUrl, active: true }],
       urlsMatch,
       { viewerTargetId: 'viewer', preferViewer: true },
     )).toBe(duplicateUrlTargets[1]);

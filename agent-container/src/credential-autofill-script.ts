@@ -65,7 +65,9 @@ export const CREDENTIAL_AUTOFILL_FUNCTION = `function(username, password, expect
     if (input.type === 'email') value += 60;
     if (/(user|login|email|account)/i.test(identity)) value += 40;
     const position = input.compareDocumentPosition(passwordField);
-    if (!(position & 1) && (position & 4)) value += 20;
+    const NodeConstructor = input.ownerDocument.defaultView.Node;
+    if (!(position & NodeConstructor.DOCUMENT_POSITION_DISCONNECTED) &&
+        (position & NodeConstructor.DOCUMENT_POSITION_FOLLOWING)) value += 20;
     return value;
   };
   const usernameField = pool.sort((a, b) => score(b) - score(a))[0];

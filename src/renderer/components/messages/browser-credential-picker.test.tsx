@@ -105,6 +105,18 @@ describe('BrowserCredentialPicker', () => {
           password: 'host-only-secret',
         },
       }, false))
+      .mockResolvedValueOnce(response({
+        provider: 'apple-passwords',
+        providerLabel: 'Apple Passwords',
+        status: 'ready',
+        installable: true,
+        origin: 'https://example.com',
+        suggestions: [{
+          id: 'opaque-2',
+          username: 'person@example.com',
+          domain: 'example.com',
+        }],
+      }))
 
     render(<BrowserCredentialPicker {...props} />)
     await user.click(await screen.findByTestId('credential-suggestion-opaque-1'))
@@ -112,14 +124,54 @@ describe('BrowserCredentialPicker', () => {
     expect(await screen.findByTestId('credential-picker-manual')).toBeInTheDocument()
     expect(screen.getByText('person@example.com')).toBeInTheDocument()
     expect(screen.queryByText('host-only-secret')).not.toBeInTheDocument()
+    expect(screen.getByText('Password hidden')).toHaveClass('sr-only')
 
     await user.click(screen.getByRole('button', { name: 'Copy username' }))
     expect(writeText).toHaveBeenLastCalledWith('person@example.com')
 
     await user.click(screen.getByRole('button', { name: 'Show password' }))
     expect(screen.getByText('host-only-secret')).toBeInTheDocument()
+    expect(screen.getByText('host-only-secret')).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByText('Password: host-only-secret')).toHaveClass('sr-only')
     await user.click(screen.getByRole('button', { name: 'Copy password' }))
     expect(writeText).toHaveBeenLastCalledWith('host-only-secret')
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByTestId('credential-suggestion-opaque-2')).toBeInTheDocument()
+    expect(mockApiFetch.mock.calls[2][0]).toBe(
+      '/api/agents/agent%20a/sessions/session%2F1/browser-credentials' +
+        '?toolUseId=tool%3F1&refresh=true',
+    )
+  })
+
+  it('clears the copied-state timer when the manual panel unmounts', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    const clearTimeout = vi.spyOn(window, 'clearTimeout')
+    mockApiFetch
+      .mockResolvedValueOnce(response({
+        provider: 'apple-passwords',
+        providerLabel: 'Apple Passwords',
+        status: 'ready',
+        installable: true,
+        origin: 'https://example.com',
+        suggestions: [{ id: 'opaque-1', username: 'person@example.com', domain: 'example.com' }],
+      }))
+      .mockResolvedValueOnce(response({
+        error: 'No visible password field was found',
+        reason: 'no_password_field',
+        manualCredential: { username: 'person@example.com', password: 'host-only-secret' },
+      }, false))
+
+    const view = render(<BrowserCredentialPicker {...props} />)
+    await user.click(await screen.findByTestId('credential-suggestion-opaque-1'))
+    await user.click(await screen.findByRole('button', { name: 'Copy password' }))
+    const callsBeforeUnmount = clearTimeout.mock.calls.length
+
+    view.unmount()
+
+    expect(clearTimeout.mock.calls.length).toBeGreaterThan(callsBeforeUnmount)
+    clearTimeout.mockRestore()
   })
 
   it('links to Browser Use settings when no password manager is configured', async () => {

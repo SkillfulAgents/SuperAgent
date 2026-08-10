@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Copy, Eye, EyeOff, KeyRound, RefreshCw } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import { Button } from '@renderer/components/ui/button'
@@ -63,6 +63,18 @@ export function BrowserCredentialPicker({
   const [passwordRevealed, setPasswordRevealed] = useState(false)
   const [copiedField, setCopiedField] = useState<'username' | 'password' | null>(null)
   const [copyError, setCopyError] = useState<string | null>(null)
+  const copiedResetTimer = useRef<number | null>(null)
+
+  const clearCopiedResetTimer = useCallback(() => {
+    if (copiedResetTimer.current !== null) {
+      window.clearTimeout(copiedResetTimer.current)
+      copiedResetTimer.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => clearCopiedResetTimer()
+  }, [clearCopiedResetTimer])
 
   useEffect(() => {
     if (!canUsePasswordManagers) {
@@ -75,6 +87,7 @@ export function BrowserCredentialPicker({
     setFilled(false)
     setManualCredential(null)
     setPasswordRevealed(false)
+    clearCopiedResetTimer()
     setCopiedField(null)
     setCopyError(null)
     const refreshQuery = reload > 0 ? '&refresh=true' : ''
@@ -94,7 +107,7 @@ export function BrowserCredentialPicker({
       if (!controller.signal.aborted) setLoading(false)
     })
     return () => controller.abort()
-  }, [agentSlug, canUsePasswordManagers, sessionId, toolUseId, reload])
+  }, [agentSlug, canUsePasswordManagers, clearCopiedResetTimer, sessionId, toolUseId, reload])
 
   const fill = useCallback(async (credentialId: string) => {
     setFillingId(credentialId)
@@ -134,13 +147,15 @@ export function BrowserCredentialPicker({
       await navigator.clipboard.writeText(manualCredential[field])
       setCopyError(null)
       setCopiedField(field)
-      window.setTimeout(() => {
+      clearCopiedResetTimer()
+      copiedResetTimer.current = window.setTimeout(() => {
         setCopiedField((current) => current === field ? null : current)
+        copiedResetTimer.current = null
       }, 2000)
     } catch {
       setCopyError('Could not copy automatically. Reveal and select the value instead.')
     }
-  }, [manualCredential])
+  }, [clearCopiedResetTimer, manualCredential])
 
   const checkPasswordManager = useCallback(async () => {
     if (!data || data.provider === 'none') return
@@ -262,10 +277,13 @@ export function BrowserCredentialPicker({
             <div className="flex items-center gap-1.5">
               <code
                 className="min-w-0 flex-1 select-all truncate rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground"
-                aria-label={passwordRevealed ? manualCredential.password : 'Password hidden'}
+                aria-hidden="true"
               >
                 {passwordRevealed ? manualCredential.password : '••••••••••••'}
               </code>
+              <span className="sr-only" aria-live="polite">
+                {passwordRevealed ? `Password: ${manualCredential.password}` : 'Password hidden'}
+              </span>
               <Button
                 type="button"
                 variant="ghost"
@@ -291,6 +309,21 @@ export function BrowserCredentialPicker({
           </div>
         </div>
         {copyError && <p className="mt-2 text-destructive">{copyError}</p>}
+        <div className="mt-3 flex items-center gap-2 border-t border-border/60 pt-3">
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            onClick={() => setReload((value) => value + 1)}
+            disabled={disabled}
+          >
+            <RefreshCw className="mr-1 h-3 w-3" />
+            Retry
+          </Button>
+          <p className="text-2xs text-muted-foreground">
+            Refresh saved logins, then select this login again.
+          </p>
+        </div>
       </div>
     )
   }
