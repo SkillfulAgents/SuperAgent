@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import { useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
+import { useCanManageRemoteMcp, useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
@@ -35,6 +35,7 @@ export function McpReauthRequestItem({
 }: McpReauthRequestItemProps) {
   const queryClient = useQueryClient()
   const initiateOAuth = useInitiateMcpOAuth()
+  const { data: canManage } = useCanManageRemoteMcp(mcpId)
   const [pending, setPending] = useState(false)
   const [bearerToken, setBearerToken] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -43,6 +44,7 @@ export function McpReauthRequestItem({
     () => COMMON_MCP_SERVERS.find((server) => server.displayName === mcpName)?.slug,
     [mcpName],
   )
+  const canReconnect = !readOnly && canManage === true
 
   const finish = () => {
     queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
@@ -123,18 +125,20 @@ export function McpReauthRequestItem({
   return (
     <RequestItemShell
       title={`This request needs ${mcpName}, which requires re-authentication.`}
-      subtitle="Reconnect to continue. The original MCP request will resume automatically."
+      subtitle={canManage === false
+        ? 'Only the connection owner or an administrator can reconnect it. The request will resume when they do.'
+        : 'Reconnect to continue. The original MCP request will resume automatically.'}
       icon={<ServiceIcon slug={serviceSlug} fallback="mcp" className="h-4 w-4" />}
       theme="orange"
       sessionId={sessionId}
       agentSlug={agentSlug}
-      readOnly={readOnly ? {} : false}
+      readOnly={canReconnect ? false : {}}
       waitingText="Waiting for reconnection"
       error={error}
       data-testid="mcp-reauth-request"
       data-auth-type={authType}
     >
-      {!readOnly && authType === 'bearer' && (
+      {canReconnect && authType === 'bearer' && (
         <Input
           type="password"
           value={bearerToken}
@@ -144,22 +148,24 @@ export function McpReauthRequestItem({
           data-testid="mcp-reauth-token-input"
         />
       )}
-      <RequestItemActions>
-        <Button
-          type="button"
-          size="xs"
-          onClick={() => void reconnect()}
-          disabled={pending || (authType === 'bearer' && !bearerToken.trim())}
-          data-testid="mcp-reauth-reconnect-btn"
-        >
-          {pending ? (
-            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-          )}
-          {pending ? 'Reconnecting…' : authType === 'none' ? 'Retry' : 'Reconnect'}
-        </Button>
-      </RequestItemActions>
+      {canReconnect && (
+        <RequestItemActions>
+          <Button
+            type="button"
+            size="xs"
+            onClick={() => void reconnect()}
+            disabled={pending || (authType === 'bearer' && !bearerToken.trim())}
+            data-testid="mcp-reauth-reconnect-btn"
+          >
+            {pending ? (
+              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+            )}
+            {pending ? 'Reconnecting…' : authType === 'none' ? 'Retry' : 'Reconnect'}
+          </Button>
+        </RequestItemActions>
+      )}
       <span className="sr-only">MCP proxy request {proxyRequestId}</span>
     </RequestItemShell>
   )

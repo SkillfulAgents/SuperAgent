@@ -206,7 +206,7 @@ describe('proxy route', () => {
           toolkitSlug: 'gmail',
           providerConnectionId: 'comp-123',
             providerName: 'composio',
-          status: 'active',
+          status: 'expired',
         },
       },
     ])
@@ -219,6 +219,7 @@ describe('proxy route', () => {
     expect(res.status).toBe(403)
     const body = await res.json()
     expect(body.error).toContain('not allowed')
+    expect(mockRequestReauth).not.toHaveBeenCalled()
   })
 
   it('returns 502 when provider makeApiCall fails', async () => {
@@ -999,7 +1000,7 @@ describe('proxy policy enforcement', () => {
   }
 
   // Set up mocks through host validation, then let policy take over
-  function setupThroughHostValidation() {
+  function setupThroughHostValidation(status: 'active' | 'expired' = 'active') {
     mockValidateProxyToken.mockResolvedValue('my-agent')
     mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
     mockInnerJoin.mockReturnValue({ where: mockWhere })
@@ -1011,7 +1012,7 @@ describe('proxy policy enforcement', () => {
           toolkitSlug: 'gmail',
           providerConnectionId: 'comp-123',
             providerName: 'composio',
-          status: 'active',
+          status,
           userId: 'user-1',
         },
       },
@@ -1039,7 +1040,7 @@ describe('proxy policy enforcement', () => {
   })
 
   it('policy "block" → returns 403, body has error: "blocked_by_policy"', async () => {
-    setupThroughHostValidation()
+    setupThroughHostValidation('expired')
     mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.full'], descriptions: {} })
     mockResolveApiPolicy.mockResolvedValue({
       decision: 'block',
@@ -1055,6 +1056,7 @@ describe('proxy policy enforcement', () => {
     expect(res.status).toBe(403)
     const body = await res.json()
     expect(body.error).toBe('blocked_by_policy')
+    expect(mockRequestReauth).not.toHaveBeenCalled()
   })
 
   it('block does NOT call provider.makeApiCall', async () => {

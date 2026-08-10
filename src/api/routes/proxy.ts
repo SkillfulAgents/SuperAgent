@@ -193,27 +193,6 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       result.reason === 'missing' ? 404 : 502)
   }
 
-  // 2b. Park requests for accounts with non-active local status. The OAuth
-  // completion route resolves this wait; then we reload the account so the
-  // original request uses the new provider connection ID.
-  if (account.status !== 'active') {
-    const status = account.status
-    const result = await holdForReauth(status)
-    if (!result.ok) {
-      return reauthFailureResponse(result, status, (errorMessage, statusCode) =>
-        logAuditEntry({
-          agentSlug,
-          accountId,
-          toolkit: account!.toolkitSlug,
-          targetHost,
-          targetPath,
-          method,
-          statusCode,
-          errorMessage,
-        }))
-    }
-  }
-
   // 3. Validate target host against toolkit allowlist
   if (!isHostAllowed(account.toolkitSlug, targetHost)) {
     await logAuditEntry({
@@ -328,6 +307,19 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       matchedScopes: JSON.stringify(policyResult.matchedScopes),
       ...extras,
     })
+
+  // Park only after the request has passed both the host allowlist and API
+  // policy gate. Re-authentication cannot turn a forbidden request into an
+  // allowed one, so prompting before these checks only interrupts the user
+  // for work that will be rejected immediately afterward.
+  if (account.status !== 'active') {
+    const status = account.status
+    const result = await holdForReauth(status)
+    if (!result.ok) {
+      return reauthFailureResponse(result, status, (errorMessage, statusCode) =>
+        audit({ statusCode, errorMessage }))
+    }
+  }
 
   // 4. Build target URL
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL

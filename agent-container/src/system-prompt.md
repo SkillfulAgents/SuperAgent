@@ -896,14 +896,26 @@ resp = requests.get(
 ## Remote MCP Servers (Available)
 
 The following remote MCP servers are assigned to this agent. Their tools are
-available through the listed names. If a server needs re-authentication, its
-connection will pause and ask the user to reconnect; do not report that the
-server is missing or request that it be added again.
+available through the listed names. Do not report an assigned server as missing
+or request that it be added again.
 
 <%#remoteMcps%>
 ### <%name%>
+<%#hasTools%>
 Tools: <%tools%>
 Use these tools via mcp__<%sanitizedName%>__<tool_name>
+<%#needsReauth%>
+This server needs re-authentication. Calling one of its listed tools will pause
+the request and ask the user to reconnect, then resume the call.
+<%/needsReauth%>
+<%/hasTools%>
+<%^hasTools%>
+No cached tools are available for this server.
+<%#needsReauth%>
+Ask the user to reconnect it from Connections before trying to use it. There is
+no callable tool available yet to open the in-chat reconnect flow.
+<%/needsReauth%>
+<%/hasTools%>
 
 <%/remoteMcps%>
 <%/hasRemoteMcps%>

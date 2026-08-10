@@ -289,8 +289,108 @@ describe('mcp-proxy route', () => {
           serverInfo: { name: 'Test MCP' },
         },
       })
+      expect(res.headers.get('Mcp-Session-Id')).toBeTruthy()
       expect(mockRequestMcpReauth).not.toHaveBeenCalled()
       expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('binds the local session id to a stateful upstream session before resuming', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      const stale = buildMcp({ status: 'auth_required', accessToken: 'stale-token' })
+      const reconnected = buildMcp({ status: 'active', accessToken: 'fresh-token' })
+      setupDbMocks(stale)
+
+      const initialize = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: { protocolVersion: '2025-06-18' },
+        }),
+      })
+      const clientSessionId = initialize.headers.get('Mcp-Session-Id')
+      expect(clientSessionId).toBeTruthy()
+
+      mockLimit
+        .mockResolvedValueOnce([{ mcp: stale }])
+        .mockResolvedValueOnce([{ mcp: reconnected }])
+      mockFetch
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'upstream-init',
+          result: {
+            protocolVersion: '2025-06-18',
+            capabilities: {},
+            serverInfo: { name: 'Stateful MCP', version: '1.0.0' },
+          },
+        }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'Mcp-Session-Id': 'upstream-session-1',
+          },
+        }))
+        .mockResolvedValueOnce(new Response(null, { status: 202 }))
+        .mockResolvedValueOnce(new Response('{"jsonrpc":"2.0","id":2,"result":{"ok":true}}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }))
+
+      const resumed = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+          'Mcp-Session-Id': clientSessionId!,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'search', arguments: { query: 'hello' } },
+        }),
+      })
+
+      expect(resumed.status).toBe(200)
+      expect(mockFetch).toHaveBeenCalledTimes(3)
+      expect(JSON.parse(String(mockFetch.mock.calls[0][1].body))).toMatchObject({
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18' },
+      })
+      expect(JSON.parse(String(mockFetch.mock.calls[1][1].body))).toMatchObject({
+        method: 'notifications/initialized',
+      })
+      const resumedHeaders = mockFetch.mock.calls[2][1].headers as Headers
+      expect(resumedHeaders.get('Mcp-Session-Id')).toBe('upstream-session-1')
+      expect(resumedHeaders.get('Authorization')).toBe('Bearer fresh-token')
+
+      // Later calls in the same SDK session keep using the stable synthetic id;
+      // the proxy rewrites it without re-initializing upstream again.
+      mockLimit.mockResolvedValue([{ mcp: reconnected }])
+      mockFetch.mockResolvedValueOnce(new Response('{"jsonrpc":"2.0","id":3,"result":{}}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+      const later = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+          'Mcp-Session-Id': clientSessionId!,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: { name: 'search', arguments: { query: 'again' } },
+        }),
+      })
+      expect(later.status).toBe(200)
+      expect(mockFetch).toHaveBeenCalledTimes(4)
+      expect((mockFetch.mock.calls[3][1].headers as Headers).get('Mcp-Session-Id'))
+        .toBe('upstream-session-1')
     })
 
     it('serves cached tools locally while auth is required', async () => {
@@ -1824,7 +1924,8 @@ describe('mcp-proxy route', () => {
     })
 
     it('tools/call with policy "block" → 403', async () => {
-      setupSuccessPath()
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      setupDbMocks(buildMcp({ status: 'auth_required' }))
       mockResolveMcpPolicy.mockResolvedValue({
         decision: 'block',
         matchedScopes: ['search'],
@@ -1841,6 +1942,8 @@ describe('mcp-proxy route', () => {
       expect(res.status).toBe(403)
       const json = await res.json()
       expect(json.error).toBe('blocked_by_policy')
+      expect(mockRequestMcpReauth).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
     })
 
     it('tools/call with policy "review" → await decision', async () => {

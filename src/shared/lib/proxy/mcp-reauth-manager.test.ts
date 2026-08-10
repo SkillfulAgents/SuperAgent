@@ -67,6 +67,29 @@ describe('McpReauthManager', () => {
     await expect(unrelated).resolves.toBeUndefined()
   })
 
+  it('deduplicates concurrent waits for one MCP into a single agent card', async () => {
+    const first = manager.requestReauth(DETAILS)
+    const second = manager.requestReauth(DETAILS)
+
+    expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
+    expect(manager.completeMcp('mcp-1')).toBe(2)
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined])
+  })
+
+  it('keeps the shared card open when only one concurrent MCP request aborts', async () => {
+    const controller = new AbortController()
+    const aborted = manager.requestReauth(DETAILS, controller.signal)
+    const remaining = manager.requestReauth(DETAILS)
+    const rejection = expect(aborted).rejects.toThrow('aborted')
+
+    controller.abort()
+
+    await rejection
+    expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
+    expect(manager.completeMcp('mcp-1')).toBe(1)
+    await expect(remaining).resolves.toBeUndefined()
+  })
+
   it('settles an abandoned request after the timeout', async () => {
     const promise = manager.requestReauth(DETAILS)
     const rejection = expect(promise).rejects.toThrow('timed out')

@@ -12,10 +12,20 @@ export interface AccountReauthDetails {
   accountStatus: 'expired' | 'revoked'
 }
 
-interface ReauthSettler {
+interface ReauthWaiter {
   resolve: () => void
   reject: (error: Error) => void
   timer: ReturnType<typeof setTimeout>
+  signal?: AbortSignal
+  onAbort?: () => void
+}
+
+interface AccountReauthGroup {
+  key: string
+  entryId: string
+  agentSlug: string
+  accountId: string
+  waiters: Set<ReauthWaiter>
 }
 
 type AccountReauthEntry = Extract<PendingUserInputRequest, { kind: 'account_reauth_required' }>
@@ -31,7 +41,8 @@ type AccountReauthEntry = Extract<PendingUserInputRequest, { kind: 'account_reau
  * request resume after the OAuth completion route activates the account.
  */
 export class AccountReauthManager {
-  private settlers = new Map<string, ReauthSettler>()
+  private groups = new Map<string, AccountReauthGroup>()
+  private entryIdByKey = new Map<string, string>()
 
   private static isAccountReauthEntry(
     request: PendingUserInputRequest,
@@ -39,64 +50,139 @@ export class AccountReauthManager {
     return request.kind === 'account_reauth_required'
   }
 
-  private settle(
-    entry: AccountReauthEntry,
-    outcome: 'answered' | 'cancelled' | 'timeout',
-    action: { type: 'resolve' } | { type: 'reject'; error: Error },
-  ): void {
-    const settler = this.settlers.get(entry.id)
-    this.settlers.delete(entry.id)
-    if (settler) clearTimeout(settler.timer)
-    userInputRequestManager.resolve(entry.id, outcome)
-    if (settler) {
-      if (action.type === 'resolve') settler.resolve()
-      else settler.reject(action.error)
+  private cleanupWaiter(waiter: ReauthWaiter): void {
+    clearTimeout(waiter.timer)
+    if (waiter.signal && waiter.onAbort) {
+      waiter.signal.removeEventListener('abort', waiter.onAbort)
     }
   }
 
+  private settleGroup(
+    group: AccountReauthGroup,
+    outcome: 'answered' | 'cancelled' | 'timeout',
+    action: { type: 'resolve' } | { type: 'reject'; error: Error },
+  ): number {
+    this.groups.delete(group.entryId)
+    if (this.entryIdByKey.get(group.key) === group.entryId) {
+      this.entryIdByKey.delete(group.key)
+    }
+
+    const entry = userInputRequestManager.getOpenRequest(group.entryId)
+    if (entry && AccountReauthManager.isAccountReauthEntry(entry)) {
+      userInputRequestManager.resolve(entry.id, outcome)
+    }
+
+    const waiters = [...group.waiters]
+    group.waiters.clear()
+    for (const waiter of waiters) {
+      this.cleanupWaiter(waiter)
+      if (action.type === 'resolve') waiter.resolve()
+      else waiter.reject(action.error)
+    }
+    messagePersister.syncAgentSessionsAwaiting(group.agentSlug)
+    return waiters.length
+  }
+
+  private rejectWaiter(
+    group: AccountReauthGroup,
+    waiter: ReauthWaiter,
+    outcome: 'cancelled' | 'timeout',
+    error: Error,
+  ): void {
+    if (!group.waiters.delete(waiter)) return
+    this.cleanupWaiter(waiter)
+    waiter.reject(error)
+
+    // Keep the shared card open while another HTTP request is still parked on
+    // the same credential. The final waiter owns the registry resolution.
+    if (group.waiters.size > 0) return
+
+    this.groups.delete(group.entryId)
+    if (this.entryIdByKey.get(group.key) === group.entryId) {
+      this.entryIdByKey.delete(group.key)
+    }
+    const entry = userInputRequestManager.getOpenRequest(group.entryId)
+    if (entry && AccountReauthManager.isAccountReauthEntry(entry)) {
+      userInputRequestManager.resolve(entry.id, outcome)
+    }
+    messagePersister.syncAgentSessionsAwaiting(group.agentSlug)
+  }
+
   requestReauth(details: AccountReauthDetails, signal?: AbortSignal): Promise<void> {
-    const id = crypto.randomUUID()
+    // Requests share one credential but the registry scope can name only one
+    // agent. Deduplicate within that visible scope; completing the account
+    // still settles every group across every assigned agent.
+    const key = `${details.agentSlug}\0${details.accountId}`
+    const existingId = this.entryIdByKey.get(key)
+    let group = existingId ? this.groups.get(existingId) : undefined
+    let isNewGroup = false
+
+    if (group) {
+      const entry = userInputRequestManager.getOpenRequest(group.entryId)
+      if (!entry || !AccountReauthManager.isAccountReauthEntry(entry)) {
+        this.settleGroup(group, 'cancelled', {
+          type: 'reject',
+          error: new Error('Account re-authentication request was lost'),
+        })
+        group = undefined
+      }
+    }
+
+    if (!group) {
+      if (existingId) this.entryIdByKey.delete(key)
+      const entryId = crypto.randomUUID()
+      group = {
+        key,
+        entryId,
+        agentSlug: details.agentSlug,
+        accountId: details.accountId,
+        waiters: new Set(),
+      }
+      this.groups.set(entryId, group)
+      this.entryIdByKey.set(key, entryId)
+      isNewGroup = true
+    }
+
+    const activeGroup = group
 
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const entry = userInputRequestManager.getOpenRequest(id)
-        if (!entry || !AccountReauthManager.isAccountReauthEntry(entry)) {
-          const orphan = this.settlers.get(id)
-          if (!orphan) return
-          this.settlers.delete(id)
-          orphan.reject(new Error('Account re-authentication request was lost'))
-          return
-        }
-        this.settle(entry, 'timeout', {
-          type: 'reject',
-          error: new Error('Account re-authentication timed out'),
-        })
-        messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
-      }, ACCOUNT_REAUTH_TIMEOUT_MS)
-
-      this.settlers.set(id, { resolve, reject, timer })
-
       if (signal?.aborted) {
-        clearTimeout(timer)
-        this.settlers.delete(id)
+        if (isNewGroup && activeGroup.waiters.size === 0) {
+          this.groups.delete(activeGroup.entryId)
+          this.entryIdByKey.delete(activeGroup.key)
+        }
         reject(new Error('Proxy request aborted while awaiting re-authentication'))
         return
       }
 
+      let waiter: ReauthWaiter
+      const timer = setTimeout(() => {
+        this.rejectWaiter(
+          activeGroup,
+          waiter,
+          'timeout',
+          new Error('Account re-authentication timed out'),
+        )
+      }, ACCOUNT_REAUTH_TIMEOUT_MS)
+
+      waiter = { resolve, reject, timer, signal }
       if (signal) {
-        signal.addEventListener('abort', () => {
-          const entry = userInputRequestManager.getOpenRequest(id)
-          if (!entry || !AccountReauthManager.isAccountReauthEntry(entry)) return
-          this.settle(entry, 'cancelled', {
-            type: 'reject',
-            error: new Error('Proxy request aborted while awaiting re-authentication'),
-          })
-          messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
-        }, { once: true })
+        waiter.onAbort = () => {
+          this.rejectWaiter(
+            activeGroup,
+            waiter,
+            'cancelled',
+            new Error('Proxy request aborted while awaiting re-authentication'),
+          )
+        }
+        signal.addEventListener('abort', waiter.onAbort, { once: true })
       }
+      activeGroup.waiters.add(waiter)
+
+      if (!isNewGroup) return
 
       const registered = userInputRequestManager.register({
-        id,
+        id: activeGroup.entryId,
         kind: 'account_reauth_required',
         scope: { agentSlug: details.agentSlug },
         blocking: true,
@@ -105,14 +191,15 @@ export class AccountReauthManager {
           accountId: details.accountId,
           toolkit: details.toolkit,
           accountStatus: details.accountStatus,
-          proxyRequestId: id,
+          proxyRequestId: activeGroup.entryId,
         },
       })
 
       if (!registered) {
-        clearTimeout(timer)
-        this.settlers.delete(id)
-        reject(new Error('Failed to register account re-authentication request'))
+        this.settleGroup(activeGroup, 'cancelled', {
+          type: 'reject',
+          error: new Error('Failed to register account re-authentication request'),
+        })
         return
       }
 
@@ -122,44 +209,20 @@ export class AccountReauthManager {
 
   /** Resume every parked proxy request that uses the reconnected account. */
   completeAccount(accountId: string): number {
-    const agentSlugs = new Set<string>()
     let completed = 0
-
-    for (const request of userInputRequestManager.getOpenRequestsForStore('review')) {
-      if (!AccountReauthManager.isAccountReauthEntry(request)) continue
-      const payload = request.payload as Record<string, unknown>
-      if (payload.accountId !== accountId) continue
-      if (request.scope.agentSlug) agentSlugs.add(request.scope.agentSlug)
-      this.settle(request, 'answered', { type: 'resolve' })
-      completed++
-    }
-
-    for (const agentSlug of agentSlugs) {
-      messagePersister.syncAgentSessionsAwaiting(agentSlug)
+    for (const group of [...this.groups.values()]) {
+      if (group.accountId !== accountId) continue
+      completed += this.settleGroup(group, 'answered', { type: 'resolve' })
     }
     return completed
   }
 
   rejectAll(): void {
-    const agentSlugs = new Set<string>()
-    for (const request of userInputRequestManager.getOpenRequestsForStore('review')) {
-      if (!AccountReauthManager.isAccountReauthEntry(request)) continue
-      if (request.scope.agentSlug) agentSlugs.add(request.scope.agentSlug)
-      this.settle(request, 'cancelled', {
+    for (const group of [...this.groups.values()]) {
+      this.settleGroup(group, 'cancelled', {
         type: 'reject',
         error: new Error('Account re-authentication interrupted by shutdown'),
       })
-    }
-
-    // Defensive cleanup for a settler whose registry entry disappeared.
-    for (const [id, settler] of this.settlers) {
-      clearTimeout(settler.timer)
-      this.settlers.delete(id)
-      settler.reject(new Error('Account re-authentication interrupted by shutdown'))
-    }
-
-    for (const agentSlug of agentSlugs) {
-      messagePersister.syncAgentSessionsAwaiting(agentSlug)
     }
   }
 }

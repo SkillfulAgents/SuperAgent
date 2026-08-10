@@ -5,6 +5,7 @@ import { AccountReauthRequestItem } from './account-reauth-request-item'
 
 const mockReconnect = vi.fn()
 let mockPendingAccountId: string | null = null
+let mockOwnedAccountIds = ['account-1', 'account-2', 'account-3']
 
 vi.mock('@renderer/hooks/use-oauth-reconnect', () => ({
   useOAuthReconnect: () => ({
@@ -13,10 +14,17 @@ vi.mock('@renderer/hooks/use-oauth-reconnect', () => ({
   }),
 }))
 
+vi.mock('@renderer/hooks/use-connected-accounts', () => ({
+  useConnectedAccounts: () => ({
+    data: { accounts: mockOwnedAccountIds.map((id) => ({ id })) },
+  }),
+}))
+
 describe('AccountReauthRequestItem', () => {
   beforeEach(() => {
     mockReconnect.mockReset()
     mockPendingAccountId = null
+    mockOwnedAccountIds = ['account-1', 'account-2', 'account-3']
   })
 
   it('explains the expired access and resumes after a successful reconnect', async () => {
@@ -77,5 +85,22 @@ describe('AccountReauthRequestItem', () => {
 
     expect(screen.queryByTestId('account-reauth-reconnect-btn')).not.toBeInTheDocument()
     expect(screen.getByText('Waiting for reconnection')).toBeInTheDocument()
+  })
+
+  it('shows a non-actionable card to a member who does not own the account', () => {
+    mockOwnedAccountIds = []
+    render(
+      <AccountReauthRequestItem
+        proxyRequestId="proxy-4"
+        accountId="account-4"
+        toolkit="gmail"
+        accountStatus="expired"
+        agentSlug="agent-1"
+        onComplete={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByTestId('account-reauth-reconnect-btn')).not.toBeInTheDocument()
+    expect(screen.getByText(/Only the connection owner can reconnect/)).toBeInTheDocument()
   })
 })

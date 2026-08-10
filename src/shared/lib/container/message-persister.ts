@@ -343,12 +343,13 @@ class MessagePersister {
       return
     }
 
-    // Account re-auth requests are agent-scoped but have no safe actionable
-    // OS-notification flow: OAuth must be opened from the in-app card.
-    if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
-
     const sessionId = request.scope.sessionId
+    // Agent-scoped reviews and re-auth requests have no session id and no safe
+    // actionable OS-notification flow; their in-app cards are the prompt.
     if (!sessionId) return
+    // Defensive type boundary if a future caller violates the agent-scoped
+    // re-auth invariant; these kinds are not accepted notification categories.
+    if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
     const waitingFor =
       request.kind === 'capability_review'
         ? (request.payload as { capability?: unknown }).capability === 'workflows'

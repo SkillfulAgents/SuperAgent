@@ -64,6 +64,21 @@ describe('generateSystemPrompt rendering', () => {
     expect(out).toContain('Do NOT report them as missing')
   })
 
+  it('does not promise an in-chat MCP reconnect when no cached tools exist', () => {
+    process.env.REMOTE_MCPS = JSON.stringify([{
+      id: 'mcp-empty',
+      name: 'Empty MCP',
+      status: 'auth_required',
+      proxyUrl: 'http://host/api/mcp-proxy/agent/mcp-empty',
+      tools: [],
+    }])
+
+    const out = generateSystemPrompt()
+    expect(out).toContain('No cached tools are available for this server.')
+    expect(out).toContain('reconnect it from Connections')
+    expect(out).not.toContain('mcp__Empty_MCP__<tool_name>')
+  })
+
   // A heading whose body is entirely gated renders as a title with the next
   // heading directly beneath it. Some headings (`## File Handling`) are static
   // containers of subheadings and are bodyless in every render, which is fine --

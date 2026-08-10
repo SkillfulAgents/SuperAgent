@@ -256,6 +256,52 @@ export interface PendingMcpReauth {
   proxyRequestId: string
 }
 
+export function accountReauthFromEnvelope(
+  request: PendingUserInputRequest,
+  payload: Record<string, unknown>,
+): PendingAccountReauth | null {
+  if (
+    request.kind !== 'account_reauth_required' ||
+    typeof payload.accountId !== 'string' ||
+    typeof payload.toolkit !== 'string' ||
+    (payload.accountStatus !== 'expired' && payload.accountStatus !== 'revoked')
+  ) {
+    return null
+  }
+  return {
+    id: request.id,
+    agentSlug: request.scope.agentSlug ?? '',
+    accountId: payload.accountId,
+    toolkit: payload.toolkit,
+    accountStatus: payload.accountStatus,
+    proxyRequestId:
+      typeof payload.proxyRequestId === 'string' ? payload.proxyRequestId : request.id,
+  }
+}
+
+export function mcpReauthFromEnvelope(
+  request: PendingUserInputRequest,
+  payload: Record<string, unknown>,
+): PendingMcpReauth | null {
+  if (
+    request.kind !== 'mcp_reauth_required' ||
+    typeof payload.mcpId !== 'string' ||
+    typeof payload.mcpName !== 'string' ||
+    (payload.authType !== 'none' && payload.authType !== 'oauth' && payload.authType !== 'bearer')
+  ) {
+    return null
+  }
+  return {
+    id: request.id,
+    agentSlug: request.scope.agentSlug ?? '',
+    mcpId: payload.mcpId,
+    mcpName: payload.mcpName,
+    authType: payload.authType,
+    proxyRequestId:
+      typeof payload.proxyRequestId === 'string' ? payload.proxyRequestId : request.id,
+  }
+}
+
 // Rebuild the PendingReview shape from a review envelope. The payload carries
 // the full ReviewDetails (plus the derived displayText), but envelope payloads
 // are lenient by design, so the card-critical fields are re-validated here
@@ -441,37 +487,15 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
         break
       }
       case 'account_reauth_required':
-        if (
-          typeof payload.accountId === 'string' &&
-          typeof payload.toolkit === 'string' &&
-          (payload.accountStatus === 'expired' || payload.accountStatus === 'revoked')
-        ) {
-          accountReauthRequests.push({
-            id: request.id,
-            agentSlug: request.scope.agentSlug ?? '',
-            accountId: payload.accountId,
-            toolkit: payload.toolkit,
-            accountStatus: payload.accountStatus,
-            proxyRequestId:
-              typeof payload.proxyRequestId === 'string' ? payload.proxyRequestId : request.id,
-          })
+        {
+          const reauth = accountReauthFromEnvelope(request, payload)
+          if (reauth) accountReauthRequests.push(reauth)
         }
         break
       case 'mcp_reauth_required':
-        if (
-          typeof payload.mcpId === 'string' &&
-          typeof payload.mcpName === 'string' &&
-          (payload.authType === 'none' || payload.authType === 'oauth' || payload.authType === 'bearer')
-        ) {
-          mcpReauthRequests.push({
-            id: request.id,
-            agentSlug: request.scope.agentSlug ?? '',
-            mcpId: payload.mcpId,
-            mcpName: payload.mcpName,
-            authType: payload.authType,
-            proxyRequestId:
-              typeof payload.proxyRequestId === 'string' ? payload.proxyRequestId : request.id,
-          })
+        {
+          const reauth = mcpReauthFromEnvelope(request, payload)
+          if (reauth) mcpReauthRequests.push(reauth)
         }
         break
     }

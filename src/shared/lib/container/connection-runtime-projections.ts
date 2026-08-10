@@ -86,8 +86,9 @@ export function buildRemoteMcpProjection(
 ): RemoteMcpRuntimeConfig[] {
   return mcps
     // Keep auth-required servers in the runtime. Their MCP handshake reaches
-    // the host proxy, which parks it and surfaces the reconnect card. Dropping
-    // them here makes the agent believe an assigned MCP does not exist.
+    // the host proxy, which serves cached discovery locally; the first actual
+    // tool call parks and surfaces the reconnect card. Dropping them here makes
+    // the agent believe an assigned MCP does not exist.
     .filter((mcp) => mcp.status === 'active' || mcp.status === 'auth_required')
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((mcp) => ({

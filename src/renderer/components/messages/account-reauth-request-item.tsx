@@ -3,6 +3,7 @@ import { Loader2, RefreshCw } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
+import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
 import { RequestItemActions } from './request-item-actions'
 import { RequestItemShell } from './request-item-shell'
@@ -30,10 +31,13 @@ export function AccountReauthRequestItem({
 }: AccountReauthRequestItemProps) {
   const [error, setError] = useState<string | null>(null)
   const { reconnect, pendingAccountId } = useOAuthReconnect()
+  const { data: connectedAccounts } = useConnectedAccounts()
   const isReconnecting = pendingAccountId === accountId
   const providerName = getProvider(toolkit)?.displayName
     ?? `${toolkit.charAt(0).toUpperCase()}${toolkit.slice(1)}`
   const statusLabel = accountStatus === 'expired' ? 'expired' : 'been revoked'
+  const ownsAccount = connectedAccounts?.accounts.some((account) => account.id === accountId)
+  const canReconnect = !readOnly && ownsAccount === true
 
   const handleReconnect = async () => {
     setError(null)
@@ -48,33 +52,37 @@ export function AccountReauthRequestItem({
   return (
     <RequestItemShell
       title={`This request needs ${providerName} access that has ${statusLabel}.`}
-      subtitle="Reconnect to continue. The original request will resume automatically."
+      subtitle={ownsAccount === false
+        ? 'Only the connection owner can reconnect it. The request will resume when they do.'
+        : 'Reconnect to continue. The original request will resume automatically.'}
       icon={<ServiceIcon slug={toolkit} fallback="oauth" className="h-4 w-4" />}
       theme="orange"
       sessionId={sessionId}
       agentSlug={agentSlug}
-      readOnly={readOnly ? {} : false}
+      readOnly={canReconnect ? false : {}}
       waitingText="Waiting for reconnection"
       error={error}
       data-testid="account-reauth-request"
       data-status={accountStatus}
     >
-      <RequestItemActions>
-        <Button
-          type="button"
-          size="xs"
-          onClick={handleReconnect}
-          disabled={isReconnecting}
-          data-testid="account-reauth-reconnect-btn"
-        >
-          {isReconnecting ? (
-            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-          )}
-          {isReconnecting ? 'Reconnecting…' : 'Reconnect'}
-        </Button>
-      </RequestItemActions>
+      {canReconnect && (
+        <RequestItemActions>
+          <Button
+            type="button"
+            size="xs"
+            onClick={handleReconnect}
+            disabled={isReconnecting}
+            data-testid="account-reauth-reconnect-btn"
+          >
+            {isReconnecting ? (
+              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+            )}
+            {isReconnecting ? 'Reconnecting…' : 'Reconnect'}
+          </Button>
+        </RequestItemActions>
+      )}
       <span className="sr-only">Proxy request {proxyRequestId}</span>
     </RequestItemShell>
   )

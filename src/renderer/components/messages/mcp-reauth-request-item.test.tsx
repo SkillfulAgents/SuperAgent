@@ -9,9 +9,11 @@ const mockApiFetch = vi.fn()
 const mockNavigate = vi.fn()
 const mockClose = vi.fn()
 let oauthComplete: ((result: { success: boolean; error?: string }) => void) | null = null
+let mockCanManage = true
 
 vi.mock('@renderer/hooks/use-remote-mcps', () => ({
   useInitiateMcpOAuth: () => ({ mutateAsync: (...args: unknown[]) => mockInitiateOAuth(...args) }),
+  useCanManageRemoteMcp: () => ({ data: mockCanManage }),
 }))
 
 vi.mock('@renderer/hooks/use-mcp-oauth-listener', () => ({
@@ -51,6 +53,7 @@ describe('McpReauthRequestItem', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     oauthComplete = null
+    mockCanManage = true
   })
 
   it('starts OAuth for the existing MCP and completes after the callback', async () => {
@@ -97,5 +100,13 @@ describe('McpReauthRequestItem', () => {
 
     expect(screen.queryByTestId('mcp-reauth-reconnect-btn')).not.toBeInTheDocument()
     expect(screen.getByText('Waiting for reconnection')).toBeInTheDocument()
+  })
+
+  it('shows a non-actionable card to a member who cannot manage the MCP', () => {
+    mockCanManage = false
+    renderItem()
+
+    expect(screen.queryByTestId('mcp-reauth-reconnect-btn')).not.toBeInTheDocument()
+    expect(screen.getByText(/Only the connection owner or an administrator/)).toBeInTheDocument()
   })
 })

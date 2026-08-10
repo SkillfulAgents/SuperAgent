@@ -191,6 +191,8 @@ interface RemoteMcpView {
   name: string;
   tools: string;
   sanitizedName: string;
+  hasTools: boolean;
+  needsReauth: boolean;
 }
 
 function connectedAccountGroups(): ConnectedAccountGroup[] {
@@ -205,6 +207,8 @@ function remoteMcpViews(): RemoteMcpView[] {
     name: mcp.name,
     tools: mcp.tools.map(t => t.name).join(', '),
     sanitizedName: sanitizeMcpName(mcp.name),
+    hasTools: mcp.tools.length > 0,
+    needsReauth: mcp.status === 'auth_required',
   }));
 }
 
@@ -633,17 +637,20 @@ export class ClaudeCodeProcess extends EventEmitter {
    * available": the exact symptom of a connection that never arrived.
    *
    * Active connection changes call this. Auth-required servers are excluded
-   * from the gate because the host deliberately parks their handshake while a
-   * person completes OAuth; holding the user message on that handshake would
-   * freeze every turn. Other re-query triggers (effort/speed/capability change)
-   * also do not wait because the remote MCP set itself did not change.
+   * individually because they complete discovery through the host's local
+   * handshake; an unrelated active server must still reach a terminal status.
+   * Other re-query triggers (effort/speed/capability change) do not wait because
+   * the remote MCP set itself did not change.
    */
   private async waitForRemoteMcpsReady(
     timeoutMs: number = REMOTE_MCP_READY_TIMEOUT_MS
   ): Promise<void> {
     // Keys are already sanitized, and they are exactly the keys handed to
     // query() as mcpServers — so they match the names the SDK reports back.
-    const expected = Object.keys(this.buildRemoteMcpServers());
+    // Only the auth-required entries are exempt; active siblings still gate.
+    const expected = parseRemoteMcps()
+      .filter((mcp) => mcp.status !== 'auth_required')
+      .map((mcp) => sanitizeMcpName(mcp.name));
     if (expected.length === 0 || !this.queryInstance) return;
 
     const deadline = Date.now() + timeoutMs;
@@ -1280,10 +1287,6 @@ export class ClaudeCodeProcess extends EventEmitter {
     const model = options?.model;
     const runtimeConnectionConfigChanged =
       runtimeConnectionConfigSnapshot() !== this.runtimeConnectionSnapshot;
-    const hasMcpAwaitingReauth = parseRemoteMcps().some(
-      (mcp) => mcp.status === 'auth_required'
-    );
-
     if (runtimeConnectionConfigChanged) {
       // The prompt's connected-account and remote-MCP sections are generated
       // from runtime env metadata, so refresh them alongside the query config.
@@ -1391,9 +1394,9 @@ export class ClaudeCodeProcess extends EventEmitter {
 
     // Deliberately outside the branch chain above: BOTH the cold-session
     // restart() and the interrupt() re-query rebuild the query with the new
-    // connection set, so both race the handshake. Guarded by the flag rather
-    // than by the branch, so an effort- or speed-only re-query pays nothing.
-    if (runtimeConnectionConfigChanged && !hasMcpAwaitingReauth) {
+    // connection set, so both race the handshake. Effort- or speed-only
+    // re-queries pay nothing because the runtime connection set is unchanged.
+    if (runtimeConnectionConfigChanged) {
       await this.waitForRemoteMcpsReady();
     }
 
