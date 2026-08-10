@@ -2268,5 +2268,17 @@ describe('MessageList', () => {
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
     })
+
+    it('drops a completed empty-text block while the wider turn remains active', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({ content: { text: 'Starting a tool next' } }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = [liveBlock('', Date.now())]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
+    })
   })
 })
