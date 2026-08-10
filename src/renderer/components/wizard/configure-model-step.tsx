@@ -41,6 +41,9 @@ export function ConfigureModelStep() {
   const otherSelected = showOther || (Boolean(agentModel) && !matchedOption)
 
   const persistSelection = (model: string) => {
+    // The full-catalog picker may land back on a curated family. Reflect that
+    // immediately, including when it re-selects the same pinned model.
+    setShowOther(!findDefaultModelOption(model, options, catalog))
     if (model === agentModel) return
     // Optimistically reflect the choice in the settings cache so the card
     // updates instantly. The mutation's onSuccess invalidation refetches to
@@ -66,6 +69,9 @@ export function ConfigureModelStep() {
 
   const selectRecommended = (model: string) => {
     setShowOther(false)
+    // A pinned concrete version lights its family card. Clicking that already-
+    // selected card must not replace the pin with the bare family alias.
+    if (matchedOption?.model === model) return
     persistSelection(model)
   }
 
@@ -81,6 +87,9 @@ export function ConfigureModelStep() {
       <div className="space-y-3" role="radiogroup" aria-label="Default model">
         {options.map((option) => {
           const isSelected = !showOther && matchedOption?.model === option.model
+          const label = option.resolveLabelFromCatalog
+            ? findCatalogModel(option.model, catalog)?.label ?? option.label
+            : option.label
           return (
             <div
               key={option.model}
@@ -98,7 +107,7 @@ export function ConfigureModelStep() {
               >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm">{option.label}</span>
+                    <span className="font-medium text-sm">{label}</span>
                     <span className="text-xs text-muted-foreground">{option.tag}</span>
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">

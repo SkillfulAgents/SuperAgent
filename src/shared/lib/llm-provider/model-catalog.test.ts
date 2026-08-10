@@ -27,10 +27,10 @@ describe('getProviderCatalog', () => {
   it('exposes provider-owned onboarding options and uses Grok as the Platform agent fallback', () => {
     const platform = getAllProviderInfo().find((provider) => provider.id === 'platform')!
 
-    expect(platform.defaultModelOptions.map((option) => [option.model, option.label])).toEqual([
-      ['opus', 'Opus'],
-      ['gpt', 'GPT-5.6'],
-      ['grok', 'Grok 4.5'],
+    expect(platform.defaultModelOptions.map((option) => option.model)).toEqual([
+      'opus',
+      'gpt',
+      'grok',
     ])
     expect(platform.defaultModels.agent).toBe('grok')
     expect(getLlmProvider('platform').getDefaultModel('agent')).toBe('grok')

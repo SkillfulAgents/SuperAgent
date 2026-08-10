@@ -113,6 +113,7 @@ describe('ComposerOptionsPopover', () => {
           model: 'claude-sonnet-4-6',
           setModel,
           catalog: CATALOG,
+          defaultModel: 'opus',
           toRuntimeOptions: () => ({ effort: 'high', model: 'claude-sonnet-4-6' }),
         }}
       />
@@ -137,6 +138,7 @@ describe('ComposerOptionsPopover', () => {
           model: 'claude-opus-4-8',
           setModel: vi.fn(),
           catalog: CATALOG,
+          defaultModel: 'opus',
           toRuntimeOptions: () => ({ effort: 'high', model: 'claude-opus-4-8' }),
         }}
       />

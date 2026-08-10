@@ -32,7 +32,7 @@ export interface ComposerOptionsState {
   /** The active provider's flat catalog of concrete model ids. */
   catalog: ModelDefinition[]
   /** Effective catalog/provider fallback used while a model selection is unresolved. */
-  defaultModel?: string
+  defaultModel: string | undefined
   /** Active host web-provider id (settings-derived), so the model picker's web-tools availability
    *  warning knows a configured vendor makes those tools work on any model. Undefined = native. */
   webProvider?: string

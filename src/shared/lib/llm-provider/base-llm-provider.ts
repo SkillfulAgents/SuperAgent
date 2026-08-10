@@ -17,7 +17,10 @@ export type ModelPurpose = 'agent' | 'summarizer' | 'browser' | 'dashboard'
  */
 export interface ProviderDefaultModelOption {
   model: string
+  /** Stable fallback label, also used when the option names a model family. */
   label: string
+  /** Display the currently resolved catalog entry's label when available. */
+  resolveLabelFromCatalog?: boolean
   tag: string
   description: string
   subdescription?: string

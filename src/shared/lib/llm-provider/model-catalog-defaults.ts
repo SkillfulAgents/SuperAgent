@@ -77,5 +77,9 @@ export function getCatalogDefaultModels(
       }
     }
   }
-  return BUILTIN_DEFAULTS[providerId]
+  // Settings files are deliberately tolerant of unknown keys/values. A newer
+  // build may persist a provider id that an older build does not know after a
+  // downgrade, so the runtime lookup must not assume the TypeScript union was
+  // enforced on disk.
+  return BUILTIN_DEFAULTS[providerId] ?? ANTHROPIC_CATALOG_DEFAULT_MODELS
 }

@@ -107,14 +107,16 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
   },
   {
     model: 'gpt',
-    label: 'GPT-5.6',
+    label: 'GPT',
+    resolveLabelFromCatalog: true,
     tag: 'OpenAI flagship',
     description: 'Strong all-around reasoning and tool use.',
     subdescription: 'A versatile choice for demanding agent work.',
   },
   {
     model: 'grok',
-    label: 'Grok 4.5',
+    label: 'Grok',
+    resolveLabelFromCatalog: true,
     tag: 'Recommended',
     description: 'Fast, capable, and efficient for everyday agent work.',
     subdescription: 'The default model for Gamut Platform.',

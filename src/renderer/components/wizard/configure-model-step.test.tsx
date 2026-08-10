@@ -9,6 +9,7 @@ import type { ModelDefinition, ProviderDefaultModelOption } from '@shared/lib/ll
 const state = vi.hoisted(() => ({
   settings: undefined as GlobalSettingsResponse | undefined,
   mutate: vi.fn(),
+  pickerModel: 'kimi',
 }))
 
 vi.mock('@renderer/hooks/use-settings', () => ({
@@ -18,7 +19,7 @@ vi.mock('@renderer/hooks/use-settings', () => ({
 
 vi.mock('@renderer/components/settings/settings-model-select', () => ({
   SettingsModelSelect: ({ onModelChange }: { onModelChange: (model: string) => void }) => (
-    <button type="button" data-testid="full-catalog-picker" onClick={() => onModelChange('kimi')}>
+    <button type="button" data-testid="full-catalog-picker" onClick={() => onModelChange(state.pickerModel)}>
       Full catalog
     </button>
   ),
@@ -35,8 +36,8 @@ const CATALOG: ModelDefinition[] = [
 
 const OPTIONS: ProviderDefaultModelOption[] = [
   { model: 'opus', label: 'Opus', tag: 'Deep reasoning', description: 'Opus copy' },
-  { model: 'gpt', label: 'GPT-5.6', tag: 'OpenAI flagship', description: 'GPT copy' },
-  { model: 'grok', label: 'Grok 4.5', tag: 'Recommended', description: 'Grok copy' },
+  { model: 'gpt', label: 'GPT', resolveLabelFromCatalog: true, tag: 'OpenAI flagship', description: 'GPT copy' },
+  { model: 'grok', label: 'Grok', resolveLabelFromCatalog: true, tag: 'Recommended', description: 'Grok copy' },
 ]
 
 function platformSettings(agentModel = 'grok'): GlobalSettingsResponse {
@@ -64,16 +65,19 @@ function platformSettings(agentModel = 'grok'): GlobalSettingsResponse {
 function renderStep() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   queryClient.setQueryData(['settings'], state.settings)
-  return render(
+  const step = () => (
     <QueryClientProvider client={queryClient}>
       <ConfigureModelStep />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
+  const result = render(step())
+  return { ...result, rerenderStep: () => result.rerender(step()) }
 }
 
 beforeEach(() => {
   state.settings = platformSettings()
   state.mutate.mockReset()
+  state.pickerModel = 'kimi'
 })
 
 describe('ConfigureModelStep', () => {
@@ -81,7 +85,7 @@ describe('ConfigureModelStep', () => {
     renderStep()
 
     expect(screen.getByRole('radio', { name: /Opus/ })).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: /GPT-5\.6/ })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /GPT-5\.6 Sol/ })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: /Grok 4\.5/ })).toHaveAttribute('aria-checked', 'true')
     expect(screen.queryByRole('radio', { name: /Sonnet/ })).not.toBeInTheDocument()
   })
@@ -109,6 +113,38 @@ describe('ConfigureModelStep', () => {
 
     expect(screen.getByTestId('wizard-model-other')).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByTestId('full-catalog-picker')).toBeInTheDocument()
+  })
+
+  it('clears Other when the full picker selects a curated family', async () => {
+    state.settings = platformSettings('kimi')
+    state.pickerModel = 'claude-opus-5'
+    const user = userEvent.setup()
+    const view = renderStep()
+
+    expect(screen.getByTestId('wizard-model-other')).toHaveAttribute('aria-checked', 'true')
+    await user.click(screen.getByTestId('full-catalog-picker'))
+    await waitFor(() => {
+      expect(state.mutate).toHaveBeenCalledWith(
+        { models: { agentModel: 'claude-opus-5' } },
+        expect.objectContaining({ onError: expect.any(Function) }),
+      )
+    })
+    // The real hook rerenders from the optimistic query-cache update. Mirror
+    // that here because this unit mock reads `state.settings` directly.
+    state.settings = platformSettings('claude-opus-5')
+    view.rerenderStep()
+    expect(screen.getByTestId('wizard-model-opus')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('wizard-model-other')).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('does not replace a pinned version when its highlighted family card is clicked', async () => {
+    state.settings = platformSettings('claude-opus-5')
+    const user = userEvent.setup()
+    renderStep()
+
+    expect(screen.getByTestId('wizard-model-opus')).toHaveAttribute('aria-checked', 'true')
+    await user.click(screen.getByTestId('wizard-model-opus'))
+    expect(state.mutate).not.toHaveBeenCalled()
   })
 })
 
