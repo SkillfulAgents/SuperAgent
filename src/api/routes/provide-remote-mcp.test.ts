@@ -525,6 +525,7 @@ describe('Agent Settings remote MCP live sync', () => {
         id: 'mcp-1',
         name: 'Calendar',
         proxyUrl: 'http://10.20.107.8:3000/api/mcp-proxy/test-agent/mcp-1',
+        status: 'active',
         tools: [{ name: 'list_events' }],
       },
     ])
