@@ -21,6 +21,38 @@
   --xy-controls-box-shadow: 0 1px 3px 0 hsl(0 0% 0% / 0.5);
 }
 
+/* Hover focus: hovering any element (agent card, account, MCP, trigger)
+   pushes everything outside its neighborhood back, so the hovered thing and
+   what it's wired to read as the foreground. The class is toggled on the DOM
+   directly (see applyFocus in agent-graph.tsx) — rebuilding React Flow's node
+   array on hover would drop in-flight connection drags.
+
+   Edges fade harder than nodes: a 1.25px line at the same opacity as a card
+   still draws the eye along its whole length. Two-class selectors so the
+   utility opacities on nodes/chips can't win on specificity. */
+.agent-graph-canvas .react-flow__node.graph-dimmed {
+  opacity: 0.2;
+}
+.agent-graph-canvas .react-flow__edge {
+  transition: opacity 200ms;
+}
+.agent-graph-canvas .react-flow__edge.graph-dimmed {
+  opacity: 0.15;
+}
+.react-flow__edgelabel-renderer > .graph-dimmed {
+  opacity: 0.15;
+}
+/* The surviving connectors also gain a little weight, so the lit path reads
+   as the subject rather than merely what didn't fade. !important because
+   BaseEdge writes stroke-width inline from edge.style; the transition is on
+   the path itself so edge-hover thickening eases in too. */
+.agent-graph-canvas .react-flow__edge-path {
+  transition: stroke-width 200ms;
+}
+.graph-focusing .react-flow__edge:not(.graph-dimmed) .react-flow__edge-path {
+  stroke-width: 1.75 !important;
+}
+
 /* Attention pulse on agent cards: a thin ring hugging the card that travels
    outward and fades — a power field pulsing out and dissipating. Two copies
    at opposite phase (the .delayed ring starts mid-cycle via a NEGATIVE

@@ -89,6 +89,45 @@ test.describe('home connections graph', () => {
     expect(errors).toEqual([])
   })
 
+  test('hovering a node fades everything outside its neighborhood', async ({ page, request }, testInfo) => {
+    const caller = await createAgent(request, uniqueName(testInfo, 'Graph Focus Src'))
+    const target = await createAgent(request, uniqueName(testInfo, 'Graph Focus Dst'))
+    const bystander = await createAgent(request, uniqueName(testInfo, 'Graph Focus Odd'))
+    await createInvokePolicy(request, caller, target)
+
+    await page.goto('/?view=graph')
+    const callerNode = page.getByTestId(`graph-node-agent-${caller.slug}`)
+    await expect(callerNode).toBeVisible()
+    await expect(page.getByTestId(`graph-node-agent-${bystander.slug}`)).toBeVisible()
+
+    // The fade class is applied to React Flow's node wrapper (data-id = node
+    // id) straight from the DOM, so it never rebuilds the node array.
+    const wrapper = (slug: string) => page.locator(`.react-flow__node[data-id="agent:${slug}"]`)
+
+    // Sibling specs churn the layout, so a hover can land where the card
+    // just was (a no-op) or on an overlapping neighbor (focusing the wrong
+    // agent) — re-fit and re-hover until the whole focus picture holds.
+    await expect(async () => {
+      await page.getByRole('button', { name: 'Fit View' }).click()
+      await callerNode.hover({ force: true })
+      await expect(wrapper(bystander.slug)).toHaveClass(/graph-dimmed/, { timeout: 1000 })
+      await expect(wrapper(target.slug)).not.toHaveClass(/graph-dimmed/, { timeout: 200 })
+      await expect(wrapper(caller.slug)).not.toHaveClass(/graph-dimmed/, { timeout: 200 })
+      // The edge between caller and target stays lit with them, and the
+      // canvas flags the focused state (which thickens the surviving lines).
+      const [a, b] = [`agent:${caller.slug}`, `agent:${target.slug}`].sort()
+      await expect(page.locator(`.react-flow__edge[data-id="${a}~${b}"]`)).not.toHaveClass(/graph-dimmed/, {
+        timeout: 200,
+      })
+      await expect(page.getByTestId('agent-graph')).toHaveClass(/graph-focusing/, { timeout: 200 })
+    }).toPass({ timeout: 15_000 })
+
+    // Leaving the node restores everything.
+    await page.mouse.move(0, 0)
+    await expect(wrapper(bystander.slug)).not.toHaveClass(/graph-dimmed/)
+    await expect(page.getByTestId('agent-graph')).not.toHaveClass(/graph-focusing/)
+  })
+
   test('dragging a node persists its position; reset layout clears saved positions', async ({ page, request }, testInfo) => {
     const agent = await createAgent(request, uniqueName(testInfo, 'Graph Drag'))
 

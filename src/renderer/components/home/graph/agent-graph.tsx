@@ -197,6 +197,64 @@ export function AgentGraph() {
   // receive the connection fade while it's set (applied in the node sync).
   const [connectingFromId, setConnectingFromId] = useState<string | null>(null)
 
+  // Hovering any node — agent card, account, MCP, trigger — focuses its
+  // neighborhood: it and its direct connections stay lit while everything
+  // else fades back.
+  //
+  // Applied straight to the DOM, deliberately, instead of through node/edge
+  // props: routing it through React state rebuilds the node array on every
+  // hover, and handing React Flow fresh node objects mid-gesture drops an
+  // in-flight connection drag (the drop lands on no handle and silently
+  // creates nothing). Touching only classList means hovering cannot disturb
+  // a gesture — and costs no React render at all.
+  const canvasRef = useRef<HTMLDivElement | null>(null)
+  const graphEdgesRef = useRef(graph.edges)
+  useEffect(() => {
+    graphEdgesRef.current = graph.edges
+  }, [graph.edges])
+  // Mid connection-drag the can-drop fade owns the canvas, so hover focus
+  // stands down (a ref, not state — this is read from DOM handlers).
+  const connectingRef = useRef(false)
+
+  const applyFocus = useCallback((nodeId: string | null) => {
+    const root = canvasRef.current
+    if (!root) return
+    if (!nodeId) {
+      root.classList.remove('graph-focusing')
+      for (const el of root.querySelectorAll('.graph-dimmed')) el.classList.remove('graph-dimmed')
+      return
+    }
+    // Marks the focused state itself: the surviving connectors thicken, which
+    // only CSS can express (there's no "lit" class — they're the leftovers).
+    root.classList.add('graph-focusing')
+    const neighborhood = new Set([nodeId])
+    const dimmedEdgeIds = new Set<string>()
+    for (const e of graphEdgesRef.current) {
+      if (e.source === nodeId) neighborhood.add(e.target)
+      else if (e.target === nodeId) neighborhood.add(e.source)
+      else dimmedEdgeIds.add(e.id)
+    }
+    for (const el of root.querySelectorAll<HTMLElement>('.react-flow__node')) {
+      el.classList.toggle('graph-dimmed', !neighborhood.has(el.dataset.id ?? ''))
+    }
+    for (const el of root.querySelectorAll<HTMLElement>('.react-flow__edge')) {
+      el.classList.toggle('graph-dimmed', dimmedEdgeIds.has(el.dataset.id ?? ''))
+    }
+    // Count chips render in the edge-label portal, outside their edge's <g>,
+    // so they can't inherit its opacity — dim them by the edge they belong to.
+    for (const el of root.querySelectorAll<HTMLElement>('[data-edge-id]')) {
+      el.classList.toggle('graph-dimmed', dimmedEdgeIds.has(el.dataset.edgeId ?? ''))
+    }
+  }, [])
+
+  const onNodeMouseEnter: NodeMouseHandler<RfNode> = useCallback(
+    (_event, node) => {
+      if (!connectingRef.current) applyFocus(node.id)
+    },
+    [applyFocus],
+  )
+  const onNodeMouseLeave: NodeMouseHandler<RfNode> = useCallback(() => applyFocus(null), [applyFocus])
+
   // Details view: pin every resource's detail card open (vs. the simple
   // view's hover/select reveal). Persisted as a user preference; the local
   // override answers immediately while the PUT round-trips (and before the
@@ -236,6 +294,7 @@ export function AgentGraph() {
         deletable: false,
         selected: selectedIds.has(spec.id),
         // Mid connection-drag, fade anything the drag can't legally land on.
+        // (Hover focus deliberately does NOT ride this prop — see applyFocus.)
         className:
           connectingFromId && spec.id !== connectingFromId && !canDrawConnection(connectingFromId, spec.id)
             ? 'opacity-25 transition-opacity duration-200'
@@ -372,8 +431,19 @@ export function AgentGraph() {
 
   // Dragging out of a node port draws a new connection; dropping it creates
   // the real relationship, then the topology refetch draws the edge.
-  const onConnectStart: OnConnectStart = useCallback((_event, params) => setConnectingFromId(params.nodeId), [])
-  const onConnectEnd = useCallback(() => setConnectingFromId(null), [])
+  const onConnectStart: OnConnectStart = useCallback(
+    (_event, params) => {
+      // Hand the canvas over to the can-drop fade for the duration of the drag.
+      connectingRef.current = true
+      applyFocus(null)
+      setConnectingFromId(params.nodeId)
+    },
+    [applyFocus],
+  )
+  const onConnectEnd = useCallback(() => {
+    connectingRef.current = false
+    setConnectingFromId(null)
+  }, [])
   const queryClient = useQueryClient()
   const isValidConnection: IsValidConnection<GraphEdge> = useCallback(
     (connection) => canDrawConnection(connection.source, connection.target),
@@ -547,6 +617,7 @@ export function AgentGraph() {
 
   return (
     <div
+      ref={canvasRef}
       className="h-full w-full"
       data-testid="agent-graph"
       onPointerDownCapture={() => {
@@ -565,6 +636,8 @@ export function AgentGraph() {
         edgeTypes={edgeTypes}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeDragStop={schedulePersist}
+        onNodeMouseEnter={onNodeMouseEnter}
+        onNodeMouseLeave={onNodeMouseLeave}
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
         onInit={(instance) => {
