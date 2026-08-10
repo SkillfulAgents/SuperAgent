@@ -40,7 +40,7 @@ test.describe('Computer Use requests', () => {
 
     // Session should complete
     await sessionPage.waitForInputEnabled(15000)
-    await sessionPage.expectAssistantMessage('Thank you for providing the information.', 1, 15000)
+    await sessionPage.expectAssistantMessage('Thank you for providing the information.', 0, 15000)
   })
 
   test('an abandoned approval does not survive into the next turn', async ({ page }) => {
@@ -79,6 +79,6 @@ test.describe('Computer Use requests', () => {
 
     // Session should complete
     await sessionPage.waitForInputEnabled(15000)
-    await sessionPage.expectAssistantMessage('Thank you for providing the information.', 1, 15000)
+    await sessionPage.expectAssistantMessage('Thank you for providing the information.', 0, 15000)
   })
 })

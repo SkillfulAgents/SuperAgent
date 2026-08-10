@@ -219,6 +219,10 @@ interface MessageItemProps {
   /** Read-only mirror (chat-integration replay): no edit actions; lift the
    *  connector's inline sender prefix into the sender label. */
   readOnly?: boolean
+  /** Optional reveal animation for work restored on turn expansion. */
+  workDetailClassName?: string
+  /** Tool calls that were hidden while the containing work phase was collapsed. */
+  revealedToolCallIds?: ReadonlySet<string>
 }
 
 function resolveSubagentRun(
@@ -243,7 +247,7 @@ function resolveSubagentRun(
   }
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly, workDetailClassName, revealedToolCallIds }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
@@ -324,7 +328,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
             episode. Same card the live stream uses, minus timing (the transcript
             doesn't carry it). */}
         {thinking.length > 0 && (
-          <div className="w-full space-y-2">
+          <div className={cn('w-full space-y-2', workDetailClassName)}>
             {thinking.map((t, i) => (
               <MessageErrorBoundary key={i} kind="thinking block" raw={t} itemId={`${message.id}-thinking-${i}`}>
                 <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} />
@@ -444,7 +448,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               const subagentRun = resolveSubagentRun(toolCall, activeSubagents, completedSubagents)
               return (
                 <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
-                  <div>
+                  <div
+                    className={
+                      revealedToolCallIds?.has(toolCall.id)
+                        ? workDetailClassName
+                        : undefined
+                    }
+                  >
                     <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
                       {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
                         <SubAgentBlock

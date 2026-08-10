@@ -50,6 +50,13 @@ export interface TransformedMessage {
    * from entry timestamps (see thinkingByEntry) and absent when underivable.
    */
   thinking?: TransformedThinkingBlock[]
+  /** Per-model-response token usage, de-duplicated by the merge pass above. */
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheCreationInputTokens: number
+    cacheReadInputTokens: number
+  }
 }
 
 export interface TransformedCompactBoundary {
@@ -310,6 +317,17 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
           mergedContentOffset = existingContent.length
           // Append new content blocks to existing
           ;(existing.message.content as ContentBlock[]).push(...(newContent as ContentBlock[]))
+        }
+        // Transcript snapshots for one provider response repeat the same input
+        // usage while output_tokens grows. Keep the latest/highest snapshot so
+        // consumers can count this response once without understating it.
+        const existingUsage = existing.message.usage
+        const incomingUsage = entry.message.usage
+        if (
+          incomingUsage &&
+          (!existingUsage || incomingUsage.output_tokens >= existingUsage.output_tokens)
+        ) {
+          existing.message.usage = { ...incomingUsage }
         }
         // Keep the original entry's uuid and timestamp for correct ordering
         target = existing
@@ -583,6 +601,14 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       ...(entry.error && { apiError: entry.error }),
       ...(entry.isQueuedCommand && { queued: true }),
       ...(thinking && thinking.length > 0 && { thinking }),
+      ...(entry.message.usage && {
+        usage: {
+          inputTokens: entry.message.usage.input_tokens ?? 0,
+          outputTokens: entry.message.usage.output_tokens ?? 0,
+          cacheCreationInputTokens: entry.message.usage.cache_creation_input_tokens ?? 0,
+          cacheReadInputTokens: entry.message.usage.cache_read_input_tokens ?? 0,
+        },
+      }),
     })
   }
 

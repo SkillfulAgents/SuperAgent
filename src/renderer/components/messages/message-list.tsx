@@ -20,7 +20,7 @@ import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { InformationalItem } from './informational-item'
 import { MessageErrorBoundary } from './message-error-boundary'
-import { ArrowDown, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
+import { ArrowDown, ChevronRight, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
@@ -41,6 +41,7 @@ import {
 } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
+import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts
@@ -57,7 +58,72 @@ const BASE_WINDOW = 300
 const LOAD_STEP = 200
 const TURN_ANCHOR_TOP = 100
 const TURN_ANCHOR_ANIMATION_MS = 220
+const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
 const SCROLL_KEYS = new Set(['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '])
+
+interface CompletedTurn {
+  id: string
+  startMessageId: string
+  /** Null during the brief idle window before the streamed final text persists. */
+  finalAssistantMessageId: string | null
+  /** The final textual response for this visual work phase. */
+  answerMessageIds: ReadonlySet<string>
+  /** Tool cards on the answer message that appear only after expansion. */
+  revealedToolCallIds: ReadonlySet<string>
+  elapsedMs: number
+  toolCallCount: number
+  tokenCount: number
+  hasTokenUsage: boolean
+}
+
+function TurnSummaryRow({
+  turn,
+  expanded,
+  onToggle,
+  onProvideFeedback,
+}: {
+  turn: CompletedTurn
+  expanded: boolean
+  onToggle: () => void
+  onProvideFeedback?: () => void
+}) {
+  return (
+    <div className="flex items-center gap-3 border-b border-border text-muted-foreground">
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 items-center gap-1.5 py-3 text-left text-sm tabular-nums transition-colors hover:text-foreground"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        aria-label={expanded ? 'Collapse completed turn work' : 'Expand completed turn work'}
+        data-testid="turn-summary"
+      >
+        <span>Worked for {formatElapsed(turn.elapsedMs)}</span>
+        <span aria-hidden="true">·</span>
+        <span>{turn.toolCallCount} {turn.toolCallCount === 1 ? 'tool call' : 'tool calls'}</span>
+        {turn.hasTokenUsage && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{turn.tokenCount.toLocaleString('en-US')} tokens</span>
+          </>
+        )}
+        <ChevronRight
+          className={`h-4 w-4 shrink-0 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
+          aria-hidden="true"
+        />
+      </button>
+      {onProvideFeedback && (
+        <button
+          type="button"
+          onClick={onProvideFeedback}
+          className="flex shrink-0 items-center gap-1 text-xs transition-colors hover:text-foreground"
+        >
+          <MessageSquarePlus className="h-3 w-3" />
+          <span>Voice feedback</span>
+        </button>
+      )}
+    </div>
+  )
+}
 
 function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; agentSlug: string }) {
   return (
@@ -121,13 +187,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const { data: agentData } = useAgent(agentSlug)
   const hasVoiceConfigured = useIsVoiceAgentConfigured()
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
+  const [expandedTurnIds, setExpandedTurnIds] = useState<Set<string>>(new Set())
 
   const handleProvideFeedback = useCallback(() => {
     setFeedbackDialogOpen(true)
   }, [])
 
-  // Find the last assistant message that has an elapsed time (for voice feedback button)
-  const lastAssistantElapsedId = useMemo(() => {
+  const toggleTurn = useCallback((turnId: string) => {
+    setExpandedTurnIds((current) => {
+      const next = new Set(current)
+      if (next.has(turnId)) next.delete(turnId)
+      else next.add(turnId)
+      return next
+    })
+  }, [])
+
+  // Find the latest assistant response (for the voice feedback button).
+  const lastAssistantMessageId = useMemo(() => {
     if (!messages) return null
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
@@ -656,42 +732,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return streamingToolUses.filter(t => !persistedToolIds.has(t.id))
   }, [messages, streamingToolUses])
 
-  // Compute elapsed time for each completed response turn
-  // A turn starts with a user message and ends at the last assistant message before the next user message (or end of messages when idle)
-  const turnElapsedTimes = useMemo(() => {
-    const elapsed = new Map<string, number>()
-    if (!messages) return elapsed
-
-    let lastUserMessageTime: number | null = null
-    let lastAssistantMessageId: string | null = null
-    let lastAssistantMessageTime: number | null = null
-
-    for (const msg of messages) {
-      // Queued (mid-turn) user messages don't end the turn they appear in
-      if (isTurnStartingUserMessage(msg)) {
-        // Close previous turn
-        if (lastUserMessageTime && lastAssistantMessageId && lastAssistantMessageTime) {
-          elapsed.set(lastAssistantMessageId, lastAssistantMessageTime - lastUserMessageTime)
-        }
-        lastUserMessageTime = new Date(msg.createdAt).getTime()
-        lastAssistantMessageId = null
-        lastAssistantMessageTime = null
-      } else if (msg.type === 'assistant') {
-        lastAssistantMessageId = msg.id
-        lastAssistantMessageTime = new Date(msg.createdAt).getTime()
-      }
-    }
-
-    // Close the last turn if session is idle, or if the user has sent a new message
-    // (a pending message means a new turn started, so the previous one is complete)
-    if ((!isActive || hasTurnStartingPendingMessage) && lastUserMessageTime && lastAssistantMessageId && lastAssistantMessageTime) {
-      elapsed.set(lastAssistantMessageId, lastAssistantMessageTime - lastUserMessageTime)
-    }
-
-    return elapsed
-  }, [messages, isActive, hasTurnStartingPendingMessage])
-
-  // Collect delivered files for each completed turn (same turn boundaries as turnElapsedTimes)
+  // Collect delivered files for each completed turn.
   const turnDeliveredFiles = useMemo(() => {
     const filesMap = new Map<string, { filePath: string }[]>()
     if (!messages) return filesMap
@@ -745,6 +786,187 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
     return null
   }, [messages, hasTurnStartingPendingMessage, streamingMessage, isStreamingMessagePersisted, unpersistedStreamingToolUses])
+
+  // Group persisted history into user-initiated turns, then split each completed
+  // turn into visual work phases at queued steering messages. The actual turn
+  // remains fully expanded until it completes; afterward each steering message
+  // floats between the summary for the work before it and the summary for the
+  // work it initiated.
+  const hasUnpersistedStreamingMessage =
+    !!streamingMessage && !isStreamingMessagePersisted
+  const hasUnpersistedStreamingTools = unpersistedStreamingToolUses.length > 0
+  const hasUnpersistedThinking = unpersistedThinkingBlocks.length > 0
+
+  const { completedTurns, completedTurnByItemId, collapsedMessageById } = useMemo(() => {
+    const turns: CompletedTurn[] = []
+    const byItemId = new Map<string, CompletedTurn>()
+    const collapsedById = new Map<string, ApiMessage>()
+    let actualTurnStartIndex: number | null = null
+
+    const finishWorkPhase = (
+      startIndex: number,
+      endIndex: number,
+      isTerminalPhase: boolean,
+      finalTextIsStillStreaming = false,
+    ) => {
+      if (endIndex <= startIndex + 1) return
+      const items = visibleMessages.slice(startIndex, endIndex)
+      const start = items[0]
+      if (!start || start.type !== 'user') return
+
+      const assistantMessages = items.filter(
+        (item): item is ApiMessage => item.type === 'assistant'
+      )
+      const finalAssistant = assistantMessages[assistantMessages.length - 1]
+      if (!finalAssistant) return
+
+      // The persisted tail may already be the completed answer even while an
+      // older, divergent live text buffer is still waiting to reconcile. Never
+      // hide that tail: at worst it is the latest visible checkpoint until the
+      // streamed answer persists, and hiding it loses real output in the
+      // queued-message cancellation race.
+      const answerMessageIds = new Set([finalAssistant.id])
+
+      // A declined/cancelled user-input request can itself be the terminal
+      // output. Keep those historical cards visible, regardless of parallel
+      // call order. Ordinary tool work stays behind the phase disclosure.
+      const visibleTerminalToolCalls = isTerminalPhase
+        ? finalAssistant.toolCalls.filter((toolCall) =>
+            isBlockingUserInputToolName(toolCall.name),
+          )
+        : []
+      const visibleTerminalToolCallIds = new Set(
+        visibleTerminalToolCalls.map((toolCall) => toolCall.id),
+      )
+      const revealedToolCallIds = new Set(
+        finalAssistant.toolCalls
+          .filter((toolCall) => !visibleTerminalToolCallIds.has(toolCall.id))
+          .map((toolCall) => toolCall.id),
+      )
+
+      const answerHasHiddenThinking =
+        finalAssistant.thinking?.some((block) => block.text.trim().length > 0) === true
+      const hasCollapsibleWork =
+        assistantMessages.some((message) => !answerMessageIds.has(message.id)) ||
+        answerHasHiddenThinking ||
+        finalAssistant.toolCalls.length > visibleTerminalToolCalls.length
+      // Turns with no hidden work don't need a disclosure row, but they also
+      // don't need an entry in the completed-turn map: the answer and any
+      // terminal user-input outcome already render naturally.
+      if (!hasCollapsibleWork) return
+
+      collapsedById.set(finalAssistant.id, {
+        ...finalAssistant,
+        thinking: undefined,
+        toolCalls: visibleTerminalToolCalls,
+      })
+
+      let toolCallCount = 0
+      let tokenCount = 0
+      let hasTokenUsage = false
+      for (const message of assistantMessages) {
+        for (const toolCall of message.toolCalls) {
+          toolCallCount += 1 + (toolCall.subagent?.totalToolUseCount ?? 0)
+          if (toolCall.subagent?.totalTokens !== undefined) {
+            tokenCount += toolCall.subagent.totalTokens
+            hasTokenUsage = true
+          }
+        }
+        if (message.usage) {
+          // Match loadSessionUsageTotals: cumulative billed/processed tokens,
+          // including the four raw provider usage fields for every response.
+          tokenCount +=
+            message.usage.inputTokens +
+            message.usage.outputTokens +
+            message.usage.cacheCreationInputTokens +
+            message.usage.cacheReadInputTokens
+          hasTokenUsage = true
+        }
+      }
+
+      const startTime = new Date(start.createdAt).getTime()
+      const endTime = new Date(finalAssistant.createdAt).getTime()
+      const turn: CompletedTurn = {
+        id: start.id,
+        startMessageId: start.id,
+        finalAssistantMessageId: finalTextIsStillStreaming ? null : finalAssistant.id,
+        answerMessageIds,
+        revealedToolCallIds,
+        elapsedMs:
+          Number.isFinite(startTime) && Number.isFinite(endTime)
+            ? Math.max(0, endTime - startTime)
+            : 0,
+        toolCallCount,
+        tokenCount,
+        hasTokenUsage,
+      }
+      turns.push(turn)
+      for (const item of items) byItemId.set(item.id, turn)
+    }
+
+    const finishActualTurn = (endIndex: number, finalTextIsStillStreaming = false) => {
+      if (
+        actualTurnStartIndex === null ||
+        endIndex <= actualTurnStartIndex + 1
+      ) return
+
+      let phaseStartIndex = actualTurnStartIndex
+      for (let i = actualTurnStartIndex + 1; i < endIndex; i++) {
+        const item = visibleMessages[i]
+        if (item.type !== 'user' || !item.queued) continue
+        finishWorkPhase(phaseStartIndex, i, false)
+        phaseStartIndex = i
+      }
+      finishWorkPhase(
+        phaseStartIndex,
+        endIndex,
+        true,
+        finalTextIsStillStreaming,
+      )
+    }
+
+    for (let i = 0; i < visibleMessages.length; i++) {
+      if (!isTurnStartingUserMessage(visibleMessages[i])) continue
+      if (actualTurnStartIndex !== null) finishActualTurn(i)
+      actualTurnStartIndex = i
+    }
+
+    const hasUnreconciledOutput =
+      hasUnpersistedStreamingMessage ||
+      hasUnpersistedStreamingTools ||
+      hasUnpersistedThinking
+    if (actualTurnStartIndex !== null && (!isActive || hasTurnStartingPendingMessage)) {
+      // session_idle can precede the final messages refetch. Collapse the
+      // persisted work immediately, but don't mistake its last interim text
+      // for the final answer — the still-streamed final text below owns that.
+      finishActualTurn(
+        visibleMessages.length,
+        hasUnreconciledOutput && !hasTurnStartingPendingMessage,
+      )
+    }
+
+    return {
+      completedTurns: turns,
+      completedTurnByItemId: byItemId,
+      collapsedMessageById: collapsedById,
+    }
+  }, [
+    visibleMessages,
+    hasUnpersistedStreamingMessage,
+    hasUnpersistedStreamingTools,
+    hasUnpersistedThinking,
+    isActive,
+    hasTurnStartingPendingMessage,
+  ])
+
+  // Drop expansion state for turns that no longer exist after edits/refetches.
+  useEffect(() => {
+    const validIds = new Set(completedTurns.map((turn) => turn.id))
+    setExpandedTurnIds((current) => {
+      if ([...current].every((id) => validIds.has(id))) return current
+      return new Set([...current].filter((id) => validIds.has(id)))
+    })
+  }, [completedTurns])
 
   // Determine which messages could have tool calls that are still running.
   // Only the trailing assistant messages (after the last user message) can have running tools,
@@ -1047,42 +1269,106 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             {hiddenCount} earlier {hiddenCount === 1 ? 'message' : 'messages'} hidden — scroll up to load
           </div>
         )}
-        {windowedMessages.map((item) => (
-          <Fragment key={item.id}>
-            {item.type === 'memory_recall' ? (
-              <MemoryRecallItem recall={item as ApiMemoryRecall} />
-            ) : item.type === 'compact_boundary' ? (
-              <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
-            ) : item.type === 'informational' ? (
-              <InformationalItem item={item as ApiInformational} />
-            ) : (
-              <>
-                <MessageErrorBoundary kind="message" raw={item} itemId={item.id}>
-                  <MessageItem message={item as ApiMessage} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={canHaveRunningToolCalls.has(item.id)} activeSubagents={activeSubagents} completedSubagents={completedSubagents} onRemoveMessage={readOnly ? undefined : handleRemoveMessage} onRemoveToolCall={readOnly ? undefined : handleRemoveToolCall} readOnly={readOnly} />
-                </MessageErrorBoundary>
-                {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
-                  <DeliveredFiles files={turnDeliveredFiles.get(item.id)!} agentSlug={agentSlug} />
-                )}
-                {turnElapsedTimes.has(item.id) && item.id !== deferredElapsedMessageId && (
-                  <div className="flex items-center gap-3 pb-1 -mt-3 text-xs text-muted-foreground tabular-nums italic">
-                    <span>Worked for {formatElapsed(turnElapsedTimes.get(item.id)!)}</span>
-                    <div className="h-px flex-1 bg-border" />
-                    {hasVoiceConfigured && (item as ApiMessage).type === 'assistant' && item.id === lastAssistantElapsedId && (
-                      <button
-                        type="button"
-                        onClick={handleProvideFeedback}
-                        className="flex items-center gap-1 not-italic text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        <MessageSquarePlus className="h-3 w-3" />
-                        <span>Voice feedback</span>
-                      </button>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </Fragment>
-        ))}
+        {windowedMessages.map((item, index) => {
+          const turn = completedTurnByItemId.get(item.id)
+          const expanded = !!turn && expandedTurnIds.has(turn.id)
+          const previousItem = index > 0 ? windowedMessages[index - 1] : null
+          const previousTurn = previousItem
+            ? completedTurnByItemId.get(previousItem.id)
+            : undefined
+          const showTurnSummary =
+            !!turn &&
+            item.id !== turn.startMessageId &&
+            (!previousTurn ||
+              previousTurn.id !== turn.id ||
+              previousItem?.id === turn.startMessageId)
+          const collapsed = !!turn && !expanded
+          const isAssistantItem = item.type === 'assistant'
+          const isAnswerMessage =
+            !!turn && isAssistantItem && turn.answerMessageIds.has(item.id)
+          const hideItem =
+            collapsed &&
+            isAssistantItem &&
+            !isAnswerMessage
+          const isRevealedWorkItem =
+            expanded &&
+            isAssistantItem &&
+            !isAnswerMessage
+
+          let renderedItem: ReactNode = null
+          if (!hideItem) {
+            if (item.type === 'memory_recall') {
+              renderedItem = <MemoryRecallItem recall={item as ApiMemoryRecall} />
+            } else if (item.type === 'compact_boundary') {
+              renderedItem = <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
+            } else if (item.type === 'informational') {
+              renderedItem = <InformationalItem item={item as ApiInformational} />
+            } else {
+              const message = item as ApiMessage
+              // Collapsed answer shapes are memoized with the turn grouping so
+              // streaming deltas don't allocate and re-render past messages.
+              const displayedMessage = collapsed
+                ? collapsedMessageById.get(message.id) ?? message
+                : message
+              const messageItem = (
+                <>
+                  <MessageErrorBoundary kind="message" raw={item} itemId={item.id}>
+                    <MessageItem
+                      message={displayedMessage}
+                      agentSlug={agentSlug}
+                      sessionId={sessionId}
+                      isSessionActive={canHaveRunningToolCalls.has(item.id)}
+                      activeSubagents={activeSubagents}
+                      completedSubagents={completedSubagents}
+                      onRemoveMessage={readOnly ? undefined : handleRemoveMessage}
+                      onRemoveToolCall={readOnly ? undefined : handleRemoveToolCall}
+                      readOnly={readOnly}
+                      workDetailClassName={
+                        expanded && isAnswerMessage
+                          ? TURN_WORK_REVEAL_CLASS
+                          : undefined
+                      }
+                      revealedToolCallIds={
+                        expanded && isAnswerMessage
+                          ? turn.revealedToolCallIds
+                          : undefined
+                      }
+                    />
+                  </MessageErrorBoundary>
+                  {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
+                    <DeliveredFiles files={turnDeliveredFiles.get(item.id)!} agentSlug={agentSlug} />
+                  )}
+                </>
+              )
+              renderedItem = isRevealedWorkItem ? (
+                <div
+                  className={TURN_WORK_REVEAL_CLASS}
+                  data-testid="turn-work-detail"
+                >
+                  {messageItem}
+                </div>
+              ) : messageItem
+            }
+          }
+
+          return (
+            <Fragment key={item.id}>
+              {showTurnSummary && (
+                <TurnSummaryRow
+                  turn={turn}
+                  expanded={expanded}
+                  onToggle={() => toggleTurn(turn.id)}
+                  onProvideFeedback={
+                    hasVoiceConfigured && turn.finalAssistantMessageId === lastAssistantMessageId
+                      ? handleProvideFeedback
+                      : undefined
+                  }
+                />
+              )}
+              {renderedItem}
+            </Fragment>
+          )
+        })}
 
         {/* Turn-starting ghosts (sent while idle) — the next turn belongs to
             them, so they render before any streaming content. Queued ghosts
@@ -1197,15 +1483,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           )
         })}
 
-        {/* Deferred delivered files + elapsed time — shown after streaming content */}
+        {/* Deferred delivered files — shown after streaming content */}
         {deferredElapsedMessageId && turnDeliveredFiles.has(deferredElapsedMessageId) && (
           <DeliveredFiles files={turnDeliveredFiles.get(deferredElapsedMessageId)!} agentSlug={agentSlug} />
-        )}
-        {deferredElapsedMessageId && turnElapsedTimes.has(deferredElapsedMessageId) && (
-          <div className="flex items-center gap-3 pb-1 -mt-3 text-xs text-muted-foreground tabular-nums italic">
-            <span>Worked for {formatElapsed(turnElapsedTimes.get(deferredElapsedMessageId)!)}</span>
-            <div className="h-px flex-1 bg-border" />
-          </div>
         )}
 
         {/* Queued ghosts — waiting for the agent loop to pick them up, so they
