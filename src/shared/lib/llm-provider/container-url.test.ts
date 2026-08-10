@@ -14,6 +14,23 @@ describe('rewriteLoopbackForContainer', () => {
   it('leaves non-loopback URLs untouched', () => {
     expect(rewriteLoopbackForContainer('http://ollama.example.com:11434')).toBe('http://ollama.example.com:11434')
   })
+
+  // Apple Container has no --add-host; the runtime's gateway IP is the only
+  // host-reachable address inside the guest (SUP-447).
+  it('rewrites to an explicit host address when one is supplied', () => {
+    expect(rewriteLoopbackForContainer('http://localhost:11434', '192.168.64.1')).toBe(
+      'http://192.168.64.1:11434',
+    )
+  })
+
+  it('honors an explicit host address for IPv6 loopback and trailing slash', () => {
+    expect(rewriteLoopbackForContainer('http://[::1]:11434', '192.168.64.1')).toBe(
+      'http://192.168.64.1:11434',
+    )
+    expect(rewriteLoopbackForContainer('http://localhost:11434/', '192.168.64.1')).toBe(
+      'http://192.168.64.1:11434/',
+    )
+  })
 })
 
 describe('isHostOnlyHostname', () => {

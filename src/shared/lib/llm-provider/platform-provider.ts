@@ -64,9 +64,12 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     }
   }
 
-  getContainerEnvVars(agent?: AgentIdentity): Record<string, string | undefined> {
+  getContainerEnvVars(
+    agent?: AgentIdentity,
+    hostAddress?: string,
+  ): Record<string, string | undefined> {
     const proxyUrl = getPlatformProxyBaseUrl()
-    const containerUrl = rewriteLoopbackForContainer(proxyUrl)
+    const containerUrl = rewriteLoopbackForContainer(proxyUrl, hostAddress)
 
     const auth = attribution.current()
     const authToken = auth?.bearerToken() ?? this.getEffectiveApiKey()

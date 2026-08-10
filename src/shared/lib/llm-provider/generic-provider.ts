@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider, type AgentIdentity, type ModelPurpose } from './base-llm-provider'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { EffortLevel } from '../container/types'
 import { getSettings, getModelCatalogSettings, type ApiKeyStatus } from '../config/settings'
@@ -128,11 +128,14 @@ export class GenericLlmProvider extends BaseLlmProvider {
     return process.env[DEFAULT_MODEL_ENV]?.trim() || GENERIC_FALLBACK_MODEL
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  getContainerEnvVars(
+    _agent?: AgentIdentity,
+    hostAddress?: string,
+  ): Record<string, string | undefined> {
     // A loopback endpoint (e.g. ollama on the host) isn't reachable as
-    // localhost from inside the agent container; rewrite to the host gateway
-    // (same translation the platform provider applies).
-    const containerUrl = rewriteLoopbackForContainer(this.getEffectiveBaseUrl())
+    // localhost from inside the agent container; rewrite to the runtime's
+    // host address (same translation the platform provider applies).
+    const containerUrl = rewriteLoopbackForContainer(this.getEffectiveBaseUrl(), hostAddress)
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: containerUrl,
