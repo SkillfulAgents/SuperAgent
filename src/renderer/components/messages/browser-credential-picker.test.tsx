@@ -81,6 +81,47 @@ describe('BrowserCredentialPicker', () => {
     })
   })
 
+  it('shows reveal and copy controls when the browser fields cannot be reached', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    mockApiFetch
+      .mockResolvedValueOnce(response({
+        provider: 'apple-passwords',
+        providerLabel: 'Apple Passwords',
+        status: 'ready',
+        installable: true,
+        origin: 'https://example.com',
+        suggestions: [{
+          id: 'opaque-1',
+          username: 'person@example.com',
+          domain: 'example.com',
+        }],
+      }))
+      .mockResolvedValueOnce(response({
+        error: 'No visible password field was found',
+        reason: 'no_password_field',
+        manualCredential: {
+          username: 'person@example.com',
+          password: 'host-only-secret',
+        },
+      }, false))
+
+    render(<BrowserCredentialPicker {...props} />)
+    await user.click(await screen.findByTestId('credential-suggestion-opaque-1'))
+
+    expect(await screen.findByTestId('credential-picker-manual')).toBeInTheDocument()
+    expect(screen.getByText('person@example.com')).toBeInTheDocument()
+    expect(screen.queryByText('host-only-secret')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Copy username' }))
+    expect(writeText).toHaveBeenLastCalledWith('person@example.com')
+
+    await user.click(screen.getByRole('button', { name: 'Show password' }))
+    expect(screen.getByText('host-only-secret')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Copy password' }))
+    expect(writeText).toHaveBeenLastCalledWith('host-only-secret')
+  })
+
   it('links to Browser Use settings when no password manager is configured', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValueOnce(response({

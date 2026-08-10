@@ -43,6 +43,7 @@ import {
 
 import { getEditingCommands } from './cdp-editing-commands';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
+import { selectActivePageTarget } from './active-page-target';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -2269,19 +2270,19 @@ async function findActivePageTarget(): Promise<PageTarget | null> {
   if (allTargets.length === 0) return null;
   if (allTargets.length === 1) return allTargets[0];
 
-  // Use daemon to find which is active
+  let daemonTabs: Awaited<ReturnType<typeof tabManager.queryTabs>> = [];
   try {
-    const tabs = await tabManager.queryTabs();
-    const active = tabs.find(t => t.active);
-    if (active) {
-      const byUrl = allTargets.find(p => tabManager.urlsMatch(p.url, active.url));
-      if (byUrl) return byUrl;
-    }
+    daemonTabs = await tabManager.queryTabs();
   } catch (err) {
     console.error('[CDP] Daemon tab query failed:', err);
   }
 
-  return allTargets[0]; // fallback: first target (most recently active per Chrome's /json ordering)
+  return selectActivePageTarget(
+    allTargets,
+    daemonTabs,
+    cdpScreencast?.currentTargetId ?? null,
+    (left, right) => tabManager.urlsMatch(left, right),
+  );
 }
 
 /** Discover page targets via CDP WebSocket protocol (for remote providers) */
@@ -2737,12 +2738,14 @@ function notifyBrowserAction() {
         tabManager.queryTabs(),
       ]);
 
-      // Resolve the active target from daemon info
-      const activeDaemonTab = daemonTabs.find(t => t.active);
-      let activeTarget: PageTarget | null = allTargets[0] ?? null;
-      if (activeDaemonTab && allTargets.length > 1) {
-        activeTarget = allTargets.find(p => tabManager.urlsMatch(p.url, activeDaemonTab.url)) ?? activeTarget;
-      }
+      // Resolve the active target from daemon info, retaining the page already
+      // shown in the viewer when host-browser daemon navigation state is stale.
+      const activeTarget = selectActivePageTarget(
+        allTargets,
+        daemonTabs,
+        cdpScreencast.currentTargetId,
+        (left, right) => tabManager.urlsMatch(left, right),
+      );
 
       // Switch screencast only if auto-following and target changed
       if (activeTarget && activeTarget.id !== cdpScreencast.currentTargetId && cdpScreencast.autoFollow) {

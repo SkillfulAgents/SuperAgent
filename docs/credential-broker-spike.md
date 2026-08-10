@@ -34,9 +34,14 @@ sequenceDiagram
   Host->>Browser: username, password, expected origin
   Browser->>Browser: origin check + DOM fill in one CDP turn
   Browser-->>Host: field-filled booleans only
-  Host-->>UI: success (no credential values)
-  Host->>Agent: resolve request with submit-login guidance
-  Agent->>Browser: click login; request input again if 2FA appears
+  alt Fields are reachable
+    Host-->>UI: success (no credential values)
+    Host->>Agent: resolve request with submit-login guidance
+    Agent->>Browser: click login; request input again if 2FA appears
+  else Fields are inaccessible
+    Host-->>UI: selected credential (no-store response)
+    UI->>Browser: user copies and pastes values
+  end
 ```
 
 The host discovers the user-installed Apple Passwords Chrome extension and
@@ -89,12 +94,18 @@ Apple password, PIN, or PAKE secret is persisted by Superagent.
 
 ## Security properties
 
-- The renderer receives usernames, titles, domains, and opaque random IDs only.
+- Suggestion and successful-fill responses contain only usernames, titles,
+  domains, and opaque random IDs. If a selected credential cannot reach any
+  password field, the global-admin renderer receives that one credential in a
+  `no-store` response so the user can copy it manually; it is not persisted.
 - IDs expire after five minutes, are one-shot, and are bound to the exact agent,
   session, `browser_input` tool call, and origin.
 - The host harness captures the active URL onto `browser_input`; the host then
   refreshes stale or explicitly retried context and re-checks the live origin
   immediately before retrieving a password.
+- Active-page resolution prefers an exact daemon URL match and then the CDP
+  target currently shown in the browser viewer. This prevents a stale
+  pre-navigation daemon URL from sending lookup or fill to a background page.
 - The browser repeats the expected-origin check in the same JavaScript turn as
   the field mutation, preventing a navigation race from filling another site.
 - The agent-container credential endpoints require the existing host token. The
@@ -105,8 +116,9 @@ Apple password, PIN, or PAKE secret is persisted by Superagent.
 - A credential fill claims the open `browser_input` request before retrieval.
   Competing Done/Decline actions cannot settle it while a secret is in flight;
   every non-settling path releases the claim.
-- Secrets are not put in a tool result, renderer API response, environment
-  variable, process argument, analytics event, or log line.
+- Secrets are not put in a tool result, environment variable, process argument,
+  analytics event, or log line. The only renderer API exception is the explicit
+  missing-field manual-copy fallback described above.
 - Autofill does not submit the form. It resolves `browser_input` with an explicit
   tool result telling the agent to submit the login and request user input again
   if 2FA or another manual step appears.
@@ -114,8 +126,9 @@ Apple password, PIN, or PAKE secret is persisted by Superagent.
   shutdown sequence clears pending selections and stops the Apple broker Chrome.
 
 The password necessarily exists briefly as a JavaScript string in the host API,
-the host-to-container request body, and the CDP request. This is an MVP boundary,
-not hardware-backed secret isolation.
+the host-to-container request body, and the CDP request. During manual fallback
+it also exists in the renderer and, after a copy action, the system clipboard.
+This is an MVP boundary, not hardware-backed secret isolation.
 
 ## Local prerequisites
 
@@ -148,8 +161,9 @@ password.
   its lifetime. Chrome's Origin checks remain enabled (the broker does not use
   `--remote-allow-origins`), but prefer the debugging pipe or an authenticated
   proxy before production hardening.
-- Top-level document fields only; login forms in cross-origin iframes are not
-  filled.
+- Top-level, open-shadow-root, and same-origin iframe fields are filled. Login
+  forms in closed shadow roots or cross-origin iframes use the manual copy
+  fallback instead.
 - The heuristic targets a visible password field and the highest-confidence
   username/email field. Passkeys, federated login, and OTP fill are out of scope.
 - A two-page login works only if `browser_input` is raised on the relevant page;

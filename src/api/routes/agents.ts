@@ -2964,6 +2964,7 @@ const credentialFillResponseSchema = z.object({
 })
 const credentialErrorResponseSchema = z.object({
   error: z.string(),
+  reason: z.enum(['origin_changed', 'no_password_field']).optional(),
 })
 const browserInputContextSchema = z.object({
   url: z.string().min(1),
@@ -3123,6 +3124,22 @@ agents.post(
       const fillError = credentialErrorResponseSchema.safeParse(
         await fillResponse.json().catch(() => null),
       )
+      if (fillResponse.status === 409 && fillError.success &&
+          fillError.data.reason === 'no_password_field') {
+        // Keep the browser request open so the user can paste the values and
+        // complete the step themselves. This is intentionally limited to the
+        // stable-origin, missing-field case; never disclose on navigation or
+        // an unclassified browser failure.
+        c.header('Cache-Control', 'no-store')
+        return c.json({
+          error: fillError.data.error,
+          reason: fillError.data.reason,
+          manualCredential: {
+            username: credential.username,
+            password: credential.password,
+          },
+        }, 409)
+      }
       return c.json({
         error: fillError.success ? fillError.data.error : 'Credential autofill failed',
       }, fillResponse.status === 409 ? 409 : 502)

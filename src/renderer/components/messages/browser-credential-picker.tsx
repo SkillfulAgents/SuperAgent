@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { KeyRound, RefreshCw } from 'lucide-react'
+import { Check, Copy, Eye, EyeOff, KeyRound, RefreshCw } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -29,6 +29,11 @@ interface VerificationRequest {
   message: string
 }
 
+interface ManualCredential {
+  username: string
+  password: string
+}
+
 interface BrowserCredentialPickerProps {
   agentSlug: string
   sessionId: string
@@ -54,6 +59,10 @@ export function BrowserCredentialPicker({
   const [checking, setChecking] = useState(false)
   const [verification, setVerification] = useState<VerificationRequest | null>(null)
   const [code, setCode] = useState('')
+  const [manualCredential, setManualCredential] = useState<ManualCredential | null>(null)
+  const [passwordRevealed, setPasswordRevealed] = useState(false)
+  const [copiedField, setCopiedField] = useState<'username' | 'password' | null>(null)
+  const [copyError, setCopyError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!canUsePasswordManagers) {
@@ -63,6 +72,11 @@ export function BrowserCredentialPicker({
     const controller = new AbortController()
     setLoading(true)
     setError(null)
+    setFilled(false)
+    setManualCredential(null)
+    setPasswordRevealed(false)
+    setCopiedField(null)
+    setCopyError(null)
     const refreshQuery = reload > 0 ? '&refresh=true' : ''
     void apiFetch(
       `/api/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}` +
@@ -95,7 +109,15 @@ export function BrowserCredentialPicker({
           body: JSON.stringify({ toolUseId, credentialId }),
         },
       )
-      const result = await response.json() as { error?: string }
+      const result = await response.json() as {
+        error?: string
+        reason?: string
+        manualCredential?: ManualCredential
+      }
+      if (!response.ok && result.reason === 'no_password_field' && result.manualCredential) {
+        setManualCredential(result.manualCredential)
+        return
+      }
       if (!response.ok) throw new Error(result.error || 'Credential autofill failed')
       setFilled(true)
     } catch (reason) {
@@ -104,6 +126,21 @@ export function BrowserCredentialPicker({
       setFillingId(null)
     }
   }, [agentSlug, sessionId, toolUseId])
+
+  const copyManualCredential = useCallback(async (field: 'username' | 'password') => {
+    if (!manualCredential) return
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable')
+      await navigator.clipboard.writeText(manualCredential[field])
+      setCopyError(null)
+      setCopiedField(field)
+      window.setTimeout(() => {
+        setCopiedField((current) => current === field ? null : current)
+      }, 2000)
+    } catch {
+      setCopyError('Could not copy automatically. Reveal and select the value instead.')
+    }
+  }, [manualCredential])
 
   const checkPasswordManager = useCallback(async () => {
     if (!data || data.provider === 'none') return
@@ -186,6 +223,74 @@ export function BrowserCredentialPicker({
           Credentials filled
         </div>
         <p className="mt-1 text-muted-foreground">Continue signing in in the browser.</p>
+      </div>
+    )
+  }
+
+  if (manualCredential) {
+    return (
+      <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs" data-testid="credential-picker-manual">
+        <div className="flex items-center gap-2 font-medium text-foreground">
+          <KeyRound className="h-3.5 w-3.5 text-amber-600" />
+          Copy saved login
+        </div>
+        <p className="mt-1 text-muted-foreground">
+          Autofill couldn&apos;t reach this page&apos;s sign-in fields. Copy and paste each value in the browser, then click Done.
+        </p>
+        <div className="mt-3 space-y-2">
+          <div>
+            <p className="mb-1 text-2xs font-medium text-muted-foreground">Username</p>
+            <div className="flex items-center gap-1.5">
+              <code className="min-w-0 flex-1 select-all truncate rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground">
+                {manualCredential.username || '(empty)'}
+              </code>
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                onClick={() => void copyManualCredential('username')}
+                aria-label="Copy username"
+                disabled={disabled}
+              >
+                {copiedField === 'username' ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                <span className="ml-1">{copiedField === 'username' ? 'Copied' : 'Copy'}</span>
+              </Button>
+            </div>
+          </div>
+          <div>
+            <p className="mb-1 text-2xs font-medium text-muted-foreground">Password</p>
+            <div className="flex items-center gap-1.5">
+              <code
+                className="min-w-0 flex-1 select-all truncate rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground"
+                aria-label={passwordRevealed ? manualCredential.password : 'Password hidden'}
+              >
+                {passwordRevealed ? manualCredential.password : '••••••••••••'}
+              </code>
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                onClick={() => setPasswordRevealed((value) => !value)}
+                aria-label={passwordRevealed ? 'Hide password' : 'Show password'}
+                disabled={disabled}
+              >
+                {passwordRevealed ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                onClick={() => void copyManualCredential('password')}
+                aria-label="Copy password"
+                disabled={disabled}
+              >
+                {copiedField === 'password' ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                <span className="ml-1">{copiedField === 'password' ? 'Copied' : 'Copy'}</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+        {copyError && <p className="mt-2 text-destructive">{copyError}</p>}
       </div>
     )
   }
