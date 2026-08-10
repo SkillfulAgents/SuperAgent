@@ -66,16 +66,19 @@ describe('credential autofill page function', () => {
 
   it('fills login fields inside a same-origin iframe', () => {
     const frame = document.createElement('iframe');
+    frame.src = `${location.origin}/embedded-login`;
     document.body.append(frame);
     vi.spyOn(frame.contentWindow!.HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
       x: 0, y: 0, width: 200, height: 30, top: 0, right: 200, bottom: 30, left: 0,
       toJSON: () => ({}),
     });
-    frame.contentDocument!.body.innerHTML = `
+    frame.contentDocument!.open();
+    frame.contentDocument!.write(`<!doctype html><body>
       <form>
         <input id="email" type="email" autocomplete="username">
         <input id="password" type="password" autocomplete="current-password">
-      </form>`;
+      </form></body>`);
+    frame.contentDocument!.close();
 
     expect(autofill('person@example.com', 's3cret', location.origin)).toEqual({
       ok: true,
@@ -86,6 +89,32 @@ describe('credential autofill page function', () => {
       .toBe('person@example.com');
     expect(frame.contentDocument!.querySelector<HTMLInputElement>('#password')!.value)
       .toBe('s3cret');
+  });
+
+  it('does not fill an accessible iframe from a different origin', () => {
+    const frame = document.createElement('iframe');
+    frame.src = 'https://accounts.other.example/embedded-login';
+    document.body.append(frame);
+    vi.spyOn(frame.contentWindow!.HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, width: 200, height: 30, top: 0, right: 200, bottom: 30, left: 0,
+      toJSON: () => ({}),
+    });
+    frame.contentDocument!.open();
+    frame.contentDocument!.write(`<!doctype html><body>
+      <form>
+        <input id="email" type="email" autocomplete="username">
+        <input id="password" type="password" autocomplete="current-password">
+      </form></body>`);
+    frame.contentDocument!.close();
+
+    expect(autofill('person@example.com', 's3cret', location.origin)).toEqual({
+      ok: false,
+      reason: 'no_password_field',
+      usernameFilled: false,
+      passwordFilled: false,
+    });
+    expect(frame.contentDocument!.querySelector<HTMLInputElement>('#email')!.value).toBe('');
+    expect(frame.contentDocument!.querySelector<HTMLInputElement>('#password')!.value).toBe('');
   });
 
   it('does not mutate the DOM when the expected origin differs', () => {

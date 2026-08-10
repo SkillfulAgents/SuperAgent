@@ -12,25 +12,48 @@ describe('selectActivePageTarget', () => {
     expect(selectActivePageTarget(
       targets,
       [{ url: targets[1].url, active: true }],
-      'background',
       urlsMatch,
+      { viewerTargetId: 'background' },
     )).toBe(targets[1]);
   });
 
-  it('uses the visible viewer target when the daemon URL is stale', () => {
+  it('uses the visible viewer target first when the caller opts in', () => {
     expect(selectActivePageTarget(
       targets,
       [{ url: 'https://www.pge.com/', active: true }],
-      'pge',
       urlsMatch,
+      { viewerTargetId: 'pge', preferViewer: true },
     )).toBe(targets[1]);
   });
 
+  it('keeps the viewer authoritative even when the daemon matches another tab', () => {
+    const duplicateUrlTargets = [
+      { id: 'background', url: 'https://myaccount.pge.com/myaccount/s/login/' },
+      { id: 'viewer', url: 'https://myaccount.pge.com/myaccount/s/login/' },
+    ];
+
+    expect(selectActivePageTarget(
+      duplicateUrlTargets,
+      [{ url: duplicateUrlTargets[0].url, active: true }],
+      urlsMatch,
+      { viewerTargetId: 'viewer', preferViewer: true },
+    )).toBe(duplicateUrlTargets[1]);
+  });
+
+  it('does not make auto-follow sticky when the daemon URL is stale', () => {
+    expect(selectActivePageTarget(
+      targets,
+      [{ url: 'https://www.pge.com/', active: true }],
+      urlsMatch,
+      { viewerTargetId: 'pge' },
+    )).toBe(targets[0]);
+  });
+
   it('falls back to Chrome target ordering without an active match or viewer', () => {
-    expect(selectActivePageTarget(targets, [], null, urlsMatch)).toBe(targets[0]);
+    expect(selectActivePageTarget(targets, [], urlsMatch)).toBe(targets[0]);
   });
 
   it('returns null when Chrome has no page targets', () => {
-    expect(selectActivePageTarget([], [], null, urlsMatch)).toBeNull();
+    expect(selectActivePageTarget([], [], urlsMatch)).toBeNull();
   });
 });

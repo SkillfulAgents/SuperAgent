@@ -23,9 +23,10 @@ export const CREDENTIAL_AUTOFILL_FUNCTION = `function(username, password, expect
     }
     for (const frame of root.querySelectorAll('iframe, frame')) {
       try {
-        // Access throws for cross-origin frames. Never weaken that browser
-        // boundary: those cases fall back to an explicit user copy instead.
-        if (rendered(frame) && frame.contentDocument) {
+        // Cross-origin access normally throws, but legacy document.domain can
+        // relax it. Require the frame's actual origin to preserve the boundary.
+        if (rendered(frame) && frame.contentWindow?.location.origin === expectedOrigin &&
+            frame.contentDocument) {
           inputs.push(...collectInputs(frame.contentDocument, seen));
         }
       } catch {

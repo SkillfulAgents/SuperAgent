@@ -8,31 +8,39 @@ export interface BrowserTabCandidate {
   active: boolean;
 }
 
+export interface ActivePageTargetSelectionOptions {
+  /** The CDP target currently rendered in the browser viewer. */
+  viewerTargetId?: string | null;
+  /** Use the viewer before daemon/MRU resolution for user-directed actions. */
+  preferViewer?: boolean;
+}
+
 /**
- * Resolve the page the user is actually viewing.
+ * Resolve Chrome's active page, optionally giving a user-selected viewer page
+ * priority for operations that act on exactly what the user is looking at.
  *
- * The daemon URL is preferred while it is current. In host-browser/CDP mode
- * the daemon can retain the pre-navigation URL, so the viewer's current CDP
- * target is the safest fallback before relying on Chrome's target ordering.
+ * Viewer priority must stay opt-in: auto-follow callers are trying to discover
+ * where the viewer should move and would become sticky if its current target
+ * were used as their fallback.
  */
 export function selectActivePageTarget<T extends PageTargetCandidate>(
   targets: T[],
   daemonTabs: BrowserTabCandidate[],
-  viewerTargetId: string | null,
   urlsMatch: (left: string, right: string) => boolean,
+  options: ActivePageTargetSelectionOptions = {},
 ): T | null {
   if (targets.length === 0) return null;
   if (targets.length === 1) return targets[0];
+
+  if (options.preferViewer && options.viewerTargetId) {
+    const viewerTarget = targets.find((target) => target.id === options.viewerTargetId);
+    if (viewerTarget) return viewerTarget;
+  }
 
   const activeDaemonTab = daemonTabs.find((tab) => tab.active);
   if (activeDaemonTab) {
     const daemonTarget = targets.find((target) => urlsMatch(target.url, activeDaemonTab.url));
     if (daemonTarget) return daemonTarget;
-  }
-
-  if (viewerTargetId) {
-    const viewerTarget = targets.find((target) => target.id === viewerTargetId);
-    if (viewerTarget) return viewerTarget;
   }
 
   return targets[0];

@@ -103,9 +103,9 @@ Apple password, PIN, or PAKE secret is persisted by Superagent.
 - The host harness captures the active URL onto `browser_input`; the host then
   refreshes stale or explicitly retried context and re-checks the live origin
   immediately before retrieving a password.
-- Active-page resolution prefers an exact daemon URL match and then the CDP
-  target currently shown in the browser viewer. This prevents a stale
-  pre-navigation daemon URL from sending lookup or fill to a background page.
+- Credential context and fill treat the CDP target currently shown in the
+  browser viewer as authoritative. Auto-follow resolution remains separate and
+  uses daemon state with Chrome target ordering as its stale-state fallback.
 - The browser repeats the expected-origin check in the same JavaScript turn as
   the field mutation, preventing a navigation race from filling another site.
 - The agent-container credential endpoints require the existing host token. The
