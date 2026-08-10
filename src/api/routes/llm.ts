@@ -1,13 +1,12 @@
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { getConfiguredLlmClient } from '@shared/lib/llm-provider/helpers'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
+import { getEffectiveModels } from '@shared/lib/config/settings'
 
 const llm = new Hono()
 
 llm.use('*', Authenticated())
-
-const DEFAULT_MODEL = 'claude-sonnet-5'
 
 // Simple rate limiter: 100 requests per minute
 const requestCounts = new Map<string, { count: number; resetAt: number }>()
@@ -32,12 +31,17 @@ function checkRateLimit(key: string): boolean {
   return true
 }
 
+/** Resolve the global agent default to the active provider's concrete wire id. */
+function getDefaultModel(): string {
+  return resolveActiveProviderModel(getEffectiveModels().agentModel, 'agent')
+}
+
 // GET /api/llm/config
 llm.get('/config', (c) => {
   const provider = getActiveLlmProvider()
   return c.json({
     configured: provider.getApiKeyStatus().isConfigured,
-    defaultModel: DEFAULT_MODEL,
+    defaultModel: getDefaultModel(),
     provider: provider.id,
   })
 })
@@ -68,7 +72,7 @@ llm.post('/v1/messages', async (c) => {
     return c.json({ error: 'Missing required field: messages' }, 400)
   }
 
-  const model = (body.model as string) || DEFAULT_MODEL
+  const model = (body.model as string) || getDefaultModel()
   const stream = !!body.stream
 
   let client
