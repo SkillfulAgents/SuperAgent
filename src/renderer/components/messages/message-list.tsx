@@ -584,7 +584,17 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // reset on session_active, so a match against an older turn can only be a
   // false positive (the model reusing a stock opener suppresses the live card).
   const unpersistedThinkingBlocks = useMemo(() => {
-    if (!thinkingBlocks.length || !messages?.length) return thinkingBlocks
+    if (!thinkingBlocks.length) return thinkingBlocks
+
+    // Opus can emit a signed thinking block with no display text. Keep the
+    // placeholder only while that exact block is still open; once thinking_stop
+    // arrives, an empty card has nothing useful to show even if the wider turn
+    // remains active for a following tool call or response.
+    const displayableThinkingBlocks = thinkingBlocks.filter(
+      b => b.text.trim() || (isActive && b.endedAt === null)
+    )
+    if (!displayableThinkingBlocks.length || !messages?.length) return displayableThinkingBlocks
+
     const persisted: Array<{ id?: string; text: string }> = []
     let interrupted = false
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -617,7 +627,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // An interrupted turn is over even when nothing persisted: the SDK
     // discarded whatever the leftover live blocks hold, so they'd strand.
     if (!isActive && (persisted.length || interrupted)) return []
-    return thinkingBlocks.filter(b => {
+    return displayableThinkingBlocks.filter(b => {
       const t = b.text.trim()
       const matched = persisted.some(p => {
         // When both sides have an identity, text must not override it: models
@@ -628,10 +638,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         return !!t && (p.text.startsWith(t) || t.startsWith(p.text))
       })
       if (matched) return false
-      // Blocks with no streamed text (display option off) have no persisted
-      // counterpart to collide with — keep them while the turn runs, but don't
-      // let them strand in an idle transcript.
-      if (!t) return isActive
       return true
     })
   }, [messages, thinkingBlocks, isActive])
