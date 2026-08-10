@@ -52,6 +52,9 @@ const externalExact = new Set([
   'electron',
   'require-in-the-middle',
   'import-in-the-middle',
+  // grammy hardwires node-fetch@2, whose isAbortSignal checks constructor.name;
+  // bundling renames abort-controller's class, so every Telegram call throws.
+  'grammy',
 ])
 const externalPrefix = ['@sentry/', '@opentelemetry/']
 
