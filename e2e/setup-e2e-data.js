@@ -112,6 +112,14 @@ fs.writeFileSync(
         version: '1.0.0',
       },
     ],
+    agents: [
+      {
+        name: 'E2E Onboarding Template',
+        path: 'agents/e2e-onboarding-template/',
+        description: 'An agent template that exercises the onboarding handoff',
+        version: '1.0.0',
+      },
+    ],
   }, null, 2),
 )
 
@@ -129,6 +137,31 @@ metadata:
 # E2E Public Skill
 
 This skill is seeded from a public provider for end-to-end tests.
+`,
+)
+
+const PUBLIC_AGENT_DIR = path.join(PUBLIC_SKILLSET_DIR, 'agents', 'e2e-onboarding-template')
+fs.mkdirSync(path.join(PUBLIC_AGENT_DIR, '.claude', 'skills', 'agent-onboarding'), { recursive: true })
+fs.writeFileSync(
+  path.join(PUBLIC_AGENT_DIR, 'CLAUDE.md'),
+  `---
+name: E2E Onboarding Template
+description: An agent template that exercises the onboarding handoff
+---
+
+# E2E Onboarding Template
+
+This agent is seeded for end-to-end tests.
+`,
+)
+fs.writeFileSync(
+  path.join(PUBLIC_AGENT_DIR, '.claude', 'skills', 'agent-onboarding', 'SKILL.md'),
+  `---
+name: agent-onboarding
+description: Helps configure a freshly-installed agent.
+---
+
+Help the user configure this agent.
 `,
 )
 

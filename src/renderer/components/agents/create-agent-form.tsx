@@ -419,6 +419,7 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
             onVoiceResult={handleVoiceResult}
             onImportComplete={handleImportComplete}
             onAidOpened={forfeitHandoffTemplate}
+            onTemplateInstalled={onAgentCreated}
           />
         </div>
       </div>

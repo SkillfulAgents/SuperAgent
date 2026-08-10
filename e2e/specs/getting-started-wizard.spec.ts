@@ -201,6 +201,51 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectNotVisible()
   })
 
+  test('finishes onboarding after creating the first agent from a template', async ({ page, request }) => {
+    await request.put('/api/user-settings', {
+      data: { setupCompleted: false, onboardingProgress: null },
+    })
+
+    await appPage.goto()
+    await appPage.waitForAppLoaded()
+    await wizardPage.expectVisible()
+    await wizardPage.chooseManualSetup()
+
+    await wizardPage.clickNext() // LLM -> Model
+    await wizardPage.expectStep(1)
+    await wizardPage.clickNext() // Model -> Browser
+    await wizardPage.expectStep(2)
+    await wizardPage.clickNext() // Browser -> Composio
+    await wizardPage.expectStep(3)
+    await wizardPage.clickSkip() // Composio -> Runtime
+    await wizardPage.expectStep(4)
+    await wizardPage.clickNext() // Runtime -> Privacy
+    await wizardPage.expectStep(5)
+    await wizardPage.clickNext() // Privacy -> Agent
+    await wizardPage.expectStep(6)
+
+    await page.getByRole('button', { name: /Browse Templates/ }).click()
+    const marketplace = page.locator('[data-testid="agent-template-browse-dialog"]')
+    await expect(marketplace).toBeVisible()
+    await marketplace.getByRole('button', { name: /E2E Onboarding Template/ }).click()
+
+    const installDialog = page.getByRole('dialog', { name: 'Install E2E Onboarding Template' })
+    const agentName = `Onboarding Template Agent ${Date.now()}`
+    await installDialog.getByPlaceholder('Agent name').fill(agentName)
+    await installDialog.getByRole('button', { name: 'Install' }).click()
+
+    // Installing a template is a successful completion of the final onboarding
+    // step, just like creating from a prompt or importing a local template.
+    await wizardPage.expectNotVisible()
+    await expect(page.locator('[data-testid="app-sidebar"]')).toBeVisible()
+    await expect(page.getByText(agentName, { exact: true }).first()).toBeVisible()
+
+    const response = await request.get('/api/user-settings')
+    const settings = await response.json()
+    expect(settings.setupCompleted).toBe(true)
+    expect(settings.onboardingProgress).toBeNull()
+  })
+
   test('sets setupCompleted after finishing', async ({ request }) => {
     await request.put('/api/user-settings', {
       data: { setupCompleted: false },
