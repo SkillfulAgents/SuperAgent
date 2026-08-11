@@ -8,8 +8,8 @@ import { Hono } from 'hono'
 const state = vi.hoisted(() => ({
   providerId: 'anthropic',
   configured: true,
-  agentModel: 'opus',
-  resolvedModel: 'claude-opus-5',
+  browserModel: 'sonnet',
+  resolvedModel: 'claude-sonnet-5',
   resolveModel: vi.fn(),
 }))
 
@@ -37,7 +37,7 @@ vi.mock('@shared/lib/llm-provider', () => ({
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: () => ({ agentModel: state.agentModel }),
+  getEffectiveModels: () => ({ browserModel: state.browserModel }),
 }))
 
 import llm from './llm'
@@ -74,8 +74,8 @@ describe('LLM proxy endpoint', () => {
     vi.clearAllMocks()
     state.providerId = 'anthropic'
     state.configured = true
-    state.agentModel = 'opus'
-    state.resolvedModel = 'claude-opus-5'
+    state.browserModel = 'sonnet'
+    state.resolvedModel = 'claude-sonnet-5'
   })
 
   describe('GET /api/llm/config', () => {
@@ -85,18 +85,18 @@ describe('LLM proxy endpoint', () => {
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.configured).toBe(true)
-      expect(body.defaultModel).toBe('claude-opus-5')
+      expect(body.defaultModel).toBe('claude-sonnet-5')
       expect(body.provider).toBe('anthropic')
-      expect(state.resolveModel).toHaveBeenCalledWith('opus', 'agent')
+      expect(state.resolveModel).toHaveBeenCalledWith('sonnet', 'browser')
     })
 
     it.each([
       ['platform', 'grok', 'grok-4.5'],
       ['bedrock', 'sonnet', 'us.anthropic.claude-sonnet-5'],
       ['generic', 'custom/qwen3', 'custom/qwen3'],
-    ])('returns the resolved %s catalog default', async (providerId, agentModel, resolvedModel) => {
+    ])('returns the resolved %s catalog default', async (providerId, browserModel, resolvedModel) => {
       state.providerId = providerId
-      state.agentModel = agentModel
+      state.browserModel = browserModel
       state.resolvedModel = resolvedModel
 
       const res = await get(createApp(), '/api/llm/config')
@@ -106,7 +106,7 @@ describe('LLM proxy endpoint', () => {
         provider: providerId,
         defaultModel: resolvedModel,
       })
-      expect(state.resolveModel).toHaveBeenCalledWith(agentModel, 'agent')
+      expect(state.resolveModel).toHaveBeenCalledWith(browserModel, 'browser')
     })
   })
 
@@ -130,17 +130,17 @@ describe('LLM proxy endpoint', () => {
       expect(body.content[0].text).toBe('Hello!')
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'claude-opus-5',
+          model: 'claude-sonnet-5',
           messages: [{ role: 'user', content: 'hi' }],
           max_tokens: 100,
         }),
       )
-      expect(state.resolveModel).toHaveBeenCalledWith('opus', 'agent')
+      expect(state.resolveModel).toHaveBeenCalledWith('sonnet', 'browser')
     })
 
     it('uses the resolved Generic catalog default when model is omitted', async () => {
       state.providerId = 'generic'
-      state.agentModel = 'custom/qwen3'
+      state.browserModel = 'custom/qwen3'
       state.resolvedModel = 'custom/qwen3'
       mockCreate.mockResolvedValue({ content: [] })
 

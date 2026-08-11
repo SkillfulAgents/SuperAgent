@@ -31,9 +31,14 @@ function checkRateLimit(key: string): boolean {
   return true
 }
 
-/** Resolve the global agent default to the active provider's concrete wire id. */
+/**
+ * Resolve the dashboard-runtime default to the active provider's concrete wire
+ * id. The iframe proxy historically used the Sonnet tier; browserModel is the
+ * existing cross-provider Sonnet-tier setting, so using it preserves that cost
+ * profile without hard-coding a Claude model id.
+ */
 function getDefaultModel(): string {
-  return resolveActiveProviderModel(getEffectiveModels().agentModel, 'agent')
+  return resolveActiveProviderModel(getEffectiveModels().browserModel, 'browser')
 }
 
 // GET /api/llm/config
