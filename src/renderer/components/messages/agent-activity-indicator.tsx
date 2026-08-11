@@ -13,6 +13,7 @@ import { AlertTriangle, ChevronDown, Monitor, X } from 'lucide-react'
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import { deriveTaskList, Todo } from '@shared/lib/utils/derive-task-list'
+import { ActivityOrb, deriveActivityStatus } from './activity-orb'
 
 interface AgentActivityIndicatorProps {
   sessionId: string
@@ -294,15 +295,14 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     return null
   }
 
-  const statusText = isAwaitingInput
-    ? 'Waiting for input...'
-    : isCompacting
-      ? 'Compacting...'
-      : apiRetry
-        ? `Retrying... (attempt ${apiRetry.attempt}${apiRetry.maxRetries ? `/${apiRetry.maxRetries}` : ''})`
-        : isThinking
-          ? 'Thinking...'
-          : (activeItem?.activeForm || 'Working...')
+  // One precedence order drives both the label and the orb's animation.
+  const { statusText, orbState } = deriveActivityStatus({
+    isAwaitingInput,
+    isCompacting,
+    apiRetry,
+    isThinking,
+    activeForm: activeItem?.activeForm ?? null,
+  })
 
   return (
     <div className={cn(
@@ -334,21 +334,12 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
             />
           </button>
         )}
-        {/* Header with pulsing indicator */}
+        {/* Header with the thought orb — its animation is the status cue */}
         <div
           className={cn('flex min-w-0 items-center gap-2', hasExpandableDetails && 'pr-7')}
           data-testid="activity-indicator-header"
         >
-          <span className="relative flex h-3 w-3 shrink-0">
-            <span className={cn(
-              "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
-              (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
-            )}></span>
-            <span className={cn(
-              "relative inline-flex rounded-full h-3 w-3",
-              (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
-            )}></span>
-          </span>
+          <ActivityOrb state={orbState} size={24} />
           <span className="min-w-0 truncate text-sm font-medium">{statusText}</span>
           {computerUseApp && (
             <span className="inline-flex shrink-0 items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
@@ -389,10 +380,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
               <li key={item.id} className="flex flex-col gap-0.5">
                 <div className="flex items-center gap-2">
                   {item.status === 'running' ? (
-                    <span className="relative flex h-2 w-2 shrink-0">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-                    </span>
+                    <ActivityOrb />
                   ) : (
                     <span className="text-xs text-green-500 shrink-0">✓</span>
                   )}
@@ -575,10 +563,7 @@ function BackgroundTasksSection({ tasks }: { tasks: Array<{ taskId: string; star
   return (
     <div className="mt-2 text-sm pl-5">
       <div className="flex items-center gap-2">
-        <span className="relative flex h-2 w-2 shrink-0">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-        </span>
+        <ActivityOrb />
         <span className="text-xs text-muted-foreground">
           {label}
         </span>
