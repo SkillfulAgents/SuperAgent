@@ -205,8 +205,17 @@ export function AgentGraph() {
   // props: routing it through React state rebuilds the node array on every
   // hover, and handing React Flow fresh node objects mid-gesture drops an
   // in-flight connection drag (the drop lands on no handle and silently
-  // creates nothing). Touching only classList means hovering cannot disturb
-  // a gesture — and costs no React render at all.
+  // creates nothing). Writing the mark ourselves means hovering cannot
+  // disturb a gesture — and costs no React render at all.
+  //
+  // The mark is a `data-graph-dimmed` ATTRIBUTE rather than a class, because
+  // className on React Flow's wrappers belongs to React, which folds its own
+  // state into the string (`selected`, `dragging`) and rewrites the whole
+  // attribute when one flips — carrying a hand-added class away with it.
+  // There is no winning that race from an effect: the wrappers subscribe to
+  // React Flow's store directly, and its own store-update cascade lands
+  // after anything we can schedule. React never renders this attribute on
+  // these elements, so it never diffs it and never takes it back.
   const canvasRef = useRef<HTMLDivElement | null>(null)
   const graphEdgesRef = useRef(graph.edges)
   useEffect(() => {
@@ -221,7 +230,7 @@ export function AgentGraph() {
     if (!root) return
     if (!nodeId) {
       root.classList.remove('graph-focusing')
-      for (const el of root.querySelectorAll('.graph-dimmed')) el.classList.remove('graph-dimmed')
+      for (const el of root.querySelectorAll('[data-graph-dimmed]')) el.removeAttribute('data-graph-dimmed')
       return
     }
     // Marks the focused state itself: the surviving connectors thicken, which
@@ -235,25 +244,50 @@ export function AgentGraph() {
       else dimmedEdgeIds.add(e.id)
     }
     for (const el of root.querySelectorAll<HTMLElement>('.react-flow__node')) {
-      el.classList.toggle('graph-dimmed', !neighborhood.has(el.dataset.id ?? ''))
+      el.toggleAttribute('data-graph-dimmed', !neighborhood.has(el.dataset.id ?? ''))
     }
     for (const el of root.querySelectorAll<HTMLElement>('.react-flow__edge')) {
-      el.classList.toggle('graph-dimmed', dimmedEdgeIds.has(el.dataset.id ?? ''))
+      el.toggleAttribute('data-graph-dimmed', dimmedEdgeIds.has(el.dataset.id ?? ''))
     }
     // Count chips render in the edge-label portal, outside their edge's <g>,
     // so they can't inherit its opacity — dim them by the edge they belong to.
     for (const el of root.querySelectorAll<HTMLElement>('[data-edge-id]')) {
-      el.classList.toggle('graph-dimmed', dimmedEdgeIds.has(el.dataset.edgeId ?? ''))
+      el.toggleAttribute('data-graph-dimmed', dimmedEdgeIds.has(el.dataset.edgeId ?? ''))
     }
   }, [])
 
-  const onNodeMouseEnter: NodeMouseHandler<RfNode> = useCallback(
-    (_event, node) => {
-      if (!connectingRef.current) applyFocus(node.id)
+  // What the cursor is on, so the focus can be re-applied to elements that
+  // arrive while it's held, and stood down if that node goes away.
+  const hoveredNodeIdRef = useRef<string | null>(null)
+  const focusOn = useCallback(
+    (nodeId: string | null) => {
+      hoveredNodeIdRef.current = nodeId
+      applyFocus(nodeId)
     },
     [applyFocus],
   )
-  const onNodeMouseLeave: NodeMouseHandler<RfNode> = useCallback(() => applyFocus(null), [applyFocus])
+  const onNodeMouseEnter: NodeMouseHandler<RfNode> = useCallback(
+    (_event, node) => {
+      if (!connectingRef.current) focusOn(node.id)
+    },
+    [focusOn],
+  )
+  const onNodeMouseLeave: NodeMouseHandler<RfNode> = useCallback(() => focusOn(null), [focusOn])
+  // Leaving the canvas outright doesn't have to cross a node on the way out.
+  const onPaneMouseLeave = useCallback(() => focusOn(null), [focusOn])
+
+  // Nodes and edges that appear while the cursor is held on a node are born
+  // unmarked (a topology refresh, or the per-agent fan-out queries still
+  // streaming edges in), so re-apply on every commit. The hovered node can
+  // equally VANISH under a stationary cursor, which fires no mouseleave —
+  // focusing an id nothing matches would fade the whole canvas with nothing
+  // lit, so stand down instead.
+  useEffect(() => {
+    const hoveredId = hoveredNodeIdRef.current
+    if (!hoveredId) return
+    if (nodes.some((n) => n.id === hoveredId)) applyFocus(hoveredId)
+    else focusOn(null)
+  })
 
   // Details view: pin every resource's detail card open (vs. the simple
   // view's hover/select reveal). Persisted as a user preference; the local
@@ -433,12 +467,14 @@ export function AgentGraph() {
   // the real relationship, then the topology refetch draws the edge.
   const onConnectStart: OnConnectStart = useCallback(
     (_event, params) => {
-      // Hand the canvas over to the can-drop fade for the duration of the drag.
+      // Hand the canvas over to the can-drop fade for the duration of the
+      // drag. Clearing the hovered id too, or the commit effect above would
+      // put the focus straight back on the next render.
       connectingRef.current = true
-      applyFocus(null)
+      focusOn(null)
       setConnectingFromId(params.nodeId)
     },
-    [applyFocus],
+    [focusOn],
   )
   const onConnectEnd = useCallback(() => {
     connectingRef.current = false
@@ -638,6 +674,7 @@ export function AgentGraph() {
         onNodeDragStop={schedulePersist}
         onNodeMouseEnter={onNodeMouseEnter}
         onNodeMouseLeave={onNodeMouseLeave}
+        onPaneMouseLeave={onPaneMouseLeave}
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
         onInit={(instance) => {
