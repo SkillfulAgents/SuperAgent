@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified browser-use feature can execute browser navigation tasks and return correct page title information",
+  "steps": [
+    "Navigated to http://localhost:47891 — Application loaded successfully with agent sidebar visible",
+    "Clicked on \"QA-20260811-001714-hlup\" agent in sidebar — Agent page loaded with chat interface ready for input",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully sent and agent started processing (status changed to \"working\")",
+    "Waited for response (up to 3 minutes) — Response received within 11 seconds",
+    "Verified response mentions \"Example Domain\" and captured screenshot — Response clearly states: The page title is \"Example Domain\" — the page has a single H1 with that text, plus a short paragraph noting the domain is for documentation examples, and a \"Learn more\" link. Browser is closed."
+  ],
+  "bugs": [],
+  "durationMs": 67207,
+  "sessionId": "f096832a-5e0d-4a6d-a074-e955240aa977",
+  "cost": {
+    "inputTokens": 320,
+    "outputTokens": 10786,
+    "cacheCreationTokens": 66342,
+    "cacheReadTokens": 861411,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.223319
+  }
+}
