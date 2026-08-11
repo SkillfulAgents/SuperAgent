@@ -17,13 +17,25 @@ import {
   hasVersionSegment,
   resolveModelForProvider,
 } from './model-catalog'
-import { resolveActiveProviderModel } from './index'
+import { getAllProviderInfo, getLlmProvider, resolveActiveProviderModel } from './index'
 
 beforeEach(() => {
   settingsMock.mockReturnValue({ llmProvider: 'anthropic' })
 })
 
 describe('getProviderCatalog', () => {
+  it('exposes provider-owned onboarding options and uses Grok as the Platform agent fallback', () => {
+    const platform = getAllProviderInfo().find((provider) => provider.id === 'platform')!
+
+    expect(platform.defaultModelOptions.map((option) => option.model)).toEqual([
+      'opus',
+      'gpt',
+      'grok',
+    ])
+    expect(platform.defaultModels.agent).toBe('grok')
+    expect(getLlmProvider('platform').getDefaultModel('agent')).toBe('grok')
+  })
+
   it('declares one concrete picker default for every built-in model vendor', () => {
     const defaultsByIcon = (providerId: 'anthropic' | 'bedrock' | 'openrouter' | 'platform') =>
       getProviderCatalog(providerId)
@@ -522,7 +534,7 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')
     expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.5')
     expect(resolveModelForProvider('grok-4.5', 'platform', 'agent')).toBe('grok-4.5')
-    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('claude-opus-5')
+    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('grok-4.5')
   })
 
   it('resolves the SAME bare alias to each provider concrete id (cross-provider portability)', () => {

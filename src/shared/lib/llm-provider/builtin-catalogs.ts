@@ -1,4 +1,5 @@
 import type { EffortLevel, SpeedLevel } from '../container/types'
+import type { ProviderDefaultModelOption } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
 import { GPT_TOOL_USE_PROMPT_HINTS, GROK_BROWSER_TOOL_PROMPT_HINTS } from './model-prompt-hints'
 import { pricingFor } from './model-pricing-lookup'
@@ -76,6 +77,51 @@ const GPT_LONG_CONTEXT_CLIFF = {
 } as const
 
 const ICON = 'anthropic'
+
+/** Default-model shortlist for providers whose onboarding catalog is Claude-only. */
+export const CLAUDE_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[] = [
+  {
+    model: 'opus',
+    label: 'Opus',
+    tag: 'Most capable',
+    description: 'Best for complex, multi-step tasks.',
+    subdescription: 'Slower, and uses 5x more credits than Sonnet.',
+  },
+  {
+    model: 'sonnet',
+    label: 'Sonnet',
+    tag: 'Fast & efficient',
+    description: 'Best for everyday tasks and most agent work.',
+    subdescription: 'Far lower credit cost than Opus.',
+  },
+]
+
+/** Platform-specific default-model shortlist. The provider default is Grok. */
+export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[] = [
+  {
+    model: 'opus',
+    label: 'Opus',
+    tag: 'Deep reasoning',
+    description: 'Best for complex, multi-step tasks.',
+    subdescription: 'A premium choice for the hardest agent work.',
+  },
+  {
+    model: 'gpt',
+    label: 'GPT',
+    resolveLabelFromCatalog: true,
+    tag: 'OpenAI flagship',
+    description: 'Strong all-around reasoning and tool use.',
+    subdescription: 'A versatile choice for demanding agent work.',
+  },
+  {
+    model: 'grok',
+    label: 'Grok',
+    resolveLabelFromCatalog: true,
+    tag: 'Recommended',
+    description: 'Fast, capable, and efficient for everyday agent work.',
+    subdescription: 'The default model for Gamut Platform.',
+  },
+]
 
 /** Anthropic / OpenRouter / Platform — bare Claude ids. */
 export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [

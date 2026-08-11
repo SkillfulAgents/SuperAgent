@@ -24,6 +24,7 @@ function makeState(overrides: Partial<ComposerOptionsState>): ComposerOptionsSta
     model: 'claude-sonnet-4-6',
     setModel: vi.fn(),
     catalog: CATALOG,
+    defaultModel: 'sonnet',
     toRuntimeOptions: () => ({}),
     ...overrides,
   }

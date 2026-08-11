@@ -1,7 +1,7 @@
 export { BaseLlmProvider } from './base-llm-provider'
 export { LLM_PROVIDER_IDS } from './provider-types'
 export type { LlmProviderId } from './provider-types'
-export type { ModelPurpose } from './base-llm-provider'
+export type { ModelPurpose, ProviderDefaultModelOption } from './base-llm-provider'
 export { AnthropicLlmProvider } from './anthropic-provider'
 export { OpenRouterLlmProvider } from './openrouter-provider'
 export { BedrockLlmProvider } from './bedrock-provider'
@@ -33,7 +33,7 @@ export {
 } from './model-catalog'
 
 import type { LlmProviderId } from './provider-types'
-import type { ModelPurpose } from './base-llm-provider'
+import type { ModelPurpose, ProviderDefaultModelOption } from './base-llm-provider'
 import { BaseLlmProvider } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
 import { getEffectiveCatalog, getProviderCatalog, resolveModelForProvider } from './model-catalog'
@@ -92,6 +92,8 @@ export interface LlmProviderInfo {
   builtinCatalog?: ModelDefinition[]
   /** Per-purpose default selections (bare aliases). */
   defaultModels: ProviderDefaultModels
+  /** Curated default-model choices and provider-specific onboarding copy. */
+  defaultModelOptions: readonly ProviderDefaultModelOption[]
   capabilities: {
     modelSearch: boolean
   }
@@ -114,6 +116,7 @@ export function getAllProviderInfo(): LlmProviderInfo[] {
     catalog: getEffectiveCatalog(p.id),
     builtinCatalog: getProviderCatalog(p.id),
     defaultModels: defaultModelsFor(p),
+    defaultModelOptions: p.defaultModelOptions,
     capabilities: {
       modelSearch: p.supportsModelSearch,
     },

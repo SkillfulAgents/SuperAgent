@@ -46,9 +46,6 @@ import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
  */
 const HANDOFF_TEMPLATE_WAIT_MS = 10000
 
-/** The create flow's own default — no agent exists yet to supply one. */
-const DEFAULT_MODEL = 'opus'
-
 export interface CreateAgentFormProps {
   /** Fires after an agent is successfully created (via any path). Parent uses this to close the overlay/wizard. */
   onAgentCreated?: () => Promise<void> | void
@@ -125,12 +122,9 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
     () => (handoffModel ? findCatalogModel(handoffModel, catalog)?.id : undefined),
     [handoffModel, catalog],
   )
-  const composerOptions = useComposerOptions({
-    initialModel: handoffSeedModel,
-    // No agent exists yet, so there are no per-agent defaults to fall back to;
-    // this pins the create flow's own default above the app-wide one.
-    agentDefaultModel: DEFAULT_MODEL,
-  })
+  // No agent exists yet to supply a per-agent override. The hook falls back
+  // to the app-wide selection, then the active provider's catalog default.
+  const composerOptions = useComposerOptions({ initialModel: handoffSeedModel })
 
   // Warm-precreated Untitled agent; deleted on abandon unless submit consumes it.
   const warmSlugOwnedRef = useRef<string | null>(null)
@@ -222,7 +216,7 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
               // An untouched model is omitted from the runtime options, but a brand
               // new agent has no stored default for the server to resolve against —
               // always send what the picker is showing.
-              model: composerOptions.model ?? DEFAULT_MODEL,
+              model: composerOptions.model ?? composerOptions.defaultModel,
             })
             return { newAgent, session }
           } catch (error) {

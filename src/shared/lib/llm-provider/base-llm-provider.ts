@@ -1,12 +1,30 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
+import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
 
 export { LLM_PROVIDER_IDS } from './provider-types'
 export type { LlmProviderId } from './provider-types'
 
 export type ModelPurpose = 'agent' | 'summarizer' | 'browser' | 'dashboard'
+
+/**
+ * A curated default-model choice shown during onboarding. The selection may be
+ * a bare family alias (so it rides catalog upgrades) or a concrete model id.
+ * Keeping this on the provider lets each provider offer a different shortlist
+ * and provider-specific copy while the renderer remains catalog-agnostic.
+ */
+export interface ProviderDefaultModelOption {
+  model: string
+  /** Stable fallback label, also used when the option names a model family. */
+  label: string
+  /** Display the currently resolved catalog entry's label when available. */
+  resolveLabelFromCatalog?: boolean
+  tag: string
+  description: string
+  subdescription?: string
+}
 
 /**
  * Identity of the agent a container belongs to, resolved at env-build time.
@@ -23,6 +41,8 @@ export interface AgentIdentity {
 export abstract class BaseLlmProvider {
   abstract readonly id: LlmProviderId
   abstract readonly name: string
+  abstract readonly defaultModelOptions: readonly ProviderDefaultModelOption[]
+  abstract readonly catalogDefaultModels: CatalogDefaultModels
 
   /** Which field in ApiKeySettings stores this provider's key. */
   protected abstract readonly settingsKeyField: keyof ApiKeySettings
@@ -69,7 +89,14 @@ export abstract class BaseLlmProvider {
    * this to a concrete id; it is the ultimate fallback when a selection
    * can't be matched.
    */
-  abstract getDefaultModel(purpose: ModelPurpose): string
+  getDefaultModel(purpose: ModelPurpose): string {
+    switch (purpose) {
+      case 'summarizer': return this.catalogDefaultModels.summarizerModel
+      case 'agent': return this.catalogDefaultModels.agentModel
+      case 'browser': return this.catalogDefaultModels.browserModel
+      case 'dashboard': return this.catalogDefaultModels.dashboardBuilderModel
+    }
+  }
 
   /**
    * All three per-purpose defaults as bare aliases, keyed to match the

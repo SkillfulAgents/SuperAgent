@@ -5,6 +5,14 @@ import { Hono } from 'hono'
 // Mock dependencies
 // ---------------------------------------------------------------------------
 
+const state = vi.hoisted(() => ({
+  providerId: 'anthropic',
+  configured: true,
+  browserModel: 'sonnet',
+  resolvedModel: 'claude-sonnet-5',
+  resolveModel: vi.fn(),
+}))
+
 const mockCreate = vi.fn()
 
 vi.mock('../middleware/auth', () => ({
@@ -19,9 +27,17 @@ vi.mock('@shared/lib/llm-provider/helpers', () => ({
 
 vi.mock('@shared/lib/llm-provider', () => ({
   getActiveLlmProvider: () => ({
-    id: 'anthropic',
-    getApiKeyStatus: () => ({ isConfigured: true }),
+    id: state.providerId,
+    getApiKeyStatus: () => ({ isConfigured: state.configured }),
   }),
+  resolveActiveProviderModel: (selection: string, purpose: string) => {
+    state.resolveModel(selection, purpose)
+    return state.resolvedModel
+  },
+}))
+
+vi.mock('@shared/lib/config/settings', () => ({
+  getEffectiveModels: () => ({ browserModel: state.browserModel }),
 }))
 
 import llm from './llm'
@@ -56,6 +72,10 @@ async function get(app: ReturnType<typeof createApp>, path: string) {
 describe('LLM proxy endpoint', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    state.providerId = 'anthropic'
+    state.configured = true
+    state.browserModel = 'sonnet'
+    state.resolvedModel = 'claude-sonnet-5'
   })
 
   describe('GET /api/llm/config', () => {
@@ -67,6 +87,26 @@ describe('LLM proxy endpoint', () => {
       expect(body.configured).toBe(true)
       expect(body.defaultModel).toBe('claude-sonnet-5')
       expect(body.provider).toBe('anthropic')
+      expect(state.resolveModel).toHaveBeenCalledWith('sonnet', 'browser')
+    })
+
+    it.each([
+      ['platform', 'grok', 'grok-4.5'],
+      ['bedrock', 'sonnet', 'us.anthropic.claude-sonnet-5'],
+      ['generic', 'custom/qwen3', 'custom/qwen3'],
+    ])('returns the resolved %s catalog default', async (providerId, browserModel, resolvedModel) => {
+      state.providerId = providerId
+      state.browserModel = browserModel
+      state.resolvedModel = resolvedModel
+
+      const res = await get(createApp(), '/api/llm/config')
+
+      expect(res.status).toBe(200)
+      await expect(res.json()).resolves.toMatchObject({
+        provider: providerId,
+        defaultModel: resolvedModel,
+      })
+      expect(state.resolveModel).toHaveBeenCalledWith(browserModel, 'browser')
     })
   })
 
@@ -94,6 +134,23 @@ describe('LLM proxy endpoint', () => {
           messages: [{ role: 'user', content: 'hi' }],
           max_tokens: 100,
         }),
+      )
+      expect(state.resolveModel).toHaveBeenCalledWith('sonnet', 'browser')
+    })
+
+    it('uses the resolved Generic catalog default when model is omitted', async () => {
+      state.providerId = 'generic'
+      state.browserModel = 'custom/qwen3'
+      state.resolvedModel = 'custom/qwen3'
+      mockCreate.mockResolvedValue({ content: [] })
+
+      await post(createApp(), '/api/llm/v1/messages', {
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 10,
+      })
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'custom/qwen3' }),
       )
     })
 
