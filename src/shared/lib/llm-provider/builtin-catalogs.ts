@@ -397,6 +397,68 @@ export const OPENROUTER_CATALOG: ModelDefinition[] = [
 // Responses hosts web_search but not web_fetch — fetch needs a Settings → Web vendor (Exa).
 const PLATFORM_RESPONSES_WEB = { supportsWebSearch: true, supportsWebFetch: false } as const
 
+/**
+ * Meta's muse-spark family, served via the platform proxy's `meta` upstream.
+ *
+ * Shared traits, all measured against api.meta.ai (2026-08-10) rather than
+ * taken from a spec sheet:
+ *   - no speed tiers, so `supportedSpeeds` is omitted entirely;
+ *   - the proxy strips Anthropic server tools (Meta hosts none), so neither
+ *     search nor fetch runs — web search needs a Settings → Web vendor;
+ *   - image input is accepted;
+ *   - a 1,000,020-token prompt was accepted and 2.1M rejected, so the window
+ *     is somewhere in between. We pin the verified floor rather than guess the
+ *     ceiling: under-stating only makes the app compact earlier than it must.
+ *
+ * The `meta` icon key follows the one-brand-icon-per-vendor convention the
+ * catalog test enforces; the mark lives at `public/model-icons/meta.svg`.
+ */
+const MUSE_SPARK_SHARED = {
+  family: 'muse',
+  icon: 'meta',
+  supportedEfforts: NON_CLAUDE_EFFORTS,
+  supportsWebSearch: false,
+  supportsWebFetch: false,
+  supportsImageInput: true,
+  contextWindow: 1_000_000,
+} as const
+
+/** Standard-tier rates, identical across muse-spark 1.1 and 1.2. */
+const MUSE_SPARK_STANDARD_PRICING = { inputPerMtok: 1.25, outputPerMtok: 4.25 } as const
+
+const MUSE_SPARK_MODELS: ModelDefinition[] = [
+  {
+    ...MUSE_SPARK_SHARED,
+    id: 'muse-spark-1.1',
+    label: 'Muse Spark 1.1',
+    blurb: 'Meta, served via Platform',
+    pricing: MUSE_SPARK_STANDARD_PRICING,
+  },
+  {
+    // Bare id matches the platform proxy's muse-spark-* → meta route.
+    ...MUSE_SPARK_SHARED,
+    id: 'muse-spark-1.2',
+    label: 'Muse Spark 1.2',
+    blurb: 'Meta flagship, served via Platform',
+    isLatest: true,
+    isDefault: true,
+    pricing: MUSE_SPARK_STANDARD_PRICING,
+  },
+  {
+    // Meta's discounted tier, ~12x cheaper in exchange for data use: Meta uses
+    // Contributor prompts and outputs to improve its products, and has not
+    // clarified whether that is training-only. Anything touching customer
+    // data, PII, or secrets belongs on the standard tier above — which is what
+    // `dataUsedForProductImprovement` puts in front of the user at pick time.
+    ...MUSE_SPARK_SHARED,
+    id: 'muse-spark-1.2-contributor',
+    label: 'Muse Spark 1.2c',
+    blurb: 'Meta contributor tier, served via Platform',
+    pricing: { inputPerMtok: 0.1, outputPerMtok: 0.2 },
+    dataUsedForProductImprovement: true,
+  },
+]
+
 const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   {
     id: 'gpt-5.4',
@@ -520,6 +582,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     contextWindow: 1_048_576,
     supportsImageInput: true,
   },
+  ...MUSE_SPARK_MODELS,
 ]
 
 /** Platform — bare Claude models plus the GPT/Grok models the proxy serves. */
