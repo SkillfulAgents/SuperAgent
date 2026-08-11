@@ -35,6 +35,8 @@ export interface AgentCreationAidsProps {
   className?: string
   /** Fires when the user opens browse / voice / import (forfeits signup template handoff). */
   onAidOpened?: () => void
+  /** Called after a marketplace template has been installed and opened. */
+  onTemplateInstalled?: () => void | Promise<void>
 }
 
 /**
@@ -43,7 +45,13 @@ export interface AgentCreationAidsProps {
  * home state. Callers decide what to do with the voice result / imported
  * agent — this component is pure UI + dialog plumbing.
  */
-export function AgentCreationAids({ onVoiceResult, onImportComplete, className, onAidOpened }: AgentCreationAidsProps) {
+export function AgentCreationAids({
+  onVoiceResult,
+  onImportComplete,
+  className,
+  onAidOpened,
+  onTemplateInstalled,
+}: AgentCreationAidsProps) {
   const hasVoiceConfigured = useIsVoiceAgentConfigured()
   const { data: discoverableAgents } = useDiscoverableAgents()
   const hasMarketplace = !!(discoverableAgents && discoverableAgents.length > 0)
@@ -207,7 +215,11 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className, 
         />
       </div>
 
-      <AgentTemplateBrowseDialog open={showTemplatesDialog} onOpenChange={setShowTemplatesDialog} />
+      <AgentTemplateBrowseDialog
+        open={showTemplatesDialog}
+        onOpenChange={setShowTemplatesDialog}
+        onInstalled={onTemplateInstalled}
+      />
 
       <Dialog open={showVoiceAgent} onOpenChange={(open) => { if (!open) closeVoiceAgent() }}>
         <DialogContent className="max-w-2xl p-0 overflow-hidden h-[420px] [grid-template-rows:minmax(0,1fr)] gap-0">
@@ -370,4 +382,3 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className, 
     </div>
   )
 }
-

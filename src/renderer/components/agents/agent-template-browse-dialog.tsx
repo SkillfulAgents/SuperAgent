@@ -18,11 +18,14 @@ import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
 interface AgentTemplateBrowseDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** Fires after the selected template has been installed and opened. */
+  onInstalled?: () => void | Promise<void>
 }
 
 export function AgentTemplateBrowseDialog({
   open,
   onOpenChange,
+  onInstalled,
 }: AgentTemplateBrowseDialogProps) {
   const { data: discoverableAgents } = useDiscoverableAgents()
   const navigate = useNavigate()
@@ -44,8 +47,9 @@ export function AgentTemplateBrowseDialog({
         await startOnboardingSession(agent.slug)
       }
       onOpenChange(false)
+      await onInstalled?.()
     },
-    [track, queryClient, navigate, startOnboardingSession, onOpenChange],
+    [track, queryClient, navigate, startOnboardingSession, onOpenChange, onInstalled],
   )
 
   const hasTemplates = discoverableAgents && discoverableAgents.length > 0
