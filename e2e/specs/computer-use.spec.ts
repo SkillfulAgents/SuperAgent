@@ -56,12 +56,12 @@ test.describe('Computer Use requests', () => {
     // turn must wipe it, or the stale entry reads as a live wait.)
     await sessionPage.sendMessage('carry on without the computer')
     await sessionPage.waitForInputEnabled(15000)
-    await sessionPage.expectAssistantMessage('This is a mock response from the E2E test container.', 1, 15000)
+    await sessionPage.expectAssistantMessage('This is a mock response from the E2E test container.', 0, 15000)
 
     // Reload: the /stream replay must NOT resurrect the abandoned approval
     // card, and the agent must read idle — not needing input.
     await page.reload()
-    await sessionPage.expectAssistantMessage('This is a mock response from the E2E test container.', 1, 15000)
+    await sessionPage.expectAssistantMessage('This is a mock response from the E2E test container.', 0, 15000)
     await expect(sessionPage.getComputerUseRequests()).toHaveCount(0)
     await agentPage.waitForStatus('idle', 15000)
   })
