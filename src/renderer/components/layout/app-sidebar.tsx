@@ -844,10 +844,9 @@ export function AppSidebar() {
       {/*
         The sidebar's title bar: one 48px row holding everything that acts on the
         window rather than on an agent — where agents run, history, search — and,
-        on macOS, the traffic lights it leaves room for. There is no app name
-        here on purpose: it named the window in a window that is already named,
-        and its row was the only thing standing between the traffic lights and
-        the controls.
+        on macOS, the traffic lights it leaves room for. The browser restores the
+        app name in the space left by the Electron-only target and history
+        controls.
 
         The left padding (not the height) is what changes on a fullscreen
         toggle, so the row itself never moves and only the traffic-light gap
@@ -861,6 +860,10 @@ export function AppSidebar() {
             expands it in place, which pushes the buttons after it past the right
             edge rather than squeezing them. */}
         <div className="flex items-center h-12 px-2 gap-1 overflow-hidden">
+          {__WEB__ && (
+            <span className="shrink-0 select-none text-base font-medium">Gamut</span>
+          )}
+
           {isWindowsElectron && (
             <button
               className="app-no-drag shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
