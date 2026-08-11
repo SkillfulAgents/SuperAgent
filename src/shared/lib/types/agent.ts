@@ -155,6 +155,8 @@ export interface JsonlMessageEntry {
     usage?: {
       input_tokens: number
       output_tokens: number
+      cache_creation_input_tokens?: number
+      cache_read_input_tokens?: number
     }
   }
   // Tool result specific fields (present when type is 'user' with tool_result content)

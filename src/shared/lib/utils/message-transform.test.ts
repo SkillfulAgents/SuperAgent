@@ -313,6 +313,40 @@ describe('transformMessages', () => {
       expect(asMessage(result[1]).content.text).toBe('Second')
     })
 
+    it('preserves the highest usage snapshot for a merged provider response', () => {
+      const first = createAssistantMessage(
+        'uuid-1',
+        'msg-shared',
+        [{ type: 'text', text: 'Working' }]
+      )
+      first.message.usage = {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 30,
+      }
+      const final = createAssistantMessage(
+        'uuid-2',
+        'msg-shared',
+        [{ type: 'text', text: ' done' }]
+      )
+      final.message.usage = {
+        input_tokens: 10,
+        output_tokens: 15,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 30,
+      }
+
+      const result = transformMessages([first, final])
+
+      expect(asMessage(result[0]).usage).toEqual({
+        inputTokens: 10,
+        outputTokens: 15,
+        cacheCreationInputTokens: 20,
+        cacheReadInputTokens: 30,
+      })
+    })
+
     it('handles three-way merge (text + tool_use + more text)', () => {
       const entries: JsonlMessageEntry[] = [
         createAssistantMessage('uuid-1', 'msg-shared', [{ type: 'text', text: 'Starting. ' }]),

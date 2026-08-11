@@ -167,6 +167,13 @@ export interface ApiMessage {
    * timestamps and absent when underivable.
    */
   thinking?: Array<{ id?: string; text: string; durationMs?: number }>
+  /** Per-model-response token usage preserved from the session transcript. */
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheCreationInputTokens: number
+    cacheReadInputTokens: number
+  }
 }
 
 /**

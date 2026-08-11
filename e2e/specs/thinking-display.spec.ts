@@ -51,6 +51,7 @@ test.describe('Thinking Display', () => {
     // the refetched message) with no duplication, collapsed to a summary header.
     await sessionPage.waitForInputEnabled(30000)
     await expect(page.getByText('Done thinking — here is the answer.')).toBeVisible({ timeout: 10000 })
+    await page.getByTestId('turn-summary').last().click()
     await expect(page.getByTestId('thinking-block')).toHaveCount(1, { timeout: 15000 })
     await expect(toggle).toContainText('Thought for', { timeout: 10000 })
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
@@ -115,6 +116,7 @@ test.describe('Thinking Display', () => {
     // The CLI appends the interrupt marker as a user message ending the turn
     const marker = sessionPage.getUserMessages().filter({ hasText: '[Request interrupted by user]' })
     await expect(marker).toBeVisible({ timeout: 10000 })
+    await page.getByTestId('turn-summary').last().click()
 
     // The persisted passes stay inline above the marker...
     await expect(page.getByTestId('thinking-block').first()).toBeVisible()
@@ -144,6 +146,7 @@ test.describe('Thinking Display', () => {
     await appPage.waitForAgentsLoaded()
     await openAgentSession(page, agent, setupSession)
     await sessionPage.waitForInputEnabled(15000)
+    await page.getByTestId('turn-summary').last().click()
 
     const card = page.getByTestId('thinking-block').last()
     const toggle = card.getByTestId('thinking-block-toggle')

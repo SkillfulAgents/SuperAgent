@@ -123,6 +123,12 @@ vi.mock('./subagent-block', () => ({
   SubAgentBlock: ({ toolCall }: any) => <div data-testid="subagent-block">{toolCall.name}</div>,
 }))
 
+vi.mock('./informational-item', () => ({
+  InformationalItem: ({ item }: any) => (
+    <div data-testid="informational-item">{item.content}</div>
+  ),
+}))
+
 vi.mock('./message-context-menu', () => ({
   MessageContextMenu: ({ children }: any) => <>{children}</>,
 }))
@@ -316,7 +322,7 @@ describe('MessageList', () => {
 
   // Pending-request derivation/rendering is covered by use-pending-requests.test.tsx.
 
-  it('shows turn elapsed times for completed turns', () => {
+  it('does not show a disclosure row for completed turns with only text', () => {
     const userMsg = createUserMessage({
       content: { text: 'Hello' },
       createdAt: new Date('2025-01-01T00:00:00Z'),
@@ -340,10 +346,243 @@ describe('MessageList', () => {
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
 
-    // First turn: 60s
-    expect(screen.getByText('Worked for 60s')).toBeInTheDocument()
-    // Second turn not shown (session is active=false so it should be shown)
+    expect(screen.queryByTestId('turn-summary')).not.toBeInTheDocument()
+    expect(screen.getByText('Response')).toBeInTheDocument()
+    expect(screen.getByText('Second response')).toBeInTheDocument()
+  })
+
+  it('collapses completed turn work and keeps the final text visible', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Build it' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'I am inspecting the project.' },
+        createdAt: new Date('2025-01-01T00:00:10Z'),
+        toolCalls: [createToolCall({ name: 'Bash' })],
+        usage: {
+          inputTokens: 60,
+          outputTokens: 20,
+          cacheCreationInputTokens: 50,
+          cacheReadInputTokens: 0,
+        },
+      }),
+      createAssistantMessage({
+        content: { text: 'Implemented the change.' },
+        createdAt: new Date('2025-01-01T00:00:30Z'),
+        toolCalls: [createToolCall({ name: 'Read' })],
+        usage: {
+          inputTokens: 200,
+          outputTokens: 30,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+        },
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('Implemented the change.')).toBeInTheDocument()
+    expect(screen.queryByText('I am inspecting the project.')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Bash')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Read')).not.toBeInTheDocument()
     expect(screen.getByText('Worked for 30s')).toBeInTheDocument()
+    expect(screen.getByText('2 tool calls')).toBeInTheDocument()
+    // Uses the same raw-field sum as the session usage popup. In the first
+    // response inputTokens already covers the cache subset, but billed usage
+    // still reports both fields: 60 + 20 + 50 + 200 + 30 = 360.
+    expect(screen.getByText('360 tokens')).toBeInTheDocument()
+
+    const summary = screen.getByTestId('turn-summary')
+    expect(summary).toHaveAccessibleName('Expand completed turn work')
+    fireEvent.click(summary)
+
+    expect(screen.getByText('I am inspecting the project.')).toBeInTheDocument()
+    expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
+    expect(screen.getByTestId('tool-call-Read')).toBeInTheDocument()
+    expect(screen.getByTestId('turn-summary')).toHaveAttribute('aria-expanded', 'true')
+    expect(summary).toHaveAccessibleName('Collapse completed turn work')
+    expect(screen.getByTestId('turn-work-detail')).toHaveClass(
+      'animate-in',
+      'fade-in-0',
+      'slide-in-from-top-2',
+    )
+    expect(screen.getByTestId('tool-call-Read').closest('.animate-in')).toHaveClass(
+      'fade-in-0',
+      'slide-in-from-top-2',
+    )
+  })
+
+  it('splits completed work around queued steering messages', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Start the slow work' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Working through the task.' },
+        createdAt: new Date('2025-01-01T00:00:05Z'),
+        toolCalls: [createToolCall({ name: 'Bash' })],
+      }),
+      createAssistantMessage({
+        content: { text: 'Finished the slow work.' },
+        createdAt: new Date('2025-01-01T00:00:10Z'),
+      }),
+      createUserMessage({
+        content: { text: 'late instruction' },
+        queued: true,
+        createdAt: new Date('2025-01-01T00:00:11Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Adapting the work.' },
+        createdAt: new Date('2025-01-01T00:00:15Z'),
+        toolCalls: [createToolCall({ name: 'Read' })],
+      }),
+      createAssistantMessage({
+        content: { text: 'Adjusting based on: late instruction' },
+        createdAt: new Date('2025-01-01T00:00:20Z'),
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('Finished the slow work.')).toBeInTheDocument()
+    expect(screen.getByText('Adjusting based on: late instruction')).toBeInTheDocument()
+    expect(screen.queryByText('Working through the task.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Adapting the work.')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Bash')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Read')).not.toBeInTheDocument()
+
+    const summaries = screen.getAllByTestId('turn-summary')
+    expect(summaries).toHaveLength(2)
+    expect(summaries[0]).toHaveTextContent('Worked for 10s')
+    expect(summaries[1]).toHaveTextContent('Worked for 9s')
+
+    const transcript = screen.getByTestId('message-list').textContent ?? ''
+    expect(transcript.indexOf('Start the slow work')).toBeLessThan(
+      transcript.indexOf('Worked for 10s'),
+    )
+    expect(transcript.indexOf('Worked for 10s')).toBeLessThan(
+      transcript.indexOf('late instruction'),
+    )
+    expect(transcript.indexOf('late instruction')).toBeLessThan(
+      transcript.indexOf('Worked for 9s'),
+    )
+    expect(transcript.indexOf('Worked for 9s')).toBeLessThan(
+      transcript.indexOf('Adjusting based on: late instruction'),
+    )
+  })
+
+  it('keeps structural notices visible inside a collapsed turn', () => {
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Do the work' } }),
+      createAssistantMessage({
+        content: { text: 'Hidden intermediate work.' },
+        toolCalls: [createToolCall({ name: 'Bash' })],
+      }),
+      {
+        id: 'notice-1',
+        type: 'informational',
+        content: 'A mid-turn agent notice.',
+        createdAt: new Date('2025-01-01T00:00:02Z'),
+      },
+      createAssistantMessage({ content: { text: 'Final answer.' } }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('A mid-turn agent notice.')).toBeInTheDocument()
+    expect(screen.getByText('Final answer.')).toBeInTheDocument()
+    expect(screen.queryByText('Hidden intermediate work.')).not.toBeInTheDocument()
+  })
+
+  it('keeps a cancelled terminal tool call visible without an empty disclosure row', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Sign me in' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'This step needs you.' },
+        createdAt: new Date('2025-01-01T00:00:30Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__request_browser_input',
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('This step needs you.')).toBeInTheDocument()
+    expect(
+      screen.getByTestId('tool-call-mcp__user-input__request_browser_input'),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId('turn-summary')).not.toBeInTheDocument()
+  })
+
+  it('keeps only terminal user-input calls visible when parallel calls complete out of order', () => {
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Finish the workflow' } }),
+      createAssistantMessage({
+        content: { text: 'Doing the hidden setup.' },
+        toolCalls: [createToolCall({ name: 'Bash' })],
+      }),
+      createAssistantMessage({
+        content: { text: 'This step needs you.' },
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__request_browser_input',
+            result: undefined,
+          }),
+          createToolCall({ name: 'Read' }),
+        ],
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('This step needs you.')).toBeInTheDocument()
+    expect(
+      screen.getByTestId('tool-call-mcp__user-input__request_browser_input'),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Read')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Bash')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('turn-summary'))
+    expect(screen.getByTestId('tool-call-Read')).toBeInTheDocument()
+    expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
+    expect(screen.getByTestId('tool-call-Read').closest('.animate-in')).toHaveClass(
+      'fade-in-0',
+      'slide-in-from-top-2',
+    )
+    expect(
+      screen
+        .getByTestId('tool-call-mcp__user-input__request_browser_input')
+        .closest('.animate-in'),
+    ).toBeNull()
+  })
+
+  it('leaves the current streaming turn fully expanded', () => {
+    mockStreamState.isActive = true
+    mockStreamState.isStreaming = true
+    mockStreamState.streamingMessage = 'Writing the final response...'
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Build it' } }),
+      createAssistantMessage({
+        content: { text: 'Inspecting first.' },
+        toolCalls: [createToolCall({ name: 'Bash' })],
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('Inspecting first.')).toBeInTheDocument()
+    expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
+    expect(screen.getByText('Writing the final response...')).toBeInTheDocument()
+    expect(screen.queryByTestId('turn-summary')).not.toBeInTheDocument()
   })
 
   it('detects running tool calls only for trailing assistant messages when active', () => {
@@ -628,7 +867,10 @@ describe('MessageList', () => {
       createUserMessage({ content: { text: 'Start' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
       createAssistantMessage({ content: { text: 'Searching' }, createdAt: new Date('2025-01-01T00:00:09Z') }),
       createUserMessage({ content: { text: 'Steer' }, createdAt: new Date('2025-01-01T00:00:10Z'), queued: true }),
-      createAssistantMessage({ content: { text: 'Continuing' }, createdAt: new Date('2025-01-01T00:00:20Z') }),
+      createAssistantMessage({
+        content: { text: 'Continuing' },
+        createdAt: new Date('2025-01-01T00:00:20Z'),
+      }),
     ]
 
     renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
@@ -636,20 +878,25 @@ describe('MessageList', () => {
     expect(screen.queryByText(/Worked for/)).not.toBeInTheDocument()
   })
 
-  it('attributes the whole turn duration across steering segments once idle', () => {
+  it('attributes elapsed time to the steered work phase once idle', () => {
     mockStreamState.isActive = false
     mockMessagesData.data = [
       createUserMessage({ content: { text: 'Start' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
       createAssistantMessage({ content: { text: 'Searching' }, createdAt: new Date('2025-01-01T00:00:09Z') }),
       createUserMessage({ content: { text: 'Steer' }, createdAt: new Date('2025-01-01T00:00:10Z'), queued: true }),
-      createAssistantMessage({ content: { text: 'Continuing' }, createdAt: new Date('2025-01-01T00:00:20Z') }),
+      createAssistantMessage({
+        content: { text: 'Continuing' },
+        createdAt: new Date('2025-01-01T00:00:20Z'),
+        thinking: [{ text: 'Hidden reasoning' }],
+      }),
     ]
 
     renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
 
-    // One elapsed entry, from the turn-starting message to the final assistant message
-    expect(screen.getByText('Worked for 20s')).toBeInTheDocument()
-    expect(screen.queryByText('Worked for 9s')).not.toBeInTheDocument()
+    // The queued message starts a visual work phase without becoming a new
+    // agent turn. Its elapsed time starts at the steering message.
+    expect(screen.getByText('Worked for 10s')).toBeInTheDocument()
+    expect(screen.queryByText('Worked for 20s')).not.toBeInTheDocument()
   })
 
   it('keeps tools running when a persisted queued message follows them', () => {
@@ -1111,6 +1358,11 @@ describe('MessageList', () => {
       createAssistantMessage({
         content: { text: 'Response' },
         createdAt: new Date('2025-01-01T00:01:00Z'),
+        thinking: [{ text: 'Hidden reasoning' }],
+        toolCalls: [
+          createToolCall({ name: 'Bash' }),
+          createToolCall({ name: 'Read' }),
+        ],
       }),
     ]
 
@@ -1139,7 +1391,9 @@ describe('MessageList', () => {
       createAssistantMessage({
         content: { text: 'Done' },
         createdAt: new Date('2025-01-01T00:01:00Z'),
+        thinking: [{ text: 'Hidden reasoning' }],
         toolCalls: [
+          createToolCall({ name: 'Read' }),
           createToolCall({
             name: 'mcp__user-input__deliver_file',
             input: { filePath: '/workspace/result.csv' },
@@ -1185,7 +1439,9 @@ describe('MessageList', () => {
       createAssistantMessage({
         content: { text: 'Done' },
         createdAt: new Date('2025-01-01T00:01:00Z'),
+        thinking: [{ text: 'Hidden reasoning' }],
         toolCalls: [
+          createToolCall({ name: 'Read' }),
           createToolCall({
             name: 'mcp__user-input__deliver_file',
             input: { filePath: '/workspace/output.csv' },
@@ -1253,6 +1509,11 @@ describe('MessageList', () => {
       createAssistantMessage({
         content: { text: 'First response' },
         createdAt: new Date('2025-01-01T00:01:00Z'),
+        thinking: [{ text: 'Hidden reasoning' }],
+        toolCalls: [
+          createToolCall({ name: 'Bash' }),
+          createToolCall({ name: 'Read' }),
+        ],
       }),
       createUserMessage({
         content: { text: 'Follow up' },
@@ -1282,6 +1543,7 @@ describe('MessageList', () => {
       createAssistantMessage({
         content: { text: 'Partial response' },
         createdAt: new Date('2025-01-01T00:01:00Z'),
+        toolCalls: [createToolCall({ name: 'Read' })],
       }),
       // No user message after — streaming is same turn
     ]
@@ -1293,10 +1555,16 @@ describe('MessageList', () => {
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
 
-    // Elapsed is deferred (after streaming), not inline
+    // A divergent live buffer may be stale. Keep the latest persisted response
+    // visible, while its ordinary tool work stays in the disclosure.
     expect(screen.getByText('Worked for 60s')).toBeInTheDocument()
     const allText = container.textContent || ''
-    expect(allText.indexOf('Still going...')).toBeLessThan(allText.indexOf('Worked for 60s'))
+    expect(allText.indexOf('Worked for 60s')).toBeLessThan(
+      allText.indexOf('Partial response'),
+    )
+    expect(allText.indexOf('Partial response')).toBeLessThan(allText.indexOf('Still going...'))
+    expect(screen.getByText('Partial response')).toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Read')).not.toBeInTheDocument()
   })
 
   // ---- Shows loading spinner only when no pending message ----
@@ -2196,7 +2464,10 @@ describe('MessageList', () => {
       mockStreamState.thinkingBlocks = [liveBlock('Let me check')]
 
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-      // Old turn's persisted card + the new turn's live card
+      // The old completed turn is collapsed, while the new turn's live card
+      // remains visible and must not be falsely de-duplicated.
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
+      fireEvent.click(screen.getByTestId('turn-summary'))
       expect(screen.getAllByTestId('thinking-block')).toHaveLength(2)
     })
 
@@ -2211,6 +2482,8 @@ describe('MessageList', () => {
       mockStreamState.thinkingBlocks = [liveBlock('divergent streamed fragment', Date.now())]
 
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
+      fireEvent.click(screen.getByTestId('turn-summary'))
       expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
       expect(screen.queryByText('divergent streamed fragment')).not.toBeInTheDocument()
     })
@@ -2233,7 +2506,10 @@ describe('MessageList', () => {
       ]
 
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-      // Only the two persisted cards — the live copies must not double-render.
+      // Completed work is collapsed by default. Expansion reveals only the two
+      // persisted cards — the live copies must not double-render.
+      expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
+      fireEvent.click(screen.getByTestId('turn-summary'))
       expect(screen.getAllByTestId('thinking-block')).toHaveLength(2)
     })
 
