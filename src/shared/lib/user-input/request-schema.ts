@@ -20,6 +20,8 @@ export const USER_INPUT_REQUEST_KINDS = [
   'computer_use',
   'proxy_review',
   'x_agent_review',
+  'account_reauth_required',
+  'mcp_reauth_required',
 ] as const
 
 export const userInputRequestKindSchema = z.enum(USER_INPUT_REQUEST_KINDS)
@@ -35,7 +37,7 @@ export const userInputRequestOutcomeSchema = z.enum([
 ])
 export type UserInputRequestOutcome = z.infer<typeof userInputRequestOutcomeSchema>
 
-/** sessionId absent ⇒ agent-scoped (proxy / x-agent reviews). */
+/** sessionId absent ⇒ agent-scoped (proxy/x-agent reviews and account re-auth). */
 const requestScopeSchema = z.object({
   agentSlug: z.string().optional(),
   sessionId: z.string().optional(),
@@ -155,6 +157,24 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
         })
         .optional()
         .catch(undefined),
+      }),
+  }),
+  baseRequest.extend({
+    kind: z.literal('account_reauth_required'),
+    payload: z.looseObject({
+      accountId: lenientString,
+      toolkit: lenientString,
+      accountStatus: z.enum(['expired', 'revoked']).optional().catch(undefined),
+      proxyRequestId: lenientString,
+    }),
+  }),
+  baseRequest.extend({
+    kind: z.literal('mcp_reauth_required'),
+    payload: z.looseObject({
+      mcpId: lenientString,
+      mcpName: lenientString,
+      authType: z.enum(['none', 'oauth', 'bearer']).optional().catch(undefined),
+      proxyRequestId: lenientString,
     }),
   }),
 ])
@@ -183,6 +203,11 @@ export function isReplayableUserInputRequest(request: PendingUserInputRequest): 
 
 export function storeForKind(kind: UserInputRequestKind): UserInputRequestStore {
   if (kind === 'computer_use') return 'computer_use'
-  if (kind === 'proxy_review' || kind === 'x_agent_review') return 'review'
+  if (
+    kind === 'proxy_review' ||
+    kind === 'x_agent_review' ||
+    kind === 'account_reauth_required' ||
+    kind === 'mcp_reauth_required'
+  ) return 'review'
   return 'stream'
 }

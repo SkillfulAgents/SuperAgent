@@ -315,7 +315,7 @@ describe('containerManager.ensureRunning — env var construction', () => {
     expect(mockStart.mock.calls[0][0].envVars.AGENT_BROWSER_USE_HOST).toBe('1')
   })
 
-  it('CONNECTED_ACCOUNTS includes only active accounts, grouped by toolkitSlug', async () => {
+  it('CONNECTED_ACCOUNTS includes active and reconnectable assigned accounts, grouped by toolkitSlug', async () => {
     setupAccountMocks([
       { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
       { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'user2@gmail.com', status: 'active', providerConnectionId: 'c2', providerName: 'composio' },
@@ -330,10 +330,12 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
     expect(metadata.gmail).toHaveLength(2)
     expect(metadata.slack).toHaveLength(1)
-    expect(metadata.github).toBeUndefined() // expired, excluded
+    expect(metadata.github).toEqual([
+      { name: 'My GH', id: 'acc-4', status: 'expired' },
+    ])
   })
 
-  it('each account entry has { name, id } structure', async () => {
+  it('each account entry has { name, id, status } structure', async () => {
     setupAccountMocks([
       { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
     ])
@@ -343,7 +345,7 @@ describe('containerManager.ensureRunning — env var construction', () => {
     const startOpts = mockStart.mock.calls[0][0]
     const metadata = JSON.parse(startOpts.envVars.CONNECTED_ACCOUNTS)
 
-    expect(metadata.gmail[0]).toEqual({ name: 'user@gmail.com', id: 'acc-1' })
+    expect(metadata.gmail[0]).toEqual({ name: 'user@gmail.com', id: 'acc-1', status: 'active' })
   })
 
   it('empty CONNECTED_ACCOUNTS ({}) when no accounts exist', async () => {
@@ -356,11 +358,12 @@ describe('containerManager.ensureRunning — env var construction', () => {
     expect(metadata).toEqual({})
   })
 
-  it('inactive accounts are excluded from metadata', async () => {
+  it('unknown inactive statuses are excluded while expired accounts remain available for reconnect', async () => {
     setupAccountMocks([
       { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'active@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
       { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'inactive@gmail.com', status: 'inactive', providerConnectionId: 'c2', providerName: 'composio' },
       { id: 'acc-3', toolkitSlug: 'slack', displayName: 'expired-slack', status: 'expired', providerConnectionId: 'c3', providerName: 'composio' },
+      { id: 'acc-4', toolkitSlug: 'notion', displayName: 'revoked-notion', status: 'revoked', providerConnectionId: 'c4', providerName: 'composio' },
     ])
 
     await containerManager.ensureRunning('test-agent')
@@ -370,7 +373,12 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
     expect(metadata.gmail).toHaveLength(1)
     expect(metadata.gmail[0].name).toBe('active@gmail.com')
-    expect(metadata.slack).toBeUndefined()
+    expect(metadata.slack).toEqual([
+      { name: 'expired-slack', id: 'acc-3', status: 'expired' },
+    ])
+    expect(metadata.notion).toEqual([
+      { name: 'revoked-notion', id: 'acc-4', status: 'revoked' },
+    ])
   })
 
   it('serializes connection projections in stable id order', async () => {
@@ -388,6 +396,7 @@ describe('containerManager.ensureRunning — env var construction', () => {
           toolsJson: JSON.stringify([{ name: 'search' }, { invalid: true }]),
         },
         { id: 'mcp-disabled', name: 'Disabled', status: 'auth_required', toolsJson: null },
+        { id: 'mcp-error', name: 'Broken', status: 'error', toolsJson: null },
         { id: 'mcp-a', name: 'Alpha', status: 'active', toolsJson: '[]' },
       ],
     )
@@ -397,15 +406,16 @@ describe('containerManager.ensureRunning — env var construction', () => {
     const envVars = mockStart.mock.calls[0][0].envVars
     expect(JSON.parse(envVars.CONNECTED_ACCOUNTS)).toEqual({
       gmail: [
-        { name: 'Gmail A', id: 'gmail-a' },
-        { name: 'Gmail Z', id: 'gmail-z' },
+        { name: 'Gmail A', id: 'gmail-a', status: 'active' },
+        { name: 'Gmail Z', id: 'gmail-z', status: 'active' },
       ],
-      slack: [{ name: 'Slack Z', id: 'slack-z' }],
+      slack: [{ name: 'Slack Z', id: 'slack-z', status: 'active' }],
     })
     const mcpConfigs = JSON.parse(envVars.REMOTE_MCPS)
     expect(mcpConfigs.map((mcp: { id: string }) => mcp.id))
-      .toEqual(['mcp-a', 'mcp-z'])
-    expect(mcpConfigs[1].tools).toEqual([{ name: 'search' }])
+      .toEqual(['mcp-a', 'mcp-disabled', 'mcp-z'])
+    expect(mcpConfigs[1]).toMatchObject({ status: 'auth_required', tools: [] })
+    expect(mcpConfigs[2].tools).toEqual([{ name: 'search' }])
   })
 
   it('sets TZ env var from resolveTimezoneForAgent', async () => {

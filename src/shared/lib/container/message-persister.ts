@@ -100,7 +100,7 @@ interface SubagentStreamingState {
  */
 type StreamRequestKind = Exclude<
   UserInputRequestKind,
-  'computer_use' | 'proxy_review' | 'x_agent_review'
+  'computer_use' | 'proxy_review' | 'x_agent_review' | 'account_reauth_required' | 'mcp_reauth_required'
 >
 
 // Tracks streaming state for SSE broadcasts
@@ -344,7 +344,12 @@ class MessagePersister {
     }
 
     const sessionId = request.scope.sessionId
+    // Agent-scoped reviews and re-auth requests have no session id and no safe
+    // actionable OS-notification flow; their in-app cards are the prompt.
     if (!sessionId) return
+    // Defensive type boundary if a future caller violates the agent-scoped
+    // re-auth invariant; these kinds are not accepted notification categories.
+    if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
     const waitingFor =
       request.kind === 'capability_review'
         ? (request.payload as { capability?: unknown }).capability === 'workflows'

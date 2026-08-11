@@ -47,6 +47,7 @@ const mockValidateAndConsumeOAuthErrorResponse = vi.fn()
 const mockFindAgentsAssignedRemoteMcp = vi.fn().mockResolvedValue(['agent-a'])
 const mockSyncAgentsAssignedRemoteMcp = vi.fn().mockResolvedValue(true)
 const mockSyncRemoteMcpAgents = vi.fn().mockResolvedValue(true)
+const mockCompleteMcpReauth = vi.fn()
 
 vi.mock('@shared/lib/mcp/oauth', () => ({
   McpOAuthSetupError: class McpOAuthSetupError extends Error {},
@@ -65,6 +66,12 @@ vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
     mockSyncAgentsAssignedRemoteMcp(...args),
   syncRemoteMcpAgents: (...args: unknown[]) =>
     mockSyncRemoteMcpAgents(...args),
+}))
+
+vi.mock('@shared/lib/proxy/mcp-reauth-manager', () => ({
+  mcpReauthManager: {
+    completeMcp: (...args: unknown[]) => mockCompleteMcpReauth(...args),
+  },
 }))
 
 // Mock DB with chainable query builder
@@ -1374,6 +1381,7 @@ describe('OAuth callback — postMessage origin', () => {
     expect(html).not.toContain("'*'")
     expect(mockFindAgentsAssignedRemoteMcp).toHaveBeenCalledWith('mcp-new')
     expect(mockSyncRemoteMcpAgents).toHaveBeenCalledWith(['agent-a'])
+    expect(mockCompleteMcpReauth).toHaveBeenCalledWith('mcp-new')
   })
 
   it('emits callback fallbacks for web popups whose opener was severed', async () => {

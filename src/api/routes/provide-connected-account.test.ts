@@ -413,7 +413,9 @@ describe('provide-connected-account handler', () => {
     const envBody = JSON.parse(envOpts.body)
     expect(envBody.key).toBe('CONNECTED_ACCOUNTS')
     const metadata = JSON.parse(envBody.value)
-    expect(metadata.gmail).toEqual([{ name: 'user@gmail.com', id: 'acc-1' }])
+    expect(metadata.gmail).toEqual([
+      { name: 'user@gmail.com', id: 'acc-1', status: 'active' },
+    ])
 
     // Verify resolve call
     const [resolvePath] = mockContainerFetch.mock.calls[1]
@@ -524,7 +526,7 @@ describe('provide-connected-account handler', () => {
     expect(body.error).toContain('notify agent')
   })
 
-  it('metadata only includes status === active accounts', async () => {
+  it('metadata keeps active and expired assigned accounts with their statuses', async () => {
     mockSelectFrom.mockReturnValueOnce({ where: mockSelectWhere })
     mockSelectWhere.mockResolvedValueOnce([
       { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'active@gmail.com', status: 'active' },
@@ -556,11 +558,13 @@ describe('provide-connected-account handler', () => {
 
     expect(res.status).toBe(200)
 
-    // Verify metadata sent to container only includes active accounts
+    // Verify metadata sent to the container keeps reconnectable assignments.
     const [, envOpts] = mockContainerFetch.mock.calls[0]
     const envBody = JSON.parse(envOpts.body)
     const metadata = JSON.parse(envBody.value)
-    expect(metadata.gmail).toHaveLength(1)
-    expect(metadata.gmail[0].name).toBe('active@gmail.com')
+    expect(metadata.gmail).toEqual([
+      { name: 'active@gmail.com', id: 'acc-1', status: 'active' },
+      { name: 'expired@gmail.com', id: 'acc-2', status: 'expired' },
+    ])
   })
 })

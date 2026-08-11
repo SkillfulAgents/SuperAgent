@@ -4,7 +4,9 @@ import { Button } from '@renderer/components/ui/button'
 import { ChevronRight, Plus, Settings2 } from 'lucide-react'
 import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import { McpStatusPill } from '@renderer/components/connections/mcp-status-pill'
-import { useAgentConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
+import { AccountStatusBadge } from '@renderer/components/connections/account-status-badge'
+import { useAgentConnectedAccounts, type ConnectedAccount } from '@renderer/hooks/use-connected-accounts'
+import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import { useAgentRemoteMcps, type RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
 import { HomeCollapsible } from './home-collapsible'
 import { formatDistanceToNow } from 'date-fns'
@@ -35,6 +37,9 @@ interface ConnectionRow {
   date?: string | number
   /** Opaque link owned by another member; never navigable. */
   foreign?: true
+  accountId?: string
+  accountStatus?: ConnectedAccount['status']
+  toolkit?: string
   mcpStatus?: RemoteMcpServer['status']
   mcpErrorMessage?: string | null
 }
@@ -44,6 +49,12 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
   const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
   const { data: activityStats, isPending: activityPending } = useAgentActivityStats(agentSlug)
   const navigate = useNavigate()
+  const {
+    reconnect: oauthReconnect,
+    pendingAccountId,
+    canCancelPendingReconnect,
+    cancelReconnect,
+  } = useOAuthReconnect()
 
   const connections = useMemo<ConnectionRow[]>(() => {
     const rows: ConnectionRow[] = []
@@ -61,6 +72,9 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
         iconFallback: 'oauth',
         type: 'oauth',
         date: account.createdAt,
+        accountId: account.id,
+        accountStatus: account.status,
+        toolkit: account.toolkitSlug,
       })
     }
 
@@ -106,7 +120,25 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
               iconSlug={conn.iconSlug}
               iconFallback={conn.iconFallback}
               name={conn.name}
-              nameBadge={<McpStatusPill status={conn.mcpStatus} errorMessage={conn.mcpErrorMessage} />}
+              nameBadge={
+                <>
+                  <McpStatusPill status={conn.mcpStatus} errorMessage={conn.mcpErrorMessage} />
+                  <AccountStatusBadge
+                    status={conn.accountStatus}
+                    onReconnect={
+                      conn.accountId && conn.toolkit && conn.accountStatus !== 'active'
+                        ? () => { void oauthReconnect(conn.accountId!, conn.toolkit!) }
+                        : undefined
+                    }
+                    onCancelReconnect={
+                      pendingAccountId === conn.accountId && canCancelPendingReconnect
+                        ? cancelReconnect
+                        : undefined
+                    }
+                    loading={pendingAccountId === conn.accountId}
+                  />
+                </>
+              }
               subtitle={
                 <>
                   <span className="shrink-0">{conn.type === 'oauth' ? 'API' : 'MCP'}</span>

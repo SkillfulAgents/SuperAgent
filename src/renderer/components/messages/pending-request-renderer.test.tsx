@@ -12,6 +12,8 @@ import { ScriptRunRequestItem } from './script-run-request-item'
 import { ComputerUseRequestItem } from './computer-use-request-item'
 import { ProxyReviewRequestItem } from './proxy-review-request-item'
 import { XAgentReviewRequestItem } from './x-agent-review-request-item'
+import { AccountReauthRequestItem } from './account-reauth-request-item'
+import { McpReauthRequestItem } from './mcp-reauth-request-item'
 
 const ctx: RenderContext = {
   sessionId: 'session-xyz',
@@ -167,6 +169,44 @@ const cases: Array<{
     expectedComponent: XAgentReviewRequestItem,
     expectedProps: { reviewId: 'rx', xAgent: { targetAgentSlug: 'r', targetAgentName: 'R', operation: 'invoke' } },
   },
+  {
+    name: 'account_reauth_required',
+    descriptor: {
+      kind: 'account_reauth_required',
+      key: 'k11',
+      proxyRequestId: 'pr-1',
+      accountId: 'a1',
+      toolkit: 'gmail',
+      accountStatus: 'expired',
+      onComplete: noop,
+    },
+    expectedComponent: AccountReauthRequestItem,
+    expectedProps: {
+      proxyRequestId: 'pr-1',
+      accountId: 'a1',
+      toolkit: 'gmail',
+      accountStatus: 'expired',
+    },
+  },
+  {
+    name: 'mcp_reauth_required',
+    descriptor: {
+      kind: 'mcp_reauth_required',
+      key: 'k12',
+      proxyRequestId: 'mpr-1',
+      mcpId: 'mcp-1',
+      mcpName: 'Cal.com',
+      authType: 'oauth',
+      onComplete: noop,
+    },
+    expectedComponent: McpReauthRequestItem,
+    expectedProps: {
+      proxyRequestId: 'mpr-1',
+      mcpId: 'mcp-1',
+      mcpName: 'Cal.com',
+      authType: 'oauth',
+    },
+  },
 ]
 
 describe('renderPendingRequest', () => {
@@ -182,10 +222,7 @@ describe('renderPendingRequest', () => {
       // Context is plumbed through on every kind.
       expect(props.agentSlug).toBe(ctx.agentSlug)
       expect(props.readOnly).toBe(ctx.readOnly)
-      // sessionId is passed to all SSE-based items but NOT to proxy/x-agent reviews.
-      if (c.name !== 'proxy_review' && c.name !== 'x_agent_review') {
-        expect(props.sessionId).toBe(ctx.sessionId)
-      }
+      expect(props.sessionId).toBe(ctx.sessionId)
       // Every descriptor's onComplete is forwarded as the onComplete prop.
       expect(props.onComplete).toBe(c.descriptor.onComplete)
       // The element's React key carries the descriptor key (for stable identity in lists).
@@ -199,6 +236,6 @@ describe('renderPendingRequest', () => {
     // case). This sanity check pins the case count to the test table so we
     // remember to update it in lockstep.
     const kinds = new Set(cases.map((c) => c.descriptor.kind))
-    expect(kinds.size).toBe(10)
+    expect(kinds.size).toBe(12)
   })
 })

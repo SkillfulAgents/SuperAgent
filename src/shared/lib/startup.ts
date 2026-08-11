@@ -3,6 +3,8 @@ import pLimit from 'p-limit'
 import { containerManager } from './container/container-manager'
 import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
+import { accountReauthManager } from './proxy/account-reauth-manager'
+import { mcpReauthManager } from './proxy/mcp-reauth-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { triggerManager } from './scheduler/trigger-manager'
 import { platformNotificationsManager } from './scheduler/platform-notifications-manager'
@@ -275,6 +277,8 @@ export function setupServerHandlers(server: ServerType): void {
 export async function shutdownServices() {
   servicesShuttingDown = true
   reviewManager.rejectAll()
+  accountReauthManager.rejectAll()
+  mcpReauthManager.rejectAll()
   stopBrowserProfileCleanup()
   chatIntegrationManager.stop()
   await credentialBroker.shutdown()
