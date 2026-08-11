@@ -43,6 +43,7 @@ import {
 
 import { getEditingCommands } from './cdp-editing-commands';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
+import { selectActivePageTarget } from './active-page-target';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -2263,25 +2264,27 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
   return target ? [target] : [];
 }
 
-/** Find the CDP page target that corresponds to agent-browser's active page */
-async function findActivePageTarget(): Promise<PageTarget | null> {
+/** Find Chrome's active page. Credential actions opt into the viewer page. */
+async function findActivePageTarget(preferViewer = false): Promise<PageTarget | null> {
   const allTargets = await getAllPageTargets();
   if (allTargets.length === 0) return null;
   if (allTargets.length === 1) return allTargets[0];
 
-  // Use daemon to find which is active
+  let daemonTabs: Awaited<ReturnType<typeof tabManager.queryTabs>> = [];
   try {
-    const tabs = await tabManager.queryTabs();
-    const active = tabs.find(t => t.active);
-    if (active) {
-      const byUrl = allTargets.find(p => tabManager.urlsMatch(p.url, active.url));
-      if (byUrl) return byUrl;
-    }
+    daemonTabs = await tabManager.queryTabs();
   } catch (err) {
     console.error('[CDP] Daemon tab query failed:', err);
   }
 
-  return allTargets[0]; // fallback: first target (most recently active per Chrome's /json ordering)
+  return selectActivePageTarget(
+    allTargets,
+    daemonTabs,
+    (left, right) => tabManager.urlsMatch(left, right),
+    preferViewer
+      ? { preferViewer: true, viewerTargetId: cdpScreencast?.currentTargetId ?? null }
+      : {},
+  );
 }
 
 /** Discover page targets via CDP WebSocket protocol (for remote providers) */
@@ -2444,7 +2447,7 @@ app.get('/browser/credential-context', async (c) => {
   if (validationError) return c.json({ error: validationError }, 409);
   if (!browserState.active) return c.json({ error: 'Browser is not active' }, 409);
 
-  const target = await findActivePageTarget();
+  const target = await findActivePageTarget(true);
   if (!target?.url) return c.json({ error: 'No active browser page was found' }, 409);
   return c.json({ url: target.url });
 });
@@ -2461,7 +2464,7 @@ app.post('/browser/fill-credential', async (c) => {
     if (validationError) return c.json({ error: validationError }, 409);
     if (!browserState.active) return c.json({ error: 'Browser is not active' }, 409);
 
-    const target = await findActivePageTarget();
+    const target = await findActivePageTarget(true);
     if (!target) return c.json({ error: 'No active browser page was found' }, 409);
     const result = await autofillCredentialViaCdp(
       target,
@@ -2737,12 +2740,13 @@ function notifyBrowserAction() {
         tabManager.queryTabs(),
       ]);
 
-      // Resolve the active target from daemon info
-      const activeDaemonTab = daemonTabs.find(t => t.active);
-      let activeTarget: PageTarget | null = allTargets[0] ?? null;
-      if (activeDaemonTab && allTargets.length > 1) {
-        activeTarget = allTargets.find(p => tabManager.urlsMatch(p.url, activeDaemonTab.url)) ?? activeTarget;
-      }
+      // Resolve where the viewer should move. Do not prefer its current target:
+      // a stale daemon URL must retain Chrome's MRU fallback for auto-follow.
+      const activeTarget = selectActivePageTarget(
+        allTargets,
+        daemonTabs,
+        (left, right) => tabManager.urlsMatch(left, right),
+      );
 
       // Switch screencast only if auto-following and target changed
       if (activeTarget && activeTarget.id !== cdpScreencast.currentTargetId && cdpScreencast.autoFollow) {

@@ -3780,13 +3780,16 @@ describe('browser credential broker routes', () => {
     expect(messagePersister.completeInputRequest).toHaveBeenCalledTimes(1)
   })
 
-  it('releases the request claim when autofill fails before settlement', async () => {
+  it('returns a no-store manual copy fallback when no password field can be reached', async () => {
     mockContainerFetch
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ error: 'No visible password field was found' }), { status: 409 }),
+        new Response(JSON.stringify({
+          error: 'No visible password field was found',
+          reason: 'no_password_field',
+        }), { status: 409 }),
       )
     mockCredentialRetrieve.mockResolvedValueOnce({
       credential: { username: 'person@example.com', password: 'host-only-secret' },
@@ -3800,9 +3803,44 @@ describe('browser credential broker routes', () => {
     )
 
     expect(res.status).toBe(409)
+    expect(res.headers.get('cache-control')).toBe('no-store')
+    expect(await res.json()).toEqual({
+      error: 'No visible password field was found',
+      reason: 'no_password_field',
+      manualCredential: {
+        username: 'person@example.com',
+        password: 'host-only-secret',
+      },
+    })
     const reclaimed = userInputRequestManager.claimRequest('tool-credential')
     expect(reclaimed?.id).toBe('tool-credential')
     userInputRequestManager.releaseClaim('tool-credential')
+  })
+
+  it('does not disclose credentials when the page origin changes', async () => {
+    mockContainerFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          error: 'The browser page changed before autofill',
+          reason: 'origin_changed',
+        }), { status: 409 }),
+      )
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+
+    expect(res.status).toBe(409)
+    expect(JSON.stringify(await res.json())).not.toContain('host-only-secret')
   })
 
   it('rejects a malformed autofill response from the container', async () => {
