@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { MODE_DRAWS, resolvePreset, type OrbState } from 'thinking-orbs'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { MODE_DRAWS, resolvePreset, type OrbState as PackageOrbState } from 'thinking-orbs'
+
+import { useIsDark } from '@renderer/hooks/use-theme'
 
 /**
  * The thought orbs used by the activity indicator (AgentActivityIndicator):
@@ -51,20 +53,6 @@ function paint(ctx: CanvasRenderingContext2D, dots: Dot[], dark: boolean, rMin =
     ctx.arc(d.x, d.y, Math.max(rMin, d.r), 0, Math.PI * 2)
     ctx.fill()
   }
-}
-
-/** Follows the app's `dark` class on <html> (same pattern as voice-agent). */
-function useIsDark(): boolean {
-  const [isDark, setIsDark] = useState(() =>
-    typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
-  )
-  useEffect(() => {
-    const el = document.documentElement
-    const observer = new MutationObserver(() => setIsDark(el.classList.contains('dark')))
-    observer.observe(el, { attributes: true, attributeFilter: ['class'] })
-    return () => observer.disconnect()
-  }, [])
-  return isDark
 }
 
 // House tuning on top of the package's 20px inline preset: slightly smaller
@@ -199,7 +187,7 @@ function OrbCanvas({ draw, speed, staticT = 0.6, size }: { draw: OrbDraw; speed:
 }
 
 /** Package painters (listening, searching, ...) with the size-aware tuned opts. */
-function PackageOrb({ state, size }: { state: OrbState; size: number }) {
+function PackageOrb({ state, size }: { state: PackageOrbState; size: number }) {
   const { mode, speed, opts } = resolvePreset(state, ORB_BASE_SIZE)
   const tuned = useMemo(() => tuneOpts(opts, size), [opts, size])
   const draw = useCallback<OrbDraw>(
@@ -495,15 +483,36 @@ function CompactingOrb({ size = 20 }: { size?: number }) {
   return <OrbCanvas draw={drawCompactingCube} speed={1} staticT={0.3} size={size} />
 }
 
+/**
+ * What the indicator is showing, in the app's own vocabulary.
+ *
+ * Deliberately NOT the package's `OrbState`. Two of its members collide with
+ * ours in name but not in animation — the package's `solving` is a lat/long
+ * rubik that scrambles between moves, and its `shaping` morphs a 2-D outline
+ * circle→triangle→square. Neither is what we draw for `working` /
+ * `compacting`, so reusing its vocabulary would send the next reader to the
+ * package's docs for the wrong picture.
+ */
+export type ActivityOrbState = 'working' | 'waiting' | 'retrying' | 'compacting'
+
 /** Thought-orb activity dot (thinking-orbs painters, house-tuned density/size).
-    The animation itself is the state cue: solving quarter-turns while
-    working/thinking, a rolling waveform while waiting on the user, etc.
-    Solving and shaping use our local painters (clean-landing cube-sphere
-    twists; the collapsing globe for compacting) instead of the package's. */
-export function ActivityOrb({ state = 'solving', size = 20 }: { state?: OrbState; size?: number }) {
-  if (state === 'shaping') return <CompactingOrb size={size} />
-  if (state === 'solving') return <SolvingOrb size={size} />
-  return <PackageOrb state={state} size={size} />
+    The animation itself is the state cue. Each arm below names its painter
+    explicitly — the two package states are the ONLY place the package's
+    vocabulary appears. */
+export function ActivityOrb({ state = 'working', size = 20 }: { state?: ActivityOrbState; size?: number }) {
+  switch (state) {
+    // Our own painters — see the section comments above each for why the
+    // package's same-named states don't fit.
+    case 'working':
+      return <SolvingOrb size={size} />
+    case 'compacting':
+      return <CompactingOrb size={size} />
+    // Package painters, re-scaled by tuneOpts().
+    case 'waiting':
+      return <PackageOrb state="listening" size={size} />
+    case 'retrying':
+      return <PackageOrb state="searching" size={size} />
+  }
 }
 
 export interface ActivityStatusFlags {
@@ -522,16 +531,16 @@ export function deriveActivityStatus({
   apiRetry,
   isThinking,
   activeForm,
-}: ActivityStatusFlags): { statusText: string; orbState: OrbState } {
-  if (isAwaitingInput) return { statusText: 'Waiting for input...', orbState: 'listening' }
-  if (isCompacting) return { statusText: 'Compacting...', orbState: 'shaping' }
+}: ActivityStatusFlags): { statusText: string; orbState: ActivityOrbState } {
+  if (isAwaitingInput) return { statusText: 'Waiting for input...', orbState: 'waiting' }
+  if (isCompacting) return { statusText: 'Compacting...', orbState: 'compacting' }
   if (apiRetry) {
     return {
       statusText: `Retrying... (attempt ${apiRetry.attempt}${apiRetry.maxRetries ? `/${apiRetry.maxRetries}` : ''})`,
-      orbState: 'searching',
+      orbState: 'retrying',
     }
   }
-  if (isThinking) return { statusText: 'Thinking...', orbState: 'solving' }
-  return { statusText: activeForm || 'Working...', orbState: 'solving' }
+  if (isThinking) return { statusText: 'Thinking...', orbState: 'working' }
+  return { statusText: activeForm || 'Working...', orbState: 'working' }
 }
 
