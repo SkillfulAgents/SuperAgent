@@ -89,6 +89,82 @@ test.describe('home connections graph', () => {
     expect(errors).toEqual([])
   })
 
+  test('hovering a node fades everything outside its neighborhood', async ({ page, request }, testInfo) => {
+    const caller = await createAgent(request, uniqueName(testInfo, 'Graph Focus Src'))
+    const target = await createAgent(request, uniqueName(testInfo, 'Graph Focus Dst'))
+    const bystander = await createAgent(request, uniqueName(testInfo, 'Graph Focus Odd'))
+    await createInvokePolicy(request, caller, target)
+
+    await page.goto('/?view=graph')
+    const callerNode = page.getByTestId(`graph-node-agent-${caller.slug}`)
+    await expect(callerNode).toBeVisible()
+    await expect(page.getByTestId(`graph-node-agent-${bystander.slug}`)).toBeVisible()
+
+    // The fade is marked on React Flow's node wrapper (data-id = node id)
+    // straight from the DOM, so it never rebuilds the node array.
+    const wrapper = (slug: string) => page.locator(`.react-flow__node[data-id="agent:${slug}"]`)
+
+    // Sibling specs churn the layout, so a hover can land where the card
+    // just was (a no-op) or on an overlapping neighbor (focusing the wrong
+    // agent) — re-fit and re-hover until the whole focus picture holds.
+    await expect(async () => {
+      await page.getByRole('button', { name: 'Fit View' }).click()
+      await callerNode.hover({ force: true })
+      await expect(wrapper(bystander.slug)).toHaveAttribute('data-graph-dimmed', '', { timeout: 1000 })
+      await expect(wrapper(target.slug)).not.toHaveAttribute('data-graph-dimmed', '', { timeout: 200 })
+      await expect(wrapper(caller.slug)).not.toHaveAttribute('data-graph-dimmed', '', { timeout: 200 })
+      // The edge between caller and target stays lit with them, and the
+      // canvas flags the focused state (which thickens the surviving lines).
+      const [a, b] = [`agent:${caller.slug}`, `agent:${target.slug}`].sort()
+      await expect(page.locator(`.react-flow__edge[data-id="${a}~${b}"]`)).not.toHaveAttribute(
+        'data-graph-dimmed',
+        '',
+        { timeout: 200 },
+      )
+      await expect(page.getByTestId('agent-graph')).toHaveClass(/graph-focusing/, { timeout: 200 })
+    }).toPass({ timeout: 15_000 })
+
+    // Leaving the node restores everything.
+    await page.mouse.move(0, 0)
+    await expect(wrapper(bystander.slug)).not.toHaveAttribute('data-graph-dimmed', '')
+    await expect(page.getByTestId('agent-graph')).not.toHaveClass(/graph-focusing/)
+  })
+
+  test('the fade survives a selection change under the cursor', async ({ page, request }, testInfo) => {
+    // React Flow folds `selected` into the node wrapper's className and
+    // rewrites the whole attribute when it flips, which is why the fade is
+    // marked with an attribute React never renders. Selecting one card and
+    // then clicking another while hovering it deselects the first mid-focus
+    // — the sequence that dropped a class-based mark.
+    const caller = await createAgent(request, uniqueName(testInfo, 'Graph Select Src'))
+    const target = await createAgent(request, uniqueName(testInfo, 'Graph Select Dst'))
+    const bystander = await createAgent(request, uniqueName(testInfo, 'Graph Select Odd'))
+    await createInvokePolicy(request, caller, target)
+
+    await page.goto('/?view=graph')
+    const callerNode = page.getByTestId(`graph-node-agent-${caller.slug}`)
+    const bystanderNode = page.getByTestId(`graph-node-agent-${bystander.slug}`)
+    await expect(callerNode).toBeVisible()
+    await expect(bystanderNode).toBeVisible()
+    const wrapper = (slug: string) => page.locator(`.react-flow__node[data-id="agent:${slug}"]`)
+
+    // Same re-fit loop as the hover spec, for the same layout churn.
+    await expect(async () => {
+      await page.getByRole('button', { name: 'Fit View' }).click()
+      await bystanderNode.click({ force: true })
+      await expect(wrapper(bystander.slug)).toHaveClass(/selected/, { timeout: 1000 })
+      await callerNode.hover({ force: true })
+      await expect(wrapper(bystander.slug)).toHaveAttribute('data-graph-dimmed', '', { timeout: 1000 })
+    }).toPass({ timeout: 15_000 })
+
+    // Selection moves to the hovered card; the bystander stays faded.
+    await callerNode.click({ force: true })
+    await expect(wrapper(caller.slug)).toHaveClass(/selected/)
+    await expect(wrapper(bystander.slug)).not.toHaveClass(/selected/)
+    await expect(wrapper(bystander.slug)).toHaveAttribute('data-graph-dimmed', '')
+    await expect(page.getByTestId('agent-graph')).toHaveClass(/graph-focusing/)
+  })
+
   test('dragging a node persists its position; reset layout clears saved positions', async ({ page, request }, testInfo) => {
     const agent = await createAgent(request, uniqueName(testInfo, 'Graph Drag'))
 
