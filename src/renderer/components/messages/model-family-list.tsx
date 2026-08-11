@@ -135,6 +135,17 @@ export function webToolsWarning(
   return null
 }
 
+/**
+ * Picker banner for tiers whose discount is paid in the user's data. Unlike
+ * the web-tools warning there is no setting that fixes it — the only remedy is
+ * picking a different model — so the copy names the tradeoff and the class of
+ * content to keep off it rather than pointing at a settings page.
+ */
+export function dataUseWarning(model: ModelDefinition | undefined): string | null {
+  if (!model?.dataUsedForProductImprovement) return null
+  return 'Prompts and outputs on this model may be used by the provider to improve its products. Avoid customer data, credentials, and anything confidential.'
+}
+
 type LongContextCliff = NonNullable<ModelDefinition['longContextPriceCliff']>
 
 // Detail copy behind the cliff banner's info icon: the consequence in plain
@@ -463,6 +474,7 @@ export function ModelFamilyList({
   // `native`/undefined means no host vendor — only then surface the model's native gap.
   const webVendorSet = !!webProvider && webProvider !== 'native'
   const webWarning = webToolsWarning(resolved, webVendorSet)
+  const dataWarning = dataUseWarning(resolved)
 
   return (
     <div className="flex flex-col gap-0.5">
@@ -634,6 +646,19 @@ export function ModelFamilyList({
           wrong-row hazard). Like the cliff note, the warning is scoped to the
           tab that owns the selection — on any other tab its "this model" copy
           would read as being about the listed models. */}
+      {/* Data-use first: a missing web tool is an inconvenience the user can
+          fix in settings, but this one leaves the building with their prompt
+          and has no remedy after the fact, so it must not sit below the fold
+          of a second banner. */}
+      {dataWarning && resolved && vendorKey(resolved) === activeVendor && (
+        <div
+          data-testid="model-data-use-warning"
+          className="mx-1 mt-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
+        >
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+          <span>{dataWarning}</span>
+        </div>
+      )}
       {webWarning && resolved && vendorKey(resolved) === activeVendor && (
         <div
           data-testid="model-no-websearch-warning"
