@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the Browser Use feature allows an agent to open a browser, navigate to a URL, extract the page title, and report it back in the chat interface.",
+  "steps": [
+    "Step 1: Navigate to http://localhost:47891 — Successfully loaded the Gamut application homepage showing agents in the sidebar.",
+    "Step 2: Click on \"QA-20260811-002622-xap6\" agent in the sidebar — Successfully opened the agent chat interface, which displayed the message input area and agent configuration panels.",
+    "Step 3: Send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully typed the message into the input field and clicked the Send button. The agent status changed to \"working\" and the session was created with the title \"Browser Navigation and Page Title Extraction\".",
+    "Step 4: Wait up to 3 minutes for a response — The agent responded within 11 seconds. The response executed the following tool calls in sequence:",
+    "Step 5: Verify the response mentions \"Example Domain\" — The agent's response explicitly states: 'The page title is \"Example Domain\" — the page body reads \"This domain is for use in documentation examples without needing permission. Avoid use in operations.\" with a \"Learn more\" link. Browser closed.' The response correctly identifies \"Example Domain\" as the page title, confirming successful browser navigation and page title extraction."
+  ],
+  "bugs": [],
+  "durationMs": 64760,
+  "sessionId": "de447543-8011-41e3-8db4-8c7dca3794d3",
+  "cost": {
+    "inputTokens": 334,
+    "outputTokens": 9541,
+    "cacheCreationTokens": 99757,
+    "cacheReadTokens": 816481,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.254383
+  }
+}
