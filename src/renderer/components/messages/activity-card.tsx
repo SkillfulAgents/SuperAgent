@@ -1,9 +1,9 @@
 import { cn } from '@shared/lib/utils'
 import { AlertTriangle, ChevronDown, CircleCheckBig, Ellipsis, Monitor, X } from 'lucide-react'
-import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
-import { ACTIVITY_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
+import { ACTIVITY_TREE_CONNECTORS, ACTIVITY_TREE_TRACER } from '@renderer/components/ui/tree-connectors'
 import type { Todo } from '@shared/lib/utils/derive-task-list'
 import { ActivityOrb, type ActivityOrbState } from './activity-orb'
 
@@ -66,6 +66,7 @@ export function ActivityCard({
 }: ActivityCardProps) {
   const [showAllTodos, setShowAllTodos] = useState(false)
   const [isCollapsed, setIsCollapsed] = useState(false)
+  const listRef = useRef<HTMLUListElement>(null)
 
   // Background subagents are excluded: they already render as named subagent
   // rows above, and counting them here would show the same work twice.
@@ -88,9 +89,19 @@ export function ActivityCard({
     formatActivityCount(pendingTaskCount, 'pending task', 'pending tasks'),
   ].filter(Boolean).join(', ')
 
+  // Row positions on the tree, counted across all groups: the tracer stages each
+  // branch flash off its own index (see .tree-tracer in globals.css).
+  // Computer use leads the tree: it is a hold that lasts the whole turn, so it
+  // keeps a fixed position while subagents come and go beneath it.
+  const computerUseRows = computerUse ? 1 : 0
+  const todoRowStart = computerUseRows
+    + subagents.length
+    + (visibleBackgroundTasks.length > 0 ? 1 : 0)
   const todoRows = todos && pendingTaskCount > 0
-    ? buildTodoRows(todos, showAllTodos, setShowAllTodos)
+    ? buildTodoRows(todos, showAllTodos, setShowAllTodos, todoRowStart)
     : null
+
+  useTracerPhaseLock(listRef)
 
   return (
     <div className={cn(
@@ -153,13 +164,24 @@ export function ActivityCard({
             Every row keeps the same 16px line box (text-xs) so the elbows,
             pinned at half that, stay centered on all three kinds. */}
         {!isCollapsed && hasExpandableDetails && (
-          <ul data-testid="activity-tree" className={cn('mt-2 space-y-1 text-xs pl-6', ACTIVITY_TREE_CONNECTORS)}>
+          <ul ref={listRef} data-testid="activity-tree" className={cn(
+            'mt-2 space-y-1 text-xs pl-6',
+            ACTIVITY_TREE_CONNECTORS,
+            ACTIVITY_TREE_TRACER,
+          )}>
             {computerUse && (
-              <ComputerUseRow computerUse={computerUse} />
+              <ComputerUseRow
+                computerUse={computerUse}
+                tracerRow={0}
+              />
             )}
 
-            {subagents.map((item) => (
-              <li key={item.id}>
+            {subagents.map((item, index) => (
+              <li
+                key={item.id}
+                style={tracerRowStyle(computerUseRows + index)}
+                data-tracer-live={item.status === 'running' ? 'true' : undefined}
+              >
                 <div className="flex flex-col gap-0.5">
                   {/* A finished row recedes as a whole — the mark inherits the
                       muting with its label rather than carrying its own color. */}
@@ -189,7 +211,10 @@ export function ActivityCard({
             ))}
 
             {visibleBackgroundTasks.length > 0 && (
-              <BackgroundTasksRow tasks={visibleBackgroundTasks} />
+              <BackgroundTasksRow
+                tasks={visibleBackgroundTasks}
+                tracerRow={computerUseRows + subagents.length}
+              />
             )}
 
             {todoRows}
@@ -304,15 +329,161 @@ function RowMark({ children }: { children?: ReactNode }) {
 }
 
 /**
+ * Holds the tracer's three animations — the trunk's travel, each branch's flash,
+ * each row's shimmer — to one phase.
+ *
+ * They share a duration and are staggered by row, so on paper they read as a
+ * single band running down the tree. What breaks that is WHEN each one starts: a
+ * CSS animation's clock begins the moment it is applied to the element, not when
+ * the card mounts. A subagent that goes live mid-turn, a task that flips to
+ * in_progress, a row that finishes and drops out — each starts (or restarts) its
+ * own timeline while the trunk is already partway through its cycle, and lands
+ * on the wrong beat. Nothing drifts within one animation; they simply never
+ * agreed on an origin.
+ *
+ * Pinning every one to the earliest start time already running means latecomers
+ * join the band in flight. It settles immediately for animations already in
+ * phase, so re-running it on every commit costs nothing.
+ */
+function useTracerPhaseLock(listRef: RefObject<HTMLUListElement | null>) {
+  useEffect(() => {
+    const list = listRef.current
+    if (!list || typeof list.getAnimations !== 'function') return
+
+    const lock = () => {
+      // An animation does not exist until the style declaring it is
+      // recalculated, and that can land after this commit's effects have run.
+      // Force the flush first — reading getAnimations() without it returns only
+      // the animations from before this render, so a row that just went live is
+      // missed and, with no further commit coming, never gets locked at all.
+      getComputedStyle(list).animationName
+      const animations = list
+        .getAnimations({ subtree: true })
+        .filter((animation) => animation.startTime != null)
+      if (animations.length < 2) return
+
+      const origin = Math.min(...animations.map((animation) => Number(animation.startTime)))
+      for (const animation of animations) {
+        if (Number(animation.startTime) !== origin) animation.startTime = origin
+      }
+    }
+
+    lock()
+    // Second pass next frame, for animations the flush above still raced.
+    const frame = requestAnimationFrame(lock)
+    return () => cancelAnimationFrame(frame)
+  })
+}
+
+/** Relay pacing. Travel is constant-speed, so a row further down takes longer. */
+const RELAY_SPEED_PX_PER_S = 130
+const RELAY_MIN_TRAVEL_MS = 260
+/** Long enough for the branch flash and one shimmer pass to land. */
+const RELAY_DWELL_MS = 780
+const RELAY_REST_MS = 220
+/** Nothing live yet — poll rather than give up; rows arrive as the turn runs. */
+const RELAY_IDLE_MS = 500
+/** Half the band's 28px depth: aligns its peak with the branch it stops at. */
+const RELAY_BAND_HALF = 14
+/** Row's elbow (8px into a 16px row) measured from the rail top (4px above). */
+const RELAY_ELBOW_OFFSET = 12
+
+/**
+ * Relay: sends the band to one live row at a time instead of running the whole
+ * trunk. Each pass picks the next live row, travels only as far as that row,
+ * hands off to its branch and label, rests, then takes the next one.
+ *
+ * Scheduled here rather than in CSS because both the distance and the target
+ * change every pass — no fixed set of keyframes can say "stop at whichever row
+ * is up next". The hook only moves the band and marks the row it reaches;
+ * the branch flash and the shimmer are CSS reacting to that mark.
+ *
+ * Driving it from one timer also sidesteps the phase problem the continuous
+ * tracer has: there is nothing to keep in sync, because the trunk hands over to
+ * the row explicitly instead of two clocks agreeing on when to meet.
+ */
+function useTracerRelay(listRef: RefObject<HTMLUListElement | null>, enabled: boolean) {
+  useEffect(() => {
+    const list = listRef.current
+    if (!list || !enabled || typeof list.animate !== 'function') return
+
+    let stopped = false
+    let timer = 0
+    let lit: HTMLElement | null = null
+    let pass = 0
+
+    const clearLit = () => {
+      lit?.removeAttribute('data-tracer-lit')
+      lit = null
+    }
+
+    const schedule = (fn: () => void, ms: number) => {
+      timer = window.setTimeout(() => { if (!stopped) fn() }, ms)
+    }
+
+    const run = () => {
+      const rows = [...list.children].filter(
+        (row): row is HTMLElement => row instanceof HTMLElement && row.hasAttribute('data-tracer-live')
+      )
+      if (rows.length === 0) {
+        schedule(run, RELAY_IDLE_MS)
+        return
+      }
+
+      const row = rows[pass % rows.length]
+      pass += 1
+      const target = row.offsetTop + RELAY_ELBOW_OFFSET
+      const travelMs = Math.max(RELAY_MIN_TRAVEL_MS, (target / RELAY_SPEED_PX_PER_S) * 1000)
+
+      // No fill: the band returns to its parked position the moment it lands,
+      // so the pulse reads as passing INTO the branch rather than stopping on it.
+      const travel = list.animate(
+        [{ backgroundPositionY: '-28px' }, { backgroundPositionY: `${target - RELAY_BAND_HALF}px` }],
+        { duration: travelMs, easing: 'cubic-bezier(0.35, 0, 0.2, 1)', pseudoElement: '::before' },
+      )
+
+      travel.onfinish = () => {
+        if (stopped) return
+        clearLit()
+        // The row may have finished while the band was on its way.
+        if (row.isConnected && row.hasAttribute('data-tracer-live')) {
+          row.setAttribute('data-tracer-lit', 'true')
+          lit = row
+        }
+        schedule(() => {
+          clearLit()
+          schedule(run, RELAY_REST_MS)
+        }, RELAY_DWELL_MS)
+      }
+    }
+
+    run()
+    return () => {
+      stopped = true
+      window.clearTimeout(timer)
+      clearLit()
+    }
+  }, [listRef, enabled])
+}
+
+/** Inline hook the tracer keyframes read to stage each branch's flash. */
+function tracerRowStyle(index: number): CSSProperties {
+  return { '--tree-tracer-row': index } as CSSProperties
+}
+
+/**
  * The app the turn currently has hold of, as a tree row.
  *
  * Deliberately kept at full strength rather than muted like a finished row: the
  * user granted this, it is still in force, and the row is the only place the UI
  * says so once the header badge is gone. The revoke control travels with it.
  */
-function ComputerUseRow({ computerUse }: { computerUse: ActivityComputerUse }) {
+function ComputerUseRow({ computerUse, tracerRow }: {
+  computerUse: ActivityComputerUse
+  tracerRow: number
+}) {
   return (
-    <li>
+    <li style={tracerRowStyle(tracerRow)} data-tracer-live="true">
       <div className="flex items-center gap-1.5">
         <RowMark>
           {computerUse.iconBase64 ? (
@@ -355,7 +526,10 @@ function ComputerUseRow({ computerUse }: { computerUse: ActivityComputerUse }) {
 }
 
 /** One tree row standing in for all active background work. */
-function BackgroundTasksRow({ tasks }: { tasks: ActivityBackgroundTask[] }) {
+function BackgroundTasksRow({ tasks, tracerRow }: {
+  tasks: ActivityBackgroundTask[]
+  tracerRow: number
+}) {
   const earliest = Math.min(...tasks.map(t => t.startedAt))
   const elapsed = useElapsedTimer(new Date(earliest))
   // Label as "workflow" when every active background task is a dynamic workflow;
@@ -364,7 +538,7 @@ function BackgroundTasksRow({ tasks }: { tasks: ActivityBackgroundTask[] }) {
   const noun = allWorkflows ? 'workflow' : 'process'
   const label = `${tasks.length} background ${tasks.length === 1 ? noun : allWorkflows ? `${noun}s` : `${noun}es`}`
   return (
-    <li>
+    <li style={tracerRowStyle(tracerRow)} data-tracer-live="true">
       <div className="flex items-center gap-1.5">
         <span className="text-muted-foreground">{label}</span>
         {elapsed && (
@@ -384,7 +558,13 @@ function buildTodoRows(
   todos: Todo[],
   showAllTodos: boolean,
   setShowAllTodos: (show: boolean) => void,
+  /** This group's first position on the tree. */
+  tracerRowStart: number,
 ): ReactNode {
+  const rowStyle = (offset: number) => tracerRowStyle(tracerRowStart + offset)
+  // The toggles are rows on the tree too, so they take positions ahead of the
+  // items they hide.
+  let offset = 0
   const MAX_VISIBLE = 5
   const needsTruncation = todos.length > MAX_VISIBLE && !showAllTodos
 
@@ -412,7 +592,7 @@ function buildTodoRows(
   return (
     <>
       {hiddenTodos.length > 0 && (
-        <li>
+        <li style={rowStyle(offset++)}>
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setShowAllTodos(true)}
@@ -428,7 +608,7 @@ function buildTodoRows(
         </li>
       )}
       {showAllTodos && todos.length > MAX_VISIBLE && (
-        <li>
+        <li style={rowStyle(offset++)}>
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setShowAllTodos(false)}
@@ -440,7 +620,11 @@ function buildTodoRows(
         </li>
       )}
       {visibleTodos.map((todo, index) => (
-        <li key={index}>
+        <li
+          key={index}
+          style={rowStyle(offset + index)}
+          data-tracer-live={todo.status === 'in_progress' ? 'true' : undefined}
+        >
           <div
             className={cn(
               'flex items-center gap-1.5',
