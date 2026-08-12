@@ -22,6 +22,7 @@ import { QueryClient, QueryCache, MutationCache, CancelledError } from '@tanstac
 import type { MutationMeta, QueryMeta } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { captureRendererException } from './error-reporting'
+import { ApiRequestError, isProvenIntentionalApiAbort } from './api'
 
 // Type the meta fields the global handlers read. Augmenting `Register` makes
 // `mutation.options.meta` / `query.meta` strongly typed everywhere.
@@ -58,7 +59,12 @@ function messageFromError(error: unknown): string {
 
 /** Exported for unit tests. Report to Sentry, then toast unless opted out. */
 export function handleMutationError(error: unknown, meta?: MutationMeta): void {
-  captureRendererException(error, { tags: { source: 'mutation' } })
+  // apiFetch already reports typed transport/HTTP failures at the request
+  // boundary. Only suppress a teardown abort when that boundary proved it.
+  if (isProvenIntentionalApiAbort(error)) return
+  if (!(error instanceof ApiRequestError)) {
+    captureRendererException(error, { tags: { source: 'mutation' } })
+  }
   if (meta?.skipGlobalErrorToast) return
   toast.error(meta?.errorMessage ?? messageFromError(error))
 }
@@ -66,8 +72,10 @@ export function handleMutationError(error: unknown, meta?: MutationMeta): void {
 /** Exported for unit tests. Report to Sentry; toast only if the query opted in. */
 export function handleQueryError(error: unknown, meta?: QueryMeta): void {
   // A cancelled fetch (navigation / unmount / refetch supersede) is not a failure.
-  if (error instanceof CancelledError) return
-  captureRendererException(error, { tags: { source: 'query' } })
+  if (error instanceof CancelledError || isProvenIntentionalApiAbort(error)) return
+  if (!(error instanceof ApiRequestError)) {
+    captureRendererException(error, { tags: { source: 'query' } })
+  }
   if (meta?.showErrorToast) toast.error(meta.errorMessage ?? messageFromError(error))
 }
 

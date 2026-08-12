@@ -75,7 +75,11 @@ export function setRendererErrorReportingUser(user: ErrorReportingUser | null): 
  */
 export function captureRendererException(
   error: unknown,
-  context?: { tags?: Record<string, string>; extra?: Record<string, unknown> }
+  context?: {
+    tags?: Record<string, string>
+    extra?: Record<string, unknown>
+    fingerprint?: string[]
+  }
 ): void {
   void loadSentry().then((provider) => {
     if (!provider) return
@@ -83,6 +87,7 @@ export function captureRendererException(
       provider.captureException(error, {
         tags: context?.tags,
         extra: context?.extra,
+        fingerprint: context?.fingerprint,
       })
     } catch { /* never crash */ }
   }).catch(() => {
