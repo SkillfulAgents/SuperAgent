@@ -9,7 +9,7 @@
  */
 
 import { ERROR_REPORTING_INGEST_URL } from '@shared/lib/error-reporting/config'
-import type { ErrorReportingUser } from '@shared/lib/error-reporting/types'
+import type { Breadcrumb, ErrorReportingUser } from '@shared/lib/error-reporting/types'
 import { isElectron } from './env'
 
 let errorReportingEnabled = true // null/undefined means true — default on for existing users
@@ -75,7 +75,11 @@ export function setRendererErrorReportingUser(user: ErrorReportingUser | null): 
  */
 export function captureRendererException(
   error: unknown,
-  context?: { tags?: Record<string, string>; extra?: Record<string, unknown> }
+  context?: {
+    tags?: Record<string, string>
+    extra?: Record<string, unknown>
+    fingerprint?: string[]
+  }
 ): void {
   void loadSentry().then((provider) => {
     if (!provider) return
@@ -83,10 +87,21 @@ export function captureRendererException(
       provider.captureException(error, {
         tags: context?.tags,
         extra: context?.extra,
+        fingerprint: context?.fingerprint,
       })
     } catch { /* never crash */ }
   }).catch(() => {
     // loadSentry already degrades provider failures; this is defense-in-depth
     // against a future implementation changing that contract.
   })
+}
+
+/** Add a pre-sanitized renderer breadcrumb without exposing the provider. */
+export function addRendererBreadcrumb(breadcrumb: Breadcrumb): void {
+  void loadSentry().then((provider) => {
+    if (!provider) return
+    try {
+      provider.addBreadcrumb(breadcrumb)
+    } catch { /* never crash */ }
+  }).catch(() => {})
 }

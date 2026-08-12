@@ -22,6 +22,7 @@ import { QueryClient, QueryCache, MutationCache, CancelledError } from '@tanstac
 import type { MutationMeta, QueryMeta } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { captureRendererException } from './error-reporting'
+import { ApiRequestError } from './api-observability'
 
 // Type the meta fields the global handlers read. Augmenting `Register` makes
 // `mutation.options.meta` / `query.meta` strongly typed everywhere.
@@ -57,8 +58,39 @@ function messageFromError(error: unknown): string {
 }
 
 /** Exported for unit tests. Report to Sentry, then toast unless opted out. */
+function reportApiAwareError(error: unknown, source: 'mutation' | 'query'): void {
+  if (error instanceof ApiRequestError) {
+    const { routeTemplate, method, operation, originClass, status, code, requestId,
+      transport, online, visibility, lifecycle, failureStreak, durationBucket } = error.context
+    captureRendererException(error, {
+      tags: {
+        source,
+        route: routeTemplate,
+        method,
+        operation,
+        origin: originClass,
+        result: status ? `http-${status}` : `transport-${transport ?? 'unknown'}`,
+      },
+      fingerprint: ['renderer-api', operation, routeTemplate, String(status ?? transport ?? 'unknown')],
+      extra: {
+        status,
+        code,
+        requestId,
+        transport,
+        online,
+        visibility,
+        lifecycle,
+        failureStreak,
+        durationBucket,
+      },
+    })
+    return
+  }
+  captureRendererException(error, { tags: { source } })
+}
+
 export function handleMutationError(error: unknown, meta?: MutationMeta): void {
-  captureRendererException(error, { tags: { source: 'mutation' } })
+  reportApiAwareError(error, 'mutation')
   if (meta?.skipGlobalErrorToast) return
   toast.error(meta?.errorMessage ?? messageFromError(error))
 }
@@ -67,7 +99,7 @@ export function handleMutationError(error: unknown, meta?: MutationMeta): void {
 export function handleQueryError(error: unknown, meta?: QueryMeta): void {
   // A cancelled fetch (navigation / unmount / refetch supersede) is not a failure.
   if (error instanceof CancelledError) return
-  captureRendererException(error, { tags: { source: 'query' } })
+  reportApiAwareError(error, 'query')
   if (meta?.showErrorToast) toast.error(meta.errorMessage ?? messageFromError(error))
 }
 

@@ -1,4 +1,4 @@
-import { apiFetch, apiJson } from '@renderer/lib/api'
+import { apiFetch, apiJson, throwApiResponseError } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
@@ -33,7 +33,7 @@ export function useSessions(agentSlug: string | null, options?: { staleTime?: nu
     queryKey: ['sessions', resolvedSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${resolvedSlug}/sessions`)
-      if (!res.ok) throw new Error('Failed to fetch sessions')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-sessions')
       return res.json()
     },
     enabled: !!resolvedSlug,
@@ -55,7 +55,7 @@ export function useNotableSessions(agentSlug: string | null, options?: { limit?:
     queryKey: ['sessions', resolvedSlug, 'notable', limit],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${resolvedSlug}/sessions?notable=true&limit=${limit}`)
-      if (!res.ok) throw new Error('Failed to fetch sessions')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-sessions')
       return res.json()
     },
     enabled: !!resolvedSlug,
@@ -95,7 +95,7 @@ export function useCreateSession() {
           ...(data.model ? { model: data.model } : {}),
         }),
       })
-      if (!res.ok) throw new Error('Failed to create session')
+      if (!res.ok) await throwApiResponseError(res, 'create-session')
       // initialMessageUuid is the server-assigned id of the initial message,
       // used to materialize the optimistic pending copy by exact id match.
       return res.json() as Promise<ApiSession & { initialMessageUuid: string }>
@@ -116,7 +116,7 @@ export function useDeleteSession() {
   return useMutation({
     mutationFn: async ({ id, agentSlug }: { id: string; agentSlug: string }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${id}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Failed to delete session')
+      if (!res.ok) await throwApiResponseError(res, 'delete-session')
       // 204 No Content - no body to parse
     },
     onSuccess: (_, variables) => {
@@ -137,7 +137,7 @@ export function useUpdateSessionName() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
       })
-      if (!res.ok) throw new Error('Failed to update session name')
+      if (!res.ok) await throwApiResponseError(res, 'update-session-name')
       return res.json() as Promise<ApiSession>
     },
     onSuccess: (_, variables) => {

@@ -1,4 +1,4 @@
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, throwApiResponseError } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type {
   GlobalSettingsResponse,
@@ -24,7 +24,7 @@ export function useSettings(options?: { enabled?: boolean }) {
     queryKey: ['settings'],
     queryFn: async () => {
       const res = await apiFetch('/api/settings')
-      if (!res.ok) throw new Error('Failed to fetch settings')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-settings')
       return res.json()
     },
     refetchInterval: 60000, // Poll less frequently - container status is cached server-side
@@ -61,7 +61,7 @@ export function useModelSettings() {
     queryKey: ['settings', 'models'],
     queryFn: async () => {
       const res = await apiFetch('/api/settings/models')
-      if (!res.ok) throw new Error('Failed to fetch model settings')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-model-settings')
       return res.json()
     },
     staleTime: 60000,
@@ -168,7 +168,7 @@ export function useRefreshAvailability() {
       const res = await apiFetch('/api/settings/refresh-availability', {
         method: 'POST',
       })
-      if (!res.ok) throw new Error('Failed to refresh availability')
+      if (!res.ok) await throwApiResponseError(res, 'refresh-availability')
       return res.json()
     },
     onSuccess: () => {

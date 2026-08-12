@@ -1,4 +1,4 @@
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, throwApiResponseError } from '@renderer/lib/api'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
@@ -26,7 +26,7 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages`)
       if (res.status === 404) throw new TranscriptNotFoundError()
-      if (!res.ok) throw new Error('Failed to fetch messages')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-messages')
       return res.json()
     },
     enabled: !!sessionId && !!agentSlug,
@@ -56,7 +56,7 @@ export function useSendMessage() {
           ...(data.model ? { model: data.model } : {}),
         }),
       })
-      if (!res.ok) throw new Error('Failed to send message')
+      if (!res.ok) await throwApiResponseError(res, 'send-message')
       // uuid is the server-assigned message id, used to materialize the
       // optimistic pending copy by exact id match.
       return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean }>
@@ -72,7 +72,7 @@ export function useCancelQueuedMessage() {
         `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/queued-messages/${encodeURIComponent(data.uuid)}`,
         { method: 'DELETE' }
       )
-      if (!res.ok) throw new Error('Failed to cancel queued message')
+      if (!res.ok) await throwApiResponseError(res, 'cancel-queued-message')
       // cancelled: false = the agent already picked the message up; the
       // caller leaves the ghost alone and lets it materialize normally.
       return res.json() as Promise<{ cancelled: boolean }>
@@ -103,7 +103,7 @@ export function useUploadFolder() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sourcePath: data.sourcePath }),
       })
-      if (!res.ok) throw new Error('Failed to upload folder')
+      if (!res.ok) await throwApiResponseError(res, 'upload-folder')
       return res.json() as Promise<{ path: string; folderName: string }>
     },
   })
@@ -117,7 +117,7 @@ export function useDeleteMessage() {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages/${messageId}`, {
         method: 'DELETE',
       })
-      if (!res.ok) throw new Error('Failed to delete message')
+      if (!res.ok) await throwApiResponseError(res, 'delete-message')
     },
     onSuccess: (_, { sessionId, agentSlug }) => {
       queryClient.invalidateQueries({ queryKey: ['messages', sessionId, agentSlug] })
@@ -133,7 +133,7 @@ export function useDeleteToolCall() {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/tool-calls/${toolCallId}`, {
         method: 'DELETE',
       })
-      if (!res.ok) throw new Error('Failed to delete tool call')
+      if (!res.ok) await throwApiResponseError(res, 'delete-tool-call')
     },
     onSuccess: (_, { sessionId, agentSlug }) => {
       queryClient.invalidateQueries({ queryKey: ['messages', sessionId, agentSlug] })
@@ -152,7 +152,7 @@ export function useSubagentMessages(
       const res = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/subagent/${subagentId}/messages`
       )
-      if (!res.ok) throw new Error('Failed to fetch subagent messages')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-subagent-messages')
       return res.json()
     },
     enabled: !!sessionId && !!agentSlug && !!subagentId,
@@ -178,7 +178,7 @@ export function useWorkflowTree(
       const res = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/tree`
       )
-      if (!res.ok) throw new Error('Failed to fetch workflow tree')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-workflow-tree')
       return res.json()
     },
     enabled: !!sessionId && !!agentSlug && !!runId,
@@ -208,7 +208,7 @@ export function useWorkflowAgentMessages(
       const res = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/agents/${agentId}/messages`
       )
-      if (!res.ok) throw new Error('Failed to fetch workflow agent messages')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-workflow-agent-messages')
       return res.json()
     },
     enabled: !!sessionId && !!agentSlug && !!runId && !!agentId,
@@ -224,7 +224,7 @@ export function useInterruptSession() {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/interrupt`, {
         method: 'POST',
       })
-      if (!res.ok) throw new Error('Failed to interrupt session')
+      if (!res.ok) await throwApiResponseError(res, 'interrupt-session')
       return res.json()
     },
     onSuccess: (_, { sessionId }) => {

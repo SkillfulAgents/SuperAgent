@@ -9,6 +9,7 @@ const { mockCapture } = vi.hoisted(() => ({ mockCapture: vi.fn() }))
 vi.mock('./error-reporting', () => ({ captureRendererException: mockCapture }))
 
 import { handleMutationError, handleQueryError, createAppQueryClient } from './query-client'
+import { ApiRequestError } from './api-observability'
 
 beforeEach(() => {
   mockToastError.mockClear()
@@ -51,6 +52,39 @@ describe('handleQueryError', () => {
     expect(mockCapture).toHaveBeenCalledTimes(1)
     expect(mockCapture.mock.calls[0][1]).toMatchObject({ tags: { source: 'query' } })
     expect(mockToastError).not.toHaveBeenCalled()
+  })
+
+  it('reports typed API context with operation-specific fingerprinting', () => {
+    handleQueryError(new ApiRequestError({
+      routeTemplate: '/api/agents/:id/preferences',
+      method: 'GET',
+      operation: 'fetch-agent-preferences',
+      originClass: 'loopback',
+      online: true,
+      visibility: 'visible',
+      lifecycle: 'online',
+      failureStreak: 2,
+      durationBucket: '<1s',
+      status: 503,
+      code: 'preferences_unavailable',
+      requestId: 'request_AbC12345',
+    }))
+
+    expect(mockCapture).toHaveBeenCalledWith(expect.any(ApiRequestError), {
+      tags: expect.objectContaining({
+        source: 'query',
+        route: '/api/agents/:id/preferences',
+        operation: 'fetch-agent-preferences',
+        result: 'http-503',
+      }),
+      fingerprint: ['renderer-api', 'fetch-agent-preferences', '/api/agents/:id/preferences', '503'],
+      extra: expect.objectContaining({
+        status: 503,
+        code: 'preferences_unavailable',
+        failureStreak: 2,
+        lifecycle: 'online',
+      }),
+    })
   })
 
   it('toasts when the query opts in via meta.showErrorToast', () => {

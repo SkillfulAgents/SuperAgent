@@ -1,6 +1,7 @@
 import { Component, type ReactNode } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { Button } from './button'
+import { captureRendererException } from '@renderer/lib/error-reporting'
 
 interface ErrorBoundaryProps {
   children: ReactNode
@@ -29,6 +30,18 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
     console.error('ErrorBoundary caught an error:', error, errorInfo)
+    const componentNames = Array.from((errorInfo.componentStack ?? '').matchAll(/\bat ([A-Z][A-Za-z0-9_]*)/g))
+      .map((match) => match[1])
+      .slice(0, 8)
+    captureRendererException(error, {
+      tags: {
+        source: 'react-error-boundary',
+        route: window.location.pathname.split('/').map((part) => part && !['agents', 'sessions', 'settings', 'account'].includes(part) ? ':id' : part).join('/'),
+        component: componentNames[0] ?? 'unknown',
+      },
+      fingerprint: ['renderer-react', componentNames[0] ?? 'unknown', error.name],
+      extra: { componentNames },
+    })
     this.props.onError?.(error, errorInfo)
   }
 

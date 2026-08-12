@@ -6,6 +6,7 @@ const sentry = vi.hoisted(() => ({
   init: vi.fn(),
   setUser: vi.fn(),
   captureException: vi.fn(),
+  addBreadcrumb: vi.fn(),
 }))
 
 vi.mock('./sentry-browser-provider', () => sentry)
@@ -72,6 +73,21 @@ describe('renderer error reporting facade', () => {
       email: 'early@example.com',
     })
     expect(sentry.captureException).toHaveBeenCalledWith(error, context)
+  })
+
+  it('forwards only caller-sanitized breadcrumbs through the facade', async () => {
+    reporting.addRendererBreadcrumb({
+      category: 'api.request',
+      message: 'fetch-settings failed',
+      data: { routeTemplate: '/api/settings', status: 503 },
+    })
+
+    await vi.waitFor(() => expect(sentry.addBreadcrumb).toHaveBeenCalledOnce())
+    expect(sentry.addBreadcrumb).toHaveBeenCalledWith({
+      category: 'api.request',
+      message: 'fetch-settings failed',
+      data: { routeTemplate: '/api/settings', status: 503 },
+    })
   })
 
   it('never lets provider failures escape into the renderer', async () => {

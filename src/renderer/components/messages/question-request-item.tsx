@@ -1,4 +1,4 @@
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, throwApiResponseError } from '@renderer/lib/api'
 
 import { useEffect, useRef, useState } from 'react'
 import { HelpCircle, Check, ChevronRight } from 'lucide-react'
@@ -169,10 +169,7 @@ export function QuestionRequestItem({
         signal,
       }
     )
-    if (!response.ok) {
-      const data = await response.json()
-      throw new Error(data.error || 'Request failed')
-    }
+    if (!response.ok) await throwApiResponseError(response, 'answer-question')
   }
 
   const handleSubmit = () => {

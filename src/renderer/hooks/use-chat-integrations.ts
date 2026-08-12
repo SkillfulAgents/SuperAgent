@@ -8,7 +8,7 @@ import type { ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
 import { isSettling } from '@shared/lib/chat-integrations/utils'
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, throwApiResponseError } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
 export type { ChatIntegrationSession, ChatIntegrationAccess }
@@ -53,7 +53,7 @@ export function useChatIntegrations(agentSlug: string | null, status?: string) {
         ? `/api/agents/${agentSlug}/chat-integrations?status=${status}`
         : `/api/agents/${agentSlug}/chat-integrations`
       const res = await apiFetch(url)
-      if (!res.ok) throw new Error('Failed to fetch chat integrations')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-chat-integrations')
       return res.json()
     },
     enabled: !!agentSlug,
@@ -74,7 +74,7 @@ export function useChatIntegration(id: string | null) {
     queryKey: chatIntegrationKeys.detail(id),
     queryFn: async () => {
       const res = await apiFetch(`/api/chat-integrations/${id}`)
-      if (!res.ok) throw new Error('Failed to fetch chat integration')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-chat-integration')
       return res.json()
     },
     enabled: !!id,
@@ -92,7 +92,7 @@ export function useChatIntegrationStatus(id: string | null) {
     queryKey: chatIntegrationKeys.status(id),
     queryFn: async () => {
       const res = await apiFetch(`/api/chat-integrations/${id}/status`)
-      if (!res.ok) throw new Error('Failed to fetch status')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-status')
       return res.json()
     },
     enabled: !!id,
@@ -117,7 +117,7 @@ export function useChatIntegrationSessions(integrationId: string | null) {
     queryKey: chatIntegrationKeys.sessions(integrationId),
     queryFn: async () => {
       const res = await apiFetch(`/api/chat-integrations/${integrationId}/sessions`)
-      if (!res.ok) throw new Error('Failed to fetch chat integration sessions')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-chat-integration-sessions')
       return res.json()
     },
     enabled: !!integrationId,
@@ -137,7 +137,7 @@ export function useChatIntegrationAccess(integrationId: string | null, enabled =
     queryKey: chatIntegrationKeys.access(integrationId ?? ''),
     queryFn: async () => {
       const res = await apiFetch(`/api/chat-integrations/${integrationId}/access`)
-      if (!res.ok) throw new Error('Failed to fetch chat integration access')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-chat-integration-access')
       return res.json()
     },
     // The /access route is owner-gated; callers pass enabled=false for non-owners
@@ -222,7 +222,7 @@ export function useUpdateChatIntegration() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
       })
-      if (!res.ok) throw new Error('Failed to update chat integration')
+      if (!res.ok) await throwApiResponseError(res, 'update-chat-integration')
       return res.json() as Promise<ChatIntegration>
     },
     onSuccess: (data) => {
@@ -242,7 +242,7 @@ export function useDeleteChatIntegration() {
   return useMutation({
     mutationFn: async ({ id, agentSlug }: { id: string; agentSlug: string }) => {
       const res = await apiFetch(`/api/chat-integrations/${id}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Failed to delete chat integration')
+      if (!res.ok) await throwApiResponseError(res, 'delete-chat-integration')
       return { id, agentSlug }
     },
     onSuccess: (_, variables) => {
@@ -295,7 +295,7 @@ export function useSetRequireApproval() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ requireApproval }),
       })
-      if (!res.ok) throw new Error('Failed to update require approval')
+      if (!res.ok) await throwApiResponseError(res, 'update-require-approval')
       return res.json() as Promise<ChatIntegration>
     },
     onSuccess: (data) => {
@@ -318,7 +318,7 @@ export function useClearChatSession() {
       const res = await apiFetch(`/api/chat-integrations/${integrationId}/sessions/${sessionId}`, {
         method: 'DELETE',
       })
-      if (!res.ok) throw new Error('Failed to clear session')
+      if (!res.ok) await throwApiResponseError(res, 'clear-session')
       return { integrationId }
     },
     onSuccess: (_, variables) => {

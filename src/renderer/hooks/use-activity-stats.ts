@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import type { z } from 'zod'
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, throwApiResponseError } from '@renderer/lib/api'
 import { DEFAULT_ACTIVITY_DAYS } from '@shared/lib/types/activity'
 import {
   agentActivityStatsSchema,
@@ -12,7 +12,7 @@ const ACTIVITY_REFETCH_INTERVAL_MS = 120_000
 
 async function activityJson<T>(url: string, schema: z.ZodType<T>): Promise<T> {
   const response = await apiFetch(url)
-  if (!response.ok) throw new Error('Failed to fetch activity statistics')
+  if (!response.ok) await throwApiResponseError(response, 'fetch-activity-statistics')
   return schema.parse(await response.json())
 }
 

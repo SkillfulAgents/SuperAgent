@@ -1,4 +1,4 @@
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, throwApiResponseError } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -54,7 +54,7 @@ export function useAgents<TData = ApiAgent[]>(options?: {
     queryKey: ['agents'],
     queryFn: async () => {
       const res = await apiFetch('/api/agents')
-      if (!res.ok) throw new Error('Failed to fetch agents')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-agents')
       return res.json()
     },
     enabled: options?.enabled,
@@ -73,7 +73,7 @@ export function useAgent(slug: string | null) {
   return useQuery<ApiAgent>({
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${slug}`)
-      if (!res.ok) throw new Error('Failed to fetch agent')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-agent')
       return res.json()
     },
     queryKey: ['agents', slug],
@@ -94,7 +94,7 @@ export function useCreateAgent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
-      if (!res.ok) throw new Error('Failed to create agent')
+      if (!res.ok) await throwApiResponseError(res, 'create-agent')
       return res.json() as Promise<ApiAgent>
     },
     onSuccess: (agent) => {
@@ -165,7 +165,7 @@ export function useUpdateAgent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, description, instructions }),
       })
-      if (!res.ok) throw new Error('Failed to update agent')
+      if (!res.ok) await throwApiResponseError(res, 'update-agent')
       return res.json() as Promise<ApiAgent>
     },
     onSuccess: (_, variables) => {
@@ -225,7 +225,7 @@ export function useStopAgent() {
   return useMutation({
     mutationFn: async (slug: string) => {
       const res = await apiFetch(`/api/agents/${slug}/stop`, { method: 'POST' })
-      if (!res.ok) throw new Error('Failed to stop agent')
+      if (!res.ok) await throwApiResponseError(res, 'stop-agent')
       return res.json()
     },
     onSuccess: (_, slug) => {

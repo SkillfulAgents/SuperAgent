@@ -1,4 +1,4 @@
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, throwApiResponseError } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { AgentPreferences } from '@shared/lib/types/agent-preferences'
 
@@ -7,7 +7,7 @@ export function useAgentPreferences(agentSlug: string) {
     queryKey: ['agent-preferences', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/preferences`)
-      if (!res.ok) throw new Error('Failed to fetch agent preferences')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-agent-preferences')
       return res.json()
     },
     enabled: !!agentSlug,
@@ -28,7 +28,7 @@ export function useUpdateAgentPreferences(agentSlug: string) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
-      if (!res.ok) throw new Error('Failed to update agent preferences')
+      if (!res.ok) await throwApiResponseError(res, 'update-agent-preferences')
       return res.json()
     },
     onSuccess: () => {

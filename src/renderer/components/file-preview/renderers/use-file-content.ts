@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { ApiRequestError, beginApiRequest, rememberResponseContext, throwApiResponseError } from '@renderer/lib/api-observability'
 
 /**
  * Hard cap on how much text we pull into the renderer. Measured in UTF-16 code
@@ -24,8 +25,15 @@ export function useFileContent(url: string) {
   return useQuery<FileContent>({
     queryKey: ['file-content', url],
     queryFn: async () => {
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`Failed to load file: ${res.status}`)
+      const request = beginApiRequest(url, undefined, '', 'load-file-preview')
+      let res: Response
+      try {
+        res = await fetch(url)
+        rememberResponseContext(res, request.finish(res))
+      } catch (error) {
+        throw new ApiRequestError(request.fail(error))
+      }
+      if (!res.ok) await throwApiResponseError(res, 'load-file-preview')
       const text = await res.text()
       if (text.length > MAX_CONTENT_CHARS) {
         return { text: text.slice(0, MAX_CONTENT_CHARS), truncated: true }

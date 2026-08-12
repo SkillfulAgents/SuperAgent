@@ -1,6 +1,16 @@
 import { getApiBaseUrl } from './env'
 import { hasInteractiveLogin, isAuthMode } from './auth-mode'
 import { reportCloudSessionRejected } from './cloud-session'
+import {
+  ApiRequestError,
+  apiTransportError,
+  beginApiRequest,
+  rememberResponseContext,
+  throwApiError,
+} from './api-observability'
+
+export { ApiRequestError } from './api-observability'
+export { throwApiError, throwApiResponseError } from './api-observability'
 
 /**
  * Fetch wrapper that prepends the API base URL.
@@ -11,10 +21,18 @@ import { reportCloudSessionRejected } from './cloud-session'
  */
 export async function apiFetch(
   path: string,
-  init?: RequestInit
+  init?: RequestInit,
+  observability?: { operation?: string },
 ): Promise<Response> {
   const baseUrl = getApiBaseUrl()
-  const response = await fetch(`${baseUrl}${path}`, init)
+  const request = beginApiRequest(path, init, baseUrl, observability?.operation)
+  let response: Response
+  try {
+    response = await fetch(`${baseUrl}${path}`, init)
+    rememberResponseContext(response, request.finish(response))
+  } catch (error) {
+    throw apiTransportError(error, request.fail(error))
+  }
 
   // A 401 means three different things depending on what we're talking to, so
   // the handling is three-way (skip auth endpoints throughout, to avoid loops):
@@ -139,10 +157,24 @@ export function stashRedirectTarget(path: string): void {
  * Thrown by `apiJson` on a non-2xx response, carrying the HTTP status so route
  * loaders can map it: 403/404 → `notFound()`, 5xx/network → `errorComponent`.
  */
-export class HttpError extends Error {
-  constructor(public status: number) {
-    super(`HTTP ${status}`)
+export class HttpError extends ApiRequestError {
+  readonly status: number
+
+  constructor(status: number, path = '/unknown') {
+    super({
+      routeTemplate: path,
+      method: 'GET',
+      operation: 'loader-request',
+      originClass: 'same-origin',
+      online: typeof navigator === 'undefined' ? 'unknown' : navigator.onLine,
+      visibility: 'unknown',
+      lifecycle: 'request',
+      failureStreak: 1,
+      durationBucket: '<250ms',
+      status,
+    })
     this.name = 'HttpError'
+    this.status = status
   }
 }
 
@@ -152,8 +184,8 @@ export class HttpError extends Error {
  * renders its own inline loading/empty states); loaders need a throw to gate
  * access before the route renders.
  */
-export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await apiFetch(path, init)
-  if (!res.ok) throw new HttpError(res.status)
+export async function apiJson<T>(path: string, init?: RequestInit, operation = 'loader-request'): Promise<T> {
+  const res = await apiFetch(path, init, { operation })
+  if (!res.ok) await throwApiError(res, path, operation)
   return res.json() as Promise<T>
 }

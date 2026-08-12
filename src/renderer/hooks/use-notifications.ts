@@ -1,4 +1,4 @@
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, throwApiResponseError } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiNotification } from '@shared/lib/types/api'
 
@@ -18,7 +18,7 @@ export function useNotifications(limit: number, offset: number = 0) {
     queryKey: ['notifications', limit, offset],
     queryFn: async () => {
       const res = await apiFetch(`/api/notifications?limit=${limit}&offset=${offset}`)
-      if (!res.ok) throw new Error('Failed to fetch notifications')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-notifications')
       return res.json()
     },
     refetchInterval: 30000,
@@ -33,7 +33,7 @@ export function useUnreadNotificationCount() {
     queryKey: ['notifications', 'unread-count'],
     queryFn: async () => {
       const res = await apiFetch('/api/notifications/unread-count')
-      if (!res.ok) throw new Error('Failed to fetch unread count')
+      if (!res.ok) await throwApiResponseError(res, 'fetch-unread-count')
       return res.json()
     },
     refetchInterval: 10000, // Poll more frequently for badge
@@ -52,7 +52,7 @@ export function useMarkNotificationRead() {
       const res = await apiFetch(`/api/notifications/${notificationId}/read`, {
         method: 'POST',
       })
-      if (!res.ok) throw new Error('Failed to mark notification as read')
+      if (!res.ok) await throwApiResponseError(res, 'mark-notification-as-read')
       return res.json()
     },
     onSuccess: () => {
@@ -73,7 +73,7 @@ export function useMarkAllNotificationsRead() {
       const res = await apiFetch('/api/notifications/read-all', {
         method: 'POST',
       })
-      if (!res.ok) throw new Error('Failed to mark all notifications as read')
+      if (!res.ok) await throwApiResponseError(res, 'mark-all-notifications-as-read')
       return res.json()
     },
     onSuccess: () => {
@@ -94,7 +94,7 @@ export function useMarkSessionNotificationsRead() {
       const res = await apiFetch(`/api/notifications/read-by-session/${sessionId}`, {
         method: 'POST',
       })
-      if (!res.ok) throw new Error('Failed to mark session notifications as read')
+      if (!res.ok) await throwApiResponseError(res, 'mark-session-notifications-as-read')
       return res.json()
     },
     onSuccess: () => {
