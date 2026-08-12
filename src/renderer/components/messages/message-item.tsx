@@ -16,12 +16,14 @@ import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attac
 import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import type { PluggableList } from 'unified'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -201,6 +203,42 @@ const MARKDOWN_COMPONENTS: Components = {
 export const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
   return (
     <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={markdownUrlTransform}>
+      {text}
+    </ReactMarkdown>
+  )
+})
+
+// Only the still-growing Markdown tail uses the word wrapper. Settled blocks
+// switch back to MarkdownBlock, keeping the filter-animation surface small even
+// during long responses.
+const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text }: { text: string }) {
+  const previousTextRef = useRef('')
+  const batchStartsRef = useRef<number[]>([0])
+  const previousText = previousTextRef.current
+
+  if (text !== previousText) {
+    if (previousText && text.startsWith(previousText)) {
+      batchStartsRef.current = [...batchStartsRef.current, previousText.length]
+    } else {
+      batchStartsRef.current = [0]
+    }
+    previousTextRef.current = text
+  }
+
+  // The plugin keeps each batch's delays stable across subsequent renders, so
+  // existing words do not restart while newly appended words get their own
+  // compact stagger sequence.
+  const rehypePlugins: PluggableList = [[rehypeStreamingWordReveal, {
+    batchStarts: batchStartsRef.current,
+  }]]
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={rehypePlugins}
+      components={MARKDOWN_COMPONENTS}
+      urlTransform={markdownUrlTransform}
+    >
       {text}
     </ReactMarkdown>
   )
@@ -387,7 +425,12 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                       {streamingSplit.settled.map((block, i) => (
                         <MarkdownBlock key={i} text={block} />
                       ))}
-                      {streamingSplit.tail && <MarkdownBlock text={streamingSplit.tail} />}
+                      {streamingSplit.tail && (
+                        <StreamingMarkdownBlock
+                          key={`tail-${streamingSplit.settled.length}`}
+                          text={streamingSplit.tail}
+                        />
+                      )}
                     </>
                   ) : (
                     <MarkdownBlock text={text} />

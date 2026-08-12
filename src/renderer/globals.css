@@ -117,6 +117,31 @@ html[data-keyboard-open] [data-composer-footer] {
   padding-bottom: 0;
 }
 
+/* Newly streamed prose resolves from a soft blur. Each word is mounted once in
+   the growing Markdown tail, so previously revealed text stays crisp while the
+   next chunk arrives. */
+@keyframes streaming-word-reveal {
+  from {
+    opacity: 0.18;
+    filter: blur(3.5px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+.streaming-word-reveal {
+  animation: streaming-word-reveal 420ms cubic-bezier(0.22, 0.61, 0.25, 1) both;
+  will-change: filter, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming-word-reveal {
+    animation: none;
+  }
+}
+
 /* The composer uses a ProseMirror document model but its controlled value is
    always serialized Markdown. Keep block spacing compact enough for chat while
    still making each Markdown construct immediately legible as it is typed. */
