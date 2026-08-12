@@ -3967,6 +3967,21 @@ describe('MessagePersister', () => {
       expect(lastSubscription.unsubscribe).toHaveBeenCalled()
     })
 
+    it('releases the stream when a scheduled session settles with an error', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+      mockClient._sendMessage({
+        type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    })
+
     it('releases the stream when a webhook session settles', async () => {
       await resubscribeWithMetadata({ isWebhookExecution: true, webhookTriggerId: 'trigger-1' })
 
@@ -3996,6 +4011,28 @@ describe('MessagePersister', () => {
       await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
 
       await messagePersister.promoteAutomatedSession(SESSION_ID, AGENT_SLUG)
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('does not let a stale subscribe-time metadata read undo a promotion', async () => {
+      const unpromoted = { isScheduledExecution: true, scheduledTaskId: 'task-1' }
+      let resolveSubscribeMeta: ((value: typeof unpromoted) => void) | undefined
+      let metaCalls = 0
+      vi.mocked(getSessionMetadata).mockImplementation(() => {
+        metaCalls += 1
+        if (metaCalls === 1) {
+          return new Promise((resolve) => { resolveSubscribeMeta = resolve })
+        }
+        return Promise.resolve(unpromoted as never)
+      })
+
+      await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+      await messagePersister.promoteAutomatedSession(SESSION_ID, AGENT_SLUG)
+      resolveSubscribeMeta!(unpromoted)
+      await new Promise((resolve) => setTimeout(resolve, 0))
 
       settleSession()
 

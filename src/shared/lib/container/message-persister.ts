@@ -123,6 +123,9 @@ interface StreamingState {
   // session settles. Resolved from session metadata at subscribe time so the
   // settle-time teardown in finalizeIdle stays synchronous (race-free).
   releaseStreamOnSettle?: boolean
+  // Set synchronously on promote so an in-flight subscribe-time metadata read
+  // cannot flip releaseStreamOnSettle back to true.
+  promotedToInteractive?: boolean
   // True when the most recent result was a clean success (not error-shaped,
   // not an interrupt, not a resume-exit). Consumed by finalizeIdle: a success
   // result alone is NOT terminal — queued messages or background work can keep
@@ -477,6 +480,7 @@ class MessagePersister {
       // Carried over so a transport reattach mid-run doesn't lose the verdict
       // before the refresh below lands.
       releaseStreamOnSettle: prior?.releaseStreamOnSettle ?? false,
+      promotedToInteractive: prior?.promotedToInteractive ?? false,
     })
 
     this.resolveReleaseStreamOnSettle(sessionId, agentSlug)
@@ -515,6 +519,8 @@ class MessagePersister {
         // A resubscribe replaced the state and kicked off its own resolution.
         const current = this.streamingStates.get(sessionId)
         if (!current || current !== stateRef) return
+        // Promote wins: its marker is set synchronously, this read may be stale.
+        if (current.promotedToInteractive) return
         current.releaseStreamOnSettle = Boolean(
           (meta?.isScheduledExecution || meta?.isWebhookExecution) &&
             !meta?.promotedToInteractive
@@ -571,17 +577,12 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: false,
     })
-    // A settled automation (cron/webhook) session's WebSocket to the runtime
-    // container carries no further traffic, but stream keepalives hold it open
-    // indefinitely. Runtimes that cap concurrent connections per container
-    // then reject new sessions once enough one-shot runs accumulate (SUP-572).
-    // Release the stream on settle;
-    // every send/wake path re-subscribes on demand, so a later resume costs one
-    // reconnect. Synchronous on purpose: an async gap here would race the
-    // wake path's isSubscribed check and close a stream a new turn relies on.
-    // Gated on stateEventsAuthority: only the runtime's own idle event proves
-    // the queue is drained — a legacy result-driven idle can still have a
-    // queued message about to start a turn on this stream.
+    this.maybeReleaseSettledAutomationStream(sessionId, state)
+  }
+
+  // Tear down a settled automation stream. Sync: an async gap races the wake path's isSubscribed check.
+  // Gated on stateEventsAuthority so a legacy idle can't drop a queued turn's stream.
+  private maybeReleaseSettledAutomationStream(sessionId: string, state: StreamingState): void {
     if (
       state.releaseStreamOnSettle &&
       state.stateEventsAuthority &&
@@ -1305,7 +1306,10 @@ class MessagePersister {
     // Promoted sessions behave interactive from here on — keep their stream
     // alive across settles like any other interactive session.
     const state = this.streamingStates.get(sessionId)
-    if (state) state.releaseStreamOnSettle = false
+    if (state) {
+      state.promotedToInteractive = true
+      state.releaseStreamOnSettle = false
+    }
 
     console.log(`[MessagePersister] Promoted automated session ${sessionId} to interactive (agent: ${agentSlug})`)
 
@@ -1916,6 +1920,9 @@ class MessagePersister {
                   })
                 }
               }
+            } else if (!state.isActive && state.lastResultSubtype !== null) {
+              // Error path already cleared isActive, so finalizeIdle never ran.
+              this.maybeReleaseSettledAutomationStream(sessionId, state)
             }
           } else if (content.state === 'running' && !state.isActive) {
             // The runtime started a turn we didn't initiate via POST (e.g. a
