@@ -119,6 +119,10 @@ interface StreamingState {
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
   agentSlug?: string // The agent slug for this session
   notAutomationSession?: boolean // Cached "not a cron/webhook session" verdict; skips the automation-status metadata write on later results
+  // Unpromoted cron/webhook session: release its container stream when the
+  // session settles. Resolved from session metadata at subscribe time so the
+  // settle-time teardown in finalizeIdle stays synchronous (race-free).
+  releaseStreamOnSettle?: boolean
   // True when the most recent result was a clean success (not error-shaped,
   // not an interrupt, not a resume-exit). Consumed by finalizeIdle: a success
   // result alone is NOT terminal — queued messages or background work can keep
@@ -470,7 +474,12 @@ class MessagePersister {
       lastResultSubtype: null,
       lastResultCleanSuccess: false,
       isRetrying: false,
+      // Carried over so a transport reattach mid-run doesn't lose the verdict
+      // before the refresh below lands.
+      releaseStreamOnSettle: prior?.releaseStreamOnSettle ?? false,
     })
+
+    this.resolveReleaseStreamOnSettle(sessionId, agentSlug)
 
     // Store container client for reconnection checks
     this.containerClients.set(sessionId, client)
@@ -491,6 +500,33 @@ class MessagePersister {
 
     // Wait for the WebSocket connection to be established
     await ready
+  }
+
+  // Resolve whether this subscription belongs to an unpromoted cron/webhook
+  // session. Non-blocking: automation runs last long enough that the verdict
+  // lands well before finalizeIdle consumes it, and an unresolved read just
+  // means the stream is kept (the pre-fix behavior). Scheduler and trigger
+  // paths register metadata before subscribing, so the read can't miss them.
+  private resolveReleaseStreamOnSettle(sessionId: string, agentSlug?: string): void {
+    if (!agentSlug) return
+    const stateRef = this.streamingStates.get(sessionId)
+    void getSessionMetadata(agentSlug, sessionId)
+      .then((meta) => {
+        // A resubscribe replaced the state and kicked off its own resolution.
+        const current = this.streamingStates.get(sessionId)
+        if (!current || current !== stateRef) return
+        current.releaseStreamOnSettle = Boolean(
+          (meta?.isScheduledExecution || meta?.isWebhookExecution) &&
+            !meta?.promotedToInteractive
+        )
+      })
+      .catch((error) => {
+        console.warn('[MessagePersister] Failed to resolve automation stream policy:', error)
+        captureException(error, {
+          tags: { area: 'container', op: 'resolveReleaseStreamOnSettle' },
+          extra: { sessionId, agentSlug },
+        })
+      })
   }
 
   // Unsubscribe from a session
@@ -535,6 +571,24 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: false,
     })
+    // A settled automation (cron/webhook) session's container WebSocket carries
+    // no further traffic, but stream keepalives hold it open indefinitely.
+    // Runtimes with a per-VM connection quota then reject new sessions once
+    // enough one-shot runs accumulate (SUP-572). Release the stream on settle;
+    // every send/wake path re-subscribes on demand, so a later resume costs one
+    // reconnect. Synchronous on purpose: an async gap here would race the
+    // wake path's isSubscribed check and close a stream a new turn relies on.
+    // Gated on stateEventsAuthority: only the runtime's own idle event proves
+    // the queue is drained — a legacy result-driven idle can still have a
+    // queued message about to start a turn on this stream.
+    if (
+      state.releaseStreamOnSettle &&
+      state.stateEventsAuthority &&
+      this.subscriptions.has(sessionId)
+    ) {
+      console.log(`[MessagePersister] Releasing settled automation stream for session ${sessionId}`)
+      this.unsubscribeFromSession(sessionId)
+    }
   }
 
   // Revert an optimistic markSessionActive when a host-initiated send fails
@@ -1246,6 +1300,11 @@ class MessagePersister {
     await updateSessionMetadata(agentSlug, sessionId, {
       promotedToInteractive: true,
     })
+
+    // Promoted sessions behave interactive from here on — keep their stream
+    // alive across settles like any other interactive session.
+    const state = this.streamingStates.get(sessionId)
+    if (state) state.releaseStreamOnSettle = false
 
     console.log(`[MessagePersister] Promoted automated session ${sessionId} to interactive (agent: ${agentSlug})`)
 
