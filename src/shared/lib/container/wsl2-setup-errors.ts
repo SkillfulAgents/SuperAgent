@@ -11,6 +11,7 @@ export type RunnerSetupErrorKind =
   | 'access-denied'
   | 'rootfs-missing'
   | 'wsl-not-installed'
+  | 'alpine-index-unreachable'
   | 'unknown'
 
 export interface RunnerSetupRemediationStep {
@@ -253,6 +254,33 @@ export function classifyWSL2Stderr(stderrRaw: string): RunnerSetupRemediation | 
   }
 
   return null
+}
+
+/**
+ * The distro could not download the Alpine packages it needs to provision
+ * itself, and the bounded retry over transient apk/DNS failures was exhausted
+ * (Sentry ELECTRON-14). Almost always DNS/proxy/VPN/firewall on the network the
+ * WSL2 VM uses, so it is user-resolvable.
+ *
+ * `stderrExcerpt` MUST already be redacted and truncated (see
+ * `redactApkStderr`) — it is shown in the UI and attached to telemetry.
+ */
+export function alpineIndexUnreachableError(stderrExcerpt: string): RunnerSetupRemediation {
+  return {
+    kind: 'alpine-index-unreachable',
+    title: 'Could not download Alpine packages',
+    remediation:
+      'The WSL2 runtime could not reach the Alpine package repositories while setting itself up, even after retrying. This is usually a DNS, proxy, VPN, or firewall issue on the network the WSL2 virtual machine uses.',
+    steps: [
+      { label: 'Check whether the distro can fetch the package index:', command: 'wsl -d superagent -- apk update' },
+      { label: 'If you are on a VPN or corporate proxy, disconnect (or configure it for WSL) and retry — split-tunnel VPNs commonly break WSL2 DNS.' },
+      { label: 'Restart WSL so it picks up fresh DNS settings:', command: 'wsl --shutdown' },
+      { label: 'Then retry starting the runtime — setup resumes where it left off.' },
+    ],
+    docsUrl: null,
+    originalStderr: stderrExcerpt,
+    userResolvable: true,
+  }
 }
 
 /** Build an "unknown" payload when stderr didn't match any known pattern. */

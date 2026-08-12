@@ -80,6 +80,8 @@ import {
   classifyProbeWgetResult,
   killWSL2PullProcesses,
 } from './wsl2-container-client'
+import { RunnerSetupError } from './wsl2-setup-errors'
+import { DEFAULT_APK_RETRY_POLICY } from './wsl2-provision-retry'
 
 const mockedFs = vi.mocked(fs)
 const mockedExecWithPath = vi.mocked(execWithPath)
@@ -285,20 +287,24 @@ describe('ensureWSL2Ready', () => {
     expect(mockSpawn).toHaveBeenCalledWith('wsl', ['-d', WSL2_DISTRO_NAME, '--', 'sh', '-s'], expect.any(Object))
   })
 
-  it('unregisters distro and throws when re-provisioning fails', async () => {
+  it('unregisters distro and throws when re-provisioning fails permanently', async () => {
     // First list: distro exists and running
     mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Running' }])
     // Second list: still running
     mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Running' }])
     // Provisioning check: test -x fails (helper missing)
     mockedExecWithPath.mockRejectedValueOnce(new Error('exit code 1'))
-    // Re-provision fails via spawn
-    mockSpawnProvision(1, 'apk: network unreachable')
+    // Re-provision fails via spawn with a PERMANENT apk error. Transient
+    // apk/DNS failures are retried instead and keep the distro — see the
+    // "provisionWSL2Distro apk retry (ELECTRON-14)" suite below.
+    mockSpawnProvision(1, 'ERROR: unsatisfiable constraints:\n  containerd-9.9.9 (missing)')
     // Unregister (cleanup)
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
 
     await expect(ensureWSL2Ready()).rejects.toThrow('Failed to provision WSL2 distro')
 
+    // A permanent apk error is fatal on the first attempt — no retry.
+    expect(mockSpawn).toHaveBeenCalledTimes(1)
     const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
     expect(calls.some((c) => c.includes('--unregister'))).toBe(true)
   })
@@ -406,6 +412,111 @@ describe('ensureWSL2Ready', () => {
     mockedFs.existsSync.mockReturnValue(true)
 
     await expect(ensureWSL2Ready()).rejects.toThrow('cannot mount the Windows filesystem')
+  })
+})
+
+// ============================================================================
+// provisionWSL2Distro apk retry (ELECTRON-14)
+//
+// A freshly imported distro's DNS is often still settling, so the provision
+// script's `apk update` / `apk add` can fail with a temporary resolution/index
+// error that succeeds moments later. Provisioning used to treat that as fatal
+// and unregister the distro. Fake timers keep the backoff instant.
+// ============================================================================
+
+describe('provisionWSL2Distro apk retry (ELECTRON-14)', () => {
+  const APK_DNS_STDERR = [
+    'fetch https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/APKINDEX.tar.gz',
+    'WARNING: Ignoring https://dl-cdn.alpinelinux.org/alpine/v3.23/main: temporary error (try again later)',
+    'ERROR: unable to select packages:',
+    '  containerd (no such package)',
+  ].join('\n')
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /**
+   * Queue one provision attempt. The close/stderr events fire on a microtask
+   * (never a timer) so they still land while fake timers are installed.
+   */
+  function queueProvisionAttempt(exitCode: number, stderrOutput = '', once = true) {
+    const { EventEmitter } = require('events')
+    const makeProc = () => {
+      const proc = new EventEmitter()
+      proc.stdin = { write: vi.fn(), end: vi.fn() }
+      proc.stdout = new EventEmitter()
+      proc.stderr = new EventEmitter()
+      Promise.resolve().then(() => {
+        if (stderrOutput) proc.stderr.emit('data', Buffer.from(stderrOutput))
+        proc.emit('close', exitCode)
+      })
+      return proc
+    }
+    if (once) mockSpawn.mockImplementationOnce(makeProc)
+    else mockSpawn.mockImplementation(makeProc)
+  }
+
+  function mockRunningDistroNeedingProvision() {
+    const header = '  NAME                   STATE           VERSION'
+    const line = `  ${WSL2_DISTRO_NAME.padEnd(23)}Running         2`
+    const running = { stdout: `${header}\n${line}`, stderr: '' }
+    // First list + second list: distro exists and running
+    mockedExecWithPath.mockResolvedValueOnce(running)
+    mockedExecWithPath.mockResolvedValueOnce(running)
+    // Provisioning check: test -x fails (helper missing) → provision
+    mockedExecWithPath.mockRejectedValueOnce(new Error('exit code 1'))
+  }
+
+  /** Drain the retry backoff without waiting in real time. */
+  async function drainBackoff() {
+    for (let i = 0; i < 12; i++) {
+      await vi.advanceTimersByTimeAsync(DEFAULT_APK_RETRY_POLICY.maxDelayMs)
+    }
+  }
+
+  it('retries a transient apk/DNS failure and finishes provisioning on a later attempt', async () => {
+    mockRunningDistroNeedingProvision()
+    // Attempt 1 fails with a transient DNS/index error, attempt 2 succeeds.
+    queueProvisionAttempt(1, APK_DNS_STDERR)
+    queueProvisionAttempt(0)
+    // nerdctl version + mount health check
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+
+    const promise = ensureWSL2Ready()
+    await drainBackoff()
+    await expect(promise).resolves.toBeUndefined()
+
+    expect(mockSpawn).toHaveBeenCalledTimes(2)
+    const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
+    expect(calls.some((c) => c.includes('--unregister'))).toBe(false)
+  })
+
+  it('emits a typed alpine-index-unreachable error and keeps the distro when the retry budget is exhausted', async () => {
+    mockRunningDistroNeedingProvision()
+    // Every attempt fails with the same transient error.
+    queueProvisionAttempt(1, APK_DNS_STDERR, false)
+
+    // Attach the handler before draining so the rejection is never "unhandled".
+    const promise = ensureWSL2Ready().catch((e) => e)
+    await drainBackoff()
+    const error = await promise
+
+    expect(error).toBeInstanceOf(RunnerSetupError)
+    expect(error.kind).toBe('alpine-index-unreachable')
+    // Bounded: the excerpt carries no mirror URL and no raw stderr.
+    expect(error.originalStderr).not.toContain('dl-cdn.alpinelinux.org')
+    expect(error.originalStderr).toContain('temporary error')
+    // Bounded attempts, and the distro is kept for a resumable retry.
+    expect(mockSpawn).toHaveBeenCalledTimes(DEFAULT_APK_RETRY_POLICY.maxAttempts)
+    const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
+    expect(calls.some((c) => c.includes('--unregister'))).toBe(false)
   })
 })
 

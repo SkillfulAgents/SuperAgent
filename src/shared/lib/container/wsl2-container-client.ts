@@ -15,6 +15,12 @@ import {
   unknownRunnerSetupError,
   type RunnerSetupRemediation,
 } from './wsl2-setup-errors'
+import {
+  AlpineIndexUnreachableError,
+  MAX_PROVISION_STDERR_CAPTURE_BYTES,
+  ProvisionAttemptError,
+  runProvisionWithApkRetry,
+} from './wsl2-provision-retry'
 
 /**
  * Collect diagnostic data about the WSL2 environment at the moment of failure.
@@ -720,6 +726,13 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
     try {
       await provisionWSL2Distro()
     } catch (error) {
+      // An exhausted Alpine index/DNS retry is a network condition, not a
+      // corrupt distro: keep the distro (the provision script is idempotent, so
+      // the next attempt resumes instead of re-importing the rootfs) and let the
+      // typed error through to the runner-setup panel. It was already reported.
+      if (error instanceof AlpineIndexUnreachableError) {
+        throw error
+      }
       captureException(error, {
         tags: { component: 'wsl2', operation: 'provision' },
         extra: { wsl2Home, isRetry, ...collectWSL2Diagnostics() },
@@ -860,6 +873,12 @@ async function createWSL2Distro(): Promise<void> {
   try {
     await provisionWSL2Distro()
   } catch (error) {
+    // Exception: an exhausted Alpine index/DNS retry leaves a perfectly good
+    // (if unprovisioned) distro behind. Keep it so the next attempt only has to
+    // re-run the idempotent provision script instead of re-importing the rootfs.
+    if (error instanceof AlpineIndexUnreachableError) {
+      throw error
+    }
     console.error('Provisioning failed after distro import, cleaning up...')
     try {
       await execWithPath(`wsl --unregister ${WSL2_DISTRO_NAME}`)
@@ -869,13 +888,15 @@ async function createWSL2Distro(): Promise<void> {
 }
 
 /**
- * Provision the WSL2 distro: install containerd, nerdctl, buildkit, cni-plugins,
- * and create the superagent-nerdctl helper script.
- * Safe to call on an already-provisioned distro (idempotent).
+ * Build the provision script. Every step is idempotent and therefore safe to
+ * re-run on a partially provisioned distro: the resolv.conf edits are
+ * grep-guarded, /etc/apk/repositories and the helper scripts are rewritten
+ * wholesale, `apk update` refetches the index, and `apk add` is a no-op for
+ * packages that are already installed. That is what makes the bounded retry
+ * below (and a later resumed attempt) safe.
  */
-async function provisionWSL2Distro(): Promise<void> {
-  console.log('Provisioning WSL2 distro...')
-  const provisionScript = [
+function buildProvisionScript(): string {
+  return [
     '#!/bin/sh',
     'set -e',
     '',
@@ -926,27 +947,108 @@ async function provisionWSL2Distro(): Promise<void> {
     'command = /bin/sh -c "setsid containerd > /dev/null 2>&1 &"',
     'WSLCONF',
   ].join('\n')
+}
 
-  // Pipe the provision script via stdin rather than writing to a file on the
-  // Windows filesystem. Freshly imported WSL2 distros may not have /mnt/c
-  // automounted yet, making Windows file paths inaccessible.
-  await new Promise<void>((resolve, reject) => {
+/**
+ * Run the provision script once.
+ *
+ * Pipe it via stdin rather than writing to a file on the Windows filesystem:
+ * freshly imported WSL2 distros may not have /mnt/c automounted yet, making
+ * Windows file paths inaccessible.
+ *
+ * Rejects with a ProvisionAttemptError, which classifies and redacts the
+ * captured stderr (bounded on the way in, so a chatty failure can't grow
+ * unboundedly in memory) and drops the raw text.
+ */
+function runProvisionScriptOnce(provisionScript: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
     const proc = spawn('wsl', ['-d', WSL2_DISTRO_NAME, '--', 'sh', '-s'], {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     let stderr = ''
-    proc.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
+    proc.stderr.on('data', (data: Buffer) => {
+      if (stderr.length >= MAX_PROVISION_STDERR_CAPTURE_BYTES) return
+      stderr += data.toString()
+    })
     proc.on('close', (code) => {
       if (code === 0) {
         resolve()
       } else {
-        reject(new Error(`Provision script failed (exit ${code}): ${stderr.trim()}`))
+        reject(new ProvisionAttemptError(code, stderr))
       }
     })
     proc.on('error', reject)
     proc.stdin.write(provisionScript)
     proc.stdin.end()
   })
+}
+
+/**
+ * Provision the WSL2 distro: install containerd, nerdctl, buildkit, cni-plugins,
+ * and create the superagent-nerdctl helper script.
+ * Safe to call on an already-provisioned distro (idempotent).
+ *
+ * A just-imported distro's DNS is often still settling, so `apk update`/`apk add`
+ * can fail with a temporary name-resolution or index-fetch error that succeeds
+ * moments later (Sentry ELECTRON-14). Recognized transient failures are retried
+ * with capped exponential backoff + jitter under a bounded total budget; a
+ * permanent apk error (unsatisfiable constraints, missing package, disk full)
+ * fails on the first attempt; an exhausted budget throws the typed
+ * AlpineIndexUnreachableError so the UI can show network remediation.
+ */
+async function provisionWSL2Distro(): Promise<void> {
+  console.log('Provisioning WSL2 distro...')
+  const provisionScript = buildProvisionScript()
+
+  try {
+    const outcome = await runProvisionWithApkRetry({
+      attempt: () => runProvisionScriptOnce(provisionScript),
+      onRetry: (event) => {
+        console.warn(
+          `WSL2 provisioning hit a transient Alpine package error (${event.codes.join(',') || 'unclassified'}); ` +
+          `retrying attempt ${event.attempt + 1} in ${event.delayMs}ms`
+        )
+        addErrorBreadcrumb({
+          category: 'wsl2',
+          level: 'warning',
+          message: 'Transient apk failure during provisioning, retrying',
+          data: {
+            attempt: event.attempt,
+            delay_ms: event.delayMs,
+            apk_failure_codes: event.codes.join(','),
+            mirror_host_class: event.mirrorHostClass,
+            exit_code: event.exitCode,
+          },
+        })
+      },
+    })
+    if (outcome.attempts > 1) {
+      captureMessage('WSL2 provisioning recovered after transient apk failure', {
+        level: 'info',
+        tags: { component: 'wsl2', operation: 'provision-apk-retry' },
+        extra: {
+          apk_attempts: outcome.attempts,
+          apk_retry_delays_ms: outcome.delaysMs,
+          apk_elapsed_ms: outcome.elapsedMs,
+        },
+      })
+    }
+  } catch (error) {
+    if (error instanceof AlpineIndexUnreachableError) {
+      // Typed, bounded report: only classified codes, a host class, and the
+      // redacted excerpt — never the raw stderr, mirror URLs, or paths.
+      reportWSL2SetupFailure(error, error.toPayload(), {
+        operation: 'provision-apk',
+        apk_attempts: error.attempts,
+        apk_elapsed_ms: error.elapsedMs,
+        apk_failure_codes: error.summary.codes.join(','),
+        mirror_host_class: error.summary.mirrorHostClass,
+        apk_exit_code: error.summary.exitCode,
+        apk_stderr_bytes: error.summary.stderrBytes,
+      })
+    }
+    throw error
+  }
 }
 
 /**
