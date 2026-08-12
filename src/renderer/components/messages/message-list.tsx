@@ -58,6 +58,16 @@ const BASE_WINDOW = 300
 const LOAD_STEP = 200
 const TURN_ANCHOR_TOP = 100
 const TURN_ANCHOR_ANIMATION_MS = 220
+// Following the live edge by assigning scrollTop teleports the viewport by the
+// full height of whatever just arrived — a paragraph, a tool card — so the
+// thread reads as a series of jumps. Instead the follow glides: each frame
+// closes a fraction of the remaining distance, turning every burst into a short
+// slide. The step ceiling keeps a tall card from whipping past, and past the
+// snap distance gliding would read as drift, so we jump instead.
+const FOLLOW_SMOOTHING = 0.22
+const FOLLOW_MAX_STEP_PX = 32
+const FOLLOW_SNAP_PX = 900
+const FOLLOW_SETTLE_PX = 0.5
 const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
 const SCROLL_KEYS = new Set(['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '])
 
@@ -394,6 +404,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const programmaticScrollTopRef = useRef<number | null>(null)
   const lastScrollTopRef = useRef(0)
   const scrollAnimationFrameRef = useRef<number | null>(null)
+  const followFrameRef = useRef<number | null>(null)
+  const followTargetRef = useRef(0)
   const animateNextTurnRef = useRef(false)
   const isScrolledToBottomRef = useRef(true)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
@@ -469,6 +481,52 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     scrollAnimationFrameRef.current = null
   }, [])
 
+  const cancelFollowAnimation = useCallback(() => {
+    if (followFrameRef.current == null) return
+    cancelAnimationFrame(followFrameRef.current)
+    followFrameRef.current = null
+  }, [])
+
+  // Glide toward the live edge instead of snapping to it. Re-entrant by design:
+  // streaming calls this on every content change, and an in-flight glide simply
+  // retargets, so a burst mid-slide extends the same motion rather than
+  // restarting it (which is what makes fixed-duration animations stutter here).
+  const followLiveEdge = useCallback((el: HTMLDivElement) => {
+    const target = Math.max(0, el.scrollHeight - el.clientHeight)
+    followTargetRef.current = target
+    const distance = target - el.scrollTop
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+    // Settled, moving backwards, or so far out that easing would read as drift.
+    if (reduceMotion || distance <= FOLLOW_SETTLE_PX || distance > FOLLOW_SNAP_PX) {
+      cancelFollowAnimation()
+      setScrollTop(el, target)
+      return
+    }
+
+    if (followFrameRef.current != null) return
+
+    const tick = () => {
+      const viewport = scrollRef.current
+      if (!viewport) {
+        followFrameRef.current = null
+        return
+      }
+
+      const remaining = followTargetRef.current - viewport.scrollTop
+      if (remaining <= FOLLOW_SETTLE_PX || remaining > FOLLOW_SNAP_PX) {
+        followFrameRef.current = null
+        setScrollTop(viewport, followTargetRef.current)
+        return
+      }
+
+      const step = Math.min(Math.max(remaining * FOLLOW_SMOOTHING, 1), FOLLOW_MAX_STEP_PX)
+      setScrollTop(viewport, viewport.scrollTop + step)
+      followFrameRef.current = requestAnimationFrame(tick)
+    }
+    followFrameRef.current = requestAnimationFrame(tick)
+  }, [cancelFollowAnimation, setScrollTop])
+
   const animateScrollTop = useCallback((el: HTMLDivElement, targetScrollTop: number) => {
     cancelScrollAnimation()
     const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
@@ -499,6 +557,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }, [cancelScrollAnimation, setScrollTop])
 
   useEffect(() => cancelScrollAnimation, [cancelScrollAnimation])
+  useEffect(() => cancelFollowAnimation, [cancelFollowAnimation])
 
   // Keep the newly-sent turn fixed at its reading line while the response uses
   // up the reserved room below it. Once that room reaches zero, following the
@@ -530,14 +589,17 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       }
 
       if (!isScrolledToBottomRef.current || scrollAnimationFrameRef.current != null) return
-      setScrollTop(el, targetScrollTop)
+      // While the reserve holds the turn at its reading line the position is
+      // static, so there is nothing to smooth — only the live-edge case glides.
+      if (requiredSpacer > 0) setScrollTop(el, targetScrollTop)
+      else followLiveEdge(el)
       return
     }
 
     animateNextTurnRef.current = false
     if (!isScrolledToBottomRef.current || scrollAnimationFrameRef.current != null) return
-    setScrollTop(el, el.scrollHeight)
-  }, [animateScrollTop, setBottomSpacerHeight, setScrollTop])
+    followLiveEdge(el)
+  }, [animateScrollTop, followLiveEdge, setBottomSpacerHeight, setScrollTop])
 
   const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     const el = event.currentTarget
@@ -546,6 +608,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const programmaticTarget = programmaticScrollTopRef.current
     const isProgrammatic =
       scrollAnimationFrameRef.current != null ||
+      followFrameRef.current != null ||
       (programmaticTarget != null && Math.abs(el.scrollTop - programmaticTarget) <= 1)
     if (isProgrammatic) {
       programmaticScrollTopRef.current = null
@@ -568,9 +631,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // this threshold pauses following, and returning within it resumes.
     const threshold = 80
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    isScrolledToBottomRef.current = distanceFromBottom < threshold
-    // Show "scroll to bottom" button when scrolled up more than 300px
-    setShowScrollToBottom(distanceFromBottom > 300)
+    // A glide trails the live edge on purpose, and that lag can exceed the
+    // threshold. Reading it as "the user scrolled away" would disengage
+    // auto-follow mid-response, so while we are driving, following stands.
+    if (followFrameRef.current == null) {
+      isScrolledToBottomRef.current = distanceFromBottom < threshold
+      // Show "scroll to bottom" button when scrolled up more than 300px
+      setShowScrollToBottom(distanceFromBottom > 300)
+    }
 
     // Near the top with older messages still hidden: reveal the next chunk.
     // prevScrollHeightRef doubles as a re-entrancy guard so we expand at most once
@@ -599,11 +667,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const el = scrollRef.current
     if (!el) return
     cancelScrollAnimation()
+    cancelFollowAnimation()
     anchoredTurnRef.current = null
     animateNextTurnRef.current = false
     setBottomSpacerHeight(0)
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-  }, [cancelScrollAnimation, setBottomSpacerHeight])
+  }, [cancelFollowAnimation, cancelScrollAnimation, setBottomSpacerHeight])
 
   // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
   // messages, compaction is done and the SSE compact_complete event was missed.
@@ -1075,7 +1144,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const handleUserScrollIntent = useCallback(() => {
     programmaticScrollTopRef.current = null
     cancelScrollAnimation()
-  }, [cancelScrollAnimation])
+    // Hand the viewport back immediately — a glide that keeps running under a
+    // wheel gesture feels like the thread is fighting the reader.
+    cancelFollowAnimation()
+  }, [cancelFollowAnimation, cancelScrollAnimation])
 
   const handleScrollKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (SCROLL_KEYS.has(event.key)) handleUserScrollIntent()
