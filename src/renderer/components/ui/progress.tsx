@@ -1,18 +1,21 @@
 import { cn } from '@shared/lib/utils'
 
+/**
+ * Colour thresholds on the REMAINING percent, mirroring the platform web app's
+ * seat-quota bar. Exported so the low-balance warning fires at exactly the point
+ * this bar turns amber — one story between Settings and the session view.
+ */
+export const PROGRESS_THRESHOLDS = { warning: 20, critical: 5 } as const
+
 interface ProgressProps {
   /** Fill percentage, 0–100 (clamped). */
   percent: number
-  /**
-   * Color thresholds on the REMAINING percent: at/below `critical` → red,
-   * at/below `warning` → amber, otherwise primary. Mirrors the platform web
-   * app's seat-quota bar.
-   */
+  /** Override the shared PROGRESS_THRESHOLDS for this bar. */
   thresholds?: { warning: number; critical: number }
   className?: string
 }
 
-export function Progress({ percent, thresholds = { warning: 20, critical: 5 }, className }: ProgressProps) {
+export function Progress({ percent, thresholds = PROGRESS_THRESHOLDS, className }: ProgressProps) {
   const pct = Math.max(0, Math.min(100, percent))
   const color =
     pct <= thresholds.critical

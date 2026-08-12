@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { cn } from '@shared/lib/utils'
 import { MessageList } from '@renderer/components/messages/message-list'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
+import { LowBalanceNotice } from '@renderer/components/messages/low-balance-notice'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 
@@ -109,6 +110,10 @@ export function SessionThread({
           data-composer-footer
           data-overlay-footer={overlayFooter || undefined}
         >
+          {/* Above the activity card, so a warning about running out sits next
+              to the thing spending it — and in the same slot the hard 402
+              lands in, which is where a user already looks for billing. */}
+          <LowBalanceNotice />
           <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
           {footer}
         </div>
