@@ -27,6 +27,7 @@ import {
   clearDeliberateSignOut,
   ApiRequestError,
   normalizeApiRoute,
+  setLocalApiLifecycle,
 } from './api'
 
 const KEY = 'superagent.redirect'
@@ -107,6 +108,7 @@ describe('redirect stash (post-login restore)', () => {
 describe('apiFetch diagnostics', () => {
   beforeEach(() => {
     captureMock.mockClear()
+    setLocalApiLifecycle('unknown')
     vi.stubGlobal('__AUTH_MODE__', false)
   })
 
@@ -164,6 +166,22 @@ describe('apiFetch diagnostics', () => {
       .toEqual(['transport_or_cors', 'server', 'forbidden'])
     expect(captureMock.mock.calls[2][1]).toMatchObject({ tags: { policy_code: 'POLICY_DENIED' } })
     expect(JSON.stringify(captureMock.mock.calls)).not.toMatch(/private response|private-id/)
+  })
+
+  it('adds distinct local API lifecycle and packaged/channel provenance', async () => {
+    setLocalApiLifecycle('quitting')
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed with private URL')))
+
+    await expect(apiFetch('/api/files/private-id?filename=pii.txt')).rejects.toBeInstanceOf(ApiRequestError)
+    expect(captureMock.mock.calls[0][1]).toMatchObject({
+      tags: {
+        local_api_lifecycle: 'quitting',
+        packaged: 'yes',
+        app_channel: 'test',
+        route: '/api/files/:param',
+      },
+    })
+    expect(JSON.stringify(captureMock.mock.calls)).not.toMatch(/private-id|filename|pii\.txt/)
   })
 
   it('does not retain a provider error as a recursively serialized cause', async () => {
