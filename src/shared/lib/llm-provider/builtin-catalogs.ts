@@ -35,7 +35,7 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
  * Vendor mapping, verified 2026-07-14:
  *   - OpenAI GPT-5.x: `service_tier` flex (0.5x price, slower) / priority
  *     (2x, 2.5x on gpt-5.5) → slow/normal/fast.
- *   - xAI grok-4.5: `service_tier` priority only (2x when granted) → normal/fast.
+ *   - xAI grok: `service_tier` priority only (2x when granted) → normal/fast.
  *   - Anthropic: fast mode (research preview) on Opus 4.8 only → normal/fast.
  *   - Z.AI GLM: no request-level tier → normal only.
  *   - Fireworks (kimi-k3): fast is a separate `-fast` router resource, not a
@@ -74,6 +74,13 @@ const GPT_LONG_CONTEXT_CLIFF = {
   thresholdTokens: 272_000,
   inputMultiplier: 2,
   outputMultiplier: 1.5,
+} as const
+
+// xAI doubles every rate once prompt input reaches 200K tokens.
+const GROK_LONG_CONTEXT_CLIFF = {
+  thresholdTokens: 200_000,
+  inputMultiplier: 2,
+  outputMultiplier: 2,
 } as const
 
 const ICON = 'anthropic'
@@ -322,8 +329,8 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     pricing: { inputPerMtok: 1.2, outputPerMtok: 4.2 },
   },
   {
-    id: 'x-ai/grok-4.5',
-    label: 'Grok 4.5',
+    id: 'x-ai/grok-4.6',
+    label: 'Grok 4.6',
     blurb: 'xAI Grok, routed via OpenRouter',
     family: 'grok',
     isLatest: true,
@@ -331,10 +338,24 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     icon: 'xai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
+    pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+    contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
+    promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
+  },
+  {
+    id: 'x-ai/grok-4.5',
+    label: 'Grok 4.5',
+    blurb: 'xAI Grok, routed via OpenRouter',
+    family: 'grok',
+    icon: 'xai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-07-10.
     pricing: { inputPerMtok: 2, outputPerMtok: 6 },
     // OpenRouter-reported context length for x-ai/grok-4.5, fetched 2026-07-10.
     contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
   // Kimi, newest first. The K2 line stays listed because it is an order of
@@ -391,7 +412,7 @@ export const OPENROUTER_CATALOG: ModelDefinition[] = [
 
 /**
  * Non-Claude models the Platform proxy can serve. Unlike OpenRouter these use
- * BARE ids (`gpt-5.5`, `grok-4.5`): the proxy's routing/pricing all key off bare
+ * BARE ids (`gpt-5.5`, `grok-4.6`): the proxy's routing/pricing all key off bare
  * ids, so a vendor-prefixed slug would miss every match.
  */
 // Responses hosts web_search but not web_fetch — fetch needs a Settings → Web vendor (Exa).
@@ -540,8 +561,8 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   },
   {
     // Bare id matches the platform proxy's grok-* → xai-responses route.
-    id: 'grok-4.5',
-    label: 'Grok 4.5',
+    id: 'grok-4.6',
+    label: 'Grok 4.6',
     blurb: 'xAI Grok, served via Platform',
     family: 'grok',
     isLatest: true,
@@ -553,6 +574,21 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
     contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
+    promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
+  },
+  {
+    id: 'grok-4.5',
+    label: 'Grok 4.5',
+    blurb: 'xAI Grok, served via Platform',
+    family: 'grok',
+    icon: 'xai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedSpeeds: PRIORITY_ONLY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
+    contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
   {

@@ -91,7 +91,7 @@ describe('LLM proxy endpoint', () => {
     })
 
     it.each([
-      ['platform', 'grok', 'grok-4.5'],
+      ['platform', 'grok', 'grok-4.6'],
       ['bedrock', 'sonnet', 'us.anthropic.claude-sonnet-5'],
       ['generic', 'custom/qwen3', 'custom/qwen3'],
     ])('returns the resolved %s catalog default', async (providerId, browserModel, resolvedModel) => {
