@@ -571,10 +571,11 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: false,
     })
-    // A settled automation (cron/webhook) session's container WebSocket carries
-    // no further traffic, but stream keepalives hold it open indefinitely.
-    // Runtimes with a per-VM connection quota then reject new sessions once
-    // enough one-shot runs accumulate (SUP-572). Release the stream on settle;
+    // A settled automation (cron/webhook) session's WebSocket to the runtime
+    // container carries no further traffic, but stream keepalives hold it open
+    // indefinitely. Runtimes that cap concurrent connections per container
+    // then reject new sessions once enough one-shot runs accumulate (SUP-572).
+    // Release the stream on settle;
     // every send/wake path re-subscribes on demand, so a later resume costs one
     // reconnect. Synchronous on purpose: an async gap here would race the
     // wake path's isSubscribed check and close a stream a new turn relies on.

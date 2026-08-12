@@ -3926,10 +3926,10 @@ describe('MessagePersister', () => {
   })
 
   describe('automation stream release on settle (SUP-572)', () => {
-    // A leaked stream per cron/webhook run holds a container WebSocket open
-    // forever (keepalives defeat idle cuts); runtimes with a per-VM connection
-    // quota then 429 new sessions. The persister must release the stream once
-    // an unpromoted automation session truly settles.
+    // A leaked stream per cron/webhook run holds a runtime-container WebSocket
+    // open forever (keepalives defeat idle cuts); runtimes that cap concurrent
+    // connections per container then block new sessions. The persister must
+    // release the stream once an unpromoted automation session truly settles.
 
     afterEach(() => {
       // mockResolvedValue survives clearAllMocks — restore the suite default.
