@@ -1241,12 +1241,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   async deleteSession(sessionId: string): Promise<boolean> {
     const port = await this.getPortOrThrow()
 
-    // Close WebSocket if exists
-    const ws = this.wsConnections.get(sessionId)
-    if (ws) {
-      ws.close()
-      this.wsConnections.delete(sessionId)
-    }
+    this.closeTrackedWebSocket(sessionId)
 
     const response = await fetch(
       `${this.getBaseUrl(port)}/sessions/${sessionId}`,
@@ -1363,6 +1358,16 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response.ok
   }
 
+  // Drop listeners before close so a deliberate teardown cannot fire
+  // connection_closed into a newer socket's map slot (SUP-572).
+  private closeTrackedWebSocket(sessionId: string): void {
+    const ws = this.wsConnections.get(sessionId)
+    if (!ws) return
+    ws.removeAllListeners()
+    ws.close()
+    this.wsConnections.delete(sessionId)
+  }
+
   subscribeToStream(
     sessionId: string,
     callback: (message: StreamMessage) => void
@@ -1377,9 +1382,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const setupWebSocket = async () => {
       const port = await this.getPortOrThrow()
 
-      const existing = this.wsConnections.get(sessionId)
-      if (existing) {
-        existing.close()
+      if (this.wsConnections.has(sessionId)) {
+        this.closeTrackedWebSocket(sessionId)
       }
 
       const ws = new WebSocket(
@@ -1452,11 +1456,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     })
 
     const unsubscribe = () => {
-      const ws = this.wsConnections.get(sessionId)
-      if (ws) {
-        ws.close()
-        this.wsConnections.delete(sessionId)
-      }
+      this.closeTrackedWebSocket(sessionId)
     }
 
     return { unsubscribe, ready }
