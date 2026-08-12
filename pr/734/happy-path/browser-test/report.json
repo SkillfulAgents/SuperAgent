@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature allows agents to open browsers, navigate to URLs, capture page content, and close browsers via tool calls. Agent successfully navigated to example.com, retrieved the page title \"Example Domain\", and reported it back.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Application loaded successfully showing home page with agent list",
+    "Clicked on \"QA-20260812-211444-vxru\" agent in sidebar — Agent page loaded, showing chat interface with message input field",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message appeared in the textbox",
+    "Clicked \"Send message\" button — Message was sent to the agent; agent status changed to \"working\"",
+    "Waited up to 3 minutes for response using polling loop — Agent completed in 13 seconds; response received indicating \"Example Domain\" was found on the page",
+    "Verified response mentions \"Example Domain\" — Response clearly states: 'The page title is \"Example Domain\" — the standard IANA placeholder page. Browser closed.'",
+    "Expanded tool call cards to verify browser tools were executed — 4 tool calls confirmed:"
+  ],
+  "bugs": [],
+  "durationMs": 107143,
+  "sessionId": "7cec7c55-6340-4262-8911-17034f9c422e",
+  "cost": {
+    "inputTokens": 676,
+    "outputTokens": 17674,
+    "cacheCreationTokens": 103793,
+    "cacheReadTokens": 2449635,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.463751
+  }
+}
