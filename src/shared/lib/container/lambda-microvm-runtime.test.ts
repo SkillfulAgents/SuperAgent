@@ -5,6 +5,8 @@ import { PassThrough } from 'stream'
 import { WebSocketServer } from 'ws'
 
 const sendMock = vi.fn()
+const captureExceptionMock = vi.fn()
+const addErrorBreadcrumbMock = vi.fn()
 const responses: Record<string, unknown> = {}
 
 // Upstream transports are mocked so the proxy's real loopback server can be
@@ -34,7 +36,10 @@ vi.mock('@aws-sdk/client-lambda-microvms', () => {
   }
 })
 
-vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: (...args: unknown[]) => captureExceptionMock(...args),
+  addErrorBreadcrumb: (...args: unknown[]) => addErrorBreadcrumbMock(...args),
+}))
 // Inert: the env builder reaches for the active provider; we don't assert its
 // output here (that's the builder's concern), we only verify the runtime
 // delivers the agent's own config.envVars through runHookPayload.
@@ -57,6 +62,7 @@ import {
   resolveMicrovmRuntimeConfigOrNull,
   isMicrovmRuntimeConfigured,
   getMicrovmRuntimeConfig,
+  serviceFetch,
 } from './lambda-microvm-runtime'
 import { readBootstrapEnv, resetBootstrapEnvStoreForTests } from './agent-bootstrap-env-store'
 
@@ -81,6 +87,8 @@ beforeEach(() => {
   for (const k in responses) delete responses[k]
   autoSleepTimeoutMinutes.mockReturnValue(30)
   sendMock.mockReset()
+  captureExceptionMock.mockReset()
+  addErrorBreadcrumbMock.mockReset()
   httpsRequestMock.mockReset()
   tlsConnectMock.mockReset()
   sendMock.mockImplementation(async (cmd: { type: string }) => {
@@ -208,6 +216,63 @@ describe('LambdaMicroVmRuntimeClient host API base URL', () => {
   })
 })
 
+describe('MicroVM service instrumentation', () => {
+  it('retries idempotent GET 500s and records only bounded diagnostics after exhaustion', async () => {
+    const secretUrl = 'https://mvm.internal/private?token=secret'
+    vi.mocked(fetch).mockResolvedValue({
+      ok: false,
+      status: 500,
+      headers: new Headers({
+        'x-error-code': 'ControlPlaneUnavailable',
+        'x-request-id': 'request_abc-123',
+      }),
+    } as Response)
+
+    await expect(serviceFetch({ url: secretUrl, token: 'secret-token' }, 'GET', '/microvm/raw-entity-id'))
+      .rejects.toMatchObject({
+        operation: 'inspect',
+        status: 500,
+        serviceCode: 'ControlPlaneUnavailable',
+        requestId: 'request_abc-123',
+        attempts: 2,
+      })
+
+    expect(fetch).toHaveBeenCalledTimes(2)
+    const context = captureExceptionMock.mock.calls[0][1]
+    expect(context.tags).toMatchObject({
+      operation: 'inspect',
+      failure_cause: 'service_error',
+      service_code: 'ControlPlaneUnavailable',
+    })
+    expect(context.extra).toMatchObject({ status: 500, requestId: 'request_abc-123', attempt: 2, maxAttempts: 2 })
+    expect(JSON.stringify(context)).not.toContain('secret-token')
+    expect(JSON.stringify(context)).not.toContain(secretUrl)
+    expect(JSON.stringify(context)).not.toContain('raw-entity-id')
+  })
+
+  it('normalizes IPv4 timeout and IPv6 unreachable causes without retaining addresses', async () => {
+    for (const [code, expected] of [['ETIMEDOUT', 'connect_timeout'], ['ENETUNREACH', 'network_unreachable']] as const) {
+      vi.mocked(fetch).mockReset()
+      vi.mocked(fetch).mockRejectedValue(Object.assign(new Error(`connect ${code} 2001:db8::1 10.0.0.9`), { code }))
+      let caught: unknown
+      try {
+        await serviceFetch({ url: 'https://private.example', token: 'secret' }, 'GET', '/microvm/entity-id')
+      } catch (error) {
+        caught = error
+      }
+      expect(caught).toMatchObject({ failureCause: expected, attempts: 2 })
+      expect((caught as Error).message).not.toMatch(/2001:db8|10\.0\.0\.9|entity-id/)
+    }
+  })
+
+  it('does not retry non-idempotent control-plane operations', async () => {
+    vi.mocked(fetch).mockRejectedValue(Object.assign(new Error('connect reset'), { code: 'ECONNRESET' }))
+    await expect(serviceFetch({ url: 'https://mvm.internal', token: 'secret' }, 'POST', '/microvm/run', {}))
+      .rejects.toMatchObject({ operation: 'run', attempts: 1 })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('LambdaMicroVmRuntimeClient lifecycle', () => {
   beforeEach(() => {
     Object.assign(process.env, FULL_ENV)
@@ -238,6 +303,37 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
       cause: new Error('connect ECONNREFUSED 127.0.0.1:4000'),
     })
   }
+
+  it('captures stable terminal-before-ready lifecycle context without entity IDs or secrets', async () => {
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') return { microvmId: 'sensitive-mvm-id', endpoint: 'secret.endpoint.internal' }
+      if (cmd.type === 'Get') return { state: 'TERMINATED' }
+      if (cmd.type === 'Terminate') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'secret-token' } }
+      return {}
+    })
+
+    await expect(newClient().start()).rejects.toThrow(/terminal_before_ready/)
+    const lifecycleCall = captureExceptionMock.mock.calls.find((call) => call[1]?.tags?.op === 'microvm.start')
+    expect(lifecycleCall).toBeTruthy()
+    const context = lifecycleCall![1]
+    expect(context.tags).toMatchObject({
+      lifecycle_phase: 'wait_running',
+      terminal_reason: 'terminal_before_ready',
+      control_plane_state: 'TERMINATED',
+      bootstrap_hook: 'env_fetch',
+    })
+    expect(context.fingerprint).toEqual(['microvm-start', 'wait_running', 'terminal_before_ready'])
+    expect(context.extra.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'run' }),
+      expect.objectContaining({ phase: 'wait_running' }),
+    ]))
+    const serialized = JSON.stringify(context)
+    expect(serialized).not.toContain('sensitive-mvm-id')
+    expect(serialized).not.toContain('secret.endpoint.internal')
+    expect(serialized).not.toContain('secret-token')
+    expect(serialized).not.toContain('agent-xyz')
+  })
 
   it('start runs a MicroVM with image/role/connectors and becomes healthy', async () => {
     const info = await newClient().start()

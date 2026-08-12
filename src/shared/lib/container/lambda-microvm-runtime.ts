@@ -45,6 +45,8 @@ const RESUME_RETRY_DELAY_MS = 400
 // handshake completes (a live stream is idle by design).
 const UPSTREAM_IDLE_TIMEOUT_MS = 30_000
 const ECS_METADATA_TIMEOUT_MS = 2_000
+const SERVICE_GET_MAX_ATTEMPTS = 2
+const SERVICE_GET_RETRY_DELAY_MS = 100
 // Quiet session streams through MicroVM ingress die at ~60s without traffic.
 export const MICROVM_STREAM_KEEPALIVE_MS = 25_000
 
@@ -315,7 +317,7 @@ export class LocalAuthForwardProxy {
       try {
         auth = await this.authHeaders()
       } catch (error) {
-        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' }, extra: { endpoint: this.options.endpoint } })
+        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' } })
         return false
       }
       try {
@@ -346,7 +348,7 @@ export class LocalAuthForwardProxy {
       try {
         auth = await this.authHeaders()
       } catch (error) {
-        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' }, extra: { endpoint: this.options.endpoint } })
+        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' } })
         if (!res.headersSent) res.writeHead(502)
         res.end('microvm auth token unavailable')
         return
@@ -361,7 +363,15 @@ export class LocalAuthForwardProxy {
           await new Promise((r) => setTimeout(r, RESUME_RETRY_DELAY_MS))
           continue
         }
-        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.request' }, extra: { endpoint: this.options.endpoint, path: req.url } })
+        captureException(error, {
+          tags: {
+            area: 'container',
+            op: 'microvm.proxy.request',
+            method: req.method ?? 'UNKNOWN',
+            route_class: req.url?.startsWith('/health') ? 'health' : 'agent_api',
+            failure_cause: classifyServiceFailure(error),
+          },
+        })
         if (!res.headersSent) res.writeHead(502)
         res.end()
         return
@@ -389,7 +399,7 @@ export class LocalAuthForwardProxy {
     try {
       auth = await this.authHeaders()
     } catch (error) {
-      captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' }, extra: { endpoint: this.options.endpoint } })
+      captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' } })
       socket.destroy()
       return
     }
@@ -435,7 +445,14 @@ export class LocalAuthForwardProxy {
       clearConnectTimer()
       stopKeepalive?.()
       stopKeepalive = null
-      captureException(error, { tags: { area: 'container', op: 'microvm.proxy.upgrade' }, extra: { endpoint: this.options.endpoint } })
+      captureException(error, {
+        tags: {
+          area: 'container',
+          op: 'microvm.proxy.upgrade',
+          lifecycle_phase: 'connect',
+          failure_cause: classifyServiceFailure(error),
+        },
+      })
       upstream.destroy()
       socket.destroy()
     }
@@ -500,6 +517,67 @@ class MicrovmNotFoundError extends Error {
   readonly name = 'ResourceNotFoundException'
 }
 
+export type MicrovmServiceFailureCause =
+  | 'service_error'
+  | 'connect_timeout'
+  | 'network_unreachable'
+  | 'connection_refused'
+  | 'connection_reset'
+  | 'aborted'
+  | 'network_unknown'
+
+export class MicrovmServiceError extends Error {
+  readonly name = 'MicrovmServiceError'
+
+  constructor(
+    readonly operation: string,
+    readonly status: number | null,
+    readonly serviceCode: string | null,
+    readonly requestId: string | null,
+    readonly failureCause: MicrovmServiceFailureCause,
+    readonly attempts: number,
+    options?: ErrorOptions,
+  ) {
+    super(`MicroVM service ${operation} failed (${failureCause})`, options)
+  }
+}
+
+const SAFE_SERVICE_CODE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/
+const SAFE_REQUEST_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+function safeHeader(value: string | null, pattern: RegExp): string | null {
+  return value && pattern.test(value) ? value : null
+}
+
+function serviceOperation(method: string, path: string): string {
+  if (path === '/microvm/run') return 'run'
+  if (/^\/microvm\/[^/]+\/token$/.test(path)) return 'token'
+  if (/^\/microvm\/[^/]+$/.test(path)) return method === 'DELETE' ? 'terminate' : 'inspect'
+  return 'unknown'
+}
+
+function networkCode(error: unknown): string | null {
+  let current: unknown = error
+  for (let i = 0; i < 5 && current; i++) {
+    const code = (current as { code?: unknown }).code
+    if (typeof code === 'string') return code.toUpperCase()
+    current = (current as { cause?: unknown }).cause
+  }
+  return null
+}
+
+function classifyServiceFailure(error: unknown): MicrovmServiceFailureCause {
+  if ((error as { name?: string })?.name === 'AbortError') return 'aborted'
+  switch (networkCode(error)) {
+    case 'ETIMEDOUT': return 'connect_timeout'
+    case 'ENETUNREACH':
+    case 'EHOSTUNREACH': return 'network_unreachable'
+    case 'ECONNREFUSED': return 'connection_refused'
+    case 'ECONNRESET': return 'connection_reset'
+    default: return 'network_unknown'
+  }
+}
+
 function isNotFound(error: unknown): boolean {
   return (error as { name?: string })?.name === 'ResourceNotFoundException'
 }
@@ -512,23 +590,95 @@ function getMicrovmClient(region: string): LambdaMicrovmsClient {
   return memoizedClient.client
 }
 
-async function serviceFetch<T>(
+export async function serviceFetch<T>(
   svc: { url: string; token: string },
   method: string,
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch(`${svc.url}${path}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${svc.token}`,
-      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  if (res.status === 404) throw new MicrovmNotFoundError(`microvm not found (${path})`)
-  if (!res.ok) throw new Error(`microvm service ${method} ${path} failed: ${res.status}`)
-  return (await res.json()) as T
+  const operation = serviceOperation(method, path)
+  const maxAttempts = method === 'GET' ? SERVICE_GET_MAX_ATTEMPTS : 1
+  const startedAt = Date.now()
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let res: Response
+    try {
+      res = await fetch(`${svc.url}${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${svc.token}`,
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      })
+    } catch (error) {
+      const failureCause = classifyServiceFailure(error)
+      if (attempt < maxAttempts) {
+        addErrorBreadcrumb({
+          category: 'microvm.control-plane',
+          message: 'Idempotent control-plane request retrying',
+          level: 'warning',
+          data: { operation, attempt, failureCause },
+        })
+        await new Promise((resolve) => setTimeout(resolve, SERVICE_GET_RETRY_DELAY_MS))
+        continue
+      }
+      throw new MicrovmServiceError(operation, null, null, null, failureCause, attempt, { cause: error })
+    }
+
+    if (res.status === 404) throw new MicrovmNotFoundError('microvm not found')
+    if (!res.ok) {
+      const serviceCode = safeHeader(res.headers.get('x-error-code'), SAFE_SERVICE_CODE)
+      const requestId = safeHeader(
+        res.headers.get('x-request-id') ?? res.headers.get('request-id'),
+        SAFE_REQUEST_ID,
+      )
+      if (method === 'GET' && res.status >= 500 && attempt < maxAttempts) {
+        addErrorBreadcrumb({
+          category: 'microvm.control-plane',
+          message: 'Idempotent control-plane request retrying',
+          level: 'warning',
+          data: { operation, attempt, status: res.status, serviceCode },
+        })
+        await new Promise((resolve) => setTimeout(resolve, SERVICE_GET_RETRY_DELAY_MS))
+        continue
+      }
+      const error = new MicrovmServiceError(
+        operation,
+        res.status,
+        serviceCode,
+        requestId,
+        'service_error',
+        attempt,
+      )
+      captureException(error, {
+        tags: {
+          area: 'container',
+          op: 'microvm.service',
+          operation,
+          failure_cause: error.failureCause,
+          service_code: serviceCode ?? 'unknown',
+        },
+        fingerprint: ['microvm-service', operation, serviceCode ?? String(res.status)],
+        extra: {
+          status: res.status,
+          requestId,
+          attempt,
+          maxAttempts,
+          elapsedMs: Date.now() - startedAt,
+        },
+      })
+      throw error
+    }
+    if (attempt > 1) {
+      addErrorBreadcrumb({
+        category: 'microvm.control-plane',
+        message: 'Idempotent control-plane request recovered',
+        data: { operation, attempts: attempt, elapsedMs: Date.now() - startedAt },
+      })
+    }
+    return (await res.json()) as T
+  }
+  throw new Error('MicroVM service request exhausted attempts')
 }
 
 async function runMicrovm(
@@ -629,6 +779,16 @@ async function createMicrovmAuthToken(
 
 const TERMINAL_MICROVM_STATES = new Set(['TERMINATED', 'TERMINATING'])
 
+type MicrovmTerminalReason = 'terminal_before_ready' | 'running_timeout'
+
+class MicrovmLifecycleError extends Error {
+  readonly name = 'MicrovmLifecycleError'
+
+  constructor(readonly reason: MicrovmTerminalReason, readonly state: string) {
+    super(`MicroVM lifecycle failed: ${reason} (${state})`)
+  }
+}
+
 // True only when the create never left the host TCP stack (connect refused).
 // BaseContainerClient maps ECONNRESET/ETIMEDOUT/fetch failed to the same
 // "unable to connect" string — those are ambiguous (prompt may already run).
@@ -680,9 +840,19 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   }
 
   async start(options?: StartOptions): Promise<ContainerInfo> {
+    const lifecycleStartedAt = Date.now()
+    let lifecyclePhase = 'inspect'
+    let lastControlPlaneState = 'unobserved'
+    const timeline: Array<{ phase: string; elapsedMs: number; state?: string }> = []
+    const markPhase = (phase: string, state?: string) => {
+      lifecyclePhase = phase
+      if (state) lastControlPlaneState = state
+      timeline.push({ phase, elapsedMs: Date.now() - lifecycleStartedAt, ...(state ? { state } : {}) })
+    }
     const info = await this.getInfoFromRuntime()
     if (info.status === 'running') return info
 
+    markPhase('configure')
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
@@ -719,6 +889,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       )
     }
 
+    markPhase('run')
     const run = await runMicrovm(config, {
       runHookPayload,
       // Unique per start() — dedupes retries, but never collides with a prior
@@ -741,11 +912,36 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     agentStates.set(this.config.agentId, { microvmId: run.microvmId, endpoint: run.endpoint, proxy, proxyPort })
 
     try {
-      await this.waitForRunning(config.region, run.microvmId, 300_000)
+      markPhase('wait_running')
+      lastControlPlaneState = await this.waitForRunning(config.region, run.microvmId, 300_000, (state) => {
+        lastControlPlaneState = state
+      })
+      markPhase('wait_health', lastControlPlaneState)
       if (!(await this.waitForHealthy(120_000, proxyPort))) {
-        throw new Error(`MicroVM agent ${run.microvmId} failed to become healthy`)
+        throw new Error('MicroVM agent failed to become healthy')
       }
+      markPhase('ready', lastControlPlaneState)
     } catch (error) {
+      const terminalReason = error instanceof MicrovmLifecycleError
+        ? error.reason
+        : lifecyclePhase === 'wait_health' ? 'health_timeout' : 'start_failed'
+      captureException(error, {
+        tags: {
+          area: 'container',
+          op: 'microvm.start',
+          lifecycle_phase: lifecyclePhase,
+          terminal_reason: terminalReason,
+          control_plane_state: lastControlPlaneState,
+          bootstrap_hook: hasEnv ? 'env_fetch' : 'none',
+          image_version_configured: config.imageVersion ? 'true' : 'false',
+          logging_configured: config.logGroup ? 'true' : 'false',
+        },
+        fingerprint: ['microvm-start', lifecyclePhase, terminalReason],
+        extra: {
+          elapsedMs: Date.now() - lifecycleStartedAt,
+          timeline,
+        },
+      })
       await this.teardown()
       throw error
     }
@@ -829,7 +1025,9 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       }
       // Transient (throttling/network): keep last known state so we don't orphan a live
       // VM; container-manager's TTL /health re-probe backstops a genuinely dead one.
-      captureException(error, { tags: { area: 'container', op: 'microvm.getInfo' }, extra: { microvmId: observedId } })
+      captureException(error, {
+        tags: { area: 'container', op: 'microvm.getInfo', failure_cause: classifyServiceFailure(error) },
+      })
       return { status: 'running', port: state.proxyPort }
     }
   }
@@ -877,13 +1075,11 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   }
 
   private async replaceGenerationInner(reason: string, observedId: string | null): Promise<void> {
-    console.warn(
-      `[LambdaMicroVmRuntimeClient] Replacing dead MicroVM generation agent=${this.config.agentId} reason=${reason} old=${observedId ?? 'none'}`,
-    )
+    console.warn(`[LambdaMicroVmRuntimeClient] Replacing dead MicroVM generation reason=${reason}`)
     addErrorBreadcrumb({
       category: 'container',
-      message: `MicroVM generation replaced: ${reason}`,
-      data: { agentId: this.config.agentId, oldMicrovmId: observedId, reason },
+      message: 'MicroVM generation replaced',
+      data: { reason, hadObservedGeneration: observedId !== null },
       level: 'warning',
     })
 
@@ -914,8 +1110,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       await this.config.restartAgent()
     } catch (error) {
       captureException(error, {
-        tags: { area: 'container', op: 'microvm.replace' },
-        extra: { agentId: this.config.agentId, oldMicrovmId: observedId, reason },
+        tags: { area: 'container', op: 'microvm.replace', replacement_reason: reason },
+        extra: { hadObservedGeneration: observedId !== null },
       })
       throw error
     }
@@ -927,22 +1123,30 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       await terminateMicrovm(config.region, microvmId)
     } catch (error) {
       if (!isNotFound(error)) {
-        captureException(error, { tags: { area: 'container', op: 'microvm.terminate' }, extra: { microvmId } })
+        captureException(error, { tags: { area: 'container', op: 'microvm.terminate', failure_cause: classifyServiceFailure(error) } })
       }
     }
   }
 
-  private async waitForRunning(region: string, microvmId: string, timeoutMs: number): Promise<void> {
+  private async waitForRunning(
+    region: string,
+    microvmId: string,
+    timeoutMs: number,
+    onState: (state: string) => void,
+  ): Promise<string> {
     const startedAt = Date.now()
+    let lastState = 'unknown'
     while (Date.now() - startedAt < timeoutMs) {
       const mvm = await getMicrovm(region, microvmId)
-      if (mvm.state === 'RUNNING') return
-      if (TERMINAL_MICROVM_STATES.has(mvm.state ?? '')) {
-        throw new Error(`MicroVM ${microvmId} entered ${mvm.state} before becoming ready`)
+      lastState = mvm.state ?? 'unknown'
+      onState(lastState)
+      if (lastState === 'RUNNING') return lastState
+      if (TERMINAL_MICROVM_STATES.has(lastState)) {
+        throw new MicrovmLifecycleError('terminal_before_ready', lastState)
       }
       await new Promise((resolve) => setTimeout(resolve, 2_000))
     }
-    throw new Error(`Timed out waiting for MicroVM ${microvmId} to become RUNNING`)
+    throw new MicrovmLifecycleError('running_timeout', lastState)
   }
 
   private async teardown(): Promise<void> {
@@ -957,7 +1161,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       await terminateMicrovm(config.region, observedId)
     } catch (error) {
       if (!isNotFound(error)) {
-        captureException(error, { tags: { area: 'container', op: 'microvm.terminate' }, extra: { microvmId: observedId } })
+        captureException(error, { tags: { area: 'container', op: 'microvm.terminate', failure_cause: classifyServiceFailure(error) } })
       }
     }
     // CAS: a newer generation may have been installed while Terminate was in
