@@ -60,6 +60,40 @@ function semverGt(a: string, b: string): boolean {
  * nothing the user can do and it self-heals once the assets land, so we treat
  * it as "no update available" rather than reporting it to Sentry.
  */
+export function safeUpdaterFailureContext(err: unknown): {
+  category: 'signature' | 'verifier-missing' | 'shipit-file' | 'disk-full' | 'http' | 'network' | 'unknown'
+  code?: string
+  status?: number
+} {
+  const candidate = err && typeof err === 'object' ? err as { code?: unknown; statusCode?: unknown } : {}
+  const code = typeof candidate.code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(candidate.code)
+    ? candidate.code
+    : undefined
+  const status = typeof candidate.statusCode === 'number' && candidate.statusCode >= 100 && candidate.statusCode <= 599
+    ? candidate.statusCode
+    : undefined
+  const message = err instanceof Error ? err.message.toLowerCase() : ''
+  const category = /signature|authenticode|publisher/.test(message) ? 'signature'
+    : /powershell|command not found|enoent/.test(message) ? 'verifier-missing'
+      : /shipit|copyfile|rename/.test(message) ? 'shipit-file'
+        : code === 'ENOSPC' || /no space left/.test(message) ? 'disk-full'
+          : status !== undefined || /http\s*\d{3}/.test(message) ? 'http'
+            : /network|internet|dns|connection|socket/.test(message) ? 'network'
+              : 'unknown'
+  return { category, ...(code ? { code } : {}), ...(status ? { status } : {}) }
+}
+
+function captureUpdaterFailure(err: unknown, operation: 'check' | 'download' | 'runtime' | 'init'): void {
+  const safe = safeUpdaterFailureContext(err)
+  if (safe.category === 'disk-full') return
+  captureException(new Error(`Auto-updater ${operation} failed: ${safe.category}`), {
+    tags: { component: 'auto-updater', operation, phase: safe.category },
+    fingerprint: ['auto-updater', operation, safe.category, String(safe.status ?? safe.code ?? 'unknown')],
+    extra: { ...safe, currentVersion: app.getVersion(), userVisible: runIsUserVisible },
+    level: operation === 'runtime' || operation === 'init' ? 'warning' : undefined,
+  })
+}
+
 function isChannelFileNotFoundError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false
   const code = (err as { code?: unknown }).code
@@ -254,10 +288,7 @@ async function runUpdateCheckBody() {
       setChannelFilePendingStatus()
       return
     }
-    captureException(err, {
-      tags: { component: 'auto-updater', operation: 'check' },
-      extra: { currentVersion: app.getVersion(), userVisible: runIsUserVisible },
-    })
+    captureUpdaterFailure(err, 'check')
     if (runIsUserVisible) {
       const message = err instanceof Error ? err.message : String(err)
       setStatus({ state: 'error', error: message })
@@ -316,10 +347,7 @@ export function registerUpdateHandlers() {
       const autoUpdater = await getAutoUpdater()
       await autoUpdater.downloadUpdate()
     } catch (err) {
-      captureException(err, {
-        tags: { component: 'auto-updater', operation: 'download' },
-        extra: { currentVersion: app.getVersion(), targetVersion: currentStatus.version },
-      })
+      captureUpdaterFailure(err, 'download')
       const message = err instanceof Error ? err.message : String(err)
       setStatus({ state: 'error', error: message })
     }
@@ -411,15 +439,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
       }
       const isTransientNetworkError = /net::ERR_(NETWORK_CHANGED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|CONNECTION_TIMED_OUT|CONNECTION_REFUSED|CONNECTION_RESET)\b/.test(err.message)
       if (!isTransientNetworkError) {
-        captureException(err, {
-          tags: { component: 'auto-updater', operation: 'runtime' },
-          extra: {
-            currentVersion: app.getVersion(),
-            state: currentStatus.state,
-            userVisible: runIsUserVisible,
-          },
-          level: 'warning',
-        })
+        captureUpdaterFailure(err, 'runtime')
       }
       // Errors during a purely silent background check should not flip the UI to
       // an alarming error state — the user never asked for the check. But the
@@ -435,10 +455,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
     updaterReady = true
     scheduleAutomaticUpdateChecks()
   } catch (err) {
-    captureException(err, {
-      tags: { component: 'auto-updater', operation: 'init' },
-      level: 'warning',
-    })
+    captureUpdaterFailure(err, 'init')
     console.warn('Failed to initialize auto-updater:', err)
   }
 }

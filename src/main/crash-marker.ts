@@ -11,6 +11,7 @@
  */
 
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { inspect } from 'util'
 import { getDataDir } from '@shared/lib/config/data-dir'
@@ -57,15 +58,37 @@ function readMarker(): CrashMarker | null {
  * shutdown, or an undelivered marker from a previous run), the entry is
  * appended up to MAX_ENTRIES so the original cause is never displaced.
  */
+function mb(bytes: number): number {
+  return Math.max(0, Math.round(bytes / (1024 * 1024)))
+}
+
+function memoryOperation(error: Error): NonNullable<CrashMarkerEntry['memory']>['operation'] {
+  const safe = `${error.name} ${error.message}`.toLowerCase()
+  if (/decompress|inflate|unzip|gunzip/.test(safe)) return 'decompression'
+  if (/compress|deflate|gzip|zlib/.test(safe)) return 'compression'
+  if (/sentry|transport/.test(safe)) return 'sentry-transport'
+  return 'unknown'
+}
+
 export function recordFatalError(type: CrashMarkerEntry['type'], reason: unknown): void {
   try {
     const error = toReportableError(reason)
+    const usage = process.memoryUsage()
     const entry: CrashMarkerEntry = {
       timestamp: new Date().toISOString(),
       type,
       name: error.name,
       message: error.message.slice(0, MAX_MESSAGE_LENGTH),
       stack: error.stack?.slice(0, MAX_STACK_LENGTH),
+      memory: {
+        operation: memoryOperation(error),
+        heapUsedMb: mb(usage.heapUsed),
+        heapTotalMb: mb(usage.heapTotal),
+        externalMb: mb(usage.external),
+        rssMb: mb(usage.rss),
+        osFreeMb: mb(os.freemem()),
+        osTotalMb: mb(os.totalmem()),
+      },
     }
     const existing = readMarker()
     const marker: CrashMarker = existing

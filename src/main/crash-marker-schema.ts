@@ -6,6 +6,15 @@ export const crashMarkerEntrySchema = z.object({
   name: z.string(),
   message: z.string(),
   stack: z.string().optional(),
+  memory: z.object({
+    operation: z.enum(['compression', 'decompression', 'sentry-transport', 'unknown']),
+    heapUsedMb: z.number().int().nonnegative(),
+    heapTotalMb: z.number().int().nonnegative(),
+    externalMb: z.number().int().nonnegative(),
+    rssMb: z.number().int().nonnegative(),
+    osFreeMb: z.number().int().nonnegative(),
+    osTotalMb: z.number().int().nonnegative(),
+  }).optional(),
 })
 
 export const crashMarkerSchema = z.object({

@@ -2,7 +2,7 @@ import http from 'http'
 import https from 'https'
 import tls from 'tls'
 import net, { AddressInfo } from 'net'
-import { randomBytes, randomUUID } from 'crypto'
+import { createHash, randomBytes, randomUUID } from 'crypto'
 import { z } from 'zod'
 import {
   LambdaMicrovmsClient,
@@ -218,6 +218,8 @@ export type MicrovmAuthToken = Record<string, string>
 export interface ProxyOptions {
   /** MicroVM HTTPS endpoint host (no scheme), from RunMicrovm/GetMicrovm. */
   endpoint: string
+  /** Process-local generation counter; never the raw VM ID. */
+  generation?: number
   /** Port inside the MicroVM the auth-proxy should forward to (agent server). */
   agentPort: number
   /** Mints a fresh auth-token map ({ "X-aws-proxy-auth": "<jwe>", ... }). */
@@ -308,24 +310,34 @@ export class LocalAuthForwardProxy {
   // Confirm the MicroVM agent serves before we start an unreplayable WS pipe.
   // Reuses the HTTP forward+retry over /health so a 502 or connection refusal
   // during cold bring-up is retried within the budget.
-  private async waitForUpstreamReady(): Promise<boolean> {
+  private async waitForUpstreamReady(): Promise<{ ready: boolean; attempts: number; lastStatus?: number; cause?: string }> {
     const deadline = Date.now() + RESUME_KICK_TIMEOUT_MS
+    let attempts = 0
+    let lastStatus: number | undefined
+    let cause: string | undefined
     for (;;) {
+      attempts += 1
       let auth: Record<string, string>
       try {
         auth = await this.authHeaders()
       } catch (error) {
-        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' }, extra: { endpoint: this.options.endpoint } })
-        return false
+        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' } })
+        return { ready: false, attempts, cause: 'token' }
       }
       try {
         const res = await this.forwardOnce('GET', '/health', { host: this.options.endpoint, ...auth }, Buffer.alloc(0))
         res.resume()
-        if (res.statusCode !== 502) return true
-      } catch {
+        lastStatus = res.statusCode
+        if (res.statusCode !== 502) return { ready: true, attempts, lastStatus }
+        cause = 'http-502'
+      } catch (error) {
         // Connection refused/reset/timeout = VM still waking; retry below.
+        const code = error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+          ? (error as { code: string }).code
+          : undefined
+        cause = code && /^[A-Z0-9_]{2,32}$/.test(code) ? code : 'transport'
       }
-      if (Date.now() >= deadline) return false
+      if (Date.now() >= deadline) return { ready: false, attempts, lastStatus, cause }
       await new Promise((r) => setTimeout(r, RESUME_RETRY_DELAY_MS))
     }
   }
@@ -346,7 +358,7 @@ export class LocalAuthForwardProxy {
       try {
         auth = await this.authHeaders()
       } catch (error) {
-        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' }, extra: { endpoint: this.options.endpoint } })
+        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' } })
         if (!res.headersSent) res.writeHead(502)
         res.end('microvm auth token unavailable')
         return
@@ -361,7 +373,14 @@ export class LocalAuthForwardProxy {
           await new Promise((r) => setTimeout(r, RESUME_RETRY_DELAY_MS))
           continue
         }
-        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.request' }, extra: { endpoint: this.options.endpoint, path: req.url } })
+        captureException(new Error('MicroVM proxy request deadline exhausted'), {
+          tags: { area: 'container', op: 'microvm.proxy.request' },
+          extra: {
+            endpointHash: createHash('sha256').update(this.options.endpoint).digest('hex').slice(0, 12),
+            method: req.method ?? 'GET',
+            routeKind: req.url?.startsWith('/health') ? 'health' : 'agent-api',
+          },
+        })
         if (!res.headersSent) res.writeHead(502)
         res.end()
         return
@@ -381,15 +400,47 @@ export class LocalAuthForwardProxy {
   private async handleUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): Promise<void> {
     // A WS upgrade can't be replayed once piped, so kick the VM awake over HTTP
     // (with the same resume-retry HTTP requests get) before opening the stream.
-    if (!(await this.waitForUpstreamReady())) {
+    const readiness = await this.waitForUpstreamReady()
+    const endpointHash = createHash('sha256').update(this.options.endpoint).digest('hex').slice(0, 12)
+    if (!readiness.ready) {
+      captureException(new Error('MicroVM WebSocket readiness deadline exhausted'), {
+        tags: {
+          area: 'container',
+          op: 'microvm.proxy.upgrade',
+          phase: 'readiness',
+          outcome: 'terminal',
+        },
+        fingerprint: ['microvm-ws-upgrade', 'readiness', String(readiness.lastStatus ?? readiness.cause ?? 'unknown')],
+        extra: {
+          endpointHash,
+          generation: this.options.generation ?? 0,
+          attempts: readiness.attempts,
+          deadlineMs: RESUME_KICK_TIMEOUT_MS,
+          status: readiness.lastStatus,
+          safeCode: readiness.cause,
+        },
+      })
       socket.destroy()
       return
+    }
+    if (readiness.attempts > 1) {
+      addErrorBreadcrumb({
+        category: 'container',
+        message: 'MicroVM WebSocket readiness recovered',
+        level: 'info',
+        data: {
+          endpointHash,
+          generation: this.options.generation ?? 0,
+          attempts: readiness.attempts,
+          recovered: true,
+        },
+      })
     }
     let auth: Record<string, string>
     try {
       auth = await this.authHeaders()
     } catch (error) {
-      captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' }, extra: { endpoint: this.options.endpoint } })
+      captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' } })
       socket.destroy()
       return
     }
@@ -435,7 +486,21 @@ export class LocalAuthForwardProxy {
       clearConnectTimer()
       stopKeepalive?.()
       stopKeepalive = null
-      captureException(error, { tags: { area: 'container', op: 'microvm.proxy.upgrade' }, extra: { endpoint: this.options.endpoint } })
+      captureException(new Error('MicroVM WebSocket upgrade transport failed'), {
+        tags: {
+          area: 'container',
+          op: 'microvm.proxy.upgrade',
+          phase: 'connect',
+          outcome: 'terminal',
+        },
+        fingerprint: ['microvm-ws-upgrade', 'connect', error.name],
+        extra: {
+          endpointHash,
+          generation: this.options.generation ?? 0,
+          attempts: readiness.attempts,
+          deadlineMs: UPSTREAM_IDLE_TIMEOUT_MS,
+        },
+      })
       upstream.destroy()
       socket.destroy()
     }
@@ -657,6 +722,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   static readonly supportsCustomAgentImage = false
 
   private replaceInFlight: Promise<void> | null = null
+  private generation = 0
 
   constructor(config: ContainerConfig) {
     super(config)
@@ -730,6 +796,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
     const proxy = new LocalAuthForwardProxy({
       endpoint: run.endpoint,
+      generation: ++this.generation,
       agentPort: config.agentPort,
       mintToken: () => this.mintToken(run.microvmId),
     })

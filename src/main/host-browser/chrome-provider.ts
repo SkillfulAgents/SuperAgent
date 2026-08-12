@@ -89,33 +89,20 @@ interface BrowserInstance {
  * Returns the first few KB of the most recent .ips/.crash file written
  * in the last 30 seconds, or null if none found.
  */
-function collectRecentCrashReport(): string | null {
-  if (process.platform !== 'darwin') return null
-  try {
-    const dirs = [
-      path.join(os.homedir(), 'Library/Logs/DiagnosticReports'),
-      '/Library/Logs/DiagnosticReports',
-    ]
-    const cutoff = Date.now() - 30_000
-    for (const dir of dirs) {
-      if (!fs.existsSync(dir)) continue
-      const files = fs.readdirSync(dir)
-        .filter(f => /Google Chrome/i.test(f) && /\.(ips|crash)$/.test(f))
-        .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
-        .filter(f => f.mtime > cutoff)
-        .sort((a, b) => b.mtime - a.mtime)
-      if (files.length > 0) {
-        return fs.readFileSync(path.join(dir, files[0].name), 'utf-8').slice(0, 4000)
-      }
-    }
-  } catch { /* best-effort */ }
-  return null
-}
-
 /**
  * Collect diagnostic data about the Chrome environment at the moment of failure.
  * Runs quick ad-hoc checks to surface the actual root cause.
  */
+function sanitizeChromeDiagnostics(diag: Record<string, unknown>): Record<string, unknown> {
+  const allowed = [
+    'chrome_binary_exists', 'chrome_binary_size', 'chrome_binary_error',
+    'other_chrome_processes', 'singleton_lock_exists', 'devtools_active_port_exists',
+    'disk_free_mb', 'chrome_version', 'system_memory_free_mb', 'system_memory_total_mb',
+    'diagnostic_error',
+  ]
+  return Object.fromEntries(allowed.filter((key) => key in diag).map((key) => [key, diag[key]]))
+}
+
 function collectChromeDiagnostics(chromePath: string | null, port: number, userDataDir: string): Record<string, unknown> {
   const diag: Record<string, unknown> = {}
 
@@ -460,9 +447,10 @@ export class ChromeProvider implements HostBrowserProvider {
       const foundPid = await this.findChromePidByUserDataDir(userDataDir, 5000)
       if (!foundPid) {
         const err = new Error(`Chrome was launched via 'open' but the process could not be located for user-data-dir ${userDataDir}`)
-        captureException(err, {
-          tags: { component: 'browser', operation: 'launch' },
-          extra: { instanceId, platform: 'darwin', stage: 'pid-lookup', userDataDir },
+        captureException(new Error('Host browser process lookup failed'), {
+          tags: { component: 'browser', operation: 'launch', phase: 'pid-lookup' },
+          fingerprint: ['host-browser-launch', 'darwin', 'pid-lookup'],
+          extra: { platform: 'darwin', profileClaimed: true },
         })
         throw err
       }
@@ -619,29 +607,25 @@ export class ChromeProvider implements HostBrowserProvider {
       ])
     } catch (err) {
       if (earlyExitInterval) { clearInterval(earlyExitInterval); earlyExitInterval = null }
-      const stderr = Buffer.concat(stderrChunks).toString().trim()
-      // Run ad-hoc diagnostics to capture the actual root cause
-      const diagnostics = collectChromeDiagnostics(this.detectedPath, port, userDataDir)
-      captureException(err, {
-        tags: { component: 'browser', operation: 'launch' },
+      // Keep launch evidence categorical. Raw stderr/crash reports, process IDs,
+      // executable/profile paths and ports can contain user data or host identity.
+      const diagnostics = sanitizeChromeDiagnostics(
+        collectChromeDiagnostics(this.detectedPath, port, userDataDir),
+      )
+      const phase = earlyExitCode !== undefined ? 'early-exit' : 'debug-port-timeout'
+      captureException(new Error(`Host browser launch failed during ${phase}`), {
+        tags: { component: 'browser', operation: 'launch', phase },
+        fingerprint: ['host-browser-launch', process.platform, phase, String(earlyExitCode ?? earlyExitSignal ?? 'timeout')],
         extra: {
-          instanceId,
-          port,
           platform: process.platform,
           arch: process.arch,
-          chromePath: this.detectedPath,
+          executableAvailable: Boolean(this.detectedPath),
           earlyExitCode,
           earlyExitSignal,
-          timeToExitMs: earlyExitCode !== undefined ? Date.now() - spawnedAt : null,
-          stderr: stderr.slice(-2000),
-          crashReport: collectRecentCrashReport(),
-          userDataDir,
-          profileId,
-          spawnArgs: [
-            `--remote-debugging-port=${port}`,
-            `--remote-debugging-address=${CDP_LOOPBACK_ADDRESS}`,
-            `--user-data-dir=${userDataDir}`,
-          ],
+          timeToExitBucket: earlyExitCode === undefined ? 'not-exited'
+            : Date.now() - spawnedAt < 1_000 ? '<1s'
+              : Date.now() - spawnedAt < 5_000 ? '<5s' : '>=5s',
+          profileImported: Boolean(profileId),
           ...diagnostics,
         },
       })

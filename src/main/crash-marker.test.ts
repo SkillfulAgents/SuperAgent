@@ -76,6 +76,12 @@ describe('recordFatalError', () => {
     })
     expect(marker.entries[0].stack).toContain('it broke')
     expect(marker.reportAttempts).toBe(0)
+    expect(marker.entries[0].memory).toEqual(expect.objectContaining({
+      operation: 'unknown',
+      heapUsedMb: expect.any(Number),
+      externalMb: expect.any(Number),
+      osFreeMb: expect.any(Number),
+    }))
   })
 
   it('records an undefined rejection reason with usable context', () => {
@@ -83,6 +89,14 @@ describe('recordFatalError', () => {
 
     const marker = readMarkerFile()
     expect(marker.entries[0].message).toContain('Non-Error fatal reason')
+  })
+
+  it('categorizes native compression pressure without retaining payloads', () => {
+    recordFatalError('uncaughtException', new Error('zlib allocation failed while deflate payload=private'))
+
+    const marker = readMarkerFile()
+    expect(marker.entries[0].memory?.operation).toBe('compression')
+    expect(marker.entries[0].memory).not.toHaveProperty('payload')
   })
 
   it('appends pile-on fatals without displacing the original, capped at 5', () => {
