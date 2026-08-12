@@ -60,14 +60,26 @@ const TURN_ANCHOR_TOP = 100
 const TURN_ANCHOR_ANIMATION_MS = 220
 // Following the live edge by assigning scrollTop teleports the viewport by the
 // full height of whatever just arrived — a paragraph, a tool card — so the
-// thread reads as a series of jumps. Instead the follow glides: each frame
-// closes a fraction of the remaining distance, turning every burst into a short
-// slide. The step ceiling keeps a tall card from whipping past, and past the
-// snap distance gliding would read as drift, so we jump instead.
-const FOLLOW_SMOOTHING = 0.22
-const FOLLOW_MAX_STEP_PX = 32
+// thread reads as a series of jumps. Instead the viewport chases the edge on a
+// critically damped spring: it carries velocity across retargets, so a chunk
+// landing mid-motion bends the existing curve instead of kicking the speed to a
+// new value. Critically damped means it converges without overshoot, which
+// matters here because overshoot past the live edge would bounce the text.
+//
+// Stiffness is in rad/s (higher = tighter tracking, closer to the old snap);
+// ~7 settles a burst in roughly two thirds of a second, letting the viewport
+// trail the text and drift up to it. The velocity ceiling stops a tall tool
+// card from whipping past, and past the snap distance any easing reads as
+// sluggish drift rather than float, so we jump instead.
+const FOLLOW_STIFFNESS = 7
+const FOLLOW_MAX_VELOCITY_PX_S = 2400
 const FOLLOW_SNAP_PX = 900
 const FOLLOW_SETTLE_PX = 0.5
+// A dropped frame or a backgrounded window must not integrate one huge step.
+const FOLLOW_MAX_FRAME_S = 1 / 15
+// Beyond this the viewport moved without us (user gesture, layout jump), so the
+// spring resyncs to reality rather than fighting toward a stale position.
+const FOLLOW_RESYNC_PX = 2
 const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
 const SCROLL_KEYS = new Set(['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '])
 
@@ -406,6 +418,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const scrollAnimationFrameRef = useRef<number | null>(null)
   const followFrameRef = useRef<number | null>(null)
   const followTargetRef = useRef(0)
+  const followPositionRef = useRef(0)
+  const followVelocityRef = useRef(0)
+  const followLastFrameRef = useRef(0)
   const animateNextTurnRef = useRef(false)
   const isScrolledToBottomRef = useRef(true)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
@@ -482,15 +497,17 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }, [])
 
   const cancelFollowAnimation = useCallback(() => {
+    followVelocityRef.current = 0
     if (followFrameRef.current == null) return
     cancelAnimationFrame(followFrameRef.current)
     followFrameRef.current = null
   }, [])
 
-  // Glide toward the live edge instead of snapping to it. Re-entrant by design:
-  // streaming calls this on every content change, and an in-flight glide simply
-  // retargets, so a burst mid-slide extends the same motion rather than
-  // restarting it (which is what makes fixed-duration animations stutter here).
+  // Chase the live edge instead of snapping to it. Re-entrant by design:
+  // streaming calls this on every content change, and an in-flight chase simply
+  // retargets. Because the spring carries its velocity, retargeting bends the
+  // curve rather than restarting it — restart-per-chunk is exactly what makes
+  // fixed-duration animations stutter under a stream.
   const followLiveEdge = useCallback((el: HTMLDivElement) => {
     const target = Math.max(0, el.scrollHeight - el.clientHeight)
     followTargetRef.current = target
@@ -500,28 +517,58 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // Settled, moving backwards, or so far out that easing would read as drift.
     if (reduceMotion || distance <= FOLLOW_SETTLE_PX || distance > FOLLOW_SNAP_PX) {
       cancelFollowAnimation()
+      followVelocityRef.current = 0
       setScrollTop(el, target)
       return
     }
 
     if (followFrameRef.current != null) return
 
-    const tick = () => {
+    // Integrate against our own float position. Reading scrollTop back each
+    // frame would re-quantize to the compositor's rounding, and at the low
+    // speeds this settles into that lost fraction is visible as judder.
+    followPositionRef.current = el.scrollTop
+    followLastFrameRef.current = performance.now()
+
+    const tick = (now: number) => {
       const viewport = scrollRef.current
       if (!viewport) {
         followFrameRef.current = null
         return
       }
 
-      const remaining = followTargetRef.current - viewport.scrollTop
+      const elapsed = Math.min((now - followLastFrameRef.current) / 1000, FOLLOW_MAX_FRAME_S)
+      followLastFrameRef.current = now
+
+      if (Math.abs(viewport.scrollTop - followPositionRef.current) > FOLLOW_RESYNC_PX) {
+        followPositionRef.current = viewport.scrollTop
+        followVelocityRef.current = 0
+      }
+
+      const goal = followTargetRef.current
+      const remaining = goal - followPositionRef.current
       if (remaining <= FOLLOW_SETTLE_PX || remaining > FOLLOW_SNAP_PX) {
         followFrameRef.current = null
-        setScrollTop(viewport, followTargetRef.current)
+        followVelocityRef.current = 0
+        setScrollTop(viewport, goal)
         return
       }
 
-      const step = Math.min(Math.max(remaining * FOLLOW_SMOOTHING, 1), FOLLOW_MAX_STEP_PX)
-      setScrollTop(viewport, viewport.scrollTop + step)
+      // Analytic step of a critically damped spring, so the motion is identical
+      // at 60Hz and 120Hz and a long frame cannot overshoot.
+      const offset = followPositionRef.current - goal
+      const detached = followVelocityRef.current + FOLLOW_STIFFNESS * offset
+      const decay = Math.exp(-FOLLOW_STIFFNESS * elapsed)
+      followPositionRef.current = goal + (offset + detached * elapsed) * decay
+      followVelocityRef.current = Math.max(
+        -FOLLOW_MAX_VELOCITY_PX_S,
+        Math.min(
+          FOLLOW_MAX_VELOCITY_PX_S,
+          (followVelocityRef.current - FOLLOW_STIFFNESS * detached * elapsed) * decay,
+        ),
+      )
+
+      setScrollTop(viewport, followPositionRef.current)
       followFrameRef.current = requestAnimationFrame(tick)
     }
     followFrameRef.current = requestAnimationFrame(tick)
