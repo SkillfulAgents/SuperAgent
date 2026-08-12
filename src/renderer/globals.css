@@ -131,9 +131,15 @@ html[data-keyboard-open] [data-composer-footer] {
   }
 }
 
+/* `backwards` (not `both`): a forwards fill would keep `filter: blur(0)` applied
+   after the animation ends, leaving every revealed word layer-promoted and a
+   stacking context for the life of the tail — tables and lists have no blank
+   lines, so they stay "tail" (and would accumulate promoted layers) until the
+   stream moves past them. No `will-change` for the same reason: browsers already
+   promote during an active filter animation, and it would otherwise pin a layer
+   per word. */
 .streaming-word-reveal {
-  animation: streaming-word-reveal 420ms cubic-bezier(0.22, 0.61, 0.25, 1) both;
-  will-change: filter, opacity;
+  animation: streaming-word-reveal 420ms cubic-bezier(0.22, 0.61, 0.25, 1) backwards;
 }
 
 @media (prefers-reduced-motion: reduce) {

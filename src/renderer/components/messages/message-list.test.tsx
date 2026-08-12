@@ -251,7 +251,8 @@ describe('MessageList', () => {
     renderWithProviders(
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
-    expect(screen.getByText('Streaming response...')).toBeInTheDocument()
+    // Streamed prose is split into per-word reveal spans, so match on textContent.
+    expect(screen.getByTestId('message-assistant')).toHaveTextContent('Streaming response...')
   })
 
   it('hides streaming message when persisted', () => {
@@ -581,7 +582,12 @@ describe('MessageList', () => {
 
     expect(screen.getByText('Inspecting first.')).toBeInTheDocument()
     expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
-    expect(screen.getByText('Writing the final response...')).toBeInTheDocument()
+    // The live streaming message is the last assistant item; its prose is split
+    // into per-word reveal spans, so match on textContent.
+    const assistantMessages = screen.getAllByTestId('message-assistant')
+    expect(assistantMessages[assistantMessages.length - 1]).toHaveTextContent(
+      'Writing the final response...'
+    )
     expect(screen.queryByTestId('turn-summary')).not.toBeInTheDocument()
   })
 
@@ -1322,7 +1328,8 @@ describe('MessageList', () => {
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
 
-    expect(screen.getByText('New streaming content')).toBeInTheDocument()
+    // Streamed prose is split into per-word reveal spans, so match on textContent.
+    expect(screen.getByTestId('message-assistant')).toHaveTextContent('New streaming content')
   })
 
   // ---- Turn elapsed time not shown during active session's last turn ----

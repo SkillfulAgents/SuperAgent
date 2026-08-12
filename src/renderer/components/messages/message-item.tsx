@@ -14,9 +14,8 @@ import { MessageErrorBoundary } from './message-error-boundary'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attached-files'
 import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { PluggableList } from 'unified'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
@@ -228,7 +227,7 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text }: { 
   // The plugin keeps each batch's delays stable across subsequent renders, so
   // existing words do not restart while newly appended words get their own
   // compact stagger sequence.
-  const rehypePlugins: PluggableList = [[rehypeStreamingWordReveal, {
+  const rehypePlugins: ReactMarkdownOptions['rehypePlugins'] = [[rehypeStreamingWordReveal, {
     batchStarts: batchStartsRef.current,
   }]]
 

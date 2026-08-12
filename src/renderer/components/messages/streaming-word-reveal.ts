@@ -5,6 +5,9 @@
  *
  * Code-like elements are deliberately left alone: blurring individual tokens
  * makes code shimmer and can disturb its whitespace-sensitive presentation.
+ * Text without a source position (nodes a plugin generated rather than parsed,
+ * e.g. GFM footnote scaffolding) is also left alone — it has no offset to batch
+ * by, and lumping it into batch 0 would retroactively shift that batch's delays.
  */
 
 interface HastNode {
@@ -54,14 +57,14 @@ function batchForOffset(offset: number, batchStarts: readonly number[]): number 
 
 function revealedText(
   value: string,
-  sourceStart: number | undefined,
+  sourceStart: number,
   batchStarts: readonly number[],
   spans: RevealSpan[],
 ): HastNode[] {
   let relativeOffset = 0
 
   return value.split(/(\s+)/u).filter(Boolean).map((part) => {
-    const partOffset = sourceStart === undefined ? 0 : sourceStart + relativeOffset
+    const partOffset = sourceStart + relativeOffset
     relativeOffset += part.length
     if (WHITESPACE.test(part)) return { type: 'text', value: part }
 
@@ -94,13 +97,14 @@ function wrapTextChildren(
       continue
     }
 
-    if (!keepStatic && child.type === 'text' && typeof child.value === 'string') {
-      children.push(...revealedText(
-        child.value,
-        child.position?.start?.offset,
-        batchStarts,
-        spans,
-      ))
+    const sourceStart = child.position?.start?.offset
+    if (
+      !keepStatic &&
+      child.type === 'text' &&
+      typeof child.value === 'string' &&
+      typeof sourceStart === 'number'
+    ) {
+      children.push(...revealedText(child.value, sourceStart, batchStarts, spans))
       continue
     }
 
