@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified browser capability in agent works correctly - agent successfully opened browser, navigated to https://example.com, and retrieved the correct page title \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 - Page loaded successfully with title \"Gamut\"",
+    "Found and clicked the \"QA-20260812-191228-y85m\" agent in sidebar - Agent page opened successfully, URL changed to /agents/qa-20260812-191228-y85m-ltq78aerc7",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in chat input - Message displayed in textbox, send button became enabled",
+    "Clicked send button to send message - Message sent successfully, agent status changed to \"working\", session ID created in URL",
+    "Waited for agent response - Agent completed in 17 seconds with 4 tool calls and 199,713 tokens",
+    "Verified response content - Response clearly states: The page title is \"Example Domain\" — the page contains that heading plus a short note that the domain is for use in documentation examples, and a \"Learn more\" link. Browser is closed again.",
+    "Captured final screenshot showing complete conversation with agent response mentioning \"Example Domain\" - Screenshot saved showing the successful browser use feature"
+  ],
+  "bugs": [],
+  "durationMs": 144954,
+  "sessionId": "058641c6-d7b8-4a66-97d6-80faa246468d",
+  "cost": {
+    "inputTokens": 542,
+    "outputTokens": 13854,
+    "cacheCreationTokens": 82173,
+    "cacheReadTokens": 1616876,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.334216
+  }
+}
