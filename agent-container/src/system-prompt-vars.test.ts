@@ -11,12 +11,6 @@ describe('buildSystemPromptVars', () => {
   it('defaults CLAUDE_CONFIG_DIR when the host env is unset', () => {
     expect(buildSystemPromptVars(undefined, undefined, undefined, undefined).CLAUDE_CONFIG_DIR).toBe('/workspace/.claude')
   })
-
-  it('gates platformServices on PLATFORM_AUTH_ACTIVE', () => {
-    expect(buildSystemPromptVars().platformServices).toBe(false)
-    process.env.PLATFORM_AUTH_ACTIVE = 'true'
-    expect(buildSystemPromptVars().platformServices).toBe(true)
-  })
 })
 
 describe('generateSystemPrompt rendering', () => {

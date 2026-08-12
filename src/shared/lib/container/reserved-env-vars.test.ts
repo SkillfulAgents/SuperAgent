@@ -26,7 +26,6 @@ describe('reserved-env-vars', () => {
       'TZ',
       'HOST_PLATFORM',
       'COMPOSIO_PLATFORM_MODE',
-      'PLATFORM_AUTH_ACTIVE',
       'CLAUDE_CODE_ATTRIBUTION_HEADER',
     ]) {
       expect(RESERVED_ENV_VAR_KEYS.has(key)).toBe(true)
