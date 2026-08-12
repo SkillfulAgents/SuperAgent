@@ -22,6 +22,14 @@ type ApiRequestFailureKind =
   | 'forbidden'
   | 'server'
 
+export type LocalApiLifecycle = 'unknown' | 'ready' | 'quitting' | 'reloading' | 'crashed'
+
+let localApiLifecycle: LocalApiLifecycle = 'unknown'
+
+export function setLocalApiLifecycle(state: LocalApiLifecycle): void {
+  localApiLifecycle = state
+}
+
 type ApiRequestMetadata = {
   route: string
   method: string
@@ -34,6 +42,9 @@ type ApiRequestMetadata = {
   online: 'yes' | 'no' | 'unknown'
   visibility: 'visible' | 'hidden' | 'unknown'
   lifecycle: 'active' | 'pagehide'
+  localApiLifecycle: LocalApiLifecycle
+  packaged: 'yes' | 'no' | 'unknown'
+  channel: 'production' | 'development' | 'test' | 'unknown'
   elapsedMsBucket: '<100' | '100-999' | '1000-9999' | '10000+'
 }
 
@@ -101,6 +112,18 @@ function browserKind(): ApiRequestMetadata['browser'] {
   return 'other'
 }
 
+function appChannel(): ApiRequestMetadata['channel'] {
+  if (import.meta.env.MODE === 'test') return 'test'
+  if (import.meta.env.DEV) return 'development'
+  if (import.meta.env.PROD) return 'production'
+  return 'unknown'
+}
+
+function packagedKind(): ApiRequestMetadata['packaged'] {
+  if (typeof window === 'undefined') return 'unknown'
+  return 'electronAPI' in window ? 'yes' : 'no'
+}
+
 function elapsedBucket(elapsedMs: number): ApiRequestMetadata['elapsedMsBucket'] {
   if (elapsedMs < 100) return '<100'
   if (elapsedMs < 1_000) return '100-999'
@@ -138,6 +161,9 @@ function requestMetadata(
       ? 'unknown'
       : document.visibilityState === 'hidden' ? 'hidden' : 'visible',
     lifecycle: pageLifecycle,
+    localApiLifecycle,
+    packaged: packagedKind(),
+    channel: appChannel(),
     elapsedMsBucket: elapsedBucket(performance.now() - startedAt),
   }
 }
@@ -156,6 +182,9 @@ function reportApiRequestFailure(error: ApiRequestError): void {
       online: metadata.online,
       visibility: metadata.visibility,
       lifecycle: metadata.lifecycle,
+      local_api_lifecycle: metadata.localApiLifecycle,
+      packaged: metadata.packaged,
+      app_channel: metadata.channel,
       ...(metadata.policyCode ? { policy_code: metadata.policyCode } : {}),
     },
     extra: {
