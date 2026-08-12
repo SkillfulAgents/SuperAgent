@@ -386,7 +386,24 @@ async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvA
     )
     return { email: account.email, orgName: account.orgName, role: account.role }
   } catch (error) {
-    captureException(error, { tags: { area: 'platform-auth', op: 'introspect-env-account' } })
+    const status = error && typeof error === 'object' && typeof (error as { status?: unknown }).status === 'number'
+      ? (error as { status: number }).status
+      : undefined
+    const statusClass = status === 401 ? 'unauthorized'
+      : status === 403 ? 'forbidden'
+        : status === 404 ? 'missing'
+          : status !== undefined && status >= 500 ? 'upstream-5xx'
+            : status !== undefined ? 'other-http' : 'transport'
+    captureException(new Error(`Account introspection failed: ${statusClass}`), {
+      tags: {
+        area: 'platform-auth',
+        op: 'introspect-env-account',
+        statusClass,
+        tokenSource: 'environment',
+      },
+      extra: { status },
+      fingerprint: ['platform-auth', 'introspect-env-account', statusClass],
+    })
     return null
   }
 }

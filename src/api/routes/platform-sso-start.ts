@@ -66,6 +66,7 @@ platformSsoStart.get('/platform/start', async (c) => {
     return c.redirect('/', 302)
   }
 
+  let phase: 'session-read' | 'oauth-start' | 'redirect-build' = 'session-read'
   try {
     const auth = getAuth()
     const session = await auth.api.getSession({ headers: c.req.raw.headers })
@@ -74,6 +75,7 @@ platformSsoStart.get('/platform/start', async (c) => {
       return c.redirect(target, 302)
     }
 
+    phase = 'oauth-start'
     const { headers, response } = await auth.api.signInWithOAuth2({
       body: {
         providerId,
@@ -91,12 +93,19 @@ platformSsoStart.get('/platform/start', async (c) => {
       return c.redirect('/', 302)
     }
 
+    phase = 'redirect-build'
     const redirect = c.redirect(url, 302)
     if (headers) appendSetCookies(headers, redirect.headers)
     return redirect
   } catch (error) {
-    captureException(error, {
-      tags: { area: 'auth', op: 'platform-sso-start' },
+    captureException(new Error(`Platform SSO start failed during ${phase}`), {
+      tags: {
+        area: 'auth',
+        op: 'platform-sso-start',
+        phase,
+        sessionCookiePresent: c.req.header('cookie') ? 'true' : 'false',
+      },
+      fingerprint: ['platform-sso-start', phase],
     })
     console.warn('[platform-sso-start] failed to start Platform OIDC', error)
     return c.redirect('/', 302)

@@ -165,16 +165,19 @@ export function isDeploymentUrlAllowed(rawUrl: string): boolean {
  * build). Returns false — never throws — so an unsafe or poisoned record simply
  * fails closed to "no workspace".
  */
-async function isDeploymentTargetSafe(entry: DeploymentDiscoveryEntry): Promise<boolean> {
-  if (entry.deployment_url !== entry.authorization_server) return false
+type DeploymentSafetyReason = 'url-mismatch' | 'invalid-url' | 'private-dns' | 'cleartext' | 'safe'
+
+async function deploymentTargetSafety(entry: DeploymentDiscoveryEntry): Promise<DeploymentSafetyReason> {
+  if (entry.deployment_url !== entry.authorization_server) return 'url-mismatch'
   const policy = deploymentHostPolicy()
   try {
     const parsed = await validateMcpDiscoveryUrl(entry.deployment_url, policy)
     // Require TLS off-loopback so the grant is never sent in cleartext.
-    if (parsed.protocol !== 'https:' && !isLocalhostHost(parsed.hostname)) return false
-    return true
-  } catch {
-    return false
+    if (parsed.protocol !== 'https:' && !isLocalhostHost(parsed.hostname)) return 'cleartext'
+    return 'safe'
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : ''
+    return /private|loopback|link-local|dns/.test(message) ? 'private-dns' : 'invalid-url'
   }
 }
 
@@ -396,14 +399,14 @@ export async function getCloudWorkspace(
     return NOT_FOUND
   }
 
-  if (!(await isDeploymentTargetSafe(deployed))) {
+  const safetyReason = await deploymentTargetSafety(deployed)
+  if (safetyReason !== 'safe') {
     // A mismatched/unsafe deployment URL is a signal, not normal control flow:
     // fail closed (no grant is minted or sent, no workspace surfaced) and flag
-    // it. Reported as a failure, not as absence — the workspace does exist, we
-    // just refuse to talk to the address we were handed.
+    // it. Report only the categorical reason: target/auth URLs and DNS answers
+    // are credentials-adjacent deployment data and must not enter telemetry.
     reportFailureOnce('validate-target', new Error('cloud-workspace: unsafe deployment target'), {
-      deploymentUrl: deployed.deployment_url,
-      authorizationServer: deployed.authorization_server,
+      safetyReason,
     })
     clearCloudWorkspaceRecord()
     return DISCOVERY_FAILED

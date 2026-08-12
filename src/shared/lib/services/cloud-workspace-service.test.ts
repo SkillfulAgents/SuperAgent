@@ -305,6 +305,10 @@ describe('getCloudWorkspace', () => {
     expect(mockValidateUrl).not.toHaveBeenCalled() // string mismatch short-circuits
     expect(mockRequestGrant).not.toHaveBeenCalled()
     expect(mockClearRecord).toHaveBeenCalled()
+    expect(mockCapture).toHaveBeenCalledWith(expect.any(Error), expect.objectContaining({
+      extra: { safetyReason: 'url-mismatch' },
+    }))
+    expect(JSON.stringify(mockCapture.mock.calls)).not.toContain('other.example.com')
   })
 
   it('drops the entry (never mints) when the URL fails the SSRF/DNS check', async () => {
@@ -314,6 +318,10 @@ describe('getCloudWorkspace', () => {
     expect(status).toMatchObject({ available: true, found: false, deploymentUrl: null })
     expect(mockRequestGrant).not.toHaveBeenCalled()
     expect(mockClearRecord).toHaveBeenCalled()
+    expect(mockCapture).toHaveBeenCalledWith(expect.any(Error), expect.objectContaining({
+      extra: { safetyReason: 'private-dns' },
+    }))
+    expect(JSON.stringify(mockCapture.mock.calls)).not.toContain(DEPLOYED.deployment_url)
   })
 
   it('drops the entry when the URL is non-HTTPS and non-loopback', async () => {

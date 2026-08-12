@@ -96,7 +96,16 @@ describe('GET /auth/platform/start', () => {
     const res = await createApp().request('/auth/platform/start')
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/')
-    expect(mockCaptureException).toHaveBeenCalled()
+    expect(mockCaptureException).toHaveBeenCalledWith(expect.any(Error), {
+      tags: expect.objectContaining({
+        area: 'auth',
+        op: 'platform-sso-start',
+        phase: 'oauth-start',
+        sessionCookiePresent: 'false',
+      }),
+      fingerprint: ['platform-sso-start', 'oauth-start'],
+    })
+    expect(JSON.stringify(mockCaptureException.mock.calls)).not.toContain('provider down')
   })
 
   it('warm session redirect carries validated prompt and model', async () => {
