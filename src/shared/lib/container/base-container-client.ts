@@ -29,7 +29,7 @@ import { readAgentDisplayNameSync } from '@shared/lib/utils/file-storage'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
-import { getOrCreateHostToken } from './host-token-store'
+import { getOrCreateHostToken, hostTokenId } from './host-token-store'
 import { getSubagentModelCatalog } from './subagent-model-catalog'
 
 const execAsync = promisify(exec)
@@ -237,6 +237,22 @@ const BASE_PORT = (() => {
 // Max time for a single /health probe (isHealthy). Kept short because it gates
 // the request hot path via ensureRunning's stale-cache liveness check.
 const HEALTH_PROBE_TIMEOUT_MS = 2000
+
+/**
+ * The container rejected a host-authenticated request (HTTP 401).
+ *
+ * Typed so callers can distinguish "this container is holding a host token
+ * the host no longer has" (recoverable by a restart) from a generic
+ * request failure, and so a persistent 401 stays a single, classifiable
+ * error rather than an opaque string. [ELECTRON-DD]
+ */
+export class ContainerUnauthorizedError extends Error {
+  readonly status = 401
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = 'ContainerUnauthorizedError'
+  }
+}
 
 /**
  * Parse a memory value string (e.g., "231.2MiB", "1.5GiB", "512MB") to bytes.
@@ -1096,7 +1112,84 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
+  /**
+   * Create a session, recovering once from a stale host-auth token.
+   *
+   * A container keeps requiring the host token it was *started* with. If the
+   * host's token store is lost or rewritten while that container keeps
+   * running (data-dir wipe, unreadable token file — see host-token-store's
+   * regenerate path), every policy-bearing request 401s forever and the agent
+   * is permanently wedged. Recovery is bounded and evidence-based: only when
+   * the container reports a *different* non-secret token id do we restart it
+   * once and retry once. [ELECTRON-DD]
+   */
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
+    try {
+      return await this.createSessionRequest(options)
+    } catch (error) {
+      if (!(error instanceof ContainerUnauthorizedError)) throw error
+      if (!(await this.recoverStaleHostAuth())) throw error
+      // Exactly one retry: a second 401 propagates as the typed error.
+      return await this.createSessionRequest(options)
+    }
+  }
+
+  /**
+   * Restart the container iff it is provably holding a superseded host token.
+   * Returns whether a retry is worth attempting.
+   */
+  private async recoverStaleHostAuth(): Promise<boolean> {
+    if (!this.config.restartAgent) return false
+
+    // Re-read the token from disk: this client may have memoized a header
+    // built before the store was rewritten.
+    this.hostAuthHeadersCache = undefined
+    const expectedId = hostTokenId(getOrCreateHostToken(this.config.agentId))
+    const observedId = await this.probeHostTokenId()
+
+    if (!observedId || observedId === expectedId) {
+      // Unknown (older container image that doesn't report an id) or the same
+      // generation — a real authorization failure, not a stale container.
+      // Stay typed and do not restart, so a persistent 401 can't loop.
+      addErrorBreadcrumb({
+        category: 'container',
+        message: 'Host-auth 401 with current token generation; not restarting',
+        data: { agentId: this.config.agentId, expectedId, observedId: observedId ?? 'unknown' },
+      })
+      return false
+    }
+
+    addErrorBreadcrumb({
+      category: 'container',
+      message: 'Restarting container holding a superseded host token',
+      data: { agentId: this.config.agentId, expectedId, observedId },
+    })
+    await this.config.restartAgent()
+    this.hostAuthHeadersCache = undefined
+    return true
+  }
+
+  /**
+   * Read the running container's non-secret host-token id from /health (the
+   * one endpoint that does not require host auth). Never carries token
+   * material. Returns null when unavailable.
+   */
+  private async probeHostTokenId(): Promise<string | null> {
+    try {
+      const port = await this.getPortOrThrow()
+      const response = await fetch(`${this.getBaseUrl(port)}/health`, {
+        signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+      })
+      if (!response.ok) return null
+      const body = await response.json()
+      const id = (body as { hostTokenId?: unknown }).hostTokenId
+      return typeof id === 'string' && id.length > 0 ? id : null
+    } catch {
+      return null
+    }
+  }
+
+  private async createSessionRequest(options: CreateSessionOptions): Promise<ContainerSession> {
     const port = await this.getPortOrThrow()
     const timeoutMs = 60000 // 60 second timeout
 
@@ -1183,6 +1276,16 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           }
         } catch {
           errorDetail = response.statusText
+        }
+
+        // An explicit host-auth rejection is its own failure mode: the
+        // container is requiring a host token this host is not sending.
+        // Keep it typed so createSession can attempt bounded recovery and so
+        // it never degrades into an unclassifiable "Failed to create session".
+        if (response.status === 401) {
+          throw new ContainerUnauthorizedError(
+            'Failed to start session - the agent rejected this request as unauthorized. Restart the agent and try again.'
+          )
         }
 
         // Check for known error patterns and provide user-friendly messages
