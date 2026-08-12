@@ -1,8 +1,8 @@
-import type { ReactNode } from 'react'
+import { Children, isValidElement, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { linkify } from '@renderer/lib/linkify'
-import { RequestItemErrorContext } from './request-item-actions'
+import { RequestItemActions, RequestItemErrorContext } from './request-item-actions'
 import { usePagination } from './pending-request-stack'
 import { StopSessionButton } from './stop-session-button'
 
@@ -165,12 +165,32 @@ export function RequestItemShell({
   const headerRightContent = paginationControls ?? headerRight
   const showStopButton = !!(sessionId && agentSlug)
 
+  // Action rows used to be sticky children of this scroll container. Safari
+  // can fail to paint that combination when the whole request card lives in
+  // the absolutely-positioned composer overlay. Split direct action rows into
+  // a real, non-scrolling footer instead. Inline action rows belong to their
+  // surrounding content and deliberately stay in the scrolling body.
+  const childNodes = Children.toArray(children)
+  const bodyChildren: ReactNode[] = []
+  const footerActions: ReactNode[] = []
+  for (const child of childNodes) {
+    if (
+      isValidElement<{ inline?: boolean }>(child) &&
+      child.type === RequestItemActions &&
+      !child.props.inline
+    ) {
+      footerActions.push(child)
+    } else {
+      bodyChildren.push(child)
+    }
+  }
+
   return (
     <div
-      className={cn('max-h-[50vh] overflow-y-auto', REQUEST_CARD_CLASS)}
+      className={cn('flex max-h-[50vh] flex-col overflow-hidden', REQUEST_CARD_CLASS)}
       {...dataAttrs}
     >
-      <div className="p-4">
+      <div className="min-h-0 overflow-y-auto p-4" data-request-item-body>
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-3">
             {titleNode}
@@ -190,10 +210,15 @@ export function RequestItemShell({
           </div>
           {subtitleNode}
           <RequestItemErrorContext.Provider value={error ?? null}>
-            {children}
+            {bodyChildren}
           </RequestItemErrorContext.Provider>
         </div>
       </div>
+      {footerActions.length > 0 && (
+        <RequestItemErrorContext.Provider value={error ?? null}>
+          {footerActions}
+        </RequestItemErrorContext.Provider>
+      )}
     </div>
   )
 }

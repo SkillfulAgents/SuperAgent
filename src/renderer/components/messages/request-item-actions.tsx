@@ -16,14 +16,20 @@ export function RequestItemActions({ children, className, inline }: RequestItemA
 
   if (inline) {
     return (
-      <div className={cn('flex justify-end gap-2 pt-4', className)}>
+      <div
+        className={cn('flex justify-end gap-2 pt-4', className)}
+        data-request-item-actions="inline"
+      >
         {children}
       </div>
     )
   }
 
   return (
-    <div className="sticky bottom-0 z-10 -mx-4 -mb-4 mt-4 flex flex-col gap-2 border-t border-border bg-background px-4 pb-4 pt-4">
+    <div
+      className="shrink-0 flex flex-col gap-2 border-t border-border bg-background p-4"
+      data-request-item-actions="footer"
+    >
       <div className={cn('flex justify-end gap-2', className)}>{children}</div>
       {error ? <RequestError message={error} className="mt-0" /> : null}
     </div>
