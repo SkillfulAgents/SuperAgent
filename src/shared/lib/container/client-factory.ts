@@ -673,6 +673,7 @@ export function buildImage(
   image: string,
   onProgress?: (progress: ImagePullProgress) => void
 ): Promise<void> {
+  const startedAt = Date.now()
   return new Promise((resolve, reject) => {
     const cli = getCliCommand(runner)
     const proc = spawnWithPath(cli, ['build', '-t', image, AGENT_CONTAINER_PATH])
@@ -716,16 +717,28 @@ export function buildImage(
         // sentryCaptured: canonical event — see pullImage.
         const buildError = Object.assign(new Error(`Image build failed with exit code ${code}${detail}`), { sentryCaptured: true })
         captureException(buildError, {
-          tags: { component: 'container', operation: 'image-build' },
-          extra: { image, runner, exitCode: code, stderr: stderr.slice(-2000) },
+          tags: {
+            component: 'container',
+            operation: 'image-build',
+            runner,
+            result: 'nonzero_exit',
+          },
+          fingerprint: ['container-image-build', runner, String(code ?? 'unknown')],
+          extra: {
+            exitCode: code,
+            elapsedMs: Date.now() - startedAt,
+            observedStepCount: stepCount,
+            stderrBytes: Buffer.byteLength(stderr),
+          },
         })
         reject(buildError)
       }
     })
     proc.on('error', (err) => {
       captureException(err, {
-        tags: { component: 'container', operation: 'image-build-spawn' },
-        extra: { image, runner },
+        tags: { component: 'container', operation: 'image-build-spawn', runner, result: 'spawn_error' },
+        fingerprint: ['container-image-build-spawn', runner],
+        extra: { elapsedMs: Date.now() - startedAt },
       })
       reject(Object.assign(err, { sentryCaptured: true }))
     })
