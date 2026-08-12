@@ -1,8 +1,9 @@
 import { cn } from '@shared/lib/utils'
-import { AlertTriangle, ChevronDown, CircleCheckBig, Ellipsis, Monitor, X } from 'lucide-react'
+import { ChevronDown, CircleCheckBig, Ellipsis, Monitor, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { RequestError } from './request-error'
 import { ACTIVITY_TREE_CONNECTORS, ACTIVITY_TREE_TRACER } from '@renderer/components/ui/tree-connectors'
 import type { Todo } from '@shared/lib/utils/derive-task-list'
 import { ActivityOrb, type ActivityOrbState } from './activity-orb'
@@ -232,16 +233,15 @@ export function ActivityCard({
  */
 export function ActivityErrorCard({ message }: { message: string }) {
   return (
-    <div className="rounded-lg border border-destructive/50 bg-red-50 p-3 select-text dark:bg-red-950" data-testid="error-card">
-      <div className="flex items-center gap-2">
-        <AlertTriangle className="h-4 w-4 text-destructive" />
-        <span className="text-sm font-medium text-destructive">Error</span>
-      </div>
-      <p className="mt-1 text-sm text-destructive/90">{message}</p>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Send another message to retry.
-      </p>
-    </div>
+    <RequestError
+      message={message}
+      hint="Send another message to retry."
+      // Opaque in dark too: this sits in the overlay footer with the transcript
+      // scrolling behind it, where the shared banner's translucent dark fill
+      // would let the messages show through.
+      className="mt-0 dark:bg-red-950"
+      data-testid="error-card"
+    />
   )
 }
 

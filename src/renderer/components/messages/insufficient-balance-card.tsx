@@ -1,6 +1,7 @@
-import { ArrowUpRight, Wallet } from 'lucide-react'
+import { ArrowUpRight, Info } from 'lucide-react'
 
-import { Button } from '@renderer/components/ui/button'
+import { cn } from '@shared/lib/utils'
+
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useSettings } from '@renderer/hooks/use-settings'
 
@@ -34,12 +35,34 @@ export function usePlatformBillingUrl(message: string): string | null {
   return `${platformBaseUrl}/dashboard/organizations/${orgId}?tab=billing`
 }
 
-export function InsufficientBalanceCard({
+/**
+ * The two billing banners, in the error banner's frame and metrics (see
+ * RequestError): a leading glyph, one line of copy, and the billing link where
+ * the error banner puts "More details".
+ *
+ * Red, like the other error banners. What sets this one apart is that it
+ * carries an action; every other error can only be retried.
+ *
+ * Tinted fills stay opaque in dark for the same reason as the red banner — the
+ * transcript scrolls behind the overlay footer.
+ */
+const BANNER_TONES = {
+  stop: {
+    container: 'bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300',
+    action: 'text-red-700/85 hover:text-red-700 dark:text-red-300/85 dark:hover:text-red-300',
+  },
+} as const
+
+function BillingBanner({
+  message,
   billingUrl,
-  'data-testid': testId,
+  tone,
+  testId,
 }: {
+  message: string
   billingUrl: string
-  'data-testid'?: string
+  tone: keyof typeof BANNER_TONES
+  testId: string
 }) {
   async function handleGoToBilling() {
     if (window.electronAPI?.openExternal) {
@@ -51,24 +74,42 @@ export function InsufficientBalanceCard({
 
   return (
     <div
-      className="rounded-[12px] border bg-card shadow-md p-4"
-      data-testid={testId ?? 'insufficient-balance-card'}
+      className={cn('rounded-md px-3 py-2 text-xs', BANNER_TONES[tone].container)}
+      data-testid={testId}
     >
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-500/15">
-          <Wallet className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <h4 className="text-sm font-medium text-foreground">Insufficient balance</h4>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            Subscribe or top up to continue running agents.
-          </p>
-          <Button size="sm" className="mt-3 gap-1.5" onClick={() => void handleGoToBilling()}>
-            Go to billing
-            <ArrowUpRight className="h-3.5 w-3.5" />
-          </Button>
-        </div>
+      <div className="flex items-start gap-2">
+        <Info className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        <span className="min-w-0 flex-1">{message}</span>
+        <button
+          type="button"
+          onClick={() => void handleGoToBilling()}
+          className={cn(
+            'inline-flex shrink-0 cursor-pointer items-center gap-1 rounded font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            BANNER_TONES[tone].action,
+          )}
+        >
+          Go to billing
+          <ArrowUpRight className="h-3 w-3" />
+        </button>
       </div>
     </div>
+  )
+}
+
+/** The turn is already dead: the 402 has landed and nothing runs until paid. */
+export function InsufficientBalanceCard({
+  billingUrl,
+  'data-testid': testId,
+}: {
+  billingUrl: string
+  'data-testid'?: string
+}) {
+  return (
+    <BillingBanner
+      message="Insufficient balance: Subscribe or top up to continue running agents."
+      billingUrl={billingUrl}
+      tone="stop"
+      testId={testId ?? 'insufficient-balance-card'}
+    />
   )
 }

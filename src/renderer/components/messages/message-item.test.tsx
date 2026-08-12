@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, act } from '@testing-library/react'
 import { MessageItem } from './message-item'
 import { createUserMessage, createAssistantMessage, createToolCall } from '@renderer/test/factories'
 
@@ -337,8 +337,8 @@ describe('MessageItem', () => {
         apiError: 'authentication_failed',
       })
       render(<MessageItem message={msg} />)
-      expect(screen.getByText('LLM Provider Error')).toBeInTheDocument()
-      expect(screen.getByText('Invalid API key')).toBeInTheDocument()
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('LLM Provider Error: Invalid API key')
+      act(() => { screen.getByTestId('provider-error-card').click() })
       expect(screen.getByText(/external LLM provider API/)).toBeInTheDocument()
     })
 
