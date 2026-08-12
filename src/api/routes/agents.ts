@@ -2544,6 +2544,17 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
     })
 
     if (!envResponse.ok) {
+      captureException(new Error('Container environment mutation failed'), {
+        tags: {
+          component: 'container',
+          operation: 'environment-mutation',
+          mutation_kind: 'secret_value',
+          result: 'nonzero_response',
+          status_class: `${Math.floor(envResponse.status / 100)}xx`,
+        },
+        fingerprint: ['container-environment-mutation', 'secret_value', String(envResponse.status)],
+        extra: { status: envResponse.status },
+      })
       let errorDetails = 'Unknown error'
       try {
         const error = await envResponse.json()
@@ -4255,6 +4266,17 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
     // Update container env var
     const envResponse = await updateRemoteMcpEnvironment(slug, client)
     if (!envResponse.ok) {
+      captureException(new Error('Container environment mutation failed'), {
+        tags: {
+          component: 'container',
+          operation: 'environment-mutation',
+          mutation_kind: 'connection_bundle',
+          result: 'nonzero_response',
+          status_class: `${Math.floor(envResponse.status / 100)}xx`,
+        },
+        fingerprint: ['container-environment-mutation', 'connection_bundle', String(envResponse.status)],
+        extra: { status: envResponse.status },
+      })
       console.error('Failed to update REMOTE_MCPS env var:', await envResponse.text())
       return c.json({ error: 'Failed to update container environment' }, 502)
     }
