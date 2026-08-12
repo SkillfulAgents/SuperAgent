@@ -46,7 +46,8 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('platform-dependent')).toBe(!composio && !webhook)    // disconnected fallback
     // platformServices shares PLATFORM_AUTH_ACTIVE with webhookEndpoints
     expect(out.includes('## Built-in media generation')).toBe(webhook)
-    expect(out.includes('services/replicate')).toBe(webhook)
+    expect(out.includes('v1/replicate')).toBe(webhook)
+    expect(out.includes('ANTHROPIC_AUTH_TOKEN')).toBe(webhook)
   })
 
   // The pause/resume guidance must always render: without it agents reach for

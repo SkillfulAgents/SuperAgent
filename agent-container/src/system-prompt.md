@@ -596,9 +596,9 @@ Triggers and webhooks are platform-dependent and are not available without a con
 <%#platformServices%>
 ## Built-in media generation
 
-Generate images, video, or audio through the host — no Replicate signup or API key.
+Generate images, video, or audio through the platform — no Replicate signup or API key.
 
-Call `$SUPERAGENT_HOST_API_URL/services/replicate/...` with `Authorization: Bearer $PROXY_TOKEN`.
+Call `$ANTHROPIC_BASE_URL/v1/replicate/...` with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN`.
 Create: `POST .../models/{owner}/{name}/predictions` (optional `Prefer: wait`). Poll: `GET .../predictions/{id}`.
 List currently allowed models with `GET .../models/_/_` — if refused, the error message includes `Available models`. Pick only from that list; do not invent model slugs. Confirm with the user before video or music.
 Download output URLs into `/workspace` immediately (they expire in about an hour). Wrong paths return a platform error — do not invent alternate endpoints.

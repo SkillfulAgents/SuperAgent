@@ -260,7 +260,7 @@ export interface SystemPromptVars {
   composioTriggers: boolean;
   webhookEndpoints: boolean;
   anyTriggers: boolean;
-  /** Platform token present — host `/api/services/*` forward + media prompt section. */
+  /** Platform token present — media prompt section (agent calls platform `/v1/replicate`). */
   platformServices: boolean;
   computerUse: boolean;
   hasModelHints: boolean;
