@@ -198,7 +198,7 @@ describe('AgentActivityIndicator', () => {
     // Shows status indicators
     expect(screen.getByTestId('todo-status-completed')).toBeInTheDocument()
     expect(screen.getByTestId('todo-status-in-progress')).toBeInTheDocument()
-    expect(screen.getByText('○')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-pending')).toBeInTheDocument()
   })
 
   it('does not show todo list when all items are completed', () => {
@@ -469,7 +469,7 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('Set up database')).toBeInTheDocument()
     expect(screen.getByText('Write API routes')).toBeInTheDocument()
     expect(screen.getByText('Add tests')).toBeInTheDocument()
-    expect(screen.getAllByText('○')).toHaveLength(3)
+    expect(screen.getAllByTestId('todo-status-pending')).toHaveLength(3)
   })
 
   it('applies TaskUpdate status changes to task list', () => {
