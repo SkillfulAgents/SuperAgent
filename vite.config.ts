@@ -18,8 +18,6 @@ export default defineConfig({
     __WEB__: JSON.stringify(true), // web bundle → browser/path history (Hono SPA fallback)
     __AMPLITUDE_API_KEY__: JSON.stringify(process.env.AMPLITUDE_API_KEY || analyticsConfig.defaultAmplitudeKey),
     __RENDER_TRACKING__: JSON.stringify(process.env.RENDER_TRACKING === 'true'),
-    'process.env.MESSAGES_PAGE_LIMIT': JSON.stringify(process.env.MESSAGES_PAGE_LIMIT ?? ''),
-    'process.env.MESSAGES_PAGE_OLDER_LIMIT': JSON.stringify(process.env.MESSAGES_PAGE_OLDER_LIMIT ?? ''),
     'globalThis.__PLATFORM_BASE_URL__': JSON.stringify(process.env.PLATFORM_BASE_URL || ''),
     'globalThis.__PLATFORM_PROXY_URL__': JSON.stringify(process.env.PLATFORM_PROXY_URL || ''),
     'globalThis.__PLATFORM_AUTH_ISSUER_URL__': JSON.stringify(process.env.PLATFORM_AUTH_ISSUER_URL || ''),

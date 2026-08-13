@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
-import { getMessagesPageLimit, getMessagesPageOlderLimit } from '@shared/lib/messages-page'
+import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
 
 // Re-export for convenience
 export type { ApiMessage, ApiMessageOrBoundary }
@@ -49,7 +49,7 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     queryKey: ['messages', sessionId, agentSlug],
     queryFn: async () => {
       if (!sessionId || !agentSlug) throw new Error('Missing session')
-      return fetchMessagesPage(agentSlug, sessionId, { limit: getMessagesPageLimit() })
+      return fetchMessagesPage(agentSlug, sessionId, { limit: MESSAGES_PAGE_LIMIT })
     },
     enabled: !!sessionId && !!agentSlug,
     retry: (failureCount, error) =>
@@ -99,7 +99,7 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     setIsFetchingOlder(true)
     try {
       const page = await fetchMessagesPage(agentSlug, sessionId, {
-        limit: getMessagesPageOlderLimit(),
+        limit: MESSAGES_PAGE_OLDER_LIMIT,
         cursor,
       })
       setOlder((cur) => {
