@@ -452,54 +452,6 @@ export function createJsonArrayStringifyTransform(): Transform {
   })
 }
 
-/** JSONL bytes in → JSON array bytes out. Used as `createReadStream(path).pipe(this)`. */
-export function createJsonlToJsonArrayTransform(): Transform {
-  let pending: Buffer[] = []
-  let first = true
-  let opened = false
-
-  const emit = (transform: Transform, line: Buffer) => {
-    const parsed = parseJsonlLine(line)
-    if (parsed === undefined) return
-    const json = JSON.stringify(parsed)
-    transform.push(first ? json : `,${json}`)
-    first = false
-  }
-
-  return new Transform({
-    transform(chunk, _enc, cb) {
-      if (!opened) {
-        this.push('[')
-        opened = true
-      }
-      const buf = chunk as Buffer
-      let start = 0
-      let idx = buf.indexOf(NEWLINE_BYTE)
-      while (idx !== -1) {
-        let line: Buffer
-        if (pending.length > 0) {
-          pending.push(buf.subarray(start, idx))
-          line = Buffer.concat(pending)
-          pending = []
-        } else {
-          line = buf.subarray(start, idx)
-        }
-        emit(this, line)
-        start = idx + 1
-        idx = buf.indexOf(NEWLINE_BYTE, start)
-      }
-      if (start < buf.length) pending.push(buf.subarray(start))
-      cb()
-    },
-    flush(cb) {
-      if (!opened) this.push('[')
-      if (pending.length > 0) emit(this, Buffer.concat(pending))
-      this.push(']')
-      cb()
-    },
-  })
-}
-
 // ============================================================================
 // Temp Upload Helpers
 // ============================================================================

@@ -21,7 +21,6 @@ import {
   parseJsonl,
   readJsonlFile,
   streamJsonlFile,
-  createJsonlToJsonArrayTransform,
   createJsonArrayStringifyTransform,
   getAgentsDir,
   getAgentDir,
@@ -671,20 +670,17 @@ describe('readJsonlFile', () => {
     expect(JSON.parse(Buffer.concat(chunks).toString('utf-8'))).toEqual([{ id: 1 }, { id: 2 }])
   })
 
-  it('pipes JSONL into a JSON array', async () => {
-    const filePath = path.join(testDir, 'pipe.jsonl')
-    await fs.promises.writeFile(filePath, '{"id": 1}\n{"id": 2}\n')
-
+  it('pipes an empty iterable into []', async () => {
+    const { Readable } = await import('stream')
     const chunks: Buffer[] = []
     await new Promise<void>((resolve, reject) => {
-      fs.createReadStream(filePath)
-        .pipe(createJsonlToJsonArrayTransform())
+      Readable.from([])
+        .pipe(createJsonArrayStringifyTransform())
         .on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
         .on('end', resolve)
         .on('error', reject)
     })
-
-    expect(JSON.parse(Buffer.concat(chunks).toString('utf-8'))).toEqual([{ id: 1 }, { id: 2 }])
+    expect(Buffer.concat(chunks).toString('utf-8')).toBe('[]')
   })
 
   it('parses rows wider than a read chunk without a whole-file string', async () => {

@@ -1825,8 +1825,15 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       }
     }
 
-    const stream = Readable.from(transformed).pipe(createJsonArrayStringifyTransform())
-    return c.body(Readable.toWeb(stream) as ReadableStream, 200, {
+    const source = Readable.from(transformed)
+    const stringify = createJsonArrayStringifyTransform()
+    const reportStreamError = (err: unknown) => {
+      console.error('Failed to stream messages:', err)
+      captureException(err, { tags: { component: 'agents', operation: 'stream-messages' } })
+    }
+    source.on('error', reportStreamError)
+    stringify.on('error', reportStreamError)
+    return c.body(Readable.toWeb(source.pipe(stringify)) as ReadableStream, 200, {
       'Content-Type': 'application/json',
     })
   } catch (error) {

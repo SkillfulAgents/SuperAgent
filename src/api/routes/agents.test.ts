@@ -56,8 +56,6 @@ vi.mock('fs', () => ({
   createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
 }))
 
-vi.mock('stream', async (importOriginal) => importOriginal<typeof import('stream')>())
-
 // child_process — the run-script route executes approved scripts via
 // promisify(exec)/promisify(execFile); the callback-style mocks below resolve
 // through promisify. Also covers the fire-and-forget execFile in the
@@ -465,7 +463,8 @@ const mockGetAgentWorkspaceDir = vi.fn((_slug?: string) => '/mock/workspace')
 const mockGetSessionJsonlPath = vi.fn(
   (agentSlug: string, sessionId: string) => `/mock/sessions/${agentSlug}/${sessionId}.jsonl`,
 )
-vi.mock('@shared/lib/utils/file-storage', () => ({
+vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/utils/file-storage')>()),
   // ResolveAgent() resolves the :id param via resolveAgentId. Delegate to the
   // existing agentExists mock so the legacy 404-on-missing behavior is preserved:
   // returns the slug verbatim when it "exists", else null.
@@ -476,24 +475,6 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   writeFile: vi.fn(),
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
   readJsonlFile: vi.fn(),
-  createJsonArrayStringifyTransform: () => {
-    const { Transform } = require('node:stream') as typeof import('node:stream')
-    let first = true
-    return new Transform({
-      writableObjectMode: true,
-      transform(obj, _enc, cb) {
-        const json = JSON.stringify(obj)
-        this.push(first ? `[${json}` : `,${json}`)
-        first = false
-        cb()
-      },
-      flush(cb) {
-        this.push(first ? '[]' : ']')
-        cb()
-      },
-    })
-  },
-  createJsonlToJsonArrayTransform: vi.fn(() => ({})),
   getAgentWorkspaceDir: (slug: string) => mockGetAgentWorkspaceDir(slug),
   getAgentPreferencesPath: vi.fn((slug: string) => `/mock/workspace/${slug}/agent-preferences.json`),
   getTempUploadsDir: vi.fn(() => '/mock/tmp/uploads'),
@@ -3426,6 +3407,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
 
     const res = await getReq(app, URL)
     expect(res.status).toBe(404)
+    // Should not attempt to read messages for a missing transcript
     expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
   })
 
@@ -3439,7 +3421,9 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     expect(res.status).toBe(200)
 
     const body = await res.json()
+    // No sender field attached
     expect(body[0].sender).toBeUndefined()
+    // DB select should not have been called for author lookup
     expect(mockDbSelectFrom).not.toHaveBeenCalled()
   })
 
@@ -3450,6 +3434,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
       { id: 'msg-2', type: 'assistant', content: { text: 'hello' }, toolCalls: [], createdAt: new Date() },
     ])
 
+    // Mock the DB select chain for author lookup: db.select().from().innerJoin().where()
     mockDbSelectFrom.mockReturnValue({
       innerJoin: () => ({
         where: () => Promise.resolve([
@@ -3462,11 +3447,13 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     expect(res.status).toBe(200)
 
     const body = await res.json()
+    // User message should have sender
     expect(body[0].sender).toEqual({
       id: 'user-1',
       name: 'Alice',
       email: 'alice@example.com',
     })
+    // Assistant message should not have sender
     expect(body[1].sender).toBeUndefined()
   })
 
@@ -3476,6 +3463,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
       { id: 'msg-old', type: 'user', content: { text: 'old message' }, toolCalls: [], createdAt: new Date() },
     ])
 
+    // DB returns no author records (messages from before feature was added)
     mockDbSelectFrom.mockReturnValue({
       innerJoin: () => ({
         where: () => Promise.resolve([]),
@@ -3486,6 +3474,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     expect(res.status).toBe(200)
 
     const body = await res.json()
+    // Message returned without sender — no crash
     expect(body[0].sender).toBeUndefined()
   })
 
@@ -3498,6 +3487,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     const res = await getReq(app, URL)
     expect(res.status).toBe(200)
 
+    // No DB query since there are no user messages to look up
     expect(mockDbSelectFrom).not.toHaveBeenCalled()
   })
 })
@@ -4436,8 +4426,12 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
         content: { text: '' },
         createdAt: new Date(),
         toolCalls: [
+          // Resolved call: not recoverable.
           { id: 'tool-done', name: 'Bash', input: {}, result: 'ok' },
+          // The missed blocking ask this fallback exists for.
           { id: 'tool-q', name: 'AskUserQuestion', input: {} },
+          // script_run is excluded from isBlockingUserInputToolName (its
+          // handler decides blocking per-grant) — must not be recovered here.
           { id: 'tool-sr', name: 'mcp__user-input__request_script_run', input: {} },
         ],
       },
@@ -4462,6 +4456,7 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
         createdAt: new Date(),
         toolCalls: [{ id: 'tool-q', name: 'mcp__user-input__request_secret', input: {} }],
       },
+      // Queued mid-turn message: the turn is still the same one that parked.
       { id: 'm2', type: 'user', queued: true, content: { text: 'also…' }, toolCalls: [], createdAt: new Date() },
     ])
 
@@ -4483,6 +4478,7 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
         createdAt: new Date(),
         toolCalls: [{ id: 'tool-q', name: 'AskUserQuestion', input: {} }],
       },
+      // A real (non-queued) user message supersedes the parked ask.
       { id: 'm2', type: 'user', content: { text: 'never mind' }, toolCalls: [], createdAt: new Date() },
     ])
 
@@ -4491,6 +4487,10 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
   })
 
   it('a decision-settled request is stamped resolved and excluded from recovery', async () => {
+    // Parallel tool calls hold every sibling's transcript result until the
+    // last one settles — the declined call still looks unresolved here.
+    // Without the stamp, a reload resurrects its card (history fallback) and
+    // recovery re-asserts awaiting for a request nothing can answer anymore.
     vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
     vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
       new Map([['tool-declined', 'declined']]),
