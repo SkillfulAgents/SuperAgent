@@ -109,6 +109,8 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByTestId('provider-error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
     // Opaque in dark: the transcript scrolls behind this in the overlay footer.
     expect(screen.getByTestId('provider-error-card')).not.toHaveClass('dark:bg-red-950/30')
+    // Selectable despite the app-wide user-select: none — errors get copied.
+    expect(screen.getByTestId('provider-error-card')).toHaveClass('select-text', '[&_*]:select-text')
   })
 
   it('shows generic error alert when no apiErrorCode', () => {
@@ -125,6 +127,8 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByTestId('error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
     // Opaque in dark: the transcript scrolls behind this in the overlay footer.
     expect(screen.getByTestId('error-card')).not.toHaveClass('dark:bg-red-950/30')
+    // Selectable despite the app-wide user-select: none — errors get copied.
+    expect(screen.getByTestId('error-card')).toHaveClass('select-text', '[&_*]:select-text')
   })
 
   it('shows "Working..." status when active with no todo', () => {

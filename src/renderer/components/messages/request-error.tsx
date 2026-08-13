@@ -72,6 +72,11 @@ export function RequestError({
       } : {})}
       className={cn(
         'mt-4 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300',
+        // Globals disable selection app-wide (`* { user-select: none }`), and
+        // that rule hits every descendant — so re-enable on the descendants
+        // too, not just the container. Without this the message can't be
+        // copied, and the drag-to-copy guard in handleClick never fires.
+        'select-text [&_*]:select-text',
         hint && 'group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         VARIANT_CLASSES[variant],
         className,
