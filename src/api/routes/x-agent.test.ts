@@ -111,6 +111,7 @@ const mockIsSessionAwaitingInput = vi.fn((_sessionId?: string): boolean => false
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
 const mockSubscribeToSession = vi.fn()
 const mockMarkSessionActive = vi.fn()
+const mockBroadcastGlobal = vi.fn()
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
     isSessionActive: (sessionId?: string) => mockIsSessionActive(sessionId),
@@ -121,6 +122,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     unsubscribeFromSession: vi.fn(),
     markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
     setSlashCommands: vi.fn(),
+    broadcastGlobal: (...args: unknown[]) => mockBroadcastGlobal(...args),
   },
 }))
 
@@ -387,6 +389,39 @@ describe('/create', () => {
     expect(newAgentAcl).toHaveLength(1)
     expect(newAgentAcl[0].userId).toBe(OWNER_USER_ID)
     expect(newAgentAcl[0].role).toBe('owner')
+  })
+
+  it('broadcasts agent_created only after inherited owner ACL is persisted', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    // slug and displaySlug must DIFFER here: agentSlug is the ACL filter key the
+    // global stream matches against, and only the canonical slug is stored in the
+    // ACL. A fixture where both are equal cannot tell the two apart.
+    mockCreateAgent.mockResolvedValue({
+      slug: 'a1b2c3d4e5',
+      displaySlug: 'new-a1b2c3d4e5',
+      name: 'New',
+    })
+
+    let ownerAclAtBroadcast: Array<{ userId: string; role: string }> = []
+    mockBroadcastGlobal.mockImplementation(() => {
+      ownerAclAtBroadcast = testDb
+        .select()
+        .from(schema.agentAcl)
+        .all()
+        .filter((r) => r.agentSlug === 'a1b2c3d4e5' && r.role === 'owner')
+        .map((r) => ({ userId: r.userId, role: r.role }))
+    })
+
+    const res = await authedFetch('/x-agent/create', { name: 'New' })
+    expect(res.status).toBe(200)
+
+    expect(ownerAclAtBroadcast).toEqual([{ userId: OWNER_USER_ID, role: 'owner' }])
+    expect(mockBroadcastGlobal).toHaveBeenCalledTimes(1)
+    expect(mockBroadcastGlobal).toHaveBeenCalledWith({
+      type: 'agent_created',
+      agentSlug: 'a1b2c3d4e5',
+    })
   })
 })
 

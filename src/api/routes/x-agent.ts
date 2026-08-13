@@ -327,6 +327,13 @@ xAgent.post('/create', zValidator('json', createBodySchema), async (c) => {
       })
     }
   }
+
+  // Announce only after ACL inheritance so live stream filters admit owners.
+  messagePersister.broadcastGlobal({
+    type: 'agent_created',
+    agentSlug: agent.slug,
+  })
+
   return c.json({ slug: agent.displaySlug, name: agent.name })
 })
 
