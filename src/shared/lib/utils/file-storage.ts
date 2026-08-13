@@ -11,6 +11,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { Transform } from 'stream'
 import type { ZodType } from 'zod'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
@@ -343,15 +344,22 @@ export function parseJsonl<T = unknown>(content: string): T[] {
 }
 
 /**
- * Read and parse a JSONL file
- * Returns empty array if file doesn't exist
+ * Read and parse a JSONL file. Streams line-by-line so a large transcript is
+ * never one `readFile` string. Returns [] if the file does not exist.
  */
 export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]> {
-  const content = await readFileOrNull(filePath)
-  if (content === null) {
-    return []
+  const results: T[] = []
+  try {
+    for await (const item of streamJsonlFile<T>(filePath)) {
+      results.push(item)
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return []
+    }
+    throw error
   }
-  return parseJsonl<T>(content)
+  return results
 }
 
 const NEWLINE_BYTE = 0x0a
@@ -420,6 +428,54 @@ function parseJsonlLine<T>(line: Buffer): T | undefined {
   } catch {
     return undefined
   }
+}
+
+/** JSONL bytes in → JSON array bytes out. Used as `createReadStream(path).pipe(this)`. */
+export function createJsonlToJsonArrayTransform(): Transform {
+  let pending: Buffer[] = []
+  let first = true
+  let opened = false
+
+  const emit = (transform: Transform, line: Buffer) => {
+    const parsed = parseJsonlLine(line)
+    if (parsed === undefined) return
+    const json = JSON.stringify(parsed)
+    transform.push(first ? json : `,${json}`)
+    first = false
+  }
+
+  return new Transform({
+    transform(chunk, _enc, cb) {
+      if (!opened) {
+        this.push('[')
+        opened = true
+      }
+      const buf = chunk as Buffer
+      let start = 0
+      let idx = buf.indexOf(NEWLINE_BYTE)
+      while (idx !== -1) {
+        let line: Buffer
+        if (pending.length > 0) {
+          pending.push(buf.subarray(start, idx))
+          line = Buffer.concat(pending)
+          pending = []
+        } else {
+          line = buf.subarray(start, idx)
+        }
+        emit(this, line)
+        start = idx + 1
+        idx = buf.indexOf(NEWLINE_BYTE, start)
+      }
+      if (start < buf.length) pending.push(buf.subarray(start))
+      cb()
+    },
+    flush(cb) {
+      if (!opened) this.push('[')
+      if (pending.length > 0) emit(this, Buffer.concat(pending))
+      this.push(']')
+      cb()
+    },
+  })
 }
 
 // ============================================================================

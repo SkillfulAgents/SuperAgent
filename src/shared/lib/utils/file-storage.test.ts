@@ -21,6 +21,7 @@ import {
   parseJsonl,
   readJsonlFile,
   streamJsonlFile,
+  createJsonlToJsonArrayTransform,
   getAgentsDir,
   getAgentDir,
   getAgentWorkspaceDir,
@@ -654,6 +655,35 @@ describe('readJsonlFile', () => {
   it('returns empty array for non-existent file', async () => {
     const result = await readJsonlFile(path.join(testDir, 'nonexistent.jsonl'))
     expect(result).toEqual([])
+  })
+
+  it('pipes JSONL into a JSON array', async () => {
+    const filePath = path.join(testDir, 'pipe.jsonl')
+    await fs.promises.writeFile(filePath, '{"id": 1}\n{"id": 2}\n')
+
+    const chunks: Buffer[] = []
+    await new Promise<void>((resolve, reject) => {
+      fs.createReadStream(filePath)
+        .pipe(createJsonlToJsonArrayTransform())
+        .on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
+        .on('end', resolve)
+        .on('error', reject)
+    })
+
+    expect(JSON.parse(Buffer.concat(chunks).toString('utf-8'))).toEqual([{ id: 1 }, { id: 2 }])
+  })
+
+  it('parses rows wider than a read chunk without a whole-file string', async () => {
+    const filePath = path.join(testDir, 'wide-read.jsonl')
+    const padding = 'x'.repeat(64 * 1024 + 137)
+    await fs.promises.writeFile(
+      filePath,
+      `${JSON.stringify({ id: 1, padding })}\n${JSON.stringify({ id: 2 })}\n`
+    )
+
+    const result = await readJsonlFile<{ id: number; padding?: string }>(filePath)
+    expect(result.map((r) => r.id)).toEqual([1, 2])
+    expect(result[0].padding).toHaveLength(padding.length)
   })
 })
 

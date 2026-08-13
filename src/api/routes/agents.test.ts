@@ -56,9 +56,10 @@ vi.mock('fs', () => ({
   createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
 }))
 
+const mockToWeb = vi.fn(() => new ReadableStream())
 vi.mock('stream', () => ({
   Readable: {
-    toWeb: () => new ReadableStream(),
+    toWeb: (...args: unknown[]) => mockToWeb(...args),
   },
 }))
 
@@ -480,6 +481,7 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   writeFile: vi.fn(),
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
   readJsonlFile: vi.fn(),
+  createJsonlToJsonArrayTransform: vi.fn(() => ({})),
   getAgentWorkspaceDir: (slug: string) => mockGetAgentWorkspaceDir(slug),
   getAgentPreferencesPath: vi.fn((slug: string) => `/mock/workspace/${slug}/agent-preferences.json`),
   getTempUploadsDir: vi.fn(() => '/mock/tmp/uploads'),
@@ -541,7 +543,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -3396,15 +3398,25 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
   })
 })
 
-describe('message author attribution — GET /:id/sessions/:sessionId/messages', () => {
+describe('GET /:id/sessions/:sessionId/messages', () => {
   let app: ReturnType<typeof createApp>
   const URL = '/api/agents/test-agent/sessions/sess-1/messages'
 
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
-    vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
     vi.mocked(sessionExists).mockResolvedValue(true)
+    mockCreateReadStream.mockReturnValue({
+      pipe: vi.fn().mockReturnValue({}),
+    })
+    mockToWeb.mockReturnValue(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('[]'))
+          controller.close()
+        },
+      })
+    )
   })
 
   it('returns 404 when the session transcript is missing', async () => {
@@ -3412,88 +3424,20 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
 
     const res = await getReq(app, URL)
     expect(res.status).toBe(404)
-    // Should not attempt to read messages for a missing transcript
-    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+    expect(mockCreateReadStream).not.toHaveBeenCalled()
   })
 
-  it('does not query messageAuthor in non-auth mode', async () => {
-    mockIsAuthMode.mockReturnValue(false)
-    mockTransformMessages.mockReturnValue([
-      { id: 'msg-1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
-    ])
+  it('pipes the JSONL file into the HTTP body', async () => {
+    const piped = {}
+    const pipe = vi.fn().mockReturnValue(piped)
+    mockCreateReadStream.mockReturnValue({ pipe })
 
     const res = await getReq(app, URL)
     expect(res.status).toBe(200)
-
-    const body = await res.json()
-    // No sender field attached
-    expect(body[0].sender).toBeUndefined()
-    // DB select should not have been called for author lookup
-    expect(mockDbSelectFrom).not.toHaveBeenCalled()
-  })
-
-  it('annotates user messages with sender info in auth mode', async () => {
-    mockIsAuthMode.mockReturnValue(true)
-    mockTransformMessages.mockReturnValue([
-      { id: 'msg-1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
-      { id: 'msg-2', type: 'assistant', content: { text: 'hello' }, toolCalls: [], createdAt: new Date() },
-    ])
-
-    // Mock the DB select chain for author lookup: db.select().from().innerJoin().where()
-    mockDbSelectFrom.mockReturnValue({
-      innerJoin: () => ({
-        where: () => Promise.resolve([
-          { messageId: 'msg-1', userId: 'user-1', userName: 'Alice', userEmail: 'alice@example.com' },
-        ]),
-      }),
-    })
-
-    const res = await getReq(app, URL)
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    // User message should have sender
-    expect(body[0].sender).toEqual({
-      id: 'user-1',
-      name: 'Alice',
-      email: 'alice@example.com',
-    })
-    // Assistant message should not have sender
-    expect(body[1].sender).toBeUndefined()
-  })
-
-  it('handles sessions with no author records gracefully', async () => {
-    mockIsAuthMode.mockReturnValue(true)
-    mockTransformMessages.mockReturnValue([
-      { id: 'msg-old', type: 'user', content: { text: 'old message' }, toolCalls: [], createdAt: new Date() },
-    ])
-
-    // DB returns no author records (messages from before feature was added)
-    mockDbSelectFrom.mockReturnValue({
-      innerJoin: () => ({
-        where: () => Promise.resolve([]),
-      }),
-    })
-
-    const res = await getReq(app, URL)
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    // Message returned without sender — no crash
-    expect(body[0].sender).toBeUndefined()
-  })
-
-  it('skips author query when there are no user messages', async () => {
-    mockIsAuthMode.mockReturnValue(true)
-    mockTransformMessages.mockReturnValue([
-      { id: 'msg-1', type: 'assistant', content: { text: 'hello' }, toolCalls: [], createdAt: new Date() },
-    ])
-
-    const res = await getReq(app, URL)
-    expect(res.status).toBe(200)
-
-    // No DB query since there are no user messages to look up
-    expect(mockDbSelectFrom).not.toHaveBeenCalled()
+    expect(mockCreateReadStream).toHaveBeenCalledWith('/mock/sessions/test-agent/sess-1.jsonl')
+    expect(pipe).toHaveBeenCalled()
+    expect(mockToWeb).toHaveBeenCalledWith(piped)
+    expect(await res.json()).toEqual([])
   })
 })
 
@@ -4416,134 +4360,27 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
-    mockIsAuthMode.mockReturnValue(false)
     vi.mocked(sessionExists).mockResolvedValue(true)
-    vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+    mockCreateReadStream.mockReturnValue({
+      pipe: vi.fn().mockReturnValue({}),
+    })
+    mockToWeb.mockReturnValue(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('[]'))
+          controller.close()
+        },
+      })
+    )
   })
 
-  it('re-establishes the missed blocking requests of the trailing turn for an active session', async () => {
+  it('does not scan the transcript for recovery — the list is a file pipe', async () => {
     vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
-    mockTransformMessages.mockReturnValue([
-      { id: 'm1', type: 'user', content: { text: 'go' }, toolCalls: [], createdAt: new Date() },
-      {
-        id: 'm2',
-        type: 'assistant',
-        content: { text: '' },
-        createdAt: new Date(),
-        toolCalls: [
-          // Resolved call: not recoverable.
-          { id: 'tool-done', name: 'Bash', input: {}, result: 'ok' },
-          // The missed blocking ask this fallback exists for.
-          { id: 'tool-q', name: 'AskUserQuestion', input: {} },
-          // script_run is excluded from isBlockingUserInputToolName (its
-          // handler decides blocking per-grant) — must not be recovered here.
-          { id: 'tool-sr', name: 'mcp__user-input__request_script_run', input: {} },
-        ],
-      },
-    ])
 
     const res = await getReq(app, URL)
     expect(res.status).toBe(200)
-    expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
-      'sess-1',
-      'test-agent',
-      [{ toolUseId: 'tool-q', toolName: 'AskUserQuestion' }],
-    )
-  })
-
-  it('a trailing QUEUED user message does not end the turn scan', async () => {
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
-    mockTransformMessages.mockReturnValue([
-      {
-        id: 'm1',
-        type: 'assistant',
-        content: { text: '' },
-        createdAt: new Date(),
-        toolCalls: [{ id: 'tool-q', name: 'mcp__user-input__request_secret', input: {} }],
-      },
-      // Queued mid-turn message: the turn is still the same one that parked.
-      { id: 'm2', type: 'user', queued: true, content: { text: 'also…' }, toolCalls: [], createdAt: new Date() },
-    ])
-
-    await getReq(app, URL)
-    expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
-      'sess-1',
-      'test-agent',
-      [{ toolUseId: 'tool-q', toolName: 'mcp__user-input__request_secret' }],
-    )
-  })
-
-  it('does not recover when a later user message started a fresh turn', async () => {
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
-    mockTransformMessages.mockReturnValue([
-      {
-        id: 'm1',
-        type: 'assistant',
-        content: { text: '' },
-        createdAt: new Date(),
-        toolCalls: [{ id: 'tool-q', name: 'AskUserQuestion', input: {} }],
-      },
-      // A real (non-queued) user message supersedes the parked ask.
-      { id: 'm2', type: 'user', content: { text: 'never mind' }, toolCalls: [], createdAt: new Date() },
-    ])
-
-    await getReq(app, URL)
     expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
-  })
-
-  it('a decision-settled request is stamped resolved and excluded from recovery', async () => {
-    // Parallel tool calls hold every sibling's transcript result until the
-    // last one settles — the declined call still looks unresolved here.
-    // Without the stamp, a reload resurrects its card (history fallback) and
-    // recovery re-asserts awaiting for a request nothing can answer anymore.
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
-    vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
-      new Map([['tool-declined', 'declined']]),
-    )
-    mockTransformMessages.mockReturnValue([
-      {
-        id: 'm1',
-        type: 'assistant',
-        content: { text: '' },
-        createdAt: new Date(),
-        toolCalls: [
-          { id: 'tool-declined', name: 'mcp__user-input__request_secret', input: {} },
-          { id: 'tool-open', name: 'AskUserQuestion', input: {} },
-        ],
-      },
-    ])
-
-    const res = await getReq(app, URL)
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as Array<{
-      toolCalls?: Array<{ id: string; result?: string }>
-    }>
-    const toolCalls = body[0].toolCalls ?? []
-    expect(toolCalls.find((t) => t.id === 'tool-declined')?.result).toBe(
-      'User declined the request',
-    )
-    expect(toolCalls.find((t) => t.id === 'tool-open')?.result).toBeUndefined()
-    expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
-      'sess-1',
-      'test-agent',
-      [{ toolUseId: 'tool-open', toolName: 'AskUserQuestion' }],
-    )
-  })
-
-  it('does not recover for an inactive session', async () => {
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
-    mockTransformMessages.mockReturnValue([
-      {
-        id: 'm1',
-        type: 'assistant',
-        content: { text: '' },
-        createdAt: new Date(),
-        toolCalls: [{ id: 'tool-q', name: 'AskUserQuestion', input: {} }],
-      },
-    ])
-
-    await getReq(app, URL)
-    expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+    expect(messagePersister.getSettledInputRequests).not.toHaveBeenCalled()
   })
 })
 
