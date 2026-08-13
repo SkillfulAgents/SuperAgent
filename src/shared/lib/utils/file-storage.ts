@@ -430,14 +430,14 @@ function parseJsonlLine<T>(line: Buffer): T | undefined {
   }
 }
 
-/** Object-mode items in → JSON array bytes out. Used as `Readable.from(items).pipe(this)`. */
+/** Object-mode items in → JSON array bytes out. Pair with `pipeline(Readable.from(items), this)`. */
 export function createJsonArrayStringifyTransform(): Transform {
   let first = true
   return new Transform({
     writableObjectMode: true,
     transform(obj, _enc, cb) {
       try {
-        const json = JSON.stringify(obj)
+        const json = JSON.stringify(obj) ?? 'null'
         this.push(first ? `[${json}` : `,${json}`)
         first = false
         cb()

@@ -657,30 +657,30 @@ describe('readJsonlFile', () => {
     expect(result).toEqual([])
   })
 
-  it('pipes objects into a JSON array', async () => {
-    const { Readable } = await import('stream')
+  async function stringifyJsonArray(items: unknown[]): Promise<string> {
+    const { Readable, pipeline } = await import('stream')
     const chunks: Buffer[] = []
+    const stringify = createJsonArrayStringifyTransform()
+    stringify.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
     await new Promise<void>((resolve, reject) => {
-      Readable.from([{ id: 1 }, { id: 2 }])
-        .pipe(createJsonArrayStringifyTransform())
-        .on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
-        .on('end', resolve)
-        .on('error', reject)
+      pipeline(Readable.from(items), stringify, (err) => {
+        if (err) reject(err)
+        else resolve()
+      })
     })
-    expect(JSON.parse(Buffer.concat(chunks).toString('utf-8'))).toEqual([{ id: 1 }, { id: 2 }])
+    return Buffer.concat(chunks).toString('utf-8')
+  }
+
+  it('pipes objects into a JSON array', async () => {
+    expect(JSON.parse(await stringifyJsonArray([{ id: 1 }, { id: 2 }]))).toEqual([{ id: 1 }, { id: 2 }])
   })
 
   it('pipes an empty iterable into []', async () => {
-    const { Readable } = await import('stream')
-    const chunks: Buffer[] = []
-    await new Promise<void>((resolve, reject) => {
-      Readable.from([])
-        .pipe(createJsonArrayStringifyTransform())
-        .on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
-        .on('end', resolve)
-        .on('error', reject)
-    })
-    expect(Buffer.concat(chunks).toString('utf-8')).toBe('[]')
+    expect(await stringifyJsonArray([])).toBe('[]')
+  })
+
+  it('serializes undefined elements as null', async () => {
+    expect(JSON.parse(await stringifyJsonArray([undefined, 1]))).toEqual([null, 1])
   })
 
   it('parses rows wider than a read chunk without a whole-file string', async () => {
