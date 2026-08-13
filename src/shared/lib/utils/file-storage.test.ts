@@ -22,6 +22,7 @@ import {
   readJsonlFile,
   streamJsonlFile,
   createJsonlToJsonArrayTransform,
+  createJsonArrayStringifyTransform,
   getAgentsDir,
   getAgentDir,
   getAgentWorkspaceDir,
@@ -655,6 +656,19 @@ describe('readJsonlFile', () => {
   it('returns empty array for non-existent file', async () => {
     const result = await readJsonlFile(path.join(testDir, 'nonexistent.jsonl'))
     expect(result).toEqual([])
+  })
+
+  it('pipes objects into a JSON array', async () => {
+    const { Readable } = await import('stream')
+    const chunks: Buffer[] = []
+    await new Promise<void>((resolve, reject) => {
+      Readable.from([{ id: 1 }, { id: 2 }])
+        .pipe(createJsonArrayStringifyTransform())
+        .on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
+        .on('end', resolve)
+        .on('error', reject)
+    })
+    expect(JSON.parse(Buffer.concat(chunks).toString('utf-8'))).toEqual([{ id: 1 }, { id: 2 }])
   })
 
   it('pipes JSONL into a JSON array', async () => {

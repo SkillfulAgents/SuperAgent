@@ -430,6 +430,28 @@ function parseJsonlLine<T>(line: Buffer): T | undefined {
   }
 }
 
+/** Object-mode items in → JSON array bytes out. Used as `Readable.from(items).pipe(this)`. */
+export function createJsonArrayStringifyTransform(): Transform {
+  let first = true
+  return new Transform({
+    writableObjectMode: true,
+    transform(obj, _enc, cb) {
+      try {
+        const json = JSON.stringify(obj)
+        this.push(first ? `[${json}` : `,${json}`)
+        first = false
+        cb()
+      } catch (err) {
+        cb(err as Error)
+      }
+    },
+    flush(cb) {
+      this.push(first ? '[]' : ']')
+      cb()
+    },
+  })
+}
+
 /** JSONL bytes in → JSON array bytes out. Used as `createReadStream(path).pipe(this)`. */
 export function createJsonlToJsonArrayTransform(): Transform {
   let pending: Buffer[] = []
