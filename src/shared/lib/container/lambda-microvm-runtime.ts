@@ -229,12 +229,20 @@ export interface ProxyOptions {
 
 const INGRESS_RATE_LIMIT_RETRY_DELAY_MS = 150
 const INGRESS_RATE_LIMIT_RETRY_BUDGET_MS = 8_000
+const INGRESS_RATE_LIMIT_RETRY_MAX_DELAY_MS = 2_000
 const H2_FORBIDDEN_HEADERS = new Set([
-  'host', 'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade',
+  'host', 'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te',
 ])
 
-function pipeUntilSettled(src: http.IncomingMessage, dest: http.ServerResponse): Promise<void> {
-  return pipeline(src, dest)
+function isRoutineClientAbort(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code
+  return code === 'ABORT_ERR' || code === 'ERR_STREAM_PREMATURE_CLOSE'
+}
+
+// Equal-jitter exponential backoff so a sustained 429 does not stampede.
+function ingressRateLimitDelayMs(attempt: number): number {
+  const exp = Math.min(INGRESS_RATE_LIMIT_RETRY_DELAY_MS * 2 ** attempt, INGRESS_RATE_LIMIT_RETRY_MAX_DELAY_MS)
+  return exp / 2 + Math.random() * (exp / 2)
 }
 
 export class LocalAuthForwardProxy {
@@ -349,9 +357,14 @@ export class LocalAuthForwardProxy {
       session.once('connect', () => {
         session.off('error', onConnectError)
         clearTimeout(timer)
+        if (!this.server) {
+          session.close()
+          finishErr(new Error('microvm http2 connect aborted: proxy stopped'))
+          return
+        }
         this.h2 = session
         session.once('close', () => { if (this.h2 === session) this.h2 = null })
-        session.once('error', (error) => {
+        session.on('error', (error) => {
           if (this.h2 === session) this.h2 = null
           captureException(error, { tags: { area: 'container', op: 'microvm.proxy.http2.session' }, extra: { endpoint: this.options.endpoint } })
         })
@@ -411,6 +424,7 @@ export class LocalAuthForwardProxy {
   private async waitForUpstreamReady(): Promise<boolean> {
     const deadline = Date.now() + RESUME_KICK_TIMEOUT_MS
     for (;;) {
+      if (!this.server) return false
       let auth: Record<string, string>
       try {
         auth = await this.authHeaders()
@@ -443,7 +457,9 @@ export class LocalAuthForwardProxy {
     try {
       await this.forwardRequest(req, res, body)
     } catch (error) {
-      captureException(error, { tags: { area: 'container', op: 'microvm.proxy.request' }, extra: { endpoint: this.options.endpoint, path: req.url } })
+      if (!isRoutineClientAbort(error)) {
+        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.request' }, extra: { endpoint: this.options.endpoint, path: req.url } })
+      }
       if (!res.headersSent) res.writeHead(502)
       res.end()
     }
@@ -456,7 +472,13 @@ export class LocalAuthForwardProxy {
   ): Promise<void> {
     const deadline = Date.now() + RESUME_KICK_TIMEOUT_MS
     const rateLimitDeadline = Date.now() + INGRESS_RATE_LIMIT_RETRY_BUDGET_MS
+    let rateLimitAttempts = 0
     for (;;) {
+      if (!this.server) {
+        if (!res.headersSent) res.writeHead(502)
+        res.end()
+        return
+      }
       let auth: Record<string, string>
       try {
         auth = await this.authHeaders()
@@ -471,6 +493,11 @@ export class LocalAuthForwardProxy {
       try {
         upstreamRes = await this.forwardOnce(req.method ?? 'GET', req.url ?? '/', headers, body)
       } catch (error) {
+        if (!this.server) {
+          if (!res.headersSent) res.writeHead(502)
+          res.end()
+          return
+        }
         // Connection error = VM still waking; retry within the resume budget.
         if (Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, RESUME_RETRY_DELAY_MS))
@@ -489,11 +516,12 @@ export class LocalAuthForwardProxy {
       }
       if (upstreamRes.statusCode === 429 && Date.now() < rateLimitDeadline) {
         upstreamRes.resume()
-        await new Promise((r) => setTimeout(r, INGRESS_RATE_LIMIT_RETRY_DELAY_MS))
+        await new Promise((r) => setTimeout(r, ingressRateLimitDelayMs(rateLimitAttempts)))
+        rateLimitAttempts++
         continue
       }
       res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers)
-      await pipeUntilSettled(upstreamRes, res)
+      await pipeline(upstreamRes, res)
       return
     }
   }

@@ -42,6 +42,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ app: { autoSleepTimeoutMinutes: autoSleepTimeoutMinutes() }, enableToolSearch: true }),
 }))
 
+import { captureException } from '@shared/lib/error-reporting'
 import {
   LambdaMicroVmRuntimeClient,
   LocalAuthForwardProxy,
@@ -1098,7 +1099,7 @@ describe('LocalAuthForwardProxy', () => {
   it('injects auth + proxy-port headers, sets upstream host, and drops hop-by-hop headers', async () => {
     const proxy = makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok1' }))
     const port = await proxy.start()
-    const res = await httpGet(port, '/sessions', { connection: 'keep-alive', 'x-custom': 'v' })
+    const res = await httpGet(port, '/sessions', { connection: 'keep-alive', te: 'trailers', 'x-custom': 'v' })
     expect(res.body).toBe('UPSTREAM_OK')
     expect(capturedRequest.host).toBe('mvm.lambda-microvm.aws')
     expect(capturedRequest.path).toBe('/sessions')
@@ -1107,6 +1108,7 @@ describe('LocalAuthForwardProxy', () => {
     expect(capturedRequest.headers!.host).toBe('mvm.lambda-microvm.aws')
     expect(capturedRequest.headers!['x-custom']).toBe('v')
     expect(capturedRequest.headers!.connection).toBeUndefined()
+    expect(capturedRequest.headers!.te).toBeUndefined()
     expect(capturedRequest.headers!['x-aws-proxy-force-h2']).toBeUndefined()
     expect(capturedRequest.timeout).toBe(30_000)
   })
@@ -1268,6 +1270,69 @@ describe('LocalAuthForwardProxy', () => {
     expect(first.body).toBe('UPSTREAM_OK')
     expect(second.body).toBe('UPSTREAM_OK')
     wsClient.destroy()
+  })
+
+  it('does not report a client abort to Sentry', async () => {
+    vi.mocked(captureException).mockClear()
+    http2ConnectImpl = () => mockH2Session((_headers, stream) => {
+      stream.end = ((() => stream) as unknown as typeof stream.end)
+      stream.push(Buffer.from('partial'))
+      process.nextTick(() => stream.emit('response', { ':status': 200 }))
+    })
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, path: '/asset.js' }, (res) => {
+        res.resume()
+        req.destroy()
+        resolve()
+      })
+      req.on('error', () => {})
+      req.setTimeout(2000, () => reject(new Error('client got no response')))
+      req.end()
+    })
+    await new Promise((r) => setImmediate(r))
+    await new Promise((r) => setImmediate(r))
+    expect(captureException).not.toHaveBeenCalled()
+  })
+
+  it('reports a non-abort pipeline error to Sentry', async () => {
+    vi.mocked(captureException).mockClear()
+    installH2((_headers, stream) => {
+      process.nextTick(() => {
+        stream.emit('response', { ':status': 200 })
+        stream.destroy(new Error('upstream exploded'))
+      })
+    })
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    await httpGet(port, '/asset.js').catch(() => {})
+    await vi.waitFor(() => expect(captureException).toHaveBeenCalled())
+    expect(vi.mocked(captureException).mock.calls[0][0]).toMatchObject({ message: 'upstream exploded' })
+  })
+
+  it('closes a session that connects after stop()', async () => {
+    let connectCb: (() => void) | undefined
+    const session = {
+      closed: false,
+      destroyed: false,
+      request() { throw new Error('should not request') },
+      destroy() { this.destroyed = true; this.closed = true },
+      close() { this.closed = true },
+      on() { return this },
+      off() { return this },
+      once(ev: string, cb: () => void) {
+        if (ev === 'connect') connectCb = cb
+        return this
+      },
+    }
+    http2ConnectImpl = () => session
+    const proxy = makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' }))
+    const port = await proxy.start()
+    const pending = httpGet(port, '/health').catch(() => {})
+    await vi.waitFor(() => { if (!connectCb) throw new Error('connect not armed') })
+    proxy.stop()
+    connectCb!()
+    expect(session.closed).toBe(true)
+    await pending
   })
 
   it('destroys the client socket if the WS upstream connect never completes', async () => {
