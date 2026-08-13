@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature successfully opens browser, navigates to URL, retrieves page title, and returns correct result in chat response.",
+  "steps": [
+    "Step 1: Navigate to http://localhost:47891 — Page loaded successfully, displaying Gamut application home with agent list showing \"QA-20260813-215418-ldqe\" agent.",
+    "Step 2: Click on \"QA-20260813-215418-ldqe\" agent in sidebar — Agent page opened successfully, showing chat interface with input field and agent configuration panels.",
+    "Step 3: Click chat input field and type message — Message \"Open a browser and go to https://example.com. Tell me the page title.\" entered successfully in input field.",
+    "Step 4: Click Send message button — Message sent successfully; agent status changed to \"working\"; session page loaded at /agents/qn9qfbqg3m/sessions/390a581f-97d6-4aff-8a8e-e4dd3cf35891.",
+    "Step 5: Wait up to 3 minutes for response — Agent completed processing in approximately 25 seconds (status shows \"Worked for 25s · 6 tool calls · 283,696 tokens\").",
+    "Step 6: Verify response mentions \"Example Domain\" — Response displays: \"The page title is \"Example Domain\". Browser closed.\" Agent successfully opened browser, navigated to https://example.com, retrieved the correct page title, and returned it in the chat response."
+  ],
+  "bugs": [],
+  "durationMs": 99818,
+  "sessionId": "a6506bc4-079b-4850-a1b7-a1cafc445ca1",
+  "cost": {
+    "inputTokens": 454,
+    "outputTokens": 13716,
+    "cacheCreationTokens": 123251,
+    "cacheReadTokens": 1339073,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.357005
+  }
+}
