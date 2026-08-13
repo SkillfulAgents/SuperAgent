@@ -119,6 +119,8 @@ export interface ApiToolCall {
   name: string
   input: Record<string, unknown>
   result?: unknown
+  /** True when a result exists but was omitted from this payload (`strip-tools`). */
+  hasResult?: boolean
   isError?: boolean
   subagent?: {
     agentId: string
@@ -127,6 +129,10 @@ export interface ApiToolCall {
     totalTokens?: number
     totalToolUseCount?: number
   }
+}
+
+export function toolCallHasResult(toolCall: Pick<ApiToolCall, 'result' | 'hasResult'>): boolean {
+  return toolCall.hasResult === true || (toolCall.result !== undefined && toolCall.result !== null)
 }
 
 /**

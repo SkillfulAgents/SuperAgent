@@ -24,7 +24,7 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
   return useQuery<ApiMessageOrBoundary[]>({
     queryKey: ['messages', sessionId, agentSlug],
     queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages`)
+      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages?strip-tools=1`)
       if (res.status === 404) throw new TranscriptNotFoundError()
       if (!res.ok) throw new Error('Failed to fetch messages')
       return res.json()

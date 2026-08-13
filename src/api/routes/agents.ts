@@ -55,6 +55,8 @@ import {
   updateSessionName,
   registerSession,
   getSessionMessagesWithCompact,
+  getSessionToolResult,
+  getSessionToolResultImage,
   readDisplayTranscript,
   getSession,
   getSessionMetadata,
@@ -69,6 +71,12 @@ import {
   removeToolCall,
 } from '@shared/lib/services/session-service'
 import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
+import {
+  sessionToolResultSchema,
+  toolResultImageParamsSchema,
+  toolResultParamsSchema,
+  transcriptImageSchema,
+} from '@shared/lib/services/session-transcript-schema'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
@@ -495,6 +503,21 @@ function getUnresolvedBlockingInputRequests(
   }
 
   return unresolved
+}
+
+const messagesQuerySchema = z.object({
+  'strip-tools': z.enum(['1', 'true']).optional(),
+})
+
+function stripToolResults(items: TransformedItem[]): void {
+  for (const item of items) {
+    if (item.type !== 'assistant') continue
+    for (const toolCall of item.toolCalls) {
+      if (toolCall.result === undefined) continue
+      toolCall.hasResult = true
+      delete toolCall.result
+    }
+  }
 }
 
 /**
@@ -1758,6 +1781,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
     const transformed = transformMessages(filtered)
 
+
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
 
@@ -1826,11 +1850,43 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       }
     }
 
+    const query = messagesQuerySchema.safeParse(c.req.query())
+    if (query.success && query.data['strip-tools']) {
+      stripToolResults(transformed)
+    }
+
     return c.json(transformed)
   } catch (error) {
     console.error('Failed to fetch messages:', error)
     return c.json({ error: 'Failed to fetch messages' }, 500)
   }
+})
+
+agents.get('/:id/sessions/:sessionId/tool-results/:toolUseId', AgentRead(), async (c) => {
+  const parsed = toolResultParamsSchema.safeParse({
+    toolUseId: c.req.param('toolUseId'),
+  })
+  if (!parsed.success) return c.json({ error: 'Invalid tool result request' }, 400)
+
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.param('sessionId')
+  const toolResult = await getSessionToolResult(agentSlug, sessionId, parsed.data.toolUseId)
+  if (!toolResult) return c.json({ error: 'Tool result not found' }, 404)
+  return c.json(sessionToolResultSchema.parse(toolResult))
+})
+
+agents.get('/:id/sessions/:sessionId/tool-results/:toolUseId/images/:index', AgentRead(), async (c) => {
+  const parsed = toolResultImageParamsSchema.safeParse({
+    toolUseId: c.req.param('toolUseId'),
+    index: c.req.param('index'),
+  })
+  if (!parsed.success) return c.json({ error: 'Invalid image request' }, 400)
+
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.param('sessionId')
+  const image = await getSessionToolResultImage(agentSlug, sessionId, parsed.data.toolUseId, parsed.data.index)
+  if (!image) return c.json({ error: 'Image not found' }, 404)
+  return c.json(transcriptImageSchema.parse(image))
 })
 
 // DELETE /api/agents/:id/sessions/:sessionId/messages/:messageId - Remove a message from history

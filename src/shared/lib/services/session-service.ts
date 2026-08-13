@@ -27,6 +27,7 @@ import {
   ensureDirectory,
 } from '@shared/lib/utils/file-storage'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
+import type { SessionToolResult, TranscriptImage } from './session-transcript-schema'
 import { isHiddenAutomatedSession } from './session-visibility'
 import {
   SessionInfo,
@@ -483,6 +484,129 @@ async function forEachTranscriptEntry(
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
     throw error
   }
+}
+
+function pushImageBlock(block: Record<string, unknown>, out: TranscriptImage[]): void {
+  const source = block.source
+  if (source && typeof source === 'object') {
+    const src = source as Record<string, unknown>
+    if (typeof src.data === 'string' && typeof src.media_type === 'string') {
+      out.push({ mimeType: src.media_type, data: src.data })
+      return
+    }
+  }
+  if (typeof block.data === 'string' && typeof block.mimeType === 'string') {
+    out.push({ mimeType: block.mimeType, data: block.data })
+  }
+}
+
+function collectImages(value: unknown, out: TranscriptImage[]): void {
+  if (value == null) return
+  if (typeof value === 'string') {
+    const trimmed = value.trimStart()
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        collectImages(JSON.parse(value), out)
+      } catch {
+        return
+      }
+    }
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectImages(item, out)
+    return
+  }
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    if (obj.type === 'image') {
+      pushImageBlock(obj, out)
+      return
+    }
+    for (const nested of Object.values(obj)) {
+      if (nested && typeof nested === 'object') collectImages(nested, out)
+    }
+  }
+}
+
+function toolResultForUse(
+  entry: JsonlMessageEntry,
+  toolUseId: string
+): { content: unknown; isError: boolean } | null {
+  const content = entry.message.content
+  if (!Array.isArray(content)) return null
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue
+    const result = block as { type?: string; tool_use_id?: string; content?: unknown; is_error?: boolean }
+    if (result.type !== 'tool_result' || result.tool_use_id !== toolUseId) continue
+    return {
+      content: entry.toolUseResult?.stdout ?? result.content ?? '',
+      isError: result.is_error === true,
+    }
+  }
+  return null
+}
+
+function imagesForToolUse(entry: JsonlMessageEntry, toolUseId: string): TranscriptImage[] | null {
+  const content = entry.message.content
+  if (!Array.isArray(content)) return null
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue
+    const result = block as { type?: string; tool_use_id?: string; content?: unknown }
+    if (result.type !== 'tool_result' || result.tool_use_id !== toolUseId) continue
+    const images: TranscriptImage[] = []
+    collectImages(result.content, images)
+    if (images.length === 0) collectImages(entry.toolUseResult, images)
+    return images
+  }
+  return null
+}
+
+/** Full-fidelity tool result from disk. Display list reads may omit this payload. */
+export async function getSessionToolResult(
+  agentSlug: string,
+  sessionId: string,
+  toolUseId: string
+): Promise<SessionToolResult | null> {
+  if (!toolUseId) return null
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  try {
+    for await (const raw of streamJsonlFile<JsonlEntry>(jsonlPath)) {
+      const entry = normalizeQueuedCommandEntry(raw)
+      if (!isMessageEntry(entry)) continue
+      const found = toolResultForUse(entry, toolUseId)
+      if (!found) continue
+      return { result: found.content, isError: found.isError }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  return null
+}
+
+/** Full-fidelity image from disk. Display reads omit these; this is the on-demand path. */
+export async function getSessionToolResultImage(
+  agentSlug: string,
+  sessionId: string,
+  toolUseId: string,
+  index: number
+): Promise<TranscriptImage | null> {
+  if (index < 0 || !toolUseId) return null
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  try {
+    for await (const raw of streamJsonlFile<JsonlEntry>(jsonlPath)) {
+      const entry = normalizeQueuedCommandEntry(raw)
+      if (!isMessageEntry(entry)) continue
+      const images = imagesForToolUse(entry, toolUseId)
+      if (!images) continue
+      return images[index] ?? null
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  return null
 }
 
 /** Stream a transcript for UI/API display, capping oversized string fields. */

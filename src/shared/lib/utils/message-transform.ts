@@ -24,6 +24,7 @@ export interface TransformedMessage {
     name: string
     input: Record<string, unknown>
     result?: string
+    hasResult?: boolean
     isError?: boolean
     subagent?: {
       agentId: string

@@ -1632,7 +1632,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             } else {
               inner = (
                 <div className="max-w-[80%]">
-                  <ToolCallItem toolCall={syntheticToolCall} agentSlug={agentSlug} isSessionActive={isActive} />
+                  <ToolCallItem toolCall={syntheticToolCall} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={isActive} />
                 </div>
               )
             }

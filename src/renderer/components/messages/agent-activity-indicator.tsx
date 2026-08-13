@@ -6,7 +6,7 @@ import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-request
 import { apiFetch } from '@renderer/lib/api'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
-import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
+import { PROVIDER_ERROR_CODES, toolCallHasResult } from '@shared/lib/types/api'
 import { isTurnStartingUserMessage } from './pending-message'
 import { useCallback, useMemo, useState } from 'react'
 
@@ -131,7 +131,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
             agentId: tc.subagent?.agentId ?? null,
             name: input.subagent_type || tc.name,
             description: input.description || '',
-            completedFromResult: !isAsyncLaunched && tc.result != null,
+            completedFromResult: !isAsyncLaunched && toolCallHasResult(tc),
           }
           launchByToolId.set(tc.id, metadata)
           launches.push(metadata)

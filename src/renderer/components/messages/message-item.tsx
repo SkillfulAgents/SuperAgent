@@ -514,7 +514,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                           isCompleted={completedSubagents?.has(toolCall.id) ?? false}
                         />
                       ) : (
-                        <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
+                        <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={isSessionActive} />
                       )}
                     </MessageErrorBoundary>
                   </div>

@@ -6,10 +6,15 @@ import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { formatToolName } from './tool-call-item'
 import { createToolCall } from '@renderer/test/factories'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
+import { apiFetch } from '@renderer/lib/api'
 
 // Mock getToolRenderer to return null (generic display)
 vi.mock('./tool-renderers', () => ({
   getToolRenderer: () => null,
+}))
+
+vi.mock('@renderer/lib/api', () => ({
+  apiFetch: vi.fn(),
 }))
 
 // Mock parseToolResult
@@ -95,6 +100,12 @@ describe('ToolCallItem', () => {
       // No elapsed timer for cancelled
       expect(screen.queryByText('5s')).not.toBeInTheDocument()
     })
+
+    it('renders success for a stripped result via hasResult', () => {
+      const tc = createToolCall({ result: undefined, hasResult: true })
+      render(<ToolCallItem toolCall={tc} isSessionActive />)
+      expect(screen.queryByText('5s')).not.toBeInTheDocument()
+    })
   })
 
   describe('tool name', () => {
@@ -159,6 +170,48 @@ describe('ToolCallItem', () => {
 
       await user.click(screen.getByTestId('tool-call-toggle-Bash'))
       expect(screen.getByTestId('omitted-screenshot')).toHaveTextContent('Screenshot omitted (2.1 MB)')
+    })
+
+    it('loads a stripped tool result on expand', async () => {
+      const user = userEvent.setup()
+      vi.mocked(apiFetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ result: 'file list', isError: false }),
+      } as Response)
+      const tc = createToolCall({ id: 'toolu_ls', result: undefined, hasResult: true })
+      render(<ToolCallItem toolCall={tc} agentSlug="agent-1" sessionId="session-1" />)
+
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
+      expect(apiFetch).toHaveBeenCalledWith(
+        '/api/agents/agent-1/sessions/session-1/tool-results/toolu_ls'
+      )
+      expect(await screen.findByText('Output')).toBeInTheDocument()
+      expect(parseToolResult).toHaveBeenCalledWith('file list')
+    })
+
+    it('loads the omitted screenshot on click', async () => {
+      const user = userEvent.setup()
+      vi.mocked(parseToolResult).mockReturnValueOnce({
+        text: null,
+        images: [],
+        omittedImages: [{ mimeType: 'image/png', originalChars: 2_100_000 }],
+      })
+      vi.mocked(apiFetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ mimeType: 'image/png', data: 'abc123' }),
+      } as Response)
+      const tc = createToolCall({ id: 'toolu_shot', result: 'ignored' })
+      render(<ToolCallItem toolCall={tc} agentSlug="agent-1" sessionId="session-1" />)
+
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
+      await user.click(screen.getByTestId('omitted-screenshot'))
+      expect(apiFetch).toHaveBeenCalledWith(
+        '/api/agents/agent-1/sessions/session-1/tool-results/toolu_shot/images/0'
+      )
+      expect(await screen.findByAltText('Tool result')).toHaveAttribute(
+        'src',
+        'data:image/png;base64,abc123'
+      )
     })
   })
 

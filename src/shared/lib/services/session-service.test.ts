@@ -15,6 +15,8 @@ import {
   getSession,
   getSessionMessages,
   getSessionMessagesWithCompact,
+  getSessionToolResult,
+  getSessionToolResultImage,
   readDisplayTranscript,
   DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS,
   deleteSession,
@@ -945,6 +947,87 @@ describe('session-service', () => {
         originalChars: huge.length,
       })
       expect(JSON.stringify(content[0])).not.toContain('[truncated')
+    })
+  })
+
+  describe('getSessionToolResultImage', () => {
+    it('returns the full image payload that display reads omit', async () => {
+      const huge = 'A'.repeat(DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS + 8000)
+      await createSessionFile('test-agent', 'image-fetch-session', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_shot',
+                content: [
+                  { type: 'text', text: 'viewport' },
+                  { type: 'image', source: { type: 'base64', media_type: 'image/png', data: huge } },
+                ],
+              },
+            ],
+          },
+        },
+      ])
+
+      const image = await getSessionToolResultImage('test-agent', 'image-fetch-session', 'toolu_shot', 0)
+      expect(image).toEqual({ mimeType: 'image/png', data: huge })
+    })
+
+    it('returns null for a missing tool or index', async () => {
+      await createSessionFile('test-agent', 'empty-image-session', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          message: { role: 'user', content: 'hello' },
+        },
+      ])
+      expect(await getSessionToolResultImage('test-agent', 'empty-image-session', 'missing', 0)).toBeNull()
+      expect(await getSessionToolResultImage('test-agent', 'missing-session', 'toolu_shot', 0)).toBeNull()
+    })
+  })
+
+  describe('getSessionToolResult', () => {
+    it('returns the full tool result that display reads cap', async () => {
+      const huge = 'A'.repeat(DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS + 8000)
+      await createSessionFile('test-agent', 'result-fetch-session', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_ls',
+                content: huge,
+              },
+            ],
+          },
+        },
+      ])
+
+      const found = await getSessionToolResult('test-agent', 'result-fetch-session', 'toolu_ls')
+      expect(found).toEqual({ result: huge, isError: false })
+    })
+
+    it('returns null for a missing tool or session', async () => {
+      await createSessionFile('test-agent', 'empty-result-session', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          message: { role: 'user', content: 'hello' },
+        },
+      ])
+      expect(await getSessionToolResult('test-agent', 'empty-result-session', 'missing')).toBeNull()
+      expect(await getSessionToolResult('test-agent', 'missing-session', 'toolu_ls')).toBeNull()
     })
   })
 

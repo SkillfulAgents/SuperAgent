@@ -1,12 +1,14 @@
 
 import { cn } from '@shared/lib/utils/cn'
 import { Check, X, Ban, ChevronDown, ChevronRight, Loader2, Search, ImageOff } from 'lucide-react'
-import { useState, useRef, useMemo, memo } from 'react'
+import { useState, useRef, useMemo, memo, useCallback, useEffect } from 'react'
 import { getToolRenderer } from './tool-renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
-import type { ApiToolCall } from '@shared/lib/types/api'
+import { toolCallHasResult, type ApiToolCall } from '@shared/lib/types/api'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
+import { apiFetch } from '@renderer/lib/api'
+import { sessionToolResultSchema, transcriptImageSchema } from '@shared/lib/services/session-transcript-schema'
 
 export { formatToolName } from '@shared/lib/tool-definitions/types'
 
@@ -14,6 +16,7 @@ interface ToolCallItemProps {
   toolCall: ApiToolCall
   messageCreatedAt?: Date | string
   agentSlug?: string
+  sessionId?: string
   isSessionActive?: boolean
 }
 
@@ -25,7 +28,7 @@ interface StreamingToolCallItemProps {
 type ToolCallStatus = 'running' | 'success' | 'error' | 'cancelled'
 
 function getStatus(toolCall: ApiToolCall, isSessionActive?: boolean): ToolCallStatus {
-  if (toolCall.result === null || toolCall.result === undefined) {
+  if (!toolCallHasResult(toolCall)) {
     // Only show "running" if the caller explicitly says this tool could still be active.
     // Otherwise it was interrupted/cancelled (or is from a historical interrupted turn).
     return isSessionActive ? 'running' : 'cancelled'
@@ -42,6 +45,65 @@ function formatOmittedSize(chars: number): string {
   if (chars >= 1_000_000) return `${(chars / 1_000_000).toFixed(1)} MB`
   if (chars >= 1_000) return `${Math.round(chars / 1_000)} KB`
   return `${chars} chars`
+}
+
+function OmittedScreenshot({
+  agentSlug,
+  sessionId,
+  toolUseId,
+  index,
+  originalChars,
+}: {
+  agentSlug?: string
+  sessionId?: string
+  toolUseId: string
+  index: number
+  originalChars: number
+}) {
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [src, setSrc] = useState<string | null>(null)
+  const canLoad = Boolean(agentSlug && sessionId && toolUseId)
+
+  const load = useCallback(async () => {
+    if (!agentSlug || !sessionId || !toolUseId || status === 'loading' || status === 'ready') return
+    setStatus('loading')
+    try {
+      const res = await apiFetch(
+        `/api/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}/tool-results/${encodeURIComponent(toolUseId)}/images/${index}`
+      )
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const parsed = transcriptImageSchema.safeParse(await res.json())
+      if (!parsed.success) throw new Error('Invalid image payload')
+      setSrc(`data:${parsed.data.mimeType};base64,${parsed.data.data}`)
+      setStatus('ready')
+    } catch (error) {
+      console.warn('Failed to load omitted screenshot', error)
+      setStatus('error')
+    }
+  }, [agentSlug, sessionId, toolUseId, index, status])
+
+  if (status === 'ready' && src) {
+    return <img src={src} alt="Tool result" className="max-w-full rounded border" />
+  }
+
+  return (
+    <button
+      type="button"
+      data-testid="omitted-screenshot"
+      onClick={load}
+      disabled={!canLoad || status === 'loading'}
+      className="flex w-full items-center gap-2 rounded border border-dashed border-border px-2 py-2 text-left text-xs text-muted-foreground hover:bg-muted/50 disabled:hover:bg-transparent"
+    >
+      {status === 'loading' ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <ImageOff className="h-3.5 w-3.5 shrink-0" />}
+      {status === 'loading'
+        ? 'Loading screenshot…'
+        : status === 'error'
+          ? 'Failed to load screenshot'
+          : canLoad
+            ? `Screenshot omitted (${formatOmittedSize(originalChars)}) — click to load`
+            : `Screenshot omitted (${formatOmittedSize(originalChars)})`}
+    </button>
+  )
 }
 
 function ToolNameWithSummary({ name, summary, active = false }: { name: string; summary?: string | null; active?: boolean }) {
@@ -94,13 +156,42 @@ export function StatusIndicator({ status }: { status: string }) {
   )
 }
 
-function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessionActive }: ToolCallItemProps) {
+function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionId, isSessionActive }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
+  const [loaded, setLoaded] = useState<{ result: unknown; isError: boolean } | null>(null)
+  const [loadState, setLoadState] = useState<'idle' | 'loading' | 'error'>('idle')
   const status = getStatus(toolCall, isSessionActive)
   const renderer = getToolRenderer(toolCall.name)
   const isPendingUserInput = status === 'running' && isUserInputTool(toolCall.name)
   const elapsed = useElapsedTimer(status === 'running' && !isPendingUserInput ? (messageCreatedAt ?? null) : null)
   const ToolIcon = renderer?.icon || Search
+  const result = loaded?.result ?? toolCall.result
+  const isError = loaded?.isError ?? toolCall.isError
+
+  useEffect(() => {
+    if (!expanded || result != null || !toolCall.hasResult || !agentSlug || !sessionId) return
+    let cancelled = false
+    setLoadState('loading')
+    void apiFetch(
+      `/api/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}/tool-results/${encodeURIComponent(toolCall.id)}`
+    )
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const parsed = sessionToolResultSchema.safeParse(await res.json())
+        if (!parsed.success) throw new Error('Invalid tool result')
+        if (!cancelled) {
+          setLoaded(parsed.data)
+          setLoadState('idle')
+        }
+      })
+      .catch((error) => {
+        console.warn('Failed to load tool result', error)
+        if (!cancelled) setLoadState('error')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [expanded, result, toolCall.hasResult, toolCall.id, agentSlug, sessionId])
 
   // Get summary for collapsed view
   const summary = useMemo(() => renderer?.getSummary?.(toolCall.input), [renderer, toolCall.input])
@@ -112,7 +203,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
   )
 
   // Parse result into text + images
-  const parsed = useMemo(() => parseToolResult(toolCall.result), [toolCall.result])
+  const parsed = useMemo(() => parseToolResult(result), [result])
   const resultStr = parsed.text
   const resultImages = parsed.images
   const omittedImages = parsed.omittedImages
@@ -175,11 +266,20 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
 
       {expanded && (
         <div className="border-t border-border/70 bg-muted/50 px-3 py-3">
+          {loadState === 'loading' && (
+            <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Loading tool result…
+            </div>
+          )}
+          {loadState === 'error' && (
+            <div className="mb-2 text-xs text-muted-foreground">Failed to load tool result</div>
+          )}
           {CustomExpandedView ? (
             <CustomExpandedView
               input={toolCall.input}
               result={resultStr}
-              isError={toolCall.isError ?? false}
+              isError={isError ?? false}
               agentSlug={agentSlug}
             />
           ) : (
@@ -197,12 +297,12 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
               {resultStr && (
                 <div>
                   <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
-                    {toolCall.isError ? 'Error' : 'Output'}
+                    {isError ? 'Error' : 'Output'}
                   </div>
                   <pre
                     className={cn(
                       'bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto',
-                      toolCall.isError && 'text-red-800 dark:text-red-200'
+                      isError && 'text-red-800 dark:text-red-200'
                     )}
                   >
                     {resultStr}
@@ -227,14 +327,14 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
           {omittedImages.length > 0 && (
             <div className="mt-2 space-y-2">
               {omittedImages.map((img, i) => (
-                <div
+                <OmittedScreenshot
                   key={i}
-                  data-testid="omitted-screenshot"
-                  className="flex items-center gap-2 rounded border border-dashed border-border px-2 py-2 text-xs text-muted-foreground"
-                >
-                  <ImageOff className="h-3.5 w-3.5 shrink-0" />
-                  Screenshot omitted ({formatOmittedSize(img.originalChars)})
-                </div>
+                  agentSlug={agentSlug}
+                  sessionId={sessionId}
+                  toolUseId={toolCall.id}
+                  index={i}
+                  originalChars={img.originalChars}
+                />
               ))}
             </div>
           )}

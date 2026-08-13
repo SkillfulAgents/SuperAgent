@@ -6,7 +6,7 @@ import { StreamingToolCallItem, StatusIndicator } from './tool-call-item'
 import { flattenAssistantMessages, TranscriptItems, TranscriptText, type FlatItem } from './agent-transcript'
 import { useSubagentMessages } from '@renderer/hooks/use-messages'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
-import type { ApiToolCall, ApiMessage } from '@shared/lib/types/api'
+import { toolCallHasResult, type ApiToolCall, type ApiMessage } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 
@@ -81,12 +81,12 @@ export function SubAgentBlock({
     isSessionActive &&
     activeSubagent &&
     !isCompleted &&
-    (isResumedRun || toolCall.result === null || toolCall.result === undefined)
+    (isResumedRun || !toolCallHasResult(toolCall))
   ) {
     // activeSubagent may be a later SendMessage run for the same stable agent.
     // Its live lifecycle takes precedence over the original Agent tool result.
     status = 'running'
-  } else if (toolCall.result !== null && toolCall.result !== undefined) {
+  } else if (toolCallHasResult(toolCall)) {
     // Background agents return an immediate "async_launched" result — don't treat as completed
     // unless we've received a subagent_completed SSE event (isCompleted) for this tool
     if (toolCall.subagent?.status === 'async_launched' && isSessionActive && !isCompleted) {

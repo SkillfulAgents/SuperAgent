@@ -287,6 +287,8 @@ vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionName: vi.fn(),
   registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(),
+  getSessionToolResultImage: vi.fn(),
+  getSessionToolResult: vi.fn(),
   readDisplayTranscript: vi.fn().mockResolvedValue([]),
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
@@ -542,7 +544,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionToolResult, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -3495,6 +3497,106 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
 
     // No DB query since there are no user messages to look up
     expect(mockDbSelectFrom).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /:id/sessions/:sessionId/messages?strip-tools=1', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages?strip-tools=1'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+  })
+
+  it('drops tool result payloads and sets hasResult after recovery', async () => {
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
+      new Map([['tool-declined', 'declined']]),
+    )
+    mockTransformMessages.mockReturnValue([
+      {
+        id: 'm1',
+        type: 'assistant',
+        content: { text: '' },
+        createdAt: new Date(),
+        toolCalls: [
+          { id: 'tool-done', name: 'Bash', input: {}, result: 'ok' },
+          { id: 'tool-declined', name: 'mcp__user-input__request_secret', input: {} },
+          { id: 'tool-open', name: 'AskUserQuestion', input: {} },
+        ],
+      },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Array<{
+      toolCalls?: Array<{ id: string; result?: string; hasResult?: boolean }>
+    }>
+    const toolCalls = body[0].toolCalls ?? []
+    expect(toolCalls.find((t) => t.id === 'tool-done')).toEqual(
+      expect.objectContaining({ hasResult: true }),
+    )
+    expect(toolCalls.find((t) => t.id === 'tool-done')).not.toHaveProperty('result')
+    expect(toolCalls.find((t) => t.id === 'tool-declined')).toEqual(
+      expect.objectContaining({ hasResult: true }),
+    )
+    expect(toolCalls.find((t) => t.id === 'tool-declined')).not.toHaveProperty('result')
+    expect(toolCalls.find((t) => t.id === 'tool-open')?.result).toBeUndefined()
+    expect(toolCalls.find((t) => t.id === 'tool-open')?.hasResult).toBeUndefined()
+    expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+      'sess-1',
+      'test-agent',
+      [{ toolUseId: 'tool-open', toolName: 'AskUserQuestion' }],
+    )
+  })
+
+  it('keeps tool results on the default list', async () => {
+    mockTransformMessages.mockReturnValue([
+      {
+        id: 'm1',
+        type: 'assistant',
+        content: { text: '' },
+        createdAt: new Date(),
+        toolCalls: [{ id: 'tool-done', name: 'Bash', input: {}, result: 'ok' }],
+      },
+    ])
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1/messages')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Array<{
+      toolCalls?: Array<{ id: string; result?: string; hasResult?: boolean }>
+    }>
+    expect(body[0].toolCalls?.[0]).toEqual(expect.objectContaining({ id: 'tool-done', result: 'ok' }))
+    expect(body[0].toolCalls?.[0]?.hasResult).toBeUndefined()
+  })
+})
+
+describe('GET /:id/sessions/:sessionId/tool-results/:toolUseId', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('returns the full tool result', async () => {
+    vi.mocked(getSessionToolResult).mockResolvedValue({ result: 'file list', isError: false })
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1/tool-results/toolu_ls')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ result: 'file list', isError: false })
+    expect(getSessionToolResult).toHaveBeenCalledWith('test-agent', 'sess-1', 'toolu_ls')
+  })
+
+  it('returns 404 when the tool result is missing', async () => {
+    vi.mocked(getSessionToolResult).mockResolvedValue(null)
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1/tool-results/missing')
+    expect(res.status).toBe(404)
   })
 })
 

@@ -7,6 +7,7 @@ import { isTurnStartingUserMessage, type PendingMessage } from './pending-messag
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { askUserQuestionDef } from '@shared/lib/tool-definitions/ask-user-question'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
+import { toolCallHasResult } from '@shared/lib/types/api'
 
 interface UsePendingRequestsArgs {
   sessionId: string
@@ -632,7 +633,7 @@ export function usePendingRequests({
       if (hasSubsequentUserMessage) continue
 
       for (const toolCall of message.toolCalls) {
-        if (toolCall.result !== undefined) continue
+        if (toolCallHasResult(toolCall)) continue
         addPendingRequestFromToolCall(buckets, toolCall)
       }
     }
