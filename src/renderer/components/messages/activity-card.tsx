@@ -1,5 +1,5 @@
 import { cn } from '@shared/lib/utils'
-import { ChevronDown, Circle, CircleCheckBig, Ellipsis, Monitor, X } from 'lucide-react'
+import { ChevronDown, Circle, CircleCheckBig, Loader2, Monitor, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
@@ -222,6 +222,7 @@ export function ActivityCard({
             todos={todos}
             showAllTodos={showAllTodos}
             setShowAllTodos={setShowAllTodos}
+            followsTree={hasTreeRows}
           />
         )}
       </div>
@@ -470,7 +471,7 @@ function BackgroundTasksRow({ tasks, tracerRow }: {
 
 /**
  * The task list, under the tree rather than on it: the tree is live work, and
- * the plan is intent. A small "Plan" header owns the section, with the
+ * the plan is intent. A small "Planned Tasks" label owns the section, with the
  * truncation toggle beside it instead of spending a row on it. Items run
  * pending/in-progress first, then finished ones newest first.
  */
@@ -478,10 +479,13 @@ function TodoPlan({
   todos,
   showAllTodos,
   setShowAllTodos,
+  followsTree,
 }: {
   todos: Todo[]
   showAllTodos: boolean
   setShowAllTodos: (show: boolean) => void
+  /** Whether the live-work tree renders above this section. */
+  followsTree: boolean
 }) {
   const MAX_VISIBLE = 5
   const needsTruncation = todos.length > MAX_VISIBLE && !showAllTodos
@@ -504,33 +508,63 @@ function TodoPlan({
     hiddenTodos = todos.filter(t => !visibleSet.has(t))
   }
 
-  const hiddenPending = hiddenTodos.filter(t => t.status !== 'completed').length
-  const hiddenDone = hiddenTodos.filter(t => t.status === 'completed').length
+  // Shown expanded, the list hides nothing — so the toggle has to survive on
+  // the list being longer than the cap, or "Show less" would vanish the moment
+  // it did its job and strand the user in the long list.
+  const canToggleTruncation = hiddenTodos.length > 0 || todos.length > MAX_VISIBLE
 
   return (
-    <div className="mt-2 pl-6 text-xs" data-testid="activity-plan">
-      {/* Indented to the tree rows' own left edge so the two sections read as
-          one column, plan marks under tree marks. */}
-      <div className="flex items-center gap-2">
-        <span className="font-medium text-muted-foreground">Plan</span>
-        {hiddenTodos.length > 0 && (
+    // pl-3 puts the section on the tree's trunk (the rail's 12px x-offset, one
+    // notch left of the pl-6 branch rows), so the plan hangs off the same line
+    // the branches do rather than starting inside them.
+    //
+    // w-fit: the section is exactly as wide as its widest line, so the header
+    // and its rule stop at the longest task instead of running out past the
+    // list. max-w-md is the cap that keeps a long task from stretching the rule
+    // across the card — and it's what makes the rows' `truncate` reachable,
+    // since shrink-to-fit alone would just size to the full text.
+    //
+    // Following the tree, the section needs a real break: the tree's last row
+    // sits only space-y-1 off its neighbours, so at the header's own mt-2 the
+    // plan looked like one more branch. With no tree it hangs straight off the
+    // header row and that gap would just be a hole.
+    <div
+      className={cn('w-fit max-w-md pl-3 text-xs', followsTree ? 'mt-4' : 'mt-2')}
+      data-testid="activity-plan"
+    >
+      {/* Hairline under the header. Lighter than the tree rail's /25: the rail
+          is structure the eye follows, this rule only has to separate, and at
+          the rail's weight it competed with the rows above it. It starts at the
+          trunk (the section's pl-3) and ends at the section's own width cap,
+          which is what makes the plan read as its own section under the tree. */}
+      <div className="flex items-center gap-2 border-b border-muted-foreground/15 pb-1">
+        {/* A label, not a heading: it names the section for anyone scanning
+            past it and otherwise stays out of the way, so the task rows are
+            the darkest thing in their own section. */}
+        <span className="text-muted-foreground/70">Planned Tasks</span>
+        {/* One toggle rather than two labels: the two states are mutually
+            exclusive (nothing is hidden once everything is shown), and a single
+            control that stays put is easier to hit twice than a label that
+            moves. ml-auto parks it at the rule's right end, and the chevron
+            flips like the card's own disclosure so both read as the same
+            gesture. */}
+        {canToggleTruncation && (
           <button
-            onClick={() => setShowAllTodos(true)}
-            className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            type="button"
+            onClick={() => setShowAllTodos(!showAllTodos)}
+            // Same weight and color as the "Planned Tasks" label — the two ends
+            // of the header row are one line of chrome, not a label and a
+            // control competing. Only hover picks it out as clickable.
+            className="ml-auto flex shrink-0 cursor-pointer items-center gap-0.5 text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-expanded={showAllTodos}
           >
-            {hiddenTodos.length} more{': '}
-            {[
-              hiddenPending > 0 && `${hiddenPending} pending`,
-              hiddenDone > 0 && `${hiddenDone} done`,
-            ].filter(Boolean).join(', ')}
-          </button>
-        )}
-        {showAllTodos && todos.length > MAX_VISIBLE && (
-          <button
-            onClick={() => setShowAllTodos(false)}
-            className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-          >
-            Show fewer
+            {showAllTodos ? 'Show less' : 'Show more'}
+            {/* 12px to match the task marks, so the toggle keeps the header on
+                the same 16px line box as every other row. */}
+            <ChevronDown
+              className={cn('h-3 w-3 transition-transform', showAllTodos && 'rotate-180')}
+              aria-hidden="true"
+            />
           </button>
         )}
       </div>
@@ -540,11 +574,13 @@ function TodoPlan({
             <div
               className={cn(
                 'flex items-center gap-1.5',
-                // Only the task being worked on carries full weight. Pending
-                // used to sit at plain foreground, which made the row NOT being
-                // worked on the darkest thing in the list.
+                // The task being worked on steps up in color only — weight too
+                // made it the loudest thing on the card, louder than the
+                // header it sits under. One step of contrast is enough to find
+                // it. (Pending used to sit at plain foreground, which made the
+                // row NOT being worked on the darkest thing in the list.)
                 todo.status === 'in_progress'
-                  ? 'font-medium text-foreground'
+                  ? 'text-foreground'
                   : 'text-muted-foreground'
               )}
             >
@@ -557,7 +593,10 @@ function TodoPlan({
                   // thing in a finished row.
                   <CircleCheckBig className="h-3 w-3" aria-hidden data-testid="todo-status-completed" />
                 ) : todo.status === 'in_progress' ? (
-                  <Ellipsis className="h-3 w-3" aria-hidden data-testid="todo-status-in-progress" />
+                  // The app's one spinner (Loader2 + animate-spin), at the same
+                  // 12px box as the pending circle and the completed check — a
+                  // task's mark must not resize as it moves through the list.
+                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden data-testid="todo-status-in-progress" />
                 ) : (
                   // Same 12px box and stroke as the check, so a task's mark
                   // doesn't change size when it completes.
