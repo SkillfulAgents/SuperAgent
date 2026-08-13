@@ -456,11 +456,13 @@ class ChatIntegrationManager {
       const agent = await getAgent(integration.agentSlug)
       if (!agent) return
 
+      const cardName = integration.name?.trim() || agent.frontmatter.name
+
       const card = buildAgentContactCard({
         // UID stays the minted id: renaming the agent must not mint a second
         // contact on the phone. Only the link carries the prettier display slug.
         slug: integration.agentSlug,
-        name: agent.frontmatter.name,
+        name: cardName,
         description: agent.frontmatter.description,
         appUrl: resolveAgentWebUrl(displaySlug(agent.frontmatter.name, integration.agentSlug)),
       })
@@ -474,7 +476,7 @@ class ChatIntegrationManager {
       await connector.sendFile(
         '',
         card,
-        `${sanitizeUploadFilename(agent.frontmatter.name)}.vcf`,
+        `${sanitizeUploadFilename(cardName)}.vcf`,
         `Save me as a contact so I'm not just a number. Text me anytime.`,
       )
     } catch (err) {
