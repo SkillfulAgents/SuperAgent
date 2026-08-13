@@ -26,6 +26,7 @@ function successfulTranscriptRefetch(data?: ApiMessageOrBoundary[]) {
     data: data ?? mockMessagesData.data ?? [],
     error: null,
     isError: false,
+    dataUpdatedAt: Date.now(),
   }))
 }
 
@@ -1305,6 +1306,53 @@ describe('MessageList', () => {
     }
   })
 
+  it('does not restore when a successful refetch returns a stale cache', async () => {
+    // A cancelled in-flight refetch can resolve as success with the previous
+    // cache: isError false, data present, dataUpdatedAt from before the ask.
+    // Treat that as missing evidence, same as a failed refresh.
+    vi.useFakeTimers()
+    try {
+      const onAppeared = vi.fn()
+      const staleUpdatedAt = Date.now()
+      mockMessagesData.data = []
+      mockMessagesData.refetch = vi.fn(async () => ({
+        data: [],
+        error: null,
+        isError: false,
+        dataUpdatedAt: staleUpdatedAt,
+      }))
+      mockStreamState.isActive = false
+
+      const DraftProbe = () => {
+        const [draft] = useDraft<string>('session:s-1')
+        return <div data-testid="draft-probe">{draft ?? ''}</div>
+      }
+
+      renderWithProviders(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={[{ localId: 'l1', uuid: 'server-uuid', text: 'accepted prompt', sentAt: Date.now() }]}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500)
+      })
+
+      expect(mockMessagesData.refetch).toHaveBeenCalled()
+      expect(onAppeared).not.toHaveBeenCalled()
+      expect(screen.getByTestId('draft-probe').textContent).toBe('')
+      expect(screen.getByTestId('pending-user-message')).toHaveTextContent('accepted prompt')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('clears peer ghosts at idle without restarting the local transcript refresh', async () => {
     vi.useFakeTimers()
     try {
@@ -1313,6 +1361,7 @@ describe('MessageList', () => {
         data: ApiMessageOrBoundary[]
         error: Error | null
         isError: boolean
+        dataUpdatedAt: number
       }) => void = () => {}
       mockMessagesData.data = []
       mockMessagesData.refetch = vi.fn(
@@ -1382,6 +1431,7 @@ describe('MessageList', () => {
           ],
           error: null,
           isError: false,
+          dataUpdatedAt: Date.now(),
         })
       })
 

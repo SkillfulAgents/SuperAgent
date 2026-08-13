@@ -413,6 +413,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // the user can resend, and remove the ghosts. The cached query can lag a
   // successful POST, so absence there is not proof of loss. A failed refresh
   // is missing evidence: leave the optimistic copy and do not restore.
+  // A cancelled refetch can resolve as success with the previous cache, so
+  // dataUpdatedAt must be at or after the request, not merely non-error.
   // Messages that were delivered still clear via the materialize effect above
   // as the post-idle refetch lands. While the agent is active, queued ghosts
   // may wait minutes.
@@ -432,9 +434,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     let cancelled = false
     const timerId = setTimeout(() => {
       void (async () => {
+        const fetchedAfter = Date.now()
         const result = await refetch()
         if (cancelled) return
-        if (!result.isError && !result.error && result.data != null) {
+        if (
+          !result.isError &&
+          !result.error &&
+          result.data != null &&
+          result.dataUpdatedAt >= fetchedAfter
+        ) {
           const claimed = claimedMessageIdsRef.current
           const stillMissing: PendingMessage[] = []
           for (const pending of undelivered) {
