@@ -99,7 +99,22 @@ describe('preflightDashboardInstall', () => {
     const result = await preflightDashboardInstall(dashboardDir)
     expect(result).toEqual({
       ok: false,
-      reason: 'missing package left-pad',
+      reason: 'missing-package',
+      package: 'left-pad',
+    })
+  })
+
+  it('fails when the installed manifest is not valid JSON', async () => {
+    await writeJson(path.join(dashboardDir, 'package.json'), {
+      name: 'dash',
+      dependencies: { 'left-pad': '1.0.0' },
+    })
+    const pkgDir = path.join(dashboardDir, 'node_modules', 'left-pad')
+    await fs.promises.mkdir(pkgDir, { recursive: true })
+    await fs.promises.writeFile(path.join(pkgDir, 'package.json'), '{')
+    await expect(preflightDashboardInstall(dashboardDir)).resolves.toEqual({
+      ok: false,
+      reason: 'unreadable-manifest',
       package: 'left-pad',
     })
   })
@@ -125,8 +140,9 @@ describe('preflightDashboardInstall', () => {
     const result = await preflightDashboardInstall(dashboardDir)
     expect(result).toEqual({
       ok: false,
-      reason: 'installed name "other" !== "left-pad"',
+      reason: 'name-mismatch',
       package: 'left-pad',
+      installedName: 'other',
     })
   })
 
@@ -139,7 +155,7 @@ describe('preflightDashboardInstall', () => {
     const result = await preflightDashboardInstall(dashboardDir)
     expect(result).toEqual({
       ok: false,
-      reason: 'missing bin open-slide',
+      reason: 'missing-bin',
       package: 'open-slide',
       bin: 'open-slide',
     })
@@ -157,7 +173,7 @@ describe('preflightDashboardInstall', () => {
     const result = await preflightDashboardInstall(dashboardDir)
     expect(result).toEqual({
       ok: false,
-      reason: 'dangling bin open-slide',
+      reason: 'dangling-bin',
       package: 'open-slide',
       bin: 'open-slide',
     })
@@ -166,16 +182,16 @@ describe('preflightDashboardInstall', () => {
   it('fails when package.json is missing or invalid', async () => {
     await expect(preflightDashboardInstall(dashboardDir)).resolves.toEqual({
       ok: false,
-      reason: 'package.json missing or invalid',
+      reason: 'invalid-package-json',
     })
     await fs.promises.writeFile(path.join(dashboardDir, 'package.json'), '{')
     await expect(preflightDashboardInstall(dashboardDir)).resolves.toEqual({
       ok: false,
-      reason: 'package.json missing or invalid',
+      reason: 'invalid-package-json',
     })
   })
 
-  it('passes when package.json is newer than node_modules mtime', async () => {
+  it('ignores mtime relationship between package.json and node_modules', async () => {
     await writeJson(path.join(dashboardDir, 'package.json'), {
       name: 'dash',
       dependencies: { lodash: '4.0.0' },
@@ -189,14 +205,25 @@ describe('preflightDashboardInstall', () => {
 })
 
 describe('formatPreflightFailure', () => {
-  it('includes package and bin when present', () => {
+  it('joins reason with structured fields', () => {
     expect(
       formatPreflightFailure({
         ok: false,
-        reason: 'missing bin open-slide',
+        reason: 'missing-bin',
         package: 'open-slide',
         bin: 'open-slide',
       }),
-    ).toBe('missing bin open-slide package=open-slide bin=open-slide')
+    ).toBe('missing-bin package=open-slide bin=open-slide')
+    expect(
+      formatPreflightFailure({
+        ok: false,
+        reason: 'name-mismatch',
+        package: 'left-pad',
+        installedName: 'other',
+      }),
+    ).toBe('name-mismatch package=left-pad installed=other')
+    expect(formatPreflightFailure({ ok: false, reason: 'invalid-package-json' })).toBe(
+      'invalid-package-json',
+    )
   })
 })

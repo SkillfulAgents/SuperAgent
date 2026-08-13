@@ -500,7 +500,7 @@ describe('DashboardManager log stream lifecycle', () => {
       expect(spawns.map((s) => s.args)).toEqual([['run', 'start']])
     })
 
-    it('boot start skips install when package.json is newer than node_modules', async () => {
+    it('boot start skips install even when package.json is newer than node_modules', async () => {
       const slug = await scaffoldDashboard({ dependencies: { lodash: '1.0.0' } })
       const dir = path.join(testDir, slug)
       await writeInstalledPackage(dir, 'lodash')

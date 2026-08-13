@@ -4,6 +4,8 @@ export const DashboardPackageSchema = z
   .object({
     name: z.string().optional(),
     description: z.string().optional(),
+    dependencies: z.record(z.string(), z.string()).optional(),
+    devDependencies: z.record(z.string(), z.string()).optional(),
     gamut: z
       .object({
         upstreamPath: z.enum(['stripped', 'mounted']).optional(),
@@ -12,3 +14,17 @@ export const DashboardPackageSchema = z
       .optional(),
   })
   .passthrough()
+
+export const DashboardInstallDepsSchema = DashboardPackageSchema.pick({
+  dependencies: true,
+  devDependencies: true,
+})
+
+export const InstalledPackageManifestSchema = z
+  .object({
+    name: z.string().min(1),
+    bin: z.union([z.string(), z.record(z.string(), z.string())]).optional(),
+  })
+  .passthrough()
+
+export type InstalledPackageManifest = z.infer<typeof InstalledPackageManifestSchema>

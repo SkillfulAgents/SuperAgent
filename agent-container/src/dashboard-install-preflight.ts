@@ -1,13 +1,27 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import {
-  DashboardInstallManifestSchema,
+  DashboardInstallDepsSchema,
   InstalledPackageManifestSchema,
   type InstalledPackageManifest,
-} from './dashboard-install-preflight-schema'
+} from './dashboard-package-schema'
+
+export type PreflightReason =
+  | 'missing-package'
+  | 'unreadable-manifest'
+  | 'name-mismatch'
+  | 'missing-bin'
+  | 'dangling-bin'
+  | 'invalid-package-json'
 
 export type PreflightOk = { ok: true }
-export type PreflightFail = { ok: false; reason: string; package?: string; bin?: string }
+export type PreflightFail = {
+  ok: false
+  reason: PreflightReason
+  package?: string
+  bin?: string
+  installedName?: string
+}
 export type PreflightResult = PreflightOk | PreflightFail
 
 export function unscopedPackageName(pkgName: string): string {
@@ -47,29 +61,33 @@ async function binTargetResolves(binPath: string): Promise<'ok' | 'missing' | 'd
   }
 }
 
+function parseJson(raw: string): unknown | undefined {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+}
+
 async function checkPackage(dashboardDir: string, pkgName: string): Promise<PreflightResult> {
   const manifestPath = packageManifestPath(dashboardDir, pkgName)
   let raw: string
   try {
     raw = await fs.promises.readFile(manifestPath, 'utf-8')
   } catch {
-    return { ok: false, reason: `missing package ${pkgName}`, package: pkgName }
+    return { ok: false, reason: 'missing-package', package: pkgName }
   }
-  let json: unknown
-  try {
-    json = JSON.parse(raw)
-  } catch {
-    return { ok: false, reason: `unreadable manifest for ${pkgName}`, package: pkgName }
-  }
-  const parsed = InstalledPackageManifestSchema.safeParse(json)
-  if (!parsed.success) {
-    return { ok: false, reason: `unreadable manifest for ${pkgName}`, package: pkgName }
+  const json = parseJson(raw)
+  const parsed = json === undefined ? undefined : InstalledPackageManifestSchema.safeParse(json)
+  if (!parsed?.success) {
+    return { ok: false, reason: 'unreadable-manifest', package: pkgName }
   }
   if (parsed.data.name !== pkgName) {
     return {
       ok: false,
-      reason: `installed name "${parsed.data.name}" !== "${pkgName}"`,
+      reason: 'name-mismatch',
       package: pkgName,
+      installedName: parsed.data.name,
     }
   }
   for (const command of declaredBins(pkgName, parsed.data.bin)) {
@@ -78,7 +96,7 @@ async function checkPackage(dashboardDir: string, pkgName: string): Promise<Pref
     if (state === 'ok') continue
     return {
       ok: false,
-      reason: state === 'dangling' ? `dangling bin ${command}` : `missing bin ${command}`,
+      reason: state === 'dangling' ? 'dangling-bin' : 'missing-bin',
       package: pkgName,
       bin: command,
     }
@@ -92,11 +110,11 @@ export async function preflightDashboardInstall(dashboardDir: string): Promise<P
   try {
     json = JSON.parse(await fs.promises.readFile(pkgPath, 'utf-8'))
   } catch {
-    return { ok: false, reason: 'package.json missing or invalid' }
+    return { ok: false, reason: 'invalid-package-json' }
   }
-  const parsed = DashboardInstallManifestSchema.safeParse(json)
+  const parsed = DashboardInstallDepsSchema.safeParse(json)
   if (!parsed.success) {
-    return { ok: false, reason: 'package.json missing or invalid' }
+    return { ok: false, reason: 'invalid-package-json' }
   }
   const names = [
     ...Object.keys(parsed.data.dependencies ?? {}),
@@ -112,6 +130,7 @@ export async function preflightDashboardInstall(dashboardDir: string): Promise<P
 export function formatPreflightFailure(result: PreflightFail): string {
   const bits = [result.reason]
   if (result.package) bits.push(`package=${result.package}`)
+  if (result.installedName) bits.push(`installed=${result.installedName}`)
   if (result.bin) bits.push(`bin=${result.bin}`)
   return bits.join(' ')
 }

@@ -380,33 +380,23 @@ class DashboardManager {
     force: boolean,
     onInstallStart: () => void,
   ): Promise<void> {
-    if (force) {
-      onInstallStart()
-      await this.runBunInstall(dir, logStream)
-      const afterForce = await preflightDashboardInstall(dir)
-      if (!afterForce.ok) {
-        throw new Error(
-          `Dashboard install preflight failed after install: ${formatPreflightFailure(afterForce)}`
-        )
+    if (!force) {
+      const preflight = await preflightDashboardInstall(dir)
+      if (preflight.ok) {
+        logStream?.write('[DashboardManager] install preflight ok, skipping bun install\n')
+        return
       }
-      return
+      logStream?.write(
+        `[DashboardManager] install preflight failed (${formatPreflightFailure(preflight)}); repairing\n`
+      )
     }
-
-    const preflight = await preflightDashboardInstall(dir)
-    if (preflight.ok) {
-      logStream?.write('[DashboardManager] install preflight ok, skipping bun install\n')
-      return
-    }
-    logStream?.write(
-      `[DashboardManager] install preflight failed (${formatPreflightFailure(preflight)}); repairing\n`
-    )
     onInstallStart()
-    const extraArgs = this.hasLockfile(dir) ? ['--frozen-lockfile'] : []
+    const extraArgs = !force && this.hasLockfile(dir) ? ['--frozen-lockfile'] : []
     await this.runBunInstall(dir, logStream, extraArgs)
-    const afterRepair = await preflightDashboardInstall(dir)
-    if (!afterRepair.ok) {
+    const after = await preflightDashboardInstall(dir)
+    if (!after.ok) {
       throw new Error(
-        `Dashboard install preflight failed after repair: ${formatPreflightFailure(afterRepair)}`
+        `Dashboard install preflight failed after install: ${formatPreflightFailure(after)}`
       )
     }
   }
@@ -436,12 +426,10 @@ class DashboardManager {
       let stderr = ''
       proc.stdout?.on('data', (chunk) => {
         logStream?.write(chunk)
-        process.stdout.write(chunk)
       })
       proc.stderr?.on('data', (chunk) => {
         stderr += chunk.toString()
         logStream?.write(chunk)
-        process.stderr.write(chunk)
       })
 
       proc.on('exit', (code) => {
