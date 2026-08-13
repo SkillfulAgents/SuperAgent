@@ -259,7 +259,7 @@ class DashboardManager {
     const port = existing?.port ?? this.nextPort++
     const dashboardDir = path.join(ARTIFACTS_DIR, slug)
     const logPath = path.join(dashboardDir, 'dashboard.log')
-    const firstRun = !fs.existsSync(path.join(dashboardDir, 'node_modules'))
+    const firstRun = !(await preflightDashboardInstall(dashboardDir)).ok
 
     const info: DashboardInfo = {
       slug,

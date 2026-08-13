@@ -146,6 +146,24 @@ describe('preflightDashboardInstall', () => {
     })
   })
 
+  it('accepts an npm alias whose installed name differs from the dependency key', async () => {
+    await writeJson(path.join(dashboardDir, 'package.json'), {
+      name: 'dash',
+      dependencies: { 'alias-pkg': 'npm:left-pad@1.0.0' },
+    })
+    await installPackage(dashboardDir, 'alias-pkg', { name: 'left-pad' })
+    await expect(preflightDashboardInstall(dashboardDir)).resolves.toEqual({ ok: true })
+  })
+
+  it('accepts a file: dependency whose installed name differs from the dependency key', async () => {
+    await writeJson(path.join(dashboardDir, 'package.json'), {
+      name: 'dash',
+      dependencies: { 'local-pkg': 'file:../real-package' },
+    })
+    await installPackage(dashboardDir, 'local-pkg', { name: 'real-package' })
+    await expect(preflightDashboardInstall(dashboardDir)).resolves.toEqual({ ok: true })
+  })
+
   it('fails when a declared .bin entry is missing', async () => {
     await writeJson(path.join(dashboardDir, 'package.json'), {
       name: 'dash',
@@ -156,6 +174,22 @@ describe('preflightDashboardInstall', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'missing-bin',
+      package: 'open-slide',
+      bin: 'open-slide',
+    })
+  })
+
+  it('fails when a declared .bin resolves to a different package', async () => {
+    await writeJson(path.join(dashboardDir, 'package.json'), {
+      name: 'dash',
+      dependencies: { 'open-slide': '1.0.0', other: '1.0.0' },
+    })
+    await installPackage(dashboardDir, 'open-slide', { bin: './cli.js' })
+    const other = await installPackage(dashboardDir, 'other', { bin: './cli.js' })
+    await linkBin(dashboardDir, 'open-slide', other)
+    await expect(preflightDashboardInstall(dashboardDir)).resolves.toEqual({
+      ok: false,
+      reason: 'wrong-bin',
       package: 'open-slide',
       bin: 'open-slide',
     })
@@ -191,6 +225,41 @@ describe('preflightDashboardInstall', () => {
     })
   })
 
+  it('fails a workspace dashboard when node_modules is missing', async () => {
+    await writeJson(path.join(dashboardDir, 'package.json'), {
+      name: 'dash',
+      workspaces: ['packages/*'],
+      scripts: { start: 'bun run --filter web start' },
+    })
+    await writeJson(path.join(dashboardDir, 'packages', 'web', 'package.json'), {
+      name: 'web',
+      dependencies: { lodash: '4.0.0' },
+    })
+    await expect(preflightDashboardInstall(dashboardDir)).resolves.toEqual({
+      ok: false,
+      reason: 'missing-package',
+    })
+  })
+
+  it('checks direct deps inside workspace packages', async () => {
+    await writeJson(path.join(dashboardDir, 'package.json'), {
+      name: 'dash',
+      workspaces: ['packages/*'],
+    })
+    await fs.promises.mkdir(path.join(dashboardDir, 'node_modules'), { recursive: true })
+    await writeJson(path.join(dashboardDir, 'packages', 'web', 'package.json'), {
+      name: 'web',
+      dependencies: { lodash: '4.0.0' },
+    })
+    await expect(preflightDashboardInstall(dashboardDir)).resolves.toEqual({
+      ok: false,
+      reason: 'missing-package',
+      package: 'lodash',
+    })
+    await installPackage(path.join(dashboardDir, 'packages', 'web'), 'lodash')
+    await expect(preflightDashboardInstall(dashboardDir)).resolves.toEqual({ ok: true })
+  })
+
   it('ignores mtime relationship between package.json and node_modules', async () => {
     await writeJson(path.join(dashboardDir, 'package.json'), {
       name: 'dash',
@@ -222,6 +291,14 @@ describe('formatPreflightFailure', () => {
         installedName: 'other',
       }),
     ).toBe('name-mismatch package=left-pad installed=other')
+    expect(
+      formatPreflightFailure({
+        ok: false,
+        reason: 'wrong-bin',
+        package: 'open-slide',
+        bin: 'open-slide',
+      }),
+    ).toBe('wrong-bin package=open-slide bin=open-slide')
     expect(formatPreflightFailure({ ok: false, reason: 'invalid-package-json' })).toBe(
       'invalid-package-json',
     )

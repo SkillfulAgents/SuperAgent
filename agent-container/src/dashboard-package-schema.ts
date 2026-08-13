@@ -6,6 +6,12 @@ export const DashboardPackageSchema = z
     description: z.string().optional(),
     dependencies: z.record(z.string(), z.string()).optional(),
     devDependencies: z.record(z.string(), z.string()).optional(),
+    workspaces: z
+      .union([
+        z.array(z.string()),
+        z.object({ packages: z.array(z.string()).optional() }).passthrough(),
+      ])
+      .optional(),
     gamut: z
       .object({
         upstreamPath: z.enum(['stripped', 'mounted']).optional(),
@@ -18,6 +24,7 @@ export const DashboardPackageSchema = z
 export const DashboardInstallDepsSchema = DashboardPackageSchema.pick({
   dependencies: true,
   devDependencies: true,
+  workspaces: true,
 })
 
 export const InstalledPackageManifestSchema = z
