@@ -67,7 +67,9 @@ export function filterAgentsAndSessions(
     )
     return { agent, matchedAgent, dashboards: matchedDashboards, sessions: matchedSessions }
   })
-  return groups.filter((g) => g.matchedAgent || g.dashboards.length > 0 || g.sessions.length > 0)
+  return groups
+    .filter((g) => g.matchedAgent || g.dashboards.length > 0 || g.sessions.length > 0)
+    .sort((a, b) => Number(b.matchedAgent) - Number(a.matchedAgent))
 }
 
 /** Flatten visible groups into the linear list used for keyboard navigation. */
