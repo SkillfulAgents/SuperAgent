@@ -403,6 +403,13 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['agents'] })
             break
 
+          case 'agent_created':
+            // Agent-created child creation lands outside the human create mutation,
+            // so refresh both caches the direct-create path invalidates together.
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+            break
+
           case 'scheduled_task_created':
           case 'scheduled_task_cancelled':
           case 'scheduled_task_updated': {
@@ -463,8 +470,15 @@ export function GlobalNotificationHandler() {
       }
     }
 
+    // Catch up anything missed while the stream was down, including the
+    // window before the first successful connect.
+    es.onopen = () => {
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+    }
+
     es.onerror = () => {
-      // EventSource will auto-reconnect
+      // EventSource will auto-reconnect; onopen above catches up.
     }
 
     return () => {

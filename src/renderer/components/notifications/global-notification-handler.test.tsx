@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 class MockEventSource {
   static instances: MockEventSource[] = []
   onmessage: ((event: { data: string }) => void) | null = null
+  onopen: (() => void) | null = null
   onerror: (() => void) | null = null
   url: string
   constructor(url: string) {
@@ -549,5 +550,45 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
         { slug: 'support', name: 'Support' },
       ])
     expect(invalidateSpy).not.toHaveBeenCalled()
+  })
+
+  it('agent_created invalidates visible agents and personal roles together', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    // Producer contract: x-agent create broadcasts this exact shape after ACL writes.
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'agent_created',
+      agentSlug: 'new-helper',
+    })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+  })
+
+  it('SSE open invalidates agents and roles, including the first connect', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+    es.onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+
+    invalidateSpy.mockClear()
+    es.onerror?.()
+    es.onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
   })
 })
