@@ -3514,6 +3514,37 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     delete process.env.MESSAGES_PAGE_OLDER_LIMIT
   })
 
+  it('returns a JSON array when no pagination query is set', async () => {
+    vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+    mockTransformMessages.mockReturnValue([
+      { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(Array.isArray(body)).toBe(true)
+    expect(body).toHaveLength(1)
+    expect(body[0].id).toBe('m1')
+    expect(body).not.toHaveProperty('nextCursor')
+    expect(getSessionMessagesWithCompact).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('does not page when MESSAGES_PAGE_LIMIT is set but the client sent no limit', async () => {
+    process.env.MESSAGES_PAGE_LIMIT = '100'
+    vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+    mockTransformMessages.mockReturnValue([
+      { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(Array.isArray(body)).toBe(true)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
   it('returns a cursor envelope when limit is set', async () => {
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
       messages: [
