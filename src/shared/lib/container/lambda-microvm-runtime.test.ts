@@ -9,12 +9,7 @@ const responses: Record<string, unknown> = {}
 
 // Upstream transports are mocked so the proxy's real loopback server can be
 // driven by real http/net clients while we capture what it forwards upstream.
-const httpsRequestMock = vi.fn()
 const tlsConnectMock = vi.fn()
-vi.mock('https', () => ({
-  default: { request: (...a: unknown[]) => httpsRequestMock(...a) },
-  request: (...a: unknown[]) => httpsRequestMock(...a),
-}))
 vi.mock('tls', () => ({
   default: { connect: (...a: unknown[]) => tlsConnectMock(...a) },
   connect: (...a: unknown[]) => tlsConnectMock(...a),
@@ -81,7 +76,6 @@ beforeEach(() => {
   for (const k in responses) delete responses[k]
   autoSleepTimeoutMinutes.mockReturnValue(30)
   sendMock.mockReset()
-  httpsRequestMock.mockReset()
   tlsConnectMock.mockReset()
   sendMock.mockImplementation(async (cmd: { type: string }) => {
     if (cmd.type === 'Run') return { microvmId: 'mvm-1', endpoint: 'ep.lambda-microvm.aws' }
@@ -1009,19 +1003,67 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
 })
 
 describe('LocalAuthForwardProxy', () => {
-  let capturedRequest: { host?: string; path?: string; headers?: Record<string, string> }
+  let capturedRequest: { host?: string; path?: string; headers?: Record<string, string>; timeout?: number }
   const proxies: LocalAuthForwardProxy[] = []
+
+  type H2Stream = PassThrough & { setTimeout: (ms: number) => void }
+  type H2Handler = (headers: Record<string, string>, stream: H2Stream) => void
+
+  function h2Respond(stream: H2Stream, status: number, body: string) {
+    if (body) stream.push(Buffer.from(body))
+    process.nextTick(() => {
+      stream.emit('response', { ':status': status })
+      stream.push(null)
+    })
+  }
+
+  function mockH2Session(handler: H2Handler) {
+    return {
+      closed: false,
+      destroyed: false,
+      request(headers: Record<string, string>) {
+        const stream = new PassThrough() as H2Stream
+        stream.setTimeout = (ms: number) => {
+          capturedRequest = { ...capturedRequest, timeout: ms }
+        }
+        handler(headers, stream)
+        return stream
+      },
+      destroy() {
+        this.destroyed = true
+        this.closed = true
+      },
+      close() {
+        this.closed = true
+      },
+      on() { return this },
+      once(ev: string, cb: () => void) {
+        if (ev === 'connect') cb()
+        return this
+      },
+    }
+  }
+
+  let http2ConnectImpl: ((...args: unknown[]) => ReturnType<typeof mockH2Session>) | undefined
+  let http2ConnectCalls = 0
+
+  function installH2(handler: H2Handler) {
+    http2ConnectCalls = 0
+    http2ConnectImpl = () => {
+      http2ConnectCalls++
+      return mockH2Session(handler)
+    }
+  }
 
   beforeEach(() => {
     capturedRequest = {}
-    httpsRequestMock.mockImplementation((options: typeof capturedRequest, cb: (res: PassThrough) => void) => {
-      capturedRequest = options
-      const upstreamRes = new PassThrough() as PassThrough & { statusCode: number; headers: Record<string, string> }
-      upstreamRes.statusCode = 200
-      upstreamRes.headers = {}
-      cb(upstreamRes)
-      upstreamRes.end('UPSTREAM_OK')
-      return new PassThrough() // stands in for the upstream client request (req.pipe target)
+    installH2((headers, stream) => {
+      capturedRequest = {
+        host: String(headers[':authority'] ?? ''),
+        path: String(headers[':path'] ?? ''),
+        headers: { ...headers, host: String(headers[':authority'] ?? '') },
+      }
+      h2Respond(stream, 200, 'UPSTREAM_OK')
     })
   })
 
@@ -1030,7 +1072,12 @@ describe('LocalAuthForwardProxy', () => {
   })
 
   function makeProxy(mintToken: () => Promise<Record<string, string>>) {
-    const proxy = new LocalAuthForwardProxy({ endpoint: 'mvm.lambda-microvm.aws', agentPort: 3000, mintToken })
+    const proxy = new LocalAuthForwardProxy({
+      endpoint: 'mvm.lambda-microvm.aws',
+      agentPort: 3000,
+      mintToken,
+      http2Connect: http2ConnectImpl as ConstructorParameters<typeof LocalAuthForwardProxy>[0]['http2Connect'],
+    })
     proxies.push(proxy)
     return proxy
   }
@@ -1059,6 +1106,7 @@ describe('LocalAuthForwardProxy', () => {
     expect(capturedRequest.headers!.host).toBe('mvm.lambda-microvm.aws')
     expect(capturedRequest.headers!['x-custom']).toBe('v')
     expect(capturedRequest.headers!.connection).toBeUndefined()
+    expect(capturedRequest.headers!['x-aws-proxy-force-h2']).toBeUndefined()
   })
 
   it('caches the auth token across requests (mints once)', async () => {
@@ -1125,14 +1173,9 @@ describe('LocalAuthForwardProxy', () => {
 
   it('wakes a suspended VM (retries /health past a 502) before piping a WS upgrade', async () => {
     let healthCalls = 0
-    httpsRequestMock.mockImplementation((_opts: unknown, cb: (res: PassThrough) => void) => {
+    installH2((_headers, stream) => {
       healthCalls++
-      const res = new PassThrough() as PassThrough & { statusCode: number; headers: Record<string, string> }
-      res.statusCode = healthCalls === 1 ? 502 : 200 // first probe: still resuming
-      res.headers = {}
-      cb(res)
-      res.end('')
-      return new PassThrough()
+      h2Respond(stream, healthCalls === 1 ? 502 : 200, '')
     })
     let tlsCalled = false
     const tlsReady = new Promise<void>((resolve) => {
@@ -1152,6 +1195,49 @@ describe('LocalAuthForwardProxy', () => {
     client.destroy()
     expect(healthCalls).toBeGreaterThanOrEqual(2) // retried past the 502
     expect(tlsCalled).toBe(true) // only piped once the VM was awake
+  })
+
+  it('retries an ingress 429 then returns the successful body', async () => {
+    let calls = 0
+    installH2((_headers, stream) => {
+      calls++
+      h2Respond(stream, calls === 1 ? 429 : 200, calls === 1 ? 'Rate limit exceeded' : 'UPSTREAM_OK')
+    })
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    const res = await httpGet(port, '/artifacts/open-slide-studio/')
+    expect(res.status).toBe(200)
+    expect(res.body).toBe('UPSTREAM_OK')
+    expect(calls).toBe(2)
+  })
+
+  it('multiplexes HTTP requests on one HTTP/2 session', async () => {
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    const [first, second] = await Promise.all([httpGet(port, '/a'), httpGet(port, '/b')])
+    expect(first.body).toBe('UPSTREAM_OK')
+    expect(second.body).toBe('UPSTREAM_OK')
+    expect(http2ConnectCalls).toBe(1)
+  })
+
+  it('keeps HTTP/2 streams flowing while a WebSocket is open', async () => {
+    const tlsReady = new Promise<void>((resolve) => {
+      tlsConnectMock.mockImplementation((_opts: unknown, cb: () => void) => {
+        const sock = new PassThrough()
+        process.nextTick(() => {
+          cb()
+          resolve()
+        })
+        return sock
+      })
+    })
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    const wsClient = net.connect(port, '127.0.0.1', () => {
+      wsClient.write('GET /sessions/s1/stream HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: k\r\nSec-WebSocket-Version: 13\r\n\r\n')
+    })
+    await tlsReady
+    const [first, second] = await Promise.all([httpGet(port, '/a'), httpGet(port, '/b')])
+    expect(first.body).toBe('UPSTREAM_OK')
+    expect(second.body).toBe('UPSTREAM_OK')
+    wsClient.destroy()
   })
 
   it('destroys the client socket if the WS upstream connect never completes', async () => {

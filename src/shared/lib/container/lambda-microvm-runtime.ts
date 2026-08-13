@@ -1,7 +1,8 @@
 import http from 'http'
-import https from 'https'
+import http2 from 'http2'
 import tls from 'tls'
 import net, { AddressInfo } from 'net'
+import { pipeline } from 'stream/promises'
 import { randomBytes, randomUUID } from 'crypto'
 import { z } from 'zod'
 import {
@@ -222,6 +223,18 @@ export interface ProxyOptions {
   agentPort: number
   /** Mints a fresh auth-token map ({ "X-aws-proxy-auth": "<jwe>", ... }). */
   mintToken: () => Promise<MicrovmAuthToken>
+  /** Override HTTP/2 connect (tests). */
+  http2Connect?: typeof http2.connect
+}
+
+const INGRESS_RATE_LIMIT_RETRY_DELAY_MS = 150
+const INGRESS_RATE_LIMIT_RETRY_BUDGET_MS = 8_000
+const H2_FORBIDDEN_HEADERS = new Set([
+  'host', 'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade',
+])
+
+function pipeUntilSettled(src: http.IncomingMessage, dest: http.ServerResponse): Promise<void> {
+  return pipeline(src, dest)
 }
 
 export class LocalAuthForwardProxy {
@@ -229,6 +242,8 @@ export class LocalAuthForwardProxy {
   private port: number | null = null
   private tokenCache: { token: MicrovmAuthToken; expiresAt: number } | null = null
   private refreshing: Promise<MicrovmAuthToken> | null = null
+  private h2: http2.ClientHttp2Session | null = null
+  private h2connecting: Promise<http2.ClientHttp2Session | null> | null = null
 
   constructor(private readonly options: ProxyOptions) {}
 
@@ -250,6 +265,9 @@ export class LocalAuthForwardProxy {
     this.server = null
     this.port = null
     this.tokenCache = null
+    this.h2?.close()
+    this.h2 = null
+    this.h2connecting = null
   }
 
   // Single-flight token refresh so a burst of requests can't trigger a token storm.
@@ -290,19 +308,95 @@ export class LocalAuthForwardProxy {
     })
   }
 
-  private forwardOnce(method: string, path: string, headers: Record<string, string>, body: Buffer): Promise<http.IncomingMessage> {
-    return new Promise((resolve, reject) => {
-      const upstream = https.request(
-        { host: this.options.endpoint, port: 443, method, path, servername: this.options.endpoint, headers, timeout: UPSTREAM_IDLE_TIMEOUT_MS },
-        resolve,
-      )
-      upstream.on('error', reject)
-      // A hung socket fires 'timeout' (not 'error'); destroy so the caller's
-      // retry loop sees a real error instead of blocking on it indefinitely.
-      upstream.on('timeout', () => upstream.destroy(new Error('microvm upstream request timed out')))
-      if (body.length) upstream.write(body)
-      upstream.end()
+  // One HTTP/2 session = one AWS ingress connection. Agent is plaintext HTTP/1.1
+  // inside the VM — do not send x-aws-proxy-force-h2; AWS translates streams.
+  private async ensureHttp2(): Promise<http2.ClientHttp2Session | null> {
+    if (this.h2 && !this.h2.closed && !this.h2.destroyed) return this.h2
+    if (this.h2connecting) return this.h2connecting
+    this.h2connecting = this.connectHttp2().finally(() => {
+      this.h2connecting = null
     })
+    return this.h2connecting
+  }
+
+  private connectHttp2(): Promise<http2.ClientHttp2Session | null> {
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (session: http2.ClientHttp2Session | null) => {
+        if (settled) return
+        settled = true
+        resolve(session)
+      }
+      const connect = this.options.http2Connect ?? http2.connect
+      const session = connect(`https://${this.options.endpoint}`, {
+        servername: this.options.endpoint,
+      })
+      const timer = setTimeout(() => {
+        session.destroy()
+        finish(null)
+      }, UPSTREAM_IDLE_TIMEOUT_MS)
+      session.once('connect', () => {
+        clearTimeout(timer)
+        this.h2 = session
+        session.once('close', () => { if (this.h2 === session) this.h2 = null })
+        session.once('error', () => { if (this.h2 === session) this.h2 = null })
+        finish(session)
+      })
+      session.once('error', () => {
+        clearTimeout(timer)
+        finish(null)
+      })
+    })
+  }
+
+  private forwardOnceH2(
+    session: http2.ClientHttp2Session,
+    method: string,
+    path: string,
+    headers: Record<string, string>,
+    body: Buffer,
+  ): Promise<http.IncomingMessage> {
+    return new Promise((resolve, reject) => {
+      const h2headers: http2.OutgoingHttpHeaders = {
+        ':method': method,
+        ':path': path,
+        ':scheme': 'https',
+        ':authority': this.options.endpoint,
+      }
+      for (const [key, value] of Object.entries(headers)) {
+        if (H2_FORBIDDEN_HEADERS.has(key.toLowerCase())) continue
+        h2headers[key] = value
+      }
+      const stream = session.request(h2headers)
+      const timer = setTimeout(() => {
+        stream.destroy(new Error('microvm upstream request timed out'))
+      }, UPSTREAM_IDLE_TIMEOUT_MS)
+      stream.setTimeout?.(UPSTREAM_IDLE_TIMEOUT_MS)
+      stream.once('response', (resHeaders) => {
+        clearTimeout(timer)
+        const incoming = stream as unknown as http.IncomingMessage
+        incoming.statusCode = Number(resHeaders[':status'] ?? 502)
+        const out: http.IncomingHttpHeaders = {}
+        for (const [key, value] of Object.entries(resHeaders)) {
+          if (key.startsWith(':') || value === undefined) continue
+          out[key] = value
+        }
+        incoming.headers = out
+        resolve(incoming)
+      })
+      stream.once('error', (error) => {
+        clearTimeout(timer)
+        reject(error)
+      })
+      if (body.length) stream.write(body)
+      stream.end()
+    })
+  }
+
+  private async forwardOnce(method: string, path: string, headers: Record<string, string>, body: Buffer): Promise<http.IncomingMessage> {
+    const session = await this.ensureHttp2()
+    if (!session) throw new Error('microvm http2 unavailable')
+    return this.forwardOnceH2(session, method, path, headers, body)
   }
 
   // Confirm the MicroVM agent serves before we start an unreplayable WS pipe.
@@ -321,7 +415,7 @@ export class LocalAuthForwardProxy {
       try {
         const res = await this.forwardOnce('GET', '/health', { host: this.options.endpoint, ...auth }, Buffer.alloc(0))
         res.resume()
-        if (res.statusCode !== 502) return true
+        if (res.statusCode !== 502 && res.statusCode !== 429) return true
       } catch {
         // Connection refused/reset/timeout = VM still waking; retry below.
       }
@@ -340,7 +434,22 @@ export class LocalAuthForwardProxy {
       res.end()
       return
     }
+    try {
+      await this.forwardRequest(req, res, body)
+    } catch (error) {
+      captureException(error, { tags: { area: 'container', op: 'microvm.proxy.request' }, extra: { endpoint: this.options.endpoint, path: req.url } })
+      if (!res.headersSent) res.writeHead(502)
+      res.end()
+    }
+  }
+
+  private async forwardRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    body: Buffer,
+  ): Promise<void> {
     const deadline = Date.now() + RESUME_KICK_TIMEOUT_MS
+    const rateLimitDeadline = Date.now() + INGRESS_RATE_LIMIT_RETRY_BUDGET_MS
     for (;;) {
       let auth: Record<string, string>
       try {
@@ -372,8 +481,13 @@ export class LocalAuthForwardProxy {
         await new Promise((r) => setTimeout(r, RESUME_RETRY_DELAY_MS))
         continue
       }
+      if (upstreamRes.statusCode === 429 && Date.now() < rateLimitDeadline) {
+        upstreamRes.resume()
+        await new Promise((r) => setTimeout(r, INGRESS_RATE_LIMIT_RETRY_DELAY_MS))
+        continue
+      }
       res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers)
-      upstreamRes.pipe(res)
+      await pipeUntilSettled(upstreamRes, res)
       return
     }
   }
