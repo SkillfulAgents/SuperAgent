@@ -116,6 +116,9 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('Send another message to retry.')).toBeInTheDocument()
     expect(screen.getByTestId('error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
     expect(screen.getByTestId('error-card')).not.toHaveClass('bg-destructive/10')
+    expect(screen.getByTestId('error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
+    // Opaque in dark: the transcript scrolls behind this in the overlay footer.
+    expect(screen.getByTestId('error-card')).not.toHaveClass('dark:bg-red-950/30')
   })
 
   it('shows "Working..." status when active with no todo', () => {
@@ -187,8 +190,8 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('Add tests')).toBeInTheDocument()
 
     // Shows status indicators
-    expect(screen.getByText('✓')).toBeInTheDocument()
-    expect(screen.getByText('→')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-completed')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-in-progress')).toBeInTheDocument()
     expect(screen.getByText('○')).toBeInTheDocument()
   })
 
@@ -512,8 +515,8 @@ describe('AgentActivityIndicator', () => {
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
 
     // Task 1 completed, task 2 in progress
-    expect(screen.getByText('✓')).toBeInTheDocument()
-    expect(screen.getByText('→')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-completed')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-in-progress')).toBeInTheDocument()
     // Shows activeForm of in_progress task as status text
     expect(screen.getByText('Writing API routes')).toBeInTheDocument()
   })
@@ -793,7 +796,10 @@ describe('AgentActivityIndicator', () => {
 
     const collapseButton = screen.getByRole('button', { name: 'Collapse activity details' })
     expect(collapseButton).toHaveAttribute('aria-expanded', 'true')
-    expect(collapseButton).toHaveClass('absolute', 'right-2.5', 'top-2.5')
+    // Sits in the header row, last, so it centers against the orb and the
+    // summary can never run under it — rather than floating over the row.
+    expect(collapseButton.parentElement).toHaveAttribute('data-testid', 'activity-indicator-header')
+    expect(collapseButton.parentElement?.lastElementChild).toBe(collapseButton)
     expect(collapseButton.querySelector('svg')).toHaveClass('rotate-180')
     expect(screen.getByText('Running subagent')).toBeInTheDocument()
     expect(screen.getByText('Finished subagent')).toBeInTheDocument()
