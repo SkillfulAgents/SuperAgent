@@ -1273,6 +1273,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         onScroll={handleScroll}
         onWheel={handleUserScrollIntent}
         onTouchMove={handleUserScrollIntent}
+        // Scrollbar drags emit no wheel/touch/key events, only pointerdown +
+        // scroll — without this they would never register as user intent.
+        onPointerDown={handleUserScrollIntent}
         onKeyDown={handleScrollKey}
         role="region"
         aria-label="Messages"

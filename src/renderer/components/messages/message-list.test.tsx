@@ -2373,6 +2373,40 @@ describe('MessageList', () => {
       expect(geometry.scrollTop).toBe(800)
     })
 
+    it('retires a stale turn anchor when a scrollbar drag reaches the true bottom', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+
+      geometry.setNaturalScrollHeight(1400)
+      // Dragging the scrollbar thumb produces pointerdown + scroll only — no
+      // wheel, touch, or key events — yet it is just as much an explicit trip
+      // to the live edge and must retire the reserve the same way.
+      fireEvent.pointerDown(el)
+      geometry.setScrollTop(1200)
+      fireEvent.scroll(el)
+
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
+      expect(geometry.scrollTop).toBe(800)
+
+      mockStreamState.activeSubagents = [{
+        agentId: 'sub-1',
+        parentToolId: 'tool-1',
+        subagentType: 'Explore',
+        description: 'Explore workspace structure',
+      }]
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(800)
+    })
+
     it('follows within 80px of the bottom and resumes when the reader returns', () => {
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
       const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
