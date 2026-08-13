@@ -40,7 +40,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
-import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
+import type { ApiMessage, ApiMessageOrBoundary, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 
 // Prefix for system-injected user messages that should be hidden in the UI.
@@ -160,6 +160,40 @@ function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; a
   )
 }
 
+function matchPendingMessage(
+  pending: PendingMessage,
+  messages: ApiMessageOrBoundary[],
+  claimed: Set<string>,
+): ApiMessageOrBoundary | undefined {
+  const findTextMatch = (text: string, notBefore: number) => {
+    const trimmed = text.trim()
+    return messages.find(
+      (m) =>
+        m.type === 'user' &&
+        !claimed.has(m.id) &&
+        (m.content as { text?: string }).text?.trim() === trimmed &&
+        new Date(m.createdAt).getTime() >= notBefore
+    )
+  }
+  let match = pending.uuid ? messages.find((m) => m.id === pending.uuid) : undefined
+  // Text fallback only where the uuid can't work: queued messages (CLI
+  // re-ids them) and sends still awaiting their POST response.
+  if (!match && (pending.queued || !pending.uuid)) {
+    match = findTextMatch(pending.text, pending.sentAt - 5000)
+    if (match) claimed.add(match.id)
+  }
+  if (!match && /^\/compact(?:\s|$)/.test(pending.text.trim())) {
+    match = messages.find(
+      (m) =>
+        m.type === 'compact_boundary' &&
+        !claimed.has(m.id) &&
+        new Date(m.createdAt).getTime() >= pending.sentAt - 5000
+    )
+    if (match) claimed.add(match.id)
+  }
+  return match
+}
+
 interface MessageListProps {
   sessionId: string
   agentSlug: string
@@ -178,7 +212,7 @@ interface MessageListProps {
 
 export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
   useRenderTracker('MessageList')
-  const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
+  const { data: messages, isLoading, error, refetch } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
   const cancelQueuedMessage = useCancelQueuedMessage()
@@ -312,22 +346,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       )
     }
     for (const pending of pendingUserMessages ?? []) {
-      let match = pending.uuid ? messages.find((m) => m.id === pending.uuid) : undefined
-      // Text fallback only where the uuid can't work: queued messages (CLI
-      // re-ids them) and sends still awaiting their POST response.
-      if (!match && (pending.queued || !pending.uuid)) {
-        match = findTextMatch(pending.text, pending.sentAt - 5000)
-        if (match) claimed.add(match.id)
-      }
-      if (!match && /^\/compact(?:\s|$)/.test(pending.text.trim())) {
-        match = messages.find(
-          (m) =>
-            m.type === 'compact_boundary' &&
-            !claimed.has(m.id) &&
-            new Date(m.createdAt).getTime() >= pending.sentAt - 5000
-        )
-        if (match) claimed.add(match.id)
-      }
+      const match = matchPendingMessage(pending, messages, claimed)
       if (match) {
         onPendingMessageAppeared?.(pending.localId)
       }
@@ -378,16 +397,27 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
   }, [discardedCommandUuids, pendingUserMessages, peerUserMessages, sessionId, draftsStore, onPendingMessageAppeared])
 
-  // Once the session goes idle, our messages still showing as pending are
-  // treated as undelivered — the agent was interrupted before picking them
-  // up, or the turn ended without consuming them. Restore their text to the
-  // composer so the user can edit/resend, and remove the ghosts; drop peer
-  // ghosts (we can't restore another user's text into our composer — their
-  // own client restores it for them). Messages that WERE delivered clear via
-  // the materialize effect above, which prunes them from this list as the
-  // post-idle refetch lands. The short grace below gives that refetch a beat
-  // to settle so a just-answered message isn't yanked back into the composer.
-  // While the agent is active, queued ghosts may wait minutes.
+  // Peer ghosts need no transcript evidence — we cannot restore another
+  // user's text. Drop them on the same idle grace, on their own timer, so
+  // clearing them cannot cancel the local rescue below.
+  useEffect(() => {
+    if (isActive || peerUserMessages.length === 0) return
+    const timerId = setTimeout(() => {
+      clearPeerUserMessages(sessionId)
+    }, 1500)
+    return () => clearTimeout(timerId)
+  }, [peerUserMessages, isActive, sessionId])
+
+  // Once the session goes idle, pending copies that a successful fresh
+  // transcript still lacks are treated as undelivered. Restore their text so
+  // the user can resend, and remove the ghosts. The cached query can lag a
+  // successful POST, so absence there is not proof of loss. A failed refresh
+  // is missing evidence: leave the optimistic copy and do not restore.
+  // A cancelled refetch can resolve as success with the previous cache, so
+  // dataUpdatedAt must be at or after the request, not merely non-error.
+  // Messages that were delivered still clear via the materialize effect above
+  // as the post-idle refetch lands. While the agent is active, queued ghosts
+  // may wait minutes.
   //
   // EXCEPT: a non-queued pending without a uuid has its POST still in flight
   // — commonly a send into a session whose container is waking, where the
@@ -398,18 +428,43 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // is actually mid-delivery — it then lands in the transcript AND sits in
   // the composer, baiting a duplicate resend. Leave those pending.
   useEffect(() => {
-    if (isActive || ((pendingUserMessages?.length ?? 0) === 0 && peerUserMessages.length === 0)) return
+    if (isActive) return
     const undelivered = (pendingUserMessages ?? []).filter((p) => p.queued || p.uuid)
+    if (undelivered.length === 0) return
+    let cancelled = false
     const timerId = setTimeout(() => {
-      if (undelivered.length > 0) {
-        const restored = undelivered.map((p) => p.text.trim()).filter(Boolean)
-        appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
-        for (const pending of undelivered) onPendingMessageAppeared?.(pending.localId)
-      }
-      clearPeerUserMessages(sessionId)
+      void (async () => {
+        const fetchedAfter = Date.now()
+        const result = await refetch()
+        if (cancelled) return
+        if (
+          !result.isError &&
+          !result.error &&
+          result.data != null &&
+          result.dataUpdatedAt >= fetchedAfter
+        ) {
+          const claimed = claimedMessageIdsRef.current
+          const stillMissing: PendingMessage[] = []
+          for (const pending of undelivered) {
+            if (matchPendingMessage(pending, result.data, claimed)) {
+              onPendingMessageAppeared?.(pending.localId)
+            } else {
+              stillMissing.push(pending)
+            }
+          }
+          if (stillMissing.length > 0) {
+            const restored = stillMissing.map((p) => p.text.trim()).filter(Boolean)
+            appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
+            for (const pending of stillMissing) onPendingMessageAppeared?.(pending.localId)
+          }
+        }
+      })()
     }, 1500)
-    return () => clearTimeout(timerId)
-  }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
+    return () => {
+      cancelled = true
+      clearTimeout(timerId)
+    }
+  }, [pendingUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore, refetch])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentBodyRef = useRef<HTMLDivElement>(null)

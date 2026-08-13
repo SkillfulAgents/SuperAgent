@@ -9,10 +9,25 @@ import { createUserMessage, createAssistantMessage, createToolCall, createCompac
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 
 // Mock useMessages
-const mockMessagesData: { data: ApiMessageOrBoundary[] | undefined; isLoading: boolean; error: Error | null } = {
+const mockMessagesData: {
+  data: ApiMessageOrBoundary[] | undefined
+  isLoading: boolean
+  error: Error | null
+  refetch: ReturnType<typeof vi.fn>
+} = {
   data: undefined,
   isLoading: false,
   error: null,
+  refetch: vi.fn(),
+}
+
+function successfulTranscriptRefetch(data?: ApiMessageOrBoundary[]) {
+  return vi.fn(async () => ({
+    data: data ?? mockMessagesData.data ?? [],
+    error: null,
+    isError: false,
+    dataUpdatedAt: Date.now(),
+  }))
 }
 
 const mockDeleteMessage = vi.fn()
@@ -145,6 +160,7 @@ describe('MessageList', () => {
     vi.clearAllMocks()
     mockMessagesData.data = undefined
     mockMessagesData.isLoading = false
+    mockMessagesData.refetch = successfulTranscriptRefetch()
     mockIsOnline = true
     mockCurrentUser = null
     mockCancelResult = { cancelled: true }
@@ -810,7 +826,7 @@ describe('MessageList', () => {
       rerender(<CompactRaceHarness />)
 
       await act(async () => {
-        vi.advanceTimersByTime(1500)
+        await vi.advanceTimersByTimeAsync(1500)
       })
 
       expect(screen.getByTestId('draft-probe')).toHaveTextContent('the next message')
@@ -1043,10 +1059,13 @@ describe('MessageList', () => {
       expect(onAppeared).not.toHaveBeenCalled()
       expect(screen.getByTestId('draft-probe')).toHaveTextContent('')
 
-      // After the post-idle grace, the un-picked-up text returns to the composer
+      // After the post-idle grace, a successful fresh transcript still lacks
+      // the queued prompt, so the un-picked-up text returns to the composer
       // draft and the ghost is removed.
+      mockMessagesData.refetch = successfulTranscriptRefetch([])
+
       await act(async () => {
-        vi.advanceTimersByTime(1500)
+        await vi.advanceTimersByTimeAsync(1500)
       })
 
       expect(onAppeared).toHaveBeenCalledWith('l1')
@@ -1142,7 +1161,7 @@ describe('MessageList', () => {
       )
 
       await act(async () => {
-        vi.advanceTimersByTime(1500)
+        await vi.advanceTimersByTimeAsync(1500)
       })
 
       expect(onAppeared).not.toHaveBeenCalled()
@@ -1153,13 +1172,14 @@ describe('MessageList', () => {
   })
 
   it('still restores a non-queued pending that was accepted (uuid) but never materialized', async () => {
-    // The POST succeeded but the message never showed up in the transcript by
-    // idle (e.g. an interrupt raced the CLI before it persisted the entry) —
-    // this is genuinely lost work, so the restore must still fire.
+    // The POST succeeded but a successful fresh transcript still lacks the
+    // message by idle (e.g. an interrupt raced the CLI before it persisted
+    // the entry) — this is genuinely lost work, so the restore must still fire.
     vi.useFakeTimers()
     try {
       const onAppeared = vi.fn()
       mockMessagesData.data = []
+      mockMessagesData.refetch = successfulTranscriptRefetch([])
       mockStreamState.isActive = false
 
       const DraftProbe = () => {
@@ -1180,12 +1200,245 @@ describe('MessageList', () => {
       )
 
       await act(async () => {
-        vi.advanceTimersByTime(1500)
+        await vi.advanceTimersByTimeAsync(1500)
       })
 
       expect(onAppeared).toHaveBeenCalledWith('l1')
       expect(screen.getByTestId('draft-probe')).toHaveTextContent('accepted then dropped')
     } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not restore an accepted pending whose fresh transcript already contains it', async () => {
+    // Cached transcript is still empty after idle, but a fresh read already
+    // has the accepted uuid. Restoring would put a delivered prompt back in
+    // the composer and enable a duplicate send.
+    vi.useFakeTimers()
+    try {
+      const onAppeared = vi.fn()
+      mockMessagesData.data = []
+      mockMessagesData.refetch = successfulTranscriptRefetch([
+        createUserMessage({
+          id: 'server-uuid',
+          content: { text: 'accepted prompt' },
+          createdAt: new Date(),
+        }),
+      ])
+      mockStreamState.isActive = false
+
+      const DraftProbe = () => {
+        const [draft] = useDraft<string>('session:s-1')
+        return <div data-testid="draft-probe">{draft ?? ''}</div>
+      }
+
+      renderWithProviders(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={[{ localId: 'l1', uuid: 'server-uuid', text: 'accepted prompt', sentAt: Date.now() }]}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500)
+      })
+
+      expect(screen.getByTestId('draft-probe').textContent).toBe('')
+      expect(onAppeared).toHaveBeenCalledWith('l1')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not restore or drop a pending when the idle transcript refresh fails', async () => {
+    // A failed fresh read is missing evidence, not proof of delivery or loss.
+    // Leftover data on the error result must not be treated as a successful
+    // transcript — keep the optimistic copy and leave the composer alone.
+    vi.useFakeTimers()
+    try {
+      const onAppeared = vi.fn()
+      mockMessagesData.data = []
+      mockMessagesData.refetch = vi.fn(async () => ({
+        data: [
+          createUserMessage({
+            id: 'server-uuid',
+            content: { text: 'still pending' },
+            createdAt: new Date(),
+          }),
+        ],
+        error: new Error('Failed to fetch messages'),
+        isError: true,
+      }))
+      mockStreamState.isActive = false
+
+      const DraftProbe = () => {
+        const [draft] = useDraft<string>('session:s-1')
+        return <div data-testid="draft-probe">{draft ?? ''}</div>
+      }
+
+      renderWithProviders(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={[{ localId: 'l1', uuid: 'server-uuid', text: 'still pending', sentAt: Date.now() }]}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500)
+      })
+
+      expect(mockMessagesData.refetch).toHaveBeenCalled()
+      expect(onAppeared).not.toHaveBeenCalled()
+      expect(screen.getByTestId('draft-probe').textContent).toBe('')
+      expect(screen.getByTestId('pending-user-message')).toHaveTextContent('still pending')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not restore when a successful refetch returns a stale cache', async () => {
+    // A cancelled in-flight refetch can resolve as success with the previous
+    // cache: isError false, data present, dataUpdatedAt from before the ask.
+    // Treat that as missing evidence, same as a failed refresh.
+    vi.useFakeTimers()
+    try {
+      const onAppeared = vi.fn()
+      const staleUpdatedAt = Date.now()
+      mockMessagesData.data = []
+      mockMessagesData.refetch = vi.fn(async () => ({
+        data: [],
+        error: null,
+        isError: false,
+        dataUpdatedAt: staleUpdatedAt,
+      }))
+      mockStreamState.isActive = false
+
+      const DraftProbe = () => {
+        const [draft] = useDraft<string>('session:s-1')
+        return <div data-testid="draft-probe">{draft ?? ''}</div>
+      }
+
+      renderWithProviders(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={[{ localId: 'l1', uuid: 'server-uuid', text: 'accepted prompt', sentAt: Date.now() }]}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500)
+      })
+
+      expect(mockMessagesData.refetch).toHaveBeenCalled()
+      expect(onAppeared).not.toHaveBeenCalled()
+      expect(screen.getByTestId('draft-probe').textContent).toBe('')
+      expect(screen.getByTestId('pending-user-message')).toHaveTextContent('accepted prompt')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears peer ghosts at idle without restarting the local transcript refresh', async () => {
+    vi.useFakeTimers()
+    try {
+      const onAppeared = vi.fn()
+      let resolveRefetch: (value: {
+        data: ApiMessageOrBoundary[]
+        error: Error | null
+        isError: boolean
+        dataUpdatedAt: number
+      }) => void = () => {}
+      mockMessagesData.data = []
+      mockMessagesData.refetch = vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveRefetch = resolve
+          }),
+      )
+      mockStreamState.isActive = false
+      mockStreamState.peerUserMessages = [
+        { uuid: 'peer-1', receivedAt: Date.now(), content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice' } },
+      ]
+      mockClearPeerUserMessages.mockImplementation(() => {
+        mockStreamState.peerUserMessages = []
+      })
+
+      const pending = [{ localId: 'l1', uuid: 'server-uuid', text: 'accepted prompt', sentAt: Date.now() }]
+      const DraftProbe = () => {
+        const [draft] = useDraft<string>('session:s-1')
+        return <div data-testid="draft-probe">{draft ?? ''}</div>
+      }
+      const { rerender } = renderWithProviders(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={pending}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500)
+      })
+
+      expect(mockClearPeerUserMessages).toHaveBeenCalledWith('s-1')
+      expect(mockMessagesData.refetch).toHaveBeenCalledTimes(1)
+
+      rerender(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={pending}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500)
+      })
+
+      expect(mockMessagesData.refetch).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        resolveRefetch({
+          data: [
+            createUserMessage({
+              id: 'server-uuid',
+              content: { text: 'accepted prompt' },
+              createdAt: new Date(),
+            }),
+          ],
+          error: null,
+          isError: false,
+          dataUpdatedAt: Date.now(),
+        })
+      })
+
+      expect(onAppeared).toHaveBeenCalledWith('l1')
+      expect(screen.getByTestId('draft-probe').textContent).toBe('')
+    } finally {
+      mockClearPeerUserMessages.mockReset()
       vi.useRealTimers()
     }
   })

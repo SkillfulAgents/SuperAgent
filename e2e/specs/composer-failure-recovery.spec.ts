@@ -166,4 +166,41 @@ test.describe('Composer failure recovery', () => {
     // ~1.5s and was still present at this point)
     await expect(sessionPage.getMessageInput()).toHaveText('')
   })
+
+  test('a delayed transcript refetch does not restore an accepted short prompt', async ({ page }) => {
+    // Regression for the idle-rescue race: POST and SSE complete normally, but
+    // the messages GET is held past the 1.5s grace. The accepted prompt must
+    // not be written back into the composer just because the cached transcript
+    // has not caught up yet.
+    const text = 'short accepted prompt'
+    await page.route('**/sessions/*/messages', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      await new Promise((r) => setTimeout(r, 4500))
+      return route.continue()
+    })
+
+    await sessionPage.typeMessage(text)
+    const sentAt = Date.now()
+    await sessionPage.getSendButton().click()
+    await expect(sessionPage.getMessageInput()).toHaveText('')
+
+    // The live reply can arrive while the transcript GET is still held.
+    await expect(
+      sessionPage.getAssistantMessages().filter({ hasText: 'This is a mock response from the E2E test container.' })
+    ).toHaveCount(2, { timeout: 15000 })
+
+    // Stay empty through the 1.5s idle-rescue window. If the prompt comes
+    // back, this poll surfaces the restored text instead of "empty-past-grace".
+    await expect.poll(async () => {
+      const composer = (await sessionPage.getMessageInput().textContent())?.trim() ?? ''
+      if (composer !== '') return composer
+      return Date.now() - sentAt >= 2000 ? 'empty-past-grace' : 'waiting'
+    }, { timeout: 8000 }).toBe('empty-past-grace')
+
+    await sessionPage.waitForUserMessageCount(2, 20000)
+    await sessionPage.expectUserMessage(text, 1)
+    await expect(sessionPage.getUserMessages().filter({ hasText: text })).toHaveCount(1)
+    await expect(sessionPage.getMessageInput()).toHaveText('')
+    await expect(sessionPage.getSendButton()).toBeDisabled()
+  })
 })
