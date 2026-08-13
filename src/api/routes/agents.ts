@@ -13,6 +13,7 @@ import {
   injectDashboardRuntime,
 } from '../dashboard-runtime'
 import { parsePagination } from '../pagination'
+import { MESSAGES_PAGE_MAX_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole } from '../middleware/auth'
 import {
   listAgentsWithStatus,
@@ -55,6 +56,7 @@ import {
   updateSessionName,
   registerSession,
   getSessionMessagesWithCompact,
+  getSessionMessagesPage,
   getSession,
   getSessionMetadata,
   sessionExists,
@@ -1737,6 +1739,70 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
   }
 })
 
+const messagesListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(MESSAGES_PAGE_MAX_LIMIT).optional(),
+  cursor: z.string().min(1).max(200).optional(),
+})
+
+async function annotateAndRecoverMessages(
+  transformed: TransformedItem[],
+  agentSlug: string,
+  sessionId: string,
+): Promise<void> {
+  await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
+
+  const settledRequests = messagePersister.getSettledInputRequests(sessionId)
+  if (settledRequests.size > 0) {
+    for (const item of transformed) {
+      if (item.type !== 'assistant') continue
+      for (const toolCall of item.toolCalls) {
+        if (toolCall.result !== undefined) continue
+        const outcome = settledRequests.get(toolCall.id)
+        if (outcome !== undefined) {
+          toolCall.result =
+            outcome === 'answered' ? 'User provided input' : 'User declined the request'
+        }
+      }
+    }
+  }
+
+  if (messagePersister.isSessionActive(sessionId)) {
+    const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
+    if (unresolvedRequests.length > 0) {
+      messagePersister.recoverSessionAwaitingInput(sessionId, agentSlug, unresolvedRequests)
+    }
+  }
+
+  if (!isAuthMode()) return
+
+  const userMessageIds = transformed.filter((m) => m.type === 'user').map((m) => m.id)
+  if (userMessageIds.length === 0) return
+
+  const authors = await db
+    .select({
+      messageId: messageAuthor.id,
+      userId: messageAuthor.userId,
+      userName: userTable.name,
+      userEmail: userTable.email,
+    })
+    .from(messageAuthor)
+    .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
+    .where(eq(messageAuthor.sessionId, sessionId))
+
+  const authorMap = new Map(authors.map((a) => [a.messageId, a]))
+  for (const msg of transformed) {
+    if (msg.type !== 'user') continue
+    const author = authorMap.get(msg.id)
+    if (author) {
+      msg.sender = {
+        id: author.userId,
+        name: author.userName,
+        email: author.userEmail,
+      }
+    }
+  }
+}
+
 // GET /api/agents/:id/sessions/:sessionId/messages - Get messages for a session
 agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
   try {
@@ -1753,77 +1819,28 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
 
+    const rawLimit = c.req.query('limit')
+    const rawCursor = c.req.query('cursor')
+    if (rawLimit !== undefined || rawCursor !== undefined) {
+      const parsed = messagesListQuerySchema.safeParse({
+        ...(rawLimit !== undefined ? { limit: rawLimit } : {}),
+        ...(rawCursor !== undefined ? { cursor: rawCursor } : {}),
+      })
+      if (!parsed.success) {
+        return c.json({ error: 'Invalid pagination' }, 400)
+      }
+      const page = await getSessionMessagesPage(agentSlug, sessionId, {
+        limit: parsed.data.limit ?? MESSAGES_PAGE_OLDER_LIMIT,
+        cursor: parsed.data.cursor,
+      })
+      await annotateAndRecoverMessages(page.messages, agentSlug, sessionId)
+      return c.json({ messages: page.messages, nextCursor: page.nextCursor })
+    }
+
     const messages = await getSessionMessagesWithCompact(agentSlug, sessionId)
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
     const transformed = transformMessages(filtered)
-
-    // Discover subagent IDs for interrupted Task tool calls that have no result
-    await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
-
-    // Parallel tool calls hold every sibling's transcript result until the
-    // LAST one resolves, so a request the user already decided still looks
-    // unresolved here. Stamp the settled outcome onto the transcript so every
-    // history consumer — the client's refresh fallback, the transcript card,
-    // and the recovery scan below — sees a completed call instead of
-    // resurrecting a decided one.
-    const settledRequests = messagePersister.getSettledInputRequests(sessionId)
-    if (settledRequests.size > 0) {
-      for (const item of transformed) {
-        if (item.type !== 'assistant') continue
-        for (const toolCall of item.toolCalls) {
-          if (toolCall.result !== undefined) continue
-          const outcome = settledRequests.get(toolCall.id)
-          if (outcome !== undefined) {
-            toolCall.result =
-              outcome === 'answered' ? 'User provided input' : 'User declined the request'
-          }
-        }
-      }
-    }
-
-    if (messagePersister.isSessionActive(sessionId)) {
-      const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
-      if (unresolvedRequests.length > 0) {
-        // If the request-specific stream event was missed, persisted messages are
-        // the fallback source of truth. A stale transcript can briefly re-assert
-        // awaiting input, but the next stream result/idle event clears it.
-        messagePersister.recoverSessionAwaitingInput(sessionId, agentSlug, unresolvedRequests)
-      }
-    }
-
-    // In auth mode, annotate user messages with sender info
-    if (isAuthMode()) {
-      const userMessageIds = transformed
-        .filter((m) => m.type === 'user')
-        .map((m) => m.id)
-
-      if (userMessageIds.length > 0) {
-        const authors = await db
-          .select({
-            messageId: messageAuthor.id,
-            userId: messageAuthor.userId,
-            userName: userTable.name,
-            userEmail: userTable.email,
-          })
-          .from(messageAuthor)
-          .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
-          .where(eq(messageAuthor.sessionId, sessionId))
-
-        const authorMap = new Map(authors.map((a) => [a.messageId, a]))
-
-        for (const msg of transformed) {
-          if (msg.type !== 'user') continue
-          const author = authorMap.get(msg.id)
-          if (author) {
-            msg.sender = {
-              id: author.userId,
-              name: author.userName,
-              email: author.userEmail,
-            }
-          }
-        }
-      }
-    }
+    await annotateAndRecoverMessages(transformed, agentSlug, sessionId)
 
     const source = Readable.from(transformed)
     const stringify = createJsonArrayStringifyTransform()

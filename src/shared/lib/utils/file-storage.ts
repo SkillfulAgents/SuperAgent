@@ -363,25 +363,13 @@ export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]>
 }
 
 const NEWLINE_BYTE = 0x0a
+const TAIL_READ_CHUNK = 64 * 1024
 
-/**
- * Stream-read JSONL file line by line (for large files)
- * Yields parsed objects one at a time
- *
- * Lines are split in the raw bytes rather than through a string decoder: agent
- * transcripts are dominated by very large tool-result rows, and materializing a
- * whole file (or even a whole chunk-spanning row twice) costs several times the
- * file size in peak memory. Only ASCII whitespace is trimmed at the byte level,
- * and every such byte is < 0x80, so a multi-byte UTF-8 sequence is never split.
- */
-export async function* streamJsonlFile<T = unknown>(
-  filePath: string
-): AsyncIterable<T> {
+/** Yield raw JSONL line buffers. Split in bytes so a multi-MB row is joined once. */
+export async function* streamJsonlRawLines(filePath: string): AsyncIterable<Buffer> {
   const fileHandle = await fs.promises.open(filePath, 'r')
   try {
     const stream = fileHandle.createReadStream()
-    // Chunks holding the trailing, not-yet-terminated line. Concatenated only
-    // once its newline arrives, so a row spanning many chunks is joined once.
     let pending: Buffer[] = []
 
     for await (const chunk of stream) {
@@ -396,31 +384,93 @@ export async function* streamJsonlFile<T = unknown>(
         } else {
           line = chunk.subarray(start, idx)
         }
-        const parsed = parseJsonlLine<T>(line)
-        if (parsed !== undefined) yield parsed
+        yield line
         start = idx + 1
         idx = chunk.indexOf(NEWLINE_BYTE, start)
       }
       if (start < chunk.length) pending.push(chunk.subarray(start))
     }
 
-    // Process any remaining content (file not terminated by a newline)
     if (pending.length > 0) {
-      const parsed = parseJsonlLine<T>(Buffer.concat(pending))
-      if (parsed !== undefined) yield parsed
+      yield Buffer.concat(pending)
     }
   } finally {
-    // Runs on early `break` from the consumer's for-await too, which the
-    // previous trailing close() silently skipped — leaking the descriptor.
     await fileHandle.close()
   }
 }
 
-/**
- * Decode and parse one JSONL line. Returns undefined for blank and malformed
- * lines (common while the SDK is mid-write), which callers skip.
- */
-function parseJsonlLine<T>(line: Buffer): T | undefined {
+export async function* streamJsonlFile<T = unknown>(
+  filePath: string
+): AsyncIterable<T> {
+  for await (const line of streamJsonlRawLines(filePath)) {
+    const parsed = parseJsonlLine<T>(line)
+    if (parsed !== undefined) yield parsed
+  }
+}
+
+/** Last `maxLines` JSONL rows from disk. Older rows are never read into a line buffer. */
+export async function readJsonlTailLines(
+  filePath: string,
+  maxLines: number
+): Promise<{ lines: Buffer[]; reachedStart: boolean }> {
+  if (maxLines <= 0) return { lines: [], reachedStart: true }
+
+  let fileHandle: fs.promises.FileHandle
+  try {
+    fileHandle = await fs.promises.open(filePath, 'r')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { lines: [], reachedStart: true }
+    }
+    throw error
+  }
+
+  try {
+    const stat = await fileHandle.stat()
+    if (stat.size === 0) return { lines: [], reachedStart: true }
+
+    let pos = stat.size
+    const parts: Buffer[] = []
+    let newlineCount = 0
+
+    while (pos > 0 && newlineCount <= maxLines) {
+      const size = Math.min(TAIL_READ_CHUNK, pos)
+      pos -= size
+      const buf = Buffer.allocUnsafe(size)
+      const { bytesRead } = await fileHandle.read(buf, 0, size, pos)
+      const chunk = bytesRead === size ? buf : buf.subarray(0, bytesRead)
+      parts.unshift(chunk)
+      for (let i = 0; i < chunk.length; i++) {
+        if (chunk[i] === NEWLINE_BYTE) newlineCount++
+      }
+    }
+
+    const combined = parts.length === 1 ? parts[0]! : Buffer.concat(parts)
+    const lines: Buffer[] = []
+    let start = 0
+    for (let i = 0; i < combined.length; i++) {
+      if (combined[i] === NEWLINE_BYTE) {
+        lines.push(combined.subarray(start, i))
+        start = i + 1
+      }
+    }
+    if (start < combined.length) lines.push(combined.subarray(start))
+
+    const reachedStart = pos === 0
+    if (!reachedStart && lines.length > 0) lines.shift()
+    if (lines.length > 0 && lines[lines.length - 1]!.length === 0) lines.pop()
+
+    if (lines.length > maxLines) {
+      return { lines: lines.slice(-maxLines), reachedStart: false }
+    }
+    return { lines, reachedStart }
+  } finally {
+    await fileHandle.close()
+  }
+}
+
+/** Decode and parse one JSONL line. Blank / malformed lines return undefined. */
+export function parseJsonlLine<T>(line: Buffer): T | undefined {
   const trimmed = line.toString('utf-8').trim()
   if (!trimmed) return undefined
   try {

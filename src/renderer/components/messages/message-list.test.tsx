@@ -9,10 +9,21 @@ import { createUserMessage, createAssistantMessage, createToolCall, createCompac
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 
 // Mock useMessages
-const mockMessagesData: { data: ApiMessageOrBoundary[] | undefined; isLoading: boolean; error: Error | null } = {
+const mockFetchOlder = vi.fn()
+const mockMessagesData: {
+  data: ApiMessageOrBoundary[] | undefined
+  isLoading: boolean
+  error: Error | null
+  fetchOlder: typeof mockFetchOlder
+  hasOlder: boolean
+  isFetchingOlder: boolean
+} = {
   data: undefined,
   isLoading: false,
   error: null,
+  fetchOlder: mockFetchOlder,
+  hasOlder: false,
+  isFetchingOlder: false,
 }
 
 const mockDeleteMessage = vi.fn()
@@ -145,6 +156,9 @@ describe('MessageList', () => {
     vi.clearAllMocks()
     mockMessagesData.data = undefined
     mockMessagesData.isLoading = false
+    mockMessagesData.error = null
+    mockMessagesData.hasOlder = false
+    mockMessagesData.isFetchingOlder = false
     mockIsOnline = true
     mockCurrentUser = null
     mockCancelResult = { cancelled: true }
@@ -2128,6 +2142,16 @@ describe('MessageList', () => {
       // windowSize grew by LOAD_STEP (200) → 305 < 500, so the whole thread renders.
       expect(screen.getByText('m0')).toBeInTheDocument()
       expect(screen.queryByText(/earlier messages? hidden/)).not.toBeInTheDocument()
+    })
+
+    it('fetches the next API page when scrolled to the top of a fully-rendered page', () => {
+      mockMessagesData.data = manyMessages(50)
+      mockMessagesData.hasOlder = true
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      mockScrollGeometry(el, { scrollHeight: 10000, clientHeight: 500, scrollTop: 50 })
+      fireEvent.scroll(el)
+      expect(mockFetchOlder).toHaveBeenCalledOnce()
     })
 
     it('keeps the top of the window stable when a message arrives while scrolled up', () => {

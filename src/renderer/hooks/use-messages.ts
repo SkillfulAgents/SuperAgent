@@ -1,9 +1,11 @@
 import { apiFetch } from '@renderer/lib/api'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
+import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
 
 // Re-export for convenience
 export type { ApiMessage, ApiMessageOrBoundary }
@@ -20,27 +22,105 @@ export class TranscriptNotFoundError extends Error {
   }
 }
 
+interface MessagesPage {
+  messages: ApiMessageOrBoundary[]
+  nextCursor: string | null
+}
+
+const EMPTY_MESSAGES: ApiMessageOrBoundary[] = []
+
+async function fetchMessagesPage(
+  agentSlug: string,
+  sessionId: string,
+  opts: { limit: number; cursor?: string }
+): Promise<MessagesPage> {
+  const params = new URLSearchParams({ limit: String(opts.limit) })
+  if (opts.cursor) params.set('cursor', opts.cursor)
+  const res = await apiFetch(
+    `/api/agents/${agentSlug}/sessions/${sessionId}/messages?${params.toString()}`
+  )
+  if (res.status === 404) throw new TranscriptNotFoundError()
+  if (!res.ok) throw new Error('Failed to fetch messages')
+  return res.json() as Promise<MessagesPage>
+}
+
 export function useMessages(sessionId: string | null, agentSlug: string | null) {
-  return useQuery<ApiMessageOrBoundary[]>({
+  const latest = useQuery<MessagesPage>({
     queryKey: ['messages', sessionId, agentSlug],
     queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages`)
-      if (res.status === 404) throw new TranscriptNotFoundError()
-      if (!res.ok) throw new Error('Failed to fetch messages')
-      return res.json()
+      if (!sessionId || !agentSlug) throw new Error('Missing session')
+      return fetchMessagesPage(agentSlug, sessionId, { limit: MESSAGES_PAGE_LIMIT })
     },
     enabled: !!sessionId && !!agentSlug,
-    // A missing transcript won't reappear — don't hammer it with retries.
     retry: (failureCount, error) =>
       !(error instanceof TranscriptNotFoundError) && failureCount < 3,
-    // Safety-net poll for any messages the SSE stream missed. The stream
-    // (use-message-stream) is the primary, near-instant path; this only
-    // backstops out-of-band edits / a silently-stalled SSE.
-    // TODO: conservative first step down from the original 5s. Once we've
-    // confirmed nothing relies on tight polling, this can be raised further
-    // (e.g. 30s) or gated on SSE-connection health.
     refetchInterval: 15000,
   })
+
+  const [older, setOlder] = useState<ApiMessageOrBoundary[]>([])
+  const [olderCursor, setOlderCursor] = useState<string | null | undefined>(undefined)
+  const [isFetchingOlder, setIsFetchingOlder] = useState(false)
+  const prevLatestRef = useRef<ApiMessageOrBoundary[]>(EMPTY_MESSAGES)
+
+  useEffect(() => {
+    setOlder([])
+    setOlderCursor(undefined)
+    prevLatestRef.current = EMPTY_MESSAGES
+  }, [sessionId, agentSlug])
+
+  const latestMessages = latest.data?.messages ?? EMPTY_MESSAGES
+
+  useEffect(() => {
+    const prev = prevLatestRef.current
+    prevLatestRef.current = latestMessages
+    if (prev.length === 0) return
+    const nextIds = new Set(latestMessages.map((m) => m.id))
+    const slidOff = prev.filter((m) => !nextIds.has(m.id))
+    if (slidOff.length === 0) return
+    setOlder((cur) => {
+      const seen = new Set(cur.map((m) => m.id))
+      return [...cur, ...slidOff.filter((m) => !seen.has(m.id))]
+    })
+  }, [latestMessages])
+
+  const data = useMemo(() => {
+    if (!latest.data && older.length === 0) return undefined
+    const latestIds = new Set(latestMessages.map((m) => m.id))
+    return [...older.filter((m) => !latestIds.has(m.id)), ...latestMessages]
+  }, [latest.data, older, latestMessages])
+
+  const hasOlder =
+    olderCursor !== undefined ? olderCursor !== null : latest.data?.nextCursor != null
+
+  const fetchOlder = useCallback(async () => {
+    if (!sessionId || !agentSlug || isFetchingOlder || !hasOlder) return
+    const cursor = older[0]?.id ?? latestMessages[0]?.id
+    if (!cursor) return
+    setIsFetchingOlder(true)
+    try {
+      const page = await fetchMessagesPage(agentSlug, sessionId, {
+        limit: MESSAGES_PAGE_OLDER_LIMIT,
+        cursor,
+      })
+      setOlder((cur) => {
+        const seen = new Set(cur.map((m) => m.id))
+        return [...page.messages.filter((m) => !seen.has(m.id)), ...cur]
+      })
+      setOlderCursor(page.nextCursor)
+    } catch (error) {
+      console.warn('Failed to fetch older messages:', error)
+    } finally {
+      setIsFetchingOlder(false)
+    }
+  }, [sessionId, agentSlug, isFetchingOlder, hasOlder, older, latestMessages])
+
+  return {
+    ...latest,
+    data,
+    fetchOlder,
+    hasOlder,
+    isFetchingOlder,
+  }
 }
 
 export function useSendMessage() {

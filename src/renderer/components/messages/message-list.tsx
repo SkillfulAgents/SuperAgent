@@ -178,7 +178,7 @@ interface MessageListProps {
 
 export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
   useRenderTracker('MessageList')
-  const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
+  const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
   const cancelQueuedMessage = useCancelQueuedMessage()
@@ -732,18 +732,21 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       setShowScrollToBottom(distanceFromBottom > 300)
     }
 
-    // Near the top with older messages still hidden: reveal the next chunk.
+    // Near the top: reveal the next local chunk, or fetch the next API page.
     // prevScrollHeightRef doubles as a re-entrancy guard so we expand at most once
     // per scroll gesture; the layout effect clears it after re-anchoring.
-    if (el.scrollTop < 200 && prevScrollHeightRef.current == null && hiddenCount > 0) {
-      prevScrollHeightRef.current = el.scrollHeight
-      // The user is reading older content — make sure nothing auto-pins to the
-      // bottom during the expand (the distance heuristic can misfire when the
-      // rendered slice barely overflows the viewport).
-      isScrolledToBottomRef.current = false
-      setWindowSize((n) => n + LOAD_STEP)
+    if (el.scrollTop < 200 && prevScrollHeightRef.current == null) {
+      if (hiddenCount > 0) {
+        prevScrollHeightRef.current = el.scrollHeight
+        isScrolledToBottomRef.current = false
+        setWindowSize((n) => n + LOAD_STEP)
+      } else if (hasOlder && !isFetchingOlder && fetchOlder) {
+        prevScrollHeightRef.current = el.scrollHeight
+        isScrolledToBottomRef.current = false
+        void fetchOlder()
+      }
     }
-  }, [cancelFollowAnimation, hiddenCount, setBottomSpacerHeight])
+  }, [cancelFollowAnimation, hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight])
 
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).

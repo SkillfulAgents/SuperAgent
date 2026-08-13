@@ -24,8 +24,11 @@ import {
   CorruptFileError,
   readJsonlFile,
   streamJsonlFile,
+  readJsonlTailLines,
+  parseJsonlLine,
   ensureDirectory,
 } from '@shared/lib/utils/file-storage'
+import { transformMessages, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
 import { isHiddenAutomatedSession } from './session-visibility'
 import {
@@ -899,6 +902,79 @@ export async function getSessionMessagesWithCompact(
 
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
   return entries.map(normalizeQueuedCommandEntry).filter(isMessageOrSystemDisplayEntry)
+}
+
+export interface SessionMessagesPage {
+  messages: TransformedItem[]
+  nextCursor: string | null
+}
+
+const INITIAL_TAIL_FACTOR = 4
+const MAX_TAIL_LINES = 50_000
+
+/** Trailing (or `cursor`-before) display page. Parses only a tail of the JSONL. */
+export async function getSessionMessagesPage(
+  agentSlug: string,
+  sessionId: string,
+  opts: { limit: number; cursor?: string }
+): Promise<SessionMessagesPage> {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  if (!(await fileExists(jsonlPath))) {
+    return { messages: [], nextCursor: null }
+  }
+
+  const { limit, cursor } = opts
+  let maxLines = Math.min(MAX_TAIL_LINES, Math.max(limit * INITIAL_TAIL_FACTOR, 32))
+
+  while (true) {
+    const { lines, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines)
+    const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+    for (const line of lines) {
+      const parsed = parseJsonlLine<JsonlEntry>(line)
+      if (!parsed) continue
+      const normalized = normalizeQueuedCommandEntry(parsed)
+      if (
+        isMessageOrSystemDisplayEntry(normalized) &&
+        !('isMeta' in normalized && normalized.isMeta)
+      ) {
+        entries.push(normalized)
+      }
+    }
+    const transformed = transformMessages(entries)
+
+    if (cursor) {
+      const idx = transformed.findIndex((item) => item.id === cursor)
+      if (idx === -1 && !reachedStart && maxLines < MAX_TAIL_LINES) {
+        maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
+        continue
+      }
+      const end = idx === -1 ? 0 : idx
+      if (idx !== -1 && end < limit && !reachedStart && maxLines < MAX_TAIL_LINES) {
+        maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
+        continue
+      }
+      const start = Math.max(0, end - limit)
+      const messages = transformed.slice(start, end)
+      const hasOlder = messages.length > 0 && (!reachedStart || start > 0)
+      return {
+        messages,
+        nextCursor: hasOlder && messages[0] ? messages[0].id : null,
+      }
+    }
+
+    if (transformed.length < limit && !reachedStart && maxLines < MAX_TAIL_LINES) {
+      maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
+      continue
+    }
+    const messages = transformed.slice(-limit)
+    const hasOlder =
+      messages.length > 0 &&
+      (transformed.length > limit || (!reachedStart && messages.length === limit))
+    return {
+      messages,
+      nextCursor: hasOlder && messages[0] ? messages[0].id : null,
+    }
+  }
 }
 
 /**
