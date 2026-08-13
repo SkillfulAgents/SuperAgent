@@ -935,3 +935,139 @@ html[data-keyboard-open] [data-composer-footer] {
     display: none;
   }
 }
+
+/*
+  Tree tracer: rather than marking each running row with an indicator of its own,
+  the branch path carries the motion — a bright band running down the trunk, out
+  along each live branch as it passes, and across that row's own label.
+
+  The trunk is the LIST's own ::before, painted with a tall repeating tile so the
+  band's travel is one unbroken loop with no phase-matching between rows. The
+  branches are the per-row ::before elbows, and the labels are masked; both flash
+  as the band reaches them.
+
+  They stay in step through fixed geometry rather than measurement: every row on
+  this tree is one 16px line box plus the list's 4px gap, so branch N sits exactly
+  N pitches below the first and lights one --tree-tracer-step later. ActivityCard
+  writes each row's N into --tree-tracer-row and pins the animations to a shared
+  start time (useTracerPhaseLock), since a CSS animation's clock otherwise starts
+  whenever its row happens to go live. A row that wraps to a second line is taller
+  than one pitch, so branches below it flash early by that much.
+
+  Only rows marked data-tracer-live take part — a finished subagent or a pending
+  task keeps its resting branch as the band goes by. The trunk runs through all of
+  them: it is one element, and it stands for the turn rather than any single row.
+  The index still counts EVERY row, because the stagger is physical.
+*/
+.tree-tracer {
+  /* Travel per cycle. Longer than the tree usually is, so a single band is in
+     flight at a time; a tree taller than this shows a train of them. */
+  --tree-tracer-span: 200px;
+  --tree-tracer-cycle: 2.2s;
+  /* One row pitch as time: cycle × 20px pitch ÷ span. Keep these three in sync —
+     the branch flashes are positioned by multiplying step by the row index. */
+  --tree-tracer-step: 0.22s;
+}
+
+/* Ends where it started (one whole tile down), so the loop is seamless. */
+@keyframes tree-tracer-trunk {
+  from { background-position-y: 0; }
+  to { background-position-y: var(--tree-tracer-span); }
+}
+
+/* Bright as the band arrives, then back to the resting rail color for the rest
+   of the cycle. 12% ≈ the band's own depth as a fraction of the travel. */
+@keyframes tree-tracer-branch {
+  0% { border-top-color: hsl(var(--foreground) / 0.85); }
+  12%, 100% { border-top-color: hsl(var(--muted-foreground) / 0.25); }
+}
+
+@keyframes tree-tracer-shimmer {
+  /* One tile of travel, so the loop is seamless like the trunk's. */
+  from { -webkit-mask-position: -40px 0; mask-position: -40px 0; }
+  to { -webkit-mask-position: 380px 0; mask-position: 380px 0; }
+}
+
+.tree-tracer::before {
+  background-color: hsl(var(--muted-foreground) / 0.25);
+  /* Band sits at the top of the tile, centered 12px down — which is where the
+     first row's elbow is, so that branch flashes at cycle start with no offset. */
+  background-image: linear-gradient(
+    to bottom,
+    transparent 0px,
+    hsl(var(--foreground) / 0.85) 12px,
+    transparent 24px
+  );
+  background-repeat: repeat-y;
+  background-size: 100% var(--tree-tracer-span);
+  animation: tree-tracer-trunk var(--tree-tracer-cycle) linear infinite;
+  will-change: background-position;
+}
+
+.tree-tracer > li[data-tracer-live]::before {
+  animation: tree-tracer-branch var(--tree-tracer-cycle) linear infinite;
+  animation-delay: calc(var(--tree-tracer-row, 0) * var(--tree-tracer-step));
+}
+
+/*
+  The label picks the pulse up from its branch. Masked rather than recolored, so
+  the row's own colors survive — the mask only modulates alpha, leaving a mono
+  name and its muted description their own weights. Applied to each row's single
+  content wrapper; masking the <li> itself would sweep the branch pseudo-element
+  too, on top of the flash it already has.
+*/
+.tree-tracer > li[data-tracer-live] > * {
+  --tree-tracer-shimmer-tile: 420px;
+  /*
+    How far the text drops between passes. This is the ONE dial for how loud the
+    shimmer reads: a mask can only subtract, so the peak is pinned at the row's
+    normal appearance and prominence has to come from how far it falls away.
+    Lower = more obvious sweep, but a row still working sits dimmer between
+    passes than a finished row beside it, which is the cost of going much below
+    this.
+  */
+  --tree-tracer-shimmer-rest: 0.45;
+  /*
+    A narrow band — full strength at 28px, back to resting by 56px — reads as a
+    defined highlight travelling across the row. Widening it washes the whole
+    row up and down instead. The tile repeats, so a row wider than it shows a
+    second pass.
+  */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    rgba(0, 0, 0, var(--tree-tracer-shimmer-rest)) 0px,
+    rgba(0, 0, 0, 1) 28px,
+    rgba(0, 0, 0, var(--tree-tracer-shimmer-rest)) 56px,
+    rgba(0, 0, 0, var(--tree-tracer-shimmer-rest)) 420px
+  );
+  mask-image: linear-gradient(
+    to right,
+    rgba(0, 0, 0, var(--tree-tracer-shimmer-rest)) 0px,
+    rgba(0, 0, 0, 1) 28px,
+    rgba(0, 0, 0, var(--tree-tracer-shimmer-rest)) 56px,
+    rgba(0, 0, 0, var(--tree-tracer-shimmer-rest)) 420px
+  );
+  -webkit-mask-size: var(--tree-tracer-shimmer-tile) 100%;
+  mask-size: var(--tree-tracer-shimmer-tile) 100%;
+  -webkit-mask-repeat: repeat-x;
+  mask-repeat: repeat-x;
+  animation: tree-tracer-shimmer var(--tree-tracer-cycle) linear infinite;
+  animation-delay: calc(var(--tree-tracer-row, 0) * var(--tree-tracer-step));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tree-tracer::before {
+    background-image: none;
+    animation: none;
+  }
+
+  .tree-tracer > li::before {
+    animation: none;
+  }
+
+  .tree-tracer > li[data-tracer-live] > * {
+    -webkit-mask-image: none;
+    mask-image: none;
+    animation: none;
+  }
+}

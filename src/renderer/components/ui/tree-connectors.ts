@@ -63,3 +63,24 @@ export const ACTIVITY_TREE_CONNECTORS =
   '[&>li]:after:absolute [&>li]:after:-left-3 [&>li]:after:-top-1 [&>li]:after:bottom-0 ' +
   '[&>li]:after:border-l [&>li]:after:border-muted-foreground/25 ' +
   '[&>li:last-child]:after:bottom-auto [&>li:last-child]:after:h-3'
+
+/**
+ * The tracer: a bright band travels down the trunk and out along each live
+ * branch, then across that row's own label — the tree carries the "still
+ * working" signal so no row needs a spinner of its own.
+ *
+ * Compose on top of ACTIVITY_TREE_CONNECTORS. It swaps the per-row rail segments
+ * for ONE rail drawn on the list, which is what lets the band travel the whole
+ * path unbroken; the elbows carry over unchanged. The animation itself lives in
+ * `.tree-tracer` in globals.css, and only rows marked data-tracer-live take part.
+ *
+ * The single rail can use fixed offsets because every row on this tree is the
+ * same 16px line box: it starts -top-1 like the segments did, and stops
+ * bottom-2 — 8px up from the last row's bottom, which is exactly its elbow. A
+ * row that wraps to a second line (a subagent progress summary) is taller than
+ * 16px, so if it lands LAST the rail overshoots its elbow by that much.
+ */
+export const ACTIVITY_TREE_TRACER =
+  'tree-tracer relative ' +
+  'before:absolute before:left-3 before:-top-1 before:bottom-2 before:w-px ' +
+  '[&>li]:after:hidden'
