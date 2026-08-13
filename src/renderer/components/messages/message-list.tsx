@@ -397,12 +397,25 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
   }, [discardedCommandUuids, pendingUserMessages, peerUserMessages, sessionId, draftsStore, onPendingMessageAppeared])
 
-  // Once the session goes idle, pending copies a successful fresh transcript
-  // still lacks are treated as undelivered. Restore their text so the user can
-  // resend, and remove the ghosts; drop peer ghosts (we can't restore another
-  // user's text — their own client restores it). The cached query can lag a
+  // Peer ghosts need no transcript evidence — we cannot restore another
+  // user's text. Drop them on the same idle grace, on their own timer, so
+  // clearing them cannot cancel the local rescue below.
+  useEffect(() => {
+    if (isActive || peerUserMessages.length === 0) return
+    const timerId = setTimeout(() => {
+      clearPeerUserMessages(sessionId)
+    }, 1500)
+    return () => clearTimeout(timerId)
+  }, [peerUserMessages, isActive, sessionId])
+
+  // Once the session goes idle, pending copies that a successful fresh
+  // transcript still lacks are treated as undelivered. Restore their text so
+  // the user can resend, and remove the ghosts. The cached query can lag a
   // successful POST, so absence there is not proof of loss. A failed refresh
   // is missing evidence: leave the optimistic copy and do not restore.
+  // Messages that were delivered still clear via the materialize effect above
+  // as the post-idle refetch lands. While the agent is active, queued ghosts
+  // may wait minutes.
   //
   // EXCEPT: a non-queued pending without a uuid has its POST still in flight
   // — commonly a send into a session whose container is waking, where the
@@ -413,39 +426,37 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // is actually mid-delivery — it then lands in the transcript AND sits in
   // the composer, baiting a duplicate resend. Leave those pending.
   useEffect(() => {
-    if (isActive || ((pendingUserMessages?.length ?? 0) === 0 && peerUserMessages.length === 0)) return
+    if (isActive) return
     const undelivered = (pendingUserMessages ?? []).filter((p) => p.queued || p.uuid)
+    if (undelivered.length === 0) return
     let cancelled = false
     const timerId = setTimeout(() => {
       void (async () => {
-        if (undelivered.length > 0) {
-          const result = await refetch()
-          if (cancelled) return
-          if (!result.isError && !result.error && result.data != null) {
-            const claimed = claimedMessageIdsRef.current
-            const stillMissing: PendingMessage[] = []
-            for (const pending of undelivered) {
-              if (matchPendingMessage(pending, result.data, claimed)) {
-                onPendingMessageAppeared?.(pending.localId)
-              } else {
-                stillMissing.push(pending)
-              }
-            }
-            if (stillMissing.length > 0) {
-              const restored = stillMissing.map((p) => p.text.trim()).filter(Boolean)
-              appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
-              for (const pending of stillMissing) onPendingMessageAppeared?.(pending.localId)
+        const result = await refetch()
+        if (cancelled) return
+        if (!result.isError && !result.error && result.data != null) {
+          const claimed = claimedMessageIdsRef.current
+          const stillMissing: PendingMessage[] = []
+          for (const pending of undelivered) {
+            if (matchPendingMessage(pending, result.data, claimed)) {
+              onPendingMessageAppeared?.(pending.localId)
+            } else {
+              stillMissing.push(pending)
             }
           }
+          if (stillMissing.length > 0) {
+            const restored = stillMissing.map((p) => p.text.trim()).filter(Boolean)
+            appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
+            for (const pending of stillMissing) onPendingMessageAppeared?.(pending.localId)
+          }
         }
-        if (!cancelled) clearPeerUserMessages(sessionId)
       })()
     }, 1500)
     return () => {
       cancelled = true
       clearTimeout(timerId)
     }
-  }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore, refetch])
+  }, [pendingUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore, refetch])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentBodyRef = useRef<HTMLDivElement>(null)

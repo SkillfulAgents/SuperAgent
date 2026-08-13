@@ -1296,10 +1296,99 @@ describe('MessageList', () => {
         await vi.advanceTimersByTimeAsync(1500)
       })
 
+      expect(mockMessagesData.refetch).toHaveBeenCalled()
       expect(onAppeared).not.toHaveBeenCalled()
       expect(screen.getByTestId('draft-probe').textContent).toBe('')
       expect(screen.getByTestId('pending-user-message')).toHaveTextContent('still pending')
     } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears peer ghosts at idle without restarting the local transcript refresh', async () => {
+    vi.useFakeTimers()
+    try {
+      const onAppeared = vi.fn()
+      let resolveRefetch: (value: {
+        data: ApiMessageOrBoundary[]
+        error: Error | null
+        isError: boolean
+      }) => void = () => {}
+      mockMessagesData.data = []
+      mockMessagesData.refetch = vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveRefetch = resolve
+          }),
+      )
+      mockStreamState.isActive = false
+      mockStreamState.peerUserMessages = [
+        { uuid: 'peer-1', receivedAt: Date.now(), content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice' } },
+      ]
+      mockClearPeerUserMessages.mockImplementation(() => {
+        mockStreamState.peerUserMessages = []
+      })
+
+      const pending = [{ localId: 'l1', uuid: 'server-uuid', text: 'accepted prompt', sentAt: Date.now() }]
+      const DraftProbe = () => {
+        const [draft] = useDraft<string>('session:s-1')
+        return <div data-testid="draft-probe">{draft ?? ''}</div>
+      }
+      const { rerender } = renderWithProviders(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={pending}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500)
+      })
+
+      expect(mockClearPeerUserMessages).toHaveBeenCalledWith('s-1')
+      expect(mockMessagesData.refetch).toHaveBeenCalledTimes(1)
+
+      rerender(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={pending}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500)
+      })
+
+      expect(mockMessagesData.refetch).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        resolveRefetch({
+          data: [
+            createUserMessage({
+              id: 'server-uuid',
+              content: { text: 'accepted prompt' },
+              createdAt: new Date(),
+            }),
+          ],
+          error: null,
+          isError: false,
+        })
+      })
+
+      expect(onAppeared).toHaveBeenCalledWith('l1')
+      expect(screen.getByTestId('draft-probe').textContent).toBe('')
+    } finally {
+      mockClearPeerUserMessages.mockReset()
       vi.useRealTimers()
     }
   })
