@@ -3509,6 +3509,11 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
   })
 
+  afterEach(() => {
+    delete process.env.MESSAGES_PAGE_LIMIT
+    delete process.env.MESSAGES_PAGE_OLDER_LIMIT
+  })
+
   it('returns a cursor envelope when limit is set', async () => {
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
       messages: [
@@ -3545,6 +3550,36 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     const res = await getReq(app, `${URL}?limit=0`)
     expect(res.status).toBe(400)
     expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('caps first-page limit to MESSAGES_PAGE_LIMIT', async () => {
+    process.env.MESSAGES_PAGE_LIMIT = '100'
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+    })
+
+    const res = await getReq(app, `${URL}?limit=300`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      limit: 100,
+      cursor: undefined,
+    })
+  })
+
+  it('caps older-page limit to MESSAGES_PAGE_OLDER_LIMIT', async () => {
+    process.env.MESSAGES_PAGE_OLDER_LIMIT = '80'
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+    })
+
+    const res = await getReq(app, `${URL}?limit=200&cursor=m1`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      limit: 80,
+      cursor: 'm1',
+    })
   })
 })
 

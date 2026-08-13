@@ -13,7 +13,7 @@ import {
   injectDashboardRuntime,
 } from '../dashboard-runtime'
 import { parsePagination } from '../pagination'
-import { MESSAGES_PAGE_MAX_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
+import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit } from '@shared/lib/messages-page'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole } from '../middleware/auth'
 import {
   listAgentsWithStatus,
@@ -1831,7 +1831,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         return c.json({ error: 'Invalid pagination' }, 400)
       }
       const page = await getSessionMessagesPage(agentSlug, sessionId, {
-        limit: parsed.data.limit ?? MESSAGES_PAGE_OLDER_LIMIT,
+        limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
         cursor: parsed.data.cursor,
       })
       await annotateAndRecoverMessages(page.messages, agentSlug, sessionId)
