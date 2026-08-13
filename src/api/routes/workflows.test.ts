@@ -16,7 +16,7 @@ const SID = 'd63a9cbc-2f5e-44dd-8017-231ac99bef35'
 const RUN = 'wf_818f758a-c17'
 
 // Auth is a passthrough; getAgentSessionsDir points at the real fixture so the
-// routes read genuine on-disk workflow artifacts (readJsonlFile stays real).
+// routes read genuine on-disk workflow artifacts (streamed display reads stay real).
 const mockSessionsDir = { value: FIXTURE_ROOT }
 vi.mock('../middleware/auth', () => ({
   AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),

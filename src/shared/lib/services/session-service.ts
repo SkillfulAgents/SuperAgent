@@ -398,6 +398,70 @@ function isMessageEntry(entry: JsonlEntry): entry is JsonlMessageEntry {
   return entry.type === 'user' || entry.type === 'assistant'
 }
 
+function isMessageOrSystemDisplayEntry(
+  entry: JsonlEntry
+): entry is JsonlMessageEntry | JsonlSystemEntry {
+  if (entry.type === 'user' || entry.type === 'assistant') return true
+  if (entry.type === 'system') {
+    const subtype = (entry as JsonlSystemEntry).subtype
+    return subtype === 'compact_boundary' || subtype === 'memory_recall' || subtype === 'informational'
+  }
+  return false
+}
+
+/** Per-field cap for display reads. Oversized tool_result rows are the OOM vector. */
+export const DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS = 32_768
+
+function capDisplayString(value: string): string {
+  if (value.length <= DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS) return value
+  return `${value.slice(0, DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS)}\n…[truncated ${value.length - DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS} chars]`
+}
+
+function capDisplayValue(value: unknown, depth = 0): unknown {
+  if (depth > 8 || value == null) return value
+  if (typeof value === 'string') return capDisplayString(value)
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      value[i] = capDisplayValue(value[i], depth + 1)
+    }
+    return value
+  }
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    for (const key of Object.keys(obj)) {
+      obj[key] = capDisplayValue(obj[key], depth + 1)
+    }
+    return obj
+  }
+  return value
+}
+
+async function forEachTranscriptEntry(
+  jsonlPath: string,
+  visit: (entry: JsonlEntry) => void
+): Promise<void> {
+  try {
+    for await (const raw of streamJsonlFile<JsonlEntry>(jsonlPath)) {
+      visit(normalizeQueuedCommandEntry(raw))
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+}
+
+/** Stream a transcript for UI/API display, capping oversized string fields. */
+export async function readDisplayTranscript(
+  jsonlPath: string
+): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
+  const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+  await forEachTranscriptEntry(jsonlPath, (entry) => {
+    if (!isMessageOrSystemDisplayEntry(entry)) return
+    entries.push(capDisplayValue(entry) as JsonlMessageEntry | JsonlSystemEntry)
+  })
+  return entries
+}
+
 /**
  * Convert a `queued_command` attachment entry into a synthetic user message
  * entry. The CLI records user messages that arrive mid-turn (queued/steering
@@ -861,27 +925,11 @@ export async function getSessionMessages(
   sessionId: string
 ): Promise<JsonlMessageEntry[]> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-
-  if (!(await fileExists(jsonlPath))) {
-    return []
-  }
-
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-  return entries.map(normalizeQueuedCommandEntry).filter(isMessageEntry)
-}
-
-/**
- * Check if a JSONL entry is a message or compact boundary (for display)
- */
-function isMessageOrSystemDisplayEntry(
-  entry: JsonlEntry
-): entry is JsonlMessageEntry | JsonlSystemEntry {
-  if (entry.type === 'user' || entry.type === 'assistant') return true
-  if (entry.type === 'system') {
-    const subtype = (entry as JsonlSystemEntry).subtype
-    return subtype === 'compact_boundary' || subtype === 'memory_recall' || subtype === 'informational'
-  }
-  return false
+  const messages: JsonlMessageEntry[] = []
+  await forEachTranscriptEntry(jsonlPath, (entry) => {
+    if (isMessageEntry(entry)) messages.push(entry)
+  })
+  return messages
 }
 
 /**
@@ -891,14 +939,7 @@ export async function getSessionMessagesWithCompact(
   agentSlug: string,
   sessionId: string
 ): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-
-  if (!(await fileExists(jsonlPath))) {
-    return []
-  }
-
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-  return entries.map(normalizeQueuedCommandEntry).filter(isMessageOrSystemDisplayEntry)
+  return readDisplayTranscript(getSessionJsonlPath(agentSlug, sessionId))
 }
 
 /**

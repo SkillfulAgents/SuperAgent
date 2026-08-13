@@ -655,6 +655,17 @@ describe('readJsonlFile', () => {
     const result = await readJsonlFile(path.join(testDir, 'nonexistent.jsonl'))
     expect(result).toEqual([])
   })
+
+  it('parses a large file without requiring a full-string split', async () => {
+    const filePath = path.join(testDir, 'many.jsonl')
+    const lines = Array.from({ length: 2000 }, (_, i) => JSON.stringify({ id: i }))
+    await fs.promises.writeFile(filePath, lines.join('\n'))
+
+    const result = await readJsonlFile<{ id: number }>(filePath)
+    expect(result).toHaveLength(2000)
+    expect(result[0]).toEqual({ id: 0 })
+    expect(result[1999]).toEqual({ id: 1999 })
+  })
 })
 
 describe('streamJsonlFile', () => {

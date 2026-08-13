@@ -14,6 +14,9 @@ import {
   listSessionsByIds,
   getSession,
   getSessionMessages,
+  getSessionMessagesWithCompact,
+  readDisplayTranscript,
+  DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS,
   deleteSession,
   deleteSessionsBatch,
   readSessionMetadata,
@@ -737,6 +740,83 @@ describe('session-service', () => {
       expect(queued.uuid).toBe('queue-source-uuid')
       expect(queued.timestamp).toBe('2025-01-01T00:01:00.000Z')
       expect(queued.message.content).toEqual([{ type: 'text', text: 'Queued mid-turn message' }])
+    })
+  })
+
+  describe('getSessionMessagesWithCompact', () => {
+    it('returns empty array for a missing transcript', async () => {
+      await createSessionsDir('test-agent')
+      expect(await getSessionMessagesWithCompact('test-agent', 'missing')).toEqual([])
+      expect(await readDisplayTranscript('/no/such/file.jsonl')).toEqual([])
+    })
+
+    it('keeps compact_boundary system entries', async () => {
+      await createSessionFile('test-agent', 'compact-session', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          message: { role: 'user', content: 'hello' },
+        },
+        {
+          type: 'system',
+          uuid: 'c1',
+          timestamp: '2026-01-01T00:00:01.000Z',
+          subtype: 'compact_boundary',
+          compactMetadata: { trigger: 'auto', preTokens: 12 },
+        },
+        { type: 'file-history-snapshot', messageId: '123', snapshot: {} },
+      ])
+
+      const entries = await getSessionMessagesWithCompact('test-agent', 'compact-session')
+      expect(entries.map((e) => e.type)).toEqual(['user', 'system'])
+      expect(entries[1]).toMatchObject({ subtype: 'compact_boundary' })
+    })
+
+    it('caps oversized tool_result strings on display reads only', async () => {
+      const huge = 'x'.repeat(DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS + 4000)
+      await createSessionFile('test-agent', 'huge-session', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 't1', content: huge }],
+          },
+          toolUseResult: { stdout: huge, stderr: '', interrupted: false, isImage: false },
+        },
+      ])
+
+      const display = await getSessionMessagesWithCompact('test-agent', 'huge-session')
+      const displayMsg = display[0] as {
+        message: { content: Array<{ content: string }> }
+        toolUseResult?: { stdout: string }
+      }
+      expect(displayMsg.message.content[0].content.length).toBeLessThan(huge.length)
+      expect(displayMsg.message.content[0].content).toContain('[truncated')
+      expect(displayMsg.toolUseResult?.stdout.length).toBeLessThan(huge.length)
+      expect(displayMsg.toolUseResult?.stdout).toContain('[truncated')
+
+      const full = await getSessionMessages('test-agent', 'huge-session')
+      const fullContent = full[0].message.content as Array<{ content: string }>
+      expect(fullContent[0].content).toBe(huge)
+      expect(full[0].toolUseResult?.stdout).toBe(huge)
+    })
+
+    it('leaves strings at the cap unchanged', async () => {
+      const exact = 'y'.repeat(DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS)
+      await createSessionFile('test-agent', 'exact-session', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          message: { role: 'user', content: exact },
+        },
+      ])
+
+      const display = await getSessionMessagesWithCompact('test-agent', 'exact-session')
+      expect((display[0] as { message: { content: string } }).message.content).toBe(exact)
     })
   })
 

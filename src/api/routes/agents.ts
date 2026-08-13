@@ -55,6 +55,7 @@ import {
   updateSessionName,
   registerSession,
   getSessionMessagesWithCompact,
+  readDisplayTranscript,
   getSession,
   getSessionMetadata,
   sessionExists,
@@ -67,7 +68,7 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
@@ -1882,11 +1883,8 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
     const sessionsDir = getAgentSessionsDir(agentSlug)
     const subagentJsonlPath = path.join(sessionsDir, sessionId, 'subagents', `agent-${subagentId}.jsonl`)
 
-    const entries = await readJsonlFile(subagentJsonlPath) as any[]
-    const messageEntries = entries.filter(
-      (e) => e.type === 'user' || e.type === 'assistant'
-    )
-    const transformed = transformMessages(messageEntries)
+    const entries = await readDisplayTranscript(subagentJsonlPath)
+    const transformed = transformMessages(entries)
     return c.json(transformed)
   } catch (error) {
     console.error('Failed to fetch subagent messages:', error)

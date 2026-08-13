@@ -287,6 +287,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionName: vi.fn(),
   registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(),
+  readDisplayTranscript: vi.fn().mockResolvedValue([]),
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true),

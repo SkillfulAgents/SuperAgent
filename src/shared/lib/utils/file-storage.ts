@@ -342,16 +342,18 @@ export function parseJsonl<T = unknown>(content: string): T[] {
   return results
 }
 
-/**
- * Read and parse a JSONL file
- * Returns empty array if file doesn't exist
- */
+/** Stream-parse JSONL. Missing file → []. Peak cost is one row plus the result array. */
 export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]> {
-  const content = await readFileOrNull(filePath)
-  if (content === null) {
-    return []
+  const results: T[] = []
+  try {
+    for await (const item of streamJsonlFile<T>(filePath)) {
+      results.push(item)
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
   }
-  return parseJsonl<T>(content)
+  return results
 }
 
 const NEWLINE_BYTE = 0x0a

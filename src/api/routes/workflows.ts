@@ -1,7 +1,8 @@
 import { Hono } from 'hono'
 import * as path from 'path'
 import { AgentRead } from '../middleware/auth'
-import { getAgentSessionsDir, readJsonlFile } from '@shared/lib/utils/file-storage'
+import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
+import { readDisplayTranscript } from '@shared/lib/services/session-service'
 import { transformMessages } from '@shared/lib/utils/message-transform'
 import { buildWorkflowTree } from '@shared/lib/workflows/workflow-tree'
 
@@ -62,9 +63,8 @@ workflowRoutes.get(
         `agent-${workflowAgentId}.jsonl`
       )
 
-      const entries = (await readJsonlFile(jsonlPath)) as any[]
-      const messageEntries = entries.filter((e) => e.type === 'user' || e.type === 'assistant')
-      const transformed = transformMessages(messageEntries)
+      const entries = await readDisplayTranscript(jsonlPath)
+      const transformed = transformMessages(entries)
       return c.json(transformed)
     } catch (error) {
       console.error('Failed to fetch workflow agent messages:', error)
