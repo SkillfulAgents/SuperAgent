@@ -100,25 +100,35 @@ describe('AgentActivityIndicator', () => {
     mockStreamState.error = 'API rate limit exceeded'
     mockStreamState.apiErrorCode = 'rate_limit'
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('LLM Provider Error')).toBeInTheDocument()
-    expect(screen.getByText('API rate limit exceeded')).toBeInTheDocument()
+    // The shared RequestError banner, labelled so the provider is named.
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('LLM Provider Error: API rate limit exceeded')
+    // The hint is folded away until asked for — clicking the banner opens it.
+    expect(screen.queryByText(/external LLM provider API/)).not.toBeInTheDocument()
+    act(() => { screen.getByTestId('provider-error-card').click() })
     expect(screen.getByText(/external LLM provider API/)).toBeInTheDocument()
-    expect(screen.getByTestId('provider-error-card')).toHaveClass('bg-amber-50', 'dark:bg-amber-950')
-    expect(screen.getByTestId('provider-error-card')).not.toHaveClass('bg-amber-500/10')
+    expect(screen.getByTestId('provider-error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
+    // Opaque in dark: the transcript scrolls behind this in the overlay footer.
+    expect(screen.getByTestId('provider-error-card')).not.toHaveClass('dark:bg-red-950/30')
+    // Selectable despite the app-wide user-select: none — errors get copied.
+    expect(screen.getByTestId('provider-error-card')).toHaveClass('select-text', '[&_*]:select-text')
   })
 
   it('shows generic error alert when no apiErrorCode', () => {
     mockStreamState.error = 'The agent process was terminated unexpectedly.'
     mockStreamState.apiErrorCode = null
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('Error')).toBeInTheDocument()
-    expect(screen.getByText('The agent process was terminated unexpectedly.')).toBeInTheDocument()
+    expect(screen.getByTestId('error-card')).toHaveTextContent('Error: The agent process was terminated unexpectedly.')
+    expect(screen.queryByText('Send another message to retry.')).not.toBeInTheDocument()
+    act(() => { screen.getByTestId('error-card').click() })
     expect(screen.getByText('Send another message to retry.')).toBeInTheDocument()
-    expect(screen.getByTestId('error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
-    expect(screen.getByTestId('error-card')).not.toHaveClass('bg-destructive/10')
+    // ...and folds back up.
+    act(() => { screen.getByTestId('error-card').click() })
+    expect(screen.queryByText('Send another message to retry.')).not.toBeInTheDocument()
     expect(screen.getByTestId('error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
     // Opaque in dark: the transcript scrolls behind this in the overlay footer.
     expect(screen.getByTestId('error-card')).not.toHaveClass('dark:bg-red-950/30')
+    // Selectable despite the app-wide user-select: none — errors get copied.
+    expect(screen.getByTestId('error-card')).toHaveClass('select-text', '[&_*]:select-text')
   })
 
   it('shows "Working..." status when active with no todo', () => {
