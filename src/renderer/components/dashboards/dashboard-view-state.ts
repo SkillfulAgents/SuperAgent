@@ -13,6 +13,14 @@ export type DashboardViewState =
       slow: boolean
       pollFast: boolean
     }
+  | {
+      kind: 'installing'
+      message: string
+      detail?: string
+      showSpinner: boolean
+      slow: boolean
+      pollFast: boolean
+    }
   | { kind: 'crashed'; message: string }
   | { kind: 'missing'; message: string }
   | { kind: 'ready' }
@@ -20,7 +28,7 @@ export type DashboardViewState =
 export type DashboardViewStateInput = {
   agentRunning: boolean
   artifactsLoaded: boolean
-  dashboard: Pick<ArtifactInfo, 'status'> | undefined
+  dashboard: Pick<ArtifactInfo, 'status' | 'startupPhase' | 'firstRun'> | undefined
   canStart: boolean
   startFailed: boolean
   waitElapsedMs: number
@@ -61,6 +69,16 @@ export function resolveDashboardViewState(input: DashboardViewStateInput): Dashb
         message: 'Agent is not running. Ask an admin to start it.',
       }
     }
+    if (dashboard?.firstRun) {
+      return {
+        kind: 'installing',
+        message: 'Preparing dashboard for first use…',
+        detail: 'Installing dependencies. This only happens once.',
+        showSpinner: true,
+        slow: false,
+        pollFast: true,
+      }
+    }
     return {
       kind: 'agent-starting',
       message: 'Starting agent…',
@@ -84,6 +102,34 @@ export function resolveDashboardViewState(input: DashboardViewStateInput): Dashb
 
   if (dashboard.status === 'running') {
     return { kind: 'ready' }
+  }
+
+  if (
+    dashboard.status === 'starting'
+    && dashboard.startupPhase === 'installing-dependencies'
+  ) {
+    if (slow) {
+      return {
+        kind: 'installing',
+        message: 'Dependency installation is taking longer than expected.',
+        showSpinner: false,
+        slow: true,
+        pollFast: false,
+      }
+    }
+
+    return {
+      kind: 'installing',
+      message: dashboard.firstRun
+        ? 'Preparing dashboard for first use…'
+        : 'Installing dashboard dependencies…',
+      ...(dashboard.firstRun
+        ? { detail: 'Installing dependencies. This only happens once.' }
+        : {}),
+      showSpinner: true,
+      slow: false,
+      pollFast: true,
+    }
   }
 
   // `starting` and queued `stopped` are both transient from outside.

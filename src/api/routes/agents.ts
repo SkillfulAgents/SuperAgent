@@ -5805,6 +5805,13 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
           if (!d) { throw new Error('Dashboard not found.'); }
           if (d.status === 'crashed') { throw new Error('Dashboard crashed.'); }
           if (d.status === 'running') { setTitle(d.name); return; }
+          if (d.status === 'starting' && d.startupPhase === 'installing-dependencies') {
+            statusEl.textContent = d.firstRun
+              ? 'Preparing dashboard for first use…'
+              : 'Installing dashboard dependencies…';
+          } else {
+            statusEl.textContent = 'Starting dashboard…';
+          }
         }
         await new Promise(r => setTimeout(r, 1000));
       }

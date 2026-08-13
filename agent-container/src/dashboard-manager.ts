@@ -15,6 +15,10 @@ const RESTART_WINDOW_MS = 5 * 60 * 1000 // 5 minutes
 // Boot screenshots spawn a Chromium per dashboard; deferring them keeps the
 // container's few CPUs free for dashboard/server startup while users wait.
 const BOOT_SCREENSHOT_DELAY_MS = 10_000
+// Bun defaults to 48 concurrent network requests. Under Lima's virtualized
+// network that causes small package downloads to stall in long waves; eight
+// keeps the pipeline full without overwhelming the VM's network path.
+export const BUN_INSTALL_NETWORK_CONCURRENCY = 8
 export const SLUG_REGEX = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 
 // dashboard.log is append-only across every start/crash/restart; without a
@@ -92,6 +96,7 @@ export function getDashboardBasePath(
 }
 
 export type DashboardStatus = 'running' | 'stopped' | 'crashed' | 'starting'
+export type DashboardStartupPhase = 'installing-dependencies' | 'starting-server'
 export type DashboardUpstreamPathMode = 'stripped' | 'mounted'
 
 export function getDashboardValidationUrl(
@@ -111,6 +116,8 @@ interface DashboardInfo {
   upstreamPathMode: DashboardUpstreamPathMode
   port: number
   status: DashboardStatus
+  startupPhase: DashboardStartupPhase
+  firstRun: boolean
   process: ChildProcess | null
   restartCount: number
   restartTimestamps: number[]
@@ -251,6 +258,7 @@ class DashboardManager {
     const port = existing?.port ?? this.nextPort++
     const dashboardDir = path.join(ARTIFACTS_DIR, slug)
     const logPath = path.join(dashboardDir, 'dashboard.log')
+    const firstRun = !fs.existsSync(path.join(dashboardDir, 'node_modules'))
 
     const info: DashboardInfo = {
       slug,
@@ -259,6 +267,8 @@ class DashboardManager {
       upstreamPathMode,
       port,
       status: 'starting',
+      startupPhase: 'starting-server',
+      firstRun,
       process: null,
       restartCount: existing?.restartCount ?? 0,
       restartTimestamps: existing?.restartTimestamps ?? [],
@@ -281,9 +291,15 @@ class DashboardManager {
 
       // Run bun install: always when forced (deps may have changed), else
       // only if node_modules is missing or package.json is newer than it
-      await this.runBunInstallIfNeeded(dashboardDir, info.logStream, forceInstall)
+      await this.runBunInstallIfNeeded(
+        dashboardDir,
+        info.logStream,
+        forceInstall,
+        () => { info.startupPhase = 'installing-dependencies' },
+      )
 
       // Start the dashboard server
+      info.startupPhase = 'starting-server'
       const dashboardBasePath = getDashboardBasePath(slug)
       const proc = spawn('bun', ['run', 'start'], {
         cwd: dashboardDir,
@@ -361,7 +377,8 @@ class DashboardManager {
   private async runBunInstallIfNeeded(
     dir: string,
     logStream: fs.WriteStream | undefined,
-    force: boolean
+    force: boolean,
+    onInstallStart: () => void,
   ): Promise<void> {
     if (!force) {
       const nodeModules = path.join(dir, 'node_modules')
@@ -379,6 +396,7 @@ class DashboardManager {
       // Boot-path install with a lockfile present: try --frozen-lockfile first
       // so the install is resolution-free and deterministic. If the lockfile
       // is out of sync with package.json, fall back to a plain install.
+      onInstallStart()
       if (this.hasLockfile(dir)) {
         try {
           return await this.runBunInstall(dir, logStream, ['--frozen-lockfile'])
@@ -386,6 +404,8 @@ class DashboardManager {
           logStream?.write('[DashboardManager] frozen-lockfile install failed, retrying without\n')
         }
       }
+    } else {
+      onInstallStart()
     }
     // Forced (agent-initiated) or no/stale lockfile: plain install, which
     // resolves and updates the lockfile as needed.
@@ -405,10 +425,14 @@ class DashboardManager {
     extraArgs: string[] = []
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const proc = spawn('bun', ['install', ...extraArgs], {
-        cwd: dir,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
+      const proc = spawn(
+        'bun',
+        ['install', `--network-concurrency=${BUN_INSTALL_NETWORK_CONCURRENCY}`, ...extraArgs],
+        {
+          cwd: dir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      )
 
       let stderr = ''
       proc.stdout?.on('data', (chunk) => {
@@ -488,6 +512,8 @@ class DashboardManager {
     description: string
     status: DashboardStatus
     port: number
+    startupPhase?: DashboardStartupPhase
+    firstRun?: boolean
   }> {
     const result: Array<{
       slug: string
@@ -495,6 +521,8 @@ class DashboardManager {
       description: string
       status: DashboardStatus
       port: number
+      startupPhase?: DashboardStartupPhase
+      firstRun?: boolean
     }> = []
 
     // Include tracked dashboards
@@ -505,6 +533,9 @@ class DashboardManager {
         description: info.description,
         status: info.status,
         port: info.port,
+        ...(info.status === 'starting'
+          ? { startupPhase: info.startupPhase, firstRun: info.firstRun }
+          : {}),
       })
     }
 

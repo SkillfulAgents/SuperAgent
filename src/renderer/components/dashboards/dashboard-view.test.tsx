@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   agentSlug: 'agent',
   agentStatus: 'running',
   dashboardStatus: 'crashed',
+  dashboardStartupPhase: undefined as undefined | 'installing-dependencies' | 'starting-server',
+  dashboardFirstRun: undefined as boolean | undefined,
   start: {
     mutate: vi.fn(),
     mutateAsync: vi.fn(),
@@ -41,6 +43,8 @@ vi.mock('@renderer/hooks/use-artifacts', () => ({
       description: '',
       status: mocks.dashboardStatus,
       port: 0,
+      startupPhase: mocks.dashboardStartupPhase,
+      firstRun: mocks.dashboardFirstRun,
     }],
   }),
 }))
@@ -84,6 +88,8 @@ describe('DashboardView restart', () => {
     mocks.agentSlug = 'agent'
     mocks.agentStatus = 'running'
     mocks.dashboardStatus = 'crashed'
+    mocks.dashboardStartupPhase = undefined
+    mocks.dashboardFirstRun = undefined
     mocks.start.mutateAsync.mockResolvedValue({})
   })
 
@@ -112,6 +118,17 @@ describe('DashboardView restart', () => {
     expect(mocks.start.mutateAsync).toHaveBeenCalledOnce()
   })
 
+  it('renders the first-run dependency installation state', () => {
+    mocks.dashboardStatus = 'starting'
+    mocks.dashboardStartupPhase = 'installing-dependencies'
+    mocks.dashboardFirstRun = true
+
+    render(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
+
+    expect(screen.getByText('Preparing dashboard for first use…')).toBeInTheDocument()
+    expect(screen.getByText('Installing dependencies. This only happens once.')).toBeInTheDocument()
+  })
+
   it('shows a running dashboard without waiting for the iframe load event', () => {
     mocks.dashboardStatus = 'running'
     const frame = () => document.querySelector('iframe')
@@ -135,6 +152,18 @@ describe('DashboardView restart', () => {
     expect(waiting()).toBeNull()
   })
 
+  it('shows the toolbar spinner until the first iframe document loads', () => {
+    mocks.dashboardStatus = 'running'
+    render(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
+    const frame = document.querySelector('iframe')!
+
+    expect(screen.getByRole('button', { name: 'Loading dashboard' })).toBeDisabled()
+
+    fireEvent.load(frame)
+
+    expect(screen.getByRole('button', { name: 'Refresh dashboard' })).not.toBeDisabled()
+  })
+
   it('uses the canonical agent id for the mounted dashboard URL', () => {
     mocks.agentSlug = 'abc1234567'
     mocks.dashboardStatus = 'running'
@@ -152,6 +181,7 @@ describe('DashboardView restart', () => {
     mocks.dashboardStatus = 'running'
     render(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
     const frame = document.querySelector('iframe')!
+    fireEvent.load(frame)
 
     await userEvent.click(screen.getByRole('button', { name: 'Refresh dashboard' }))
 
