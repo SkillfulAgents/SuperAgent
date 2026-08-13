@@ -233,12 +233,13 @@ describe('DashboardManager log stream lifecycle', () => {
   afterEach(async () => {
     await manager.stopAll()
     delete process.env.ARTIFACTS_DIR
+    delete process.env.SUPERAGENT_AGENT_ID
     spawnHolder.impl = null
     vi.restoreAllMocks()
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
 
-  /** Scaffold a dashboard dir whose node_modules is fresh (skips bun install). */
+  /** Scaffold a dashboard with no direct deps so boot preflight skips install. */
   async function scaffoldDashboard(packageFields: Record<string, unknown> = {}): Promise<string> {
     const slug = `dash-${++slugCounter}`
     const dir = path.join(testDir, slug)
@@ -247,10 +248,16 @@ describe('DashboardManager log stream lifecycle', () => {
       path.join(dir, 'package.json'),
       JSON.stringify({ name: slug, scripts: { start: 'true' }, ...packageFields })
     )
-    // node_modules must be at least as new as package.json to skip install
-    const future = new Date(Date.now() + 60_000)
-    await fs.promises.utimes(path.join(dir, 'node_modules'), future, future)
     return slug
+  }
+
+  function writeInstalledPackage(dir: string, pkgName: string): void {
+    const pkgDir = path.join(dir, 'node_modules', ...pkgName.split('/'))
+    fs.mkdirSync(pkgDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: pkgName, version: '1.0.0' }),
+    )
   }
 
   it('publishes a precise host event after a dashboard screenshot succeeds', async () => {
@@ -382,22 +389,29 @@ describe('DashboardManager log stream lifecycle', () => {
 
   describe('install semantics', () => {
     /** Record every spawn; auto-exit `bun install` procs with queued codes. */
-    function recordSpawns(installExitCodes: number[]) {
+    function recordSpawns(
+      installExitCodes: number[],
+      onInstall?: (cwd: string) => void,
+    ) {
       const spawns: Array<{ command: string; args: string[] }> = []
-      spawnHolder.impl = (command, args) => {
+      spawnHolder.impl = (_command, args, options) => {
         const proc = new FakeChildProcess()
         procs.push(proc)
-        spawns.push({ command, args })
+        spawns.push({ command: 'bun', args })
         if (args[0] === 'install') {
           const code = installExitCodes.shift() ?? 0
-          setImmediate(() => proc.exit(code))
+          const cwd = (options as { cwd?: string }).cwd ?? ''
+          setImmediate(() => {
+            if (code === 0) onInstall?.(cwd)
+            proc.exit(code)
+          })
         }
         return proc
       }
       return spawns
     }
 
-    it('default start runs bun install even when node_modules is fresh', async () => {
+    it('default start runs bun install even when install preflight would pass', async () => {
       const slug = await scaffoldDashboard()
       const spawns = recordSpawns([0])
 
@@ -411,13 +425,23 @@ describe('DashboardManager log stream lifecycle', () => {
     })
 
     it('publishes a distinct first-run phase while dependencies install', async () => {
-      const slug = await scaffoldDashboard()
-      await fs.promises.rm(path.join(testDir, slug, 'node_modules'), { recursive: true })
+      const slug = await scaffoldDashboard({ dependencies: { lodash: '1.0.0' } })
+      const dir = path.join(testDir, slug)
+      await fs.promises.rm(path.join(dir, 'node_modules'), { recursive: true })
+      await fs.promises.writeFile(path.join(dir, 'bun.lock'), '{}')
       let installProc: FakeChildProcess | undefined
-      spawnHolder.impl = (_command, args) => {
+      spawnHolder.impl = (_command, args, options) => {
         const proc = new FakeChildProcess()
         procs.push(proc)
-        if (args[0] === 'install') installProc = proc
+        if (args[0] === 'install') {
+          installProc = proc
+          const cwd = (options as { cwd?: string }).cwd ?? dir
+          const originalExit = proc.exit.bind(proc)
+          proc.exit = (code, signal) => {
+            if (code === 0) writeInstalledPackage(cwd, 'lodash')
+            originalExit(code, signal)
+          }
+        }
         return proc
       }
 
@@ -467,7 +491,7 @@ describe('DashboardManager log stream lifecycle', () => {
       expect(dashboardEnv?.DASHBOARD_ARTIFACT_SLUG).toBe(slug)
     })
 
-    it('boot start skips install when node_modules is fresh', async () => {
+    it('boot start skips install when install preflight passes', async () => {
       const slug = await scaffoldDashboard()
       const spawns = recordSpawns([])
 
@@ -476,20 +500,138 @@ describe('DashboardManager log stream lifecycle', () => {
       expect(spawns.map((s) => s.args)).toEqual([['run', 'start']])
     })
 
-    it('stale boot install tries --frozen-lockfile first and falls back on failure', async () => {
-      const slug = await scaffoldDashboard()
+    it('boot start skips install when package.json is newer than node_modules', async () => {
+      const slug = await scaffoldDashboard({ dependencies: { lodash: '1.0.0' } })
       const dir = path.join(testDir, slug)
-      await fs.promises.writeFile(path.join(dir, 'bun.lock'), '{}')
-      // Make node_modules stale so the boot path needs an install
+      await writeInstalledPackage(dir, 'lodash')
       const past = new Date(Date.now() - 60_000)
       await fs.promises.utimes(path.join(dir, 'node_modules'), past, past)
       await fs.promises.utimes(path.join(dir, 'package.json'), new Date(), new Date())
-      const spawns = recordSpawns([1, 0])
+      const spawns = recordSpawns([])
+
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'start']])
+    })
+
+    it('missing node_modules with a lockfile runs frozen install then launches', async () => {
+      const slug = await scaffoldDashboard({ dependencies: { lodash: '1.0.0' } })
+      const dir = path.join(testDir, slug)
+      await fs.promises.rm(path.join(dir, 'node_modules'), { recursive: true })
+      await fs.promises.writeFile(path.join(dir, 'bun.lock'), '{}')
+      const spawns = recordSpawns([0], (cwd) => {
+        writeInstalledPackage(cwd, 'lodash')
+      })
 
       const info = await manager.startDashboard(slug, { forceInstall: false })
 
       expect(spawns.map((s) => s.args)).toEqual([
         ['install', '--network-concurrency=8', '--frozen-lockfile'],
+        ['run', 'start'],
+      ])
+      expect(info.status).toBe('running')
+    })
+
+    it('missing direct dep with a lockfile runs frozen install', async () => {
+      const slug = await scaffoldDashboard({ dependencies: { lodash: '1.0.0' } })
+      const dir = path.join(testDir, slug)
+      await fs.promises.writeFile(path.join(dir, 'bun.lock'), '{}')
+      const spawns = recordSpawns([0], (cwd) => {
+        writeInstalledPackage(cwd, 'lodash')
+      })
+
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([
+        ['install', '--network-concurrency=8', '--frozen-lockfile'],
+        ['run', 'start'],
+      ])
+      expect(info.status).toBe('running')
+    })
+
+    it('mismatched installed package name runs frozen install', async () => {
+      const slug = await scaffoldDashboard({ dependencies: { lodash: '1.0.0' } })
+      const dir = path.join(testDir, slug)
+      writeInstalledPackage(dir, 'lodash')
+      fs.writeFileSync(
+        path.join(dir, 'node_modules', 'lodash', 'package.json'),
+        JSON.stringify({ name: 'other', version: '1.0.0' }),
+      )
+      await fs.promises.writeFile(path.join(dir, 'bun.lock'), '{}')
+      const spawns = recordSpawns([0], (cwd) => {
+        writeInstalledPackage(cwd, 'lodash')
+      })
+
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns[0].args).toEqual(['install', '--network-concurrency=8', '--frozen-lockfile'])
+      expect(info.status).toBe('running')
+    })
+
+    it('dangling declared bin runs frozen install', async () => {
+      const slug = await scaffoldDashboard({ dependencies: { 'open-slide': '1.0.0' } })
+      const dir = path.join(testDir, slug)
+      const pkgDir = path.join(dir, 'node_modules', 'open-slide')
+      fs.mkdirSync(pkgDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(pkgDir, 'package.json'),
+        JSON.stringify({ name: 'open-slide', bin: './cli.js' }),
+      )
+      const binDir = path.join(dir, 'node_modules', '.bin')
+      fs.mkdirSync(binDir, { recursive: true })
+      fs.symlinkSync('/nonexistent/open-slide', path.join(binDir, 'open-slide'))
+      await fs.promises.writeFile(path.join(dir, 'bun.lock'), '{}')
+      const spawns = recordSpawns([0], (cwd) => {
+        writeInstalledPackage(cwd, 'open-slide')
+      })
+
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns[0].args).toEqual(['install', '--network-concurrency=8', '--frozen-lockfile'])
+      expect(info.status).toBe('running')
+    })
+
+    it('frozen install non-zero does not launch or schedule a restart', async () => {
+      const slug = await scaffoldDashboard({ dependencies: { lodash: '1.0.0' } })
+      const dir = path.join(testDir, slug)
+      await fs.promises.writeFile(path.join(dir, 'bun.lock'), '{}')
+      const spawns = recordSpawns([1])
+
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([
+        ['install', '--network-concurrency=8', '--frozen-lockfile'],
+      ])
+      expect(info.status).toBe('crashed')
+      expect(info.restartTimestamps).toEqual([])
+      const log = await fs.promises.readFile(path.join(dir, 'dashboard.log'), 'utf-8')
+      expect(log).toMatch(/bun install failed/)
+    })
+
+    it('no lockfile repair uses plain bun install then launches', async () => {
+      const slug = await scaffoldDashboard({ dependencies: { lodash: '1.0.0' } })
+      const spawns = recordSpawns([0], (cwd) => {
+        writeInstalledPackage(cwd, 'lodash')
+      })
+
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([
+        ['install', '--network-concurrency=8'],
+        ['run', 'start'],
+      ])
+      expect(info.status).toBe('running')
+    })
+
+    it('forceInstall still installs then preflights before start', async () => {
+      const slug = await scaffoldDashboard({ dependencies: { lodash: '1.0.0' } })
+      const dir = path.join(testDir, slug)
+      await writeInstalledPackage(dir, 'lodash')
+      const spawns = recordSpawns([0])
+
+      const info = await manager.startDashboard(slug)
+
+      expect(spawns.map((s) => s.args)).toEqual([
         ['install', '--network-concurrency=8'],
         ['run', 'start'],
       ])

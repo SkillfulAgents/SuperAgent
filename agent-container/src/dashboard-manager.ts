@@ -4,6 +4,10 @@ import * as path from 'path'
 import { captureDashboardScreenshot, type ScreenshotResult } from './dashboard-screenshot'
 import { notifyDashboardScreenshotReady } from './host-events'
 import { DashboardPackageSchema } from './dashboard-package-schema'
+import {
+  formatPreflightFailure,
+  preflightDashboardInstall,
+} from './dashboard-install-preflight'
 
 const SCREENSHOT_FILENAME = 'screenshot.png'
 
@@ -152,8 +156,7 @@ class DashboardManager {
         const pkgPath = path.join(ARTIFACTS_DIR, entry.name, 'package.json')
         try {
           await fs.promises.access(pkgPath)
-          // Boot scan trusts the node_modules freshness heuristic — deps only
-          // change through agent-initiated starts, which force an install.
+          // Boot scan skips install when the direct-dep preflight already passes.
           const info = await this.startDashboard(entry.name, { forceInstall: false })
           if (info.status === 'running') started.push(entry.name)
         } catch {
@@ -227,10 +230,8 @@ class DashboardManager {
   }
 
   /**
-   * `forceInstall` (default true) always runs `bun install` before starting,
-   * so an agent-edited package.json takes effect even when the node_modules
-   * freshness heuristic would skip it. Internal boot/crash-restart paths pass
-   * false — deps can't have changed there, and skipping keeps boot fast.
+   * `forceInstall` (default true) always runs bun install so agent-edited deps apply.
+   * Boot/crash-restart pass false and skip install when preflight already passes.
    */
   async startDashboard(
     slug: string,
@@ -289,8 +290,7 @@ class DashboardManager {
         console.error(`[DashboardManager] Log stream error for ${slug}:`, error)
       })
 
-      // Run bun install: always when forced (deps may have changed), else
-      // only if node_modules is missing or package.json is newer than it
+      // Run bun install when forced (deps may have changed) or preflight fails.
       await this.runBunInstallIfNeeded(
         dashboardDir,
         info.logStream,
@@ -380,36 +380,35 @@ class DashboardManager {
     force: boolean,
     onInstallStart: () => void,
   ): Promise<void> {
-    if (!force) {
-      const nodeModules = path.join(dir, 'node_modules')
-      const pkgJson = path.join(dir, 'package.json')
-      try {
-        const nmStat = fs.statSync(nodeModules)
-        const pkgStat = fs.statSync(pkgJson)
-        if (nmStat.isDirectory() && nmStat.mtimeMs >= pkgStat.mtimeMs) {
-          logStream?.write('[DashboardManager] node_modules up-to-date, skipping bun install\n')
-          return
-        }
-      } catch {
-        // node_modules doesn't exist or stat failed — need install
-      }
-      // Boot-path install with a lockfile present: try --frozen-lockfile first
-      // so the install is resolution-free and deterministic. If the lockfile
-      // is out of sync with package.json, fall back to a plain install.
+    if (force) {
       onInstallStart()
-      if (this.hasLockfile(dir)) {
-        try {
-          return await this.runBunInstall(dir, logStream, ['--frozen-lockfile'])
-        } catch {
-          logStream?.write('[DashboardManager] frozen-lockfile install failed, retrying without\n')
-        }
+      await this.runBunInstall(dir, logStream)
+      const afterForce = await preflightDashboardInstall(dir)
+      if (!afterForce.ok) {
+        throw new Error(
+          `Dashboard install preflight failed after install: ${formatPreflightFailure(afterForce)}`
+        )
       }
-    } else {
-      onInstallStart()
+      return
     }
-    // Forced (agent-initiated) or no/stale lockfile: plain install, which
-    // resolves and updates the lockfile as needed.
-    return this.runBunInstall(dir, logStream)
+
+    const preflight = await preflightDashboardInstall(dir)
+    if (preflight.ok) {
+      logStream?.write('[DashboardManager] install preflight ok, skipping bun install\n')
+      return
+    }
+    logStream?.write(
+      `[DashboardManager] install preflight failed (${formatPreflightFailure(preflight)}); repairing\n`
+    )
+    onInstallStart()
+    const extraArgs = this.hasLockfile(dir) ? ['--frozen-lockfile'] : []
+    await this.runBunInstall(dir, logStream, extraArgs)
+    const afterRepair = await preflightDashboardInstall(dir)
+    if (!afterRepair.ok) {
+      throw new Error(
+        `Dashboard install preflight failed after repair: ${formatPreflightFailure(afterRepair)}`
+      )
+    }
   }
 
   private hasLockfile(dir: string): boolean {
@@ -437,10 +436,12 @@ class DashboardManager {
       let stderr = ''
       proc.stdout?.on('data', (chunk) => {
         logStream?.write(chunk)
+        process.stdout.write(chunk)
       })
       proc.stderr?.on('data', (chunk) => {
         stderr += chunk.toString()
         logStream?.write(chunk)
+        process.stderr.write(chunk)
       })
 
       proc.on('exit', (code) => {
@@ -497,8 +498,7 @@ class DashboardManager {
     info.restartCount++
     console.log(`[DashboardManager] Auto-restarting dashboard ${slug} (attempt ${info.restartTimestamps.length}/${MAX_RESTARTS})`)
 
-    // Delay restart slightly. Deps can't have changed across a crash — skip
-    // the forced install.
+    // Delay restart slightly. Preflight (not mtime) decides whether to reinstall.
     setTimeout(() => {
       this.startDashboard(slug, { forceInstall: false }).catch((err) => {
         console.error(`[DashboardManager] Failed to restart dashboard ${slug}:`, err)
