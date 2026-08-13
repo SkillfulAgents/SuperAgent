@@ -2175,7 +2175,9 @@ describe('MessageList', () => {
       let naturalScrollHeight = 1300
       let scrollTop = 700
       const anchorDocumentTop = 1200
-      const spacer = screen.getByTestId('turn-anchor-spacer')
+      const spacerHeight = () => Number.parseFloat(
+        (el.querySelector('[data-testid="turn-anchor-spacer"]') as HTMLElement | null)?.style.height || '0',
+      ) || 0
 
       vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
         matches: reducedMotion && query === '(prefers-reduced-motion: reduce)',
@@ -2190,12 +2192,18 @@ describe('MessageList', () => {
 
       Object.defineProperty(el, 'scrollHeight', {
         configurable: true,
-        get: () => naturalScrollHeight + (Number.parseFloat(spacer.style.height) || 0),
+        get: () => naturalScrollHeight + spacerHeight(),
       })
       Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 600 })
       Object.defineProperty(el, 'scrollTop', {
         configurable: true,
-        get: () => scrollTop,
+        // Browsers clamp scrollTop when removing the turn spacer lowers the
+        // scrollable maximum. Model that here so retiring the reserve has the
+        // same observable effect as it does in the real transcript.
+        get: () => Math.min(
+          scrollTop,
+          Math.max(0, naturalScrollHeight + spacerHeight() - 600),
+        ),
         set: (value: number) => { scrollTop = value },
       })
 
@@ -2219,7 +2227,7 @@ describe('MessageList', () => {
       })
 
       return {
-        get scrollTop() { return scrollTop },
+        get scrollTop() { return el.scrollTop },
         setScrollTop(value: number) { scrollTop = value },
         setNaturalScrollHeight(value: number) { naturalScrollHeight = value },
       }
@@ -2332,6 +2340,78 @@ describe('MessageList', () => {
         <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
       )
       expect(geometry.scrollTop).toBe(releasedScrollTop)
+    })
+
+    it('retires a stale turn anchor when the reader manually reaches the true bottom', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+
+      // A nested subagent card can grow before its ResizeObserver callback (or
+      // the next stream-state render) synchronizes the turn reserve. That makes
+      // a new, lower true bottom reachable while the old anchor is still live.
+      geometry.setNaturalScrollHeight(1400)
+      fireEvent.wheel(el, { deltaY: 200 })
+      geometry.setScrollTop(1200)
+      fireEvent.scroll(el)
+
+      // Reaching that true bottom is an explicit request to follow the live
+      // edge. The obsolete reading-line reserve must be retired immediately.
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
+      expect(geometry.scrollTop).toBe(800)
+
+      // The next subagent update must stay bottom-pinned instead of restoring
+      // the old anchored scrollTop (the visible snap-up from the recording).
+      mockStreamState.activeSubagents = [{
+        agentId: 'sub-1',
+        parentToolId: 'tool-1',
+        subagentType: 'Explore',
+        description: 'Explore workspace structure',
+      }]
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(800)
+    })
+
+    it('retires a stale turn anchor when a scrollbar drag reaches the true bottom', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+
+      geometry.setNaturalScrollHeight(1400)
+      // Dragging the scrollbar thumb produces pointerdown + scroll only — no
+      // wheel, touch, or key events — yet it is just as much an explicit trip
+      // to the live edge and must retire the reserve the same way.
+      fireEvent.pointerDown(el)
+      geometry.setScrollTop(1200)
+      fireEvent.scroll(el)
+
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
+      expect(geometry.scrollTop).toBe(800)
+
+      mockStreamState.activeSubagents = [{
+        agentId: 'sub-1',
+        parentToolId: 'tool-1',
+        subagentType: 'Explore',
+        description: 'Explore workspace structure',
+      }]
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(800)
     })
 
     it('follows within 80px of the bottom and resumes when the reader returns', () => {

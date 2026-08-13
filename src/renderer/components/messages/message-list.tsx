@@ -417,6 +417,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const bottomSpacerHeightRef = useRef(0)
   const anchoredTurnRef = useRef<{ localId: string; scrollTop: number } | null>(null)
   const programmaticScrollTopRef = useRef<number | null>(null)
+  const userScrollIntentRef = useRef(false)
   const lastScrollTopRef = useRef(0)
   const scrollAnimationFrameRef = useRef<number | null>(null)
   const followFrameRef = useRef<number | null>(null)
@@ -488,6 +489,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       Math.max(0, scrollTop),
       Math.max(0, el.scrollHeight - el.clientHeight),
     )
+    userScrollIntentRef.current = false
     programmaticScrollTopRef.current = nextScrollTop
     lastScrollTopRef.current = nextScrollTop
     el.scrollTop = nextScrollTop
@@ -581,6 +583,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // A follow glide still in flight would keep writing scrollTop toward a
     // stale live edge underneath this animation — two drivers, one viewport.
     cancelFollowAnimation()
+    userScrollIntentRef.current = false
     const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
     const target = Math.min(Math.max(0, targetScrollTop), maxScrollTop)
     const start = el.scrollTop
@@ -687,12 +690,33 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // reserve's live edge, so that discarded blank area cannot be revisited.
     const anchoredTurn = anchoredTurnRef.current
     const upwardDelta = Math.max(0, previousScrollTop - el.scrollTop)
+    const downwardDelta = Math.max(0, el.scrollTop - previousScrollTop)
     if (!isProgrammatic && anchoredTurn && upwardDelta > 0 && bottomSpacerHeightRef.current > 0) {
       const discard = Math.min(upwardDelta, bottomSpacerHeightRef.current)
       const remainingSpacer = bottomSpacerHeightRef.current - discard
       anchoredTurn.scrollTop = Math.max(0, anchoredTurn.scrollTop - discard)
       setBottomSpacerHeight(remainingSpacer)
       if (remainingSpacer === 0) anchoredTurnRef.current = null
+    }
+
+    // Reaching the actual live edge through a user scroll transfers ownership
+    // back to bottom-following. Keeping the turn anchor alive here lets the next
+    // subagent/layout update restore its old reading-line scrollTop, which is
+    // the visible snap-up even after the reader manually scrolled all the way
+    // down. Drop the reserve first; the browser clamps scrollTop to the new
+    // natural maximum synchronously.
+    const distanceFromBottomBeforeRelease = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (
+      !isProgrammatic &&
+      userScrollIntentRef.current &&
+      downwardDelta > 0 &&
+      anchoredTurnRef.current &&
+      distanceFromBottomBeforeRelease <= 1
+    ) {
+      anchoredTurnRef.current = null
+      animateNextTurnRef.current = false
+      setBottomSpacerHeight(0)
+      lastScrollTopRef.current = el.scrollTop
     }
 
     // Proximity to the live edge is the auto-follow contract: moving beyond
@@ -736,6 +760,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     if (!el) return
     cancelScrollAnimation()
     cancelFollowAnimation()
+    userScrollIntentRef.current = false
     anchoredTurnRef.current = null
     animateNextTurnRef.current = false
     setBottomSpacerHeight(0)
@@ -1142,6 +1167,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
     if (hasNewSend) {
       cancelScrollAnimation()
+      userScrollIntentRef.current = false
       isScrolledToBottomRef.current = true
       setShowScrollToBottom(false)
 
@@ -1210,6 +1236,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }, [syncFollowPosition])
 
   const handleUserScrollIntent = useCallback(() => {
+    userScrollIntentRef.current = true
     programmaticScrollTopRef.current = null
     cancelScrollAnimation()
     // Hand the viewport back immediately — a glide that keeps running under a
@@ -1386,6 +1413,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         onScroll={handleScroll}
         onWheel={handleUserScrollIntent}
         onTouchMove={handleUserScrollIntent}
+        // Scrollbar drags emit no wheel/touch/key events, only pointerdown +
+        // scroll — without this they would never register as user intent.
+        onPointerDown={handleUserScrollIntent}
         onKeyDown={handleScrollKey}
         role="region"
         aria-label="Messages"
