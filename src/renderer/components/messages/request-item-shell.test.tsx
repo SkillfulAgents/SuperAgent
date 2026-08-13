@@ -100,6 +100,52 @@ describe('RequestItemShell', () => {
       expect(screen.queryByText(/Error:/)).not.toBeInTheDocument()
     })
 
+    it('keeps actions in a normal footer outside the scrollable card body', () => {
+      render(
+        <RequestItemShell
+          title="Tall request"
+          theme="orange"
+          data-testid="request-card"
+        >
+          <div data-testid="long-content">Long content</div>
+          <RequestItemActions>
+            <button type="button">Allow</button>
+          </RequestItemActions>
+        </RequestItemShell>
+      )
+
+      const card = screen.getByTestId('request-card')
+      const body = card.querySelector<HTMLElement>('[data-request-item-body]')
+      const actions = card.querySelector<HTMLElement>('[data-request-item-actions="footer"]')
+
+      expect(card).toHaveClass('flex', 'flex-col', 'overflow-hidden')
+      expect(card).not.toHaveClass('overflow-y-auto')
+      expect(body).toHaveClass('min-h-0', 'overflow-y-auto')
+      expect(body).toContainElement(screen.getByTestId('long-content'))
+      expect(body).not.toContainElement(actions)
+      expect(actions).not.toHaveClass('sticky')
+      expect(actions?.parentElement).toBe(card)
+    })
+
+    it('leaves explicitly inline actions inside the scrollable body', () => {
+      render(
+        <RequestItemShell title="Inline request" theme="blue" data-testid="request-card">
+          <div>
+            <RequestItemActions inline>
+              <button type="button">Connect</button>
+            </RequestItemActions>
+          </div>
+        </RequestItemShell>
+      )
+
+      const card = screen.getByTestId('request-card')
+      const body = card.querySelector<HTMLElement>('[data-request-item-body]')
+      const actions = card.querySelector<HTMLElement>('[data-request-item-actions="inline"]')
+
+      expect(body).toContainElement(actions)
+      expect(card.querySelector('[data-request-item-actions="footer"]')).toBeNull()
+    })
+
     it('renders headerRight content', () => {
       render(
         <RequestItemShell

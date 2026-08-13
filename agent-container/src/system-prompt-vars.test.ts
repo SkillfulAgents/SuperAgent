@@ -38,6 +38,10 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('### Custom Webhook Endpoints')).toBe(composio && webhook) // child heading needs a sibling
     expect(out.includes('Prefer `setup_trigger`')).toBe(composio && webhook)  // composio-only bullet nested in webhook body
     expect(out.includes('platform-dependent')).toBe(!composio && !webhook)    // disconnected fallback
+    // platformServices shares PLATFORM_AUTH_ACTIVE with webhookEndpoints
+    expect(out.includes('## Built-in media generation')).toBe(webhook)
+    expect(out.includes('v1/replicate')).toBe(webhook)
+    expect(out.includes('ANTHROPIC_AUTH_TOKEN')).toBe(webhook)
   })
 
   // The pause/resume guidance must always render: without it agents reach for
@@ -200,7 +204,7 @@ describe('generateSystemPrompt rendering', () => {
   })
   // Source-level, not render-level: a `${VAR}` inside a gated-off section never
   // appears in any rendered output, so the combos table above cannot see it.
-  it('the template interpolates only through <% %>, never ${VAR}', () => {
+  it('the template interpolates only through <% %>, never dollar-brace VAR', () => {
     const template = readFileSync(__dirname + '/system-prompt.md', 'utf-8')
     expect(template).not.toMatch(/\$\{[A-Za-z_]+\}/)
   })

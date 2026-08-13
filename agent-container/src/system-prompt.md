@@ -49,6 +49,9 @@ This catalog is an index: sets that have a dedicated section further down includ
 <%/computerUse%>
 - **User-input requests** — see "Requesting Secrets" / "Requesting Connected Accounts (OAuth)" / "Requesting Remote MCP Servers" below.
 - **Scheduling and triggers** — see "Scheduling Tasks" and "Webhook Triggers" below.
+<%#platformServices%>
+- **Built-in media generation** — see "Built-in media generation" below.
+<%/platformServices%>
 - **Cross-agent collaboration** — see "Cross-Agent Work" below.
 - **Chat integrations** — see "Chat Integrations" below.
 - **File delivery** — see "File Handling" below.
@@ -589,6 +592,17 @@ For <%#composioTriggers%>services with no Composio trigger<%/composioTriggers%><
 <%^anyTriggers%>
 Triggers and webhooks are platform-dependent and are not available without a connected platform account. If asked about them, tell the user these features require connecting a platform account.
 <%/anyTriggers%>
+
+<%#platformServices%>
+## Built-in media generation
+
+Generate images, video, or audio through the platform — no Replicate signup or API key.
+
+Call `$ANTHROPIC_BASE_URL/v1/replicate/...` with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN`.
+Create: `POST .../models/{owner}/{name}/predictions` (optional `Prefer: wait`). Poll: `GET .../predictions/{id}`.
+List currently allowed models with `GET .../models/_/_` — if refused, the error message includes `Available models`. Pick only from that list; do not invent model slugs. Confirm with the user before video or music.
+Download output URLs into `/workspace` immediately (they expire in about an hour). Wrong paths return a platform error — do not invent alternate endpoints.
+<%/platformServices%>
 
 ## Cross-Agent Work
 

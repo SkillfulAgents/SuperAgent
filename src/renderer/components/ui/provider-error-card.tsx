@@ -1,4 +1,4 @@
-import { CloudOff } from 'lucide-react'
+import { RequestError } from '@renderer/components/messages/request-error'
 
 function extractReadableError(raw: string): string {
   const jsonMatch = raw.match(/\{"type":\s*"error".*?"message":\s*"([^"]+)"\s*\}/)
@@ -22,22 +22,22 @@ function getHint(message: string): string {
   return 'This error came from the external LLM provider API, not from this application. Check your provider configuration in Settings.'
 }
 
+/**
+ * A provider-side failure, in the app's one error treatment (RequestError — the
+ * same banner the setup wizard and the settings forms use). What makes it a
+ * PROVIDER error is the hint underneath, not a palette of its own.
+ */
 export function ProviderErrorCard({ message, 'data-testid': testId }: ProviderErrorCardProps) {
-  const displayMessage = extractReadableError(message)
-
   return (
-    <div
-      className="rounded-lg border border-amber-500/50 bg-amber-50 p-3 dark:bg-amber-950"
+    <RequestError
+      label="LLM Provider Error"
+      message={extractReadableError(message)}
+      hint={getHint(message)}
+      // Opaque in dark too: these sit in the overlay footer with the transcript
+      // scrolling behind them, where the shared banner's translucent dark fill
+      // would let the messages show through.
+      className="mt-0 dark:bg-red-950"
       data-testid={testId ?? 'provider-error-card'}
-    >
-      <div className="flex items-center gap-2">
-        <CloudOff className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        <span className="text-sm font-medium text-amber-600 dark:text-amber-400">LLM Provider Error</span>
-      </div>
-      <p className="mt-1 text-sm text-amber-600/90 dark:text-amber-400/90">{displayMessage}</p>
-      <p className="mt-1.5 text-xs text-muted-foreground">
-        {getHint(message)}
-      </p>
-    </div>
+    />
   )
 }

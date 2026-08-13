@@ -58,6 +58,31 @@ const BASE_WINDOW = 300
 const LOAD_STEP = 200
 const TURN_ANCHOR_TOP = 100
 const TURN_ANCHOR_ANIMATION_MS = 220
+// Following the live edge by assigning scrollTop teleports the viewport by the
+// full height of whatever just arrived — a paragraph, a tool card — so the
+// thread reads as a series of jumps. Instead the viewport chases the edge on a
+// critically damped spring: it carries velocity across retargets, so a chunk
+// landing mid-motion bends the existing curve instead of kicking the speed to a
+// new value. Critically damped means it converges without overshoot, which
+// matters here because overshoot past the live edge would bounce the text.
+//
+// Stiffness is in rad/s (higher = tighter tracking, closer to the old snap);
+// ~7 closes most of a burst inside the first half second and fully settles in
+// about a second, letting the viewport trail the text and drift up to it. The
+// velocity ceiling stops a tall tool card from whipping past, and past the
+// snap distance any easing reads as sluggish drift rather than float, so we
+// jump instead.
+const FOLLOW_STIFFNESS = 7
+const FOLLOW_MAX_VELOCITY_PX_S = 2400
+const FOLLOW_SNAP_PX = 900
+const FOLLOW_SETTLE_PX = 0.5
+// A dropped frame or a backgrounded window must not integrate one huge step.
+const FOLLOW_MAX_FRAME_S = 1 / 15
+// Beyond this the viewport moved without us. The scroll handler releases the
+// glide when an event deviates from the spring's position; this covers the
+// same-frame window before that event dispatches, resyncing to reality rather
+// than fighting toward a stale position for a frame.
+const FOLLOW_RESYNC_PX = 2
 const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
 const SCROLL_KEYS = new Set(['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '])
 
@@ -395,6 +420,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const userScrollIntentRef = useRef(false)
   const lastScrollTopRef = useRef(0)
   const scrollAnimationFrameRef = useRef<number | null>(null)
+  const followFrameRef = useRef<number | null>(null)
+  const followTargetRef = useRef(0)
+  const followPositionRef = useRef(0)
+  const followVelocityRef = useRef(0)
+  const followLastFrameRef = useRef(0)
   const animateNextTurnRef = useRef(false)
   const isScrolledToBottomRef = useRef(true)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
@@ -471,8 +501,88 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     scrollAnimationFrameRef.current = null
   }, [])
 
+  const cancelFollowAnimation = useCallback(() => {
+    followVelocityRef.current = 0
+    if (followFrameRef.current == null) return
+    cancelAnimationFrame(followFrameRef.current)
+    followFrameRef.current = null
+  }, [])
+
+  // Chase the live edge instead of snapping to it. Re-entrant by design:
+  // streaming calls this on every content change, and an in-flight chase simply
+  // retargets. Because the spring carries its velocity, retargeting bends the
+  // curve rather than restarting it — restart-per-chunk is exactly what makes
+  // fixed-duration animations stutter under a stream.
+  const followLiveEdge = useCallback((el: HTMLDivElement) => {
+    const target = Math.max(0, el.scrollHeight - el.clientHeight)
+    followTargetRef.current = target
+    const distance = target - el.scrollTop
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+    // Settled, moving backwards, or so far out that easing would read as drift.
+    if (reduceMotion || distance <= FOLLOW_SETTLE_PX || distance > FOLLOW_SNAP_PX) {
+      cancelFollowAnimation()
+      setScrollTop(el, target)
+      return
+    }
+
+    if (followFrameRef.current != null) return
+
+    // Integrate against our own float position. Reading scrollTop back each
+    // frame would re-quantize to the compositor's rounding, and at the low
+    // speeds this settles into that lost fraction is visible as judder.
+    followPositionRef.current = el.scrollTop
+    followLastFrameRef.current = performance.now()
+
+    const tick = (now: number) => {
+      const viewport = scrollRef.current
+      if (!viewport) {
+        followFrameRef.current = null
+        return
+      }
+
+      const elapsed = Math.min((now - followLastFrameRef.current) / 1000, FOLLOW_MAX_FRAME_S)
+      followLastFrameRef.current = now
+
+      if (Math.abs(viewport.scrollTop - followPositionRef.current) > FOLLOW_RESYNC_PX) {
+        followPositionRef.current = viewport.scrollTop
+        followVelocityRef.current = 0
+      }
+
+      const goal = followTargetRef.current
+      const remaining = goal - followPositionRef.current
+      if (remaining <= FOLLOW_SETTLE_PX || remaining > FOLLOW_SNAP_PX) {
+        followFrameRef.current = null
+        followVelocityRef.current = 0
+        setScrollTop(viewport, goal)
+        return
+      }
+
+      // Analytic step of a critically damped spring, so the motion is identical
+      // at 60Hz and 120Hz and a long frame cannot overshoot.
+      const offset = followPositionRef.current - goal
+      const detached = followVelocityRef.current + FOLLOW_STIFFNESS * offset
+      const decay = Math.exp(-FOLLOW_STIFFNESS * elapsed)
+      followPositionRef.current = goal + (offset + detached * elapsed) * decay
+      followVelocityRef.current = Math.max(
+        -FOLLOW_MAX_VELOCITY_PX_S,
+        Math.min(
+          FOLLOW_MAX_VELOCITY_PX_S,
+          (followVelocityRef.current - FOLLOW_STIFFNESS * detached * elapsed) * decay,
+        ),
+      )
+
+      setScrollTop(viewport, followPositionRef.current)
+      followFrameRef.current = requestAnimationFrame(tick)
+    }
+    followFrameRef.current = requestAnimationFrame(tick)
+  }, [cancelFollowAnimation, setScrollTop])
+
   const animateScrollTop = useCallback((el: HTMLDivElement, targetScrollTop: number) => {
     cancelScrollAnimation()
+    // A follow glide still in flight would keep writing scrollTop toward a
+    // stale live edge underneath this animation — two drivers, one viewport.
+    cancelFollowAnimation()
     userScrollIntentRef.current = false
     const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
     const target = Math.min(Math.max(0, targetScrollTop), maxScrollTop)
@@ -499,9 +609,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       setScrollTop(el, anchoredTurn ? anchoredTurn.scrollTop : el.scrollHeight)
     }
     scrollAnimationFrameRef.current = requestAnimationFrame(tick)
-  }, [cancelScrollAnimation, setScrollTop])
+  }, [cancelFollowAnimation, cancelScrollAnimation, setScrollTop])
 
   useEffect(() => cancelScrollAnimation, [cancelScrollAnimation])
+  useEffect(() => cancelFollowAnimation, [cancelFollowAnimation])
 
   // Keep the newly-sent turn fixed at its reading line while the response uses
   // up the reserved room below it. Once that room reaches zero, following the
@@ -533,22 +644,42 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       }
 
       if (!isScrolledToBottomRef.current || scrollAnimationFrameRef.current != null) return
-      setScrollTop(el, targetScrollTop)
+      // While the reserve holds the turn at its reading line the position is
+      // static, so there is nothing to smooth — only the live-edge case glides.
+      if (requiredSpacer > 0) setScrollTop(el, targetScrollTop)
+      else followLiveEdge(el)
       return
     }
 
     animateNextTurnRef.current = false
     if (!isScrolledToBottomRef.current || scrollAnimationFrameRef.current != null) return
-    setScrollTop(el, el.scrollHeight)
-  }, [animateScrollTop, setBottomSpacerHeight, setScrollTop])
+    followLiveEdge(el)
+  }, [animateScrollTop, followLiveEdge, setBottomSpacerHeight, setScrollTop])
 
   const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     const el = event.currentTarget
     const previousScrollTop = lastScrollTopRef.current
     lastScrollTopRef.current = el.scrollTop
+
+    // A glide writes scrollTop every frame, so its scroll events echo the
+    // spring's own position (give or take compositor quantization). An event
+    // that deviates means the viewport moved without us — a scrollbar drag,
+    // which unlike wheel/touch/keys fires no intent event, or a layout clamp.
+    // Hand the viewport back and read the event as the user's; if it was
+    // really a layout shift near the edge, the distance check below keeps
+    // following engaged and the next content change resumes the chase.
+    const followDriven =
+      followFrameRef.current != null &&
+      Math.abs(el.scrollTop - followPositionRef.current) <= 1
+    if (followFrameRef.current != null && !followDriven) {
+      cancelFollowAnimation()
+      programmaticScrollTopRef.current = null
+    }
+
     const programmaticTarget = programmaticScrollTopRef.current
     const isProgrammatic =
       scrollAnimationFrameRef.current != null ||
+      followDriven ||
       (programmaticTarget != null && Math.abs(el.scrollTop - programmaticTarget) <= 1)
     if (isProgrammatic) {
       programmaticScrollTopRef.current = null
@@ -592,9 +723,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // this threshold pauses following, and returning within it resumes.
     const threshold = 80
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    isScrolledToBottomRef.current = distanceFromBottom < threshold
-    // Show "scroll to bottom" button when scrolled up more than 300px
-    setShowScrollToBottom(distanceFromBottom > 300)
+    // A glide trails the live edge on purpose, and that lag can exceed the
+    // threshold. Reading it as "the user scrolled away" would disengage
+    // auto-follow mid-response, so while we are driving, following stands.
+    if (!followDriven) {
+      isScrolledToBottomRef.current = distanceFromBottom < threshold
+      // Show "scroll to bottom" button when scrolled up more than 300px
+      setShowScrollToBottom(distanceFromBottom > 300)
+    }
 
     // Near the top with older messages still hidden: reveal the next chunk.
     // prevScrollHeightRef doubles as a re-entrancy guard so we expand at most once
@@ -607,7 +743,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       isScrolledToBottomRef.current = false
       setWindowSize((n) => n + LOAD_STEP)
     }
-  }, [hiddenCount, setBottomSpacerHeight])
+  }, [cancelFollowAnimation, hiddenCount, setBottomSpacerHeight])
 
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).
@@ -623,12 +759,13 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const el = scrollRef.current
     if (!el) return
     cancelScrollAnimation()
+    cancelFollowAnimation()
     userScrollIntentRef.current = false
     anchoredTurnRef.current = null
     animateNextTurnRef.current = false
     setBottomSpacerHeight(0)
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-  }, [cancelScrollAnimation, setBottomSpacerHeight])
+  }, [cancelFollowAnimation, cancelScrollAnimation, setBottomSpacerHeight])
 
   // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
   // messages, compaction is done and the SSE compact_complete event was missed.
@@ -1102,7 +1239,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     userScrollIntentRef.current = true
     programmaticScrollTopRef.current = null
     cancelScrollAnimation()
-  }, [cancelScrollAnimation])
+    // Hand the viewport back immediately — a glide that keeps running under a
+    // wheel gesture feels like the thread is fighting the reader.
+    cancelFollowAnimation()
+  }, [cancelFollowAnimation, cancelScrollAnimation])
 
   const handleScrollKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (SCROLL_KEYS.has(event.key)) handleUserScrollIntent()
