@@ -1,5 +1,5 @@
 import { cn } from '@shared/lib/utils'
-import { AlertTriangle, ChevronDown, CircleCheckBig, Ellipsis, Monitor, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, Circle, CircleCheckBig, Ellipsis, Monitor, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
@@ -75,10 +75,14 @@ export function ActivityCard({
   const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount
   const activeSubagentCount = subagents.filter((item) => item.status === 'running').length
   const pendingTaskCount = todos?.filter((todo) => todo.status !== 'completed').length ?? 0
-  const hasExpandableDetails = !!computerUse
+  // The tree is live work only — things running right now, hanging off the orb.
+  // The plan is a different kind of thing (intent, not activity), so it sits
+  // below the tree under its own header rather than taking branches.
+  const hasTreeRows = !!computerUse
     || subagents.length > 0
     || visibleBackgroundTasks.length > 0
-    || pendingTaskCount > 0
+  const hasPlan = !!todos && pendingTaskCount > 0
+  const hasExpandableDetails = hasTreeRows || hasPlan
   const collapsedSummary = [
     // Held first, and named: collapsing the tree must not be how a user loses
     // track that the agent still has hold of one of their apps.
@@ -89,17 +93,11 @@ export function ActivityCard({
     formatActivityCount(pendingTaskCount, 'pending task', 'pending tasks'),
   ].filter(Boolean).join(', ')
 
-  // Row positions on the tree, counted across all groups: the tracer stages each
-  // branch flash off its own index (see .tree-tracer in globals.css).
-  // Computer use leads the tree: it is a hold that lasts the whole turn, so it
-  // keeps a fixed position while subagents come and go beneath it.
+  // Row positions on the tree: the tracer stages each branch flash off its own
+  // index (see .tree-tracer in globals.css). Computer use leads the tree: it is
+  // a hold that lasts the whole turn, so it keeps a fixed position while
+  // subagents come and go beneath it.
   const computerUseRows = computerUse ? 1 : 0
-  const todoRowStart = computerUseRows
-    + subagents.length
-    + (visibleBackgroundTasks.length > 0 ? 1 : 0)
-  const todoRows = todos && pendingTaskCount > 0
-    ? buildTodoRows(todos, showAllTodos, setShowAllTodos, todoRowStart)
-    : null
 
   useTracerPhaseLock(listRef)
 
@@ -157,13 +155,12 @@ export function ActivityCard({
         {/* Streamed reasoning renders as a thinking card in the transcript
             (see ThinkingBlockItem) — only the "Thinking..." status shows here. */}
 
-        {/* Everything the turn is doing, on ONE tree hanging off the header
-            orb — subagents, then background work, then the task list. They are
-            a single <ul> rather than three stacked sections so the rail runs
-            unbroken and only the genuinely last row gets the closing elbow.
-            Every row keeps the same 16px line box (text-xs) so the elbows,
-            pinned at half that, stay centered on all three kinds. */}
-        {!isCollapsed && hasExpandableDetails && (
+        {/* Live work, on ONE tree hanging off the header orb — computer use,
+            subagents, then background work. A single <ul> rather than stacked
+            sections so the rail runs unbroken and only the genuinely last row
+            gets the closing elbow. Every row keeps the same 16px line box
+            (text-xs) so the elbows, pinned at half that, stay centered. */}
+        {!isCollapsed && hasTreeRows && (
           <ul ref={listRef} data-testid="activity-tree" className={cn(
             'mt-2 space-y-1 text-xs pl-6',
             ACTIVITY_TREE_CONNECTORS,
@@ -216,9 +213,15 @@ export function ActivityCard({
                 tracerRow={computerUseRows + subagents.length}
               />
             )}
-
-            {todoRows}
           </ul>
+        )}
+
+        {!isCollapsed && hasPlan && todos && (
+          <TodoPlan
+            todos={todos}
+            showAllTodos={showAllTodos}
+            setShowAllTodos={setShowAllTodos}
+          />
         )}
       </div>
     </div>
@@ -357,9 +360,16 @@ function useTracerPhaseLock(listRef: RefObject<HTMLUListElement | null>) {
       // the animations from before this render, so a row that just went live is
       // missed and, with no further commit coming, never gets locked at all.
       getComputedStyle(list).animationName
+      // Only the tracer's own animations. The subtree also carries hover
+      // transitions (transition-colors on the row buttons), and pulling those
+      // back to the tracer's origin — far in the past — completes them
+      // instantly, snapping the fade.
       const animations = list
         .getAnimations({ subtree: true })
-        .filter((animation) => animation.startTime != null)
+        .filter((animation) =>
+          animation.startTime != null &&
+          'animationName' in animation &&
+          (animation as CSSAnimation).animationName.startsWith('tree-tracer'))
       if (animations.length < 2) return
 
       const origin = Math.min(...animations.map((animation) => Number(animation.startTime)))
@@ -373,97 +383,6 @@ function useTracerPhaseLock(listRef: RefObject<HTMLUListElement | null>) {
     const frame = requestAnimationFrame(lock)
     return () => cancelAnimationFrame(frame)
   })
-}
-
-/** Relay pacing. Travel is constant-speed, so a row further down takes longer. */
-const RELAY_SPEED_PX_PER_S = 130
-const RELAY_MIN_TRAVEL_MS = 260
-/** Long enough for the branch flash and one shimmer pass to land. */
-const RELAY_DWELL_MS = 780
-const RELAY_REST_MS = 220
-/** Nothing live yet — poll rather than give up; rows arrive as the turn runs. */
-const RELAY_IDLE_MS = 500
-/** Half the band's 28px depth: aligns its peak with the branch it stops at. */
-const RELAY_BAND_HALF = 14
-/** Row's elbow (8px into a 16px row) measured from the rail top (4px above). */
-const RELAY_ELBOW_OFFSET = 12
-
-/**
- * Relay: sends the band to one live row at a time instead of running the whole
- * trunk. Each pass picks the next live row, travels only as far as that row,
- * hands off to its branch and label, rests, then takes the next one.
- *
- * Scheduled here rather than in CSS because both the distance and the target
- * change every pass — no fixed set of keyframes can say "stop at whichever row
- * is up next". The hook only moves the band and marks the row it reaches;
- * the branch flash and the shimmer are CSS reacting to that mark.
- *
- * Driving it from one timer also sidesteps the phase problem the continuous
- * tracer has: there is nothing to keep in sync, because the trunk hands over to
- * the row explicitly instead of two clocks agreeing on when to meet.
- */
-function useTracerRelay(listRef: RefObject<HTMLUListElement | null>, enabled: boolean) {
-  useEffect(() => {
-    const list = listRef.current
-    if (!list || !enabled || typeof list.animate !== 'function') return
-
-    let stopped = false
-    let timer = 0
-    let lit: HTMLElement | null = null
-    let pass = 0
-
-    const clearLit = () => {
-      lit?.removeAttribute('data-tracer-lit')
-      lit = null
-    }
-
-    const schedule = (fn: () => void, ms: number) => {
-      timer = window.setTimeout(() => { if (!stopped) fn() }, ms)
-    }
-
-    const run = () => {
-      const rows = [...list.children].filter(
-        (row): row is HTMLElement => row instanceof HTMLElement && row.hasAttribute('data-tracer-live')
-      )
-      if (rows.length === 0) {
-        schedule(run, RELAY_IDLE_MS)
-        return
-      }
-
-      const row = rows[pass % rows.length]
-      pass += 1
-      const target = row.offsetTop + RELAY_ELBOW_OFFSET
-      const travelMs = Math.max(RELAY_MIN_TRAVEL_MS, (target / RELAY_SPEED_PX_PER_S) * 1000)
-
-      // No fill: the band returns to its parked position the moment it lands,
-      // so the pulse reads as passing INTO the branch rather than stopping on it.
-      const travel = list.animate(
-        [{ backgroundPositionY: '-28px' }, { backgroundPositionY: `${target - RELAY_BAND_HALF}px` }],
-        { duration: travelMs, easing: 'cubic-bezier(0.35, 0, 0.2, 1)', pseudoElement: '::before' },
-      )
-
-      travel.onfinish = () => {
-        if (stopped) return
-        clearLit()
-        // The row may have finished while the band was on its way.
-        if (row.isConnected && row.hasAttribute('data-tracer-live')) {
-          row.setAttribute('data-tracer-lit', 'true')
-          lit = row
-        }
-        schedule(() => {
-          clearLit()
-          schedule(run, RELAY_REST_MS)
-        }, RELAY_DWELL_MS)
-      }
-    }
-
-    run()
-    return () => {
-      stopped = true
-      window.clearTimeout(timer)
-      clearLit()
-    }
-  }, [listRef, enabled])
 }
 
 /** Inline hook the tracer keyframes read to stage each branch's flash. */
@@ -550,21 +469,20 @@ function BackgroundTasksRow({ tasks, tracerRow }: {
 }
 
 /**
- * The task list as tree rows: the truncation toggles first (so they never take
- * the closing elbow), then pending/in-progress items, then finished ones newest
- * first. Returns bare <li>s for the shared tree <ul> — see ActivityCard.
+ * The task list, under the tree rather than on it: the tree is live work, and
+ * the plan is intent. A small "Plan" header owns the section, with the
+ * truncation toggle beside it instead of spending a row on it. Items run
+ * pending/in-progress first, then finished ones newest first.
  */
-function buildTodoRows(
-  todos: Todo[],
-  showAllTodos: boolean,
-  setShowAllTodos: (show: boolean) => void,
-  /** This group's first position on the tree. */
-  tracerRowStart: number,
-): ReactNode {
-  const rowStyle = (offset: number) => tracerRowStyle(tracerRowStart + offset)
-  // The toggles are rows on the tree too, so they take positions ahead of the
-  // items they hide.
-  let offset = 0
+function TodoPlan({
+  todos,
+  showAllTodos,
+  setShowAllTodos,
+}: {
+  todos: Todo[]
+  showAllTodos: boolean
+  setShowAllTodos: (show: boolean) => void
+}) {
   const MAX_VISIBLE = 5
   const needsTruncation = todos.length > MAX_VISIBLE && !showAllTodos
 
@@ -590,72 +508,67 @@ function buildTodoRows(
   const hiddenDone = hiddenTodos.filter(t => t.status === 'completed').length
 
   return (
-    <>
-      {hiddenTodos.length > 0 && (
-        <li style={rowStyle(offset++)}>
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => setShowAllTodos(true)}
-              className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-            >
-              {hiddenTodos.length} more{': '}
-              {[
-                hiddenPending > 0 && `${hiddenPending} pending`,
-                hiddenDone > 0 && `${hiddenDone} done`,
-              ].filter(Boolean).join(', ')}
-            </button>
-          </div>
-        </li>
-      )}
-      {showAllTodos && todos.length > MAX_VISIBLE && (
-        <li style={rowStyle(offset++)}>
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => setShowAllTodos(false)}
-              className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-            >
-              Show fewer
-            </button>
-          </div>
-        </li>
-      )}
-      {visibleTodos.map((todo, index) => (
-        <li
-          key={index}
-          style={rowStyle(offset + index)}
-          data-tracer-live={todo.status === 'in_progress' ? 'true' : undefined}
-        >
-          <div
-            className={cn(
-              'flex items-center gap-1.5',
-              // Only the task being worked on carries full weight. Pending used
-              // to sit at plain foreground, which made the row NOT being worked
-              // on the darkest thing in the list — and under the tracer, where
-              // the live row is masked down between passes, it outweighed the
-              // active one outright.
-              todo.status === 'in_progress'
-                ? 'font-medium text-foreground'
-                : 'text-muted-foreground'
-            )}
+    <div className="mt-2 pl-6 text-xs" data-testid="activity-plan">
+      {/* Indented to the tree rows' own left edge so the two sections read as
+          one column, plan marks under tree marks. */}
+      <div className="flex items-center gap-2">
+        <span className="font-medium text-muted-foreground">Plan</span>
+        {hiddenTodos.length > 0 && (
+          <button
+            onClick={() => setShowAllTodos(true)}
+            className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
           >
-            <RowMark>
-              {todo.status === 'completed' ? (
-                // No strikethrough — the ringed check plus the muted label is
-                // enough, and it keeps the row readable. Uncolored on purpose:
-                // it inherits the completed row's muted-foreground, so the mark
-                // recedes with its label instead of being the loudest thing in
-                // a finished row.
-                <CircleCheckBig className="h-3 w-3" aria-hidden data-testid="todo-status-completed" />
-              ) : todo.status === 'in_progress' ? (
-                <Ellipsis className="h-3 w-3" aria-hidden data-testid="todo-status-in-progress" />
-              ) : (
-                <span>○</span>
+            {hiddenTodos.length} more{': '}
+            {[
+              hiddenPending > 0 && `${hiddenPending} pending`,
+              hiddenDone > 0 && `${hiddenDone} done`,
+            ].filter(Boolean).join(', ')}
+          </button>
+        )}
+        {showAllTodos && todos.length > MAX_VISIBLE && (
+          <button
+            onClick={() => setShowAllTodos(false)}
+            className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          >
+            Show fewer
+          </button>
+        )}
+      </div>
+      <ul className="mt-1 space-y-1">
+        {visibleTodos.map((todo, index) => (
+          <li key={index}>
+            <div
+              className={cn(
+                'flex items-center gap-1.5',
+                // Only the task being worked on carries full weight. Pending
+                // used to sit at plain foreground, which made the row NOT being
+                // worked on the darkest thing in the list.
+                todo.status === 'in_progress'
+                  ? 'font-medium text-foreground'
+                  : 'text-muted-foreground'
               )}
-            </RowMark>
-            <span className="truncate">{todo.content}</span>
-          </div>
-        </li>
-      ))}
-    </>
+            >
+              <RowMark>
+                {todo.status === 'completed' ? (
+                  // No strikethrough — the ringed check plus the muted label is
+                  // enough, and it keeps the row readable. Uncolored on purpose:
+                  // it inherits the completed row's muted-foreground, so the
+                  // mark recedes with its label instead of being the loudest
+                  // thing in a finished row.
+                  <CircleCheckBig className="h-3 w-3" aria-hidden data-testid="todo-status-completed" />
+                ) : todo.status === 'in_progress' ? (
+                  <Ellipsis className="h-3 w-3" aria-hidden data-testid="todo-status-in-progress" />
+                ) : (
+                  // Same 12px box and stroke as the check, so a task's mark
+                  // doesn't change size when it completes.
+                  <Circle className="h-3 w-3" aria-hidden data-testid="todo-status-pending" />
+                )}
+              </RowMark>
+              <span className="truncate">{todo.content}</span>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
