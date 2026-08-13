@@ -20,6 +20,7 @@ import {
   writeFile,
   parseJsonl,
   readJsonlFile,
+  readJsonlTailLines,
   streamJsonlFile,
   getAgentsDir,
   getAgentDir,
@@ -654,6 +655,35 @@ describe('readJsonlFile', () => {
   it('returns empty array for non-existent file', async () => {
     const result = await readJsonlFile(path.join(testDir, 'nonexistent.jsonl'))
     expect(result).toEqual([])
+  })
+})
+
+describe('readJsonlTailLines', () => {
+  it('returns the last N lines without the earlier rows', async () => {
+    const filePath = path.join(testDir, 'tail.jsonl')
+    await fs.promises.writeFile(filePath, 'a\nb\nc\nd\ne\n')
+
+    const { lines, reachedStart } = await readJsonlTailLines(filePath, 2)
+    expect(lines.map((l) => l.toString('utf-8'))).toEqual(['d', 'e'])
+    expect(reachedStart).toBe(false)
+  })
+
+  it('marks reachedStart when the tail is the whole file', async () => {
+    const filePath = path.join(testDir, 'short-tail.jsonl')
+    await fs.promises.writeFile(filePath, 'a\nb\n')
+
+    const { lines, reachedStart } = await readJsonlTailLines(filePath, 10)
+    expect(lines.map((l) => l.toString('utf-8'))).toEqual(['a', 'b'])
+    expect(reachedStart).toBe(true)
+  })
+
+  it('returns empty for a missing file', async () => {
+    const { lines, reachedStart } = await readJsonlTailLines(
+      path.join(testDir, 'missing.jsonl'),
+      5
+    )
+    expect(lines).toEqual([])
+    expect(reachedStart).toBe(true)
   })
 })
 

@@ -287,6 +287,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionName: vi.fn(),
   registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(),
+  getSessionMessagesPage: vi.fn(),
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true),
@@ -541,7 +542,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -3494,6 +3495,56 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
 
     // No DB query since there are no user messages to look up
     expect(mockDbSelectFrom).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /:id/sessions/:sessionId/messages pagination', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+  })
+
+  it('returns a cursor envelope when limit is set', async () => {
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [
+        { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+      ],
+      nextCursor: 'm1',
+    })
+
+    const res = await getReq(app, `${URL}?limit=2`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.messages).toHaveLength(1)
+    expect(body.messages[0].id).toBe('m1')
+    expect(body.nextCursor).toBe('m1')
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', { limit: 2, cursor: undefined })
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('forwards cursor to the page reader', async () => {
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+    })
+
+    const res = await getReq(app, `${URL}?limit=2&cursor=m1`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      limit: 2,
+      cursor: 'm1',
+    })
+  })
+
+  it('rejects an invalid limit', async () => {
+    const res = await getReq(app, `${URL}?limit=0`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
   })
 })
 
