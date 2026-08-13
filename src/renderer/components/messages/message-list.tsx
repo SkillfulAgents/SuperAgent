@@ -42,6 +42,7 @@ import {
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { getMessagesPageLimit, getMessagesPageOlderLimit } from '@shared/lib/messages-page'
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts
@@ -54,8 +55,8 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
 // messages stream in at the bottom the oldest rendered ones drop off the top and
 // the DOM node count stays flat. The window only grows on an explicit scroll-up
 // and is reset when the session changes.
-const BASE_WINDOW = 300
-const LOAD_STEP = 200
+const BASE_WINDOW = getMessagesPageLimit()
+const LOAD_STEP = getMessagesPageOlderLimit()
 const TURN_ANCHOR_TOP = 100
 const TURN_ANCHOR_ANIMATION_MS = 220
 // Following the live edge by assigning scrollTop teleports the viewport by the
