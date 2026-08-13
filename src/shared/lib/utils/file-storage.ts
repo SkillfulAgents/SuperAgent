@@ -11,6 +11,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { Transform } from 'stream'
 import type { ZodType } from 'zod'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
@@ -343,15 +344,22 @@ export function parseJsonl<T = unknown>(content: string): T[] {
 }
 
 /**
- * Read and parse a JSONL file
- * Returns empty array if file doesn't exist
+ * Read and parse a JSONL file. Streams line-by-line so a large transcript is
+ * never one `readFile` string. Returns [] if the file does not exist.
  */
 export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]> {
-  const content = await readFileOrNull(filePath)
-  if (content === null) {
-    return []
+  const results: T[] = []
+  try {
+    for await (const item of streamJsonlFile<T>(filePath)) {
+      results.push(item)
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return []
+    }
+    throw error
   }
-  return parseJsonl<T>(content)
+  return results
 }
 
 const NEWLINE_BYTE = 0x0a
@@ -420,6 +428,28 @@ function parseJsonlLine<T>(line: Buffer): T | undefined {
   } catch {
     return undefined
   }
+}
+
+/** Object-mode items in → JSON array bytes out. Pair with `pipeline(Readable.from(items), this)`. */
+export function createJsonArrayStringifyTransform(): Transform {
+  let first = true
+  return new Transform({
+    writableObjectMode: true,
+    transform(obj, _enc, cb) {
+      try {
+        const json = JSON.stringify(obj) ?? 'null'
+        this.push(first ? `[${json}` : `,${json}`)
+        first = false
+        cb()
+      } catch (err) {
+        cb(err as Error)
+      }
+    },
+    flush(cb) {
+      this.push(first ? '[]' : ']')
+      cb()
+    },
+  })
 }
 
 // ============================================================================

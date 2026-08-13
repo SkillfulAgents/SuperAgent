@@ -56,12 +56,6 @@ vi.mock('fs', () => ({
   createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
 }))
 
-vi.mock('stream', () => ({
-  Readable: {
-    toWeb: () => new ReadableStream(),
-  },
-}))
-
 // child_process — the run-script route executes approved scripts via
 // promisify(exec)/promisify(execFile); the callback-style mocks below resolve
 // through promisify. Also covers the fire-and-forget execFile in the
@@ -469,7 +463,8 @@ const mockGetAgentWorkspaceDir = vi.fn((_slug?: string) => '/mock/workspace')
 const mockGetSessionJsonlPath = vi.fn(
   (agentSlug: string, sessionId: string) => `/mock/sessions/${agentSlug}/${sessionId}.jsonl`,
 )
-vi.mock('@shared/lib/utils/file-storage', () => ({
+vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/utils/file-storage')>()),
   // ResolveAgent() resolves the :id param via resolveAgentId. Delegate to the
   // existing agentExists mock so the legacy 404-on-missing behavior is preserved:
   // returns the slug verbatim when it "exists", else null.

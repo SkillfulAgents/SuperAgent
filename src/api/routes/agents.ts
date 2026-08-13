@@ -67,7 +67,7 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
@@ -180,7 +180,7 @@ import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-
 import { loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { captureException } from '@shared/lib/error-reporting'
 import * as fs from 'fs'
-import { Readable } from 'stream'
+import { Readable, pipeline } from 'stream'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -1825,7 +1825,20 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       }
     }
 
-    return c.json(transformed)
+    const source = Readable.from(transformed)
+    const stringify = createJsonArrayStringifyTransform()
+    const reportStreamError = (err: unknown) => {
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (code === 'ABORT_ERR' || code === 'ERR_STREAM_PREMATURE_CLOSE') return
+      console.error('Failed to stream messages:', err)
+      captureException(err, { tags: { component: 'agents', operation: 'stream-messages' } })
+    }
+    pipeline(source, stringify, (err) => {
+      if (err) reportStreamError(err)
+    })
+    return c.body(Readable.toWeb(stringify) as ReadableStream, 200, {
+      'Content-Type': 'application/json',
+    })
   } catch (error) {
     console.error('Failed to fetch messages:', error)
     return c.json({ error: 'Failed to fetch messages' }, 500)
