@@ -598,8 +598,8 @@ describe('AgentActivityIndicator', () => {
     // The other 2 completed tasks are hidden
     expect(screen.queryByText('Task 1')).not.toBeInTheDocument()
     expect(screen.queryByText('Task 2')).not.toBeInTheDocument()
-    // Shows the overflow indicator
-    expect(screen.getByText(/2 more.*2 done/)).toBeInTheDocument()
+    // Shows the overflow toggle
+    expect(screen.getByText('Show more')).toBeInTheDocument()
   })
 
   it('shows all tasks when toggle is clicked', async () => {
@@ -624,16 +624,21 @@ describe('AgentActivityIndicator', () => {
 
     // 1 task hidden
     expect(screen.queryByText('Task 6')).not.toBeInTheDocument()
-    expect(screen.getByText(/1 more.*1 pending/)).toBeInTheDocument()
+    expect(screen.getByText('Show more')).toBeInTheDocument()
 
     // Click toggle
-    act(() => { screen.getByText(/1 more/).click() })
+    act(() => { screen.getByText('Show more').click() })
 
     // All tasks now visible
     expect(screen.getByText('Task 6')).toBeInTheDocument()
-    expect(screen.queryByText(/1 more/)).not.toBeInTheDocument()
-    // "Show fewer" button appears
-    expect(screen.getByText('Show fewer')).toBeInTheDocument()
+    expect(screen.queryByText('Show more')).not.toBeInTheDocument()
+    // The toggle flips to its collapse label
+    expect(screen.getByText('Show less')).toBeInTheDocument()
+
+    // ...and back: the toggle survives being expanded rather than vanishing
+    act(() => { screen.getByText('Show less').click() })
+    expect(screen.queryByText('Task 6')).not.toBeInTheDocument()
+    expect(screen.getByText('Show more')).toBeInTheDocument()
   })
 
   it('prefers TaskCreate/TaskUpdate over TodoWrite when both exist', () => {
