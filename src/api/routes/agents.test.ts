@@ -652,6 +652,53 @@ describe('GET /:id/artifacts/:artifactSlug/view', () => {
     expect(iframe.src).toBe('/api/agents/test-agent/artifacts/sales/')
     expect(iframe.sandbox).toContain('allow-downloads')
   })
+
+  it('shows the first-run dependency phase while the standalone view waits', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
+    const html = await res.text()
+    const installing = {
+      slug: 'sales',
+      name: 'Sales',
+      status: 'starting',
+      startupPhase: 'installing-dependencies',
+      firstRun: true,
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([installing]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'running' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([installing]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { slug: 'sales', name: 'Sales', status: 'running' },
+      ]), { status: 200 }))
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+    const appendChild = vi.fn()
+    const iframe: Record<string, string> = {}
+    const statusElement = { textContent: '', classList: { add: vi.fn() } }
+    const loadingElement = { remove: vi.fn() }
+    const document = {
+      title: '',
+      getElementById: (id: string) => id === 'status' ? statusElement : loadingElement,
+      createElement: () => iframe,
+      body: { appendChild },
+    }
+
+    expect(script).toBeDefined()
+    runInNewContext(script!, {
+      document,
+      fetch: fetchMock,
+      setTimeout: (callback: () => void) => {
+        callback()
+        return 0
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(appendChild).toHaveBeenCalledWith(iframe)
+    })
+
+    expect(statusElement.textContent).toBe('Preparing dashboard for first use…')
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
 })
 
 // ============================================================================

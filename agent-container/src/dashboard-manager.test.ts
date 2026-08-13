@@ -200,6 +200,12 @@ describe('DashboardManager log stream lifecycle', () => {
     stopAll(): Promise<void>
     getDashboardUpstreamPathMode(slug: string): 'stripped' | 'mounted'
     captureScreenshot(slug: string): Promise<{ ok: true; path: string } | { ok: false; reason: string }>
+    listDashboards(): Array<{
+      slug: string
+      status: string
+      startupPhase?: string
+      firstRun?: boolean
+    }>
   }
   let procs: FakeChildProcess[]
   let slugCounter = 0
@@ -397,8 +403,41 @@ describe('DashboardManager log stream lifecycle', () => {
 
       const info = await manager.startDashboard(slug)
 
-      expect(spawns.map((s) => s.args)).toEqual([['install'], ['run', 'start']])
+      expect(spawns.map((s) => s.args)).toEqual([
+        ['install', '--network-concurrency=8'],
+        ['run', 'start'],
+      ])
       expect(info.status).toBe('running')
+    })
+
+    it('publishes a distinct first-run phase while dependencies install', async () => {
+      const slug = await scaffoldDashboard()
+      await fs.promises.rm(path.join(testDir, slug, 'node_modules'), { recursive: true })
+      let installProc: FakeChildProcess | undefined
+      spawnHolder.impl = (_command, args) => {
+        const proc = new FakeChildProcess()
+        procs.push(proc)
+        if (args[0] === 'install') installProc = proc
+        return proc
+      }
+
+      const start = manager.startDashboard(slug, { forceInstall: false })
+
+      await vi.waitFor(() => expect(installProc).toBeDefined())
+      expect(manager.listDashboards()).toContainEqual(expect.objectContaining({
+        slug,
+        status: 'starting',
+        startupPhase: 'installing-dependencies',
+        firstRun: true,
+      }))
+
+      installProc!.exit(0)
+      await start
+
+      const running = manager.listDashboards().find((dashboard) => dashboard.slug === slug)
+      expect(running).toEqual(expect.objectContaining({ status: 'running' }))
+      expect(running).not.toHaveProperty('startupPhase')
+      expect(running).not.toHaveProperty('firstRun')
     })
 
     it('passes dashboard mount metadata to the dashboard process', async () => {
@@ -450,8 +489,8 @@ describe('DashboardManager log stream lifecycle', () => {
       const info = await manager.startDashboard(slug, { forceInstall: false })
 
       expect(spawns.map((s) => s.args)).toEqual([
-        ['install', '--frozen-lockfile'],
-        ['install'],
+        ['install', '--network-concurrency=8', '--frozen-lockfile'],
+        ['install', '--network-concurrency=8'],
         ['run', 'start'],
       ])
       expect(info.status).toBe('running')

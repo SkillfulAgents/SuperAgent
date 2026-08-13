@@ -28,6 +28,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const [now, setNow] = useState(() => Date.now())
   const [restarting, setRestarting] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [frameLoading, setFrameLoading] = useState(true)
   const [restartError, setRestartError] = useState<string | null>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const waitStartedAtRef = useRef<number | null>(null)
@@ -77,7 +78,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     waitElapsedMs,
   })
 
-  const nextPollFast = viewState.kind === 'waiting' && viewState.pollFast
+  const nextPollFast = 'pollFast' in viewState && viewState.pollFast
   useEffect(() => {
     setPollFast((prev) => (prev === nextPollFast ? prev : nextPollFast))
   }, [nextPollFast])
@@ -92,6 +93,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const handleRefresh = useCallback(() => {
     if (iframeRef.current) {
       setRefreshing(true)
+      setFrameLoading(true)
       iframeRef.current.src = iframeSrc
     }
   }, [iframeSrc])
@@ -133,6 +135,10 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
 
   const showFrame = isAgentRunning && dashboard?.status === 'running'
   const actionPending = restarting || stopAgent.isPending || startAgent.isPending
+
+  useEffect(() => {
+    if (showFrame) setFrameLoading(true)
+  }, [iframeSrc, showFrame])
 
   if (!showFrame) {
     return (
@@ -180,11 +186,15 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
             variant="ghost"
             size="sm"
             onClick={handleRefresh}
-            disabled={refreshing}
-            title={refreshing ? 'Refreshing…' : 'Refresh'}
-            aria-label={refreshing ? 'Refreshing dashboard' : 'Refresh dashboard'}
+            disabled={frameLoading}
+            title={refreshing ? 'Refreshing…' : frameLoading ? 'Loading dashboard…' : 'Refresh'}
+            aria-label={refreshing
+              ? 'Refreshing dashboard'
+              : frameLoading
+                ? 'Loading dashboard'
+                : 'Refresh dashboard'}
           >
-            {refreshing
+            {frameLoading
               ? <Loader2 className="h-3 w-3 animate-spin" />
               : <RefreshCw className="h-3 w-3" />}
           </Button>
@@ -206,7 +216,10 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           title={dashboard?.name || dashboardSlug}
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
           allow="microphone; camera"
-          onLoad={() => setRefreshing(false)}
+          onLoad={() => {
+            setFrameLoading(false)
+            setRefreshing(false)
+          }}
         />
       </div>
     </div>
@@ -237,7 +250,7 @@ function DashboardStatusBody({
   const showSpinner = 'showSpinner' in viewState && viewState.showSpinner
   const showRetry = viewState.kind === 'agent-start-failed' && canStart
   const showRestart =
-    (viewState.kind === 'crashed' || (viewState.kind === 'waiting' && viewState.slow))
+    (viewState.kind === 'crashed' || ('slow' in viewState && viewState.slow))
     && canStart
 
   return (
@@ -246,6 +259,9 @@ function DashboardStatusBody({
         {showSpinner && <Loader2 className="h-4 w-4 animate-spin" />}
         <p className="text-base">{viewState.message}</p>
       </div>
+      {'detail' in viewState && viewState.detail && (
+        <p className="text-sm text-muted-foreground">{viewState.detail}</p>
+      )}
       {showRetry && (
         <Button onClick={onRetry} disabled={retryPending}>
           <Play className="mr-2 h-4 w-4" />
