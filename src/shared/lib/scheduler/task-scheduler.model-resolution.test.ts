@@ -28,6 +28,7 @@ vi.mock('@shared/lib/config/settings', () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-browser',
     dashboardBuilderModel: 'claude-dashboard',
+    agentEffort: 'low',
   }),
 }))
 
@@ -158,7 +159,7 @@ describe('TaskScheduler model, effort, and speed resolution', () => {
   it('uses the global default when neither task nor agent set one', async () => {
     const args = await executeTask()
     expect(args.model).toBe('claude-sonnet-4-20250514')
-    expect(args.effort).toBeUndefined()
+    expect(args.effort).toBe('low')
     expect(args.speed).toBeUndefined()
   })
 

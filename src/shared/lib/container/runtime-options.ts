@@ -60,3 +60,79 @@ export function parseRuntimeOptions(raw: unknown): RuntimeOptions {
 
   return result
 }
+
+const inheritModelsSchema = z.object({
+  agentModel: z.string().min(1),
+})
+
+function presentString(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length > 0) return value
+  return undefined
+}
+
+function optionalEffort(value: unknown): EffortLevel | undefined {
+  const parsed = z.enum(EFFORT_LEVELS).safeParse(value)
+  return parsed.success ? parsed.data : undefined
+}
+
+function optionalSpeed(value: unknown): SpeedLevel | undefined {
+  const parsed = z.enum(SPEED_LEVELS).safeParse(value)
+  return parsed.success ? parsed.data : undefined
+}
+
+function asRecord(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  return raw as Record<string, unknown>
+}
+
+export type RuntimeInherit = {
+  model: string
+  effort?: EffortLevel
+  speed?: SpeedLevel
+}
+
+/**
+ * Surface override → agent default → app default.
+ * Junk surface/agent values are treated as unset (do not throw).
+ * Effort is omitted when no rung has one. Speed stays two-rung.
+ */
+export function resolveRuntimeInherit(
+  surface: unknown,
+  agent: unknown,
+  models: unknown,
+): RuntimeInherit {
+  const s = asRecord(surface) ?? {}
+  const a = asRecord(agent) ?? {}
+  const raw = asRecord(models) ?? {}
+  const m = inheritModelsSchema.parse({ agentModel: raw.agentModel })
+
+  const model = presentString(s.model) ?? presentString(a.defaultModel) ?? m.agentModel
+  const effort = optionalEffort(s.effort) ?? optionalEffort(a.defaultEffort) ?? optionalEffort(raw.agentEffort)
+  const speed = optionalSpeed(s.speed) ?? optionalSpeed(a.defaultSpeed)
+
+  return {
+    model,
+    ...(effort ? { effort } : {}),
+    ...(speed ? { speed } : {}),
+  }
+}
+
+/** Snap a resolved effort to what the catalog model allows, for display only. */
+export function clampEffortForDisplay(
+  effort: EffortLevel | undefined,
+  supported: EffortLevel[] | undefined,
+): EffortLevel | undefined {
+  if (!effort) return undefined
+  if (!supported || supported.length === 0 || supported.includes(effort)) return effort
+  return supported.includes('medium') ? 'medium' : supported[0]
+}
+
+/** Snap a resolved speed for display only. Mirrors useSpeedClamp, which always snaps to 'normal'. */
+export function clampSpeedForDisplay(
+  speed: SpeedLevel | undefined,
+  supported: SpeedLevel[] | undefined,
+): SpeedLevel | undefined {
+  if (!speed) return undefined
+  if (!supported || supported.length === 0 || supported.includes(speed)) return speed
+  return 'normal'
+}

@@ -34,8 +34,7 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
-import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import { RuntimeOptionsPatchSchema, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { deliverSessionWake } from '@shared/lib/scheduler/wake-delivery'
@@ -310,17 +309,20 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
-    const effort = task.effort ?? agentPrefs.defaultEffort
-    const speed = task.speed ?? agentPrefs.defaultSpeed
+    const resolved = resolveRuntimeInherit(
+      { model: task.model, effort: task.effort, speed: task.speed },
+      agentPrefs,
+      models,
+    )
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
-      model: task.model || agentPrefs.defaultModel || models.agentModel,
+      model: resolved.model,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
-      ...(effort ? { effort: effort as EffortLevel } : {}),
-      ...(speed ? { speed: speed as SpeedLevel } : {}),
+      effort: resolved.effort,
+      ...(resolved.speed ? { speed: resolved.speed } : {}),
     })
 
     const sessionId = containerSession.id
