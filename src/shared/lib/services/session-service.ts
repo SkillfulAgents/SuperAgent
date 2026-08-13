@@ -417,9 +417,40 @@ function capDisplayString(value: string): string {
   return `${value.slice(0, DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS)}\n…[truncated ${value.length - DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS} chars]`
 }
 
+function omitOversizedImagePayload(block: Record<string, unknown>): void {
+  let originalChars: number | undefined
+  const source = block.source
+  if (source && typeof source === 'object') {
+    const src = source as Record<string, unknown>
+    if (typeof src.data === 'string' && src.data.length > DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS) {
+      originalChars = src.data.length
+      delete src.data
+    }
+  }
+  if (typeof block.data === 'string' && block.data.length > DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS) {
+    originalChars = block.data.length
+    delete block.data
+  }
+  if (originalChars != null) {
+    block.omitted = true
+    block.originalChars = originalChars
+  }
+}
+
 function capDisplayValue(value: unknown, depth = 0): unknown {
   if (depth > 8 || value == null) return value
-  if (typeof value === 'string') return capDisplayString(value)
+  if (typeof value === 'string') {
+    if (value.length <= DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS) return value
+    const trimmed = value.trimStart()
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        return capDisplayValue(JSON.parse(value), depth)
+      } catch {
+        // Not JSON — fall through to a text cap.
+      }
+    }
+    return capDisplayString(value)
+  }
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) {
       value[i] = capDisplayValue(value[i], depth + 1)
@@ -428,6 +459,10 @@ function capDisplayValue(value: unknown, depth = 0): unknown {
   }
   if (typeof value === 'object') {
     const obj = value as Record<string, unknown>
+    if (obj.type === 'image') {
+      omitOversizedImagePayload(obj)
+      return obj
+    }
     for (const key of Object.keys(obj)) {
       obj[key] = capDisplayValue(obj[key], depth + 1)
     }

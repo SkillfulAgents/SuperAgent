@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { formatToolName } from './tool-call-item'
 import { createToolCall } from '@renderer/test/factories'
+import { parseToolResult } from '@renderer/lib/parse-tool-result'
 
 // Mock getToolRenderer to return null (generic display)
 vi.mock('./tool-renderers', () => ({
@@ -13,10 +14,11 @@ vi.mock('./tool-renderers', () => ({
 
 // Mock parseToolResult
 vi.mock('@renderer/lib/parse-tool-result', () => ({
-  parseToolResult: (result: unknown) => ({
+  parseToolResult: vi.fn((result: unknown) => ({
     text: result != null ? String(result) : null,
     images: [],
-  }),
+    omittedImages: [],
+  })),
 }))
 
 // Mock useElapsedTimer for deterministic values
@@ -143,6 +145,20 @@ describe('ToolCallItem', () => {
 
       await user.click(screen.getByTestId('tool-call-toggle-Bash'))
       expect(screen.queryByText('Input')).not.toBeInTheDocument()
+    })
+
+    it('shows a placeholder when the display transcript omitted a screenshot', async () => {
+      const user = userEvent.setup()
+      vi.mocked(parseToolResult).mockReturnValueOnce({
+        text: null,
+        images: [],
+        omittedImages: [{ mimeType: 'image/png', originalChars: 2_100_000 }],
+      })
+      const tc = createToolCall({ result: 'ignored' })
+      render(<ToolCallItem toolCall={tc} />)
+
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
+      expect(screen.getByTestId('omitted-screenshot')).toHaveTextContent('Screenshot omitted (2.1 MB)')
     })
   })
 

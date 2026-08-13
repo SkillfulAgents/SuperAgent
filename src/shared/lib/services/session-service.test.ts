@@ -818,6 +818,134 @@ describe('session-service', () => {
       const display = await getSessionMessagesWithCompact('test-agent', 'exact-session')
       expect((display[0] as { message: { content: string } }).message.content).toBe(exact)
     })
+
+    it('omits oversized image payloads instead of slicing the base64', async () => {
+      const huge = 'A'.repeat(DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS + 8000)
+      await createSessionFile('test-agent', 'image-session', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 't1',
+                content: [
+                  { type: 'text', text: 'screenshot below' },
+                  {
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/png', data: huge },
+                  },
+                  { type: 'image', data: huge, mimeType: 'image/jpeg' },
+                ],
+              },
+            ],
+          },
+        },
+      ])
+
+      const display = await getSessionMessagesWithCompact('test-agent', 'image-session')
+      const blocks = (
+        display[0] as {
+          message: {
+            content: Array<{
+              content: Array<Record<string, unknown>>
+            }>
+          }
+        }
+      ).message.content[0].content
+
+      const anthropic = blocks[1]
+      const mcp = blocks[2]
+      expect(anthropic).toMatchObject({
+        type: 'image',
+        omitted: true,
+        originalChars: huge.length,
+        source: { type: 'base64', media_type: 'image/png' },
+      })
+      expect(anthropic.source).not.toHaveProperty('data')
+      expect(JSON.stringify(anthropic)).not.toContain('[truncated')
+      expect(mcp).toMatchObject({
+        type: 'image',
+        omitted: true,
+        originalChars: huge.length,
+        mimeType: 'image/jpeg',
+      })
+      expect(mcp).not.toHaveProperty('data')
+
+      const full = await getSessionMessages('test-agent', 'image-session')
+      const fullBlocks = (full[0].message.content as Array<{ content: Array<{ source?: { data?: string }; data?: string }> }>)[0]
+        .content
+      expect(fullBlocks[1].source?.data).toBe(huge)
+      expect(fullBlocks[2].data).toBe(huge)
+    })
+
+    it('keeps image payloads at the cap', async () => {
+      const exact = 'B'.repeat(DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS)
+      await createSessionFile('test-agent', 'small-image-session', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 't1',
+                content: [
+                  {
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/png', data: exact },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ])
+
+      const display = await getSessionMessagesWithCompact('test-agent', 'small-image-session')
+      const block = (
+        display[0] as {
+          message: { content: Array<{ content: Array<{ source?: { data?: string }; omitted?: boolean }> }> }
+        }
+      ).message.content[0].content[0]
+      expect(block.source?.data).toBe(exact)
+      expect(block.omitted).toBeUndefined()
+    })
+
+    it('caps JSON-encoded image arrays without slicing the payload string', async () => {
+      const huge = 'C'.repeat(DISPLAY_TRANSCRIPT_FIELD_MAX_CHARS + 8000)
+      const encoded = JSON.stringify([
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: huge } },
+      ])
+      await createSessionFile('test-agent', 'json-image-session', [
+        {
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 't1', content: encoded }],
+          },
+        },
+      ])
+
+      const display = await getSessionMessagesWithCompact('test-agent', 'json-image-session')
+      const content = (
+        display[0] as { message: { content: Array<{ content: Array<Record<string, unknown>> }> } }
+      ).message.content[0].content
+      expect(Array.isArray(content)).toBe(true)
+      expect(content[0]).toMatchObject({
+        type: 'image',
+        omitted: true,
+        originalChars: huge.length,
+      })
+      expect(JSON.stringify(content[0])).not.toContain('[truncated')
+    })
   })
 
   describe('deleteSession', () => {

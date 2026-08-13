@@ -5,24 +5,42 @@ interface ContentBlock {
   // MCP image format
   data?: string
   mimeType?: string
+  omitted?: boolean
+  originalChars?: number
 }
 
 export interface ParsedToolResult {
   text: string | null
   images: Array<{ data: string; mimeType: string }>
+  omittedImages: Array<{ mimeType?: string; originalChars: number }>
 }
 
-/**
- * Extract displayable text and images from a tool result.
- * Results can be: a plain string, a JSON string of content blocks,
- * or an array of content block objects (from MCP).
- */
+function collectImage(
+  block: ContentBlock,
+  images: ParsedToolResult['images'],
+  omittedImages: ParsedToolResult['omittedImages']
+) {
+  if (block.omitted) {
+    omittedImages.push({
+      mimeType: block.source?.media_type ?? block.mimeType,
+      originalChars: typeof block.originalChars === 'number' ? block.originalChars : 0,
+    })
+    return
+  }
+  if (block.source?.data && block.source?.media_type) {
+    images.push({ data: block.source.data, mimeType: block.source.media_type })
+  } else if (block.data && block.mimeType) {
+    images.push({ data: block.data, mimeType: block.mimeType })
+  }
+}
+
+// Extract displayable text and images from a tool result (string, JSON blocks, or MCP array).
 export function parseToolResult(result: unknown): ParsedToolResult {
   const images: Array<{ data: string; mimeType: string }> = []
+  const omittedImages: ParsedToolResult['omittedImages'] = []
 
-  if (result == null) return { text: null, images }
+  if (result == null) return { text: null, images, omittedImages }
   if (typeof result === 'string') {
-    // Try parsing as JSON content blocks
     try {
       const parsed = JSON.parse(result)
       if (Array.isArray(parsed)) {
@@ -31,7 +49,7 @@ export function parseToolResult(result: unknown): ParsedToolResult {
     } catch {
       // Plain string
     }
-    return { text: result, images }
+    return { text: result, images, omittedImages }
   }
 
   if (Array.isArray(result)) {
@@ -40,33 +58,20 @@ export function parseToolResult(result: unknown): ParsedToolResult {
       if (block.type === 'text' && block.text) {
         textParts.push(block.text)
       } else if (block.type === 'image') {
-        // Anthropic API format: { type: "image", source: { type: "base64", media_type, data } }
-        if (block.source?.data && block.source?.media_type) {
-          images.push({ data: block.source.data, mimeType: block.source.media_type })
-        }
-        // MCP format: { type: "image", data, mimeType }
-        else if (block.data && block.mimeType) {
-          images.push({ data: block.data, mimeType: block.mimeType })
-        }
+        collectImage(block, images, omittedImages)
       }
     }
-    return { text: textParts.length > 0 ? textParts.join('\n') : null, images }
+    return { text: textParts.length > 0 ? textParts.join('\n') : null, images, omittedImages }
   }
 
-  // Single content block object
   const block = result as ContentBlock
   if (block.type === 'text' && block.text) {
-    return { text: block.text, images }
+    return { text: block.text, images, omittedImages }
   }
   if (block.type === 'image') {
-    if (block.source?.data && block.source?.media_type) {
-      images.push({ data: block.source.data, mimeType: block.source.media_type })
-    } else if (block.data && block.mimeType) {
-      images.push({ data: block.data, mimeType: block.mimeType })
-    }
-    return { text: null, images }
+    collectImage(block, images, omittedImages)
+    return { text: null, images, omittedImages }
   }
 
-  // Fallback: stringify
-  return { text: JSON.stringify(result, null, 2), images }
+  return { text: JSON.stringify(result, null, 2), images, omittedImages }
 }

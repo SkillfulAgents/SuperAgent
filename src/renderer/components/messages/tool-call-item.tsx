@@ -1,6 +1,6 @@
 
 import { cn } from '@shared/lib/utils/cn'
-import { Check, X, Ban, ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react'
+import { Check, X, Ban, ChevronDown, ChevronRight, Loader2, Search, ImageOff } from 'lucide-react'
 import { useState, useRef, useMemo, memo } from 'react'
 import { getToolRenderer } from './tool-renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
@@ -36,6 +36,12 @@ function getStatus(toolCall: ApiToolCall, isSessionActive?: boolean): ToolCallSt
 
 function isUserInputTool(name: string): boolean {
   return name === 'AskUserQuestion' || name.startsWith('mcp__user-input__')
+}
+
+function formatOmittedSize(chars: number): string {
+  if (chars >= 1_000_000) return `${(chars / 1_000_000).toFixed(1)} MB`
+  if (chars >= 1_000) return `${Math.round(chars / 1_000)} KB`
+  return `${chars} chars`
 }
 
 function ToolNameWithSummary({ name, summary, active = false }: { name: string; summary?: string | null; active?: boolean }) {
@@ -109,6 +115,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
   const parsed = useMemo(() => parseToolResult(toolCall.result), [toolCall.result])
   const resultStr = parsed.text
   const resultImages = parsed.images
+  const omittedImages = parsed.omittedImages
 
   // Get custom expanded view if available
   const CustomExpandedView = renderer?.ExpandedView
@@ -214,6 +221,20 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
                   alt="Tool result"
                   className="max-w-full rounded border"
                 />
+              ))}
+            </div>
+          )}
+          {omittedImages.length > 0 && (
+            <div className="mt-2 space-y-2">
+              {omittedImages.map((img, i) => (
+                <div
+                  key={i}
+                  data-testid="omitted-screenshot"
+                  className="flex items-center gap-2 rounded border border-dashed border-border px-2 py-2 text-xs text-muted-foreground"
+                >
+                  <ImageOff className="h-3.5 w-3.5 shrink-0" />
+                  Screenshot omitted ({formatOmittedSize(img.originalChars)})
+                </div>
               ))}
             </div>
           )}

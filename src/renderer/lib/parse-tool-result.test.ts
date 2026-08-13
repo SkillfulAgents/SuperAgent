@@ -5,24 +5,24 @@ describe('parseToolResult', () => {
   describe('null/undefined input', () => {
     it('returns null text and no images for null', () => {
       const result = parseToolResult(null)
-      expect(result).toEqual({ text: null, images: [] })
+      expect(result).toEqual({ text: null, images: [], omittedImages: [] })
     })
 
     it('returns null text and no images for undefined', () => {
       const result = parseToolResult(undefined)
-      expect(result).toEqual({ text: null, images: [] })
+      expect(result).toEqual({ text: null, images: [], omittedImages: [] })
     })
   })
 
   describe('plain string input', () => {
     it('returns the string as text', () => {
       const result = parseToolResult('hello world')
-      expect(result).toEqual({ text: 'hello world', images: [] })
+      expect(result).toEqual({ text: 'hello world', images: [], omittedImages: [] })
     })
 
     it('returns empty string as text', () => {
       const result = parseToolResult('')
-      expect(result).toEqual({ text: '', images: [] })
+      expect(result).toEqual({ text: '', images: [], omittedImages: [] })
     })
 
     it('handles strings with ANSI escape codes', () => {
@@ -44,7 +44,7 @@ describe('parseToolResult', () => {
     it('parses a JSON string containing text blocks', () => {
       const json = JSON.stringify([{ type: 'text', text: 'parsed text' }])
       const result = parseToolResult(json)
-      expect(result).toEqual({ text: 'parsed text', images: [] })
+      expect(result).toEqual({ text: 'parsed text', images: [], omittedImages: [] })
     })
 
     it('parses a JSON string containing image blocks (MCP format)', () => {
@@ -70,7 +70,7 @@ describe('parseToolResult', () => {
   describe('content block arrays (objects)', () => {
     it('extracts text from a single text block', () => {
       const result = parseToolResult([{ type: 'text', text: 'hello' }])
-      expect(result).toEqual({ text: 'hello', images: [] })
+      expect(result).toEqual({ text: 'hello', images: [], omittedImages: [] })
     })
 
     it('concatenates multiple text blocks with newlines', () => {
@@ -78,7 +78,7 @@ describe('parseToolResult', () => {
         { type: 'text', text: 'line 1' },
         { type: 'text', text: 'line 2' },
       ])
-      expect(result).toEqual({ text: 'line 1\nline 2', images: [] })
+      expect(result).toEqual({ text: 'line 1\nline 2', images: [], omittedImages: [] })
     })
 
     it('extracts images in Anthropic API format', () => {
@@ -140,14 +140,14 @@ describe('parseToolResult', () => {
 
     it('returns null text for empty arrays', () => {
       const result = parseToolResult([])
-      expect(result).toEqual({ text: null, images: [] })
+      expect(result).toEqual({ text: null, images: [], omittedImages: [] })
     })
   })
 
   describe('single content block objects', () => {
     it('extracts text from a single text block object', () => {
       const result = parseToolResult({ type: 'text', text: 'single block' })
-      expect(result).toEqual({ text: 'single block', images: [] })
+      expect(result).toEqual({ text: 'single block', images: [], omittedImages: [] })
     })
 
     it('extracts image from a single Anthropic format image block', () => {
@@ -183,6 +183,32 @@ describe('parseToolResult', () => {
       const result = parseToolResult(obj)
       expect(result.text).toBe(JSON.stringify(obj, null, 2))
       expect(result.images).toEqual([])
+    })
+  })
+
+  describe('omitted image payloads', () => {
+    it('collects omitted Anthropic image blocks without treating them as renderable', () => {
+      const result = parseToolResult([
+        {
+          type: 'image',
+          omitted: true,
+          originalChars: 99_000,
+          source: { type: 'base64', media_type: 'image/png' },
+        },
+      ])
+      expect(result.images).toEqual([])
+      expect(result.omittedImages).toEqual([{ mimeType: 'image/png', originalChars: 99_000 }])
+    })
+
+    it('collects omitted MCP image blocks', () => {
+      const result = parseToolResult({
+        type: 'image',
+        omitted: true,
+        originalChars: 50_000,
+        mimeType: 'image/jpeg',
+      })
+      expect(result.images).toEqual([])
+      expect(result.omittedImages).toEqual([{ mimeType: 'image/jpeg', originalChars: 50_000 }])
     })
   })
 })
