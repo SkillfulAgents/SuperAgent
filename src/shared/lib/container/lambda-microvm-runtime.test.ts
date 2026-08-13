@@ -1006,7 +1006,7 @@ describe('LocalAuthForwardProxy', () => {
   let capturedRequest: { host?: string; path?: string; headers?: Record<string, string>; timeout?: number }
   const proxies: LocalAuthForwardProxy[] = []
 
-  type H2Stream = PassThrough & { setTimeout: (ms: number) => void }
+  type H2Stream = PassThrough & { setTimeout: (ms: number, cb?: () => void) => void }
   type H2Handler = (headers: Record<string, string>, stream: H2Stream) => void
 
   function h2Respond(stream: H2Stream, status: number, body: string) {
@@ -1037,6 +1037,7 @@ describe('LocalAuthForwardProxy', () => {
         this.closed = true
       },
       on() { return this },
+      off() { return this },
       once(ev: string, cb: () => void) {
         if (ev === 'connect') cb()
         return this
@@ -1107,6 +1108,7 @@ describe('LocalAuthForwardProxy', () => {
     expect(capturedRequest.headers!['x-custom']).toBe('v')
     expect(capturedRequest.headers!.connection).toBeUndefined()
     expect(capturedRequest.headers!['x-aws-proxy-force-h2']).toBeUndefined()
+    expect(capturedRequest.timeout).toBe(30_000)
   })
 
   it('caches the auth token across requests (mints once)', async () => {
@@ -1195,6 +1197,34 @@ describe('LocalAuthForwardProxy', () => {
     client.destroy()
     expect(healthCalls).toBeGreaterThanOrEqual(2) // retried past the 502
     expect(tlsCalled).toBe(true) // only piped once the VM was awake
+  })
+
+  it('retries after an HTTP/2 connect error then returns the body', async () => {
+    let connects = 0
+    http2ConnectImpl = () => {
+      connects++
+      if (connects === 1) {
+        return {
+          closed: false,
+          destroyed: false,
+          request() { throw new Error('should not request') },
+          destroy() { this.destroyed = true; this.closed = true },
+          close() { this.closed = true },
+          on() { return this },
+          off() { return this },
+          once(ev: string, cb: (err?: Error) => void) {
+            if (ev === 'error') process.nextTick(() => cb(new Error('alpn rejected')))
+            return this
+          },
+        }
+      }
+      return mockH2Session((_headers, stream) => h2Respond(stream, 200, 'UPSTREAM_OK'))
+    }
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    const res = await httpGet(port, '/health')
+    expect(res.status).toBe(200)
+    expect(res.body).toBe('UPSTREAM_OK')
+    expect(connects).toBe(2)
   })
 
   it('retries an ingress 429 then returns the successful body', async () => {

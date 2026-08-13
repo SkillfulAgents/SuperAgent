@@ -243,7 +243,7 @@ export class LocalAuthForwardProxy {
   private tokenCache: { token: MicrovmAuthToken; expiresAt: number } | null = null
   private refreshing: Promise<MicrovmAuthToken> | null = null
   private h2: http2.ClientHttp2Session | null = null
-  private h2connecting: Promise<http2.ClientHttp2Session | null> | null = null
+  private h2connecting: Promise<http2.ClientHttp2Session> | null = null
 
   constructor(private readonly options: ProxyOptions) {}
 
@@ -310,7 +310,7 @@ export class LocalAuthForwardProxy {
 
   // One HTTP/2 session = one AWS ingress connection. Agent is plaintext HTTP/1.1
   // inside the VM — do not send x-aws-proxy-force-h2; AWS translates streams.
-  private async ensureHttp2(): Promise<http2.ClientHttp2Session | null> {
+  private async ensureHttp2(): Promise<http2.ClientHttp2Session> {
     if (this.h2 && !this.h2.closed && !this.h2.destroyed) return this.h2
     if (this.h2connecting) return this.h2connecting
     this.h2connecting = this.connectHttp2().finally(() => {
@@ -319,32 +319,43 @@ export class LocalAuthForwardProxy {
     return this.h2connecting
   }
 
-  private connectHttp2(): Promise<http2.ClientHttp2Session | null> {
-    return new Promise((resolve) => {
+  private connectHttp2(): Promise<http2.ClientHttp2Session> {
+    return new Promise((resolve, reject) => {
       let settled = false
-      const finish = (session: http2.ClientHttp2Session | null) => {
+      const finishOk = (session: http2.ClientHttp2Session) => {
         if (settled) return
         settled = true
         resolve(session)
+      }
+      const finishErr = (error: Error) => {
+        if (settled) return
+        settled = true
+        reject(error)
       }
       const connect = this.options.http2Connect ?? http2.connect
       const session = connect(`https://${this.options.endpoint}`, {
         servername: this.options.endpoint,
       })
       const timer = setTimeout(() => {
-        session.destroy()
-        finish(null)
+        const error = new Error('microvm http2 connect timed out')
+        session.destroy(error)
+        finishErr(error)
       }, UPSTREAM_IDLE_TIMEOUT_MS)
+      const onConnectError = (error: Error) => {
+        clearTimeout(timer)
+        finishErr(error)
+      }
+      session.once('error', onConnectError)
       session.once('connect', () => {
+        session.off('error', onConnectError)
         clearTimeout(timer)
         this.h2 = session
         session.once('close', () => { if (this.h2 === session) this.h2 = null })
-        session.once('error', () => { if (this.h2 === session) this.h2 = null })
-        finish(session)
-      })
-      session.once('error', () => {
-        clearTimeout(timer)
-        finish(null)
+        session.once('error', (error) => {
+          if (this.h2 === session) this.h2 = null
+          captureException(error, { tags: { area: 'container', op: 'microvm.proxy.http2.session' }, extra: { endpoint: this.options.endpoint } })
+        })
+        finishOk(session)
       })
     })
   }
@@ -368,12 +379,11 @@ export class LocalAuthForwardProxy {
         h2headers[key] = value
       }
       const stream = session.request(h2headers)
-      const timer = setTimeout(() => {
+      // Idle timeout (resets on data), including after response headers.
+      stream.setTimeout(UPSTREAM_IDLE_TIMEOUT_MS, () => {
         stream.destroy(new Error('microvm upstream request timed out'))
-      }, UPSTREAM_IDLE_TIMEOUT_MS)
-      stream.setTimeout?.(UPSTREAM_IDLE_TIMEOUT_MS)
+      })
       stream.once('response', (resHeaders) => {
-        clearTimeout(timer)
         const incoming = stream as unknown as http.IncomingMessage
         incoming.statusCode = Number(resHeaders[':status'] ?? 502)
         const out: http.IncomingHttpHeaders = {}
@@ -384,10 +394,7 @@ export class LocalAuthForwardProxy {
         incoming.headers = out
         resolve(incoming)
       })
-      stream.once('error', (error) => {
-        clearTimeout(timer)
-        reject(error)
-      })
+      stream.once('error', reject)
       if (body.length) stream.write(body)
       stream.end()
     })
@@ -395,7 +402,6 @@ export class LocalAuthForwardProxy {
 
   private async forwardOnce(method: string, path: string, headers: Record<string, string>, body: Buffer): Promise<http.IncomingMessage> {
     const session = await this.ensureHttp2()
-    if (!session) throw new Error('microvm http2 unavailable')
     return this.forwardOnceH2(session, method, path, headers, body)
   }
 
