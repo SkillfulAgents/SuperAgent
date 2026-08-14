@@ -204,8 +204,9 @@ export interface SlackMessageRoutingResult {
 export function routeSlackMessage(params: SlackMessageRoutingParams): SlackMessageRoutingResult {
   const { rawText, chatId, ts, channelType, threadTs, botUserId, config, activeThreads } = params
   const isChannel = channelType === 'channel' || channelType === 'group'
+  const mentionFilterApplies = isChannel || channelType === 'mpim'
 
-  if (isChannel && config.onlyMentioned) {
+  if (mentionFilterApplies && config.onlyMentioned) {
     const isMentioned = botUserId ? rawText.includes(`<@${botUserId}>`) : false
     if (!isMentioned) {
       if (!threadTs || !activeThreads.has(`${chatId}|${threadTs}`)) {
