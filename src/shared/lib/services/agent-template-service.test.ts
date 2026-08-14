@@ -2070,6 +2070,58 @@ describe('importAgentFromTemplate (full mode)', () => {
     const envPath = path.join(workspaceDir, '.env')
     expect(fs.existsSync(envPath)).toBe(false)
   })
+
+  it('imports from a ZIP file on disk identically to a buffer', async () => {
+    const zipBuffer = await makeZip({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'SECRET=abc',
+      'sessions/s1/messages.jsonl': '{"type":"user"}\n',
+      'sub/dir/deep.txt': 'deep',
+    })
+    const zipPath = path.join(testDir, 'upload.zip')
+    fs.writeFileSync(zipPath, zipBuffer)
+
+    const bufferDest = setupAgentMock('import-from-buffer')
+    await importAgentFromTemplate(zipBuffer, undefined, 'full')
+
+    const fileDest = setupAgentMock('import-from-file')
+    await importAgentFromTemplate({ filePath: zipPath }, undefined, 'full')
+
+    function listTree(dir: string): Array<[string, string]> {
+      const out: Array<[string, string]> = []
+      const walk = (d: string, rel: string) => {
+        for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+          const r = rel ? `${rel}/${entry.name}` : entry.name
+          if (entry.isDirectory()) walk(path.join(d, entry.name), r)
+          else out.push([r, fs.readFileSync(path.join(d, entry.name), 'utf-8')])
+        }
+      }
+      walk(dir, '')
+      return out.sort()
+    }
+
+    expect(listTree(fileDest)).toEqual(listTree(bufferDest))
+    expect(listTree(fileDest).map(([p]) => p)).toContain('.env')
+  })
+
+  it('validates from a ZIP file on disk', async () => {
+    const zipBuffer = await makeZip({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    const zipPath = path.join(testDir, 'validate.zip')
+    fs.writeFileSync(zipPath, zipBuffer)
+
+    const result = await validateAgentTemplate({ filePath: zipPath })
+    expect(result.valid).toBe(true)
+    expect(result.agentName).toBe('Test Agent')
+  })
+
+  it('reports invalid for a corrupt ZIP file on disk', async () => {
+    const zipPath = path.join(testDir, 'corrupt.zip')
+    fs.writeFileSync(zipPath, 'definitely not a zip')
+
+    const result = await validateAgentTemplate({ filePath: zipPath })
+    expect(result.valid).toBe(false)
+    expect(result.error).toBeTruthy()
+  })
 })
 
 describe('installAgentFromSkillset', () => {

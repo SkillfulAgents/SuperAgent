@@ -1240,7 +1240,6 @@ describe('POST /api/agents/import-template (chunked)', () => {
     const assembledPath = '/mock/tmp/uploads/22222222-2222-2222-2222-222222222222.assembled'
     mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
     mockFsStat.mockResolvedValue({ size: 10 })
-    mockFsReadFile.mockResolvedValue(Buffer.from('part0part1'))
     mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
@@ -1256,8 +1255,9 @@ describe('POST /api/agents/import-template (chunked)', () => {
 
     const body = await res.json()
     expect(body.slug).toBe('imported-agent')
+    // The assembled upload is imported straight from disk, not read into memory.
     expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      Buffer.from('part0part1'),
+      { filePath: assembledPath },
       undefined,
       'full',
     )
@@ -1268,7 +1268,6 @@ describe('POST /api/agents/import-template (chunked)', () => {
     const assembledPath = '/mock/tmp/uploads/33333333-3333-3333-3333-333333333333.assembled'
     mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
     mockFsStat.mockResolvedValue({ size: 7 })
-    mockFsReadFile.mockResolvedValue(Buffer.from('zipdata'))
     mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
@@ -1283,7 +1282,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
     const res = await postFormData(app, '/api/agents/import-template', form)
     expect(res.status).toBe(201)
     expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      expect.any(Buffer),
+      { filePath: assembledPath },
       'My Agent',
       'template',
     )
@@ -1367,7 +1366,6 @@ describe('POST /api/agents/import-template (chunked)', () => {
         filePath: `/mock/tmp/uploads/${uploadId}.assembled`,
       })
     mockFsStat.mockResolvedValue({ size: 12 })
-    mockFsReadFile.mockResolvedValue(Buffer.from('new-datapart1'))
     mockFsUnlink.mockResolvedValue(undefined)
 
     const form1 = buildChunkForm({ chunk: 'old-data', uploadId, chunkIndex: 0, totalChunks: 2 })
@@ -1379,7 +1377,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
     const res2 = await postFormData(app, '/api/agents/import-template', form2)
     expect(res2.status).toBe(201)
     expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      Buffer.from('new-datapart1'),
+      { filePath: `/mock/tmp/uploads/${uploadId}.assembled` },
       undefined,
       'template',
     )
