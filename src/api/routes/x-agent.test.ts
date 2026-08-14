@@ -83,6 +83,18 @@ const mockReserveSessionOwnership = vi.fn(async (..._args: unknown[]) => {})
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: (...args: unknown[]) => mockListSessions(...args),
   getSessionMessagesWithCompact: (...args: unknown[]) => mockGetTranscript(...args),
+  // Backed by the same transcript fixture so tests control both read paths.
+  findLastSessionEntry: async (
+    slug: unknown,
+    sessionId: unknown,
+    predicate: (entry: unknown) => boolean,
+  ) => {
+    const entries = ((await mockGetTranscript(slug, sessionId)) ?? []) as unknown[]
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (predicate(entries[i])) return entries[i]
+    }
+    return null
+  },
   registerSession: (...args: unknown[]) => mockRegisterSession(...args),
   reserveSessionOwnership: (...args: unknown[]) => mockReserveSessionOwnership(...args),
   updateSessionMetadata: (...args: unknown[]) => mockUpdateSessionMetadata(...args),
@@ -990,6 +1002,43 @@ describe('/invoke', () => {
     const body = await res.json()
     expect(body.status).toBe('completed')
     expect(body.lastMessage).toBeUndefined()
+  })
+
+  it('exhausts the full retry budget when no assistant entry ever appears', async () => {
+    reviewDecisions.push('allow')
+    mockGetTranscript.mockResolvedValue([
+      { type: 'user', message: { role: 'user', content: 'still just the prompt' } },
+    ])
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'still just the prompt',
+      sync: true,
+    })
+    const body = await res.json()
+    expect(body.status).toBe('completed')
+    expect(body.lastMessage).toBeUndefined()
+    // One transcript read per attempt (X_AGENT_READ_RETRY_ATTEMPTS=4 above).
+    expect(mockGetTranscript).toHaveBeenCalledTimes(4)
+  })
+
+  it('stops polling as soon as an assistant entry appears', async () => {
+    reviewDecisions.push('allow')
+    mockGetTranscript
+      .mockResolvedValueOnce([{ type: 'user', message: { role: 'user', content: 'q' } }])
+      .mockResolvedValueOnce([{ type: 'user', message: { role: 'user', content: 'q' } }])
+      .mockResolvedValue([
+        { type: 'user', message: { role: 'user', content: 'q' } },
+        { type: 'assistant', message: { role: 'assistant', content: 'late answer' } },
+      ])
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'q',
+      sync: true,
+    })
+    const body = await res.json()
+    expect(body.status).toBe('completed')
+    expect(body.lastMessage).toBe('late answer')
+    expect(mockGetTranscript).toHaveBeenCalledTimes(3)
   })
 
   it('rejects when continuing an already-running session', async () => {

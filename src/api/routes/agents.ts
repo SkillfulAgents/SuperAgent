@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
 import { getConnInfo } from '@hono/node-server/conninfo'
 import type Anthropic from '@anthropic-ai/sdk'
@@ -14,6 +15,7 @@ import {
 } from '../dashboard-runtime'
 import { parsePagination } from '../pagination'
 import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit } from '@shared/lib/messages-page'
+import { streamJsonArrayResponse } from '../stream-json-array'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole } from '../middleware/auth'
 import {
   listAgentsWithStatus,
@@ -69,7 +71,7 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
@@ -182,7 +184,8 @@ import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-
 import { loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { captureException } from '@shared/lib/error-reporting'
 import * as fs from 'fs'
-import { Readable } from 'stream'
+import { Readable, pipeline } from 'stream'
+import { pipeline as streamPipeline } from 'stream/promises'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -1910,7 +1913,20 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       }
     }
 
-    return c.json(transformed)
+    const source = Readable.from(transformed)
+    const stringify = createJsonArrayStringifyTransform()
+    const reportStreamError = (err: unknown) => {
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (code === 'ABORT_ERR' || code === 'ERR_STREAM_PREMATURE_CLOSE') return
+      console.error('Failed to stream messages:', err)
+      captureException(err, { tags: { component: 'agents', operation: 'stream-messages' } })
+    }
+    pipeline(source, stringify, (err) => {
+      if (err) reportStreamError(err)
+    })
+    return c.body(Readable.toWeb(stringify) as ReadableStream, 200, {
+      'Content-Type': 'application/json',
+    })
   } catch (error) {
     console.error('Failed to fetch messages:', error)
     return c.json({ error: 'Failed to fetch messages' }, 500)
@@ -1972,7 +1988,12 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
       (e) => e.type === 'user' || e.type === 'assistant'
     )
     const transformed = transformMessages(messageEntries)
-    return c.json(transformed)
+    // Fanned out in parallel across all subagent ids by the activity log, so
+    // stream the serialization instead of building one JSON string per request.
+    return streamJsonArrayResponse(c, transformed, {
+      logLabel: 'subagent messages',
+      tags: { component: 'agents', operation: 'stream-subagent-messages' },
+    })
   } catch (error) {
     console.error('Failed to fetch subagent messages:', error)
     return c.json({ error: 'Failed to fetch subagent messages' }, 500)
@@ -1987,13 +2008,49 @@ agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
 
 
     const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-    const content = await readFileOrNull(jsonlPath)
 
-    if (content === null) {
+    // Transcripts routinely reach tens of MB, so stream the file instead of
+    // buffering it whole. Open before committing to a 200 so a missing file
+    // still returns the 404 below (ENOENT → null, mirroring readFileOrNull).
+    const fileHandle = await fs.promises.open(jsonlPath, 'r').catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null
+      throw error
+    })
+    if (fileHandle === null) {
       return c.json({ error: 'Session log not found' }, 404)
     }
 
-    return c.text(content)
+    // Bound the read to the size at open so the byte count always matches the
+    // Content-Length we advertise, even if the live transcript keeps growing.
+    const { size } = await fileHandle.stat().catch(async (error: unknown) => {
+      await fileHandle.close().catch(() => {})
+      throw error
+    })
+    // An empty-at-open file must answer with an empty body even if the live
+    // transcript gains its first append before the read starts — an unbounded
+    // stream there would overrun the advertised Content-Length of 0.
+    if (size === 0) {
+      await fileHandle.close().catch(() => {})
+      return c.body('', 200, {
+        'Content-Type': 'text/plain; charset=UTF-8',
+        'Content-Length': '0',
+      })
+    }
+    // autoClose (default) closes the handle on end/destroy.
+    const source = fileHandle.createReadStream({ end: size - 1 })
+    source.on('error', (err) => {
+      // Client disconnects surface here as stream aborts and are routine on a
+      // multi-MB endpoint; only report real read failures.
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (code === 'ABORT_ERR' || code === 'ERR_STREAM_PREMATURE_CLOSE') return
+      console.error('Failed to stream raw log:', err)
+      captureException(err, { tags: { component: 'agents', operation: 'stream-raw-log' } })
+    })
+    // Same headers the buffered c.text() response carried on the wire.
+    return c.body(Readable.toWeb(source) as ReadableStream, 200, {
+      'Content-Type': 'text/plain; charset=UTF-8',
+      'Content-Length': String(size),
+    })
   } catch (error) {
     console.error('Failed to fetch raw log:', error)
     return c.json({ error: 'Failed to fetch raw log' }, 500)
@@ -4986,22 +5043,6 @@ function resolveUploadDestPath(agentSlug: string, filename: string, relativePath
   return { uploadPath, fullPath }
 }
 
-// Shared upload logic - writes a buffer to the agent workspace
-async function writeUploadedFile(agentSlug: string, filename: string, buffer: Buffer, relativePath?: string) {
-  const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, filename, relativePath)
-
-  // Write directly to host filesystem (volume-mounted into container)
-  await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
-  await fs.promises.writeFile(fullPath, buffer)
-
-  return {
-    success: true,
-    path: `/workspace/${uploadPath}`,
-    filename,
-    size: buffer.byteLength,
-  }
-}
-
 async function writeUploadedFileFromPath(agentSlug: string, filename: string, srcPath: string, relativePath?: string) {
   const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, filename, relativePath)
   const size = await moveUploadedFile(srcPath, fullPath)
@@ -5017,8 +5058,34 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
   if (file.size > MAX_UPLOAD_TOTAL_SIZE) {
     throw new UploadTooLargeError(file.size, MAX_UPLOAD_TOTAL_SIZE)
   }
-  const buffer = Buffer.from(await file.arrayBuffer())
-  return writeUploadedFile(agentSlug, file.name, buffer, relativePath)
+  const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, file.name, relativePath)
+  await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
+
+  // Stream to disk instead of Buffer.from(await file.arrayBuffer()) — avoids a
+  // second full in-memory copy of the file on top of formData()'s buffering.
+  try {
+    await streamPipeline(
+      Readable.fromWeb(file.stream() as import('stream/web').ReadableStream),
+      fs.createWriteStream(fullPath),
+    )
+  } catch (err) {
+    // Don't leave a partial file behind (pipeline already closed the fd).
+    try {
+      await fs.promises.unlink(fullPath)
+    } catch (cleanupErr) {
+      if ((cleanupErr as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.warn('[agents] failed to remove partial upload:', cleanupErr)
+      }
+    }
+    throw err
+  }
+
+  return {
+    success: true,
+    path: `/workspace/${uploadPath}`,
+    filename: file.name,
+    size: file.size,
+  }
 }
 
 // Shared by both upload-file routes. When a `chunk` field is present, persist it
@@ -5027,7 +5094,7 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
 // `chunk_received` ack) or `{ uploadResult }` once the file is fully assembled.
 type ChunkedFileUploadOutcome = {
   pending: Response | null
-  uploadResult?: Awaited<ReturnType<typeof writeUploadedFile>>
+  uploadResult?: Awaited<ReturnType<typeof writeUploadedFileFromPath>>
 }
 
 async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: FormData, chunk: File): Promise<ChunkedFileUploadOutcome> {
@@ -5106,11 +5173,29 @@ async function respondUploadFile(c: Context) {
   }
 }
 
+// Per-request body cap for the upload-file routes. formData() buffers the whole
+// multipart body in memory, so without this any client (curl, proxies) could
+// POST a single multi-GB body and the server would hold it all in RAM. The web
+// client splits files above 50MB into chunks, so no legitimate request body
+// exceeds ~50MB plus multipart framing; 64MB leaves comfortable headroom.
+// Content-Length requests are rejected from the header alone; bodies without a
+// length (chunked transfer-encoding) are counted and cut off at the cap.
+const MAX_UPLOAD_REQUEST_SIZE = 64 * 1024 * 1024
+
+const uploadRequestBodyLimit = bodyLimit({
+  maxSize: MAX_UPLOAD_REQUEST_SIZE,
+  onError: (c) =>
+    c.json(
+      { error: `Request body too large (max ${MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024}MB per request); use chunked upload for larger files` },
+      413,
+    ),
+})
+
 // POST /api/agents/:id/upload-file - Upload a file to the agent workspace (no session required)
-agents.post('/:id/upload-file', AgentUser(), respondUploadFile)
+agents.post('/:id/upload-file', AgentUser(), uploadRequestBodyLimit, respondUploadFile)
 
 // POST /api/agents/:id/sessions/:sessionId/upload-file - Upload a file to the agent workspace
-agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), respondUploadFile)
+agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), uploadRequestBodyLimit, respondUploadFile)
 
 async function handleFolderUpload(agentSlug: string, sourcePath: string) {
   const stat = await fs.promises.stat(sourcePath)
