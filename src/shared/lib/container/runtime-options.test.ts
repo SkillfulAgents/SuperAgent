@@ -100,11 +100,8 @@ describe('resolveRuntimeInherit', () => {
     expect(resolveRuntimeInherit({ model: '' }, { defaultModel: 'sonnet' }, models).model).toBe('sonnet')
   })
 
-  it.each([
-    [{ effort: 'turbo' }, {}],
-    [{}, { defaultEffort: 'turbo' }],
-  ])('treats junk effort as unset and falls through to the app default (%j)', (surface, agent) => {
-    expect(resolveRuntimeInherit(surface, agent, models)).toEqual({
+  it('treats junk surface effort as unset and falls through to the app default', () => {
+    expect(resolveRuntimeInherit({ effort: 'turbo' }, {}, models)).toEqual({
       model: 'claude-opus-4-8',
       effort: 'medium',
     })
@@ -128,7 +125,16 @@ describe('clampEffortForDisplay', () => {
 })
 
 describe('clampSpeedForDisplay', () => {
-  it('snaps to normal when the model does not allow the inherited speed', () => {
-    expect(clampSpeedForDisplay('fast', ['slow'])).toBe('normal')
+  it('leaves the speed alone when the model is not in the catalog', () => {
+    expect(clampSpeedForDisplay('fast', undefined)).toBe('fast')
+  })
+
+  it('snaps to normal when the model is found and has no speed choice', () => {
+    expect(clampSpeedForDisplay('fast', {})).toBe('normal')
+  })
+
+  it('keeps an allowed speed and snaps an illegal listed one to normal', () => {
+    expect(clampSpeedForDisplay('fast', { supportedSpeeds: ['slow', 'normal', 'fast'] })).toBe('fast')
+    expect(clampSpeedForDisplay('fast', { supportedSpeeds: ['slow', 'normal'] })).toBe('normal')
   })
 })

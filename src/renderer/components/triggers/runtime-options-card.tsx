@@ -47,10 +47,13 @@ export function RuntimeOptionsCard({ agentSlug, model, effort, speed, disabled, 
   )
 
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
-  const catalog = settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? []
+  const catalog = useMemo(
+    () => settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
+    [settings, activeProvider],
+  )
   const catalogModel = findCatalogModel(resolved?.model, catalog)
   const displayEffort = clampEffortForDisplay(resolved?.effort, catalogModel?.supportedEfforts)
-  const displaySpeed = clampSpeedForDisplay(resolved?.speed, catalogModel?.supportedSpeeds as SpeedLevel[] | undefined)
+  const displaySpeed = clampSpeedForDisplay(resolved?.speed, catalogModel)
 
   const [localEffort, setLocalEffort] = useState<EffortLevel | undefined>(displayEffort)
   const [localSpeed, setLocalSpeed] = useState<SpeedLevel | undefined>(displaySpeed)
@@ -91,7 +94,7 @@ export function RuntimeOptionsCard({ agentSlug, model, effort, speed, disabled, 
     const cleared = resolveRuntimeInherit({ model: null, effort: null, speed: null }, prefs ?? {}, inheritModels)
     const clearedModel = findCatalogModel(cleared.model, catalog)
     setLocalEffort(clampEffortForDisplay(cleared.effort, clearedModel?.supportedEfforts))
-    setLocalSpeed(clampSpeedForDisplay(cleared.speed, clearedModel?.supportedSpeeds as SpeedLevel[] | undefined))
+    setLocalSpeed(clampSpeedForDisplay(cleared.speed, clearedModel))
     setLocalModel(cleared.model)
     onUpdate({ model: null, effort: null, speed: null })
   }, [onUpdate, inheritModels, prefs, catalog])

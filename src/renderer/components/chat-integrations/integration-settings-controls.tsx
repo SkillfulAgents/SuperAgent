@@ -20,7 +20,6 @@ import {
 } from '@shared/lib/container/runtime-options'
 import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
 import type { LlmProviderId } from '@shared/lib/config/settings'
-import type { SpeedLevel } from '@shared/lib/container/types'
 
 export function ToggleRow({ label, helperText, checked, onCheckedChange, disabled }: {
   label: string
@@ -160,7 +159,7 @@ export function IntegrationModelEffort({ integration }: { integration: ChatInteg
   const catalog = settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? []
   const catalogModel = findCatalogModel(resolved?.model, catalog)
   const displayEffort = clampEffortForDisplay(resolved?.effort, catalogModel?.supportedEfforts)
-  const displaySpeed = clampSpeedForDisplay(resolved?.speed, catalogModel?.supportedSpeeds as SpeedLevel[] | undefined)
+  const displaySpeed = clampSpeedForDisplay(resolved?.speed, catalogModel)
 
   if (!resolved?.model || !resolved.effort || !displayEffort) {
     return <span className="text-xs text-muted-foreground" data-testid="runtime-inherit-pending">—</span>

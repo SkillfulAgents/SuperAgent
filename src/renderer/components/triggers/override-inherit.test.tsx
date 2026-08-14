@@ -129,6 +129,8 @@ describe('override-card inherit', () => {
       agentModel: 'claude-sonnet-4-6',
       agentEffort: 'max',
     }))
+    // Leftover Fast on a catalog model with no supportedSpeeds — the common case.
+    useAgentPreferencesMock.mockImplementation(() => ({ data: { defaultSpeed: 'fast' } }))
     const cron = render(cronCard(onUpdate))
     await waitFor(() => expect(screen.getByTestId('settings-model-trigger')).toBeInTheDocument())
     expect(onUpdate).not.toHaveBeenCalled()

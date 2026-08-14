@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { AgentPreferences } from '@shared/lib/types/agent-preferences'
 import { EFFORT_LEVELS, SPEED_LEVELS, type EffortLevel, type SpeedLevel } from './types'
 
 /**
@@ -93,22 +94,21 @@ export type RuntimeInherit = {
 
 /**
  * Surface override → agent default → app default.
- * Junk surface/agent values are treated as unset (do not throw).
+ * Junk surface values are treated as unset (do not throw).
  * Effort is omitted when no rung has one. Speed stays two-rung.
  */
 export function resolveRuntimeInherit(
   surface: unknown,
-  agent: unknown,
+  agent: Partial<AgentPreferences> | null | undefined,
   models: unknown,
 ): RuntimeInherit {
   const s = asRecord(surface) ?? {}
-  const a = asRecord(agent) ?? {}
   const raw = asRecord(models) ?? {}
   const m = inheritModelsSchema.parse({ agentModel: raw.agentModel })
 
-  const model = presentString(s.model) ?? presentString(a.defaultModel) ?? m.agentModel
-  const effort = optionalEffort(s.effort) ?? optionalEffort(a.defaultEffort) ?? optionalEffort(raw.agentEffort)
-  const speed = optionalSpeed(s.speed) ?? optionalSpeed(a.defaultSpeed)
+  const model = presentString(s.model) ?? presentString(agent?.defaultModel) ?? m.agentModel
+  const effort = optionalEffort(s.effort) ?? optionalEffort(agent?.defaultEffort) ?? optionalEffort(raw.agentEffort)
+  const speed = optionalSpeed(s.speed) ?? optionalSpeed(agent?.defaultSpeed)
 
   return {
     model,
@@ -127,12 +127,17 @@ export function clampEffortForDisplay(
   return supported.includes('medium') ? 'medium' : supported[0]
 }
 
-/** Snap a resolved speed for display only. Mirrors useSpeedClamp, which always snaps to 'normal'. */
+/**
+ * Snap a resolved speed for display only — mirrors useSpeedClamp. A found
+ * catalog model with no supportedSpeeds allows only 'normal'; an unknown
+ * model leaves the speed alone (useSpeedClamp is inert without a model).
+ */
 export function clampSpeedForDisplay(
   speed: SpeedLevel | undefined,
-  supported: SpeedLevel[] | undefined,
+  catalogModel: { supportedSpeeds?: readonly SpeedLevel[] } | undefined,
 ): SpeedLevel | undefined {
   if (!speed) return undefined
-  if (!supported || supported.length === 0 || supported.includes(speed)) return speed
-  return 'normal'
+  if (!catalogModel) return speed
+  const available = catalogModel.supportedSpeeds ?? ['normal']
+  return available.includes(speed) ? speed : 'normal'
 }
