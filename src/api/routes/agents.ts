@@ -13,6 +13,7 @@ import {
   injectDashboardRuntime,
 } from '../dashboard-runtime'
 import { parsePagination } from '../pagination'
+import { streamJsonArrayResponse } from '../stream-json-array'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole } from '../middleware/auth'
 import {
   listAgentsWithStatus,
@@ -1900,7 +1901,12 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
       (e) => e.type === 'user' || e.type === 'assistant'
     )
     const transformed = transformMessages(messageEntries)
-    return c.json(transformed)
+    // Fanned out in parallel across all subagent ids by the activity log, so
+    // stream the serialization instead of building one JSON string per request.
+    return streamJsonArrayResponse(c, transformed, {
+      logLabel: 'subagent messages',
+      tags: { component: 'agents', operation: 'stream-subagent-messages' },
+    })
   } catch (error) {
     console.error('Failed to fetch subagent messages:', error)
     return c.json({ error: 'Failed to fetch subagent messages' }, 500)

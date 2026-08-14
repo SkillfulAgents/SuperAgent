@@ -547,7 +547,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
-import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
+import { readJsonFileStrict, readJsonlFile, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
@@ -3489,6 +3489,72 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
 
     // No DB query since there are no user messages to look up
     expect(mockDbSelectFrom).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /:id/sessions/:sessionId/subagent/:agentId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/subagent/sub-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(readJsonlFile).mockResolvedValue([])
+  })
+
+  it('returns the transformed transcript as a parseable JSON array', async () => {
+    vi.mocked(readJsonlFile).mockResolvedValue([
+      { type: 'user', message: { role: 'user', content: 'hi' } },
+      { type: 'assistant', message: { role: 'assistant', content: [] } },
+    ])
+    const transformed = [
+      { id: 'msg-1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'msg-2', type: 'assistant', content: { text: 'hello "quoted"\n' }, toolCalls: [], createdAt: '2026-01-01T00:00:01.000Z' },
+    ]
+    mockTransformMessages.mockReturnValue(transformed)
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('application/json')
+    expect(await res.json()).toEqual(transformed)
+  })
+
+  it('returns [] when the subagent transcript is empty or missing', async () => {
+    mockTransformMessages.mockReturnValue([])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('[]')
+  })
+
+  it('serializes undefined transformed elements as null, matching JSON.stringify', async () => {
+    mockTransformMessages.mockReturnValue([undefined, { id: 'msg-1', type: 'user' }])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('[null,{"id":"msg-1","type":"user"}]')
+  })
+
+  it('returns a large transcript parse-identically', async () => {
+    const transformed = Array.from({ length: 2000 }, (_, i) => ({
+      id: `msg-${i}`,
+      type: 'assistant',
+      content: { text: 'z'.repeat(400) },
+      toolCalls: [],
+    }))
+    mockTransformMessages.mockReturnValue(transformed)
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(transformed)
+  })
+
+  it('returns 500 when reading the transcript fails', async () => {
+    vi.mocked(readJsonlFile).mockRejectedValue(new Error('disk error'))
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Failed to fetch subagent messages' })
   })
 })
 
