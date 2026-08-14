@@ -276,6 +276,24 @@ export type ExportArchiveStream = archiver.Archiver
 function createArchiveStream(workspaceDir: string, files: string[]): ExportArchiveStream {
   const archive = archiver('zip', { zlib: { level: 9 } })
 
+  // Archiver reports a source file that disappears between enumeration and
+  // read (its lstat fails) as a non-fatal 'warning' and would finalize a
+  // valid-looking but INCOMPLETE zip. An export must contain every
+  // enumerated file, so every warning escalates to a stream error.
+  archive.on('warning', (warning) => {
+    archive.destroy(warning)
+  })
+
+  // destroy() — which is how Readable.toWeb cancels the stream when the
+  // client disconnects mid-download — only tears down the Transform;
+  // archiver keeps its queued entries and in-flight worker alive. Bridge
+  // the post-destroy 'close' event to archiver's own abort(), which drains
+  // the work queues and stops reading source files. abort() is a no-op
+  // when the archive already finalized normally or was already aborted.
+  archive.on('close', () => {
+    archive.abort()
+  })
+
   for (const relativePath of files) {
     const fullPath = path.join(workspaceDir, relativePath)
     archive.file(fullPath, { name: relativePath })

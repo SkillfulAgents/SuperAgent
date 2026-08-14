@@ -386,9 +386,15 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   },
 }))
 
+const mockCaptureException = vi.fn()
+vi.mock('@shared/lib/error-reporting', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/error-reporting')>()),
+  captureException: (...args: unknown[]) => mockCaptureException(...args),
+}))
+
 vi.mock('@shared/lib/services/agent-template-service', () => ({
-  exportAgentTemplate: vi.fn(),
-  exportAgentFull: vi.fn(),
+  exportAgentTemplateStream: vi.fn(),
+  exportAgentFullStream: vi.fn(),
   importAgentFromTemplate: vi.fn(),
   MAX_COMPRESSED_SIZE: 500 * 1024 * 1024,
   installAgentFromSkillset: vi.fn(),
@@ -529,7 +535,11 @@ import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
   importAgentFromTemplate,
   hasOnboardingSkill,
+  exportAgentTemplateStream,
+  exportAgentFullStream,
 } from '@shared/lib/services/agent-template-service'
+import archiver from 'archiver'
+import { openZipFromBuffer } from '@shared/lib/utils/zip'
 import {
   deleteSkill,
   exportSkill,
@@ -1435,6 +1445,118 @@ describe('POST /api/agents/import-template (chunked)', () => {
     } finally {
       sizeSpy.mockRestore()
     }
+  })
+})
+
+// ============================================================================
+// Agent export routes (streaming)
+// ============================================================================
+
+describe('POST /api/agents/:id/export-template and /:id/export-full (streaming)', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Streamy' } } as any)
+  })
+
+  /** Real archiver stream built from in-memory entries (no fs involved). */
+  function buildArchive(files: Record<string, Buffer | string>) {
+    const archive = archiver('zip', { zlib: { level: 9 } })
+    for (const [name, content] of Object.entries(files)) {
+      archive.append(Buffer.isBuffer(content) ? content : Buffer.from(content), { name })
+    }
+    void archive.finalize().catch(() => {})
+    return archive
+  }
+
+  function postExport(path: string) {
+    return app.request(`http://localhost${path}`, { method: 'POST' })
+  }
+
+  it('streams a valid ZIP with the package download headers and no Content-Length', async () => {
+    vi.mocked(exportAgentTemplateStream).mockResolvedValue(
+      buildArchive({ 'CLAUDE.md': 'template body', 'notes.md': 'notes' }) as any,
+    )
+
+    const res = await postExport('/api/agents/test-agent/export-template')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('application/octet-stream')
+    expect(res.headers.get('content-disposition')).toContain('Streamy-template')
+    expect(res.headers.get('content-disposition')).toContain('attachment')
+    expect(res.headers.get('content-length')).toBeNull()
+
+    const body = Buffer.from(await res.arrayBuffer())
+    const reader = await openZipFromBuffer(body)
+    try {
+      expect(reader.entries.map((e) => e.fileName).sort()).toEqual(['CLAUDE.md', 'notes.md'])
+      expect((await reader.readEntry('CLAUDE.md')).toString('utf-8')).toBe('template body')
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('export-full streams the full archive under the -full filename', async () => {
+    vi.mocked(exportAgentFullStream).mockResolvedValue(
+      buildArchive({ 'CLAUDE.md': 'x', '.env': 'SECRET=1' }) as any,
+    )
+
+    const res = await postExport('/api/agents/test-agent/export-full')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-disposition')).toContain('Streamy-full')
+
+    const body = Buffer.from(await res.arrayBuffer())
+    const reader = await openZipFromBuffer(body)
+    try {
+      expect(reader.entries.map((e) => e.fileName)).toContain('.env')
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('returns the 500 error path when the export fails before the stream exists', async () => {
+    vi.mocked(exportAgentTemplateStream).mockRejectedValue(new Error('Agent workspace not found'))
+
+    const res = await postExport('/api/agents/test-agent/export-template')
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toBe('Agent workspace not found')
+
+    vi.mocked(exportAgentFullStream).mockRejectedValue(new Error('Agent workspace not found'))
+    const resFull = await postExport('/api/agents/test-agent/export-full')
+    expect(resFull.status).toBe(500)
+    expect((await resFull.json()).error).toBe('Agent workspace not found')
+  })
+
+  it('cancelling the download mid-body destroys the archive without Sentry captures', async () => {
+    // Enough incompressible entries that cancellation happens mid-archive.
+    // (The close-to-abort queue-drain bridge itself lives in the real
+    // createArchiveStream and is regression-tested at the service level.)
+    const files: Record<string, Buffer> = {}
+    for (let i = 0; i < 20; i++) {
+      files[`chunk-${i}.bin`] = Buffer.from(
+        Array.from({ length: 1024 * 1024 }, () => Math.floor(Math.random() * 256)),
+      )
+    }
+    const archive = buildArchive(files)
+    vi.mocked(exportAgentFullStream).mockResolvedValue(archive as any)
+
+    const res = await postExport('/api/agents/test-agent/export-full')
+    expect(res.status).toBe(200)
+
+    const reader = res.body!.getReader()
+    let received = 0
+    while (received < 2 * 1024 * 1024) {
+      const { value, done } = await reader.read()
+      if (done) break
+      received += value!.byteLength
+    }
+    await reader.cancel()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    expect(received).toBeGreaterThan(0)
+    expect(archive.destroyed).toBe(true)
+    expect(mockCaptureException).not.toHaveBeenCalled()
   })
 })
 
