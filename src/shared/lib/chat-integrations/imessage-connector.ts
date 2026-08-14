@@ -117,6 +117,9 @@ export class IMessageConnector extends ChatClientConnector {
 
   private lastReceivedMessageId: string | null = null
   private lastChatId: string | null = null
+  private recentOutboundIds: string[] = []
+  private lastSendFileCaption: string | null = null
+  private handshakeSkipRemaining = 0
   // Chats currently showing the typing bubble. The manager's tick calls startWorking
   // every ~1s for keep-alive; iMessage's bubble self-expires, so we send start_typing
   // once per working segment (on the not-shown→shown edge) instead of on every tick.
@@ -272,6 +275,7 @@ export class IMessageConnector extends ChatClientConnector {
       return `reaction-only-${Date.now()}`
     }
 
+    this.lastSendFileCaption = null
     this.send({
       type: 'send_message',
       data: { chatId: targetChatId, parts: [{ type: 'text', value: cleanText }] },
@@ -350,12 +354,14 @@ export class IMessageConnector extends ChatClientConnector {
         parts.push({ type: 'text', value: caption })
       }
 
+      this.lastSendFileCaption = caption ?? null
       this.send({ type: 'send_message', data: { chatId: targetChatId, parts } })
       return `file-${Date.now()}`
     } catch (err) {
       console.error('[IMessageConnector] Failed to send file:', err)
       captureException(err, { tags: { component: 'chat-integration', operation: 'imessage-send-file' } })
       // Fall back to a text message about the file
+      this.lastSendFileCaption = caption ?? null
       this.send({
         type: 'send_message',
         data: { chatId: targetChatId, parts: [{ type: 'text', value: `[File: ${filename}]${caption ? ` — ${caption}` : ''}` }] },
@@ -468,11 +474,18 @@ export class IMessageConnector extends ChatClientConnector {
 
   private handleServerEvent(event: { type: string; data?: any }): void {
     switch (event.type) {
-      case 'connected':
-        // Already handled in doConnect
+      case 'connected': {
+        const queued = event.data?.queuedCount
+        this.handshakeSkipRemaining = typeof queued === 'number' && queued > 0 ? queued : 0
         break
+      }
 
       case 'message.received':
+        if (!this._connected) return
+        if (this.handshakeSkipRemaining > 0) {
+          this.handshakeSkipRemaining--
+          return
+        }
         this.handleMessageReceived(event.data)
         break
 
@@ -510,21 +523,17 @@ export class IMessageConnector extends ChatClientConnector {
 
   private handleMessageReceived(data: any): void {
     if (!data) return
+    if (data.fromMe === true || data.is_from_me === true) return
 
     const messageId = data.messageId as string
+    if (messageId && this.recentOutboundIds.includes(messageId)) return
+
     const chatId = data.chatId as string || this.config.phoneNumber
     const chatName = data.chatName as string | undefined
     const from = data.from as string
     const parts = data.parts as Array<{ type: string; value?: string; url?: string; mimeType?: string; filename?: string; sizeBytes?: number }> || []
     const sentAt = data.sentAt ? new Date(data.sentAt) : new Date()
 
-    this.lastReceivedMessageId = messageId
-    this.lastChatId = chatId
-
-    // Send read receipt immediately
-    this.send({ type: 'mark_read', data: { chatId } })
-
-    // Extract text and files from parts
     let text = ''
     const files: Array<{ name: string; url: string; mimeType?: string }> = []
 
@@ -539,6 +548,14 @@ export class IMessageConnector extends ChatClientConnector {
         })
       }
     }
+
+    if (this.lastSendFileCaption && text === this.lastSendFileCaption) return
+
+    this.lastReceivedMessageId = messageId
+    this.lastChatId = chatId
+
+    // Send read receipt immediately
+    this.send({ type: 'mark_read', data: { chatId } })
 
     // Check if there's a pending question — resolve it with this message
     if (this.pendingQuestions.size > 0) {
@@ -595,6 +612,10 @@ export class IMessageConnector extends ChatClientConnector {
   private handleMessageSent(data: any): void {
     if (!data) return
     const messageId = data.messageId as string
+    if (messageId) {
+      this.recentOutboundIds.push(messageId)
+      if (this.recentOutboundIds.length > 16) this.recentOutboundIds.shift()
+    }
     // Resolve any pending send confirmations
     for (const [key, resolver] of this.sentMessageResolvers) {
       resolver(messageId)
@@ -697,6 +718,7 @@ export class IMessageConnector extends ChatClientConnector {
   }
 
   private sendTextAndReturn(text: string, targetChatId?: string): string {
+    this.lastSendFileCaption = null
     this.send({
       type: 'send_message',
       data: { chatId: targetChatId, parts: [{ type: 'text', value: text }] },
