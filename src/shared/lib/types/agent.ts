@@ -80,6 +80,10 @@ export interface SessionMetadata {
   starred?: boolean
   createdAt?: string // ISO date string - set when session is first created
   createdByUserId?: string
+  // Mobile device family that started the session (session deviceId
+  // additionalField). Absent for browser/desktop/web/cron/webhook starts.
+  // Origin-device routing: only this device gets visible alert pushes.
+  createdByDeviceId?: string
   // Scheduled task fields - present when session was created from a scheduled task
   isScheduledExecution?: boolean
   scheduledTaskId?: string

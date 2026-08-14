@@ -39,6 +39,7 @@ export const sessionMetadataSchema = z
     starred: z.boolean().optional(),
     createdAt: z.string().optional(),
     createdByUserId: z.string().optional(),
+    createdByDeviceId: z.string().optional(),
     isScheduledExecution: z.boolean().optional(),
     scheduledTaskId: z.string().optional(),
     scheduledTaskName: z.string().optional(),

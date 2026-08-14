@@ -16,7 +16,7 @@ import {
 import { parsePagination } from '../pagination'
 import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit } from '@shared/lib/messages-page'
 import { streamJsonArrayResponse } from '../stream-json-array'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole, getRequestDeviceId } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -1706,7 +1706,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
     if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
     if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
-    if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
+    if (isAuthMode()) {
+      initialMetadata.createdByUserId = getCurrentUserId(c)
+      // Origin-device stamp: which mobile device family (if any) started this
+      // session. ApnsRelayChannel routes visible alert pushes only to it.
+      const deviceId = getRequestDeviceId(c)
+      if (deviceId) initialMetadata.createdByDeviceId = deviceId
+    }
     if (Object.keys(initialMetadata).length > 0) {
       updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)
     }
