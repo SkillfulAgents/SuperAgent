@@ -14,6 +14,7 @@ import {
   listSessionsByIds,
   getSession,
   getSessionMessages,
+  getSessionMessagesPage,
   deleteSession,
   deleteSessionsBatch,
   readSessionMetadata,
@@ -737,6 +738,178 @@ describe('session-service', () => {
       expect(queued.uuid).toBe('queue-source-uuid')
       expect(queued.timestamp).toBe('2025-01-01T00:01:00.000Z')
       expect(queued.message.content).toEqual([{ type: 'text', text: 'Queued mid-turn message' }])
+    })
+  })
+
+  describe('getSessionMessagesPage', () => {
+    function makeThread(n: number) {
+      const entries: object[] = []
+      for (let i = 0; i < n; i++) {
+        entries.push({
+          type: 'user',
+          uuid: `u-${i}`,
+          timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, i * 2)).toISOString(),
+          sessionId: 'page-session',
+          parentUuid: null,
+          message: { role: 'user', content: `q${i}` },
+        })
+        entries.push({
+          type: 'assistant',
+          uuid: `a-${i}`,
+          timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, i * 2 + 1)).toISOString(),
+          sessionId: 'page-session',
+          parentUuid: `u-${i}`,
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: `a${i}` }],
+          },
+        })
+      }
+      return entries
+    }
+
+    it('returns the trailing page and a cursor when more remain', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(10))
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
+      expect(page.messages.map((m) => m.id)).toEqual(['a-7', 'u-8', 'a-8', 'u-9', 'a-9'])
+      expect(page.nextCursor).toBe('a-7')
+    })
+
+    it('returns the page before a cursor', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(10))
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        cursor: 'a-7',
+      })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-5', 'a-5', 'u-6', 'a-6', 'u-7'])
+      expect(page.nextCursor).toBe('u-5')
+    })
+
+    it('returns no cursor on the oldest page', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(3))
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', { limit: 20 })
+      expect(page.messages).toHaveLength(6)
+      expect(page.nextCursor).toBeNull()
+    })
+
+    it('does not include a huge prefix row in the trailing page', async () => {
+      const prefix = {
+        type: 'user',
+        uuid: 'huge-prefix',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        sessionId: 'page-session',
+        parentUuid: null,
+        message: { role: 'user', content: 'x'.repeat(80 * 1024) },
+      }
+      await createSessionFile('test-agent', 'page-session', [prefix, ...makeThread(20)])
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', { limit: 4 })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-18', 'a-18', 'u-19', 'a-19'])
+      expect(page.messages.some((m) => m.id === 'huge-prefix')).toBe(false)
+      expect(page.nextCursor).toBe('u-18')
+    })
+
+    it('does not use a mid-merge assistant uuid as the page cursor', async () => {
+      const meta = Array.from({ length: 27 }, (_, i) => ({
+        type: 'user',
+        uuid: `meta-${i}`,
+        timestamp: new Date(Date.UTC(2026, 0, 1, 0, 2, i)).toISOString(),
+        sessionId: 'page-session',
+        parentUuid: null,
+        isMeta: true,
+        message: { role: 'user', content: 'meta' },
+      }))
+      const tailUsers = Array.from({ length: 4 }, (_, i) => ({
+        type: 'user',
+        uuid: `tail-u-${i + 1}`,
+        timestamp: new Date(Date.UTC(2026, 0, 1, 0, 1, i + 1)).toISOString(),
+        sessionId: 'page-session',
+        parentUuid: null,
+        message: { role: 'user', content: `tail-${i + 1}` },
+      }))
+      const splitAsst = [
+        {
+          type: 'assistant',
+          uuid: 'X-0',
+          timestamp: '2026-01-01T00:00:50.000Z',
+          sessionId: 'page-session',
+          parentUuid: null,
+          message: {
+            id: 'msg-X',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'leading' }],
+          },
+        },
+        {
+          type: 'assistant',
+          uuid: 'X-1',
+          timestamp: '2026-01-01T00:00:51.000Z',
+          sessionId: 'page-session',
+          parentUuid: null,
+          message: {
+            id: 'msg-X',
+            role: 'assistant',
+            content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }],
+          },
+        },
+      ]
+      await createSessionFile('test-agent', 'page-session', [
+        ...makeThread(20),
+        ...splitAsst,
+        ...tailUsers,
+        ...meta,
+      ])
+
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
+      expect(first.messages.map((m) => m.id)).not.toContain('X-1')
+      expect(first.messages[0]?.id).toBe('X-0')
+      expect(first.nextCursor).toBe('X-0')
+      expect(first.messages.find((m) => m.id === 'X-0')).toMatchObject({
+        type: 'assistant',
+        content: { text: 'leading' },
+      })
+
+      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        cursor: first.nextCursor!,
+      })
+      expect(older.messages.length).toBeGreaterThan(0)
+      expect(older.messages.map((m) => m.id)).not.toContain('X-1')
+    })
+
+    it('returns an empty terminal page when the cursor id has vanished', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(40))
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        cursor: 'vanished-id',
+      })
+      expect(page.messages).toEqual([])
+      expect(page.nextCursor).toBeNull()
+    })
+
+    it('sequential scroll-up paging reaches the start of a long transcript', async () => {
+      // 300 pairs = 600 lines, far deeper than the initial tail window (limit*4).
+      await createSessionFile('test-agent', 'page-session', makeThread(300))
+
+      const loaded = new Set<string>()
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
+      for (const m of first.messages) loaded.add(m.id)
+
+      let cursor = first.nextCursor
+      for (let i = 0; i < 300 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 5,
+          cursor,
+        })
+        for (const m of page.messages) loaded.add(m.id)
+        cursor = page.nextCursor
+      }
+
+      expect(cursor).toBeNull()
+      expect(loaded.size).toBe(600)
     })
   })
 

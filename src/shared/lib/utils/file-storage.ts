@@ -363,6 +363,68 @@ export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]>
 }
 
 const NEWLINE_BYTE = 0x0a
+const TAIL_READ_CHUNK = 64 * 1024
+
+/** Last `maxLines` JSONL rows from disk. Older rows are never read into a line buffer. */
+export async function readJsonlTailLines(
+  filePath: string,
+  maxLines: number
+): Promise<{ lines: Buffer[]; reachedStart: boolean }> {
+  if (maxLines <= 0) return { lines: [], reachedStart: true }
+
+  let fileHandle: fs.promises.FileHandle
+  try {
+    fileHandle = await fs.promises.open(filePath, 'r')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { lines: [], reachedStart: true }
+    }
+    throw error
+  }
+
+  try {
+    const stat = await fileHandle.stat()
+    if (stat.size === 0) return { lines: [], reachedStart: true }
+
+    let pos = stat.size
+    const parts: Buffer[] = []
+    let newlineCount = 0
+
+    while (pos > 0 && newlineCount <= maxLines) {
+      const size = Math.min(TAIL_READ_CHUNK, pos)
+      pos -= size
+      const buf = Buffer.allocUnsafe(size)
+      const { bytesRead } = await fileHandle.read(buf, 0, size, pos)
+      const chunk = bytesRead === size ? buf : buf.subarray(0, bytesRead)
+      parts.unshift(chunk)
+      for (let i = 0; i < chunk.length; i++) {
+        if (chunk[i] === NEWLINE_BYTE) newlineCount++
+      }
+    }
+
+    const combined = parts.length === 1 ? parts[0]! : Buffer.concat(parts)
+    const lines: Buffer[] = []
+    let start = 0
+    for (let i = 0; i < combined.length; i++) {
+      if (combined[i] === NEWLINE_BYTE) {
+        lines.push(combined.subarray(start, i))
+        start = i + 1
+      }
+    }
+    if (start < combined.length) lines.push(combined.subarray(start))
+
+    const reachedStart = pos === 0
+    if (!reachedStart && lines.length > 0) lines.shift()
+    if (lines.length > 0 && lines[lines.length - 1]!.length === 0) lines.pop()
+
+    if (lines.length > maxLines) {
+      return { lines: lines.slice(-maxLines), reachedStart: false }
+    }
+    return { lines, reachedStart }
+  } finally {
+    await fileHandle.close()
+  }
+}
 
 /**
  * Stream-read JSONL file line by line (for large files)

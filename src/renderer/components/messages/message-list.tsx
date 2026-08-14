@@ -42,6 +42,7 @@ import {
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts
@@ -54,8 +55,8 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
 // messages stream in at the bottom the oldest rendered ones drop off the top and
 // the DOM node count stays flat. The window only grows on an explicit scroll-up
 // and is reset when the session changes.
-const BASE_WINDOW = 300
-const LOAD_STEP = 200
+const BASE_WINDOW = MESSAGES_PAGE_LIMIT
+const LOAD_STEP = MESSAGES_PAGE_OLDER_LIMIT
 const TURN_ANCHOR_TOP = 100
 const TURN_ANCHOR_ANIMATION_MS = 220
 // Following the live edge by assigning scrollTop teleports the viewport by the
@@ -178,7 +179,7 @@ interface MessageListProps {
 
 export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
   useRenderTracker('MessageList')
-  const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
+  const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
   const cancelQueuedMessage = useCancelQueuedMessage()
@@ -732,21 +733,34 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       setShowScrollToBottom(distanceFromBottom > 300)
     }
 
-    // Near the top with older messages still hidden: reveal the next chunk.
-    // prevScrollHeightRef doubles as a re-entrancy guard so we expand at most once
-    // per scroll gesture; the layout effect clears it after re-anchoring.
-    if (el.scrollTop < 200 && prevScrollHeightRef.current == null && hiddenCount > 0) {
-      prevScrollHeightRef.current = el.scrollHeight
-      // The user is reading older content — make sure nothing auto-pins to the
-      // bottom during the expand (the distance heuristic can misfire when the
-      // rendered slice barely overflows the viewport).
-      isScrolledToBottomRef.current = false
-      setWindowSize((n) => n + LOAD_STEP)
+    // Near the top: reveal the next local chunk, or fetch the next API page.
+    // prevScrollHeightRef is only set when we know the DOM will grow (local
+    // expand, or fetchOlder about to prepend) so a failed/empty fetch cannot wedge.
+    if (el.scrollTop < 200 && prevScrollHeightRef.current == null) {
+      if (hiddenCount > 0) {
+        prevScrollHeightRef.current = el.scrollHeight
+        isScrolledToBottomRef.current = false
+        setWindowSize((n) => n + LOAD_STEP)
+      } else if (hasOlder && !isFetchingOlder && fetchOlder) {
+        isScrolledToBottomRef.current = false
+        void fetchOlder(() => {
+          // Back at the bottom mid-fetch: the trailing window doesn't move on
+          // prepend, so skip the capture — a lingering guard would block the
+          // next scroll-up gesture.
+          if (scrollRef.current && !isScrolledToBottomRef.current) {
+            prevScrollHeightRef.current = scrollRef.current.scrollHeight
+          }
+        })
+      }
     }
-  }, [cancelFollowAnimation, hiddenCount, setBottomSpacerHeight])
+  }, [cancelFollowAnimation, hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight])
 
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).
+  // Deps are [windowSize] ONLY: when a prepend lands the anchor effect grows
+  // windowSize in the same commit, so this fires exactly when the rows mount.
+  // A visibleMessages.length dep would consume the guard one commit early
+  // (data grows, window unchanged, delta 0) and leave the mount uncompensated.
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (el && prevScrollHeightRef.current != null) {

@@ -23,12 +23,14 @@ import {
   CorruptFileError,
   readJsonlFile,
   streamJsonlFile,
+  readJsonlTailLines,
   parseJsonl,
   streamFileLines,
   parseJsonlLine,
   writeFileAtomicStream,
   ensureDirectory,
 } from '@shared/lib/utils/file-storage'
+import { transformMessages, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
 import { isHiddenAutomatedSession } from './session-visibility'
 import {
@@ -902,6 +904,105 @@ export async function getSessionMessagesWithCompact(
 
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
   return entries.map(normalizeQueuedCommandEntry).filter(isMessageOrSystemDisplayEntry)
+}
+
+export interface SessionMessagesPage {
+  messages: TransformedItem[]
+  nextCursor: string | null
+}
+
+const INITIAL_TAIL_FACTOR = 4
+// Hard bound on how deep paging can reach: every cursor request re-scans from
+// EOF, so history beyond this many raw JSONL lines is unreachable (walk is
+// O(depth²)). Lifting it needs an offset-carrying cursor that seeks instead.
+const MAX_TAIL_LINES = 50_000
+
+function dropPartialHead<T>(items: T[], reachedStart: boolean): T[] {
+  if (reachedStart || items.length === 0) return items
+  return items.slice(1)
+}
+
+function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | null {
+  return hasOlder && messages[0] ? messages[0].id : null
+}
+
+/** Trailing (or `cursor`-before) display page. Parses only a tail of the JSONL. */
+export async function getSessionMessagesPage(
+  agentSlug: string,
+  sessionId: string,
+  opts: { limit: number; cursor?: string }
+): Promise<SessionMessagesPage> {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  if (!(await fileExists(jsonlPath))) {
+    return { messages: [], nextCursor: null }
+  }
+
+  const { limit, cursor } = opts
+  let maxLines = Math.min(MAX_TAIL_LINES, Math.max(limit * INITIAL_TAIL_FACTOR, 32))
+
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const { lines, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines)
+    const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+    for (const line of lines) {
+      const parsed = parseJsonlLine<JsonlEntry>(line)
+      if (!parsed) continue
+      const normalized = normalizeQueuedCommandEntry(parsed)
+      if (
+        isMessageOrSystemDisplayEntry(normalized) &&
+        !('isMeta' in normalized && normalized.isMeta)
+      ) {
+        entries.push(normalized)
+      }
+    }
+    const transformed = transformMessages(entries)
+
+    if (cursor) {
+      const idx = transformed.findIndex((item) => item.id === cursor)
+      if (idx === -1) {
+        // Deep cursors from sequential scroll-up paging are legitimate — keep growing.
+        if (!reachedStart && maxLines < MAX_TAIL_LINES) {
+          maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
+          continue
+        }
+        // Vanished id (or cursor deeper than MAX_TAIL_LINES): terminate paging.
+        // Never point the client at a newer message — it would loop on
+        // already-loaded pages.
+        if (!reachedStart) {
+          console.warn(
+            `getSessionMessagesPage: cursor ${cursor} not found within ` +
+            `${MAX_TAIL_LINES} tail lines of session ${sessionId}; ending pagination`
+          )
+        }
+        return { messages: [], nextCursor: null }
+      }
+      if (!reachedStart && idx <= limit && maxLines < MAX_TAIL_LINES) {
+        maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
+        continue
+      }
+      const start = reachedStart ? Math.max(0, idx - limit) : Math.max(1, idx - limit)
+      const messages = transformed.slice(start, idx)
+      const hasOlder = messages.length > 0 && (!reachedStart || start > 0)
+      // Sequential walks end here when the cap truncates the page to empty.
+      if (messages.length === 0 && !reachedStart) {
+        console.warn(
+          `getSessionMessagesPage: pagination for session ${sessionId} hit the ` +
+          `${MAX_TAIL_LINES}-line depth cap; deeper history is unreachable`
+        )
+      }
+      return { messages, nextCursor: pageCursor(messages, hasOlder) }
+    }
+
+    if (!reachedStart && transformed.length <= limit && maxLines < MAX_TAIL_LINES) {
+      maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
+      continue
+    }
+    const usable = dropPartialHead(transformed, reachedStart)
+    const messages = usable.slice(-limit)
+    const hasOlder = messages.length > 0 && (!reachedStart || usable.length > messages.length)
+    return { messages, nextCursor: pageCursor(messages, hasOlder) }
+  }
+
+  throw new Error('getSessionMessagesPage exceeded tail growth attempts')
 }
 
 // Tail-window sizing for findLastSessionEntry: start small (covers the last

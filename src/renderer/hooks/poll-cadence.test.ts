@@ -29,7 +29,11 @@ describe('polling cadence (reviewed interval constants)', () => {
 
   it('useMessages polls every 15s as the SSE safety net', () => {
     renderHook(() => useMessages('session-1', 'agent-1'))
-    expect(capturedOptions.at(-1)?.refetchInterval).toBe(15000)
+    const messagesQuery = capturedOptions.find((opts) => {
+      const key = opts.queryKey as unknown[] | undefined
+      return Array.isArray(key) && key[0] === 'messages'
+    })
+    expect(messagesQuery?.refetchInterval).toBe(15000)
   })
 
   it('useChatIntegrationSessions polls every 20s and not while backgrounded', () => {
