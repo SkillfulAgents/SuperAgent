@@ -69,7 +69,7 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
@@ -1923,13 +1923,39 @@ agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
 
 
     const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-    const content = await readFileOrNull(jsonlPath)
 
-    if (content === null) {
+    // Transcripts routinely reach tens of MB, so stream the file instead of
+    // buffering it whole. Open before committing to a 200 so a missing file
+    // still returns the 404 below (ENOENT → null, mirroring readFileOrNull).
+    const fileHandle = await fs.promises.open(jsonlPath, 'r').catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null
+      throw error
+    })
+    if (fileHandle === null) {
       return c.json({ error: 'Session log not found' }, 404)
     }
 
-    return c.text(content)
+    // Bound the read to the size at open so the byte count always matches the
+    // Content-Length we advertise, even if the live transcript keeps growing.
+    const { size } = await fileHandle.stat().catch(async (error: unknown) => {
+      await fileHandle.close().catch(() => {})
+      throw error
+    })
+    // autoClose (default) closes the handle on end/destroy.
+    const source = fileHandle.createReadStream(size > 0 ? { end: size - 1 } : undefined)
+    source.on('error', (err) => {
+      // Client disconnects surface here as stream aborts and are routine on a
+      // multi-MB endpoint; only report real read failures.
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (code === 'ABORT_ERR' || code === 'ERR_STREAM_PREMATURE_CLOSE') return
+      console.error('Failed to stream raw log:', err)
+      captureException(err, { tags: { component: 'agents', operation: 'stream-raw-log' } })
+    })
+    // Same headers the buffered c.text() response carried on the wire.
+    return c.body(Readable.toWeb(source) as ReadableStream, 200, {
+      'Content-Type': 'text/plain; charset=UTF-8',
+      'Content-Length': String(size),
+    })
   } catch (error) {
     console.error('Failed to fetch raw log:', error)
     return c.json({ error: 'Failed to fetch raw log' }, 500)

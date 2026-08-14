@@ -17,6 +17,7 @@ const mockFsMkdir = vi.fn()
 const mockFsReaddir = vi.fn()
 const mockFsCp = vi.fn()
 const mockFsExistsSync = vi.fn()
+const mockFsOpen = vi.fn()
 const mockCreateReadStream = vi.fn()
 
 // In-memory sink for the streaming upload write path; tests can inspect the
@@ -48,6 +49,7 @@ vi.mock('fs', () => ({
       rename: (...args: unknown[]) => mockFsRename(...args),
       unlink: (...args: unknown[]) => mockFsUnlink(...args),
       rm: (...args: unknown[]) => mockFsRm(...args),
+      open: (...args: unknown[]) => mockFsOpen(...args),
     },
     existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
     createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
@@ -65,6 +67,7 @@ vi.mock('fs', () => ({
     rename: (...args: unknown[]) => mockFsRename(...args),
     unlink: (...args: unknown[]) => mockFsUnlink(...args),
     rm: (...args: unknown[]) => mockFsRm(...args),
+    open: (...args: unknown[]) => mockFsOpen(...args),
   },
   existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
   createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
@@ -562,7 +565,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
-import { readJsonFileStrict, readJsonlFile, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
+import { readJsonFileStrict, readJsonlFile, writeJsonFileAtomic, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
@@ -1024,6 +1027,110 @@ describe('session usage — GET /:id/sessions/:sessionId/usage', () => {
 
     expect(res.status).toBe(404)
     expect(mockLoadSessionUsageTotals).not.toHaveBeenCalled()
+  })
+})
+
+describe('session raw log — GET /:id/sessions/:sessionId/raw-log', () => {
+  let app: ReturnType<typeof createApp>
+  let realFs: typeof import('fs')
+  let realPath: typeof import('path')
+  let tmpDir: string
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    app = createApp()
+    realFs = await vi.importActual<typeof import('fs')>('fs')
+    realPath = await vi.importActual<typeof import('path')>('path')
+    const realOs = await vi.importActual<typeof import('os')>('os')
+    tmpDir = await realFs.promises.mkdtemp(realPath.join(realOs.tmpdir(), 'raw-log-route-'))
+
+    // Back the route with the real filesystem so the body assertions compare
+    // genuine bytes: point the transcript path at a temp file and delegate the
+    // fs helpers (both the readFileOrNull and open/createReadStream paths) to
+    // the real implementations.
+    mockGetSessionJsonlPath.mockImplementation(
+      (_agentSlug: string, sessionId: string) => realPath.join(tmpDir, `${sessionId}.jsonl`),
+    )
+    mockFsOpen.mockImplementation((...args: unknown[]) =>
+      (realFs.promises.open as (...a: unknown[]) => Promise<unknown>)(...args),
+    )
+    mockFsReadFile.mockImplementation((...args: unknown[]) =>
+      (realFs.promises.readFile as (...a: unknown[]) => Promise<unknown>)(...args),
+    )
+    vi.mocked(readFileOrNull).mockImplementation(async (filePath: string) => {
+      try {
+        return await realFs.promises.readFile(filePath, 'utf-8')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      }
+    })
+  })
+
+  afterEach(async () => {
+    await realFs.promises.rm(tmpDir, { recursive: true, force: true })
+    // These implementations must not leak into other suites (vi.clearAllMocks
+    // clears calls, not implementations).
+    mockGetSessionJsonlPath.mockImplementation(
+      (agentSlug: string, sessionId: string) => `/mock/sessions/${agentSlug}/${sessionId}.jsonl`,
+    )
+    mockFsOpen.mockReset()
+    mockFsReadFile.mockReset()
+    vi.mocked(readFileOrNull).mockReset()
+  })
+
+  async function writeTranscript(sessionId: string, content: string | Buffer) {
+    await realFs.promises.writeFile(realPath.join(tmpDir, `${sessionId}.jsonl`), content)
+  }
+
+  it('returns the transcript byte-identical to the file with the plain-text content type', async () => {
+    const content =
+      '{"type":"user","message":{"content":"héllo — ünïcode"}}\n' +
+      '{"type":"assistant","message":{"content":"line two"}}\n'
+    await writeTranscript('session-1', content)
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/session-1/raw-log')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/plain; charset=UTF-8')
+    const body = Buffer.from(await res.arrayBuffer())
+    const fileBytes = await realFs.promises.readFile(realPath.join(tmpDir, 'session-1.jsonl'))
+    expect(body.equals(fileBytes)).toBe(true)
+    expect(res.headers.get('content-length')).toBe(String(fileBytes.length))
+  })
+
+  it('returns 404 when the transcript file does not exist', async () => {
+    const res = await getReq(app, '/api/agents/test-agent/sessions/missing/raw-log')
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Session log not found' })
+  })
+
+  it('returns an empty 200 body for an empty transcript file', async () => {
+    await writeTranscript('empty-session', '')
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/empty-session/raw-log')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/plain; charset=UTF-8')
+    expect(Buffer.from(await res.arrayBuffer()).length).toBe(0)
+    expect(res.headers.get('content-length')).toBe('0')
+  })
+
+  it('returns a multi-megabyte transcript byte-identical to the file', async () => {
+    const line = `{"type":"assistant","message":{"content":"${'x'.repeat(1024)}"}}\n`
+    const content = line.repeat(5 * 1024) // ~5.3 MB
+    await writeTranscript('big-session', content)
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/big-session/raw-log')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/plain; charset=UTF-8')
+    const body = Buffer.from(await res.arrayBuffer())
+    const fileBytes = await realFs.promises.readFile(realPath.join(tmpDir, 'big-session.jsonl'))
+    expect(body.length).toBe(fileBytes.length)
+    expect(body.equals(fileBytes)).toBe(true)
+    expect(res.headers.get('content-length')).toBe(String(fileBytes.length))
   })
 })
 
