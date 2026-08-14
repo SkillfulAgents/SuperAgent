@@ -30,6 +30,9 @@ test.describe('API Error Display', () => {
     await expect(errorCard.first()).toBeVisible({ timeout: 15000 })
     await expect(errorCard.first()).toContainText('LLM Provider Error')
     await expect(errorCard.first()).toContainText('Invalid API key')
+    await expect(errorCard.first()).toHaveAttribute('aria-expanded', 'false')
+    await errorCard.first().getByText('More details', { exact: true }).click()
+    await expect(errorCard.first()).toHaveAttribute('aria-expanded', 'true')
     await expect(errorCard.first()).toContainText('external LLM provider API')
   })
 
