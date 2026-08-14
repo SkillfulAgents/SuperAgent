@@ -963,6 +963,8 @@ export class DeadSubagentInputScenario implements MockScenario {
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     const parentToolId = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
     const subToolId = `subtool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const subagentDeathDelayMs = 5_000
+    const mainTurnCompletionDelayMs = subagentDeathDelayMs + 2_500
 
     client.writeJsonlEntry(sessionId, {
       type: 'user',
@@ -1001,9 +1003,8 @@ export class DeadSubagentInputScenario implements MockScenario {
       })
     }, 60)
 
-    // The subagent dies ~2.5s later: its terminal sidechain 'result' frame
-    // arrives while the browser_input has no tool_result. Long enough for a
-    // spec to assert the card + awaiting window first.
+    // Keep the parked phase observable under a loaded, multi-worker browser
+    // run before the terminal sidechain 'result' invalidates the request.
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
         type: 'result',
@@ -1013,7 +1014,7 @@ export class DeadSubagentInputScenario implements MockScenario {
           subtype: 'success',
         },
       })
-    }, 2500)
+    }, subagentDeathDelayMs)
 
     // The main turn continues briefly, then settles on its own — the parked
     // ask must NOT be what ends it.
@@ -1029,7 +1030,7 @@ export class DeadSubagentInputScenario implements MockScenario {
         type: 'result',
         content: { type: 'result', subtype: 'success' },
       })
-    }, 5000)
+    }, mainTurnCompletionDelayMs)
   }
 }
 
