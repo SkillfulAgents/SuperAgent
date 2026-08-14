@@ -30,6 +30,7 @@ import { resolveAgentId, displaySlug } from '@shared/lib/utils/file-storage'
 import {
   listSessions,
   getSessionMessagesWithCompact,
+  findLastSessionEntry,
   getSessionMetadata,
   registerSession,
   reserveSessionOwnership,
@@ -481,12 +482,16 @@ async function readLastAssistantMessage(
   intervalMs = READ_RETRY_INTERVAL_MS,
 ): Promise<{ role: string; content: string; toolName?: string } | null> {
   for (let i = 0; i < attempts; i++) {
-    const entries = await getSessionMessagesWithCompact(targetSlug, sessionId)
-    // Walk backwards to find the most recent assistant entry.
-    for (let j = entries.length - 1; j >= 0; j--) {
-      const e = entries[j]
-      if (e.type !== 'assistant') continue
-      const compact = compactMessage(e)
+    // Only the most recent assistant entry matters, so read the transcript
+    // from the tail instead of full-parsing it (transcripts reach 100MB+, and
+    // this runs up to `attempts` times per invoke).
+    const entry = await findLastSessionEntry(
+      targetSlug,
+      sessionId,
+      (e) => e.type === 'assistant' && compactMessage(e) !== null,
+    )
+    if (entry) {
+      const compact = compactMessage(entry)
       if (compact) return compact
     }
     if (i < attempts - 1) {
