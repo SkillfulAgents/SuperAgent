@@ -24,6 +24,7 @@ import {
   CorruptFileError,
   readJsonlFile,
   streamJsonlFile,
+  parseJsonl,
   ensureDirectory,
 } from '@shared/lib/utils/file-storage'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
@@ -899,6 +900,120 @@ export async function getSessionMessagesWithCompact(
 
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
   return entries.map(normalizeQueuedCommandEntry).filter(isMessageOrSystemDisplayEntry)
+}
+
+// Tail-window sizing for findLastSessionEntry: start small (covers the last
+// few turns of a typical transcript), escalate when the window has no match,
+// and cap before falling back to a full parse.
+const TAIL_WINDOW_INITIAL_BYTES = 256 * 1024
+const TAIL_WINDOW_GROWTH_FACTOR = 4
+const TAIL_WINDOW_MAX_BYTES = 4 * 1024 * 1024
+
+/**
+ * Read the last `windowBytes` of a session transcript and return the entries
+ * parsed from the complete lines inside that window (same normalization and
+ * filtering as getSessionMessagesWithCompact). Returns null when the file does
+ * not exist.
+ *
+ * When the window starts mid-file, everything up to and including the first
+ * newline is discarded: that prefix is (almost always) the tail of a line
+ * whose start lies outside the window. If the window happens to start exactly
+ * on a line boundary this discards one complete line — harmless, because
+ * callers never conclude "absent" from a partial window (see
+ * findLastSessionEntry). Discarding to a newline also guarantees the decoded
+ * text never starts inside a multi-byte UTF-8 sequence.
+ */
+async function readSessionEntriesFromTail(
+  jsonlPath: string,
+  windowBytes: number
+): Promise<{
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[]
+  coveredWholeFile: boolean
+} | null> {
+  let fileHandle: fs.promises.FileHandle
+  try {
+    fileHandle = await fs.promises.open(jsonlPath, 'r')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  try {
+    const { size } = await fileHandle.stat()
+    const offset = Math.max(0, size - windowBytes)
+    const length = size - offset
+    const buffer = Buffer.alloc(length)
+    let bytesReadTotal = 0
+    while (bytesReadTotal < length) {
+      const { bytesRead } = await fileHandle.read(
+        buffer,
+        bytesReadTotal,
+        length - bytesReadTotal,
+        offset + bytesReadTotal
+      )
+      if (bytesRead === 0) break // file shrank under us; parse what we got
+      bytesReadTotal += bytesRead
+    }
+    let window = buffer.subarray(0, bytesReadTotal)
+    if (offset > 0) {
+      const firstNewline = window.indexOf(0x0a) // '\n'
+      if (firstNewline === -1) {
+        // One line larger than the whole window — no complete line to parse.
+        return { entries: [], coveredWholeFile: false }
+      }
+      window = window.subarray(firstNewline + 1)
+    }
+    const entries = parseJsonl<JsonlEntry>(window.toString('utf-8'))
+      .map(normalizeQueuedCommandEntry)
+      .filter(isMessageOrSystemDisplayEntry)
+    return { entries, coveredWholeFile: offset === 0 }
+  } finally {
+    await fileHandle.close()
+  }
+}
+
+/**
+ * Find the newest transcript entry matching `predicate`, over the same entry
+ * set getSessionMessagesWithCompact produces, without parsing the whole file.
+ * Transcripts routinely reach 100MB+, so callers that only need the most
+ * recent entry (e.g. the reply of a just-finished turn) should not pay a full
+ * parse — especially inside retry loops.
+ *
+ * Equivalence with the full parse: every transcript entry is line-local (one
+ * JSONL line maps to at most one entry; normalization and filtering never
+ * merge or reorder lines, and compact boundaries are ordinary standalone
+ * lines), so the newest matching entry within a complete-line tail window is
+ * exactly the entry a full parse would select. A window with no match is only
+ * trusted when it covered the whole file; otherwise the window escalates and
+ * finally falls back to one full parse, so the result always equals the
+ * full-parse result — it is just cheaper in the common case.
+ */
+export async function findLastSessionEntry(
+  agentSlug: string,
+  sessionId: string,
+  predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean
+): Promise<JsonlMessageEntry | JsonlSystemEntry | null> {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+
+  for (
+    let windowBytes = TAIL_WINDOW_INITIAL_BYTES;
+    windowBytes <= TAIL_WINDOW_MAX_BYTES;
+    windowBytes *= TAIL_WINDOW_GROWTH_FACTOR
+  ) {
+    const tail = await readSessionEntriesFromTail(jsonlPath, windowBytes)
+    if (tail === null) return null // no transcript file
+    for (let i = tail.entries.length - 1; i >= 0; i--) {
+      if (predicate(tail.entries[i])) return tail.entries[i]
+    }
+    if (tail.coveredWholeFile) return null
+  }
+
+  // The match (if any) starts earlier than the capped window: parse the whole
+  // file once so behavior is never worse than the pre-tail-read path.
+  const entries = await getSessionMessagesWithCompact(agentSlug, sessionId)
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (predicate(entries[i])) return entries[i]
+  }
+  return null
 }
 
 /**
