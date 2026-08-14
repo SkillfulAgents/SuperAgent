@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser-use feature successfully enables agents to open browsers, navigate to URLs, retrieve page titles, and return results to users in chat.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 - Successfully loaded the SuperAgent application with page title \"Gamut\"",
+    "Step 2: Found and clicked \"QA-20260814-182900-pmxh\" agent in sidebar - Successfully clicked the agent button and navigated to the agent's chat interface",
+    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Successfully typed the message into the input field and clicked the Send button",
+    "Step 4: Waited for agent response - Agent completed work in 18 seconds with 4 tool calls and 199,346 tokens",
+    "Step 5: Verified response mentions \"Example Domain\" - Response explicitly states: \"The page title is \"Example Domain\" — a placeholder page for use in documentation examples, with a \"Learn more\" link. Browser is closed.\""
+  ],
+  "bugs": [],
+  "durationMs": 337796,
+  "sessionId": "1c5f1220-8719-4971-978c-38928a643bdb",
+  "cost": {
+    "inputTokens": 578,
+    "outputTokens": 14171,
+    "cacheCreationTokens": 86793,
+    "cacheReadTokens": 1755118,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.355436
+  }
+}
