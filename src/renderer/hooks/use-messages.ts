@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import { captureRendererException } from '@renderer/lib/error-reporting'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -129,6 +130,9 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
       return prepended.length > 0
     } catch (error) {
       console.warn('Failed to fetch older messages:', error)
+      if (!(error instanceof TranscriptNotFoundError)) {
+        captureRendererException(error, { tags: { area: 'messages', op: 'fetch-older' } })
+      }
       return false
     } finally {
       setIsFetchingOlder(false)

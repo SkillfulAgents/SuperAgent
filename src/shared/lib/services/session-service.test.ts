@@ -880,7 +880,7 @@ describe('session-service', () => {
       expect(older.messages.map((m) => m.id)).not.toContain('X-1')
     })
 
-    it('does not scan the full tail when a cursor id is missing', async () => {
+    it('returns an empty terminal page when the cursor id has vanished', async () => {
       await createSessionFile('test-agent', 'page-session', makeThread(40))
       const page = await getSessionMessagesPage('test-agent', 'page-session', {
         limit: 5,
@@ -888,6 +888,28 @@ describe('session-service', () => {
       })
       expect(page.messages).toEqual([])
       expect(page.nextCursor).toBeNull()
+    })
+
+    it('sequential scroll-up paging reaches the start of a long transcript', async () => {
+      // 300 pairs = 600 lines, far deeper than the initial tail window (limit*4).
+      await createSessionFile('test-agent', 'page-session', makeThread(300))
+
+      const loaded = new Set<string>()
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
+      for (const m of first.messages) loaded.add(m.id)
+
+      let cursor = first.nextCursor
+      for (let i = 0; i < 300 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 5,
+          cursor,
+        })
+        for (const m of page.messages) loaded.add(m.id)
+        cursor = page.nextCursor
+      }
+
+      expect(cursor).toBeNull()
+      expect(loaded.size).toBe(600)
     })
   })
 

@@ -933,10 +933,7 @@ export async function getSessionMessagesPage(
   }
 
   const { limit, cursor } = opts
-  const initialTail = Math.min(MAX_TAIL_LINES, Math.max(limit * INITIAL_TAIL_FACTOR, 32))
-  let maxLines = initialTail
-  // Adjacent-page cursors land near the tail; a vanished id must not scan 50k lines.
-  const missGrowthCap = Math.min(MAX_TAIL_LINES, initialTail * 8)
+  let maxLines = Math.min(MAX_TAIL_LINES, Math.max(limit * INITIAL_TAIL_FACTOR, 32))
 
   for (let attempt = 0; attempt < 32; attempt++) {
     const { lines, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines)
@@ -957,12 +954,14 @@ export async function getSessionMessagesPage(
     if (cursor) {
       const idx = transformed.findIndex((item) => item.id === cursor)
       if (idx === -1) {
-        if (!reachedStart && maxLines < missGrowthCap) {
-          maxLines = Math.min(missGrowthCap, maxLines * 2)
+        // Deep cursors from sequential scroll-up paging are legitimate — keep growing.
+        if (!reachedStart && maxLines < MAX_TAIL_LINES) {
+          maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
           continue
         }
-        const usable = dropPartialHead(transformed, reachedStart)
-        return { messages: [], nextCursor: reachedStart ? null : (usable[0]?.id ?? null) }
+        // Vanished id: terminate paging. Never point the client at a newer
+        // message — it would refetch already-loaded pages in a loop.
+        return { messages: [], nextCursor: null }
       }
       if (!reachedStart && idx <= limit && maxLines < MAX_TAIL_LINES) {
         maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
