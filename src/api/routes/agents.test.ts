@@ -100,6 +100,9 @@ vi.mock('../credentials/credential-broker', () => ({
 
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
 const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+// Device identity of the calling session; tests set .value to simulate a
+// paired mobile device (null = browser/desktop/web).
+const mockRequestDevice = { value: null as string | null }
 const mockGlobalAdmin = vi.hoisted(() => ({ allowed: true }))
 let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
 // Display-slug -> canonical-id resolution applied by the ResolveAgent mock. Defaults
@@ -107,6 +110,7 @@ let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
 // routes where the URL display slug differs from the resolved id.
 let mockResolveSlug: (slug: string) => string = (slug) => slug
 vi.mock('../middleware/auth', () => ({
+  getRequestDeviceId: () => mockRequestDevice.value,
   Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
@@ -555,7 +559,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -3471,6 +3475,22 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     // No DB insert for message author outside auth mode
     expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('stamps the alert claim with the sender device, and clears it on deviceless sends', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+
+    // A paired mobile device speaks: it claims the session's visible alerts.
+    mockRequestDevice.value = 'device-family-9'
+    expect((await postJson(app, URL, { content: 'from phone' })).status).toBe(201)
+    expect(updateSessionMetadata).toHaveBeenCalledWith(
+      'test-agent', 'sess-1', { alertDeviceId: 'device-family-9' })
+
+    // A deviceless surface (web) speaks: the claim is explicitly cleared.
+    mockRequestDevice.value = null
+    expect((await postJson(app, URL, { content: 'from web' })).status).toBe(201)
+    expect(updateSessionMetadata).toHaveBeenLastCalledWith(
+      'test-agent', 'sess-1', { alertDeviceId: null })
   })
 
   it('generates UUID, inserts messageAuthor, passes it to sendMessage, and returns it in auth mode', async () => {

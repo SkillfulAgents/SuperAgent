@@ -80,6 +80,15 @@ export interface SessionMetadata {
   starred?: boolean
   createdAt?: string // ISO date string - set when session is first created
   createdByUserId?: string
+  // Mobile device family that started the session (session deviceId
+  // additionalField). Absent for browser/desktop/web/cron/webhook starts.
+  // Origin-device routing: the alert target falls back to this when no
+  // alertDeviceId claim exists.
+  createdByDeviceId?: string
+  // "Last speaker claims the alert": re-stamped on every device-authenticated
+  // message send; null when a deviceless surface (web) spoke last; absent =
+  // never re-claimed (fall back to createdByDeviceId).
+  alertDeviceId?: string | null
   // Scheduled task fields - present when session was created from a scheduled task
   isScheduledExecution?: boolean
   scheduledTaskId?: string

@@ -16,7 +16,7 @@ import {
 import { parsePagination } from '../pagination'
 import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit } from '@shared/lib/messages-page'
 import { streamJsonArrayResponse } from '../stream-json-array'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole, getRequestDeviceId } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -1671,6 +1671,25 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // still wins the race with early container output.
     await reserveSessionOwnership(slug, sessionId)
 
+    // Persist only what the user explicitly chose. The server-side fallback is
+    // applied at session creation but should not masquerade as a user choice in
+    // metadata — otherwise a later change to the global default wouldn't be
+    // reflected when the composer reloads.
+    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
+    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
+    if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
+    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
+    if (isAuthMode()) {
+      initialMetadata.createdByUserId = getCurrentUserId(c)
+      // Origin-device stamp: which mobile device family (if any) started this
+      // session. ApnsRelayChannel routes visible alert pushes only to it, so
+      // it must land in the INITIAL registration write — a fast completion
+      // would beat a fire-and-forget update and demote the origin's alert to
+      // a silent push.
+      const deviceId = getRequestDeviceId(c)
+      if (deviceId) initialMetadata.createdByDeviceId = deviceId
+    }
+
     // Attach lifecycle state and the stream before slower metadata/DB work. The
     // first turn can start emitting shortly after createSession returns, and a
     // blocking input emitted during that window must not be missed or reset.
@@ -1692,25 +1711,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         })
       }
 
-      await registerSession(slug, sessionId, 'New Session')
+      await registerSession(slug, sessionId, 'New Session', initialMetadata)
       sessionRegistered = true
     } catch (error) {
       if (lifecycleStarted && !sessionRegistered) {
         messagePersister.unsubscribeFromSession(sessionId)
       }
       throw error
-    }
-    // Persist only what the user explicitly chose. The server-side fallback is
-    // applied at session creation but should not masquerade as a user choice in
-    // metadata — otherwise a later change to the global default wouldn't be
-    // reflected when the composer reloads.
-    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
-    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
-    if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
-    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
-    if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
-    if (Object.keys(initialMetadata).length > 0) {
-      updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)
     }
     // Store slash commands from container's init event (captured during session creation)
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
@@ -2179,8 +2186,22 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
     if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
     if (runtimeOptions.model) updates.model = runtimeOptions.model
+    if (isAuthMode()) {
+      // Alert claim: the device that spoke last in a session is the one
+      // awaiting its outcome, so visible pushes follow it. A send with no
+      // device identity (web/desktop) CLEARS the claim — the user moved to a
+      // surface where a phone alert for this session would be noise (web push
+      // covers them there). Explicit null ≠ absent: absent falls back to the
+      // creation stamp in ApnsRelayChannel. Awaited via the metadata write
+      // below so a fast turn can't complete ahead of its own claim.
+      updates.alertDeviceId = getRequestDeviceId(c)
+    }
     if (Object.keys(updates).length > 0) {
-      updateSessionMetadata(agentSlug, sessionId, updates).catch(console.error)
+      try {
+        await updateSessionMetadata(agentSlug, sessionId, updates)
+      } catch (error) {
+        console.error(error)
+      }
     }
 
     return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
