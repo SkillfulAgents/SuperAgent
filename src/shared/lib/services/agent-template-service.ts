@@ -11,6 +11,7 @@ import fs from 'fs'
 import archiver from 'archiver'
 import {
   openZipFromBuffer,
+  openZipFromFile,
   detectZipPrefix,
   type ZipEntryMeta,
   type ZipReader,
@@ -263,10 +264,63 @@ async function walkFullExportFiles(workspaceDir: string): Promise<string[]> {
 // ZIP Export
 // ============================================================================
 
+export type ExportArchiveStream = archiver.Archiver
+
 /**
- * Export an agent's workspace as a ZIP template buffer.
+ * Build a streaming ZIP archive of the given files. The archive is finalized
+ * immediately; the caller consumes it as a Readable. Failures (e.g. a file
+ * deleted mid-export) surface on the archive's 'error' event — the finalize
+ * promise rejection is swallowed here so it never becomes an unhandled
+ * rejection when a consumer only listens to stream events.
  */
-export async function exportAgentTemplate(agentSlug: string): Promise<Buffer> {
+function createArchiveStream(workspaceDir: string, files: string[]): ExportArchiveStream {
+  const archive = archiver('zip', { zlib: { level: 9 } })
+
+  // Archiver reports a source file that disappears between enumeration and
+  // read (its lstat fails) as a non-fatal 'warning' and would finalize a
+  // valid-looking but INCOMPLETE zip. An export must contain every
+  // enumerated file, so every warning escalates to a stream error.
+  archive.on('warning', (warning) => {
+    archive.destroy(warning)
+  })
+
+  // destroy() — which is how Readable.toWeb cancels the stream when the
+  // client disconnects mid-download — only tears down the Transform;
+  // archiver keeps its queued entries and in-flight worker alive. Bridge
+  // the post-destroy 'close' event to archiver's own abort(), which drains
+  // the work queues and stops reading source files. abort() is a no-op
+  // when the archive already finalized normally or was already aborted.
+  archive.on('close', () => {
+    archive.abort()
+  })
+
+  for (const relativePath of files) {
+    const fullPath = path.join(workspaceDir, relativePath)
+    archive.file(fullPath, { name: relativePath })
+  }
+
+  void archive.finalize().catch(() => {
+    // Reported via the 'error' event.
+  })
+  return archive
+}
+
+/** Collect a streamed archive into a single Buffer (small exports/tests only). */
+function collectArchive(archive: ExportArchiveStream): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    archive.on('data', (chunk: Buffer) => chunks.push(chunk))
+    archive.on('end', () => resolve(Buffer.concat(chunks)))
+    archive.on('error', reject)
+  })
+}
+
+/**
+ * Export an agent's workspace as a streaming ZIP template.
+ * Validation errors (missing workspace/CLAUDE.md) throw before the stream is
+ * created; later failures surface on the returned stream's 'error' event.
+ */
+export async function exportAgentTemplateStream(agentSlug: string): Promise<ExportArchiveStream> {
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
 
   if (!(await directoryExists(workspaceDir))) {
@@ -280,29 +334,24 @@ export async function exportAgentTemplate(agentSlug: string): Promise<Buffer> {
   }
 
   const templateFiles = await walkTemplateFiles(workspaceDir)
-
-  return new Promise((resolve, reject) => {
-    const archive = archiver('zip', { zlib: { level: 9 } })
-    const chunks: Buffer[] = []
-
-    archive.on('data', (chunk: Buffer) => chunks.push(chunk))
-    archive.on('end', () => resolve(Buffer.concat(chunks)))
-    archive.on('error', reject)
-
-    for (const relativePath of templateFiles) {
-      const fullPath = path.join(workspaceDir, relativePath)
-      archive.file(fullPath, { name: relativePath })
-    }
-
-    archive.finalize()
-  })
+  return createArchiveStream(workspaceDir, templateFiles)
 }
 
 /**
- * Export a full agent workspace as a ZIP buffer (includes .env, sessions, etc).
- * Used for migrating agents between machines.
+ * Export an agent's workspace as a ZIP template buffer.
+ * Prefer exportAgentTemplateStream for HTTP responses — this materializes the
+ * whole ZIP in memory.
  */
-export async function exportAgentFull(agentSlug: string): Promise<Buffer> {
+export async function exportAgentTemplate(agentSlug: string): Promise<Buffer> {
+  return collectArchive(await exportAgentTemplateStream(agentSlug))
+}
+
+/**
+ * Export a full agent workspace as a streaming ZIP (includes .env, sessions,
+ * etc). Used for migrating agents between machines. Full exports carry the
+ * agent's entire sessions directory, so streaming (not buffering) matters.
+ */
+export async function exportAgentFullStream(agentSlug: string): Promise<ExportArchiveStream> {
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
 
   if (!(await directoryExists(workspaceDir))) {
@@ -310,27 +359,33 @@ export async function exportAgentFull(agentSlug: string): Promise<Buffer> {
   }
 
   const fullFiles = await walkFullExportFiles(workspaceDir)
+  return createArchiveStream(workspaceDir, fullFiles)
+}
 
-  return new Promise((resolve, reject) => {
-    const archive = archiver('zip', { zlib: { level: 9 } })
-    const chunks: Buffer[] = []
-
-    archive.on('data', (chunk: Buffer) => chunks.push(chunk))
-    archive.on('end', () => resolve(Buffer.concat(chunks)))
-    archive.on('error', reject)
-
-    for (const relativePath of fullFiles) {
-      const fullPath = path.join(workspaceDir, relativePath)
-      archive.file(fullPath, { name: relativePath })
-    }
-
-    archive.finalize()
-  })
+/**
+ * Export a full agent workspace as a ZIP buffer.
+ * Prefer exportAgentFullStream for HTTP responses — this materializes the
+ * whole ZIP in memory.
+ */
+export async function exportAgentFull(agentSlug: string): Promise<Buffer> {
+  return collectArchive(await exportAgentFullStream(agentSlug))
 }
 
 // ============================================================================
 // ZIP Validation
 // ============================================================================
+
+/**
+ * ZIP input for validation/import: either raw bytes, or a path to a ZIP
+ * already on disk. Prefer the file form when available — it reads entries on
+ * demand instead of pinning the whole (up to 500MB) buffer in memory for the
+ * entire extraction.
+ */
+export type TemplateZipSource = Buffer | { filePath: string }
+
+function openZipSource(zip: TemplateZipSource): Promise<ZipReader> {
+  return Buffer.isBuffer(zip) ? openZipFromBuffer(zip) : openZipFromFile(zip.filePath)
+}
 
 export interface TemplateValidationResult {
   valid: boolean
@@ -397,10 +452,10 @@ export function validateTemplateEntries(
  * In 'full' mode, only __MACOSX entries are filtered — all other entries count
  * toward size/count limits and are checked for path traversal.
  */
-export async function validateAgentTemplate(zipBuffer: Buffer, mode: 'template' | 'full' = 'template'): Promise<TemplateValidationResult> {
+export async function validateAgentTemplate(zip: TemplateZipSource, mode: 'template' | 'full' = 'template'): Promise<TemplateValidationResult> {
   let reader: ZipReader | undefined
   try {
-    reader = await openZipFromBuffer(zipBuffer)
+    reader = await openZipSource(zip)
 
     const result = validateTemplateEntries(reader.entries, mode)
     if (!result.valid) return { ...result, agentName: undefined }
@@ -436,11 +491,11 @@ export async function validateAgentTemplate(zipBuffer: Buffer, mode: 'template' 
  * Creates a new agent with the template contents.
  */
 export async function importAgentFromTemplate(
-  zipBuffer: Buffer,
+  zip: TemplateZipSource,
   nameOverride?: string,
   mode: 'template' | 'full' = 'template',
 ): Promise<ApiAgent> {
-  const reader = await openZipFromBuffer(zipBuffer)
+  const reader = await openZipSource(zip)
   try {
     const validation = validateTemplateEntries(reader.entries, mode)
     if (!validation.valid) {

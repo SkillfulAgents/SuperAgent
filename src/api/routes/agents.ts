@@ -145,8 +145,8 @@ import {
   xAgentOperationSchema,
 } from '@shared/lib/services/x-agent-policy-service'
 import {
-  exportAgentTemplate,
-  exportAgentFull,
+  exportAgentTemplateStream,
+  exportAgentFullStream,
   importAgentFromTemplate,
   MAX_COMPRESSED_SIZE,
   installAgentFromSkillset,
@@ -160,6 +160,7 @@ import {
   publishAgentToSkillset,
   refreshAgentTemplates,
   hasOnboardingSkill,
+  type TemplateZipSource,
 } from '@shared/lib/services/agent-template-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
@@ -660,8 +661,9 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
     if (size > MAX_COMPRESSED_SIZE) {
       return c.json({ error: formatUploadTooLargeMessage(size, MAX_COMPRESSED_SIZE) }, 413)
     }
-    const zipBuffer = await fs.promises.readFile(result.filePath)
-    return await processImport(c, zipBuffer, formData)
+    // The assembled upload is already on disk — import straight from the file
+    // instead of pinning the whole (up to 500MB) ZIP in memory.
+    return await processImport(c, { filePath: result.filePath }, formData)
   } finally {
     try {
       await fs.promises.unlink(result.filePath)
@@ -677,16 +679,17 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
   }
 }
 
-async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
-  if (zipBuffer.length > MAX_COMPRESSED_SIZE) {
-    return c.json({ error: formatUploadTooLargeMessage(zipBuffer.length, MAX_COMPRESSED_SIZE) }, 413)
+async function processImport(c: Context, zip: TemplateZipSource, formData: FormData) {
+  // File sources are size-checked by the caller via stat before reaching here.
+  if (Buffer.isBuffer(zip) && zip.length > MAX_COMPRESSED_SIZE) {
+    return c.json({ error: formatUploadTooLargeMessage(zip.length, MAX_COMPRESSED_SIZE) }, 413)
   }
 
   const nameOverride = formData.get('name') as string | null
   const mode = formData.get('mode') as string | null
   const importMode = mode === 'full' ? 'full' : 'template'
 
-  const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
+  const agent = await importAgentFromTemplate(zip, nameOverride || undefined, importMode)
   await createOwnerAclOrRollback(c, agent.slug)
   const hasOnboarding = await hasOnboardingSkill(agent.slug)
   logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name } })
@@ -4639,32 +4642,67 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
 // ============================================================
 
 /**
- * Download response for a branded .agent/.skill package. octet-stream (not
+ * Download headers for a branded .agent/.skill package. octet-stream (not
  * application/zip) so browsers keep the branded extension instead of
  * "correcting" the filename to .zip; the filename carries the human-readable
  * display name (slugs are opaque minted ids), encoded per the same quoted +
  * RFC 5987 `filename*` convention as workspace-file downloads.
  */
-function packageDownloadResponse(zipBuffer: Buffer, filename: string): Response {
+function packageDownloadHeaders(filename: string): Record<string, string> {
   const encoded = encodeURIComponent(filename)
+  return {
+    'Content-Type': 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
+  }
+}
+
+/** Buffer variant for small packages (skills) that are already in memory. */
+function packageDownloadBufferResponse(zipBuffer: Buffer, filename: string): Response {
   return new Response(new Uint8Array(zipBuffer), {
     status: 200,
     headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
+      ...packageDownloadHeaders(filename),
       'Content-Length': zipBuffer.byteLength.toString(),
     },
   })
+}
+
+/**
+ * Streamed download response, piped straight from the archiver so the ZIP is
+ * never materialized in memory (full exports can carry an agent's entire
+ * sessions directory). No Content-Length — the response uses chunked
+ * transfer; the renderer download path reads the body via res.blob() and
+ * does not depend on it. Archiver failures after headers are sent surface
+ * on the 'error' event: report (with client-abort codes filtered) and
+ * destroy so the download aborts instead of hanging.
+ */
+function packageDownloadResponse(c: Context, archive: Readable, filename: string, operation: string): Response {
+  const reportStreamError = (err: unknown) => {
+    const code = (err as NodeJS.ErrnoException)?.code
+    if (code === 'ABORT_ERR' || code === 'ERR_STREAM_PREMATURE_CLOSE') return
+    console.error(`Failed to stream ${operation}:`, err)
+    captureException(err, { tags: { component: 'agents', operation } })
+  }
+  let errorHandled = false
+  archive.on('error', (err) => {
+    if (errorHandled) return
+    errorHandled = true
+    reportStreamError(err)
+    // Propagate into the web stream so the response aborts instead of hanging.
+    archive.destroy(err)
+  })
+  return c.body(Readable.toWeb(archive) as ReadableStream, 200, packageDownloadHeaders(filename))
 }
 
 // POST /api/agents/:id/export-template - Export agent as ZIP download
 agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentTemplate(slug)])
+    const agent = await getAgent(slug)
+    const archive = await exportAgentTemplateStream(slug)
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
-    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
+    return packageDownloadResponse(c, archive, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`, 'export-template')
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export template'
     console.error('Failed to export template:', error)
@@ -4676,10 +4714,11 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
 agents.post('/:id/export-full', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentFull(slug)])
+    const agent = await getAgent(slug)
+    const archive = await exportAgentFullStream(slug)
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
-    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
+    return packageDownloadResponse(c, archive, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`, 'export-full')
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export agent'
     console.error('Failed to export full agent:', error)
@@ -4830,7 +4869,7 @@ agents.post('/:id/skills/:dir/export', AgentAdmin(), async (c) => {
     const { zipBuffer, skillName } = await exportSkill(agentSlug, dir)
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${dir}`, action: 'exported', details: { type: 'zip' } })
-    return packageDownloadResponse(zipBuffer, `${skillName || dir}${SKILL_PACKAGE_EXTENSION}`)
+    return packageDownloadBufferResponse(zipBuffer, `${skillName || dir}${SKILL_PACKAGE_EXTENSION}`)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export skill'
     console.error('Failed to export skill:', error)

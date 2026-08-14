@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import * as crypto from 'crypto'
+import { Readable } from 'stream'
 import { createZipBuffer, openZipFromBuffer, type ZipEntryMeta } from '@shared/lib/utils/zip'
 import type { SkillsetConfig, InstalledAgentMetadata } from '@shared/lib/types/skillset'
 
@@ -57,6 +59,7 @@ import {
   validateTemplateEntries,
   exportAgentTemplate,
   exportAgentFull,
+  exportAgentFullStream,
   importAgentFromTemplate,
   installAgentFromSkillset,
   computeAgentTemplateHash,
@@ -1951,6 +1954,69 @@ describe('exportAgentFull', () => {
 
     expect(entryNames).not.toContain('.browser-profile/cookies.db')
   })
+
+  it('errors instead of finalizing an incomplete zip when a source file disappears mid-export', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    for (let i = 0; i < 40; i++) {
+      fs.writeFileSync(path.join(workspaceDir, `data-${i}.txt`), `entry ${i}`)
+    }
+
+    const archive = await exportAgentFullStream('full-agent')
+    // Archiver stats sources through an async queue, so deleting
+    // synchronously here is guaranteed to precede the lstat — the shape of
+    // a file removed between enumeration and read. Without warning
+    // escalation this finalizes a valid-looking 40-entry zip missing the
+    // deleted file, with zero errors.
+    fs.rmSync(path.join(workspaceDir, 'data-39.txt'))
+
+    await expect(
+      new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = []
+        archive.on('data', (c: Buffer) => chunks.push(c))
+        archive.on('end', () => resolve(Buffer.concat(chunks)))
+        archive.on('error', reject)
+      }),
+    ).rejects.toThrow(/ENOENT/)
+  })
+
+  it('aborts queued archiver work when the consumer cancels mid-stream', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    // Incompressible entries so a few reads leave most of the queue pending.
+    for (let i = 0; i < 30; i++) {
+      fs.writeFileSync(
+        path.join(workspaceDir, `chunk-${String(i).padStart(2, '0')}.bin`),
+        crypto.randomBytes(1024 * 1024),
+      )
+    }
+
+    const archive = await exportAgentFullStream('full-agent')
+    const reader = (Readable.toWeb(archive) as ReadableStream<Uint8Array>).getReader()
+    let received = 0
+    while (received < 4 * 1024 * 1024) {
+      const { value, done } = await reader.read()
+      if (done) break
+      received += value!.byteLength
+    }
+    // The client walks away mid-download. Destroying the Transform alone
+    // leaves archiver's queued entries and worker alive indefinitely — the
+    // close-to-abort bridge must drain them.
+    await reader.cancel()
+    await new Promise((resolve) => setTimeout(resolve, 250))
+
+    const internals = archive as unknown as {
+      _state: { aborted: boolean }
+      _queue: { length(): number }
+      _statQueue: { length(): number }
+    }
+    expect(archive.destroyed).toBe(true)
+    expect(internals._state.aborted).toBe(true)
+    expect(internals._queue.length()).toBe(0)
+    expect(internals._statQueue.length()).toBe(0)
+  })
 })
 
 // ============================================================================
@@ -2069,6 +2135,58 @@ describe('importAgentFromTemplate (full mode)', () => {
 
     const envPath = path.join(workspaceDir, '.env')
     expect(fs.existsSync(envPath)).toBe(false)
+  })
+
+  it('imports from a ZIP file on disk identically to a buffer', async () => {
+    const zipBuffer = await makeZip({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'SECRET=abc',
+      'sessions/s1/messages.jsonl': '{"type":"user"}\n',
+      'sub/dir/deep.txt': 'deep',
+    })
+    const zipPath = path.join(testDir, 'upload.zip')
+    fs.writeFileSync(zipPath, zipBuffer)
+
+    const bufferDest = setupAgentMock('import-from-buffer')
+    await importAgentFromTemplate(zipBuffer, undefined, 'full')
+
+    const fileDest = setupAgentMock('import-from-file')
+    await importAgentFromTemplate({ filePath: zipPath }, undefined, 'full')
+
+    function listTree(dir: string): Array<[string, string]> {
+      const out: Array<[string, string]> = []
+      const walk = (d: string, rel: string) => {
+        for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+          const r = rel ? `${rel}/${entry.name}` : entry.name
+          if (entry.isDirectory()) walk(path.join(d, entry.name), r)
+          else out.push([r, fs.readFileSync(path.join(d, entry.name), 'utf-8')])
+        }
+      }
+      walk(dir, '')
+      return out.sort()
+    }
+
+    expect(listTree(fileDest)).toEqual(listTree(bufferDest))
+    expect(listTree(fileDest).map(([p]) => p)).toContain('.env')
+  })
+
+  it('validates from a ZIP file on disk', async () => {
+    const zipBuffer = await makeZip({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    const zipPath = path.join(testDir, 'validate.zip')
+    fs.writeFileSync(zipPath, zipBuffer)
+
+    const result = await validateAgentTemplate({ filePath: zipPath })
+    expect(result.valid).toBe(true)
+    expect(result.agentName).toBe('Test Agent')
+  })
+
+  it('reports invalid for a corrupt ZIP file on disk', async () => {
+    const zipPath = path.join(testDir, 'corrupt.zip')
+    fs.writeFileSync(zipPath, 'definitely not a zip')
+
+    const result = await validateAgentTemplate({ filePath: zipPath })
+    expect(result.valid).toBe(false)
+    expect(result.error).toBeTruthy()
   })
 })
 
