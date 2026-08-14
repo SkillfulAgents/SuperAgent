@@ -1,18 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RotateCcw } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
-import { useModelSettings } from '@renderer/hooks/use-settings'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
-import { findCatalogModel } from '@renderer/components/messages/model-family-list'
-import {
-  clampEffortForDisplay,
-  clampSpeedForDisplay,
-  resolveRuntimeInherit,
-} from '@shared/lib/container/runtime-options'
+import { useInheritedRuntimeSelection } from '@renderer/hooks/use-inherited-runtime-selection'
 import { DetailCard } from './detail-card'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
-import type { LlmProviderId } from '@shared/lib/config/settings'
 
 interface RuntimeOptionsCardProps {
   agentSlug: string
@@ -24,51 +16,26 @@ interface RuntimeOptionsCardProps {
 }
 
 export function RuntimeOptionsCard({ agentSlug, model, effort, speed, disabled, onUpdate }: RuntimeOptionsCardProps) {
-  const { data: settings } = useModelSettings()
-  const { data: prefs } = useAgentPreferences(agentSlug)
   const picked = useRef(false)
+  const { ready, selection, resolveDisplay } = useInheritedRuntimeSelection(agentSlug, { model, effort, speed })
 
-  const models = settings?.models
-  const inheritModels = useMemo(
-    () => models?.agentModel && models.agentEffort
-      ? { agentModel: models.agentModel, agentEffort: models.agentEffort }
-      : null,
-    [models?.agentModel, models?.agentEffort],
-  )
-  const resolved = useMemo(
-    () => inheritModels
-      ? resolveRuntimeInherit(
-          { model: model || null, effort: effort || null, speed: speed || null },
-          prefs ?? {},
-          inheritModels,
-        )
-      : null,
-    [inheritModels, model, effort, speed, prefs],
-  )
-
-  const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
-  const catalog = useMemo(
-    () => settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
-    [settings, activeProvider],
-  )
-  const catalogModel = findCatalogModel(resolved?.model, catalog)
-  const displayEffort = clampEffortForDisplay(resolved?.effort, catalogModel?.supportedEfforts)
-  const displaySpeed = clampSpeedForDisplay(resolved?.speed, catalogModel)
-
-  const [localEffort, setLocalEffort] = useState<EffortLevel | undefined>(displayEffort)
-  const [localSpeed, setLocalSpeed] = useState<SpeedLevel | undefined>(displaySpeed)
-  const [localModel, setLocalModel] = useState<string | undefined>(resolved?.model)
+  // Local mirror so a pick shows immediately; the parent's save round-trips
+  // through props, and the sync effect below re-adopts the inherit once it
+  // lands (or whenever the stored row changes underneath an untouched card).
+  const [localEffort, setLocalEffort] = useState<EffortLevel | undefined>(selection?.displayEffort)
+  const [localSpeed, setLocalSpeed] = useState<SpeedLevel | undefined>(selection?.displaySpeed)
+  const [localModel, setLocalModel] = useState<string | undefined>(selection?.model)
 
   useEffect(() => {
     picked.current = false
   }, [model, effort, speed])
 
   useEffect(() => {
-    if (!resolved || picked.current) return
-    setLocalEffort(displayEffort)
-    setLocalSpeed(displaySpeed)
-    setLocalModel(resolved.model)
-  }, [resolved, displayEffort, displaySpeed])
+    if (!selection || picked.current) return
+    setLocalEffort(selection.displayEffort)
+    setLocalSpeed(selection.displaySpeed)
+    setLocalModel(selection.model)
+  }, [selection])
 
   const handleSetEffort = useCallback((e: EffortLevel) => {
     picked.current = true
@@ -89,18 +56,17 @@ export function RuntimeOptionsCard({ agentSlug, model, effort, speed, disabled, 
   }, [onUpdate])
 
   const handleReset = useCallback(() => {
-    if (!inheritModels) return
+    const cleared = resolveDisplay({ model: null, effort: null, speed: null })
+    if (!cleared) return
     picked.current = false
-    const cleared = resolveRuntimeInherit({ model: null, effort: null, speed: null }, prefs ?? {}, inheritModels)
-    const clearedModel = findCatalogModel(cleared.model, catalog)
-    setLocalEffort(clampEffortForDisplay(cleared.effort, clearedModel?.supportedEfforts))
-    setLocalSpeed(clampSpeedForDisplay(cleared.speed, clearedModel))
+    setLocalEffort(cleared.displayEffort)
+    setLocalSpeed(cleared.displaySpeed)
     setLocalModel(cleared.model)
     onUpdate({ model: null, effort: null, speed: null })
-  }, [onUpdate, inheritModels, prefs, catalog])
+  }, [onUpdate, resolveDisplay])
 
   const hasCustom = model !== null || effort !== null || speed !== null
-  const canReset = Boolean(hasCustom && !disabled && inheritModels)
+  const canReset = Boolean(hasCustom && !disabled && ready)
 
   const headerActions = useMemo(
     () =>
@@ -121,7 +87,7 @@ export function RuntimeOptionsCard({ agentSlug, model, effort, speed, disabled, 
   return (
     <DetailCard label="Model & Effort" headerActions={headerActions}>
       <div className="flex items-center gap-2">
-        {resolved?.model && resolved.effort && localEffort ? (
+        {selection?.model && selection.effort && localEffort ? (
           <SettingsModelSelect
             model={localModel}
             onModelChange={handleSetModel}
@@ -139,7 +105,7 @@ export function RuntimeOptionsCard({ agentSlug, model, effort, speed, disabled, 
         ) : (
           <span className="text-xs text-muted-foreground" data-testid="runtime-inherit-pending">—</span>
         )}
-        {!hasCustom && inheritModels && <span className="text-xs text-muted-foreground">Using defaults</span>}
+        {!hasCustom && ready && <span className="text-xs text-muted-foreground">Using defaults</span>}
       </div>
     </DetailCard>
   )

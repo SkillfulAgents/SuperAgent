@@ -9,17 +9,9 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { useUpdateChatIntegration } from '@renderer/hooks/use-chat-integrations'
-import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
-import { useModelSettings } from '@renderer/hooks/use-settings'
+import { useInheritedRuntimeSelection } from '@renderer/hooks/use-inherited-runtime-selection'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
-import { findCatalogModel } from '@renderer/components/messages/model-family-list'
-import {
-  clampEffortForDisplay,
-  clampSpeedForDisplay,
-  resolveRuntimeInherit,
-} from '@shared/lib/container/runtime-options'
 import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
-import type { LlmProviderId } from '@shared/lib/config/settings'
 
 export function ToggleRow({ label, helperText, checked, onCheckedChange, disabled }: {
   label: string
@@ -143,38 +135,22 @@ export function SessionTimeoutSelect({ value, onCommit, disabled, id, descriptio
 
 export function IntegrationModelEffort({ integration }: { integration: ChatIntegration }) {
   const updateIntegration = useUpdateChatIntegration()
-  const { data: settings } = useModelSettings()
-  const { data: prefs } = useAgentPreferences(integration.agentSlug)
+  const { selection } = useInheritedRuntimeSelection(integration.agentSlug, integration)
 
-  const models = settings?.models
-  const resolved = models?.agentModel && models.agentEffort
-    ? resolveRuntimeInherit(
-        { model: integration.model, effort: integration.effort, speed: integration.speed },
-        prefs ?? {},
-        { agentModel: models.agentModel, agentEffort: models.agentEffort },
-      )
-    : null
-
-  const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
-  const catalog = settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? []
-  const catalogModel = findCatalogModel(resolved?.model, catalog)
-  const displayEffort = clampEffortForDisplay(resolved?.effort, catalogModel?.supportedEfforts)
-  const displaySpeed = clampSpeedForDisplay(resolved?.speed, catalogModel)
-
-  if (!resolved?.model || !resolved.effort || !displayEffort) {
+  if (!selection?.model || !selection.effort || !selection.displayEffort) {
     return <span className="text-xs text-muted-foreground" data-testid="runtime-inherit-pending">—</span>
   }
 
   // Drive display off the inherit ladder; writes stay on pick. Clamp is display-only.
   return (
     <SettingsModelSelect
-      model={resolved.model}
+      model={selection.model}
       onModelChange={(m) => updateIntegration.mutate({ id: integration.id, model: m })}
       includeEffort
-      effort={displayEffort}
+      effort={selection.displayEffort}
       onEffortChange={(e) => updateIntegration.mutate({ id: integration.id, effort: e })}
       includeSpeed
-      speed={displaySpeed ?? 'normal'}
+      speed={selection.displaySpeed ?? 'normal'}
       onSpeedChange={(s) => updateIntegration.mutate({ id: integration.id, speed: s })}
       // Left-aligned in its DetailCard, so the LEFT edge is the fixed one —
       // anchoring 'end' would slide the popover on every pick.
