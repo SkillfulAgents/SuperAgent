@@ -23,6 +23,29 @@ export { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/ag
 import { type AgentRole, hasMinRole } from '@shared/lib/types/agent'
 
 const AUTHORIZED_AGENT_ROLE_CONTEXT_KEY = 'authorizedAgentRole'
+const REQUEST_SESSION_CONTEXT_KEY = 'requestSession'
+
+/**
+ * The shape of the Better Auth session row we consume. `deviceId` is a
+ * session additionalField (mobile device family, set by
+ * mintInstalledClientSession) — persisted and returned by getSession but not
+ * part of the base inferred type, hence the widening here (same pattern as
+ * mobile-pairing.ts).
+ */
+interface RequestSessionInfo {
+  id: string
+  userId: string
+  deviceId?: string | null
+}
+
+/**
+ * Mobile device-family id of the calling session, or null (browser/desktop/
+ * local mode). Only meaningful after Authenticated() ran in auth mode.
+ */
+export function getRequestDeviceId(c: Context): string | null {
+  const session = c.get(REQUEST_SESSION_CONTEXT_KEY as never) as RequestSessionInfo | undefined
+  return session?.deviceId ?? null
+}
 
 function setAuthorizedAgentRole(c: Context, role: AgentRole): void {
   c.set(AUTHORIZED_AGENT_ROLE_CONTEXT_KEY as never, role as never)
@@ -53,6 +76,7 @@ export function Authenticated(): MiddlewareHandler {
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
     c.set('user' as never, session.user as never)
+    c.set(REQUEST_SESSION_CONTEXT_KEY as never, session.session as never)
     return runWithRequestUser(session.user.id, () => next())
   }
 }
