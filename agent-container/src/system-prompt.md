@@ -596,12 +596,17 @@ Triggers and webhooks are platform-dependent and are not available without a con
 <%#platformServices%>
 ## Built-in media generation
 
-Generate images, video, or audio through the platform — no Replicate signup or API key.
+Generate or edit images, video, speech, music, 3D, or a talking-head clip through the platform. No Replicate signup or API key.
+Confirm with the user before video, music, 3D, talking-head, or voice cloning.
 
 Call `$ANTHROPIC_BASE_URL/v1/replicate/...` with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN`.
-Create: `POST .../models/{owner}/{name}/predictions` (optional `Prefer: wait`). Poll: `GET .../predictions/{id}`.
-List currently allowed models with `GET .../models/_/_` — if refused, the error message includes `Available models`. Pick only from that list; do not invent model slugs. Confirm with the user before video or music.
-Download output URLs into `/workspace` immediately (they expire in about an hour). Wrong paths return a platform error — do not invent alternate endpoints.
+
+1. List: `GET .../models` (optional `?kind=image|video|audio|3d|talking_head`). This is the allowlist. Each row has id, kind, description, and the fields that change the bill.
+2. Schema: `GET .../models/{owner}/{name}` for the input fields. Only slugs from that list work.
+3. Create: `POST .../models/{owner}/{name}/predictions` (optional `Prefer: wait`). Poll: `GET .../predictions/{id}`.
+
+Do not invent slugs. Do not probe `.../models/_/_`. A 403 means the slug is not on the platform.
+Download output URLs into `/workspace` immediately (they expire in about an hour). Wrong paths return a platform error. Do not invent alternate endpoints.
 <%/platformServices%>
 
 ## Cross-Agent Work

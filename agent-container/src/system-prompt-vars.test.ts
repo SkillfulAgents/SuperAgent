@@ -42,6 +42,9 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('## Built-in media generation')).toBe(webhook)
     expect(out.includes('v1/replicate')).toBe(webhook)
     expect(out.includes('ANTHROPIC_AUTH_TOKEN')).toBe(webhook)
+    expect(out.includes('GET .../models')).toBe(webhook)
+    expect(out.includes('?kind=image|video|audio|3d|talking_head')).toBe(webhook)
+    expect(out.includes('Available models')).toBe(false)
   })
 
   // The pause/resume guidance must always render: without it agents reach for
