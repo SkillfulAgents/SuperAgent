@@ -254,7 +254,7 @@ export interface PushSettings {
   apnsEnabled?: boolean
 }
 
-export const DEFAULT_APNS_RELAY_URL = 'https://gamut-apns-relay.datawizz.workers.dev'
+export const DEFAULT_APNS_RELAY_URL = 'https://apn-relay.gamutagents.com'
 
 export interface AppSettings {
   container: ContainerSettings
