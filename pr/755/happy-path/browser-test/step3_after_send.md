@@ -1,0 +1,118 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e147]:
+            - button "Explore" [ref=e148] [cursor=pointer]:
+              - img [ref=e149]
+              - generic [ref=e152]: Explore
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - generic [ref=e37]:
+          - generic [ref=e38]: Your Agents
+          - list [ref=e40]:
+            - button "QA-20260814-002421-fhtb working Collapse Browser Page Title Check working" [ref=e325] [cursor=pointer]:
+              - generic [ref=e42]:
+                - link "QA-20260814-002421-fhtb working" [ref=e326]:
+                  - /url: /agents/qa-20260814-002421-fhtb-4l7a1rmiz9
+                  - generic [ref=e45]: QA-20260814-002421-fhtb
+                  - img "working" [ref=e327]:
+                    - img "working" [ref=e328]
+                - button "Collapse" [expanded] [ref=e332]:
+                  - img [ref=e333]
+              - list [ref=e336]:
+                - listitem [ref=e337]:
+                  - link "Browser Page Title Check working" [ref=e338]:
+                    - /url: /agents/4l7a1rmiz9/sessions/e1c8b05a-75c3-45f5-acd1-708e91a027d3
+                    - generic [ref=e340]: Browser Page Title Check
+                    - img "working" [ref=e342]
+            - button "QA-20260814-002418-snok idle" [ref=e56] [cursor=pointer]:
+              - link "QA-20260814-002418-snok idle" [ref=e58]:
+                - /url: /agents/qa-20260814-002418-snok-bh9ehqzv52
+                - generic [ref=e60]: QA-20260814-002418-snok
+                - img "idle" [ref=e61]:
+                  - img [ref=e62]
+            - status [ref=e153]
+      - generic [ref=e72]:
+        - button "Settings" [ref=e73] [cursor=pointer]:
+          - img [ref=e74]
+          - generic [ref=e77]: Settings
+        - button "v0.5.6" [ref=e78] [cursor=pointer]:
+          - generic [ref=e79]: v0.5.6
+      - button "Toggle Sidebar" [ref=e80]
+    - main [ref=e81]:
+      - generic [ref=e154]:
+        - generic [ref=e155]:
+          - button "Toggle Sidebar" [ref=e156] [cursor=pointer]:
+            - img
+            - generic [ref=e157]: Toggle Sidebar
+          - generic [ref=e158]:
+            - link "QA-20260814-002421-fhtb" [ref=e160]:
+              - /url: /agents/qa-20260814-002421-fhtb-4l7a1rmiz9
+            - generic [ref=e346]:
+              - generic [ref=e347]: /
+              - generic [ref=e348]: Browser Page Title Check
+          - generic [ref=e161]:
+            - generic [ref=e162]:
+              - img "working" [ref=e349]
+              - generic [ref=e172]: working
+            - button "Stop Agent" [ref=e174] [cursor=pointer]:
+              - img
+        - generic [ref=e355]:
+          - region "Messages" [ref=e357]:
+            - log [ref=e359]:
+              - paragraph [ref=e364]:
+                - text: Open a browser and go to
+                - link "https://example.com" [ref=e365] [cursor=pointer]:
+                  - /url: https://example.com
+                - text: . Tell me the page title.
+          - generic [ref=e367]:
+            - generic [ref=e370]:
+              - generic [ref=e372]: Working...
+              - generic [ref=e373]: 0s
+            - generic [ref=e375]:
+              - textbox "Type your next message..." [ref=e378]:
+                - text: Type your next message...
+                - paragraph [ref=e379]
+              - generic [ref=e380]:
+                - generic [ref=e381]:
+                  - button "Add files" [ref=e382] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5 · Medium. Click to change." [disabled]':
+                    - img
+                    - generic:
+                      - text: Opus 5
+                      - generic: · Medium
+                    - img
+                - generic [ref=e383]:
+                  - button "Set up voice input" [ref=e384] [cursor=pointer]:
+                    - img
+                  - generic [ref=e386]:
+                    - button "Stop the agent" [ref=e387] [cursor=pointer]:
+                      - img
+                    - button "Queue message" [disabled]:
+                      - img
+            - generic [ref=e389]:
+              - generic [ref=e390]: ↵
+              - generic [ref=e391]: Send
+              - generic [ref=e392]: ·
+              - generic [ref=e393]: ⇧↵
+              - generic [ref=e394]: New line
+  - region "Notifications alt+T"
