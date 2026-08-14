@@ -60,7 +60,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
       <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-1.5 min-w-0 flex-1">
         <div className="flex items-center gap-2 min-w-0">
           {agent ? (
-            <AgentContextMenu agent={agent}>
+            <AgentContextMenu agent={agent} surfaceTone="over-light">
               <AppLink
                 to="/agents/$slug"
                 params={{ slug }}
