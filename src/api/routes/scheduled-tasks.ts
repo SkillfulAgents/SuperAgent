@@ -36,6 +36,7 @@ import { readAgentPreferences } from '@shared/lib/services/agent-preferences-ser
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
 import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import { buildSessionContextPrompt } from '@shared/lib/session-context'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { deliverSessionWake } from '@shared/lib/scheduler/wake-delivery'
@@ -316,6 +317,10 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
+      systemPrompt: buildSessionContextPrompt({
+        surface: 'automation',
+        kind: 'scheduled-task',
+      }),
       model: task.model || agentPrefs.defaultModel || models.agentModel,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,

@@ -244,6 +244,7 @@ describe('scheduled-tasks route', () => {
     expect(mockCreateSession).toHaveBeenCalledWith({
       availableEnvVars: ['GITHUB_TOKEN'],
       initialMessage: 'Summarize yesterday',
+      systemPrompt: 'This session was started by a scheduled task, not by a person in a conversation. Your response goes to the session transcript, and writing it does not reach anyone. If you need to tell a person or agent something, that takes a tool.',
       model: 'claude-agent',
       browserModel: 'claude-browser',
     })

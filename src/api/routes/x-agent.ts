@@ -47,6 +47,7 @@ import {
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { buildSessionContextPrompt } from '@shared/lib/session-context'
 import { captureException } from '@shared/lib/error-reporting'
 import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
 
@@ -719,6 +720,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
         initialMessage: prompt,
         ...(initialMessageUuid ? { initialMessageUuid } : {}),
+        systemPrompt: buildSessionContextPrompt({
+          surface: 'agent-call',
+        }),
         model: targetPrefs.defaultModel ?? getEffectiveModels().agentModel,
         browserModel: getEffectiveModels().browserModel,
         dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,

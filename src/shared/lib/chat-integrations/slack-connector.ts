@@ -21,7 +21,7 @@ import {
   type OutgoingMessage,
   type SystemPromptContext,
 } from './base-connector'
-import { buildSessionContextPrompt } from './chat-session-context'
+import { buildSessionContextPrompt } from '@shared/lib/session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage, withSessionUrl, type AppLinkContext } from './utils'
 import { isUnrecoverableSlackError } from './slack-error'
 import { captureException } from '@shared/lib/error-reporting'
