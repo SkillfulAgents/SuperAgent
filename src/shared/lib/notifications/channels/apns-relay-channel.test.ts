@@ -182,6 +182,36 @@ describe('origin-device alert routing', () => {
     expect(background.alert).toBeUndefined()
   })
 
+  it('an alertDeviceId claim overrides the creation stamp', async () => {
+    mocks.listDeliverableApnsDevices.mockReturnValue([
+      makeDevice(),
+      makeDevice({ id: 'dev-row-2', token: TOKEN_B, mobileDeviceId: 'family-2' }),
+    ])
+    // Created on family-1, but family-2 spoke last — the alert follows it.
+    mocks.getSessionMetadata.mockResolvedValue({
+      createdByDeviceId: 'family-1',
+      alertDeviceId: 'family-2',
+    })
+
+    await channel.deliver(makeEvent())
+
+    const pushes = sentPushes()
+    expect(pushes.find((p) => p.deviceToken === TOKEN_A)!.kind).toBe('background')
+    expect(pushes.find((p) => p.deviceToken === TOKEN_B)!.kind).toBe('alert')
+  })
+
+  it('a null alertDeviceId (web spoke last) silences everyone despite a creation stamp', async () => {
+    mocks.listDeliverableApnsDevices.mockReturnValue([makeDevice()])
+    mocks.getSessionMetadata.mockResolvedValue({
+      createdByDeviceId: 'family-1',
+      alertDeviceId: null,
+    })
+
+    await channel.deliver(makeEvent())
+
+    expect(sentPushes()[0].kind).toBe('background')
+  })
+
   it('a session with no origin (web/cron/webhook) is silent to everyone', async () => {
     mocks.listDeliverableApnsDevices.mockReturnValue([
       makeDevice(),

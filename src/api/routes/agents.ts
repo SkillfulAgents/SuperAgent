@@ -2184,8 +2184,22 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
     if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
     if (runtimeOptions.model) updates.model = runtimeOptions.model
+    if (isAuthMode()) {
+      // Alert claim: the device that spoke last in a session is the one
+      // awaiting its outcome, so visible pushes follow it. A send with no
+      // device identity (web/desktop) CLEARS the claim — the user moved to a
+      // surface where a phone alert for this session would be noise (web push
+      // covers them there). Explicit null ≠ absent: absent falls back to the
+      // creation stamp in ApnsRelayChannel. Awaited via the metadata write
+      // below so a fast turn can't complete ahead of its own claim.
+      updates.alertDeviceId = getRequestDeviceId(c)
+    }
     if (Object.keys(updates).length > 0) {
-      updateSessionMetadata(agentSlug, sessionId, updates).catch(console.error)
+      try {
+        await updateSessionMetadata(agentSlug, sessionId, updates)
+      } catch (error) {
+        console.error(error)
+      }
     }
 
     return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)

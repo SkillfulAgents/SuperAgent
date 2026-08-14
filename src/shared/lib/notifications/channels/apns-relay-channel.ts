@@ -122,11 +122,19 @@ export class ApnsRelayChannel implements NotificationChannel {
     }
   }
 
-  /** Origin mobile-device family of the session, or null (web/cron/webhook). */
+  /**
+   * Which mobile-device family gets the VISIBLE push for this session.
+   * "Last speaker claims the alert": alertDeviceId is re-stamped on every
+   * device-authenticated message send and explicitly null when a deviceless
+   * surface (web) spoke last; absent means the session was never re-claimed,
+   * so the creation stamp decides. Null result = silent for everyone.
+   */
   private async getOriginDeviceId(event: NotificationEvent): Promise<string | null> {
     try {
       const meta = await getSessionMetadata(event.agentSlug, event.sessionId)
-      return meta?.createdByDeviceId ?? null
+      if (!meta) return null
+      if (meta.alertDeviceId !== undefined) return meta.alertDeviceId
+      return meta.createdByDeviceId ?? null
     } catch (error) {
       console.error('[ApnsRelayChannel] failed to read session metadata:', error)
       return null
