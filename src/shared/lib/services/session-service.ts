@@ -17,7 +17,6 @@ import {
   listDirectories,
   directoryExists,
   fileExists,
-  writeFile,
   writeJsonFileAtomic,
   readJsonFileStrict,
   withFileLock,
@@ -25,6 +24,9 @@ import {
   readJsonlFile,
   streamJsonlFile,
   parseJsonl,
+  streamFileLines,
+  parseJsonlLine,
+  writeFileAtomicStream,
   ensureDirectory,
 } from '@shared/lib/utils/file-storage'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
@@ -1231,8 +1233,6 @@ export async function removeMessage(
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   if (!(await fileExists(jsonlPath))) return false
 
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-
   // Find the target entry by id. Regular messages match by top-level uuid;
   // queued (mid-turn) messages surface in the UI with id = the queued_command
   // attachment's source_uuid (see normalizeQueuedCommandEntry), so match the
@@ -1241,7 +1241,23 @@ export async function removeMessage(
     ('uuid' in e && e.uuid === messageUuid) ||
     (e.type === 'attachment' && (e as JsonlAttachmentEntry).attachment?.source_uuid === messageUuid)
 
-  const target = entries.find(matchesTargetId)
+  // Transcripts run to tens (sometimes hundreds) of MB, so never materialize
+  // the whole file: stream once to find the target, once more to collect the
+  // associated tool_use ids if needed, then stream-rewrite.
+  let target: JsonlEntry | undefined
+  try {
+    for await (const entry of streamJsonlFile<JsonlEntry>(jsonlPath)) {
+      if (matchesTargetId(entry)) {
+        target = entry
+        break
+      }
+    }
+  } catch (error) {
+    // Transcript deleted between the existence check and the read: the old
+    // full-read implementation treated this as "not found".
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
   if (!target) return false
 
   // Collect message IDs and tool_use IDs to remove
@@ -1253,7 +1269,7 @@ export async function removeMessage(
     messageIdsToRemove.add(target.message.id)
 
     // Collect tool_use IDs from all entries with this message.id
-    for (const entry of entries) {
+    for await (const entry of streamJsonlFile<JsonlEntry>(jsonlPath)) {
       if (!('message' in entry)) continue
       const e = entry as JsonlMessageEntry
       if (e.type === 'assistant' && e.message.id === target.message.id) {
@@ -1269,13 +1285,12 @@ export async function removeMessage(
     }
   }
 
-  // Filter entries
-  const filtered = entries.filter((entry) => {
+  await rewriteTranscript(jsonlPath, (entry) => {
     // Remove the target entry (user message or queued_command attachment)
-    if (matchesTargetId(entry)) return false
-    if (!('uuid' in entry)) return true // keep non-message entries
+    if (matchesTargetId(entry)) return 'drop'
+    if (!('uuid' in entry)) return 'keep' // keep non-message entries
     const e = entry as JsonlMessageEntry
-    if (e.type === 'assistant' && e.message.id && messageIdsToRemove.has(e.message.id)) return false
+    if (e.type === 'assistant' && e.message.id && messageIdsToRemove.has(e.message.id)) return 'drop'
 
     // Remove tool_result user entries referencing removed tool calls
     if (e.type === 'user' && toolUseIdsToRemove.size > 0) {
@@ -1283,19 +1298,55 @@ export async function removeMessage(
       if (Array.isArray(content)) {
         const blocks = content as ContentBlock[]
         if (blocks.every((b) => b.type === 'tool_result' && toolUseIdsToRemove.has(b.tool_use_id))) {
-          return false
+          return 'drop'
         }
       }
     }
 
-    return true
+    return 'keep'
   })
-
-  // Write back
-  const jsonl = filtered.map((e) => JSON.stringify(e)).join('\n') + (filtered.length > 0 ? '\n' : '')
-  await writeFile(jsonlPath, jsonl)
   recordSessionActivity(agentSlug, sessionId)
   return true
+}
+
+/**
+ * Stream-rewrite a transcript, deciding per entry whether to keep, drop, or
+ * replace its line. Kept lines are copied through byte-for-byte from the
+ * original file (never parse-and-restringified, which could alter number
+ * formatting or unicode escapes); blank/malformed lines are copied through
+ * untouched. Output goes to a sibling temp file that atomically replaces the
+ * original (see writeFileAtomicStream), so a failure mid-rewrite leaves the
+ * transcript exactly as it was.
+ *
+ * Like the read-modify-write it replaces, this takes no lock against
+ * concurrent transcript appends — callers rely on the same exclusivity
+ * assumption as before.
+ */
+async function rewriteTranscript(
+  jsonlPath: string,
+  mapEntry: (entry: JsonlEntry) => JsonlEntry | 'keep' | 'drop'
+): Promise<void> {
+  const newline = Buffer.from('\n')
+  async function* lines(): AsyncGenerator<Buffer | string> {
+    for await (const raw of streamFileLines(jsonlPath)) {
+      const entry = parseJsonlLine<JsonlEntry>(raw)
+      if (entry === undefined) {
+        // Blank or malformed line (mid-write artifact): copy through untouched
+        yield raw
+        yield newline
+        continue
+      }
+      const result = mapEntry(entry)
+      if (result === 'drop') continue
+      if (result === 'keep') {
+        yield raw
+        yield newline
+        continue
+      }
+      yield JSON.stringify(result) + '\n'
+    }
+  }
+  await writeFileAtomicStream(jsonlPath, lines())
 }
 
 /**
@@ -1313,17 +1364,11 @@ export async function removeToolCall(
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   if (!(await fileExists(jsonlPath))) return false
 
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-  let found = false
-
-  // Process entries: remove the tool_use block and tool_result entries
-  const filtered: JsonlEntry[] = []
-
-  for (const entry of entries) {
-    if (!('message' in entry)) {
-      filtered.push(entry)
-      continue
-    }
+  // Decide what to do with one entry: remove the tool_use block from assistant
+  // entries and the tool_result block from user entries, dropping an entry
+  // whose content would become empty. Untouched entries are kept verbatim.
+  const mapEntry = (entry: JsonlEntry): JsonlEntry | 'keep' | 'drop' => {
+    if (!('message' in entry)) return 'keep'
     const e = entry as JsonlMessageEntry
 
     // Remove tool_result user entries for this tool call
@@ -1333,10 +1378,8 @@ export async function removeToolCall(
         (b) => !(b.type === 'tool_result' && b.tool_use_id === toolCallId)
       )
       if (remaining.length < blocks.length) {
-        found = true
-        if (remaining.length === 0) continue // drop entire entry
-        filtered.push({ ...e, message: { ...e.message, content: remaining } })
-        continue
+        if (remaining.length === 0) return 'drop' // drop entire entry
+        return { ...e, message: { ...e.message, content: remaining } }
       }
     }
 
@@ -1347,20 +1390,34 @@ export async function removeToolCall(
         (b) => !(b.type === 'tool_use' && b.id === toolCallId)
       )
       if (remaining.length < blocks.length) {
-        found = true
-        if (remaining.length === 0) continue // drop entire entry
-        filtered.push({ ...e, message: { ...e.message, content: remaining } })
-        continue
+        if (remaining.length === 0) return 'drop' // drop entire entry
+        return { ...e, message: { ...e.message, content: remaining } }
       }
     }
 
-    filtered.push(entry)
+    return 'keep'
   }
 
+  // First streaming pass: bail out (and leave the file untouched) unless some
+  // entry actually references this tool call — matches the old behavior of
+  // only writing when `found`.
+  let found = false
+  try {
+    for await (const entry of streamJsonlFile<JsonlEntry>(jsonlPath)) {
+      if (mapEntry(entry) !== 'keep') {
+        found = true
+        break
+      }
+    }
+  } catch (error) {
+    // Transcript deleted between the existence check and the read: the old
+    // full-read implementation treated this as "not found".
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
   if (!found) return false
 
-  const jsonl = filtered.map((e) => JSON.stringify(e)).join('\n') + (filtered.length > 0 ? '\n' : '')
-  await writeFile(jsonlPath, jsonl)
+  await rewriteTranscript(jsonlPath, mapEntry)
   recordSessionActivity(agentSlug, sessionId)
   return true
 }

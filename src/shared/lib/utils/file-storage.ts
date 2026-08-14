@@ -377,6 +377,19 @@ const NEWLINE_BYTE = 0x0a
 export async function* streamJsonlFile<T = unknown>(
   filePath: string
 ): AsyncIterable<T> {
+  for await (const line of streamFileLines(filePath)) {
+    const parsed = parseJsonlLine<T>(line)
+    if (parsed !== undefined) yield parsed
+  }
+}
+
+/**
+ * Stream a file's RAW lines as byte buffers, split on `\n` (the newline byte is
+ * excluded; a `\r` from a CRLF line is kept). Lines are never decoded or
+ * re-encoded, so a consumer that copies them back out preserves the original
+ * bytes exactly — the property the transcript rewriters rely on.
+ */
+export async function* streamFileLines(filePath: string): AsyncIterable<Buffer> {
   const fileHandle = await fs.promises.open(filePath, 'r')
   try {
     const stream = fileHandle.createReadStream()
@@ -388,16 +401,18 @@ export async function* streamJsonlFile<T = unknown>(
       let start = 0
       let idx = chunk.indexOf(NEWLINE_BYTE)
       while (idx !== -1) {
-        let line: Buffer
         if (pending.length > 0) {
           pending.push(chunk.subarray(start, idx))
-          line = Buffer.concat(pending)
+          // Concat and release the source chunks BEFORE yielding: yield
+          // suspends the generator, so anything still referenced here stays
+          // reachable while the consumer holds the line — clearing `pending`
+          // after the yield would retain a chunk-spanning row twice.
+          const line = Buffer.concat(pending)
           pending = []
+          yield line
         } else {
-          line = chunk.subarray(start, idx)
+          yield chunk.subarray(start, idx)
         }
-        const parsed = parseJsonlLine<T>(line)
-        if (parsed !== undefined) yield parsed
         start = idx + 1
         idx = chunk.indexOf(NEWLINE_BYTE, start)
       }
@@ -406,8 +421,10 @@ export async function* streamJsonlFile<T = unknown>(
 
     // Process any remaining content (file not terminated by a newline)
     if (pending.length > 0) {
-      const parsed = parseJsonlLine<T>(Buffer.concat(pending))
-      if (parsed !== undefined) yield parsed
+      // Same as above: drop the source chunks before suspending on yield
+      const line = Buffer.concat(pending)
+      pending = []
+      yield line
     }
   } finally {
     // Runs on early `break` from the consumer's for-await too, which the
@@ -420,7 +437,7 @@ export async function* streamJsonlFile<T = unknown>(
  * Decode and parse one JSONL line. Returns undefined for blank and malformed
  * lines (common while the SDK is mid-write), which callers skip.
  */
-function parseJsonlLine<T>(line: Buffer): T | undefined {
+export function parseJsonlLine<T>(line: Buffer): T | undefined {
   const trimmed = line.toString('utf-8').trim()
   if (!trimmed) return undefined
   try {
@@ -764,6 +781,60 @@ export async function writeFileAtomic(
   content: string,
   options?: { mode?: number; forceMode?: boolean }
 ): Promise<void> {
+  await writeFileAtomicWith(filePath, (handle) => handle.writeFile(content, 'utf-8'), options)
+}
+
+/**
+ * Streaming variant of {@link writeFileAtomic}: the content is produced by an
+ * iterable of chunks (written verbatim, in order) instead of one string, so a
+ * large file can be rewritten without ever materializing it in memory. Same
+ * temp-file + fsync + rename guarantees; if the producer throws, the temp file
+ * is removed and the target is untouched.
+ */
+export async function writeFileAtomicStream(
+  filePath: string,
+  chunks: AsyncIterable<Buffer | string> | Iterable<Buffer | string>,
+  options?: { mode?: number; forceMode?: boolean }
+): Promise<void> {
+  // Batch small chunks (transcript lines) into ~1MB writes so a many-line file
+  // doesn't pay one syscall per line.
+  const FLUSH_BYTES = 1 << 20
+  await writeFileAtomicWith(
+    filePath,
+    async (handle) => {
+      let batch: Buffer[] = []
+      let batchSize = 0
+      const flush = async () => {
+        if (batchSize === 0) return
+        const buf = batch.length === 1 ? batch[0] : Buffer.concat(batch)
+        batch = []
+        batchSize = 0
+        let offset = 0
+        while (offset < buf.length) {
+          const { bytesWritten } = await handle.write(buf, offset, buf.length - offset)
+          offset += bytesWritten
+        }
+      }
+      for await (const chunk of chunks) {
+        const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf-8') : chunk
+        if (buf.length === 0) continue
+        batch.push(buf)
+        batchSize += buf.length
+        if (batchSize >= FLUSH_BYTES) await flush()
+      }
+      await flush()
+    },
+    options
+  )
+}
+
+/** Shared temp-write/fsync/rename core of {@link writeFileAtomic} and
+ *  {@link writeFileAtomicStream}; `writeContent` fills the open temp file. */
+async function writeFileAtomicWith(
+  filePath: string,
+  writeContent: (handle: fs.promises.FileHandle) => Promise<void>,
+  options?: { mode?: number; forceMode?: boolean }
+): Promise<void> {
   const dir = path.dirname(filePath)
   const tmpPath = tempPathFor(filePath)
   // Match fs.writeFile(mode) semantics: `mode` applies only when CREATING the
@@ -794,7 +865,7 @@ export async function writeFileAtomic(
     // 'wx' = O_EXCL: never reuse a stray temp file. Unique name makes this safe.
     const handle = await fs.promises.open(tmpPath, 'wx', options?.mode ?? 0o666)
     try {
-      await handle.writeFile(content, 'utf-8')
+      await writeContent(handle)
       // Best-effort: object-storage / perms-less mounts (e.g. an S3 FUSE driver)
       // may reject chown/chmod — a metadata tweak must never fail the data write.
       // chown before chmod: chown can clear mode bits on some platforms.
