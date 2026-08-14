@@ -1941,8 +1941,18 @@ agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
       await fileHandle.close().catch(() => {})
       throw error
     })
+    // An empty-at-open file must answer with an empty body even if the live
+    // transcript gains its first append before the read starts — an unbounded
+    // stream there would overrun the advertised Content-Length of 0.
+    if (size === 0) {
+      await fileHandle.close().catch(() => {})
+      return c.body('', 200, {
+        'Content-Type': 'text/plain; charset=UTF-8',
+        'Content-Length': '0',
+      })
+    }
     // autoClose (default) closes the handle on end/destroy.
-    const source = fileHandle.createReadStream(size > 0 ? { end: size - 1 } : undefined)
+    const source = fileHandle.createReadStream({ end: size - 1 })
     source.on('error', (err) => {
       // Client disconnects surface here as stream aborts and are routine on a
       // multi-MB endpoint; only report real read failures.
