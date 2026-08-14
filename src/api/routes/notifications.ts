@@ -89,8 +89,12 @@ notificationsRouter.get('/stream', async (c) => {
         }
       }, 30000)
 
-      // Keep connection open
-      await new Promise(() => {})
+      // Wait for abort signal
+      await new Promise<void>((resolve) => {
+        stream.onAbort(() => {
+          resolve()
+        })
+      })
     } finally {
       if (pingInterval) clearInterval(pingInterval)
       if (unsubscribe) unsubscribe()
