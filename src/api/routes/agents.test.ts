@@ -6338,6 +6338,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
       agentModel: 'global-agent-model',
       browserModel: 'browser-model',
       dashboardBuilderModel: 'dashboard-model',
+      agentEffort: 'medium',
     })
   })
 
@@ -6354,6 +6355,8 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('haiku')
     expect(args.effort).toBe('high')
+    expect(args.prewarmDefaults.model).toBe('haiku')
+    expect(args.prewarmDefaults.effort).toBe('high')
   })
 
   it('reserves ownership before publishing global lifecycle state', async () => {
@@ -6383,16 +6386,20 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('claude-opus-4')
     expect(args.effort).toBe('low')
+    expect(args.prewarmDefaults.model).toBe('haiku')
+    expect(args.prewarmDefaults.effort).toBe('high')
   })
 
-  it('uses the global default model when the agent has no preferences', async () => {
+  it('uses the global default model and effort when the agent has no preferences', async () => {
     const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
 
     expect(res.status).toBe(201)
     expect(mockCreateSession).toHaveBeenCalledTimes(1)
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('global-agent-model')
-    expect(args.effort).toBeUndefined()
+    expect(args.effort).toBe('medium')
+    expect(args.prewarmDefaults.model).toBe('global-agent-model')
+    expect(args.prewarmDefaults.effort).toBe('medium')
   })
 })
 

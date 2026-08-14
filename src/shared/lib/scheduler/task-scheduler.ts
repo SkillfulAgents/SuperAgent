@@ -18,7 +18,7 @@ import {
   updateNextExecution,
 } from '@shared/lib/services/scheduled-task-service'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import {
   getSessionForScheduledExecution,
@@ -222,18 +222,21 @@ class TaskScheduler {
     // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
-    const effort = task.effort ?? agentPrefs.defaultEffort
-    const speed = task.speed ?? agentPrefs.defaultSpeed
+    const resolved = resolveRuntimeInherit(
+      { model: task.model, effort: task.effort, speed: task.speed },
+      agentPrefs,
+      models,
+    )
     const containerSession = await client.createSession({
       availableEnvVars:
         availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
-      model: task.model || agentPrefs.defaultModel || models.agentModel,
+      model: resolved.model,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },
-      ...(effort ? { effort: effort as EffortLevel } : {}),
-      ...(speed ? { speed: speed as SpeedLevel } : {}),
+      effort: resolved.effort,
+      ...(resolved.speed ? { speed: resolved.speed } : {}),
     })
 
     const sessionId = containerSession.id

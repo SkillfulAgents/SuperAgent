@@ -206,6 +206,7 @@ describe('scheduled-tasks route', () => {
       agentModel: 'claude-agent',
       browserModel: 'claude-browser',
       summarizerModel: 'claude-haiku-4-5',
+      agentEffort: 'low',
     })
     mockReadAgentPreferences.mockResolvedValue({})
     mockValidateCronExpression.mockReturnValue({ valid: true })
@@ -246,6 +247,8 @@ describe('scheduled-tasks route', () => {
       initialMessage: 'Summarize yesterday',
       model: 'claude-agent',
       browserModel: 'claude-browser',
+      dashboardBuilderModel: undefined,
+      effort: 'low',
     })
     expect(mockRegisterSession).toHaveBeenCalledWith('agent-one', 'container-session-1', 'Daily report')
     expect(mockUpdateSessionMetadata).toHaveBeenCalledWith('agent-one', 'container-session-1', {
@@ -381,7 +384,7 @@ describe('scheduled-tasks route', () => {
     it('uses the global default when neither task nor agent set one', async () => {
       const args = await runNow()
       expect(args.model).toBe('claude-agent')
-      expect(args.effort).toBeUndefined()
+      expect(args.effort).toBe('low')
       expect(args.speed).toBeUndefined()
     })
 

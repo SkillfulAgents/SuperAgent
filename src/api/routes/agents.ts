@@ -33,7 +33,7 @@ import {
   updateConnectedAccountsEnvironment,
   updateRemoteMcpEnvironment,
 } from '@shared/lib/container/connection-runtime-sync'
-import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
+import { parseRuntimeOptions, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
@@ -1635,31 +1635,33 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
     const agentPrefs = await readAgentPreferences(slug)
-    const sessionModel = runtimeOptions.model ?? agentPrefs.defaultModel ?? getEffectiveModels().agentModel
+    const models = getEffectiveModels()
+    const resolved = resolveRuntimeInherit(runtimeOptions, agentPrefs, models)
+    const prewarm = resolveRuntimeInherit({}, agentPrefs, models)
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
       initialMessageUuid,
-      model: sessionModel,
-      browserModel: getEffectiveModels().browserModel,
-      dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,
+      model: resolved.model,
+      browserModel: models.browserModel,
+      dashboardBuilderModel: models.dashboardBuilderModel,
       maxOutputTokens: agentLimits.maxOutputTokens,
       maxThinkingTokens: agentLimits.maxThinkingTokens,
       maxTurns: agentLimits.maxTurns,
       maxBudgetUsd: agentLimits.maxBudgetUsd,
       customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
       maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-      effort: runtimeOptions.effort ?? agentPrefs.defaultEffort,
-      speed: runtimeOptions.speed ?? agentPrefs.defaultSpeed,
+      effort: resolved.effort,
+      speed: resolved.speed,
       // Same preference chain MINUS the per-session pick: this is what the
       // composer will send next time (it only puts model/effort/speed on the
       // wire when the user explicitly chooses one), so it is what the
       // container should pre-warm for.
       prewarmDefaults: {
-        model: agentPrefs.defaultModel ?? getEffectiveModels().agentModel,
-        effort: agentPrefs.defaultEffort,
-        speed: agentPrefs.defaultSpeed,
+        model: prewarm.model,
+        effort: prewarm.effort,
+        speed: prewarm.speed,
       },
     })
     const sessionId = containerSession.id
