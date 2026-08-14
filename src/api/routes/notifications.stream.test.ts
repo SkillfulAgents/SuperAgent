@@ -18,9 +18,32 @@ import type { AddressInfo } from 'node:net'
 
 // Observable stand-in for the persister's global-client registry, with the
 // exact semantics of the real one (Set membership + unsubscribe deletes).
-const { globalClients } = vi.hoisted(() => ({
+const { globalClients, abortBeforeHandler } = vi.hoisted(() => ({
   globalClients: new Set<(data: unknown) => void>(),
+  // When true, the streamSSE wrapper below aborts the stream BEFORE the
+  // route's handler body runs — deterministically reproducing a client that
+  // disconnected during handler setup, i.e. before onAbort is registered.
+  abortBeforeHandler: { value: false },
 }))
+
+// Transparent pass-through around streamSSE, except it can pre-abort the
+// stream to exercise the abort-raced-with-setup path. Hono's onAbort only
+// registers a listener (it never replays a past abort), so without the
+// handler's `stream.aborted` check this path would hang the wait forever.
+vi.mock('hono/streaming', async (importOriginal) => {
+  const real = await importOriginal<typeof import('hono/streaming')>()
+  return {
+    ...real,
+    streamSSE: (
+      c: Parameters<typeof real.streamSSE>[0],
+      cb: Parameters<typeof real.streamSSE>[1],
+    ) =>
+      real.streamSSE(c, async (stream) => {
+        if (abortBeforeHandler.value) stream.abort()
+        await cb(stream)
+      }),
+  }
+})
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
@@ -97,6 +120,7 @@ afterAll(async () => {
 
 afterEach(() => {
   globalClients.clear()
+  abortBeforeHandler.value = false
 })
 
 /** Poll until `predicate` holds or `timeoutMs` elapses. */
@@ -163,6 +187,28 @@ describe('GET /api/notifications/stream teardown', () => {
 
     client.destroy()
     expect(await waitFor(() => globalClients.size === 0)).toBe(true)
+  })
+
+  it('cleans up when the abort fires before the handler waits on it', async () => {
+    abortBeforeHandler.value = true
+
+    for (let i = 0; i < 3; i++) {
+      const created = createdKeepAlives.size
+      await new Promise<void>((resolve, reject) => {
+        const req = http.get({ host: '127.0.0.1', port, path: '/api/notifications/stream' }, (res) => {
+          res.resume()
+          res.on('close', () => resolve())
+        })
+        req.on('error', reject)
+      })
+
+      // The handler ran (it created its keep-alive) against a stream that was
+      // already aborted before onAbort could be registered — the `aborted`
+      // flag check is the only thing that lets the wait settle here.
+      expect(await waitFor(() => createdKeepAlives.size === created + 1)).toBe(true)
+      expect(await waitFor(() => globalClients.size === 0)).toBe(true)
+      expect(await waitFor(() => clearedKeepAlives.size === createdKeepAlives.size)).toBe(true)
+    }
   })
 
   it('leaves no residue after repeated connect/disconnect cycles', async () => {

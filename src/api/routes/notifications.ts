@@ -89,11 +89,15 @@ notificationsRouter.get('/stream', async (c) => {
         }
       }, 30000)
 
-      // Wait for abort signal
+      // Wait for abort signal. onAbort only registers a listener — it does
+      // not replay an abort that already happened (abort() sets `aborted`
+      // before notifying), so check the flag after registering to cover a
+      // client that vanished during the setup writes above.
       await new Promise<void>((resolve) => {
         stream.onAbort(() => {
           resolve()
         })
+        if (stream.aborted) resolve()
       })
     } finally {
       if (pingInterval) clearInterval(pingInterval)
