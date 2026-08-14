@@ -154,6 +154,7 @@ vi.mock('@renderer/components/ui/tooltip', () => ({
 describe('MessageList', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockFetchOlder.mockReset()
     mockMessagesData.data = undefined
     mockMessagesData.isLoading = false
     mockMessagesData.error = null
@@ -2152,6 +2153,19 @@ describe('MessageList', () => {
       mockScrollGeometry(el, { scrollHeight: 10000, clientHeight: 500, scrollTop: 50 })
       fireEvent.scroll(el)
       expect(mockFetchOlder).toHaveBeenCalledOnce()
+    })
+
+    it('retries fetchOlder after a failed older page instead of wedging scroll-up', () => {
+      mockFetchOlder.mockResolvedValue(false)
+      mockMessagesData.data = manyMessages(50)
+      mockMessagesData.hasOlder = true
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      mockScrollGeometry(el, { scrollHeight: 10000, clientHeight: 500, scrollTop: 50 })
+      fireEvent.scroll(el)
+      expect(mockFetchOlder).toHaveBeenCalledOnce()
+      fireEvent.scroll(el)
+      expect(mockFetchOlder).toHaveBeenCalledTimes(2)
     })
 
     it('keeps the top of the window stable when a message arrives while scrolled up', () => {

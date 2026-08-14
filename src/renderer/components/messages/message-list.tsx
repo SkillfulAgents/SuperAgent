@@ -734,17 +734,18 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
 
     // Near the top: reveal the next local chunk, or fetch the next API page.
-    // prevScrollHeightRef doubles as a re-entrancy guard so we expand at most once
-    // per scroll gesture; the layout effect clears it after re-anchoring.
+    // prevScrollHeightRef is only set when we know the DOM will grow (local
+    // expand, or fetchOlder about to prepend) so a failed/empty fetch cannot wedge.
     if (el.scrollTop < 200 && prevScrollHeightRef.current == null) {
       if (hiddenCount > 0) {
         prevScrollHeightRef.current = el.scrollHeight
         isScrolledToBottomRef.current = false
         setWindowSize((n) => n + LOAD_STEP)
       } else if (hasOlder && !isFetchingOlder && fetchOlder) {
-        prevScrollHeightRef.current = el.scrollHeight
         isScrolledToBottomRef.current = false
-        void fetchOlder()
+        void fetchOlder(() => {
+          if (scrollRef.current) prevScrollHeightRef.current = scrollRef.current.scrollHeight
+        })
       }
     }
   }, [cancelFollowAnimation, hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight])
@@ -757,7 +758,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       el.scrollTop += el.scrollHeight - prevScrollHeightRef.current
       prevScrollHeightRef.current = null
     }
-  }, [windowSize])
+  }, [windowSize, visibleMessages.length])
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current

@@ -811,6 +811,84 @@ describe('session-service', () => {
       expect(page.messages.some((m) => m.id === 'huge-prefix')).toBe(false)
       expect(page.nextCursor).toBe('u-18')
     })
+
+    it('does not use a mid-merge assistant uuid as the page cursor', async () => {
+      const meta = Array.from({ length: 27 }, (_, i) => ({
+        type: 'user',
+        uuid: `meta-${i}`,
+        timestamp: new Date(Date.UTC(2026, 0, 1, 0, 2, i)).toISOString(),
+        sessionId: 'page-session',
+        parentUuid: null,
+        isMeta: true,
+        message: { role: 'user', content: 'meta' },
+      }))
+      const tailUsers = Array.from({ length: 4 }, (_, i) => ({
+        type: 'user',
+        uuid: `tail-u-${i + 1}`,
+        timestamp: new Date(Date.UTC(2026, 0, 1, 0, 1, i + 1)).toISOString(),
+        sessionId: 'page-session',
+        parentUuid: null,
+        message: { role: 'user', content: `tail-${i + 1}` },
+      }))
+      const splitAsst = [
+        {
+          type: 'assistant',
+          uuid: 'X-0',
+          timestamp: '2026-01-01T00:00:50.000Z',
+          sessionId: 'page-session',
+          parentUuid: null,
+          message: {
+            id: 'msg-X',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'leading' }],
+          },
+        },
+        {
+          type: 'assistant',
+          uuid: 'X-1',
+          timestamp: '2026-01-01T00:00:51.000Z',
+          sessionId: 'page-session',
+          parentUuid: null,
+          message: {
+            id: 'msg-X',
+            role: 'assistant',
+            content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }],
+          },
+        },
+      ]
+      await createSessionFile('test-agent', 'page-session', [
+        ...makeThread(20),
+        ...splitAsst,
+        ...tailUsers,
+        ...meta,
+      ])
+
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
+      expect(first.messages.map((m) => m.id)).not.toContain('X-1')
+      expect(first.messages[0]?.id).toBe('X-0')
+      expect(first.nextCursor).toBe('X-0')
+      expect(first.messages.find((m) => m.id === 'X-0')).toMatchObject({
+        type: 'assistant',
+        content: { text: 'leading' },
+      })
+
+      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        cursor: first.nextCursor!,
+      })
+      expect(older.messages.length).toBeGreaterThan(0)
+      expect(older.messages.map((m) => m.id)).not.toContain('X-1')
+    })
+
+    it('does not scan the full tail when a cursor id is missing', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(40))
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        cursor: 'vanished-id',
+      })
+      expect(page.messages).toEqual([])
+      expect(page.nextCursor).toBeNull()
+    })
   })
 
   describe('deleteSession', () => {

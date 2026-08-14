@@ -639,9 +639,12 @@ describe('useMessageStream', () => {
       })
 
       // Persisted transcript does NOT yet contain the final assistant line.
-      qc.setQueryData(['messages', 'session-1', 'agent-1'], [
-        { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
-      ])
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], {
+        messages: [
+          { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+        ],
+        nextCursor: null,
+      })
 
       spy.mockClear()
       act(() => {
@@ -684,10 +687,13 @@ describe('useMessageStream', () => {
       })
 
       // Transcript already has the final assistant line (no write/read race).
-      qc.setQueryData(['messages', 'session-1', 'agent-1'], [
-        { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
-        { id: 'a1', type: 'assistant', content: { text: 'Final answer' }, toolCalls: [], createdAt: '2026-01-01T00:00:01Z' },
-      ])
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], {
+        messages: [
+          { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+          { id: 'a1', type: 'assistant', content: { text: 'Final answer' }, toolCalls: [], createdAt: '2026-01-01T00:00:01Z' },
+        ],
+        nextCursor: null,
+      })
 
       spy.mockClear()
       act(() => {

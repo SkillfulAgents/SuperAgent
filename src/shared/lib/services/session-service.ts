@@ -912,6 +912,15 @@ export interface SessionMessagesPage {
 const INITIAL_TAIL_FACTOR = 4
 const MAX_TAIL_LINES = 50_000
 
+function dropPartialHead<T>(items: T[], reachedStart: boolean): T[] {
+  if (reachedStart || items.length === 0) return items
+  return items.slice(1)
+}
+
+function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | null {
+  return hasOlder && messages[0] ? messages[0].id : null
+}
+
 /** Trailing (or `cursor`-before) display page. Parses only a tail of the JSONL. */
 export async function getSessionMessagesPage(
   agentSlug: string,
@@ -924,7 +933,10 @@ export async function getSessionMessagesPage(
   }
 
   const { limit, cursor } = opts
-  let maxLines = Math.min(MAX_TAIL_LINES, Math.max(limit * INITIAL_TAIL_FACTOR, 32))
+  const initialTail = Math.min(MAX_TAIL_LINES, Math.max(limit * INITIAL_TAIL_FACTOR, 32))
+  let maxLines = initialTail
+  // Adjacent-page cursors land near the tail; a vanished id must not scan 50k lines.
+  const missGrowthCap = Math.min(MAX_TAIL_LINES, initialTail * 8)
 
   for (let attempt = 0; attempt < 32; attempt++) {
     const { lines, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines)
@@ -944,36 +956,32 @@ export async function getSessionMessagesPage(
 
     if (cursor) {
       const idx = transformed.findIndex((item) => item.id === cursor)
-      if (idx === -1 && !reachedStart && maxLines < MAX_TAIL_LINES) {
+      if (idx === -1) {
+        if (!reachedStart && maxLines < missGrowthCap) {
+          maxLines = Math.min(missGrowthCap, maxLines * 2)
+          continue
+        }
+        const usable = dropPartialHead(transformed, reachedStart)
+        return { messages: [], nextCursor: reachedStart ? null : (usable[0]?.id ?? null) }
+      }
+      if (!reachedStart && idx <= limit && maxLines < MAX_TAIL_LINES) {
         maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
         continue
       }
-      const end = idx === -1 ? 0 : idx
-      if (idx !== -1 && end < limit && !reachedStart && maxLines < MAX_TAIL_LINES) {
-        maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
-        continue
-      }
-      const start = Math.max(0, end - limit)
-      const messages = transformed.slice(start, end)
+      const start = reachedStart ? Math.max(0, idx - limit) : Math.max(1, idx - limit)
+      const messages = transformed.slice(start, idx)
       const hasOlder = messages.length > 0 && (!reachedStart || start > 0)
-      return {
-        messages,
-        nextCursor: hasOlder && messages[0] ? messages[0].id : null,
-      }
+      return { messages, nextCursor: pageCursor(messages, hasOlder) }
     }
 
-    if (transformed.length < limit && !reachedStart && maxLines < MAX_TAIL_LINES) {
+    if (!reachedStart && transformed.length <= limit && maxLines < MAX_TAIL_LINES) {
       maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
       continue
     }
-    const messages = transformed.slice(-limit)
-    const hasOlder =
-      messages.length > 0 &&
-      (transformed.length > limit || (!reachedStart && messages.length === limit))
-    return {
-      messages,
-      nextCursor: hasOlder && messages[0] ? messages[0].id : null,
-    }
+    const usable = dropPartialHead(transformed, reachedStart)
+    const messages = usable.slice(-limit)
+    const hasOlder = messages.length > 0 && (!reachedStart || usable.length > messages.length)
+    return { messages, nextCursor: pageCursor(messages, hasOlder) }
   }
 
   throw new Error('getSessionMessagesPage exceeded tail growth attempts')

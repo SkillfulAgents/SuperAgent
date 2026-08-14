@@ -215,19 +215,28 @@ const reconcilingIdleSessions = new Set<string>()
 // Does the last persisted assistant message in the messages cache match the
 // just-streamed text? Mirrors MessageList's `isStreamingMessagePersisted` so we
 // stop reconciling at exactly the point the UI considers the turn finalized.
+function messagesFromQueryCache(data: unknown): ApiMessageOrBoundary[] | null {
+  if (Array.isArray(data)) return data as ApiMessageOrBoundary[]
+  if (data && typeof data === 'object' && Array.isArray((data as { messages?: unknown }).messages)) {
+    return (data as { messages: ApiMessageOrBoundary[] }).messages
+  }
+  return null
+}
+
 function lastPersistedAssistantMatches(
   queryClient: QueryClient,
   sessionId: string,
   expectedText: string
 ): boolean {
-  const entries = queryClient.getQueriesData<ApiMessageOrBoundary[]>({
+  const entries = queryClient.getQueriesData({
     queryKey: ['messages', sessionId],
   })
   for (const [, data] of entries) {
-    if (!Array.isArray(data)) continue
-    for (let i = data.length - 1; i >= 0; i--) {
-      if (data[i].type === 'assistant') {
-        const content = (data[i] as ApiMessage).content as { text?: string } | undefined
+    const messages = messagesFromQueryCache(data)
+    if (!messages) continue
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'assistant') {
+        const content = (messages[i] as ApiMessage).content as { text?: string } | undefined
         const persisted = content?.text?.trim() || ''
         if (!persisted) return false
         return persisted.startsWith(expectedText) || expectedText.startsWith(persisted)

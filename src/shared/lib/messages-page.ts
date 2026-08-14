@@ -1,7 +1,7 @@
 export const MESSAGES_PAGE_MAX_LIMIT = 500
-/** Renderer first-page request. Host can lower the actual page with `MESSAGES_PAGE_LIMIT`. */
+/** Renderer first-page request. Host env `MESSAGES_PAGE_LIMIT` can lower the actual page (1–500). */
 export const MESSAGES_PAGE_LIMIT = 300
-/** Renderer scroll-up request. Host can lower the actual page with `MESSAGES_PAGE_OLDER_LIMIT`. */
+/** Renderer scroll-up request. Host env `MESSAGES_PAGE_OLDER_LIMIT` can lower the actual page (1–500). */
 export const MESSAGES_PAGE_OLDER_LIMIT = 200
 
 function envLimit(name: string, fallback: number): number {
