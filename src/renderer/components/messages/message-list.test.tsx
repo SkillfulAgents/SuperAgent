@@ -2168,6 +2168,55 @@ describe('MessageList', () => {
       expect(mockFetchOlder).toHaveBeenCalledTimes(2)
     })
 
+    // Geometry derives from the mounted row count, so the restore effect only
+    // sees scrollHeight growth at the commit where the prepended rows mount.
+    // Fixed-geometry mocks cannot catch a guard consumed one commit too early.
+    it('compensates scrollTop when an older page prepends above the viewport', () => {
+      const base = Array.from({ length: 300 }, (_, i) =>
+        createUserMessage({ content: { text: `row${i}` } })
+      )
+      mockMessagesData.data = base
+      mockMessagesData.hasOlder = true
+      let onBeforePrepend: (() => void) | undefined
+      mockFetchOlder.mockImplementation((cb?: () => void) => {
+        onBeforePrepend = cb
+        return Promise.resolve(true)
+      })
+
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      let top = 50
+      Object.defineProperty(el, 'scrollHeight', {
+        configurable: true,
+        get: () => (el.textContent?.match(/(?:row|old)\d+/g)?.length ?? 0) * 10,
+      })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 500 })
+      Object.defineProperty(el, 'scrollTop', {
+        configurable: true,
+        get: () => top,
+        set: (v: number) => { top = v },
+      })
+
+      fireEvent.scroll(el)
+      expect(mockFetchOlder).toHaveBeenCalledOnce()
+      expect(onBeforePrepend).toBeDefined()
+
+      const older = Array.from({ length: 200 }, (_, i) =>
+        createUserMessage({ content: { text: `old${i}` } })
+      )
+      act(() => {
+        // Mirrors the real fetchOlder: capture happens right before the prepend.
+        onBeforePrepend!()
+        mockMessagesData.data = [...older, ...base]
+        rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      })
+
+      // 200 rows (2000px at 10px/row) mounted above the viewport; the content
+      // the user was reading stays put: 50 + (5000 - 3000) = 2050.
+      expect(screen.getByText('old0')).toBeInTheDocument()
+      expect(el.scrollTop).toBe(2050)
+    })
+
     it('keeps the top of the window stable when a message arrives while scrolled up', () => {
       const base = manyMessages(305) // window = m5..m304
       mockMessagesData.data = base

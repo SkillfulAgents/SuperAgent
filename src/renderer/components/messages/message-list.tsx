@@ -744,7 +744,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       } else if (hasOlder && !isFetchingOlder && fetchOlder) {
         isScrolledToBottomRef.current = false
         void fetchOlder(() => {
-          if (scrollRef.current) prevScrollHeightRef.current = scrollRef.current.scrollHeight
+          // Back at the bottom mid-fetch: the trailing window doesn't move on
+          // prepend, so skip the capture — a lingering guard would block the
+          // next scroll-up gesture.
+          if (scrollRef.current && !isScrolledToBottomRef.current) {
+            prevScrollHeightRef.current = scrollRef.current.scrollHeight
+          }
         })
       }
     }
@@ -752,13 +757,17 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).
+  // Deps are [windowSize] ONLY: when a prepend lands the anchor effect grows
+  // windowSize in the same commit, so this fires exactly when the rows mount.
+  // A visibleMessages.length dep would consume the guard one commit early
+  // (data grows, window unchanged, delta 0) and leave the mount uncompensated.
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (el && prevScrollHeightRef.current != null) {
       el.scrollTop += el.scrollHeight - prevScrollHeightRef.current
       prevScrollHeightRef.current = null
     }
-  }, [windowSize, visibleMessages.length])
+  }, [windowSize])
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current

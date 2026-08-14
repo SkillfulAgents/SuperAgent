@@ -910,6 +910,9 @@ export interface SessionMessagesPage {
 }
 
 const INITIAL_TAIL_FACTOR = 4
+// Hard bound on how deep paging can reach: every cursor request re-scans from
+// EOF, so history beyond this many raw JSONL lines is unreachable (walk is
+// O(depth²)). Lifting it needs an offset-carrying cursor that seeks instead.
 const MAX_TAIL_LINES = 50_000
 
 function dropPartialHead<T>(items: T[], reachedStart: boolean): T[] {
@@ -959,8 +962,15 @@ export async function getSessionMessagesPage(
           maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
           continue
         }
-        // Vanished id: terminate paging. Never point the client at a newer
-        // message — it would refetch already-loaded pages in a loop.
+        // Vanished id (or cursor deeper than MAX_TAIL_LINES): terminate paging.
+        // Never point the client at a newer message — it would loop on
+        // already-loaded pages.
+        if (!reachedStart) {
+          console.warn(
+            `getSessionMessagesPage: cursor ${cursor} not found within ` +
+            `${MAX_TAIL_LINES} tail lines of session ${sessionId}; ending pagination`
+          )
+        }
         return { messages: [], nextCursor: null }
       }
       if (!reachedStart && idx <= limit && maxLines < MAX_TAIL_LINES) {
@@ -970,6 +980,13 @@ export async function getSessionMessagesPage(
       const start = reachedStart ? Math.max(0, idx - limit) : Math.max(1, idx - limit)
       const messages = transformed.slice(start, idx)
       const hasOlder = messages.length > 0 && (!reachedStart || start > 0)
+      // Sequential walks end here when the cap truncates the page to empty.
+      if (messages.length === 0 && !reachedStart) {
+        console.warn(
+          `getSessionMessagesPage: pagination for session ${sessionId} hit the ` +
+          `${MAX_TAIL_LINES}-line depth cap; deeper history is unreachable`
+        )
+      }
       return { messages, nextCursor: pageCursor(messages, hasOlder) }
     }
 
