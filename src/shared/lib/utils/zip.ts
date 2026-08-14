@@ -176,7 +176,18 @@ function openAndCollectEntries(open: (callback: ZipOpenCallback) => void): Promi
       })
 
       zipFile.on('end', () => resolve({ zipFile, entries, rawEntries }))
-      zipFile.on('error', reject)
+      zipFile.on('error', (walkErr: Error) => {
+        // The zip opened but the entry walk failed (e.g. a damaged central
+        // directory). No ZipReader is ever constructed on this path, so no
+        // caller can close the file — release it here before rejecting.
+        // Harmless for buffer-backed zips, which hold no file descriptor.
+        try {
+          zipFile.close()
+        } catch {
+          // already closed
+        }
+        reject(walkErr)
+      })
 
       zipFile.readEntry()
     })

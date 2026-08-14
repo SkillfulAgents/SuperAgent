@@ -1,7 +1,8 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import yauzl from 'yauzl'
 import {
   openZipFromBuffer,
   openZipFromFile,
@@ -165,6 +166,38 @@ describe('openZipFromFile', () => {
     const p = path.join(dir, 'not-a-zip.txt')
     fs.writeFileSync(p, 'not a zip')
     await expect(openZipFromFile(p)).rejects.toThrow()
+  })
+
+  it('closes the file when the entry walk fails after a successful open', async () => {
+    const dir = makeTempDir()
+    const zipPath = path.join(dir, 'corrupt-walk.zip')
+    await writeZipFile(zipPath, { 'first.txt': 'one', 'second.txt': 'two' })
+
+    // Corrupt the SECOND central-directory record signature (PK\x01\x02) so
+    // the zip opens fine (EOCD and first record intact) but the entry walk
+    // errors partway through — the shape of a truncated/damaged upload.
+    const bytes = fs.readFileSync(zipPath)
+    const signature = Buffer.from([0x50, 0x4b, 0x01, 0x02])
+    const firstRecord = bytes.indexOf(signature)
+    const secondRecord = bytes.indexOf(signature, firstRecord + 1)
+    expect(secondRecord).toBeGreaterThan(-1)
+    bytes[secondRecord] = 0xff
+    fs.writeFileSync(zipPath, bytes)
+
+    // No ZipReader is constructed on this path, so the shared open path must
+    // close the underlying file itself; the spy proves close() ran, and the
+    // fd count proves the descriptor was actually released.
+    const closeSpy = vi.spyOn(yauzl.ZipFile.prototype, 'close')
+    const countFds = () =>
+      process.platform === 'win32' ? 0 : fs.readdirSync('/dev/fd').length
+    try {
+      const fdsBefore = countFds()
+      await expect(openZipFromFile(zipPath)).rejects.toThrow(/central directory/i)
+      expect(closeSpy).toHaveBeenCalled()
+      expect(countFds()).toBeLessThanOrEqual(fdsBefore)
+    } finally {
+      closeSpy.mockRestore()
+    }
   })
 
   it('supports readEntry after entry enumeration completes (fd stays open until close)', async () => {
