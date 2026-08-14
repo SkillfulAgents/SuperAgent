@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   fetch: vi.fn(),
-  listApnsDevices: vi.fn((): unknown[] => []),
+  listDeliverableApnsDevices: vi.fn((): unknown[] => []),
   deleteApnsDeviceById: vi.fn(),
   getApnsRelayConfig: vi.fn(
     (): { url: string | null; enabled: boolean } => ({
@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('../push/apns-device-service', () => ({
-  listApnsDevices: mocks.listApnsDevices,
+  listDeliverableApnsDevices: mocks.listDeliverableApnsDevices,
   deleteApnsDeviceById: mocks.deleteApnsDeviceById,
 }))
 vi.mock('@shared/lib/config/settings', () => ({
@@ -103,7 +103,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.isAuthMode.mockReturnValue(false)
   mocks.getApnsRelayConfig.mockReturnValue({ url: 'https://relay.example', enabled: true })
-  mocks.listApnsDevices.mockReturnValue([makeDevice()])
+  mocks.listDeliverableApnsDevices.mockReturnValue([makeDevice()])
   mocks.getSessionMetadata.mockResolvedValue(null)
   mocks.getAccessibleAgentSlugs.mockResolvedValue([])
   mocks.getUserSettings.mockReturnValue({
@@ -133,7 +133,7 @@ describe('type gating', () => {
   it('never touches the relay for types outside the silent set', async () => {
     await channel.deliver(makeEvent({ type: 'session_chat_integration' }))
     expect(mocks.fetch).not.toHaveBeenCalled()
-    expect(mocks.listApnsDevices).not.toHaveBeenCalled()
+    expect(mocks.listDeliverableApnsDevices).not.toHaveBeenCalled()
   })
 })
 
@@ -145,7 +145,7 @@ describe('kill switch / disabled config', () => {
   })
 
   it('does nothing when no devices are registered', async () => {
-    mocks.listApnsDevices.mockReturnValue([])
+    mocks.listDeliverableApnsDevices.mockReturnValue([])
     await channel.deliver(makeEvent())
     expect(mocks.fetch).not.toHaveBeenCalled()
   })
@@ -153,7 +153,7 @@ describe('kill switch / disabled config', () => {
 
 describe('origin-device alert routing', () => {
   it('origin device gets a visible alert; all others get background pushes', async () => {
-    mocks.listApnsDevices.mockReturnValue([
+    mocks.listDeliverableApnsDevices.mockReturnValue([
       makeDevice(),
       makeDevice({ id: 'dev-row-2', token: TOKEN_B, mobileDeviceId: 'family-2' }),
     ])
@@ -183,7 +183,7 @@ describe('origin-device alert routing', () => {
   })
 
   it('a session with no origin (web/cron/webhook) is silent to everyone', async () => {
-    mocks.listApnsDevices.mockReturnValue([
+    mocks.listDeliverableApnsDevices.mockReturnValue([
       makeDevice(),
       makeDevice({ id: 'dev-row-2', token: TOKEN_B, mobileDeviceId: 'family-2' }),
     ])
@@ -197,7 +197,7 @@ describe('origin-device alert routing', () => {
   })
 
   it('a device row with no mobileDeviceId can never be the origin', async () => {
-    mocks.listApnsDevices.mockReturnValue([makeDevice({ mobileDeviceId: null })])
+    mocks.listDeliverableApnsDevices.mockReturnValue([makeDevice({ mobileDeviceId: null })])
     // A null metadata stamp must not match a null mobileDeviceId.
     mocks.getSessionMetadata.mockResolvedValue({ createdByDeviceId: undefined })
 
@@ -252,7 +252,7 @@ describe('owner settings gate', () => {
 
     mocks.isAuthMode.mockReturnValue(true)
     mocks.getAccessibleAgentSlugs.mockResolvedValue(['agent-x'])
-    mocks.listApnsDevices.mockReturnValue([makeDevice({ userId: 'user-a' })])
+    mocks.listDeliverableApnsDevices.mockReturnValue([makeDevice({ userId: 'user-a' })])
     await channel.deliver(makeEvent())
     expect(mocks.getUserSettings).toHaveBeenCalledWith('user-a')
   })
@@ -264,7 +264,7 @@ describe('auth-mode agent access gate', () => {
   })
 
   it('skips owners without access to the event agent — silent pushes too', async () => {
-    mocks.listApnsDevices.mockReturnValue([
+    mocks.listDeliverableApnsDevices.mockReturnValue([
       makeDevice({ userId: 'user-a' }),
       makeDevice({ id: 'dev-row-2', token: TOKEN_B, userId: 'user-b', mobileDeviceId: 'family-2' }),
     ])
@@ -280,7 +280,7 @@ describe('auth-mode agent access gate', () => {
   })
 
   it('never delivers to ownerless device rows in auth mode', async () => {
-    mocks.listApnsDevices.mockReturnValue([makeDevice({ userId: null })])
+    mocks.listDeliverableApnsDevices.mockReturnValue([makeDevice({ userId: null })])
 
     await channel.deliver(makeEvent())
 
@@ -305,7 +305,7 @@ describe('relay result handling', () => {
   })
 
   it('does NOT prune on RelayRateLimited (429) or RelayFetchFailed (0)', async () => {
-    mocks.listApnsDevices.mockReturnValue([
+    mocks.listDeliverableApnsDevices.mockReturnValue([
       makeDevice(),
       makeDevice({ id: 'dev-row-2', token: TOKEN_B, mobileDeviceId: 'family-2' }),
     ])
@@ -322,7 +322,7 @@ describe('relay result handling', () => {
   })
 
   it('one dead token does not affect the others', async () => {
-    mocks.listApnsDevices.mockReturnValue([
+    mocks.listDeliverableApnsDevices.mockReturnValue([
       makeDevice(),
       makeDevice({ id: 'dev-row-2', token: TOKEN_B, mobileDeviceId: 'family-2' }),
     ])
@@ -363,7 +363,7 @@ describe('batching', () => {
         mobileDeviceId: `family-${i}`,
       })
     )
-    mocks.listApnsDevices.mockReturnValue(devices)
+    mocks.listDeliverableApnsDevices.mockReturnValue(devices)
     mocks.fetch.mockImplementation(async (_url: unknown, init: unknown) => {
       const pushes = JSON.parse((init as { body: string }).body).pushes as Array<{
         deviceToken: string

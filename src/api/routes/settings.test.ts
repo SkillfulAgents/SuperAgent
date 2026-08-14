@@ -182,6 +182,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   tokenExchangeJti: {},
   mobilePairingToken: {},
   mobileDevice: {},
+  apnsDevices: {},
   pushSubscriptions: {},
   pushVapidKeys: {},
 }))

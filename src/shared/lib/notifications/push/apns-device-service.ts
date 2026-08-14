@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto'
-import { and, eq, isNull, ne, count } from 'drizzle-orm'
+import { and, eq, gt, isNull, ne, or, count, getTableColumns } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { apnsDevices } from '@shared/lib/db/schema'
+import { apnsDevices, mobileDevice } from '@shared/lib/db/schema'
 
 export type ApnsDeviceRow = typeof apnsDevices.$inferSelect
 
@@ -103,6 +103,22 @@ export function upsertApnsDevice(params: {
 
 export function listApnsDevices(): ApnsDeviceRow[] {
   return db.select().from(apnsDevices).all()
+}
+
+/**
+ * Devices eligible for push DELIVERY: registrations whose paired mobile
+ * device is still live. An expired pairing is hidden from the user's device
+ * management UI — it must not keep receiving session metadata just because
+ * APNs still accepts its token. Rows with no device link (defensive local-mode
+ * parity with push_subscriptions) stay deliverable.
+ */
+export function listDeliverableApnsDevices(now: Date = new Date()): ApnsDeviceRow[] {
+  return db
+    .select(getTableColumns(apnsDevices))
+    .from(apnsDevices)
+    .leftJoin(mobileDevice, eq(apnsDevices.mobileDeviceId, mobileDevice.id))
+    .where(or(isNull(apnsDevices.mobileDeviceId), gt(mobileDevice.expiresAt, now)))
+    .all()
 }
 
 export function deleteApnsDeviceById(id: string): void {

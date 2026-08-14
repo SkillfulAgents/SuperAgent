@@ -4,7 +4,7 @@ import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { getAccessibleAgentSlugs } from '@shared/lib/services/notification-service'
 import { getSessionMetadata } from '@shared/lib/services/session-service'
 import {
-  listApnsDevices,
+  listDeliverableApnsDevices,
   deleteApnsDeviceById,
   type ApnsDeviceRow,
 } from '../push/apns-device-service'
@@ -96,7 +96,7 @@ export class ApnsRelayChannel implements NotificationChannel {
       return
     }
 
-    const devices = listApnsDevices()
+    const devices = listDeliverableApnsDevices()
     if (devices.length === 0) {
       return
     }

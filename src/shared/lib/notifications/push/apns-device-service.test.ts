@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as path from 'path'
+import { eq } from 'drizzle-orm'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
@@ -20,6 +21,7 @@ vi.mock('../../db', () => ({
 import {
   upsertApnsDevice,
   listApnsDevices,
+  listDeliverableApnsDevices,
   deleteApnsDeviceById,
   deleteApnsDeviceByToken,
   MAX_APNS_DEVICES_PER_OWNER,
@@ -155,6 +157,32 @@ describe('apns-device-service', () => {
       upsertApnsDevice({ ...BASE_DEVICE, token: TOKEN_B, userId: 'user-a' })
 
       expect(listApnsDevices()).toHaveLength(2)
+    })
+
+    it('delivery excludes registrations whose paired device has expired', () => {
+      seedMobileDevices('dev-live', 'dev-expired')
+      testDb
+        .update(schema.mobileDevice)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(eq(schema.mobileDevice.id, 'dev-expired'))
+        .run()
+
+      upsertApnsDevice({ ...BASE_DEVICE, userId: 'user-a', mobileDeviceId: 'dev-live' })
+      upsertApnsDevice({
+        ...BASE_DEVICE,
+        token: TOKEN_B,
+        userId: 'user-a',
+        mobileDeviceId: 'dev-expired',
+      })
+      // Defensive local-mode-parity row with no device link stays deliverable.
+      upsertApnsDevice({ ...BASE_DEVICE, token: 'c'.repeat(64) })
+
+      expect(listApnsDevices()).toHaveLength(3)
+      const deliverable = listDeliverableApnsDevices()
+      expect(deliverable).toHaveLength(2)
+      expect(deliverable.map((d) => d.mobileDeviceId)).toEqual(
+        expect.arrayContaining(['dev-live', null])
+      )
     })
   })
 
