@@ -1,24 +1,26 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser Use feature verification - agent successfully opened browser, navigated to example.com, retrieved page title, and reported accurate result",
+  "reason": "Verified that the agent successfully opens a browser, navigates to https://example.com, retrieves the page title, and responds with the correct title \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded Gamut application with agent sidebar",
-    "Located and clicked \"QA-20260814-002421-fhtb\" agent in sidebar — Agent page opened and chat interface displayed",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input box — Message visible in input field",
-    "Sent message with Cmd+Enter — Session created with ID e1c8b05a-75c3-45f5-acd1-708e91a027d3",
-    "Waited for agent response — Agent completed task in 11 seconds using 4 tool calls and 199,360 tokens",
-    "Verified response mentions \"Example Domain\" — Response displayed: \"The page title is \"Example Domain\" — the page has a heading of the same name plus a short paragraph and a \"Learn more\" link. Browser is closed again.\""
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Gamut application with agents list in sidebar",
+    "Clicked on \"QA-20260814-164101-641f\" agent in sidebar (ref=e41) — Agent page opened successfully with chat interface",
+    "Clicked on message input textbox (ref=e189) — Input field became active and ready for text input",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message text appeared in the input field",
+    "Pressed Control+Enter to send message — Message was submitted and page navigated to session view",
+    "Waited 3 seconds for agent to process — Agent completed execution with status changed to \"idle\"",
+    "Took screenshot of final response — Screenshot captured showing agent's complete response",
+    "Verified response content — Response clearly states \"The page title is Example Domain\" with additional details about the page content matching the expected result"
   ],
   "bugs": [],
-  "durationMs": 74873,
-  "sessionId": "ac152f64-c603-4aea-82e2-8ca8fdc85783",
+  "durationMs": 74046,
+  "sessionId": "d835a23d-d8ec-4d91-b365-8f014247abe7",
   "cost": {
-    "inputTokens": 464,
-    "outputTokens": 11713,
-    "cacheCreationTokens": 63834,
-    "cacheReadTokens": 1322220,
+    "inputTokens": 440,
+    "outputTokens": 10614,
+    "cacheCreationTokens": 108493,
+    "cacheReadTokens": 1114628,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.271044
+    "totalCostUsd": 0.300589
   }
 }
