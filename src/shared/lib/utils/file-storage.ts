@@ -403,8 +403,13 @@ export async function* streamFileLines(filePath: string): AsyncIterable<Buffer> 
       while (idx !== -1) {
         if (pending.length > 0) {
           pending.push(chunk.subarray(start, idx))
-          yield Buffer.concat(pending)
+          // Concat and release the source chunks BEFORE yielding: yield
+          // suspends the generator, so anything still referenced here stays
+          // reachable while the consumer holds the line — clearing `pending`
+          // after the yield would retain a chunk-spanning row twice.
+          const line = Buffer.concat(pending)
           pending = []
+          yield line
         } else {
           yield chunk.subarray(start, idx)
         }
@@ -416,7 +421,10 @@ export async function* streamFileLines(filePath: string): AsyncIterable<Buffer> 
 
     // Process any remaining content (file not terminated by a newline)
     if (pending.length > 0) {
-      yield Buffer.concat(pending)
+      // Same as above: drop the source chunks before suspending on yield
+      const line = Buffer.concat(pending)
+      pending = []
+      yield line
     }
   } finally {
     // Runs on early `break` from the consumer's for-await too, which the
