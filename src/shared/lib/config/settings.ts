@@ -242,6 +242,20 @@ export interface CloudWorkspaceSettings {
   tokenFingerprint: string | null
 }
 
+/**
+ * Server-side push delivery via the APNs relay (native iOS companion app).
+ * The relay holds the APNs credentials; this deployment only POSTs push
+ * batches to it (see ApnsRelayChannel).
+ */
+export interface PushSettings {
+  /** Relay base URL. Defaults to DEFAULT_APNS_RELAY_URL; empty string disables. */
+  apnsRelayUrl?: string
+  /** Master kill switch for APNs delivery, default true. */
+  apnsEnabled?: boolean
+}
+
+export const DEFAULT_APNS_RELAY_URL = 'https://gamut-apns-relay.datawizz.workers.dev'
+
 export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
@@ -276,6 +290,8 @@ export interface AppSettings {
    * — the inbox reads live from the platform.
    */
   platformNotifications?: PlatformNotificationsSettings
+  /** APNs relay push delivery for the native iOS companion app. */
+  push?: PushSettings
   /** Anthropic SDK tool search — defaults on; passed as `ENABLE_TOOL_SEARCH` to the container. */
   enableToolSearch?: boolean
   /** Launch policies for subagents (Task/Agent) and workflows (Workflow tool). */
@@ -561,6 +577,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     shareErrorReports: loaded.shareErrorReports,
     platformAuth: loaded.platformAuth,
     cloudWorkspace: loaded.cloudWorkspace,
+    push: loaded.push,
     // Narrowed on read: an unrecognized value (hand-edited file, a future
     // version's target) must resolve to local rather than to something that
     // routes work off this machine.
@@ -910,6 +927,18 @@ export function getCustomEnvVars(): Record<string, string> {
 export function getVoiceSettings(): VoiceSettings {
   const settings = getSettings()
   return settings.voice ?? {}
+}
+
+/**
+ * Resolved APNs relay config: `url` is null when delivery is disabled (kill
+ * switch off, or relay URL explicitly set to the empty string).
+ */
+export function getApnsRelayConfig(): { url: string | null; enabled: boolean } {
+  const settings = getSettings()
+  const enabled = settings.push?.apnsEnabled !== false
+  const rawUrl = settings.push?.apnsRelayUrl ?? DEFAULT_APNS_RELAY_URL
+  const url = enabled && rawUrl !== '' ? rawUrl.replace(/\/+$/, '') : null
+  return { url, enabled }
 }
 
 /** Resolved launch policies for subagents/workflows (defaults applied). */
