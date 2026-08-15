@@ -3773,7 +3773,7 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(body.messages).toHaveLength(1)
     expect(body.messages[0].id).toBe('m1')
     expect(body.nextCursor).toBe('m1')
-    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', { limit: 2, cursor: undefined })
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', { limit: 2, cursor: undefined, signal: expect.any(AbortSignal) })
     expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
   })
 
@@ -3788,6 +3788,7 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
       limit: 2,
       cursor: 'm1',
+      signal: expect.any(AbortSignal),
     })
   })
 
@@ -3809,6 +3810,7 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
       limit: 100,
       cursor: undefined,
+      signal: expect.any(AbortSignal),
     })
   })
 
@@ -3824,7 +3826,50 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
       limit: 80,
       cursor: 'm1',
+      signal: expect.any(AbortSignal),
     })
+  })
+
+  // The renderer aborts superseded refetches (SSE burst throttling); the route
+  // must honor that server-side. Without it every abandoned request still runs
+  // the full read/parse/serialize pipeline — orphaned jobs accumulate at the
+  // event rate and OOM memory-limited deployments over slow volumes.
+  it('propagates the request abort into the page reader and answers 499', async () => {
+    vi.mocked(getSessionMessagesPage).mockImplementation(async (_agent, _session, opts) => {
+      // Behave like the real reader: the tail loop throws when the signal fires.
+      opts.signal?.throwIfAborted()
+      return { messages: [], nextCursor: null }
+    })
+
+    const controller = new AbortController()
+    controller.abort()
+    const res = await app.request(`http://localhost${URL}?limit=2`, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+    expect(res.status).toBe(499)
+  })
+
+  it('skips annotation and serialization when the client aborts after the read', async () => {
+    const controller = new AbortController()
+    vi.mocked(getSessionMessagesPage).mockImplementation(async () => {
+      // Abort lands while the read is completing — too late for the reader's
+      // own checks, so the route's post-read check must catch it.
+      controller.abort()
+      return {
+        messages: [
+          { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+        ],
+        nextCursor: null,
+      }
+    })
+
+    const res = await app.request(`http://localhost${URL}?limit=2`, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+    expect(res.status).toBe(499)
+    expect(res.body).toBeNull()
   })
 })
 

@@ -1842,15 +1842,27 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       if (!parsed.success) {
         return c.json({ error: 'Invalid pagination' }, 400)
       }
+      // The renderer aborts superseded refetches; honor that server-side too.
+      // The signal threads down to the tail reader so an abandoned request
+      // stops paying for transcript reads (multi-second on network volumes)
+      // instead of running the full read/parse/serialize pipeline to
+      // completion for a client that hung up.
       const page = await getSessionMessagesPage(agentSlug, sessionId, {
         limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
         cursor: parsed.data.cursor,
+        signal: c.req.raw.signal,
       })
+      c.req.raw.signal.throwIfAborted()
       await annotateAndRecoverMessages(page.messages, agentSlug, sessionId)
+      c.req.raw.signal.throwIfAborted()
       return c.json({ messages: page.messages, nextCursor: page.nextCursor })
     }
 
     const messages = await getSessionMessagesWithCompact(agentSlug, sessionId)
+    // The legacy full read above predates abort support (reworked wholesale by
+    // the streaming-page follow-up); at least skip transform + serialization
+    // when the client is already gone.
+    c.req.raw.signal.throwIfAborted()
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
     const transformed = transformMessages(filtered)
 
@@ -1937,6 +1949,12 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       'Content-Type': 'application/json',
     })
   } catch (error) {
+    // Client hung up mid-request (the renderer aborts superseded refetches):
+    // the read path threw AbortError. Nothing receives this response — answer
+    // with the conventional 499 instead of logging a failure that isn't one.
+    if (c.req.raw.signal.aborted) {
+      return new Response(null, { status: 499 })
+    }
     console.error('Failed to fetch messages:', error)
     return c.json({ error: 'Failed to fetch messages' }, 500)
   }

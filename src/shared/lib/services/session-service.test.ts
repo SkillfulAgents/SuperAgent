@@ -911,6 +911,34 @@ describe('session-service', () => {
       expect(cursor).toBeNull()
       expect(loaded.size).toBe(600)
     })
+
+    // The signal lets the /messages route stop paying for transcript reads when
+    // the HTTP client has already aborted (superseded refetch). Rejection must
+    // be the standard AbortError so the route can map it to 499.
+    it('rejects with AbortError when the signal is already aborted', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(10))
+
+      const controller = new AbortController()
+      controller.abort()
+      await expect(
+        getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 5,
+          signal: controller.signal,
+        })
+      ).rejects.toMatchObject({ name: 'AbortError' })
+    })
+
+    it('a never-aborted signal changes nothing', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(10))
+
+      const controller = new AbortController()
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        signal: controller.signal,
+      })
+      expect(page.messages.map((m) => m.id)).toEqual(['a-7', 'u-8', 'a-8', 'u-9', 'a-9'])
+      expect(page.nextCursor).toBe('a-7')
+    })
   })
 
   describe('deleteSession', () => {

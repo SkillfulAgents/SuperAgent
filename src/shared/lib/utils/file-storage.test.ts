@@ -725,6 +725,69 @@ describe('readJsonlTailLines', () => {
     expect(lines).toEqual([])
     expect(reachedStart).toBe(true)
   })
+
+  // The abort signal exists so an HTTP caller whose client hung up stops
+  // paying for the rest of a large transcript (reads are multi-second on
+  // network volumes). Pin both halves: a pre-aborted signal never opens the
+  // file, and an abort mid-walk stops before the next chunk read.
+  it('rejects without opening the file when the signal is already aborted', async () => {
+    const filePath = path.join(testDir, 'abort-pre.jsonl')
+    await fs.promises.writeFile(filePath, 'a\nb\n')
+    const openSpy = vi.spyOn(fs.promises, 'open')
+
+    const controller = new AbortController()
+    controller.abort()
+    await expect(readJsonlTailLines(filePath, 5, controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    expect(openSpy).not.toHaveBeenCalled()
+    openSpy.mockRestore()
+  })
+
+  it('stops the backward walk when the signal aborts between chunk reads', async () => {
+    // >4 chunks of 64KB so an unaborted read would take several iterations.
+    const filePath = path.join(testDir, 'abort-mid.jsonl')
+    const row = `${'x'.repeat(1023)}\n`
+    await fs.promises.writeFile(filePath, row.repeat(300)) // ~300KB, ~5 chunks
+
+    const controller = new AbortController()
+    let reads = 0
+    const realOpen = fs.promises.open.bind(fs.promises)
+    const openSpy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await realOpen(...(args as Parameters<typeof fs.promises.open>))
+      const realRead = handle.read.bind(handle) as (...a: unknown[]) => unknown
+      return new Proxy(handle, {
+        get(target, prop, receiver) {
+          if (prop === 'read') {
+            return (...readArgs: unknown[]) => {
+              reads++
+              controller.abort() // abort lands while the first read is in flight
+              return realRead(...readArgs)
+            }
+          }
+          const value = Reflect.get(target, prop, receiver)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      }) as Awaited<ReturnType<typeof fs.promises.open>>
+    })
+
+    // Ask for every line so only the abort can stop the walk early.
+    await expect(readJsonlTailLines(filePath, 100_000, controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    expect(reads).toBe(1)
+    openSpy.mockRestore()
+  })
+
+  it('ignores a never-aborted signal', async () => {
+    const filePath = path.join(testDir, 'abort-none.jsonl')
+    await fs.promises.writeFile(filePath, 'a\nb\nc\n')
+
+    const controller = new AbortController()
+    const { lines, reachedStart } = await readJsonlTailLines(filePath, 10, controller.signal)
+    expect(lines.map((l) => l.toString('utf-8'))).toEqual(['a', 'b', 'c'])
+    expect(reachedStart).toBe(true)
+  })
 })
 
 describe('streamJsonlFile', () => {

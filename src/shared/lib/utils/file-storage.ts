@@ -365,11 +365,18 @@ export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]>
 const NEWLINE_BYTE = 0x0a
 const TAIL_READ_CHUNK = 64 * 1024
 
-/** Last `maxLines` JSONL rows from disk. Older rows are never read into a line buffer. */
+/** Last `maxLines` JSONL rows from disk. Older rows are never read into a line buffer.
+ *
+ * `signal` (optional) aborts the backward walk between chunk reads: transcripts
+ * run to tens of MB and network filesystems make each read slow, so a caller
+ * whose HTTP client already hung up must be able to stop paying for the rest
+ * of the file. Throws the signal's abort reason (AbortError). */
 export async function readJsonlTailLines(
   filePath: string,
-  maxLines: number
+  maxLines: number,
+  signal?: AbortSignal
 ): Promise<{ lines: Buffer[]; reachedStart: boolean }> {
+  signal?.throwIfAborted()
   if (maxLines <= 0) return { lines: [], reachedStart: true }
 
   let fileHandle: fs.promises.FileHandle
@@ -391,6 +398,7 @@ export async function readJsonlTailLines(
     let newlineCount = 0
 
     while (pos > 0 && newlineCount <= maxLines) {
+      signal?.throwIfAborted()
       const size = Math.min(TAIL_READ_CHUNK, pos)
       pos -= size
       const buf = Buffer.allocUnsafe(size)

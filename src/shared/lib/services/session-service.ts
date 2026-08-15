@@ -926,22 +926,29 @@ function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | nu
   return hasOlder && messages[0] ? messages[0].id : null
 }
 
-/** Trailing (or `cursor`-before) display page. Parses only a tail of the JSONL. */
+/** Trailing (or `cursor`-before) display page. Parses only a tail of the JSONL.
+ *
+ * `opts.signal` aborts the read/parse work mid-flight (throws AbortError): the
+ * caller is an HTTP route whose client cancels superseded refetches, and without
+ * the signal every abandoned request still pays full transcript reads server-side. */
 export async function getSessionMessagesPage(
   agentSlug: string,
   sessionId: string,
-  opts: { limit: number; cursor?: string }
+  opts: { limit: number; cursor?: string; signal?: AbortSignal }
 ): Promise<SessionMessagesPage> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   if (!(await fileExists(jsonlPath))) {
     return { messages: [], nextCursor: null }
   }
 
-  const { limit, cursor } = opts
+  const { limit, cursor, signal } = opts
   let maxLines = Math.min(MAX_TAIL_LINES, Math.max(limit * INITIAL_TAIL_FACTOR, 32))
 
   for (let attempt = 0; attempt < 32; attempt++) {
-    const { lines, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines)
+    const { lines, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines, signal)
+    // An abort landing on the last chunk read still saves the parse/transform
+    // below — on large transcripts that is seconds of synchronous work.
+    signal?.throwIfAborted()
     const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
     for (const line of lines) {
       const parsed = parseJsonlLine<JsonlEntry>(line)
