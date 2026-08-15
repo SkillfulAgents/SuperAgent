@@ -351,10 +351,18 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
   const isProviderErrorMessage = isAssistant && !!message.apiError && PROVIDER_ERROR_CODES.has(message.apiError)
 
-  // Don't render assistant messages that have no text, no tool calls, and no
-  // thinking (and aren't streaming). These are transient empty entries from
-  // partially-persisted JSONL that will be filled in on the next refetch.
-  if (isAssistant && !hasText && toolCalls.length === 0 && thinking.length === 0 && !isStreaming) {
+  // Don't render assistant messages that have no text, no tool calls, no
+  // thinking, and no workflow result card (and aren't streaming). These are
+  // transient empty entries from partially-persisted JSONL that will be filled
+  // in on the next refetch.
+  if (
+    isAssistant
+    && !hasText
+    && toolCalls.length === 0
+    && thinking.length === 0
+    && workflowResults.length === 0
+    && !isStreaming
+  ) {
     return null
   }
 

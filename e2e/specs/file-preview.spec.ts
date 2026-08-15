@@ -52,6 +52,98 @@ test.describe('File Preview', () => {
     await appPage.waitForAgentsLoaded()
   })
 
+  async function sendLinkTrigger(trigger: string) {
+    await sessionPage.sendMessage(trigger)
+    await sessionPage.waitForResponse(15000)
+  }
+
+  test('markdown workspace link opens the preview tray', async ({ page }) => {
+    await agentPage.createAgent(`FileLink ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Test Report\n\nThis is a test with **bold** text.')
+
+    await sendLinkTrigger('link file')
+
+    await page.getByRole('button', { name: 'the report' }).click()
+    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(markdown(page).getByRole('heading', { name: 'Test Report' })).toBeVisible({ timeout: 10000 })
+  })
+
+  test('https link in the same reply does not open the preview tray', async ({ page }) => {
+    await agentPage.createAgent(`FileLinkWeb ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Test Report')
+
+    await sendLinkTrigger('link file')
+
+    const popupPromise = page.waitForEvent('popup', { timeout: 3000 }).catch(() => null)
+    await page.getByRole('link', { name: 'the site' }).click()
+    const popup = await popupPromise
+    if (popup) await popup.close()
+    await expect(page.getByTestId('file-preview-header')).toHaveCount(0)
+  })
+
+  test('percent-encoded filename opens the real file', async ({ page }) => {
+    await agentPage.createAgent(`FileLinkSpace ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/my report.md', '# Spaced Report')
+
+    await sendLinkTrigger('link spaced file')
+
+    await page.getByRole('button', { name: 'spaced report' }).click()
+    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(markdown(page).getByRole('heading', { name: 'Spaced Report' })).toBeVisible({ timeout: 10000 })
+  })
+
+  test('missing workspace file still opens the tray', async ({ page }) => {
+    await agentPage.createAgent(`FileLinkMissing ${Date.now()}`)
+
+    await sendLinkTrigger('link missing file')
+
+    await page.getByRole('button', { name: 'the missing file' }).click()
+    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('Failed to load file')).toBeVisible({ timeout: 10000 })
+  })
+
+  test('spreadsheet link opens the tray download fallback', async ({ page }) => {
+    await agentPage.createAgent(`FileLinkXlsx ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/data.xlsx', Buffer.from('not-a-real-xlsx'))
+
+    await sendLinkTrigger('link spreadsheet')
+
+    await page.getByRole('button', { name: 'the sheet' }).click()
+    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('Preview is not available for this file type')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('link', { name: 'Download', exact: true })).toBeVisible()
+  })
+
+  test('workflow result card file link opens the preview tray', async ({ page }) => {
+    await agentPage.createAgent(`FileLinkWorkflow ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Test Report')
+
+    await sendLinkTrigger('link workflow card')
+
+    await page.getByRole('button', { name: 'card report' }).click()
+    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(markdown(page).getByRole('heading', { name: 'Test Report' })).toBeVisible({ timeout: 10000 })
+  })
+
+  test('subagent drawer file link opens the preview tray', async ({ page }) => {
+    await agentPage.createAgent(`FileLinkSubagent ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Test Report')
+
+    await sendLinkTrigger('link subagent drawer')
+    await sessionPage.expandLatestCompletedTurn()
+
+    await page.getByRole('button', { name: /Sub-agent/ }).click()
+    await page.getByRole('button', { name: 'drawer report' }).click()
+    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(markdown(page).getByRole('heading', { name: 'Test Report' })).toBeVisible({ timeout: 10000 })
+  })
+
   test('file delivery shows pill and opens preview on click', async ({ page }) => {
     await agentPage.createAgent(`FilePreview ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
