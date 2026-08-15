@@ -212,6 +212,55 @@ const refCounts = new Map<string, number>()
 // session_idle events don't spawn duplicate loops for the same session.
 const reconcilingIdleSessions = new Set<string>()
 
+// Every SSE-driven ['messages', sessionId] invalidation funnels through one
+// per-session leading-edge throttle: the first event refetches immediately,
+// further events within the window collapse into at most one trailing refetch.
+// A busy turn emits many refetch triggers in quick succession (tool_call,
+// tool_result, messages_updated, turn_output_complete, session_idle …); each
+// refetch of a long session is a multi-MB response the server assembles from a
+// full transcript read, so an unthrottled burst multiplies into concurrent
+// requests that can OOM a memory-limited deployment. Live deltas render from
+// stream state, not from these refetches, so collapsing them does not affect
+// streaming UX. User-initiated invalidations (delete message/tool call,
+// interrupt in use-messages.ts) intentionally do NOT go through this throttle.
+export const MESSAGES_REFETCH_THROTTLE_MS = 750
+
+interface MessagesInvalidateThrottle {
+  lastInvalidatedAt: number
+  /** Pending trailing refetch; further calls in the window join its promise. */
+  trailing: { timer: ReturnType<typeof setTimeout>; promise: Promise<void> } | null
+}
+const messagesInvalidateThrottles = new Map<string, MessagesInvalidateThrottle>()
+
+// Resolves once the (possibly deferred) invalidate's refetch has settled, so
+// callers that need the refreshed cache (the idle reconcile loop) can await it.
+function invalidateMessagesThrottled(
+  queryClient: QueryClient,
+  sessionId: string
+): Promise<void> {
+  let entry = messagesInvalidateThrottles.get(sessionId)
+  if (!entry) {
+    entry = { lastInvalidatedAt: 0, trailing: null }
+    messagesInvalidateThrottles.set(sessionId, entry)
+  }
+  if (entry.trailing) return entry.trailing.promise
+  const wait = MESSAGES_REFETCH_THROTTLE_MS - (Date.now() - entry.lastInvalidatedAt)
+  if (wait <= 0) {
+    entry.lastInvalidatedAt = Date.now()
+    return queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+  }
+  const throttle = entry
+  let settle!: () => void
+  const promise = new Promise<void>((resolve) => { settle = resolve })
+  const timer = setTimeout(() => {
+    throttle.trailing = null
+    throttle.lastInvalidatedAt = Date.now()
+    queryClient.invalidateQueries({ queryKey: ['messages', sessionId] }).then(settle, settle)
+  }, wait)
+  throttle.trailing = { timer, promise }
+  return promise
+}
+
 // Does the last persisted assistant message in the messages cache match the
 // just-streamed text? Mirrors MessageList's `isStreamingMessagePersisted` so we
 // stop reconciling at exactly the point the UI considers the turn finalized.
@@ -273,7 +322,7 @@ async function reconcileMessagesAfterIdle(
       await new Promise((resolve) => setTimeout(resolve, delay))
       // refetchType defaults to 'active': refetches the mounted messages query
       // (the session being viewed) and resolves once the cache is updated.
-      await queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+      await invalidateMessagesThrottled(queryClient, sessionId)
     }
   } finally {
     reconcilingIdleSessions.delete(sessionId)
@@ -357,7 +406,7 @@ function getOrCreateEventSource(
         // input requests from them), so force a refetch now instead of waiting for the
         // safety-net poll. Without this, a late join only recovers on the next poll
         // tick, which races the assertion timeout in tests and shows a stale UI in prod.
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
         // Resync the unified pending-request store too: its create/resolve
         // events are one-shot, so anything settled or opened while this
         // stream was down must be recovered from the snapshot endpoint.
@@ -446,7 +495,7 @@ function getOrCreateEventSource(
           isWaitingBackground: false,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
         // The immediate invalidate above can refetch before the final assistant
         // line is durably readable in the JSONL transcript. Beat that race with a
@@ -486,7 +535,7 @@ function getOrCreateEventSource(
           isWaitingBackground: false,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
       // Per-command lifecycle (runtime >= CLI 2.1.206). A started command
@@ -501,7 +550,7 @@ function getOrCreateEventSource(
           // Fast path: in the common case the transcript attachment is already
           // readable. stream_start below provides the bounded read-after-write
           // retry when this invalidate lands a moment too early.
-          queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+          invalidateMessagesThrottled(queryClient, sessionId)
         } else if (
           commandUuid &&
           (data.state === 'completed' || data.state === 'discarded' || data.state === 'cancelled')
@@ -616,7 +665,7 @@ function getOrCreateEventSource(
       else if (data.type === 'stream_start') {
         if (startedCommandsAwaitingTranscript.size > 0) {
           startedCommandsAwaitingTranscript.clear()
-          queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+          invalidateMessagesThrottled(queryClient, sessionId)
         }
         // Capture slash commands from init event (piggybacked on stream_start)
         if (Array.isArray(data.slashCommands)) {
@@ -625,7 +674,7 @@ function getOrCreateEventSource(
         // If there were streaming tool uses, trigger a refetch so the persisted
         // versions are available before we clear the streaming state.
         if (current?.streamingToolUses?.length) {
-          queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+          invalidateMessagesThrottled(queryClient, sessionId)
         }
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
@@ -769,7 +818,7 @@ function getOrCreateEventSource(
           })
         }
         // Refetch to pick up the persisted message shortly
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
       }
       else if (data.type === 'user_typing') {
         // Another user is typing in this shared session
@@ -786,7 +835,7 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'messages_updated') {
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
       }
       else if (data.type === 'turn_output_complete') {
         // A turn's output finished (the session may or may not settle — e.g.
@@ -796,7 +845,7 @@ function getOrCreateEventSource(
         // bubble before the persisted copy is fetched and the final message
         // disappears briefly. The reconcile helper is idempotent, so the
         // session_idle handler's own reconcile coexists harmlessly.
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
         void reconcileMessagesAfterIdle(sessionId, queryClient, current?.streamingMessage ?? null)
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
@@ -811,7 +860,7 @@ function getOrCreateEventSource(
         // card cleanup here: the registry resolution that accompanies it emits
         // user_request_resolved, and the branch above invalidates the store
         // every tab renders from.
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
       }
       else if (data.type === 'context_usage') {
         // Context window usage update from backend
@@ -933,11 +982,11 @@ function getOrCreateEventSource(
             isCompacting: false,
           })
         }
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
       }
       else if (data.type === 'memory_recall') {
         // Agent recalled memory files — refetch messages so the persisted entry appears
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
       }
       else if (data.type === 'api_retry') {
         // API is retrying a transient error — show retry state in activity indicator
@@ -1065,7 +1114,7 @@ function getOrCreateEventSource(
             completedSubagents: newCompleted,
           })
           queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
-          queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+          invalidateMessagesThrottled(queryClient, sessionId)
         }
       }
       // Subagent streaming events
@@ -1170,7 +1219,7 @@ function getOrCreateEventSource(
             apiErrorCode: null,
             activeStartTime: null,
           })
-          queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+          invalidateMessagesThrottled(queryClient, sessionId)
           queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
@@ -1199,7 +1248,7 @@ function getOrCreateEventSource(
     }
     streamListeners.get(sessionId)?.forEach((listener) => listener())
     // Refetch messages to ensure we have latest data
-    queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+    invalidateMessagesThrottled(queryClient, sessionId)
   }
 
   return es
