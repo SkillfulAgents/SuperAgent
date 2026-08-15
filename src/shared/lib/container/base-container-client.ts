@@ -831,13 +831,43 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   protected terminateWebSocketConnections(): void {
     for (const ws of this.wsConnections.values()) {
       ws.removeAllListeners()
-      try {
-        ws.terminate()
-      } catch {
-        // ws.terminate() throws if the socket is still in CONNECTING state.
-      }
+      // Aborting a CONNECTING socket emits 'error' on the NEXT TICK, so the
+      // try/catch below cannot catch it — and with every listener just
+      // removed, EventEmitter rethrows it as an uncaught exception that takes
+      // down the process ("WebSocket was closed before the connection was
+      // established"). Re-attach a no-op sink before tearing down. [ELECTRON-5J]
+      ws.on('error', () => {})
+      this.closeStreamSocket(ws, { force: true })
     }
     this.wsConnections.clear()
+  }
+
+  /**
+   * State-aware, idempotent teardown for a stream WebSocket.
+   *
+   * `ws.close()` / `ws.terminate()` on a CONNECTING socket aborts the
+   * in-flight handshake, which surfaces asynchronously as an 'error' event
+   * carrying "WebSocket was closed before the connection was established".
+   * That is our own abort, not a failure, so the socket is recorded here and
+   * the 'error' handler suppresses it. CLOSING/CLOSED sockets are left alone —
+   * calling close() again is pointless and repeated cleanup must be safe.
+   *
+   * @returns true when the socket was still CONNECTING (handshake aborted).
+   */
+  private locallyAbortedSockets = new WeakSet<WebSocket>()
+  protected closeStreamSocket(ws: WebSocket, options?: { force?: boolean }): boolean {
+    const wasConnecting = ws.readyState === WebSocket.CONNECTING
+    if (wasConnecting) this.locallyAbortedSockets.add(ws)
+
+    if (wasConnecting || ws.readyState === WebSocket.OPEN) {
+      try {
+        if (options?.force) ws.terminate()
+        else ws.close()
+      } catch {
+        // Socket already torn down by the runtime; nothing left to do.
+      }
+    }
+    return wasConnecting
   }
 
   async stop(options?: StopOptions): Promise<StopResult> {
@@ -1244,8 +1274,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // Close WebSocket if exists
     const ws = this.wsConnections.get(sessionId)
     if (ws) {
-      ws.close()
       this.wsConnections.delete(sessionId)
+      this.closeStreamSocket(ws)
     }
 
     const response = await fetch(
@@ -1379,7 +1409,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       const existing = this.wsConnections.get(sessionId)
       if (existing) {
-        existing.close()
+        this.closeStreamSocket(existing)
       }
 
       const ws = new WebSocket(
@@ -1409,8 +1439,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       })
 
       ws.on('error', (error) => {
-        // Only log and emit if this connection is still tracked (not cleaned up by stop())
-        if (this.wsConnections.has(sessionId)) {
+        // Only log and emit for a genuine remote failure: the socket must
+        // still be the tracked one (not cleaned up by stop(), and not
+        // superseded by a resubscribe) and must not be a handshake we aborted
+        // ourselves in closeStreamSocket().
+        if (this.wsConnections.get(sessionId) === ws && !this.locallyAbortedSockets.has(ws)) {
           console.error(`WebSocket error for session ${sessionId}:`, error)
           this.safeEmitError(error)
         }
@@ -1419,7 +1452,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       ws.on('close', () => {
         console.log(`WebSocket closed for session ${sessionId}`)
-        this.wsConnections.delete(sessionId)
+        // Untrack only if this socket is still the tracked one — a resubscribe
+        // may already have replaced it, and deleting then would untrack the
+        // live replacement.
+        if (this.wsConnections.get(sessionId) === ws) {
+          this.wsConnections.delete(sessionId)
+        }
         // Notify the callback that the connection was lost
         // This allows the message persister to handle the disconnection
         const closeMessage: StreamMessage = {
@@ -1453,9 +1491,16 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
     const unsubscribe = () => {
       const ws = this.wsConnections.get(sessionId)
-      if (ws) {
-        ws.close()
-        this.wsConnections.delete(sessionId)
+      // Untracked already (never connected, stopped, or a second unsubscribe):
+      // cleanup is idempotent, so there is nothing to do.
+      if (!ws) return
+      this.wsConnections.delete(sessionId)
+      if (this.closeStreamSocket(ws)) {
+        // We aborted a handshake that was still in flight, so `ready` will
+        // reject with the expected local-abort error. Callers that discard
+        // `ready` (e.g. reconnect paths) would otherwise surface it as an
+        // unhandled rejection — mark it handled here. [ELECTRON-5J]
+        ready.catch(() => {})
       }
     }
 
