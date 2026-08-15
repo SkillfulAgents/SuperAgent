@@ -251,7 +251,7 @@ export function SubAgentBlock({
 
             {/* Streaming text from subagent (not yet persisted) */}
             {subagentStreamingMessage && !isStreamingMessagePersisted && (
-              <TranscriptText>{subagentStreamingMessage}</TranscriptText>
+              <TranscriptText agentSlug={agentSlug}>{subagentStreamingMessage}</TranscriptText>
             )}
 
             {/* Streaming tool use from subagent (not yet persisted) */}
@@ -264,7 +264,7 @@ export function SubAgentBlock({
 
             {/* Result summary from tool_result (available immediately, no JSONL refetch needed) */}
             {resultText && !isResultInFlatItems && !isRunning && (
-              <TranscriptText>{resultText}</TranscriptText>
+              <TranscriptText agentSlug={agentSlug}>{resultText}</TranscriptText>
             )}
           </div>
 
