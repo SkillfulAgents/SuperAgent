@@ -58,7 +58,9 @@ import {
   updateSessionName,
   registerSession,
   getSessionMessagesWithCompact,
-  getSessionMessagesPage,
+  getSessionMessagesPageShared,
+  getToolResultImage,
+  RequestAbortedError,
   getSession,
   getSessionMetadata,
   sessionExists,
@@ -1815,6 +1817,35 @@ async function annotateAndRecoverMessages(
   }
 }
 
+// GET /api/agents/:id/sessions/:sessionId/tool-images/:toolUseId/:imageIndex
+// Serves one inline image stripped from a tool result by stripInlineImages.
+// Tool results are immutable once persisted, so the response caches forever.
+agents.get('/:id/sessions/:sessionId/tool-images/:toolUseId/:imageIndex', AgentRead(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    const toolUseId = c.req.param('toolUseId')
+    const imageIndex = Number(c.req.param('imageIndex'))
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(toolUseId) || !Number.isInteger(imageIndex) || imageIndex < 0) {
+      return c.json({ error: 'Invalid image reference' }, 400)
+    }
+    if (!(await sessionBelongsToAgent(agentSlug, sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+    const image = await getToolResultImage(agentSlug, sessionId, toolUseId, imageIndex)
+    if (!image) {
+      return c.json({ error: 'Image not found' }, 404)
+    }
+    return c.newResponse(new Uint8Array(image.data), 200, {
+      'Content-Type': image.mimeType,
+      'Cache-Control': 'private, max-age=31536000, immutable',
+    })
+  } catch (error) {
+    console.error('Failed to fetch tool result image:', error)
+    return c.json({ error: 'Failed to fetch tool result image' }, 500)
+  }
+})
+
 // Unpaginated path stays inlined so the stream-pipe PR can still land on `return c.json(transformed)`.
 // GET /api/agents/:id/sessions/:sessionId/messages - Get messages for a session
 agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
@@ -1842,10 +1873,16 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       if (!parsed.success) {
         return c.json({ error: 'Invalid pagination' }, 400)
       }
-      const page = await getSessionMessagesPage(agentSlug, sessionId, {
+      // Accessing .signal arms @hono/node-server's lazy AbortController, which
+      // aborts when the client socket closes — superseded refetches stop paying
+      // the parse cost instead of running to completion as zombies.
+      const signal = c.req.raw.signal
+      const page = await getSessionMessagesPageShared(agentSlug, sessionId, {
         limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
         cursor: parsed.data.cursor,
+        signal,
       })
+      if (signal.aborted) return c.newResponse(null, 499 as never)
       await annotateAndRecoverMessages(page.messages, agentSlug, sessionId)
       return c.json({ messages: page.messages, nextCursor: page.nextCursor })
     }
@@ -1937,6 +1974,10 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       'Content-Type': 'application/json',
     })
   } catch (error) {
+    if (error instanceof RequestAbortedError) {
+      // Client is gone; 499 (client closed request) — nothing will read it.
+      return c.newResponse(null, 499 as never)
+    }
     console.error('Failed to fetch messages:', error)
     return c.json({ error: 'Failed to fetch messages' }, 500)
   }

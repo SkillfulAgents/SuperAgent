@@ -30,7 +30,7 @@ import {
   writeFileAtomicStream,
   ensureDirectory,
 } from '@shared/lib/utils/file-storage'
-import { transformMessages, type TransformedItem } from '@shared/lib/utils/message-transform'
+import { transformMessages, stripEntryInlineImages, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
 import { isHiddenAutomatedSession } from './session-visibility'
 import {
@@ -926,34 +926,114 @@ function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | nu
   return hasOlder && messages[0] ? messages[0].id : null
 }
 
+/** Thrown when the requesting client disconnected mid-computation; callers translate to an empty non-response. */
+export class RequestAbortedError extends Error {
+  constructor() {
+    super('Request aborted by client')
+    this.name = 'RequestAbortedError'
+  }
+}
+
+interface InflightPage {
+  promise: Promise<SessionMessagesPage>
+  waiters: number
+  controller: AbortController
+}
+
+const inflightPages = new Map<string, InflightPage>()
+
+/**
+ * Single-flight wrapper for getSessionMessagesPage: identical concurrent
+ * requests (poll + SSE-invalidation storms) share one computation instead of
+ * each paying the full transcript parse (measured ~350 MB RSS per request on a
+ * 49 MB transcript). The shared computation aborts only when every waiter's
+ * signal has fired.
+ */
+export async function getSessionMessagesPageShared(
+  agentSlug: string,
+  sessionId: string,
+  opts: { limit: number; cursor?: string; signal?: AbortSignal }
+): Promise<SessionMessagesPage> {
+  const { signal, ...pageOpts } = opts
+  if (signal?.aborted) throw new RequestAbortedError()
+
+  const key = [agentSlug, sessionId, opts.limit, opts.cursor ?? ''].join('\u0000')
+  let entry = inflightPages.get(key)
+  if (!entry) {
+    const controller = new AbortController()
+    const created: InflightPage = {
+      controller,
+      waiters: 0,
+      promise: getSessionMessagesPage(agentSlug, sessionId, {
+        ...pageOpts,
+        signal: controller.signal,
+      }).finally(() => {
+        inflightPages.delete(key)
+      }),
+    }
+    entry = created
+    inflightPages.set(key, created)
+  }
+
+  entry.waiters++
+  const onAbort = () => {
+    entry.waiters--
+    if (entry.waiters <= 0) entry.controller.abort()
+  }
+  signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    const page = await entry.promise
+    if (signal?.aborted) throw new RequestAbortedError()
+    return page
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
+  }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new RequestAbortedError()
+}
+
 /** Trailing (or `cursor`-before) display page. Parses only a tail of the JSONL. */
 export async function getSessionMessagesPage(
   agentSlug: string,
   sessionId: string,
-  opts: { limit: number; cursor?: string }
+  opts: { limit: number; cursor?: string; signal?: AbortSignal }
 ): Promise<SessionMessagesPage> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   if (!(await fileExists(jsonlPath))) {
     return { messages: [], nextCursor: null }
   }
 
-  const { limit, cursor } = opts
+  const { limit, cursor, signal } = opts
   let maxLines = Math.min(MAX_TAIL_LINES, Math.max(limit * INITIAL_TAIL_FACTOR, 32))
 
   for (let attempt = 0; attempt < 32; attempt++) {
+    // Checked between the expensive phases (tail read, parse, transform): a
+    // disconnected client's request stops consuming memory instead of running
+    // to completion as a zombie.
+    throwIfAborted(signal)
     const { lines, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines)
+    throwIfAborted(signal)
     const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
-    for (const line of lines) {
-      const parsed = parseJsonlLine<JsonlEntry>(line)
+    for (let i = 0; i < lines.length; i++) {
+      const parsed = parseJsonlLine<JsonlEntry>(lines[i])
+      // Free each raw line buffer as soon as it's parsed; keeping the whole
+      // tail's buffers alive doubles peak memory on image-heavy transcripts.
+      ;(lines as Array<Buffer | undefined>)[i] = undefined
       if (!parsed) continue
       const normalized = normalizeQueuedCommandEntry(parsed)
       if (
         isMessageOrSystemDisplayEntry(normalized) &&
         !('isMeta' in normalized && normalized.isMeta)
       ) {
+        if (normalized.type === 'user') {
+          stripEntryInlineImages(normalized as JsonlMessageEntry)
+        }
         entries.push(normalized)
       }
     }
+    throwIfAborted(signal)
     const transformed = transformMessages(entries)
 
     if (cursor) {
@@ -1117,6 +1197,85 @@ export async function findLastSessionEntry(
     if (predicate(entries[i])) return entries[i]
   }
   return null
+}
+
+/**
+ * Extract one inline image from a persisted tool_result, addressed by the
+ * `image_ref` emitted by stripInlineImages (index counts image blocks only).
+ * Byte-scans the transcript and JSON-parses only lines containing the
+ * toolUseId, so a 50 MB transcript costs one stream pass, not a full parse.
+ */
+export async function getToolResultImage(
+  agentSlug: string,
+  sessionId: string,
+  toolUseId: string,
+  imageIndex: number
+): Promise<{ data: Buffer; mimeType: string } | null> {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  if (!(await fileExists(jsonlPath))) return null
+
+  const needle = Buffer.from(toolUseId)
+  const NEWLINE = 0x0a
+  const fileHandle = await fs.promises.open(jsonlPath, 'r')
+  try {
+    const stream = fileHandle.createReadStream()
+    let pending: Buffer[] = []
+
+    const tryLine = (line: Buffer): { data: Buffer; mimeType: string } | null => {
+      if (!line.includes(needle)) return null
+      const entry = parseJsonlLine<JsonlMessageEntry>(line)
+      if (!entry || entry.type !== 'user') return null
+      const content = entry.message?.content
+      if (!Array.isArray(content)) return null
+      for (const block of content) {
+        if (block.type !== 'tool_result' || block.tool_use_id !== toolUseId) continue
+        const inner = block.content
+        if (!Array.isArray(inner)) continue
+        let idx = 0
+        for (const b of inner as Array<{
+          type?: string
+          source?: { media_type?: string; data?: string }
+          data?: string
+          mimeType?: string
+        }>) {
+          if (b?.type !== 'image') continue
+          if (idx++ !== imageIndex) continue
+          const mimeType = b.source?.media_type ?? b.mimeType
+          const data = b.source?.data ?? b.data
+          if (typeof data !== 'string' || !mimeType) return null
+          return { data: Buffer.from(data, 'base64'), mimeType }
+        }
+      }
+      return null
+    }
+
+    for await (const chunk of stream) {
+      let start = 0
+      let idx = chunk.indexOf(NEWLINE)
+      while (idx !== -1) {
+        let line: Buffer
+        if (pending.length > 0) {
+          pending.push(chunk.subarray(start, idx))
+          line = Buffer.concat(pending)
+          pending = []
+        } else {
+          line = chunk.subarray(start, idx)
+        }
+        const found = tryLine(line)
+        if (found) return found
+        start = idx + 1
+        idx = chunk.indexOf(NEWLINE, start)
+      }
+      if (start < chunk.length) pending.push(chunk.subarray(start))
+    }
+    if (pending.length > 0) {
+      const found = tryLine(Buffer.concat(pending))
+      if (found) return found
+    }
+    return null
+  } finally {
+    await fileHandle.close()
+  }
 }
 
 /**

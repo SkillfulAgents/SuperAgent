@@ -304,6 +304,9 @@ vi.mock('@shared/lib/services/session-service', () => ({
   registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(),
   getSessionMessagesPage: vi.fn(),
+  getSessionMessagesPageShared: vi.fn(),
+  getToolResultImage: vi.fn(),
+  RequestAbortedError: class RequestAbortedError extends Error {},
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true),
@@ -559,7 +562,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesPageShared, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -3631,6 +3634,15 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
   })
 
+  it('404s a registered session whose JSONL has not been written yet, including the paginated path the desktop client uses', async () => {
+    vi.mocked(sessionExists).mockResolvedValue(false)
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+
+    const res = await getReq(app, `${URL}?limit=300`)
+    expect(res.status).toBe(404)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
   it('does not query messageAuthor in non-auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
     mockTransformMessages.mockReturnValue([
@@ -3742,7 +3754,7 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(body[0].id).toBe('m1')
     expect(body).not.toHaveProperty('nextCursor')
     expect(getSessionMessagesWithCompact).toHaveBeenCalledWith('test-agent', 'sess-1')
-    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    expect(getSessionMessagesPageShared).not.toHaveBeenCalled()
   })
 
   it('does not page when MESSAGES_PAGE_LIMIT is set but the client sent no limit', async () => {
@@ -3756,11 +3768,11 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(Array.isArray(body)).toBe(true)
-    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    expect(getSessionMessagesPageShared).not.toHaveBeenCalled()
   })
 
   it('returns a cursor envelope when limit is set', async () => {
-    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+    vi.mocked(getSessionMessagesPageShared).mockResolvedValue({
       messages: [
         { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
       ],
@@ -3773,58 +3785,65 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(body.messages).toHaveLength(1)
     expect(body.messages[0].id).toBe('m1')
     expect(body.nextCursor).toBe('m1')
-    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', { limit: 2, cursor: undefined })
+    expect(getSessionMessagesPageShared).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ limit: 2, cursor: undefined, signal: expect.any(AbortSignal) })
+    )
     expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
   })
 
   it('forwards cursor to the page reader', async () => {
-    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+    vi.mocked(getSessionMessagesPageShared).mockResolvedValue({
       messages: [],
       nextCursor: null,
     })
 
     const res = await getReq(app, `${URL}?limit=2&cursor=m1`)
     expect(res.status).toBe(200)
-    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
-      limit: 2,
-      cursor: 'm1',
-    })
+    expect(getSessionMessagesPageShared).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ limit: 2, cursor: 'm1' })
+    )
   })
 
   it('rejects an invalid limit', async () => {
     const res = await getReq(app, `${URL}?limit=0`)
     expect(res.status).toBe(400)
-    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    expect(getSessionMessagesPageShared).not.toHaveBeenCalled()
   })
 
   it('caps first-page limit to MESSAGES_PAGE_LIMIT', async () => {
     process.env.MESSAGES_PAGE_LIMIT = '100'
-    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+    vi.mocked(getSessionMessagesPageShared).mockResolvedValue({
       messages: [],
       nextCursor: null,
     })
 
     const res = await getReq(app, `${URL}?limit=300`)
     expect(res.status).toBe(200)
-    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
-      limit: 100,
-      cursor: undefined,
-    })
+    expect(getSessionMessagesPageShared).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ limit: 100, cursor: undefined })
+    )
   })
 
   it('caps older-page limit to MESSAGES_PAGE_OLDER_LIMIT', async () => {
     process.env.MESSAGES_PAGE_OLDER_LIMIT = '80'
-    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+    vi.mocked(getSessionMessagesPageShared).mockResolvedValue({
       messages: [],
       nextCursor: null,
     })
 
     const res = await getReq(app, `${URL}?limit=200&cursor=m1`)
     expect(res.status).toBe(200)
-    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
-      limit: 80,
-      cursor: 'm1',
-    })
+    expect(getSessionMessagesPageShared).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ limit: 80, cursor: 'm1' })
+    )
   })
 })
 

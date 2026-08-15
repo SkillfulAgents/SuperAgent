@@ -3,8 +3,9 @@ import { cn } from '@shared/lib/utils/cn'
 import { Check, X, Ban, ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react'
 import { useState, useRef, useMemo, memo } from 'react'
 import { getToolRenderer } from './tool-renderers'
-import { parseToolResult } from '@renderer/lib/parse-tool-result'
+import { parseToolResult, type ParsedToolResultImage } from '@renderer/lib/parse-tool-result'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { getApiBaseUrl } from '@renderer/lib/env'
 import type { ApiToolCall } from '@shared/lib/types/api'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
 
@@ -14,7 +15,21 @@ interface ToolCallItemProps {
   toolCall: ApiToolCall
   messageCreatedAt?: Date | string
   agentSlug?: string
+  sessionId?: string
   isSessionActive?: boolean
+}
+
+/** data: URL for inline images; tool-images route URL for server-stripped refs (null without session context). */
+function toolImageSrc(
+  img: ParsedToolResultImage,
+  agentSlug?: string,
+  sessionId?: string
+): string | null {
+  if (img.data) return `data:${img.mimeType};base64,${img.data}`
+  if (img.ref && agentSlug && sessionId) {
+    return `${getApiBaseUrl()}/api/agents/${agentSlug}/sessions/${sessionId}/tool-images/${encodeURIComponent(img.ref.toolUseId)}/${img.ref.index}`
+  }
+  return null
 }
 
 interface StreamingToolCallItemProps {
@@ -88,7 +103,7 @@ export function StatusIndicator({ status }: { status: string }) {
   )
 }
 
-function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessionActive }: ToolCallItemProps) {
+function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionId, isSessionActive }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall, isSessionActive)
   const renderer = getToolRenderer(toolCall.name)
@@ -207,14 +222,18 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
           {/* Render images from tool results */}
           {resultImages.length > 0 && (
             <div className="mt-2 space-y-2">
-              {resultImages.map((img, i) => (
-                <img
-                  key={i}
-                  src={`data:${img.mimeType};base64,${img.data}`}
-                  alt="Tool result"
-                  className="max-w-full rounded border"
-                />
-              ))}
+              {resultImages.map((img, i) => {
+                const src = toolImageSrc(img, agentSlug, sessionId)
+                if (!src) return null
+                return (
+                  <img
+                    key={i}
+                    src={src}
+                    alt="Tool result"
+                    className="max-w-full rounded border"
+                  />
+                )
+              })}
             </div>
           )}
         </div>

@@ -90,6 +90,68 @@ export interface TransformedInformational {
 
 export type TransformedItem = TransformedMessage | TransformedCompactBoundary | TransformedMemoryRecall | TransformedInformational
 
+/** Placeholder for an inline base64 image stripped from a tool result; the client fetches it via the tool-images route. */
+export interface ImageRefBlock {
+  type: 'image_ref'
+  toolUseId: string
+  index: number
+  mimeType: string
+}
+
+/** Untyped view of an image content block (Anthropic `source.data` or MCP `data`/`mimeType` shape). */
+interface ImageLikeBlock {
+  type?: string
+  source?: { media_type?: string; data?: string }
+  data?: string
+  mimeType?: string
+}
+
+/**
+ * Parse-side strip for the paged read path: replaces inline images with refs on
+ * a just-parsed entry so megabyte base64 strings become garbage immediately
+ * instead of accumulating across the whole tail (measured ~350 MB RSS/request).
+ * Also drops toolUseResult.file.base64 — a duplicate copy the API never reads.
+ */
+export function stripEntryInlineImages(entry: JsonlMessageEntry): void {
+  if (entry.type !== 'user') return
+  const content = entry.message?.content
+  if (Array.isArray(content)) {
+    for (const block of content as ContentBlock[]) {
+      if (block.type === 'tool_result' && Array.isArray(block.content)) {
+        ;(block as { content: unknown }).content = stripInlineImages(block.content, block.tool_use_id)
+      }
+    }
+  }
+  const file = (entry.toolUseResult as { file?: { base64?: unknown } } | undefined)?.file
+  if (file && typeof file.base64 === 'string') {
+    delete file.base64
+  }
+}
+
+// Inline base64 images made a 300-message page ~20 MB (94.8% base64) and drove
+// host RSS spikes; replace them with refs resolvable on demand. Index counts
+// image blocks only, mirroring getToolResultImage's extraction walk.
+export function stripInlineImages(result: unknown, toolUseId: string): unknown {
+  if (!Array.isArray(result)) return result
+  let imageIndex = 0
+  let changed = false
+  const out = result.map((block) => {
+    const b = block as ImageLikeBlock
+    if (b && typeof b === 'object' && b.type === 'image') {
+      const mimeType = b.source?.media_type ?? b.mimeType
+      const data = b.source?.data ?? b.data
+      const index = imageIndex++
+      if (typeof data === 'string' && mimeType) {
+        changed = true
+        const ref: ImageRefBlock = { type: 'image_ref', toolUseId, index, mimeType }
+        return ref
+      }
+    }
+    return block
+  })
+  return changed ? out : result
+}
+
 /**
  * Parse a user message that may contain SDK-injected slash command XML tags.
  *
@@ -553,8 +615,10 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
           const toolResult = toolResults.get(block.id)
           // Use toolUseResult.stdout if available, otherwise use content
           // Use ?? instead of || to preserve empty string as valid result (e.g., mkdir has no output)
-          const resultContent =
-            toolResult?.toolUseResult?.stdout ?? toolResult?.content ?? undefined
+          const resultContent = stripInlineImages(
+            toolResult?.toolUseResult?.stdout ?? toolResult?.content ?? undefined,
+            block.id
+          ) as string | undefined
 
           const subagent = ((block.name === 'Task' || block.name === 'Agent') && toolResult?.toolUseResult?.agentId)
             ? {

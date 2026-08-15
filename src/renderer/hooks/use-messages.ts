@@ -38,12 +38,16 @@ function deletedMessagesKey(sessionId: string) {
 async function fetchMessagesPage(
   agentSlug: string,
   sessionId: string,
-  opts: { limit: number; cursor?: string }
+  opts: { limit: number; cursor?: string },
+  signal?: AbortSignal
 ): Promise<MessagesPage> {
   const params = new URLSearchParams({ limit: String(opts.limit) })
   if (opts.cursor) params.set('cursor', opts.cursor)
+  // Without the signal, TanStack's cancelRefetch is client-side only and the
+  // server keeps computing superseded pages (measured: ~350 MB RSS each).
   const res = await apiFetch(
-    `/api/agents/${agentSlug}/sessions/${sessionId}/messages?${params.toString()}`
+    `/api/agents/${agentSlug}/sessions/${sessionId}/messages?${params.toString()}`,
+    signal ? { signal } : undefined
   )
   if (res.status === 404) throw new TranscriptNotFoundError()
   if (!res.ok) throw new Error('Failed to fetch messages')
@@ -54,9 +58,9 @@ async function fetchMessagesPage(
 export function useMessages(sessionId: string | null, agentSlug: string | null) {
   const latest = useQuery<MessagesPage>({
     queryKey: ['messages', sessionId, agentSlug],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       if (!sessionId || !agentSlug) throw new Error('Missing session')
-      return fetchMessagesPage(agentSlug, sessionId, { limit: MESSAGES_PAGE_LIMIT })
+      return fetchMessagesPage(agentSlug, sessionId, { limit: MESSAGES_PAGE_LIMIT }, signal)
     },
     enabled: !!sessionId && !!agentSlug,
     retry: (failureCount, error) =>
