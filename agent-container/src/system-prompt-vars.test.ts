@@ -43,8 +43,10 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('v1/replicate')).toBe(webhook)
     expect(out.includes('ANTHROPIC_AUTH_TOKEN')).toBe(webhook)
     expect(out.includes('GET .../models')).toBe(webhook)
-    expect(out.includes('?kind=image|video|audio|3d|talking_head')).toBe(webhook)
+    expect(out.includes('?kind=image|video|audio|talking_head|3d|document')).toBe(webhook)
+    expect(out.includes('cost from the list row')).toBe(webhook)
     expect(out.includes('Available models')).toBe(false)
+    expect(out.includes('models/_/_')).toBe(false)
   })
 
   // The pause/resume guidance must always render: without it agents reach for
