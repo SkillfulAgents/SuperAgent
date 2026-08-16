@@ -488,18 +488,33 @@ const READ_RETRY_INTERVAL_MS = Number(process.env.X_AGENT_READ_RETRY_INTERVAL_MS
 // and a wait that ignored them could still push the total response time past
 // the transport cliff.
 const SYNC_WAIT_TIMEOUT_DEFAULT_MS = 120_000
-// Ceiling for the env override — at or past the 300s transport cliff the
-// override would restore the exact failure this timeout exists to prevent.
-const SYNC_WAIT_TIMEOUT_MAX_MS = 240_000
 
-// Exported for unit tests.
+// Exported for unit tests. The env override can only SHORTEN the wait (its
+// purpose is keeping tests snappy): the container tool docs promise "up to
+// ~2 minutes", and a longer wait would both break that promise and erode the
+// margin to the 300s transport cliff.
 export function resolveSyncWaitTimeoutMs(raw: string | undefined): number {
   const parsed = Number(raw)
   if (!Number.isFinite(parsed) || parsed <= 0) return SYNC_WAIT_TIMEOUT_DEFAULT_MS
-  return Math.min(parsed, SYNC_WAIT_TIMEOUT_MAX_MS)
+  return Math.min(parsed, SYNC_WAIT_TIMEOUT_DEFAULT_MS)
 }
 
 const SYNC_WAIT_TIMEOUT_MS = resolveSyncWaitTimeoutMs(process.env.X_AGENT_SYNC_WAIT_TIMEOUT_MS)
+
+// Hard stop for delivering the prompt at all. Past this point the caller's
+// fetch has been dead-or-dying for a while (undici gives up at 300s), so
+// delivering anyway creates exactly the ghost run the caller's inevitable
+// retry then duplicates. Applies to async invokes too — they also respond
+// only after delivery, so a slow container start can strand them the same way.
+// The 60s margin leaves room for the delivery call itself plus the response.
+const DELIVERY_CUTOFF_MS = 240_000
+
+function deliveryCutoffError(): string {
+  return (
+    `Target agent took too long to become ready (over ${Math.round(DELIVERY_CUTOFF_MS / 1000)}s), ` +
+    'so the prompt was NOT delivered. It is safe to retry; prefer sync=false.'
+  )
+}
 
 // Matched by name rather than instanceof: the persister module is wholesale-
 // mocked in many test suites, and an instanceof against a possibly-undefined
@@ -524,7 +539,12 @@ async function waitForTurnWithinBudget(
   deadline: number,
 ): Promise<'completed' | 'timeout'> {
   const remainingMs = deadline - Date.now()
-  if (remainingMs <= 0) return 'timeout'
+  if (remainingMs <= 0) {
+    // Pre-wait work can eat the whole budget; if the turn already finished
+    // during it, that's a completion — reporting 'timeout' here would label a
+    // finished turn 'running' and make the caller poll for a result it has.
+    return messagePersister.isSessionActive(sessionId) ? 'timeout' : 'completed'
+  }
   try {
     await messagePersister.waitForIdle(sessionId, {
       timeoutMs: remainingMs,
@@ -545,27 +565,34 @@ function syncWaitPromotedNote(timeoutMs: number): string {
   )
 }
 
+function isReturnableAssistantEntry(e: JsonlMessageEntry | JsonlSystemEntry): boolean {
+  return e.type === 'assistant' && compactMessage(e) !== null
+}
+
+/**
+ * `boundaryUuid` is the uuid of the last assistant entry persisted BEFORE the
+ * current turn's prompt was delivered (undefined when the session is new or
+ * had none). Seeing that entry still last means this turn's reply hasn't
+ * flushed yet — keep polling rather than returning the previous turn's answer
+ * as if it were this one's.
+ */
 async function readLastAssistantMessage(
   targetSlug: string,
   sessionId: string,
-  attempts = READ_RETRY_ATTEMPTS,
-  intervalMs = READ_RETRY_INTERVAL_MS,
+  boundaryUuid?: string,
 ): Promise<{ role: string; content: string; toolName?: string } | null> {
-  for (let i = 0; i < attempts; i++) {
+  for (let i = 0; i < READ_RETRY_ATTEMPTS; i++) {
     // Only the most recent assistant entry matters, so read the transcript
     // from the tail instead of full-parsing it (transcripts reach 100MB+, and
-    // this runs up to `attempts` times per invoke).
-    const entry = await findLastSessionEntry(
-      targetSlug,
-      sessionId,
-      (e) => e.type === 'assistant' && compactMessage(e) !== null,
-    )
-    if (entry) {
+    // this runs up to READ_RETRY_ATTEMPTS times per invoke).
+    const entry = await findLastSessionEntry(targetSlug, sessionId, isReturnableAssistantEntry)
+    const isStaleBoundary = boundaryUuid !== undefined && entry?.uuid === boundaryUuid
+    if (entry && !isStaleBoundary) {
       const compact = compactMessage(entry)
       if (compact) return compact
     }
-    if (i < attempts - 1) {
-      await new Promise((r) => setTimeout(r, intervalMs))
+    if (i < READ_RETRY_ATTEMPTS - 1) {
+      await new Promise((r) => setTimeout(r, READ_RETRY_INTERVAL_MS))
     }
   }
   return null
@@ -602,13 +629,23 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
   }
 
   if (sync && messagePersister.isSessionActive(sessionId)) {
+    // Last reply flushed before we started waiting — used below to detect that
+    // the turn we waited out has actually reached the transcript file.
+    const boundaryEntry = await findLastSessionEntry(targetSlug, sessionId, isReturnableAssistantEntry)
     try {
       // 'timeout' falls through: return the transcript so far with status
       // 'running'. Sync get-transcript is a bounded long-poll the caller can
       // repeat, not an unbounded wait — an unbounded wait would outlive the
       // container's 300s fetch header timeout and surface as a retry-inducing
       // network error. Other failures stay hard errors.
-      await waitForTurnWithinBudget(sessionId, syncDeadline)
+      const outcome = await waitForTurnWithinBudget(sessionId, syncDeadline)
+      if (outcome === 'completed') {
+        // The turn's 'result' event clears isActive before its final assistant
+        // entry hits the JSONL file. Reconcile (bounded, ~5s) until an entry
+        // newer than the pre-wait boundary appears, so an "idle" response
+        // doesn't ship a transcript missing the reply it waited for.
+        await readLastAssistantMessage(targetSlug, sessionId, boundaryEntry?.uuid)
+      }
     } catch (error) {
       return c.json({
         error: `Session did not idle: ${error instanceof Error ? error.message : String(error)}`,
@@ -648,10 +685,13 @@ const invokeBodySchema = z.object({
 })
 
 xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
-  // Stamp the sync budget before any slow pre-work (policy review, container
-  // startup, session creation) so the total response time stays under the
-  // container fetch's 300s header timeout even when delivery itself was slow.
+  // Stamp both clocks before any slow pre-work (policy review, container
+  // startup, session creation): the sync budget governs how long we wait for
+  // the turn, the delivery cutoff governs whether we deliver the prompt at all
+  // — so the total response time stays under the container fetch's 300s header
+  // timeout, and no prompt is delivered to a caller that already gave up.
   const syncDeadline = Date.now() + SYNC_WAIT_TIMEOUT_MS
+  const deliveryCutoff = Date.now() + DELIVERY_CUTOFF_MS
   const callerSlug = getCallerSlug(c)
   const { slug: rawTargetSlug, prompt, sessionId: existingSessionId, sync, _callerSessionId } = c.req.valid('json')
 
@@ -736,6 +776,20 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         }
         stage = 'ensure_running'
         const client = await containerManager.ensureRunning(targetSlug)
+        if (Date.now() > deliveryCutoff) {
+          console.warn('[x-agent] delivery cutoff exceeded before send; prompt not delivered', {
+            callerSlug,
+            targetSlug,
+            sessionId: existingSessionId,
+          })
+          return c.json({ error: deliveryCutoffError() }, 504)
+        }
+        // Last reply flushed before THIS prompt goes out — used to make sure a
+        // fast turn's answer isn't confused with the previous turn's while the
+        // new entry is still being written to the JSONL file.
+        const replyBoundary = sync
+          ? await findLastSessionEntry(targetSlug, existingSessionId, isReturnableAssistantEntry)
+          : null
         stage = 'subscribe'
         if (!messagePersister.isSubscribed(existingSessionId)) {
           await messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug)
@@ -787,7 +841,11 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
               error: syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS),
             })
           }
-          const lastMessage = await readLastAssistantMessage(targetSlug, existingSessionId)
+          const lastMessage = await readLastAssistantMessage(
+            targetSlug,
+            existingSessionId,
+            replyBoundary?.uuid,
+          )
           return c.json({
             sessionId: existingSessionId,
             status: 'completed',
@@ -810,6 +868,15 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         ? randomUUID()
         : undefined
 
+      // createSession delivers the prompt (initialMessage) — same cutoff rule
+      // as sendMessage above.
+      if (Date.now() > deliveryCutoff) {
+        console.warn('[x-agent] delivery cutoff exceeded before create; prompt not delivered', {
+          callerSlug,
+          targetSlug,
+        })
+        return c.json({ error: deliveryCutoffError() }, 504)
+      }
       stage = 'create_session'
       const containerSession = await client.createSession({
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
