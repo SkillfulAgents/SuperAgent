@@ -347,12 +347,20 @@ async function reconcileMessagesAfterIdle(
   if (!expected) return
   if (reconcilingIdleSessions.has(sessionId)) return
   reconcilingIdleSessions.add(sessionId)
+  // The stream generation this loop belongs to. The sleeps below can straddle
+  // the last subscriber's unmount (which closes the EventSource and clears the
+  // throttle state) or a rapid remount (which creates a NEW EventSource);
+  // invalidating from a stale loop would recreate the throttle entry the
+  // unmount cleanup just removed and push the remount's fresh leading-edge
+  // refetch onto the trailing edge.
+  const generation = eventSources.get(sessionId)
   try {
     // ~1.5s total across 3 tries — long enough to beat the write/read race,
     // short enough that a genuine mismatch falls through to the poll quickly.
     for (const delay of [250, 500, 750]) {
       if (lastPersistedAssistantMatches(queryClient, sessionId, expected)) return
       await new Promise((resolve) => setTimeout(resolve, delay))
+      if (eventSources.get(sessionId) !== generation) return
       // refetchType defaults to 'active': refetches the mounted messages query
       // (the session being viewed) and resolves once the cache is updated.
       await invalidateMessagesNow(queryClient, sessionId)

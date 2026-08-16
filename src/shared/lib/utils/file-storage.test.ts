@@ -779,6 +779,38 @@ describe('readJsonlTailLines', () => {
     openSpy.mockRestore()
   })
 
+  it('rejects when the abort lands during the final chunk read', async () => {
+    // Single-chunk file: this read IS the final one, so there is no next loop
+    // iteration to observe the abort — only a post-read check catches it
+    // before the tail buffer is materialized and line-scanned.
+    const filePath = path.join(testDir, 'abort-final.jsonl')
+    await fs.promises.writeFile(filePath, 'a\nb\nc\n')
+
+    const controller = new AbortController()
+    const realOpen = fs.promises.open.bind(fs.promises)
+    const openSpy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await realOpen(...(args as Parameters<typeof fs.promises.open>))
+      const realRead = handle.read.bind(handle) as (...a: unknown[]) => unknown
+      return new Proxy(handle, {
+        get(target, prop, receiver) {
+          if (prop === 'read') {
+            return (...readArgs: unknown[]) => {
+              controller.abort() // abort lands while the only read is in flight
+              return realRead(...readArgs)
+            }
+          }
+          const value = Reflect.get(target, prop, receiver)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      }) as Awaited<ReturnType<typeof fs.promises.open>>
+    })
+
+    await expect(readJsonlTailLines(filePath, 10, controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    openSpy.mockRestore()
+  })
+
   it('ignores a never-aborted signal', async () => {
     const filePath = path.join(testDir, 'abort-none.jsonl')
     await fs.promises.writeFile(filePath, 'a\nb\nc\n')

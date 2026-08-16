@@ -398,11 +398,14 @@ export async function readJsonlTailLines(
     let newlineCount = 0
 
     while (pos > 0 && newlineCount <= maxLines) {
-      signal?.throwIfAborted()
       const size = Math.min(TAIL_READ_CHUNK, pos)
       pos -= size
       const buf = Buffer.allocUnsafe(size)
       const { bytesRead } = await fileHandle.read(buf, 0, size, pos)
+      // Check AFTER the awaited read: an abort landing while the FINAL chunk
+      // is in flight has no next iteration to observe it, and would otherwise
+      // still pay for concatenating and line-scanning the whole tail window.
+      signal?.throwIfAborted()
       const chunk = bytesRead === size ? buf : buf.subarray(0, bytesRead)
       parts.unshift(chunk)
       for (let i = 0; i < chunk.length; i++) {

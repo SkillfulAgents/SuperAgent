@@ -852,6 +852,69 @@ describe('useMessageStream', () => {
     }
   })
 
+  // The idle reconcile loop sleeps between retries, so it can wake after the
+  // last subscriber unmounted. A stale wake must not invalidate: it would
+  // recreate the throttle entry the unmount cleanup just removed and its
+  // fresh window stamp would push a rapid remount's leading-edge refetch onto
+  // the trailing edge.
+  it('a stale idle reconcile stops after unmount and does not throttle the remount', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      const { unmount } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_delta', text: 'Final answer' })
+      })
+      // Persisted transcript lags the streamed text, so session_idle arms the
+      // reconcile loop.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], {
+        messages: [
+          { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+        ],
+        nextCursor: null,
+      })
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+      })
+      expect(countMessageInvalidations(spy)).toBe(0)
+
+      // Unmount while the loop sleeps toward its first 250ms retry.
+      unmount()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(countMessageInvalidations(spy)).toBe(0)
+
+      // A rapid remount right after the stale loop's would-be retry gets its
+      // fresh leading edge immediately — nothing restamped the window.
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      act(() => {
+        MockEventSource.instances[1].simulateMessage({ type: 'connected', isActive: true })
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // The old loop's remaining wakes see a different stream generation and
+      // bail — no fourth-hand invalidations trickle in later.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('throttles per session — a second session gets its own leading edge', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
