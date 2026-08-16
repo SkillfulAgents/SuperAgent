@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { RequestError } from './request-error'
 import { ACTIVITY_TREE_CONNECTORS, ACTIVITY_TREE_TRACER } from '@renderer/components/ui/tree-connectors'
+import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import type { Todo } from '@shared/lib/utils/derive-task-list'
 import { ActivityOrb, type ActivityOrbState } from './activity-orb'
 
@@ -180,30 +181,34 @@ export function ActivityCard({
                 style={tracerRowStyle(computerUseRows + index)}
                 data-tracer-live={item.status === 'running' ? 'true' : undefined}
               >
-                <div className="flex flex-col gap-0.5">
-                  {/* A finished row recedes as a whole — the mark inherits the
-                      muting with its label rather than carrying its own color. */}
-                  <div className={cn(
-                    'flex items-center gap-1.5',
-                    item.status === 'completed' && 'text-muted-foreground',
-                  )}>
-                    <RowMark>
-                      {item.status === 'completed' ? <span>✓</span> : null}
-                    </RowMark>
-                    <span className="font-mono">
-                      {item.name}
-                    </span>
+                {/* A finished row recedes as a whole — the mark inherits the
+                    muting with its label rather than carrying its own color. */}
+                <div className={cn(
+                  'flex items-center gap-1.5',
+                  item.status === 'completed' && 'text-muted-foreground',
+                )}>
+                  <RowMark>
+                    {item.status === 'completed' ? <span>✓</span> : null}
+                  </RowMark>
+                  {/* Name, description and live progress all ride ONE line: a
+                      wrapped second line breaks the tree's row rhythm, and the
+                      elbows are pinned to a single 16px line box. Overflow is
+                      handled the way long names are in the sidebar — truncate,
+                      then pan on hover. */}
+                  <HoverScrollText className="flex-1" hoverTarget="parent">
+                    <span className="font-mono">{item.name}</span>
                     {item.description && (
-                      <span className="truncate text-muted-foreground">
-                        {item.description}
-                      </span>
+                      <span className="text-muted-foreground">{' '}{item.description}</span>
                     )}
-                  </div>
-                  {item.progressSummary && item.status === 'running' && (
-                    <span className="ml-5 italic text-muted-foreground">
-                      {item.progressSummary}
-                    </span>
-                  )}
+                    {item.progressSummary && item.status === 'running' && (
+                      <>
+                        {/* Spaces live in the text, not in margins, so the row
+                            reads (and copies) as one sentence. */}
+                        <span className="text-muted-foreground" aria-hidden="true">{' · '}</span>
+                        <span className="italic text-muted-foreground">{item.progressSummary}</span>
+                      </>
+                    )}
+                  </HoverScrollText>
                 </div>
               </li>
             ))}

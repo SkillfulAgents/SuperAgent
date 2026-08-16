@@ -36,6 +36,7 @@ export function HoverScrollText({
   const contentRef = useRef<HTMLSpanElement>(null)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isHoveredRef = useRef(false)
+  const lastTextRef = useRef<string | null>(null)
   const [scrollDistance, setScrollDistance] = useState(0)
   const [isScrolling, setIsScrolling] = useState(false)
   const [motionAllowed, setMotionAllowed] = useState(() =>
@@ -86,10 +87,26 @@ export function HoverScrollText({
     }, HOVER_SCROLL_DELAY_MS)
   }, [clearHoverTimer, measureOverflow, motionAllowed])
 
+  // Reset on the rendered TEXT changing, not on `children` changing identity.
+  // A caller that re-renders on a timer (the activity card re-renders every
+  // second for its elapsed clock) hands us a brand-new element each time with
+  // the same words in it — keying off that identity cancelled the pan
+  // mid-flight and parked the row back at the start, which the sidebar never
+  // hit because its child is a plain string. Reading the committed text is
+  // what both callers actually mean by "new content".
   useLayoutEffect(() => {
+    const text = contentRef.current?.textContent ?? ''
+    if (lastTextRef.current === text) return
+    lastTextRef.current = text
+    // Content changed under the pointer: re-measure and re-arm rather than
+    // stall, so a label that updates mid-hover keeps panning.
+    if (isHoveredRef.current) {
+      startScrolling()
+      return
+    }
     stopScrolling()
     measureOverflow()
-  }, [children, measureOverflow, stopScrolling])
+  })
 
   useEffect(() => {
     const viewport = viewportRef.current

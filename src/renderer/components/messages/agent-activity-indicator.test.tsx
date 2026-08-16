@@ -931,6 +931,40 @@ describe('AgentActivityIndicator', () => {
       expect(screen.getByText('✓')).toBeInTheDocument()
     })
 
+    it('keeps name, description and progress on one hover-scrolling line', () => {
+      // A wrapped second line breaks the tree's row rhythm — the elbows are
+      // pinned to a single line box — so the progress summary joins the row
+      // behind a dot instead of stacking under it.
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [{
+        parentToolId: 'tc-sub',
+        agentId: 'a1',
+        subagentType: 'web-browser',
+        description: 'Gather UniFi WiFi events',
+        progressSummary: 'Scrolling Lobby AP detail panel',
+      }]
+      mockStreamState.completedSubagents = new Set()
+      mockMessages.push({
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'tc-sub',
+          name: 'Agent',
+          input: { subagent_type: 'web-browser', description: 'Gather UniFi WiFi events' },
+          subagent: { agentId: 'a1', status: 'async_launched' },
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      const line = screen.getByText('web-browser').closest('.hover-scroll-text')
+      expect(line).not.toBeNull()
+      expect(line).toHaveTextContent('web-browser Gather UniFi WiFi events · Scrolling Lobby AP detail panel')
+    })
+
     it('reopens the original subagent row while a SendMessage resume is running', () => {
       mockStreamState.isActive = true
       mockStreamState.activeStartTime = Date.now()
