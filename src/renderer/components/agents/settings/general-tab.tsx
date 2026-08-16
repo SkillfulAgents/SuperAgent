@@ -26,14 +26,10 @@ import {
   useAgentTemplateStatus,
   useRefreshAgentTemplateStatus,
   useUpdateAgentTemplate,
-  useExportAgentTemplate,
-  useExportAgentFull,
-  useHostExportStatus,
 } from '@renderer/hooks/use-agent-templates'
 import { StatusBadge } from '@renderer/components/agents/status-badge'
 import { AgentTemplatePRDialog } from '@renderer/components/agents/agent-template-pr-dialog'
-import { AgentTemplatePublishDialog } from '@renderer/components/agents/agent-template-publish-dialog'
-import { Trash2, Download, HardDriveDownload, RefreshCw, GitPullRequest, Send, Upload, Loader2 } from 'lucide-react'
+import { Trash2, RefreshCw, GitPullRequest, Send, Loader2 } from 'lucide-react'
 import { getReviewActionLabel, isPullRequestPublishMode } from '@renderer/lib/skillset-publish-ui'
 import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
 
@@ -47,7 +43,6 @@ interface GeneralTabProps {
 export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: GeneralTabProps) {
   const [isDeleting, setIsDeleting] = useState(false)
   const [prDialogOpen, setPrDialogOpen] = useState(false)
-  const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [forceSyncDialogOpen, setForceSyncDialogOpen] = useState(false)
   const deleteAgent = useDeleteAgent()
   const { data: agentPrefs } = useAgentPreferences(agentSlug)
@@ -59,11 +54,6 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const refreshTemplateStatus = useRefreshAgentTemplateStatus()
   const forceSyncTemplate = useForceSyncAgentTemplate()
   const updateTemplate = useUpdateAgentTemplate()
-  const exportTemplate = useExportAgentTemplate()
-  const exportFull = useExportAgentFull()
-  const { data: hostExportStatus } = useHostExportStatus()
-  const exportBusy =
-    !!hostExportStatus?.inProgress || exportTemplate.isPending || exportFull.isPending
   const templateSourceLabel = templateStatus?.sourceLabel || null
   const publishMode = useSkillsetPublishMode(templateStatus?.skillsetId)
   const isPR = isPullRequestPublishMode(publishMode)
@@ -167,72 +157,6 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
         </div>
       )}
 
-      {/* Export / Publish */}
-      <div className="space-y-2">
-        <h3 className="text-sm font-medium">Template</h3>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => exportTemplate.mutate({ agentSlug, agentName: name })}
-            disabled={exportBusy}
-          >
-            {exportBusy ? (
-              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-            ) : (
-              <Download className="h-3 w-3 mr-1" />
-            )}
-            Export as Template
-          </Button>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={exportBusy}
-              >
-                {exportBusy ? (
-                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                ) : (
-                  <HardDriveDownload className="h-3 w-3 mr-1" />
-                )}
-                Export Full Agent
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Export Full Agent</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This will export the entire agent workspace including environment
-                  variables, API keys, and other potentially sensitive data. Only share
-                  this file with people you trust.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  disabled={exportBusy}
-                  onClick={() => exportFull.mutate({ agentSlug, agentName: name })}
-                >
-                  Export
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-          {/* Hidden-org platform templates are shown as local, but must not be re-published from this org. */}
-          {templateStatus?.type === 'local' && templateStatus.publishable !== false && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setPublishDialogOpen(true)}
-            >
-              <Upload className="h-3 w-3 mr-1" />
-              Publish to Skillset
-            </Button>
-          )}
-        </div>
-      </div>
-
       {/* Session Auto-Delete */}
       <div className="space-y-2">
         <div className="space-y-0.5">
@@ -310,13 +234,6 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
         onOpenChange={setPrDialogOpen}
         agentSlug={agentSlug}
         publishMode={publishMode}
-      />
-
-      {/* Publish Dialog */}
-      <AgentTemplatePublishDialog
-        open={publishDialogOpen}
-        onOpenChange={setPublishDialogOpen}
-        agentSlug={agentSlug}
       />
 
       <AlertDialog open={forceSyncDialogOpen} onOpenChange={setForceSyncDialogOpen}>
