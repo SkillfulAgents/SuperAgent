@@ -50,12 +50,12 @@ test.describe('Accessibility Audit', () => {
     expect(results.violations.filter(v => v.impact === 'critical')).toEqual([])
   })
 
-  test('agent settings dialog has no critical a11y violations', async ({ page }) => {
+  test('agent settings popover has no critical a11y violations', async ({ page }) => {
     const agentName = `A11y Settings Agent ${Date.now()}`
     await agentPage.createAgent(agentName)
 
     await page.locator('[data-testid="agent-settings-button"]').click()
-    await expect(page.locator('[data-testid="agent-settings-dialog"]')).toBeVisible()
+    await expect(page.locator('[data-testid="agent-settings-popover"]')).toBeVisible()
 
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
