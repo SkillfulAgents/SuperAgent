@@ -66,6 +66,21 @@ describe('findDeltaWindowStart / pickDeltaAnchor', () => {
     expect(pickDeltaAnchor(items)).toBe('u1')
   })
 
+  it('a queued user message does not shield the still-streaming assistant before it', () => {
+    // Steering input lands mid-turn: block entries for a1 can still follow the
+    // queued message in the transcript. Anchoring on the queued message would
+    // leave the client's copy of a1 frozen at its partial text.
+    const items = [user('u1'), assistant('a1'), user('uq', true)]
+    expect(findDeltaWindowStart(items)).toBe(1)
+    expect(pickDeltaAnchor(items)).toBe('u1')
+  })
+
+  it('a trailing queued user message with no assistant behind it is a valid anchor', () => {
+    const items = [user('u1'), user('uq', true)]
+    expect(findDeltaWindowStart(items)).toBe(2)
+    expect(pickDeltaAnchor(items)).toBe('uq')
+  })
+
   it('trailing system items do not shield the still-merging assistant before them', () => {
     const items = [user('u1'), assistant('a1'), informational('i1')]
     expect(findDeltaWindowStart(items)).toBe(1)
@@ -113,5 +128,18 @@ describe('mergeDeltaMessages', () => {
 
   it('an empty delta leaves the cache unchanged', () => {
     expect(mergeDeltaMessages([m('a')], [])).toEqual([m('a')])
+  })
+
+  it('dedupes the kept prefix against replayed window items', () => {
+    // Resume replay re-appends old history verbatim; when the originals sit
+    // beyond the server's bounded tail, the window carries copies of ids the
+    // prefix already holds. The window's copy wins at its replayed position.
+    const merged = mergeDeltaMessages(
+      [m('u1'), m('a1'), m('u2', 'anchor')],
+      [m('u2', 'anchor'), m('u1', 'replayed'), m('a1', 'replayed'), m('a2', 'new')]
+    )
+    expect(merged?.map((x) => x.id)).toEqual(['u2', 'u1', 'a1', 'a2'])
+    expect(new Set(merged?.map((x) => x.id)).size).toBe(merged?.length)
+    expect(merged?.find((x) => x.id === 'a1')?.text).toBe('replayed')
   })
 })

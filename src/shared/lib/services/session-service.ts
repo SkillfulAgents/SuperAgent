@@ -1107,11 +1107,31 @@ export async function getSessionMessagesDelta(
     let start = Math.min(idx, windowStart)
     // Every tool_result recorded after the anchor must have its parent
     // assistant item in the response: the result may have closed a call the
-    // client still holds open (e.g. it anchored past a queued mid-turn user
-    // message while the call was pending), and only the parent item's upsert
-    // carries the resolution.
+    // client still holds open (e.g. it anchored past a call that annotation
+    // stamped as settled while the raw transcript still had it open), and
+    // only the parent item's upsert carries the resolution.
     const lateResultIds = toolResultIdsAfterEntry(entries, after)
     if (lateResultIds.size > 0) {
+      // A parent deeper than the current window would be silently skipped by
+      // the scan below — grow until every late result's parent is in view.
+      // Once the window covers the whole file, a still-unmatched id is a
+      // genuine orphan (its tool_use was rewritten away) and carries nothing
+      // to upsert.
+      if (!reachedStart) {
+        const windowToolIds = new Set<string>()
+        for (const item of transformed) {
+          if (item.type !== 'assistant') continue
+          for (const toolCall of item.toolCalls) windowToolIds.add(toolCall.id)
+        }
+        const hasUnmatched = [...lateResultIds].some((id) => !windowToolIds.has(id))
+        if (hasUnmatched) {
+          if (canGrow) {
+            maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+            continue
+          }
+          return { messages: [], anchor: null, resync: true }
+        }
+      }
       for (let i = 0; i < start; i++) {
         const item = transformed[i]
         if (item.type === 'assistant' && item.toolCalls.some((tc) => lateResultIds.has(tc.id))) {

@@ -38,7 +38,9 @@ export interface DeltaWindowItem {
  *   the last one belong to finished/interrupted turns and never resolve.
  * - The trailing assistant message may still merge streamed content blocks
  *   (same message.id across JSONL lines) even when it has no tool calls yet.
- *   Trailing system items (boundaries, banners) after it don't shield it.
+ *   Trailing system items (boundaries, banners) after it don't shield it, and
+ *   neither do queued user messages — steering input lands mid-turn, so block
+ *   entries for the assistant before it can still follow in the transcript.
  */
 export function findDeltaWindowStart(items: readonly DeltaWindowItem[]): number {
   let turnStart = 0
@@ -62,6 +64,7 @@ export function findDeltaWindowStart(items: readonly DeltaWindowItem[]): number 
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
     if (item.type !== 'user' && item.type !== 'assistant') continue
+    if (item.type === 'user' && item.queued) continue
     if (item.type === 'assistant') start = Math.min(start, i)
     break
   }
@@ -85,6 +88,12 @@ export function pickDeltaAnchor(items: readonly DeltaWindowItem[]): string | nul
  * Returns null when the window's first item isn't in the cache — the server
  * widened past the cached head or the anchor drifted — and the caller must
  * fall back to a full fetch.
+ *
+ * The kept prefix is deduped against the window: a resumed CLI can re-append
+ * old history verbatim, and when the originals sit beyond the server's bounded
+ * tail the replayed copies arrive as window items with ids the prefix already
+ * holds. Keeping the window's copy (at its replayed position) matches what a
+ * full fetch of the tail would show.
  */
 export function mergeDeltaMessages<T extends { id: string }>(
   cached: readonly T[],
@@ -93,5 +102,9 @@ export function mergeDeltaMessages<T extends { id: string }>(
   if (delta.length === 0) return [...cached]
   const spliceIdx = cached.findIndex((item) => item.id === delta[0].id)
   if (spliceIdx === -1) return null
-  return [...cached.slice(0, spliceIdx), ...delta]
+  const deltaIds = new Set(delta.map((item) => item.id))
+  return [
+    ...cached.slice(0, spliceIdx).filter((item) => !deltaIds.has(item.id)),
+    ...delta,
+  ]
 }

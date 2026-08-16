@@ -19,6 +19,7 @@ vi.mock('@renderer/lib/upload', () => ({
 
 import {
   useMessages,
+  useDeleteToolCall,
   useSubagentMessages,
   useWorkflowTree,
   useWorkflowAgentMessages,
@@ -200,8 +201,9 @@ describe('useMessages forward delta', () => {
     await waitFor(() => expect(inflight).toHaveLength(3))
     expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
     inflight[2].resolve({ messages: [user('u9')], nextCursor: null })
-    // u1/a1 slide into the older-history buffer (standard latest-page turnover).
-    await waitFor(() => expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1', 'u9']))
+    // Resync means the transcript was rewritten: u1/a1 may no longer exist, so
+    // they must NOT survive in the older-history buffer.
+    await waitFor(() => expect(result.current.data?.map((m) => m.id)).toEqual(['u9']))
   })
 
   it('treats a plain page response (pre-delta server) as the full fetch', async () => {
@@ -259,6 +261,38 @@ describe('useMessages forward delta', () => {
     })
     await waitFor(() => expect(inflight).toHaveLength(2))
     expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+  })
+
+  it('a tool-call deletion forces the next refetch to be a full page', async () => {
+    // The rewrite can edit an assistant item BEFORE the delta anchor, which
+    // deltas never re-serve — without expiring the full-fetch stamp the
+    // deleted call would stay rendered until the periodic full repair.
+    const wrapper = createWrapper()
+    const { result } = renderHook(
+      () => ({ messages: useMessages('s1', 'agent-1'), del: useDeleteToolCall() }),
+      { wrapper }
+    )
+    await waitFor(() => expect(inflight).toHaveLength(1))
+    inflight[0].resolve({ messages: [user('u1'), assistant('a1')], nextCursor: null })
+    await waitFor(() => expect(result.current.messages.isFetching).toBe(false))
+
+    let deletion: Promise<unknown>
+    act(() => {
+      deletion = result.current.del.mutateAsync({
+        sessionId: 's1',
+        agentSlug: 'agent-1',
+        toolCallId: 't1',
+      })
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/tool-calls/t1')
+    inflight[1].resolve({})
+    await act(async () => {
+      await deletion
+    })
+
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
   })
 
   it('falls back to a full fetch when the delta window predates the cache', async () => {

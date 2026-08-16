@@ -1121,6 +1121,137 @@ describe('session-service', () => {
       ).rejects.toMatchObject({ name: 'AbortError' })
     })
 
+    it('re-serves the still-streaming assistant when the anchor is a queued message after it', async () => {
+      // Steering input lands mid-turn; more blocks for the assistant before it
+      // can still arrive. Anchoring on the queued message must not freeze the
+      // assistant's partial text on the client.
+      await createSessionFile('test-agent', 'delta-session', [
+        ...makeThread(2),
+        {
+          type: 'assistant',
+          uuid: 'S-0',
+          timestamp: '2026-01-01T00:01:00.000Z',
+          sessionId: 'delta-session',
+          parentUuid: 'a-1',
+          message: {
+            id: 'msg-S',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'streaming ' }],
+          },
+        },
+        {
+          type: 'attachment',
+          uuid: 'q-attachment',
+          timestamp: '2026-01-01T00:01:05.000Z',
+          sessionId: 'delta-session',
+          attachment: {
+            type: 'queued_command',
+            prompt: [{ type: 'text', text: 'steering note' }],
+            source_uuid: 'q-1',
+            commandMode: 'prompt',
+          },
+        },
+        {
+          type: 'assistant',
+          uuid: 'S-1',
+          timestamp: '2026-01-01T00:01:10.000Z',
+          sessionId: 'delta-session',
+          parentUuid: 'q-attachment',
+          message: {
+            id: 'msg-S',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'continued' }],
+          },
+        },
+      ])
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'q-1',
+      })
+      expect(delta.messages.map((m) => m.id)).toEqual(['S-0', 'q-1'])
+      expect(delta.messages[0]).toMatchObject({ content: { text: 'streaming continued' } })
+    })
+
+    it('grows the window until a late tool_result finds its parent assistant item', async () => {
+      // The parent call sits well past the initial 128-line window; its result
+      // lands after the anchor. Without growth the parent's upsert would be
+      // silently skipped and the client's copy stay unresolved forever.
+      const parent = {
+        type: 'assistant',
+        uuid: 'P',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        sessionId: 'delta-session',
+        parentUuid: null,
+        message: {
+          id: 'msg-P',
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'deep-t1', name: 'AskUserQuestion', input: {} }],
+        },
+      }
+      const filler = makeThread(100).map((e, i) => ({
+        ...e,
+        uuid: `f-${i}`,
+        timestamp: new Date(Date.UTC(2026, 0, 1, 1, 0, i)).toISOString(),
+      }))
+      const anchorMsg = {
+        type: 'user',
+        uuid: 'anchor-u',
+        timestamp: '2026-01-01T02:00:00.000Z',
+        sessionId: 'delta-session',
+        parentUuid: null,
+        message: { role: 'user', content: 'latest question' },
+      }
+      const lateResult = {
+        type: 'user',
+        uuid: 'tr-deep',
+        timestamp: '2026-01-01T02:00:10.000Z',
+        sessionId: 'delta-session',
+        parentUuid: 'P',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'deep-t1', content: 'answered' }],
+        },
+      }
+      await createSessionFile('test-agent', 'delta-session', [
+        parent,
+        ...filler,
+        anchorMsg,
+        lateResult,
+      ])
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'anchor-u',
+      })
+      expect(delta.resync).toBeUndefined()
+      expect(delta.messages[0]?.id).toBe('P')
+      expect(delta.messages[0]).toMatchObject({
+        toolCalls: [{ id: 'deep-t1', result: 'answered' }],
+      })
+    })
+
+    it('an orphaned tool_result (parent rewritten away) does not force resync', async () => {
+      await createSessionFile('test-agent', 'delta-session', [
+        ...makeThread(3),
+        {
+          type: 'user',
+          uuid: 'tr-orphan',
+          timestamp: '2026-01-01T00:05:00.000Z',
+          sessionId: 'delta-session',
+          parentUuid: null,
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'gone-t1', content: 'orphan' }],
+          },
+        },
+      ])
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'u-2',
+      })
+      expect(delta.resync).toBeUndefined()
+      expect(delta.messages[0]?.id).toBe('u-2')
+    })
+
     it('merges a block-split assistant message into one upsert item', async () => {
       await createSessionFile('test-agent', 'delta-session', [
         ...makeThread(2),

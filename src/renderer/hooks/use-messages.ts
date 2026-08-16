@@ -31,6 +31,11 @@ interface MessagesPage {
    * page fetch (delta merges carry it forward). Drives the periodic full
    * refetch that repairs drift and re-bounds the delta-grown page. */
   fetchedFullAt?: number
+  /** Client-only: set when this full page was fetched because the server
+   * answered resync (the transcript was rewritten and the delta anchor
+   * vanished). Tells the hook to drop its older-history buffer, which may
+   * hold items that no longer exist. */
+  resyncedAt?: number
 }
 
 interface MessagesDelta {
@@ -113,13 +118,16 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
         cached && cached.messages.length > 0 ? pickDeltaAnchor(cached.messages) : null
       const fullIsFresh =
         Date.now() - (cached?.fetchedFullAt ?? 0) < MESSAGES_FULL_REFETCH_INTERVAL_MS
+      let sawResync = false
       if (cached && anchor && fullIsFresh) {
         const body = await fetchMessagesDelta(agentSlug, sessionId, { after: anchor, signal })
         if (!isDeltaResponse(body)) {
           // Pre-delta server answered with a plain trailing page — a full fetch.
           return { ...body, fetchedFullAt: Date.now() }
         }
-        if (!body.resync) {
+        if (body.resync) {
+          sawResync = true
+        } else {
           const merged = mergeDeltaMessages(cached.messages, body.messages)
           if (merged) {
             return {
@@ -134,7 +142,11 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
         limit: MESSAGES_PAGE_LIMIT,
         signal,
       })
-      return { ...page, fetchedFullAt: Date.now() }
+      return {
+        ...page,
+        fetchedFullAt: Date.now(),
+        ...(sawResync ? { resyncedAt: Date.now() } : {}),
+      }
     },
     enabled: !!sessionId && !!agentSlug,
     retry: (failureCount, error) =>
@@ -155,14 +167,29 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
   const [olderCursor, setOlderCursor] = useState<string | null | undefined>(undefined)
   const [isFetchingOlder, setIsFetchingOlder] = useState(false)
   const prevLatestRef = useRef<ApiMessageOrBoundary[]>(EMPTY_MESSAGES)
+  const lastResyncRef = useRef<number | undefined>(undefined)
 
   useEffect(() => {
     setOlder([])
     setOlderCursor(undefined)
     prevLatestRef.current = EMPTY_MESSAGES
+    lastResyncRef.current = undefined
   }, [sessionId, agentSlug])
 
   const latestMessages = latest.data?.messages ?? EMPTY_MESSAGES
+  const resyncedAt = latest.data?.resyncedAt
+
+  // A resync full fetch means the transcript was rewritten server-side: items
+  // held in the older-history buffer may no longer exist. Drop the buffer and
+  // reset the slide-off baseline BEFORE the effect below runs, so the vanished
+  // items aren't captured as "slid off" and re-rendered forever.
+  useLayoutEffect(() => {
+    if (resyncedAt === undefined || resyncedAt === lastResyncRef.current) return
+    lastResyncRef.current = resyncedAt
+    prevLatestRef.current = EMPTY_MESSAGES
+    setOlder([])
+    setOlderCursor(undefined)
+  }, [resyncedAt])
 
   useLayoutEffect(() => {
     const prev = prevLatestRef.current
@@ -306,9 +333,24 @@ export function useDeleteMessage() {
       queryClient.setQueryData<string[]>(deletedMessagesKey(sessionId), (cur = []) =>
         cur.includes(messageId) ? cur : [...cur, messageId]
       )
+      forceNextMessagesRefetchFull(queryClient, sessionId, agentSlug)
       queryClient.invalidateQueries({ queryKey: ['messages', sessionId, agentSlug] })
     },
   })
+}
+
+// Rewrite mutations edit the transcript ANYWHERE, including items before the
+// delta anchor, which deltas by design never re-serve. Expire the cached
+// full-fetch stamp so the invalidation's refetch is authoritative instead of
+// leaving the rewritten item stale until the periodic full repair.
+function forceNextMessagesRefetchFull(
+  queryClient: ReturnType<typeof useQueryClient>,
+  sessionId: string,
+  agentSlug: string
+) {
+  queryClient.setQueryData<MessagesPage>(['messages', sessionId, agentSlug], (cur) =>
+    cur ? { ...cur, fetchedFullAt: 0 } : cur
+  )
 }
 
 export function useDeleteToolCall() {
@@ -322,6 +364,7 @@ export function useDeleteToolCall() {
       if (!res.ok) throw new Error('Failed to delete tool call')
     },
     onSuccess: (_, { sessionId, agentSlug }) => {
+      forceNextMessagesRefetchFull(queryClient, sessionId, agentSlug)
       queryClient.invalidateQueries({ queryKey: ['messages', sessionId, agentSlug] })
     },
   })
