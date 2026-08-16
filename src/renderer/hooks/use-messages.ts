@@ -7,6 +7,7 @@ import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
+import { pickDeltaAnchor, mergeDeltaMessages } from '@shared/lib/messages-delta'
 
 // Re-export for convenience
 export type { ApiMessage, ApiMessageOrBoundary }
@@ -26,7 +27,23 @@ export class TranscriptNotFoundError extends Error {
 interface MessagesPage {
   messages: ApiMessageOrBoundary[]
   nextCursor: string | null
+  /** Client-only bookkeeping: when this cache entry was last built from a full
+   * page fetch (delta merges carry it forward). Drives the periodic full
+   * refetch that repairs drift and re-bounds the delta-grown page. */
+  fetchedFullAt?: number
 }
+
+interface MessagesDelta {
+  messages: ApiMessageOrBoundary[]
+  anchor: string | null
+  resync?: true
+}
+
+/** Full-page cadence while deltas are in use: periodic drift repair (deletions
+ * from other clients, missed rewrites) and the bound on how far past
+ * MESSAGES_PAGE_LIMIT the delta-merged page can grow before it resets to the
+ * trailing page (overflow slides into the `older` buffer). */
+export const MESSAGES_FULL_REFETCH_INTERVAL_MS = 60_000
 
 const EMPTY_MESSAGES: ApiMessageOrBoundary[] = []
 const EMPTY_IDS: string[] = []
@@ -51,8 +68,31 @@ async function fetchMessagesPage(
   return res.json() as Promise<MessagesPage>
 }
 
+// `limit` rides along so a server that predates the delta protocol (rolling
+// deploy) answers with a plain trailing page instead of the legacy unpaginated
+// array; the caller detects which one it got by the `anchor` field.
+async function fetchMessagesDelta(
+  agentSlug: string,
+  sessionId: string,
+  opts: { after: string; signal?: AbortSignal }
+): Promise<MessagesDelta | MessagesPage> {
+  const params = new URLSearchParams({ limit: String(MESSAGES_PAGE_LIMIT), after: opts.after })
+  const res = await apiFetch(
+    `/api/agents/${agentSlug}/sessions/${sessionId}/messages?${params.toString()}`,
+    { signal: opts.signal }
+  )
+  if (res.status === 404) throw new TranscriptNotFoundError()
+  if (!res.ok) throw new Error('Failed to fetch messages')
+  return res.json() as Promise<MessagesDelta | MessagesPage>
+}
+
+function isDeltaResponse(body: MessagesDelta | MessagesPage): body is MessagesDelta {
+  return 'anchor' in body || (body as { resync?: boolean }).resync === true
+}
+
 // Trailing page only unless the caller uses fetchOlder (MessageList). Other hook instances see ~MESSAGES_PAGE_LIMIT.
 export function useMessages(sessionId: string | null, agentSlug: string | null) {
+  const queryClient = useQueryClient()
   const latest = useQuery<MessagesPage>({
     queryKey: ['messages', sessionId, agentSlug],
     // Take React Query's per-fetch signal so a superseding invalidation aborts
@@ -61,7 +101,40 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     // produced and buffered server-side while the client has already moved on.
     queryFn: async ({ signal }) => {
       if (!sessionId || !agentSlug) throw new Error('Missing session')
-      return fetchMessagesPage(agentSlug, sessionId, { limit: MESSAGES_PAGE_LIMIT, signal })
+      // Forward delta when possible: SSE-driven refetches only care about
+      // lines appended since the last read, so ask for upserts at-or-after the
+      // last settled item instead of re-reading the whole trailing page
+      // (multi-MB on long sessions). Fall back to the full page when nothing
+      // is cached, no item is safely settled yet, the anchor vanished
+      // server-side (resync), the server predates the delta protocol, or the
+      // periodic full-refetch drift repair is due.
+      const cached = queryClient.getQueryData<MessagesPage>(['messages', sessionId, agentSlug])
+      const anchor =
+        cached && cached.messages.length > 0 ? pickDeltaAnchor(cached.messages) : null
+      const fullIsFresh =
+        Date.now() - (cached?.fetchedFullAt ?? 0) < MESSAGES_FULL_REFETCH_INTERVAL_MS
+      if (cached && anchor && fullIsFresh) {
+        const body = await fetchMessagesDelta(agentSlug, sessionId, { after: anchor, signal })
+        if (!isDeltaResponse(body)) {
+          // Pre-delta server answered with a plain trailing page — a full fetch.
+          return { ...body, fetchedFullAt: Date.now() }
+        }
+        if (!body.resync) {
+          const merged = mergeDeltaMessages(cached.messages, body.messages)
+          if (merged) {
+            return {
+              messages: merged,
+              nextCursor: cached.nextCursor,
+              fetchedFullAt: cached.fetchedFullAt,
+            }
+          }
+        }
+      }
+      const page = await fetchMessagesPage(agentSlug, sessionId, {
+        limit: MESSAGES_PAGE_LIMIT,
+        signal,
+      })
+      return { ...page, fetchedFullAt: Date.now() }
     },
     enabled: !!sessionId && !!agentSlug,
     retry: (failureCount, error) =>

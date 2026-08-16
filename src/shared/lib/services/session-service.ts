@@ -31,6 +31,7 @@ import {
   ensureDirectory,
 } from '@shared/lib/utils/file-storage'
 import { transformMessages, type TransformedItem } from '@shared/lib/utils/message-transform'
+import { findDeltaWindowStart } from '@shared/lib/messages-delta'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
 import { isHiddenAutomatedSession } from './session-visibility'
 import {
@@ -926,11 +927,61 @@ function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | nu
   return hasOlder && messages[0] ? messages[0].id : null
 }
 
-/** Trailing (or `cursor`-before) display page. Parses only a tail of the JSONL.
+/** Tail-window read + parse + transform shared by the page and delta readers.
  *
- * `opts.signal` aborts the read/parse work mid-flight (throws AbortError): the
- * caller is an HTTP route whose client cancels superseded refetches, and without
+ * `signal` aborts the read/parse work mid-flight (throws AbortError): the
+ * callers are HTTP routes whose clients cancel superseded refetches, and without
  * the signal every abandoned request still pays full transcript reads server-side. */
+async function readTransformedTail(
+  jsonlPath: string,
+  maxLines: number,
+  signal?: AbortSignal
+): Promise<{
+  transformed: TransformedItem[]
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[]
+  reachedStart: boolean
+}> {
+  const { lines, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines, signal)
+  // An abort landing on the last chunk read still saves the parse/transform
+  // below — on large transcripts that is seconds of synchronous work.
+  signal?.throwIfAborted()
+  const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+  for (const line of lines) {
+    const parsed = parseJsonlLine<JsonlEntry>(line)
+    if (!parsed) continue
+    const normalized = normalizeQueuedCommandEntry(parsed)
+    if (
+      isMessageOrSystemDisplayEntry(normalized) &&
+      !('isMeta' in normalized && normalized.isMeta)
+    ) {
+      entries.push(normalized)
+    }
+  }
+  return { transformed: transformMessages(entries), entries, reachedStart }
+}
+
+/** tool_use ids of tool_result blocks recorded after the anchor entry — new
+ * lines the client hasn't seen, whose parent assistant items (possibly before
+ * the anchor) they mutate. */
+function toolResultIdsAfterEntry(
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[],
+  anchorUuid: string
+): Set<string> {
+  const ids = new Set<string>()
+  const anchorIdx = entries.findIndex((e) => e.uuid === anchorUuid)
+  for (let i = anchorIdx + 1; i < entries.length; i++) {
+    const entry = entries[i]
+    if (entry.type !== 'user') continue
+    const content = (entry as JsonlMessageEntry).message.content
+    if (!Array.isArray(content)) continue
+    for (const block of content as ContentBlock[]) {
+      if (block.type === 'tool_result') ids.add(block.tool_use_id)
+    }
+  }
+  return ids
+}
+
+/** Trailing (or `cursor`-before) display page. Parses only a tail of the JSONL. */
 export async function getSessionMessagesPage(
   agentSlug: string,
   sessionId: string,
@@ -945,23 +996,7 @@ export async function getSessionMessagesPage(
   let maxLines = Math.min(MAX_TAIL_LINES, Math.max(limit * INITIAL_TAIL_FACTOR, 32))
 
   for (let attempt = 0; attempt < 32; attempt++) {
-    const { lines, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines, signal)
-    // An abort landing on the last chunk read still saves the parse/transform
-    // below — on large transcripts that is seconds of synchronous work.
-    signal?.throwIfAborted()
-    const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
-    for (const line of lines) {
-      const parsed = parseJsonlLine<JsonlEntry>(line)
-      if (!parsed) continue
-      const normalized = normalizeQueuedCommandEntry(parsed)
-      if (
-        isMessageOrSystemDisplayEntry(normalized) &&
-        !('isMeta' in normalized && normalized.isMeta)
-      ) {
-        entries.push(normalized)
-      }
-    }
-    const transformed = transformMessages(entries)
+    const { transformed, reachedStart } = await readTransformedTail(jsonlPath, maxLines, signal)
 
     if (cursor) {
       const idx = transformed.findIndex((item) => item.id === cursor)
@@ -1010,6 +1045,99 @@ export async function getSessionMessagesPage(
   }
 
   throw new Error('getSessionMessagesPage exceeded tail growth attempts')
+}
+
+export interface SessionMessagesDelta {
+  messages: TransformedItem[]
+  /** Last settled item in the server's current view — the client's next `after`. */
+  anchor: string | null
+  /** Anchor not found within a bounded tail (file rewritten by deletion or
+   * retention cleanup, or the anchor is deeper than a live tail can be):
+   * the client must fall back to a full page fetch. */
+  resync?: true
+}
+
+const DELTA_INITIAL_TAIL_LINES = 128
+// The anchor is by definition near EOF (the last settled item of a page the
+// client already holds); a miss deeper than this is drift, answered with
+// resync rather than an unbounded scan.
+const DELTA_MAX_TAIL_LINES = 10_000
+
+/** Forward delta: transformed display items at-or-after the `after` anchor, as
+ * upserts (full current versions — new lines can mutate items the client
+ * already holds, e.g. a tool_result attaching to an earlier assistant item).
+ *
+ * The window widens backward past the anchor to the first still-mutable item
+ * (open tool call in the live turn, trailing assistant message still merging
+ * streamed blocks) so a stale anchor still yields every pending upsert. A
+ * tail window that cuts an assistant message mid-merge gives the partial item
+ * a different id, so an anchor inside a cut group misses and forces growth —
+ * anchors always resolve against complete items. */
+export async function getSessionMessagesDelta(
+  agentSlug: string,
+  sessionId: string,
+  opts: { after: string; signal?: AbortSignal }
+): Promise<SessionMessagesDelta> {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  if (!(await fileExists(jsonlPath))) {
+    return { messages: [], anchor: null, resync: true }
+  }
+
+  const { after, signal } = opts
+  let maxLines = DELTA_INITIAL_TAIL_LINES
+
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const { transformed, entries, reachedStart } = await readTransformedTail(
+      jsonlPath,
+      maxLines,
+      signal
+    )
+    const canGrow = !reachedStart && maxLines < DELTA_MAX_TAIL_LINES
+
+    const idx = transformed.findIndex((item) => item.id === after)
+    if (idx === -1) {
+      if (canGrow) {
+        maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+        continue
+      }
+      return { messages: [], anchor: null, resync: true }
+    }
+
+    const windowStart = findDeltaWindowStart(transformed)
+    let start = Math.min(idx, windowStart)
+    // Every tool_result recorded after the anchor must have its parent
+    // assistant item in the response: the result may have closed a call the
+    // client still holds open (e.g. it anchored past a queued mid-turn user
+    // message while the call was pending), and only the parent item's upsert
+    // carries the resolution.
+    const lateResultIds = toolResultIdsAfterEntry(entries, after)
+    if (lateResultIds.size > 0) {
+      for (let i = 0; i < start; i++) {
+        const item = transformed[i]
+        if (item.type === 'assistant' && item.toolCalls.some((tc) => lateResultIds.has(tc.id))) {
+          start = i
+          break
+        }
+      }
+    }
+    // Item 0 of a window that didn't reach the file start may be a partially
+    // merged assistant message (its leading block entries cut off) — never
+    // serve it; grow until the window has context before the response.
+    if (start === 0 && !reachedStart) {
+      if (canGrow) {
+        maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+        continue
+      }
+      return { messages: [], anchor: null, resync: true }
+    }
+
+    return {
+      messages: transformed.slice(start),
+      anchor: windowStart > 0 ? transformed[windowStart - 1].id : null,
+    }
+  }
+
+  throw new Error('getSessionMessagesDelta exceeded tail growth attempts')
 }
 
 // Tail-window sizing for findLastSessionEntry: start small (covers the last

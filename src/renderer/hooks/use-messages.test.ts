@@ -22,6 +22,7 @@ import {
   useSubagentMessages,
   useWorkflowTree,
   useWorkflowAgentMessages,
+  MESSAGES_FULL_REFETCH_INTERVAL_MS,
 } from './use-messages'
 
 interface InflightRequest {
@@ -132,6 +133,148 @@ describe('useMessages abort wiring', () => {
     await waitFor(() => expect(result.current.data).toHaveLength(1))
     expect(result.current.data?.[0].id).toBe('m1')
     expect(result.current.isError).toBe(false)
+  })
+})
+
+describe('useMessages forward delta', () => {
+  const user = (id: string, text = 'q') => ({
+    id,
+    type: 'user' as const,
+    content: { text },
+    toolCalls: [],
+    createdAt: '2026-01-01T00:00:00Z',
+  })
+  const assistant = (id: string, text = 'a') => ({
+    id,
+    type: 'assistant' as const,
+    content: { text },
+    toolCalls: [],
+    createdAt: '2026-01-01T00:00:01Z',
+  })
+
+  async function settleInitialPage(
+    wrapper: ReturnType<typeof createWrapper>,
+    result: { current: { isFetching: boolean } },
+    messages: unknown[]
+  ) {
+    await waitFor(() => expect(inflight).toHaveLength(1))
+    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+    inflight[0].resolve({ messages, nextCursor: 'older-cursor' })
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+  }
+
+  it('refetches as a forward delta anchored on the last settled item and merges the upserts', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    // The trailing assistant may still merge streamed blocks → anchor is u1.
+    await settleInitialPage(wrapper, result, [user('u1'), assistant('a1', 'stale')])
+
+    act(() => {
+      void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&after=u1')
+
+    inflight[1].resolve({
+      messages: [user('u1'), assistant('a1', 'fresh'), assistant('a2', 'new')],
+      anchor: 'a1',
+    })
+    await waitFor(() => expect(result.current.data).toHaveLength(3))
+    expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1', 'a2'])
+    expect((result.current.data?.[1] as { content: { text: string } }).content.text).toBe('fresh')
+    // Older-history paging state survives delta merges.
+    expect(result.current.hasOlder).toBe(true)
+  })
+
+  it('falls back to a full fetch in the same refetch when the server answers resync', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u1'), assistant('a1')])
+
+    act(() => {
+      void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    inflight[1].resolve({ messages: [], anchor: null, resync: true })
+
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+    inflight[2].resolve({ messages: [user('u9')], nextCursor: null })
+    // u1/a1 slide into the older-history buffer (standard latest-page turnover).
+    await waitFor(() => expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1', 'u9']))
+  })
+
+  it('treats a plain page response (pre-delta server) as the full fetch', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u1'), assistant('a1')])
+
+    act(() => {
+      void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    // An old server ignores `after` and answers the trailing page envelope.
+    inflight[1].resolve({ messages: [user('u1'), assistant('a1', 'full')], nextCursor: null })
+
+    await waitFor(() =>
+      expect((result.current.data?.[1] as { content: { text: string } }).content.text).toBe('full')
+    )
+    expect(inflight).toHaveLength(2)
+  })
+
+  it('does a full refetch when the periodic drift repair is due, then returns to deltas', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const wrapper = createWrapper()
+      const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+      await settleInitialPage(wrapper, result, [user('u1'), assistant('a1')])
+
+      vi.setSystemTime(Date.now() + MESSAGES_FULL_REFETCH_INTERVAL_MS + 1000)
+      act(() => {
+        void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+      })
+      await waitFor(() => expect(inflight).toHaveLength(2))
+      expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+      inflight[1].resolve({ messages: [user('u1'), assistant('a1')], nextCursor: null })
+      await waitFor(() => expect(result.current.isFetching).toBe(false))
+
+      // The full fetch restamped the cadence — the next refetch is a delta again.
+      act(() => {
+        void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+      })
+      await waitFor(() => expect(inflight).toHaveLength(3))
+      expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&after=u1')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('fetches the full page while nothing is safely settled (lone streaming assistant)', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [assistant('a1')])
+
+    act(() => {
+      void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+  })
+
+  it('falls back to a full fetch when the delta window predates the cache', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u1'), assistant('a1')])
+
+    act(() => {
+      void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    // Server widened past everything the client holds — splice point unknown.
+    inflight[1].resolve({ messages: [user('u0'), user('u1'), assistant('a1')], anchor: 'u1' })
+
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
   })
 })
 
