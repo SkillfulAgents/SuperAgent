@@ -3,7 +3,7 @@ import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search } from 'lucide-react'
+import { ArrowUp, Loader2, Eye, Maximize2, Minimize2, Search } from 'lucide-react'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
@@ -14,7 +14,7 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
-import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
+import { AgentSettingsPopover } from '@renderer/components/agents/agent-settings-popover'
 import { AgentSharePopover } from '@renderer/components/agents/agent-share-popover'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
@@ -28,7 +28,7 @@ import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
 import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
-import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
+import { InlineEditableTitle, type InlineEditableTitleHandle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
 import { HomeExtras } from './home-extras'
@@ -121,19 +121,12 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // Tracks whether a name has already been assigned (e.g. by the voice agent)
   // so the post-submit deriveAgentName fallback doesn't clobber it.
   const nameAssignedRef = useRef(false)
-  // Agent-scoped settings dialogs — opened from the settings button and
-  // HomeExtras (system prompt). Secrets now have a standalone route; these
-  // settings remain local dialog state rather than global /settings routes.
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
+  // Agent-scoped dialogs opened from HomeExtras. Header settings are a
+  // popover on the gear now; the sidebar context menu keeps the full dialog.
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
+  const titleRef = useRef<InlineEditableTitleHandle>(null)
   const handleOpenSettings = useCallback((tab?: string) => {
-    if (tab === 'system-prompt') {
-      setSystemPromptOpen(true)
-      return
-    }
-    setSettingsTab(tab)
-    setSettingsOpen(true)
+    if (tab === 'system-prompt') setSystemPromptOpen(true)
   }, [])
   const sessions = useMemo(() => {
     if (!Array.isArray(sessionsData)) return []
@@ -309,6 +302,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             <AgentContextMenu agent={agent}>
               <div className="flex-1 min-w-0 cursor-context-menu">
                 <InlineEditableTitle
+                  ref={titleRef}
                   value={agent.name}
                   canEdit={isOwner}
                   isSaving={updateAgent.isPending}
@@ -332,15 +326,18 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 />
               </div>
             </AgentContextMenu>
-            {/* Share (ACL + publish + export) lives on the header, not in
-                settings. Owners only; outside auth mode everyone is an owner
-                and the popover shows just the Publish/Export tabs. */}
+            {/* Share (ACL + publish) lives on the header, not in settings. Owners
+                only; outside auth mode everyone is an owner and the popover
+                shows just the Publish pane. */}
             {isOwner && <AgentSharePopover agentSlug={agent.slug} agentName={agent.name} />}
-            {/* AgentHome owns the settings dialog (no onOpenSettings prop), so the
-                gear opens the local handler rather than a parent-supplied one. */}
-            <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => handleOpenSettings()} aria-label="Agent settings" data-testid="agent-settings-button">
-              <Settings2 className="h-4 w-4" />
-            </Button>
+            {/* Gear = compact settings popover; Rename delegates to the
+                InlineEditableTitle above via its imperative handle. */}
+            {isOwner && (
+              <AgentSettingsPopover
+                agent={agent}
+                onRename={() => titleRef.current?.startEditing()}
+              />
+            )}
           </div>
           {isViewOnly ? (
             <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground border rounded-lg p-6" data-testid="view-only-banner">
@@ -581,12 +578,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       </div>
     </div>
 
-      <AgentSettingsDialog
-        agent={agent}
-        open={settingsOpen}
-        onOpenChange={(open) => { setSettingsOpen(open); if (!open) setSettingsTab(undefined) }}
-        initialTab={settingsTab}
-      />
       <SystemPromptDialog
         agent={agent}
         open={systemPromptOpen}
