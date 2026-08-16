@@ -1733,14 +1733,12 @@ agents.post('/:id/leave', AgentRead(), async (c) => {
   }
 })
 
-// GET /api/agents/:id/access/search-users - Search users for invite
+// GET /api/agents/:id/access/search-users - List/search users for invite.
+// Without a query, returns all invitable users (teams are small enough to
+// show everyone as suggestions in the share popover).
 agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
   try {
     const query = c.req.query('q')?.trim()
-    if (!query || query.length < 2) {
-      return c.json([])
-    }
-
     const slug = getAgentId(c)
 
     // Get users who already have access
@@ -1753,12 +1751,16 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
 
     // Search users by name or email (SQLite LIKE is case-insensitive by default)
     // Escape LIKE wildcards to prevent pattern injection (e.g. searching "%" matching all users)
-    const escaped = query.replace(/%/g, '\\%').replace(/_/g, '\\_')
+    const escaped = query ? query.replace(/%/g, '\\%').replace(/_/g, '\\_') : ''
     const users = await db
       .select({ id: userTable.id, name: userTable.name, email: userTable.email })
       .from(userTable)
-      .where(or(like(userTable.name, `%${escaped}%`), like(userTable.email, `%${escaped}%`)))
-      .limit(20)
+      .where(
+        escaped
+          ? or(like(userTable.name, `%${escaped}%`), like(userTable.email, `%${escaped}%`))
+          : undefined
+      )
+      .limit(50)
 
     return c.json(users.filter((u) => !excludeIds.has(u.id)))
   } catch (error) {

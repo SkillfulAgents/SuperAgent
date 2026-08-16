@@ -290,8 +290,8 @@ test.describe('Auth Flow', () => {
     const testId = await ownerEntry.getAttribute('data-testid')
     const userId = testId!.replace('access-entry-', '')
 
-    // The remove button should be disabled for the last owner
-    await expect(user2Page.locator(`[data-testid="access-remove-${userId}"]`)).toBeDisabled()
+    // The role dropdown (which contains Remove) is disabled for the last owner
+    await expect(user2Page.locator(`[data-testid="access-role-${userId}"]`)).toBeDisabled()
 
     await accessPage.closeSettings()
   })
@@ -358,13 +358,10 @@ test.describe('Auth Flow', () => {
     const user3Entry = user2Page.locator('[data-testid^="access-entry-"]').filter({ hasText: user3.name })
     await expect(user3Entry).toBeVisible()
 
-    // Extract userId and click remove
+    // Extract userId and remove via the role dropdown's Remove item
     const testId = await user3Entry.getAttribute('data-testid')
     const userId = testId!.replace('access-entry-', '')
-    await user2Page.locator(`[data-testid="access-remove-${userId}"]`).click()
-
-    // Wait for entry to disappear
-    await expect(user3Entry).not.toBeVisible()
+    await accessPage.removeUser(userId)
 
     await accessPage.closeSettings()
   })
