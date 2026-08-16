@@ -86,7 +86,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     if (introStagger) setJustCreatedSlug(null)
   }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
-  const { canUseAgent, canAdminAgent, isAuthMode } = useUser()
+  const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
   const [isExpanded, setIsExpanded] = useState(false)
@@ -332,9 +332,10 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 />
               </div>
             </AgentContextMenu>
-            {/* Share (ACL) lives on the header, not in settings — auth-mode
-                owners only, since the /access endpoints are AgentAdmin(). */}
-            {isAuthMode && isOwner && <AgentSharePopover agentSlug={agent.slug} />}
+            {/* Share (ACL + publish + export) lives on the header, not in
+                settings. Owners only; outside auth mode everyone is an owner
+                and the popover shows just the Publish/Export tabs. */}
+            {isOwner && <AgentSharePopover agentSlug={agent.slug} agentName={agent.name} />}
             {/* AgentHome owns the settings dialog (no onOpenSettings prop), so the
                 gear opens the local handler rather than a parent-supplied one. */}
             <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => handleOpenSettings()} aria-label="Agent settings" data-testid="agent-settings-button">
