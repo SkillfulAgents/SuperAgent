@@ -15,6 +15,7 @@ import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
+import { AgentSharePopover } from '@renderer/components/agents/agent-share-popover'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
@@ -85,7 +86,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     if (introStagger) setJustCreatedSlug(null)
   }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
-  const { canUseAgent, canAdminAgent } = useUser()
+  const { canUseAgent, canAdminAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
   const [isExpanded, setIsExpanded] = useState(false)
@@ -331,6 +332,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 />
               </div>
             </AgentContextMenu>
+            {/* Share (ACL) lives on the header, not in settings — auth-mode
+                owners only, since the /access endpoints are AgentAdmin(). */}
+            {isAuthMode && isOwner && <AgentSharePopover agentSlug={agent.slug} />}
             {/* AgentHome owns the settings dialog (no onOpenSettings prop), so the
                 gear opens the local handler rather than a parent-supplied one. */}
             <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => handleOpenSettings()} aria-label="Agent settings" data-testid="agent-settings-button">
