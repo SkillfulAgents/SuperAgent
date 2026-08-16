@@ -666,20 +666,22 @@ describe('useMessageStream', () => {
       // ('connected' consumed the leading edge), so nothing fires synchronously.
       expect(countMessageInvalidations(spy)).toBe(0)
 
-      // Trailing edge: the idle invalidate and the reconcile loop's first retry
-      // collapse into one refetch.
+      // The reconcile loop bypasses the throttle: its first retry fires at
+      // ~250ms and FOLDS the pending trailing (scheduled for 750ms) into
+      // itself, so persistence lag is recovered on the pre-throttle schedule
+      // (250 / 750 / 1500), not a window later.
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(800)
+        await vi.advanceTimersByTimeAsync(300)
       })
       expect(countMessageInvalidations(spy)).toBe(1)
 
-      // Drain well past the reconcile window — still no match, so the loop keeps
-      // retrying through the throttle, then must self-terminate (bounded).
+      // Drain well past the reconcile window: retries at 750 and 1500, then
+      // self-terminates. Exactly three refetches — the folded trailing timer
+      // must not fire a fourth.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5000)
       })
-      expect(countMessageInvalidations(spy)).toBeGreaterThanOrEqual(2)
-      expect(countMessageInvalidations(spy)).toBeLessThanOrEqual(4)
+      expect(countMessageInvalidations(spy)).toBe(3)
     } finally {
       vi.useRealTimers()
     }
@@ -807,6 +809,43 @@ describe('useMessageStream', () => {
         MockEventSource.instances[0].simulateMessage({ type: 'messages_updated' })
       })
       // A fresh window: the event refetches immediately, not on a delay.
+      expect(countMessageInvalidations(spy)).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears pending throttle state when the last subscriber unmounts', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      const { unmount } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // Schedule a trailing refetch, then unmount before it fires.
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'messages_updated' })
+      })
+      unmount()
+
+      // The cancelled trailing timer must not refetch after unmount…
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS * 3)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // …and a remount starts on a fresh leading edge instead of joining
+      // stale pending work from the previous mount.
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      act(() => {
+        MockEventSource.instances[1].simulateMessage({ type: 'connected', isActive: true })
+      })
       expect(countMessageInvalidations(spy)).toBe(2)
     } finally {
       vi.useRealTimers()

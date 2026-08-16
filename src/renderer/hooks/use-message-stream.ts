@@ -228,7 +228,13 @@ export const MESSAGES_REFETCH_THROTTLE_MS = 750
 interface MessagesInvalidateThrottle {
   lastInvalidatedAt: number
   /** Pending trailing refetch; further calls in the window join its promise. */
-  trailing: { timer: ReturnType<typeof setTimeout>; promise: Promise<void> } | null
+  trailing: {
+    timer: ReturnType<typeof setTimeout>
+    promise: Promise<void>
+    /** Resolves the joined promise — called by the timer, by a fold-in
+     * refetch that supersedes the timer, or by unmount cleanup. */
+    settle: () => void
+  } | null
 }
 const messagesInvalidateThrottles = new Map<string, MessagesInvalidateThrottle>()
 
@@ -257,8 +263,35 @@ function invalidateMessagesThrottled(
     throttle.lastInvalidatedAt = Date.now()
     queryClient.invalidateQueries({ queryKey: ['messages', sessionId] }).then(settle, settle)
   }, wait)
-  throttle.trailing = { timer, promise }
+  throttle.trailing = { timer, promise, settle }
   return promise
+}
+
+// Immediate variant for the post-idle reconcile loop. Its whole job is beating
+// the transcript write/read race, so deferring its retries to the trailing edge
+// would push finalization a window later exactly when persistence lags. The
+// loop is already rate-limited — single-flight per session with its own bounded
+// backoff — so exempting it cannot reopen the refetch storm. The refetch FOLDS
+// into the throttle rather than stacking on top of it: a pending trailing timer
+// is cancelled (its waiters settle with this refetch) and the window restarts
+// from now, so surrounding events coalesce onto this fetch instead of adding
+// another.
+function invalidateMessagesNow(
+  queryClient: QueryClient,
+  sessionId: string
+): Promise<void> {
+  let entry = messagesInvalidateThrottles.get(sessionId)
+  if (!entry) {
+    entry = { lastInvalidatedAt: 0, trailing: null }
+    messagesInvalidateThrottles.set(sessionId, entry)
+  }
+  const pending = entry.trailing
+  entry.trailing = null
+  if (pending) clearTimeout(pending.timer)
+  entry.lastInvalidatedAt = Date.now()
+  const refetch = queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+  if (pending) refetch.then(pending.settle, pending.settle)
+  return refetch
 }
 
 // Does the last persisted assistant message in the messages cache match the
@@ -322,7 +355,7 @@ async function reconcileMessagesAfterIdle(
       await new Promise((resolve) => setTimeout(resolve, delay))
       // refetchType defaults to 'active': refetches the mounted messages query
       // (the session being viewed) and resolves once the cache is updated.
-      await invalidateMessagesThrottled(queryClient, sessionId)
+      await invalidateMessagesNow(queryClient, sessionId)
     }
   } finally {
     reconcilingIdleSessions.delete(sessionId)
@@ -1266,6 +1299,19 @@ function releaseEventSource(sessionId: string): void {
       eventSources.delete(key)
     }
     refCounts.delete(key)
+    // Symmetric cleanup for the refetch throttle: cancel a pending trailing
+    // timer (nothing is mounted to refetch), settle its waiters so nothing can
+    // ever hang on the joined promise, and drop the entry so the map stays
+    // bounded by open sessions and a remount starts on a fresh leading edge.
+    const throttle = messagesInvalidateThrottles.get(key)
+    if (throttle) {
+      if (throttle.trailing) {
+        clearTimeout(throttle.trailing.timer)
+        throttle.trailing.settle()
+        throttle.trailing = null
+      }
+      messagesInvalidateThrottles.delete(key)
+    }
   }
 }
 
