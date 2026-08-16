@@ -28,8 +28,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from './agent-settings-dialog'
 import { apiFetch } from '@renderer/lib/api'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
-import { Settings, FolderOpen, Copy, Trash2, LogOut, Move, FolderInput } from 'lucide-react'
+import { Settings, Trash2, LogOut, Move, FolderInput } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Input } from '@renderer/components/ui/input'
 import { useUserSettings, useUpdateUserSettings, type UserSettingsData } from '@renderer/hooks/use-user-settings'
@@ -67,10 +66,8 @@ export function AgentContextMenu({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showLeaveDialog, setShowLeaveDialog] = useState(false)
   const [showSettingsDialog, setShowSettingsDialog] = useState(false)
-  const [showPathDialog, setShowPathDialog] = useState(false)
   const [showNewFolderDialog, setShowNewFolderDialog] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
-  const [agentPath, setAgentPath] = useState('')
   const [isDeleting, setIsDeleting] = useState(false)
   const [isLeaving, setIsLeaving] = useState(false)
   const deleteAgent = useDeleteAgent()
@@ -158,30 +155,6 @@ export function AgentContextMenu({
     setShowNewFolderDialog(false)
     setNewFolderName('')
   }, [agent.slug, buildSections, newFolderName, updateSettings])
-
-  // `open: true` makes the API run the file manager on ITS OWN host. That is
-  // what you want when the API is this computer; against a cloud workspace it
-  // asks the deployment to launch `open`/`explorer`/`xdg-open` somewhere nobody
-  // is looking. Remotely this becomes the copy-the-path action the web build
-  // already uses, which is the part that still works.
-  const canShowDirectory = canUseHostFeatures()
-
-  const handleDirectoryAction = useCallback(async () => {
-    const res = await apiFetch(`/api/agents/${agent.slug}/open-directory`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ open: canShowDirectory }),
-    })
-    if (!canShowDirectory && res.ok) {
-      const { path } = await res.json()
-      try {
-        await navigator.clipboard.writeText(path)
-      } catch {
-        setAgentPath(path)
-        setShowPathDialog(true)
-      }
-    }
-  }, [agent.slug, canShowDirectory])
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -287,24 +260,6 @@ export function AgentContextMenu({
             <Settings className="h-4 w-4 mr-2" />
             Settings
           </ContextMenuItem>
-          {isOwner && (
-            <ContextMenuItem
-              onClick={handleDirectoryAction}
-              data-testid="open-agent-directory-item"
-            >
-              {canShowDirectory ? (
-                <>
-                  <FolderOpen className="h-4 w-4 mr-2" />
-                  Show Agent Directory
-                </>
-              ) : (
-                <>
-                  <Copy className="h-4 w-4 mr-2" />
-                  Copy Agent Directory Path
-                </>
-              )}
-            </ContextMenuItem>
-          )}
           {isOwner && (
             <ContextMenuItem
               className="text-destructive focus:bg-destructive/10 focus:text-destructive"
@@ -416,20 +371,6 @@ export function AgentContextMenu({
             >
               Create &amp; Move
             </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={showPathDialog} onOpenChange={setShowPathDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Agent Directory Path</AlertDialogTitle>
-            <AlertDialogDescription className="break-all font-mono text-sm select-all">
-              {agentPath}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Close</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
