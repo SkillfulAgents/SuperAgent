@@ -482,13 +482,59 @@ const READ_RETRY_INTERVAL_MS = Number(process.env.X_AGENT_READ_RETRY_INTERVAL_MS
 // Cap the sync wait well under that cliff: sync is meant for fast turns, so a
 // slow turn promotes to the async contract (status 'running' + session id)
 // instead of dying as a network error that invites the caller to retry.
-const SYNC_WAIT_TIMEOUT_MS = Number(process.env.X_AGENT_SYNC_WAIT_TIMEOUT_MS) || 120_000
+//
+// The budget is end-to-end from handler entry, not from when waitForIdle
+// starts: policy review and container startup happen first and can be slow,
+// and a wait that ignored them could still push the total response time past
+// the transport cliff.
+const SYNC_WAIT_TIMEOUT_DEFAULT_MS = 120_000
+// Ceiling for the env override — at or past the 300s transport cliff the
+// override would restore the exact failure this timeout exists to prevent.
+const SYNC_WAIT_TIMEOUT_MAX_MS = 240_000
+
+// Exported for unit tests.
+export function resolveSyncWaitTimeoutMs(raw: string | undefined): number {
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed <= 0) return SYNC_WAIT_TIMEOUT_DEFAULT_MS
+  return Math.min(parsed, SYNC_WAIT_TIMEOUT_MAX_MS)
+}
+
+const SYNC_WAIT_TIMEOUT_MS = resolveSyncWaitTimeoutMs(process.env.X_AGENT_SYNC_WAIT_TIMEOUT_MS)
 
 // Matched by name rather than instanceof: the persister module is wholesale-
 // mocked in many test suites, and an instanceof against a possibly-undefined
 // mock export throws instead of returning false.
 function isWaitForIdleTimeout(error: unknown): boolean {
   return error instanceof Error && error.name === 'WaitForIdleTimeoutError'
+}
+
+/**
+ * Wait for the target turn to finish within what's left of the caller's sync
+ * budget (deadline is stamped at handler entry). Returns 'timeout' when the
+ * budget is exhausted — before or during the wait — and rethrows any other
+ * waitForIdle failure.
+ *
+ * requireActiveFirst is off: every sync caller marks the session active before
+ * the prompt is delivered (invoke) or checks isSessionActive just before
+ * waiting (get-transcript), so an inactive session here means the turn already
+ * finished — resolving immediately is correct, not a startup race.
+ */
+async function waitForTurnWithinBudget(
+  sessionId: string,
+  deadline: number,
+): Promise<'completed' | 'timeout'> {
+  const remainingMs = deadline - Date.now()
+  if (remainingMs <= 0) return 'timeout'
+  try {
+    await messagePersister.waitForIdle(sessionId, {
+      timeoutMs: remainingMs,
+      requireActiveFirst: false,
+    })
+    return 'completed'
+  } catch (error) {
+    if (isWaitForIdleTimeout(error)) return 'timeout'
+    throw error
+  }
 }
 
 function syncWaitPromotedNote(timeoutMs: number): string {
@@ -526,6 +572,9 @@ async function readLastAssistantMessage(
 }
 
 xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), async (c) => {
+  // Stamp the sync budget before any slow pre-work (policy review can block on
+  // a human decision) so the total response time stays under the transport cap.
+  const syncDeadline = Date.now() + SYNC_WAIT_TIMEOUT_MS
   const callerSlug = getCallerSlug(c)
   const { slug: rawTargetSlug, sessionId, sync } = c.req.valid('json')
 
@@ -554,18 +603,16 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
 
   if (sync && messagePersister.isSessionActive(sessionId)) {
     try {
-      await messagePersister.waitForIdle(sessionId, { timeoutMs: SYNC_WAIT_TIMEOUT_MS })
+      // 'timeout' falls through: return the transcript so far with status
+      // 'running'. Sync get-transcript is a bounded long-poll the caller can
+      // repeat, not an unbounded wait — an unbounded wait would outlive the
+      // container's 300s fetch header timeout and surface as a retry-inducing
+      // network error. Other failures stay hard errors.
+      await waitForTurnWithinBudget(sessionId, syncDeadline)
     } catch (error) {
-      // Still running past the sync cap: fall through and return the transcript
-      // so far with status 'running'. Sync get-transcript is a bounded long-poll
-      // the caller can repeat, not an unbounded wait — an unbounded wait would
-      // outlive the container's 300s fetch header timeout and surface as a
-      // retry-inducing network error. Other failures stay hard errors.
-      if (!isWaitForIdleTimeout(error)) {
-        return c.json({
-          error: `Session did not idle: ${error instanceof Error ? error.message : String(error)}`,
-        }, 504)
-      }
+      return c.json({
+        error: `Session did not idle: ${error instanceof Error ? error.message : String(error)}`,
+      }, 504)
     }
   }
 
@@ -601,6 +648,10 @@ const invokeBodySchema = z.object({
 })
 
 xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
+  // Stamp the sync budget before any slow pre-work (policy review, container
+  // startup, session creation) so the total response time stays under the
+  // container fetch's 300s header timeout even when delivery itself was slow.
+  const syncDeadline = Date.now() + SYNC_WAIT_TIMEOUT_MS
   const callerSlug = getCallerSlug(c)
   const { slug: rawTargetSlug, prompt, sessionId: existingSessionId, sync, _callerSessionId } = c.req.valid('json')
 
@@ -714,19 +765,26 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         }
 
         if (sync) {
+          stage = 'wait_for_idle'
+          let outcome: 'completed' | 'timeout'
           try {
-            stage = 'wait_for_idle'
-            await messagePersister.waitForIdle(existingSessionId, { timeoutMs: SYNC_WAIT_TIMEOUT_MS })
+            outcome = await waitForTurnWithinBudget(existingSessionId, syncDeadline)
           } catch (error) {
-            // Timeout means the target is simply still working — promote to the
-            // async contract with explicit guidance so the caller polls instead
-            // of re-invoking (a re-invoke duplicates the whole run).
             return c.json({
               sessionId: existingSessionId,
               status: 'running',
-              error: isWaitForIdleTimeout(error)
-                ? syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS)
-                : error instanceof Error ? error.message : String(error),
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          if (outcome === 'timeout') {
+            // Budget exhausted (whether before or during the wait) means the
+            // target is simply still working — promote to the async contract
+            // with explicit guidance so the caller polls instead of re-invoking
+            // (a re-invoke duplicates the whole run).
+            return c.json({
+              sessionId: existingSessionId,
+              status: 'running',
+              error: syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS),
             })
           }
           const lastMessage = await readLastAssistantMessage(targetSlug, existingSessionId)
@@ -833,19 +891,26 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       }
 
       if (sync) {
+        stage = 'wait_for_idle'
+        let outcome: 'completed' | 'timeout'
         try {
-          stage = 'wait_for_idle'
-          await messagePersister.waitForIdle(newSessionId, { timeoutMs: SYNC_WAIT_TIMEOUT_MS })
+          outcome = await waitForTurnWithinBudget(newSessionId, syncDeadline)
         } catch (error) {
-          // Timeout means the target is simply still working — promote to the
-          // async contract with explicit guidance so the caller polls instead
-          // of re-invoking (a re-invoke duplicates the whole run).
           return c.json({
             sessionId: newSessionId,
             status: 'running',
-            error: isWaitForIdleTimeout(error)
-              ? syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS)
-              : error instanceof Error ? error.message : String(error),
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+        if (outcome === 'timeout') {
+          // Budget exhausted (whether before or during the wait) means the
+          // target is simply still working — promote to the async contract
+          // with explicit guidance so the caller polls instead of re-invoking
+          // (a re-invoke duplicates the whole run).
+          return c.json({
+            sessionId: newSessionId,
+            status: 'running',
+            error: syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS),
           })
         }
         const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)

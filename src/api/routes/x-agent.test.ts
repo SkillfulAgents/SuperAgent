@@ -126,6 +126,21 @@ function waitForIdleTimeoutError(): Error {
     name: 'WaitForIdleTimeoutError',
   })
 }
+
+// Sync waits pass the REMAINING end-to-end budget (deadline stamped at handler
+// entry minus pre-wait work), so the exact timeoutMs varies — assert the shape
+// and that it stays within (0, 120s]. requireActiveFirst is off because sync
+// callers mark/observe the session active before waiting, so "inactive" means
+// the turn already finished.
+function expectBoundedSyncWait(sessionId: string): void {
+  expect(mockWaitForIdle).toHaveBeenCalledWith(sessionId, {
+    timeoutMs: expect.any(Number),
+    requireActiveFirst: false,
+  })
+  const opts = mockWaitForIdle.mock.calls.at(-1)?.[1] as { timeoutMs: number }
+  expect(opts.timeoutMs).toBeGreaterThan(0)
+  expect(opts.timeoutMs).toBeLessThanOrEqual(120_000)
+}
 const mockIsSessionActive = vi.fn((_sessionId?: string): boolean => false)
 const mockIsSessionAwaitingInput = vi.fn((_sessionId?: string): boolean => false)
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
@@ -184,7 +199,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 // Imports (after mocks)
 // ----------------------------------------------------------------------------
 
-import xAgentRoute from './x-agent'
+import xAgentRoute, { resolveSyncWaitTimeoutMs } from './x-agent'
 
 // ----------------------------------------------------------------------------
 // Test app + helpers
@@ -916,7 +931,8 @@ describe('/invoke', () => {
     expect(body.error).toMatch(/get_agent_session_transcript/)
     // The sync wait must be capped below the container fetch's 300s header
     // timeout — an uncapped wait surfaces as "fetch failed" on the caller.
-    expect(mockWaitForIdle).toHaveBeenCalledWith('new-sess-id', { timeoutMs: 120_000 })
+    // The budget is end-to-end, so pre-wait work shrinks the passed timeout.
+    expectBoundedSyncWait('new-sess-id')
     // No transcript read should have been attempted since waitForIdle failed
     expect(mockGetTranscript).not.toHaveBeenCalled()
   })
@@ -936,7 +952,39 @@ describe('/invoke', () => {
     expect(body.sessionId).toBe('existing-sess')
     expect(body.status).toBe('running')
     expect(body.error).toMatch(/do not re-invoke/i)
-    expect(mockWaitForIdle).toHaveBeenCalledWith('existing-sess', { timeoutMs: 120_000 })
+    expectBoundedSyncWait('existing-sess')
+  })
+
+  it('promotes to async without waiting when pre-delivery work exhausts the sync budget', async () => {
+    // Policy review and container startup run before the prompt is delivered
+    // and count against the same end-to-end budget — otherwise slow delivery
+    // plus a full wait could still cross the container fetch's 300s header
+    // timeout and resurface as "fetch failed".
+    reviewDecisions.push('allow')
+    const realNow = Date.now.bind(Date)
+    let clockOffsetMs = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffsetMs)
+    try {
+      mockSendMessage.mockImplementationOnce(async () => {
+        clockOffsetMs = 150_000
+      })
+      const res = await authedFetch('/x-agent/invoke', {
+        slug: TARGET_SLUG,
+        prompt: 'slow to deliver',
+        sessionId: 'existing-sess',
+        sync: true,
+      })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.sessionId).toBe('existing-sess')
+      expect(body.status).toBe('running')
+      expect(body.error).toMatch(/do not re-invoke/i)
+      // The prompt WAS delivered; only the wait was skipped.
+      expect(mockSendMessage).toHaveBeenCalled()
+      expect(mockWaitForIdle).not.toHaveBeenCalled()
+    } finally {
+      nowSpy.mockRestore()
+    }
   })
 
   it('returns running + error (200) when sync=true on existing session and waitForIdle rejects', async () => {
@@ -995,7 +1043,7 @@ describe('/invoke', () => {
       sync: true,
     })
     const body = await res.json()
-    expect(mockWaitForIdle).toHaveBeenCalledWith('new-sess-id', { timeoutMs: 120_000 })
+    expectBoundedSyncWait('new-sess-id')
     expect(body.status).toBe('completed')
     expect(body.lastMessage).toBe('hi back')
   })
@@ -1347,7 +1395,7 @@ describe('/get-transcript', () => {
     })
     // Capped below the container fetch's 300s header timeout: sync reads are a
     // bounded long-poll, not an unbounded wait.
-    expect(mockWaitForIdle).toHaveBeenCalledWith('sess-1', { timeoutMs: 120_000 })
+    expectBoundedSyncWait('sess-1')
     const body = await res.json()
     expect(body.status).toBe('idle')
   })
@@ -1384,6 +1432,32 @@ describe('/get-transcript', () => {
     expect(res.status).toBe(504)
     expect((await res.json()).error).toMatch(/did not idle.*aborted/)
     expect(mockGetTranscript).not.toHaveBeenCalled()
+  })
+})
+
+describe('resolveSyncWaitTimeoutMs', () => {
+  it('defaults to 120s when unset or unparseable', () => {
+    expect(resolveSyncWaitTimeoutMs(undefined)).toBe(120_000)
+    expect(resolveSyncWaitTimeoutMs('')).toBe(120_000)
+    expect(resolveSyncWaitTimeoutMs('not-a-number')).toBe(120_000)
+  })
+
+  it('rejects non-positive and non-finite overrides', () => {
+    // A zero/negative budget would promote every sync call immediately, and
+    // Infinity would restore the unbounded wait behind the transport cliff.
+    expect(resolveSyncWaitTimeoutMs('0')).toBe(120_000)
+    expect(resolveSyncWaitTimeoutMs('-5000')).toBe(120_000)
+    expect(resolveSyncWaitTimeoutMs('Infinity')).toBe(120_000)
+    expect(resolveSyncWaitTimeoutMs('NaN')).toBe(120_000)
+  })
+
+  it('accepts overrides but clamps them under the transport deadline', () => {
+    expect(resolveSyncWaitTimeoutMs('30000')).toBe(30_000)
+    expect(resolveSyncWaitTimeoutMs('240000')).toBe(240_000)
+    // Values at/past undici's 300s header timeout would resurrect the
+    // "fetch failed" retry-storm failure this timeout exists to prevent.
+    expect(resolveSyncWaitTimeoutMs('300000')).toBe(240_000)
+    expect(resolveSyncWaitTimeoutMs('600000')).toBe(240_000)
   })
 })
 
