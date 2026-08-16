@@ -130,15 +130,17 @@ describe('mergeDeltaMessages', () => {
     expect(mergeDeltaMessages([m('a')], [])).toEqual([m('a')])
   })
 
-  it('dedupes the kept prefix against replayed window items', () => {
+  it('replayed window items upsert in place, preserving chronology', () => {
     // Resume replay re-appends old history verbatim; when the originals sit
     // beyond the server's bounded tail, the window carries copies of ids the
-    // prefix already holds. The window's copy wins at its replayed position.
+    // prefix already holds. The client still has the originals in order, so
+    // the copies must upsert in place — splicing them at their replayed
+    // positions would move old turns after newer ones.
     const merged = mergeDeltaMessages(
       [m('u1'), m('a1'), m('u2', 'anchor')],
       [m('u2', 'anchor'), m('u1', 'replayed'), m('a1', 'replayed'), m('a2', 'new')]
     )
-    expect(merged?.map((x) => x.id)).toEqual(['u2', 'u1', 'a1', 'a2'])
+    expect(merged?.map((x) => x.id)).toEqual(['u1', 'a1', 'u2', 'a2'])
     expect(new Set(merged?.map((x) => x.id)).size).toBe(merged?.length)
     expect(merged?.find((x) => x.id === 'a1')?.text).toBe('replayed')
   })

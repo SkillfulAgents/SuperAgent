@@ -118,7 +118,13 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
         cached && cached.messages.length > 0 ? pickDeltaAnchor(cached.messages) : null
       const fullIsFresh =
         Date.now() - (cached?.fetchedFullAt ?? 0) < MESSAGES_FULL_REFETCH_INTERVAL_MS
-      let sawResync = false
+      // fetchedFullAt === 0 is the rewrite-mutation marker (see
+      // forceNextMessagesRefetchFull): the transcript changed shape, so this
+      // full fetch is authoritative the same way a resync one is — items it
+      // omits were rewritten away, not paged out, and must not slide into the
+      // older-history buffer.
+      const forcedFull = cached?.fetchedFullAt === 0
+      let sawResync = forcedFull
       if (cached && anchor && fullIsFresh) {
         const body = await fetchMessagesDelta(agentSlug, sessionId, { after: anchor, signal })
         if (!isDeltaResponse(body)) {
@@ -168,8 +174,13 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
   const [isFetchingOlder, setIsFetchingOlder] = useState(false)
   const prevLatestRef = useRef<ApiMessageOrBoundary[]>(EMPTY_MESSAGES)
   const lastResyncRef = useRef<number | undefined>(undefined)
+  // Bumped whenever older-history state is reset (session switch, resync).
+  // An in-flight fetchOlder from a previous generation must not commit — it
+  // could repopulate rewritten-away history or latch a stale terminal cursor.
+  const olderGenRef = useRef(0)
 
   useEffect(() => {
+    olderGenRef.current++
     setOlder([])
     setOlderCursor(undefined)
     prevLatestRef.current = EMPTY_MESSAGES
@@ -186,6 +197,7 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
   useLayoutEffect(() => {
     if (resyncedAt === undefined || resyncedAt === lastResyncRef.current) return
     lastResyncRef.current = resyncedAt
+    olderGenRef.current++
     prevLatestRef.current = EMPTY_MESSAGES
     setOlder([])
     setOlderCursor(undefined)
@@ -218,12 +230,17 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     const cursor =
       olderCursor ?? latest.data?.nextCursor ?? older[0]?.id ?? latestMessages[0]?.id
     if (!cursor) return false
+    const gen = olderGenRef.current
     setIsFetchingOlder(true)
     try {
       const page = await fetchMessagesPage(agentSlug, sessionId, {
         limit: MESSAGES_PAGE_OLDER_LIMIT,
         cursor,
       })
+      // Older-history state was reset while this page was in flight (resync
+      // or session switch): the response belongs to the previous transcript
+      // generation and must not commit.
+      if (gen !== olderGenRef.current) return false
       const existing = new Set(older.map((m) => m.id))
       const prepended = page.messages.filter((m) => !existing.has(m.id) && !deleted.has(m.id))
       if (prepended.length > 0) onBeforePrepend?.()

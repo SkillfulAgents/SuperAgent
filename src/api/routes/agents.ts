@@ -1796,6 +1796,9 @@ async function annotateAndRecoverMessages(
   const userMessageIds = transformed.filter((m) => m.type === 'user').map((m) => m.id)
   if (userMessageIds.length === 0) return
 
+  // Scope the lookup to the ids actually in this response — a delta window is
+  // a handful of items, and loading the whole session's author history per
+  // refetch would erase the bounded-memory benefit on auth deployments.
   const authors = await db
     .select({
       messageId: messageAuthor.id,
@@ -1805,7 +1808,7 @@ async function annotateAndRecoverMessages(
     })
     .from(messageAuthor)
     .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
-    .where(eq(messageAuthor.sessionId, sessionId))
+    .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds)))
 
   const authorMap = new Map(authors.map((a) => [a.messageId, a]))
   for (const msg of transformed) {

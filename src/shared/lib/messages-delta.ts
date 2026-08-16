@@ -89,11 +89,13 @@ export function pickDeltaAnchor(items: readonly DeltaWindowItem[]): string | nul
  * widened past the cached head or the anchor drifted — and the caller must
  * fall back to a full fetch.
  *
- * The kept prefix is deduped against the window: a resumed CLI can re-append
- * old history verbatim, and when the originals sit beyond the server's bounded
- * tail the replayed copies arrive as window items with ids the prefix already
- * holds. Keeping the window's copy (at its replayed position) matches what a
- * full fetch of the tail would show.
+ * Window ids that already exist in the kept prefix are replay copies: a
+ * resumed CLI can re-append old history verbatim, and when the originals sit
+ * beyond the server's bounded tail the copies arrive as window items. The
+ * client knows more than the server here — it still holds the originals in
+ * chronological position — so those are upserted IN PLACE (content from the
+ * window's copy) and only genuinely new ids are appended. Splicing the copies
+ * at their replayed positions would move old turns after newer ones.
  */
 export function mergeDeltaMessages<T extends { id: string }>(
   cached: readonly T[],
@@ -102,9 +104,11 @@ export function mergeDeltaMessages<T extends { id: string }>(
   if (delta.length === 0) return [...cached]
   const spliceIdx = cached.findIndex((item) => item.id === delta[0].id)
   if (spliceIdx === -1) return null
-  const deltaIds = new Set(delta.map((item) => item.id))
+  const prefix = cached.slice(0, spliceIdx)
+  const prefixIds = new Set(prefix.map((item) => item.id))
+  const windowById = new Map(delta.map((item) => [item.id, item]))
   return [
-    ...cached.slice(0, spliceIdx).filter((item) => !deltaIds.has(item.id)),
-    ...delta,
+    ...prefix.map((item) => windowById.get(item.id) ?? item),
+    ...delta.filter((item) => !prefixIds.has(item.id)),
   ]
 }

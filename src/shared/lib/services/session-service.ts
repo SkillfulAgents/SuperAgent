@@ -1114,22 +1114,22 @@ export async function getSessionMessagesDelta(
     if (lateResultIds.size > 0) {
       // A parent deeper than the current window would be silently skipped by
       // the scan below — grow until every late result's parent is in view.
-      // Once the window covers the whole file, a still-unmatched id is a
-      // genuine orphan (its tool_use was rewritten away) and carries nothing
-      // to upsert.
-      if (!reachedStart) {
+      // When growth is exhausted, proceed WITHOUT the parent's upsert instead
+      // of resyncing: with the file fully read the id is a genuine orphan
+      // (its tool_use was rewritten away), and at the bounded-tail cap the
+      // parent sits deeper than any anchor the client could still hold open —
+      // a permanent orphan there would otherwise turn every poll into a
+      // resync + full-fetch cycle, recreating the cascade this delta exists
+      // to prevent.
+      if (!reachedStart && canGrow) {
         const windowToolIds = new Set<string>()
         for (const item of transformed) {
           if (item.type !== 'assistant') continue
           for (const toolCall of item.toolCalls) windowToolIds.add(toolCall.id)
         }
-        const hasUnmatched = [...lateResultIds].some((id) => !windowToolIds.has(id))
-        if (hasUnmatched) {
-          if (canGrow) {
-            maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
-            continue
-          }
-          return { messages: [], anchor: null, resync: true }
+        if ([...lateResultIds].some((id) => !windowToolIds.has(id))) {
+          maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+          continue
         }
       }
       for (let i = 0; i < start; i++) {

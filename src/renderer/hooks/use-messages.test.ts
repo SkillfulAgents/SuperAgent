@@ -293,6 +293,47 @@ describe('useMessages forward delta', () => {
 
     await waitFor(() => expect(inflight).toHaveLength(3))
     expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+
+    // The refetch omits the rewritten-away assistant. That omission is
+    // authoritative — the item must vanish, not slide into the older-history
+    // buffer and resurface elsewhere in the transcript.
+    inflight[2].resolve({ messages: [user('u1')], nextCursor: null })
+    await waitFor(() => expect(result.current.messages.data?.map((m) => m.id)).toEqual(['u1']))
+  })
+
+  it('discards an older-history page that resolves after a resync', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u1'), assistant('a1')])
+
+    // Start paging older history; leave the request in flight.
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    expect(inflight[1].url).toContain('cursor=older-cursor')
+
+    // Meanwhile the transcript is rewritten: delta answers resync, the full
+    // fetch replaces the page.
+    act(() => {
+      void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+    })
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    inflight[2].resolve({ messages: [], anchor: null, resync: true })
+    await waitFor(() => expect(inflight).toHaveLength(4))
+    inflight[3].resolve({ messages: [user('u9')], nextCursor: null })
+    await waitFor(() => expect(result.current.data?.map((m) => m.id)).toEqual(['u9']))
+
+    // The pre-resync older page finally lands — stale history from the old
+    // transcript generation must not commit.
+    inflight[1].resolve({ messages: [user('u0-stale')], nextCursor: null })
+    await act(async () => {
+      expect(await olderDone).toBe(false)
+    })
+    expect(result.current.data?.map((m) => m.id)).toEqual(['u9'])
+    // Nor may the stale page's terminal cursor latch older-history loading off.
+    expect(result.current.hasOlder).toBe(false)
   })
 
   it('falls back to a full fetch when the delta window predates the cache', async () => {

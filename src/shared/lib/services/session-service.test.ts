@@ -1229,6 +1229,33 @@ describe('session-service', () => {
       })
     })
 
+    it('a trailing orphan tool_result on a transcript beyond the tail cap does not resync-loop', async () => {
+      // The parent (if any) lies deeper than the bounded tail can reach; a
+      // resync here would repeat on EVERY poll — full fetch, new delta, same
+      // orphan — recreating the refetch cascade. Serve the delta without the
+      // unreachable parent instead.
+      await createSessionFile('test-agent', 'delta-session', [
+        ...makeThread(5100),
+        {
+          type: 'user',
+          uuid: 'tr-beyond-cap',
+          timestamp: '2026-01-01T06:00:00.000Z',
+          sessionId: 'delta-session',
+          parentUuid: null,
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'unreachable-t1', content: 'late' }],
+          },
+        },
+      ])
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'u-5099',
+      })
+      expect(delta.resync).toBeUndefined()
+      expect(delta.messages[0]?.id).toBe('u-5099')
+    })
+
     it('an orphaned tool_result (parent rewritten away) does not force resync', async () => {
       await createSessionFile('test-agent', 'delta-session', [
         ...makeThread(3),
