@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature successfully executes browser actions and returns results mentioning \"Example Domain\"",
+  "reason": "Agent successfully used browser tools to navigate to https://example.com, retrieve the page title \"Example Domain\", and report the result",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully with title \"Gamut\"",
-    "Found and clicked the \"QA-20260816-171122-1zm9\" agent in the sidebar - Navigated to agent page showing chat interface",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was successfully entered in the input field",
-    "Clicked the Send message button - Message was sent successfully and agent status changed to \"working\"",
-    "Waited for agent response (up to 3 minutes) - Agent completed processing in approximately 10 seconds",
-    "Verified response mentions \"Example Domain\" - Response successfully states: \"The page title is \"Example Domain\" — the page has a single heading with that text, a short paragraph about the domain being for documentation examples, and a \"Learn more\" link. Browser is closed.\""
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application showing \"Your Agents\" page with agent list in sidebar",
+    "Clicked on \"QA-20260816-180642-48mb\" agent in the sidebar — Successfully navigated to the agent configuration page with chat interface, page title changed to \"QA-20260816-180642-48mb · Gamut\"",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the message input field — Message successfully entered in the textbox showing the full text with placeholder \"How can I help?\"",
+    "Clicked the Send message button to submit the message — Message was sent successfully, URL changed to include session ID, page title updated to \"Browser Page Title Retrieval — QA-20260816-180642-48mb\", and agent status changed to \"working\"",
+    "Waited up to 3 minutes for agent response — Agent completed processing in 9 seconds with 4 tool calls using 199,320 tokens",
+    "Verified response contains \"Example Domain\" — Agent response clearly states: \"The page title is 'Example Domain'. Browser closed.\" confirming that the browser successfully navigated to https://example.com and retrieved the correct page title"
   ],
   "bugs": [],
-  "durationMs": 117756,
-  "sessionId": "cf729c86-1415-4bfd-85e0-ead878364e89",
+  "durationMs": 218004,
+  "sessionId": "1764b314-3dca-4bd7-9fe5-e3efca7b4bb3",
   "cost": {
-    "inputTokens": 452,
-    "outputTokens": 13006,
-    "cacheCreationTokens": 72302,
-    "cacheReadTokens": 1324673,
+    "inputTokens": 728,
+    "outputTokens": 27636,
+    "cacheCreationTokens": 149685,
+    "cacheReadTokens": 2438222,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.288327
+    "totalCostUsd": 0.569836
   }
 }

@@ -1,24 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "All steps executed successfully. Agent responded to math question with correct answer \"4\".",
+  "reason": "Agent successfully received a math query and responded with the correct answer \"4\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Application loaded successfully, sidebar visible with agent list",
-    "Clicked on agent \"QA-20260816-171121-ux6m\" in sidebar — Agent page opened, session created titled \"Quick Math Question Session\"",
-    "Verified agent status is \"running\" or \"idle\" — Status shows \"idle\" which is acceptable",
-    "Sent message \"Hello! What is 2+2?\" — Message typed and sent successfully via send button",
-    "Waited up to 3 minutes for response — Response received within seconds (agent status transitioned from idle to working and back to idle)",
-    "Verified response mentions \"4\" and took screenshot — Response clearly displays \"4\" in the message list. Screenshot saved as final-response.png showing conversation with user message on right (\"Hello! What is 2+2?\") and agent response (\"4\") in center."
+    "Navigated to http://localhost:47891 — Page loaded successfully, showing \"Your Agents\" with two agents in the sidebar",
+    "Clicked on agent \"QA-20260816-180641-20at\" in the sidebar — Agent page loaded successfully, URL changed to agent detail page with session ID",
+    "Verified agent status is \"running\" or \"idle\" — Status indicator showed \"idle\" in top right corner, requirement satisfied",
+    "Typed message \"Hello! What is 2+2?\" in message input field — Message was successfully entered in the data-testid=\"home-message-input\" field",
+    "Clicked send button to submit the message — Message was sent successfully, navigated to chat session view (URL: http://localhost:47891/agents/qa-20260816-180641-20at-ors7u1e2cx/sessions/3bf34ac6-6494-4cdf-b852-5702f3809b76)",
+    "Waited for response and verified it contains \"4\" — Agent responded immediately with \"4\", which is the correct answer to the math question. Response was visible in the message list."
   ],
   "bugs": [],
-  "durationMs": 61335,
-  "sessionId": "0d2e6b9c-ec20-4d1a-94ba-c5ac52269bcd",
+  "durationMs": 138861,
+  "sessionId": "1733608d-3df6-463f-8324-f7fc4e0e4bab",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 9430,
-    "cacheCreationTokens": 110619,
-    "cacheReadTokens": 837078,
+    "inputTokens": 308,
+    "outputTokens": 9922,
+    "cacheCreationTokens": 91108,
+    "cacheReadTokens": 730914,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.269452
+    "totalCostUsd": 0.236894
   }
 }
