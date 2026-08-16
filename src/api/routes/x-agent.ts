@@ -476,6 +476,29 @@ function compactMessage(entry: JsonlMessageEntry | JsonlSystemEntry): {
 const READ_RETRY_ATTEMPTS = Number(process.env.X_AGENT_READ_RETRY_ATTEMPTS) || 10
 const READ_RETRY_INTERVAL_MS = Number(process.env.X_AGENT_READ_RETRY_INTERVAL_MS) || 500
 
+// Sync x-agent calls hold the HTTP response open with zero bytes written until
+// the target turn completes, and the container's fetch (undici) aborts any
+// request whose response headers don't arrive within 300s ("fetch failed").
+// Cap the sync wait well under that cliff: sync is meant for fast turns, so a
+// slow turn promotes to the async contract (status 'running' + session id)
+// instead of dying as a network error that invites the caller to retry.
+const SYNC_WAIT_TIMEOUT_MS = Number(process.env.X_AGENT_SYNC_WAIT_TIMEOUT_MS) || 120_000
+
+// Matched by name rather than instanceof: the persister module is wholesale-
+// mocked in many test suites, and an instanceof against a possibly-undefined
+// mock export throws instead of returning false.
+function isWaitForIdleTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === 'WaitForIdleTimeoutError'
+}
+
+function syncWaitPromotedNote(timeoutMs: number): string {
+  return (
+    `Sync wait timed out after ${Math.round(timeoutMs / 1000)}s, but the target agent is still ` +
+    'working on this prompt. Do NOT re-invoke — that would start a duplicate run. ' +
+    'Poll get_agent_session_transcript with this session_id to retrieve the result.'
+  )
+}
+
 async function readLastAssistantMessage(
   targetSlug: string,
   sessionId: string,
@@ -531,11 +554,18 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
 
   if (sync && messagePersister.isSessionActive(sessionId)) {
     try {
-      await messagePersister.waitForIdle(sessionId)
+      await messagePersister.waitForIdle(sessionId, { timeoutMs: SYNC_WAIT_TIMEOUT_MS })
     } catch (error) {
-      return c.json({
-        error: `Session did not idle: ${error instanceof Error ? error.message : String(error)}`,
-      }, 504)
+      // Still running past the sync cap: fall through and return the transcript
+      // so far with status 'running'. Sync get-transcript is a bounded long-poll
+      // the caller can repeat, not an unbounded wait — an unbounded wait would
+      // outlive the container's 300s fetch header timeout and surface as a
+      // retry-inducing network error. Other failures stay hard errors.
+      if (!isWaitForIdleTimeout(error)) {
+        return c.json({
+          error: `Session did not idle: ${error instanceof Error ? error.message : String(error)}`,
+        }, 504)
+      }
     }
   }
 
@@ -686,12 +716,17 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (sync) {
           try {
             stage = 'wait_for_idle'
-            await messagePersister.waitForIdle(existingSessionId)
+            await messagePersister.waitForIdle(existingSessionId, { timeoutMs: SYNC_WAIT_TIMEOUT_MS })
           } catch (error) {
+            // Timeout means the target is simply still working — promote to the
+            // async contract with explicit guidance so the caller polls instead
+            // of re-invoking (a re-invoke duplicates the whole run).
             return c.json({
               sessionId: existingSessionId,
               status: 'running',
-              error: error instanceof Error ? error.message : String(error),
+              error: isWaitForIdleTimeout(error)
+                ? syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS)
+                : error instanceof Error ? error.message : String(error),
             })
           }
           const lastMessage = await readLastAssistantMessage(targetSlug, existingSessionId)
@@ -800,12 +835,17 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       if (sync) {
         try {
           stage = 'wait_for_idle'
-          await messagePersister.waitForIdle(newSessionId)
+          await messagePersister.waitForIdle(newSessionId, { timeoutMs: SYNC_WAIT_TIMEOUT_MS })
         } catch (error) {
+          // Timeout means the target is simply still working — promote to the
+          // async contract with explicit guidance so the caller polls instead
+          // of re-invoking (a re-invoke duplicates the whole run).
           return c.json({
             sessionId: newSessionId,
             status: 'running',
-            error: error instanceof Error ? error.message : String(error),
+            error: isWaitForIdleTimeout(error)
+              ? syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS)
+              : error instanceof Error ? error.message : String(error),
           })
         }
         const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)

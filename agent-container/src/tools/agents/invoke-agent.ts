@@ -14,9 +14,9 @@ export function makeInvokeAgentTool(getCallerSessionId: () => string) {
     'invoke_agent',
     `Send a message to another agent in this workspace.
 
-If session_id is omitted, a new session is started on the target agent. If session_id is provided, the message is appended to that existing session — the session must exist and not currently be running (use get_session_transcript with sync to wait).
+If session_id is omitted, a new session is started on the target agent. If session_id is provided, the message is appended to that existing session — the session must exist and not currently be running (use get_agent_session_transcript with sync to wait).
 
-If sync=true, the tool waits for the target agent's turn to finish and returns its last message. If sync=false (default), the tool returns immediately with status 'running' and you can later read the transcript with get_session_transcript.
+If sync=true, the tool waits up to ~2 minutes for the target agent's turn to finish and returns its last message. If the target is still working after that, the call returns status 'running' with the session_id — the invocation was delivered and is in progress; do NOT re-invoke (that would start a duplicate run), poll get_agent_session_transcript instead. If sync=false (default), the tool returns immediately with status 'running' and you can later read the transcript with get_agent_session_transcript.
 
 Use list_agents first to discover available slugs.
 

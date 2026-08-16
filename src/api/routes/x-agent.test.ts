@@ -118,6 +118,14 @@ vi.mock('@shared/lib/container/container-manager', () => ({
 }))
 
 // Message persister
+// Built by name, not by importing the class from the (wholesale-mocked) module:
+// the routes match timeout errors on error.name, and this mirrors that contract.
+// message-persister.test.ts pins the real class to this name.
+function waitForIdleTimeoutError(): Error {
+  return Object.assign(new Error('waitForIdle timeout after 120000ms'), {
+    name: 'WaitForIdleTimeoutError',
+  })
+}
 const mockIsSessionActive = vi.fn((_sessionId?: string): boolean => false)
 const mockIsSessionAwaitingInput = vi.fn((_sessionId?: string): boolean => false)
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
@@ -885,13 +893,13 @@ describe('/invoke', () => {
     )
   })
 
-  it('returns running + error (200, not 500) when sync=true and waitForIdle rejects', async () => {
-    // Sync invoke degrades gracefully when the target never idles: caller still
-    // gets the sessionId so they can poll/follow up via get-transcript later,
-    // plus an error string for visibility. This is intentionally NOT a 500 —
-    // the session was successfully created, it just didn't finish in time.
+  it('promotes sync=true to async (running + guidance note) when the wait times out', async () => {
+    // A slow target turn is not a failure: the caller gets the async contract
+    // (sessionId + status running) plus explicit guidance to poll the transcript
+    // rather than re-invoke. Left as a plain network error, callers retried the
+    // invoke and spawned duplicate runs (retry storm).
     reviewDecisions.push('allow')
-    mockWaitForIdle.mockRejectedValueOnce(new Error('waitForIdle timeout after 600000ms'))
+    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
       prompt: 'long-running task',
@@ -902,10 +910,33 @@ describe('/invoke', () => {
     expect(body).toEqual({
       sessionId: 'new-sess-id',
       status: 'running',
-      error: expect.stringMatching(/timeout/i),
+      error: expect.stringMatching(/still working/i),
     })
+    expect(body.error).toMatch(/do not re-invoke/i)
+    expect(body.error).toMatch(/get_agent_session_transcript/)
+    // The sync wait must be capped below the container fetch's 300s header
+    // timeout — an uncapped wait surfaces as "fetch failed" on the caller.
+    expect(mockWaitForIdle).toHaveBeenCalledWith('new-sess-id', { timeoutMs: 120_000 })
     // No transcript read should have been attempted since waitForIdle failed
     expect(mockGetTranscript).not.toHaveBeenCalled()
+  })
+
+  it('promotes sync=true on an existing session to async when the wait times out', async () => {
+    reviewDecisions.push('allow')
+    mockIsSessionActive.mockReturnValue(false)
+    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'follow-up',
+      sessionId: 'existing-sess',
+      sync: true,
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.sessionId).toBe('existing-sess')
+    expect(body.status).toBe('running')
+    expect(body.error).toMatch(/do not re-invoke/i)
+    expect(mockWaitForIdle).toHaveBeenCalledWith('existing-sess', { timeoutMs: 120_000 })
   })
 
   it('returns running + error (200) when sync=true on existing session and waitForIdle rejects', async () => {
@@ -964,7 +995,7 @@ describe('/invoke', () => {
       sync: true,
     })
     const body = await res.json()
-    expect(mockWaitForIdle).toHaveBeenCalledWith('new-sess-id')
+    expect(mockWaitForIdle).toHaveBeenCalledWith('new-sess-id', { timeoutMs: 120_000 })
     expect(body.status).toBe('completed')
     expect(body.lastMessage).toBe('hi back')
   })
@@ -1314,9 +1345,45 @@ describe('/get-transcript', () => {
       sessionId: 'sess-1',
       sync: true,
     })
-    expect(mockWaitForIdle).toHaveBeenCalledWith('sess-1')
+    // Capped below the container fetch's 300s header timeout: sync reads are a
+    // bounded long-poll, not an unbounded wait.
+    expect(mockWaitForIdle).toHaveBeenCalledWith('sess-1', { timeoutMs: 120_000 })
     const body = await res.json()
     expect(body.status).toBe('idle')
+  })
+
+  it('returns transcript-so-far with status running (200) when the sync wait times out', async () => {
+    // Timeout is the long-poll expiring, not a failure: the caller gets the
+    // current transcript and can call again with sync=true to keep waiting.
+    reviewDecisions.push('allow')
+    mockIsSessionActive.mockReturnValue(true)
+    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    mockGetTranscript.mockResolvedValue([
+      { type: 'user', message: { role: 'user', content: 'hello' } },
+    ])
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      sync: true,
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.status).toBe('running')
+    expect(body.messages).toHaveLength(1)
+  })
+
+  it('still 504s when the sync wait fails for a non-timeout reason', async () => {
+    reviewDecisions.push('allow')
+    mockIsSessionActive.mockReturnValue(true)
+    mockWaitForIdle.mockRejectedValueOnce(new Error('waitForIdle aborted'))
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      sync: true,
+    })
+    expect(res.status).toBe(504)
+    expect((await res.json()).error).toMatch(/did not idle.*aborted/)
+    expect(mockGetTranscript).not.toHaveBeenCalled()
   })
 })
 
