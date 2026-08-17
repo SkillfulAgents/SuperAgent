@@ -779,6 +779,46 @@ describe('readJsonlTailLines', () => {
     openSpy.mockRestore()
   })
 
+  it('rejects without reading a chunk when the abort lands during open/stat', async () => {
+    // The entry check runs before open(), but open and stat are themselves
+    // awaited RPCs on network volumes — an abort landing inside them must be
+    // observed before the first (also RPC-priced) chunk read starts.
+    const filePath = path.join(testDir, 'abort-stat.jsonl')
+    await fs.promises.writeFile(filePath, 'a\nb\nc\n')
+
+    const controller = new AbortController()
+    let reads = 0
+    const realOpen = fs.promises.open.bind(fs.promises)
+    const openSpy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await realOpen(...(args as Parameters<typeof fs.promises.open>))
+      const realStat = handle.stat.bind(handle) as (...a: unknown[]) => unknown
+      return new Proxy(handle, {
+        get(target, prop, receiver) {
+          if (prop === 'stat') {
+            return (...statArgs: unknown[]) => {
+              controller.abort() // abort lands while stat is in flight
+              return realStat(...statArgs)
+            }
+          }
+          if (prop === 'read') {
+            return () => {
+              reads++
+              throw new Error('read must not start after the abort')
+            }
+          }
+          const value = Reflect.get(target, prop, receiver)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      }) as Awaited<ReturnType<typeof fs.promises.open>>
+    })
+
+    await expect(readJsonlTailLines(filePath, 10, controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    expect(reads).toBe(0)
+    openSpy.mockRestore()
+  })
+
   it('rejects when the abort lands during the final chunk read', async () => {
     // Single-chunk file: this read IS the final one, so there is no next loop
     // iteration to observe the abort — only a post-read check catches it

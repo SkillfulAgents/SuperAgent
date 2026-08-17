@@ -915,6 +915,75 @@ describe('useMessageStream', () => {
     }
   })
 
+  // A newer turn's idle must SUPERSEDE a sleeping reconcile loop, not be
+  // dropped by it. With a plain one-loop-at-a-time guard, a remount plus a
+  // quick turn — both finishing before the stale loop's first 250ms wake —
+  // left the new final text with no reconciler at all (the stale loop exits on
+  // its generation check without invalidating), so it waited on the 15s poll.
+  it('a newer idle supersedes a sleeping reconcile from before the remount', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      const { unmount } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_delta', text: 'First answer' })
+      })
+      // Neither turn's final text is persisted, so both idles arm reconciles.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], {
+        messages: [
+          { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+        ],
+        nextCursor: null,
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+      })
+
+      // Remount and complete a second turn BEFORE the first loop's 250ms wake.
+      unmount()
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      act(() => {
+        MockEventSource.instances[1].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[1].simulateMessage({ type: 'stream_start' })
+      })
+      act(() => {
+        MockEventSource.instances[1].simulateMessage({ type: 'stream_delta', text: 'Second answer' })
+      })
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[1].simulateMessage({ type: 'session_idle' })
+      })
+
+      // The new loop owns the session: its first retry fires at ~250ms (and
+      // folds the idle's pending trailing refetch into itself).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // Full drain: the new loop's three retries, nothing more — the
+      // superseded pre-remount loop must contribute zero.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('throttles per session — a second session gets its own leading edge', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()

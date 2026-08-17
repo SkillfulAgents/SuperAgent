@@ -208,9 +208,13 @@ const sessionAutoApprovedComputerUseIds = new Map<string, Set<string>>()
 const eventSources = new Map<string, EventSource>()
 const refCounts = new Map<string, number>()
 
-// Sessions with an in-flight post-idle reconcile loop, so overlapping
-// session_idle events don't spawn duplicate loops for the same session.
-const reconcilingIdleSessions = new Set<string>()
+// Owner token of the in-flight post-idle reconcile loop per session. A newer
+// session_idle SUPERSEDES a sleeping loop by overwriting the token: only the
+// current owner invalidates, and a superseded loop exits at its next wake. A
+// plain "one loop at a time" guard would DROP the newer turn's reconciliation
+// instead — a second short turn (or a rapid remount) idling while the previous
+// loop sleeps would then wait on the 15s poll for its final text.
+const idleReconcileOwners = new Map<string, symbol>()
 
 // Every SSE-driven ['messages', sessionId] invalidation funnels through one
 // per-session leading-edge throttle: the first event refetches immediately,
@@ -345,8 +349,8 @@ async function reconcileMessagesAfterIdle(
   // Nothing streamed (e.g. a tool-only or interrupted turn) — no text to match
   // against, so the handler's immediate invalidate is all we can do.
   if (!expected) return
-  if (reconcilingIdleSessions.has(sessionId)) return
-  reconcilingIdleSessions.add(sessionId)
+  const token = Symbol(sessionId)
+  idleReconcileOwners.set(sessionId, token)
   // The stream generation this loop belongs to. The sleeps below can straddle
   // the last subscriber's unmount (which closes the EventSource and clears the
   // throttle state) or a rapid remount (which creates a NEW EventSource);
@@ -360,13 +364,16 @@ async function reconcileMessagesAfterIdle(
     for (const delay of [250, 500, 750]) {
       if (lastPersistedAssistantMatches(queryClient, sessionId, expected)) return
       await new Promise((resolve) => setTimeout(resolve, delay))
+      if (idleReconcileOwners.get(sessionId) !== token) return
       if (eventSources.get(sessionId) !== generation) return
       // refetchType defaults to 'active': refetches the mounted messages query
       // (the session being viewed) and resolves once the cache is updated.
       await invalidateMessagesNow(queryClient, sessionId)
     }
   } finally {
-    reconcilingIdleSessions.delete(sessionId)
+    if (idleReconcileOwners.get(sessionId) === token) {
+      idleReconcileOwners.delete(sessionId)
+    }
   }
 }
 
