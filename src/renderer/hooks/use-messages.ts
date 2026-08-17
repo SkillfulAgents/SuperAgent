@@ -38,12 +38,13 @@ function deletedMessagesKey(sessionId: string) {
 async function fetchMessagesPage(
   agentSlug: string,
   sessionId: string,
-  opts: { limit: number; cursor?: string }
+  opts: { limit: number; cursor?: string; signal?: AbortSignal }
 ): Promise<MessagesPage> {
   const params = new URLSearchParams({ limit: String(opts.limit) })
   if (opts.cursor) params.set('cursor', opts.cursor)
   const res = await apiFetch(
-    `/api/agents/${agentSlug}/sessions/${sessionId}/messages?${params.toString()}`
+    `/api/agents/${agentSlug}/sessions/${sessionId}/messages?${params.toString()}`,
+    { signal: opts.signal }
   )
   if (res.status === 404) throw new TranscriptNotFoundError()
   if (!res.ok) throw new Error('Failed to fetch messages')
@@ -54,9 +55,13 @@ async function fetchMessagesPage(
 export function useMessages(sessionId: string | null, agentSlug: string | null) {
   const latest = useQuery<MessagesPage>({
     queryKey: ['messages', sessionId, agentSlug],
-    queryFn: async () => {
+    // Take React Query's per-fetch signal so a superseding invalidation aborts
+    // the in-flight HTTP request instead of orphaning it — without the signal,
+    // superseded /messages responses (multi-MB on long sessions) keep being
+    // produced and buffered server-side while the client has already moved on.
+    queryFn: async ({ signal }) => {
       if (!sessionId || !agentSlug) throw new Error('Missing session')
-      return fetchMessagesPage(agentSlug, sessionId, { limit: MESSAGES_PAGE_LIMIT })
+      return fetchMessagesPage(agentSlug, sessionId, { limit: MESSAGES_PAGE_LIMIT, signal })
     },
     enabled: !!sessionId && !!agentSlug,
     retry: (failureCount, error) =>
@@ -256,9 +261,10 @@ export function useSubagentMessages(
 ) {
   return useQuery<ApiMessageOrBoundary[]>({
     queryKey: ['subagent-messages', sessionId, agentSlug, subagentId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const res = await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/subagent/${subagentId}/messages`
+        `/api/agents/${agentSlug}/sessions/${sessionId}/subagent/${subagentId}/messages`,
+        { signal }
       )
       if (!res.ok) throw new Error('Failed to fetch subagent messages')
       return res.json()
@@ -282,9 +288,10 @@ export function useWorkflowTree(
 ) {
   return useQuery<WorkflowTree>({
     queryKey: ['workflow-tree', sessionId, agentSlug, runId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const res = await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/tree`
+        `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/tree`,
+        { signal }
       )
       if (!res.ok) throw new Error('Failed to fetch workflow tree')
       return res.json()
@@ -312,9 +319,10 @@ export function useWorkflowAgentMessages(
 ) {
   return useQuery<ApiMessageOrBoundary[]>({
     queryKey: ['workflow-agent-messages', sessionId, agentSlug, runId, agentId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const res = await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/agents/${agentId}/messages`
+        `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/agents/${agentId}/messages`,
+        { signal }
       )
       if (!res.ok) throw new Error('Failed to fetch workflow agent messages')
       return res.json()

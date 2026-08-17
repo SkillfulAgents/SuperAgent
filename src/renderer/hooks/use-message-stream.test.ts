@@ -586,26 +586,38 @@ describe('useMessageStream', () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
   })
 
-  it('invalidates messages and sessions queries on session_idle', async () => {
-    const { useMessageStream } = await getHookModule()
-    const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
-    renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper }
-    )
+  it('invalidates messages (trailing-throttled) and sessions on session_idle', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper }
+      )
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      spy.mockClear()
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
-    })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+      })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      // The sessions invalidation is not throttled.
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      // The messages refetch collapses into the throttle's trailing edge —
+      // 'connected' consumed the leading edge moments earlier.
+      expect(spy).not.toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+      })
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   // The session_idle SSE can arrive before the final assistant line is durably
@@ -650,21 +662,26 @@ describe('useMessageStream', () => {
       act(() => {
         MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
       })
-      // Immediate invalidate from the handler.
-      expect(countMessageInvalidations(spy)).toBe(1)
+      // The handler's invalidate is deferred to the throttle's trailing edge
+      // ('connected' consumed the leading edge), so nothing fires synchronously.
+      expect(countMessageInvalidations(spy)).toBe(0)
 
-      // First backoff tick: still no match → an extra refetch fires.
+      // The reconcile loop bypasses the throttle: its first retry fires at
+      // ~250ms and FOLDS the pending trailing (scheduled for 750ms) into
+      // itself, so persistence lag is recovered on the pre-throttle schedule
+      // (250 / 750 / 1500), not a window later.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(300)
       })
-      expect(countMessageInvalidations(spy)).toBeGreaterThan(1)
+      expect(countMessageInvalidations(spy)).toBe(1)
 
-      // Drain well past the reconcile window — it must self-terminate (bounded:
-      // 1 immediate + at most 3 reconcile attempts).
+      // Drain well past the reconcile window: retries at 750 and 1500, then
+      // self-terminates. Exactly three refetches — the folded trailing timer
+      // must not fire a fourth.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5000)
       })
-      expect(countMessageInvalidations(spy)).toBeLessThanOrEqual(4)
+      expect(countMessageInvalidations(spy)).toBe(3)
     } finally {
       vi.useRealTimers()
     }
@@ -710,136 +727,469 @@ describe('useMessageStream', () => {
     }
   })
 
-  it('invalidates messages and sessions queries on session_error', async () => {
+  // ---- Messages refetch throttling (burst coalescing) ----
+  // Every SSE-driven ['messages', sessionId] invalidation funnels through a
+  // per-session leading-edge throttle: the first event in a window refetches
+  // immediately, the rest collapse into at most one trailing refetch. These
+  // tests pin the bound — an unthrottled event burst on a long session
+  // multiplies into concurrent multi-MB refetches and can OOM the server.
+
+  it('connected triggers an immediate messages refetch (late-join recovery)', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false })
+    })
+
+    // Leading edge: the reconnect catch-up refetch fires immediately.
+    expect(countMessageInvalidations(spy)).toBe(1)
+  })
+
+  it('a burst of SSE events collapses into one leading + one trailing messages refetch', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // A busy tool loop: many refetch triggers inside one throttle window.
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'tool_call' })
+        MockEventSource.instances[0].simulateMessage({ type: 'tool_result' })
+        MockEventSource.instances[0].simulateMessage({ type: 'messages_updated' })
+        MockEventSource.instances[0].simulateMessage({ type: 'messages_updated' })
+        MockEventSource.instances[0].simulateMessage({ type: 'tool_call' })
+        MockEventSource.instances[0].simulateMessage({ type: 'tool_result' })
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // Trailing edge: the entire burst collapses into exactly one extra refetch.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+      })
+      expect(countMessageInvalidations(spy)).toBe(2)
+
+      // Quiet afterwards: no stray timers keep refetching.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS * 4)
+      })
+      expect(countMessageInvalidations(spy)).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('events in separate throttle windows each refetch on the leading edge', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS + 1)
+      })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'messages_updated' })
+      })
+      // A fresh window: the event refetches immediately, not on a delay.
+      expect(countMessageInvalidations(spy)).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears pending throttle state when the last subscriber unmounts', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      const { unmount } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // Schedule a trailing refetch, then unmount before it fires.
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'messages_updated' })
+      })
+      unmount()
+
+      // The cancelled trailing timer must not refetch after unmount…
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS * 3)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // …and a remount starts on a fresh leading edge instead of joining
+      // stale pending work from the previous mount.
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      act(() => {
+        MockEventSource.instances[1].simulateMessage({ type: 'connected', isActive: true })
+      })
+      expect(countMessageInvalidations(spy)).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The idle reconcile loop sleeps between retries, so it can wake after the
+  // last subscriber unmounted. A stale wake must not invalidate: it would
+  // recreate the throttle entry the unmount cleanup just removed and its
+  // fresh window stamp would push a rapid remount's leading-edge refetch onto
+  // the trailing edge.
+  it('a stale idle reconcile stops after unmount and does not throttle the remount', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      const { unmount } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_delta', text: 'Final answer' })
+      })
+      // Persisted transcript lags the streamed text, so session_idle arms the
+      // reconcile loop.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], {
+        messages: [
+          { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+        ],
+        nextCursor: null,
+      })
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+      })
+      expect(countMessageInvalidations(spy)).toBe(0)
+
+      // Unmount while the loop sleeps toward its first 250ms retry.
+      unmount()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(countMessageInvalidations(spy)).toBe(0)
+
+      // A rapid remount right after the stale loop's would-be retry gets its
+      // fresh leading edge immediately — nothing restamped the window.
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      act(() => {
+        MockEventSource.instances[1].simulateMessage({ type: 'connected', isActive: true })
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // The old loop's remaining wakes see a different stream generation and
+      // bail — no fourth-hand invalidations trickle in later.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // A newer turn's idle must SUPERSEDE a sleeping reconcile loop, not be
+  // dropped by it. With a plain one-loop-at-a-time guard, a remount plus a
+  // quick turn — both finishing before the stale loop's first 250ms wake —
+  // left the new final text with no reconciler at all (the stale loop exits on
+  // its generation check without invalidating), so it waited on the 15s poll.
+  it('a newer idle supersedes a sleeping reconcile from before the remount', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      const { unmount } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_delta', text: 'First answer' })
+      })
+      // Neither turn's final text is persisted, so both idles arm reconciles.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], {
+        messages: [
+          { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+        ],
+        nextCursor: null,
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+      })
+
+      // Remount and complete a second turn BEFORE the first loop's 250ms wake.
+      unmount()
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      act(() => {
+        MockEventSource.instances[1].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[1].simulateMessage({ type: 'stream_start' })
+      })
+      act(() => {
+        MockEventSource.instances[1].simulateMessage({ type: 'stream_delta', text: 'Second answer' })
+      })
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[1].simulateMessage({ type: 'session_idle' })
+      })
+
+      // The new loop owns the session: its first retry fires at ~250ms (and
+      // folds the idle's pending trailing refetch into itself).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // Full drain: the new loop's three retries, nothing more — the
+      // superseded pre-remount loop must contribute zero.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('throttles per session — a second session gets its own leading edge', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
     const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
     renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
+      () => {
+        useMessageStream('session-1', 'agent-1')
+        useMessageStream('session-2', 'agent-1')
+      },
       { wrapper }
     )
 
     act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    spy.mockClear()
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'session_error', error: 'boom' })
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false })
+      MockEventSource.instances[1].simulateMessage({ type: 'connected', isActive: false })
     })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    const countFor = (sessionId: string) =>
+      spy.mock.calls.filter((call: unknown[]) => {
+        const key = (call[0] as { queryKey?: unknown[] } | undefined)?.queryKey
+        return Array.isArray(key) && key[0] === 'messages' && key[1] === sessionId
+      }).length
+    // One session's leading edge must not swallow the other's.
+    expect(countFor('session-1')).toBe(1)
+    expect(countFor('session-2')).toBe(1)
   })
 
-  it('invalidates messages on compact_complete', async () => {
-    const { useMessageStream } = await getHookModule()
-    const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
-    renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper }
-    )
+  it('invalidates messages (trailing-throttled) and sessions on session_error', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper }
+      )
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      spy.mockClear()
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'compact_complete' })
-    })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_error', error: 'boom' })
+      })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+      })
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it('invalidates messages on messages_updated event', async () => {
-    const { useMessageStream } = await getHookModule()
-    const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
-    renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper }
-    )
+  it('invalidates messages (trailing-throttled) on compact_complete', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper }
+      )
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      spy.mockClear()
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'messages_updated' })
-    })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'compact_complete' })
+      })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+      })
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it('invalidates messages on tool_call event and stops streaming', async () => {
-    const { useMessageStream } = await getHookModule()
-    const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper }
-    )
+  it('invalidates messages (trailing-throttled) on messages_updated event', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper }
+      )
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
-    })
-    expect(result.current.isStreaming).toBe(true)
-    spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      spy.mockClear()
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'tool_call' })
-    })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'messages_updated' })
+      })
 
-    expect(result.current.isStreaming).toBe(false)
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+      })
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it('invalidates messages on tool_result event', async () => {
-    const { useMessageStream } = await getHookModule()
-    const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
-    renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper }
-    )
+  it('invalidates messages (trailing-throttled) on tool_call event and stops streaming', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      const { result } = renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper }
+      )
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
+      })
+      expect(result.current.isStreaming).toBe(true)
+      spy.mockClear()
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'tool_result' })
-    })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'tool_call' })
+      })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+      // Streaming state flips synchronously; only the refetch is throttled.
+      expect(result.current.isStreaming).toBe(false)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+      })
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it('invalidates messages on error (EventSource onerror)', async () => {
-    const { useMessageStream } = await getHookModule()
-    const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
-    renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper }
-    )
+  it('invalidates messages (trailing-throttled) on tool_result event', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper }
+      )
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      spy.mockClear()
 
-    act(() => {
-      MockEventSource.instances[0].simulateError()
-    })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'tool_result' })
+      })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+      })
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('invalidates messages (trailing-throttled) on error (EventSource onerror)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper }
+      )
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      spy.mockClear()
+
+      act(() => {
+        MockEventSource.instances[0].simulateError()
+      })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+      })
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   // ---- Additional event types ----
@@ -1016,7 +1366,9 @@ describe('useMessageStream', () => {
   // ---- Subagent lifecycle ----
 
   it('handles subagent_completed — keeps streaming data and marks as completed', async () => {
-    const { useMessageStream } = await getHookModule()
+    vi.useFakeTimers()
+    try {
+    const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
     const wrapper = createWrapper()
     const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
     const { result } = renderHook(
@@ -1057,8 +1409,15 @@ describe('useMessageStream', () => {
     const sub = result.current.activeSubagents[0]
     expect(sub?.streamingMessage).toBe('summary text')
     expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
+    // subagent-messages is not throttled; the messages refetch is.
     expect(spy).toHaveBeenCalledWith({ queryKey: ['subagent-messages', 'session-1'] })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+    })
     expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('handles subagent_updated — clears streaming state and invalidates subagent messages', async () => {
@@ -1258,36 +1617,45 @@ describe('useMessageStream', () => {
     expect(result.current.streamingToolUses).toEqual([])
   })
 
-  it('stream_start invalidates messages when previous streamingToolUses exist', async () => {
-    const { useMessageStream } = await getHookModule()
-    const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper }
-    )
+  it('stream_start invalidates messages (trailing-throttled) when previous streamingToolUses exist', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      const { result } = renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper }
+      )
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'tool_use_start',
-        toolId: 'tc-1',
-        toolName: 'Bash',
-        partialInput: '',
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
       })
-    })
-    expect(result.current.streamingToolUses.length).toBeGreaterThan(0)
-    spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-1',
+          toolName: 'Bash',
+          partialInput: '',
+        })
+      })
+      expect(result.current.streamingToolUses.length).toBeGreaterThan(0)
+      spy.mockClear()
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
-    })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
+      })
 
-    // Should invalidate messages to fetch persisted tool call before clearing streaming state
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
-    expect(result.current.streamingToolUses).toEqual([])
+      // Streaming state clears synchronously; the refetch that fetches the
+      // persisted tool call rides the throttle's trailing edge.
+      expect(result.current.streamingToolUses).toEqual([])
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+      })
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('ping does not change state when server agrees session is active', async () => {
@@ -1457,29 +1825,37 @@ describe('useMessageStream', () => {
     expect(result.current.completedSubagents?.has('pt-2')).toBe(true)
   })
 
-  it('ping invalidates messages and sessions when correcting active state', async () => {
-    const { useMessageStream } = await getHookModule()
-    const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
-    renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper }
-    )
+  it('ping invalidates messages (trailing-throttled) and sessions when correcting active state', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+      renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper }
+      )
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
-    })
-    spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
+      })
+      spy.mockClear()
 
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'ping', isActive: false })
-    })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'ping', isActive: false })
+      })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+      })
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   describe('auto-approved suppress-sets (from user_request_created)', () => {
@@ -1812,30 +2188,46 @@ describe('useMessageStream', () => {
     })
 
     it('refetches at queued-command pickup and again when its model response starts', async () => {
-      const { es, queryClient } = await setupHook('cmd-s4')
-      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      vi.useFakeTimers()
+      try {
+        const { es, queryClient, mod } = await setupHook('cmd-s4')
+        const { MESSAGES_REFETCH_THROTTLE_MS } = mod
+        const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
-      act(() => {
-        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'started' })
-      })
+        act(() => {
+          es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'started' })
+        })
 
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['messages', 'cmd-s4'] })
+        // Deferred to the throttle's trailing edge ('connected' took the leading edge).
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+        })
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['messages', 'cmd-s4'] })
 
-      // The pickup refetch can race the CLI's queued_command transcript write.
-      // A model response proves the command has been incorporated, so it must
-      // trigger one bounded reconciliation retry.
-      invalidateSpy.mockClear()
-      act(() => {
-        es.simulateMessage({ type: 'stream_start' })
-      })
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['messages', 'cmd-s4'] })
+        // The pickup refetch can race the CLI's queued_command transcript write.
+        // A model response proves the command has been incorporated, so it must
+        // trigger one bounded reconciliation retry.
+        invalidateSpy.mockClear()
+        act(() => {
+          es.simulateMessage({ type: 'stream_start' })
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
+        })
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['messages', 'cmd-s4'] })
 
-      // The marker is consumed: later model iterations do not keep polling.
-      invalidateSpy.mockClear()
-      act(() => {
-        es.simulateMessage({ type: 'stream_start' })
-      })
-      expect(invalidateSpy).not.toHaveBeenCalled()
+        // The marker is consumed: later model iterations do not keep polling.
+        invalidateSpy.mockClear()
+        act(() => {
+          es.simulateMessage({ type: 'stream_start' })
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS * 2)
+        })
+        expect(invalidateSpy).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('does not retry after the picked-up command completes before another response starts', async () => {

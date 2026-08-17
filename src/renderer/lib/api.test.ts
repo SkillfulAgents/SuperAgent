@@ -266,3 +266,26 @@ describe('apiFetch 401 against a cloud workspace', () => {
     unsubscribe()
   })
 })
+
+describe('apiFetch (init passthrough)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  // The messages queryFns hand React Query's per-fetch AbortSignal to apiFetch;
+  // if the wrapper ever stops forwarding init, superseded /messages requests
+  // (multi-MB on long sessions) silently go back to running to completion
+  // server-side. Pin the pass-through.
+  it('forwards an AbortSignal to fetch so superseded requests can actually abort', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const controller = new AbortController()
+    await apiFetch('/api/x', { signal: controller.signal })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/x',
+      expect.objectContaining({ signal: controller.signal })
+    )
+  })
+})
