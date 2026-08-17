@@ -51,6 +51,61 @@ describe('HoverScrollText', () => {
     expect(viewport).toHaveAttribute('data-scrolling', 'false')
   })
 
+  it('keeps panning when a re-render hands it the same words in a new element', () => {
+    // The activity card re-renders every second for its elapsed clock, so its
+    // rows arrive as a fresh element with identical text. Treating that as new
+    // content cancelled the pan mid-flight and snapped the row back to the
+    // start — the sidebar never saw it because its child is a plain string.
+    const row = (
+      <>
+        <span>web-browser</span>
+        <span> Gather UniFi WiFi events</span>
+      </>
+    )
+    const { rerender } = render(<HoverScrollText data-testid="label">{row}</HoverScrollText>)
+    const viewport = screen.getByTestId('label')
+    const content = viewport.firstElementChild as HTMLElement
+    setTextWidths(viewport, content, 100, 145)
+
+    fireEvent.mouseEnter(viewport)
+    act(() => vi.advanceTimersByTime(HOVER_SCROLL_DELAY_MS))
+    expect(viewport).toHaveAttribute('data-scrolling', 'true')
+
+    rerender(
+      <HoverScrollText data-testid="label">
+        <>
+          <span>web-browser</span>
+          <span> Gather UniFi WiFi events</span>
+        </>
+      </HoverScrollText>
+    )
+    expect(viewport).toHaveAttribute('data-scrolling', 'true')
+  })
+
+  it('re-arms the pan when the text itself changes mid-hover', () => {
+    const { rerender } = render(<HoverScrollText data-testid="label">A long session name</HoverScrollText>)
+    const viewport = screen.getByTestId('label')
+    const content = viewport.firstElementChild as HTMLElement
+    setTextWidths(viewport, content, 100, 145)
+
+    fireEvent.mouseEnter(viewport)
+    act(() => vi.advanceTimersByTime(HOVER_SCROLL_DELAY_MS))
+    expect(viewport).toHaveAttribute('data-scrolling', 'true')
+
+    // New words under the pointer: the old measurement is stale, so it restarts
+    // from the dwell rather than either stalling or panning the wrong distance.
+    rerender(<HoverScrollText data-testid="label">A different long session name</HoverScrollText>)
+    expect(viewport).toHaveAttribute('data-scrolling', 'false')
+    setTextWidths(viewport, content, 100, 200)
+
+    act(() => vi.advanceTimersByTime(HOVER_SCROLL_DELAY_MS - 1))
+    expect(viewport).toHaveAttribute('data-scrolling', 'false')
+
+    act(() => vi.advanceTimersByTime(1))
+    expect(viewport).toHaveAttribute('data-scrolling', 'true')
+    expect(viewport).toHaveStyle({ '--hover-scroll-distance': '100px' })
+  })
+
   it('does not animate text that fits', () => {
     render(<HoverScrollText data-testid="label">Short name</HoverScrollText>)
     const viewport = screen.getByTestId('label')
