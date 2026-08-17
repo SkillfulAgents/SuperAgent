@@ -30,7 +30,9 @@ beforeEach(() => {
   process.env.SUPERAGENT_DATA_DIR = tmpDir
 })
 
-afterEach(() => {
+afterEach(async () => {
+  const { _resetSessionMetadataMtimeCacheForTest } = await import('./session-service')
+  _resetSessionMetadataMtimeCacheForTest()
   fs.rmSync(tmpDir, { recursive: true, force: true })
   delete process.env.SUPERAGENT_DATA_DIR
   vi.restoreAllMocks()
@@ -243,5 +245,41 @@ describe('finalizeAutomationStatus guards', () => {
 
     await expect(finalizeAutomationStatus('agent', 's0', 'succeeded')).rejects.toThrow()
     expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(corrupt)
+  })
+})
+
+describe('readSessionMetadata mtime cache', () => {
+  function metadataReads(spy: ReturnType<typeof vi.spyOn>, slug: string): number {
+    return spy.mock.calls.filter((call: unknown[]) => String(call[0]) === metadataPath(slug)).length
+  }
+
+  it('skips readFile on a warm read when mtime is unchanged', async () => {
+    const { registerSession, readSessionMetadata } = await importService()
+    makeAgent('agent')
+    await registerSession('agent', 's1', 'First')
+    const spy = vi.spyOn(fs.promises, 'readFile')
+
+    expect((await readSessionMetadata('agent'))['s1']?.name).toBe('First')
+    expect((await readSessionMetadata('agent'))['s1']?.name).toBe('First')
+    expect(metadataReads(spy, 'agent')).toBe(1)
+  })
+
+  it('does not cache a miss, so registerSession is visible on the next read', async () => {
+    const { registerSession, readSessionMetadata } = await importService()
+    makeAgent('agent')
+    expect(await readSessionMetadata('agent')).toEqual({})
+    await registerSession('agent', 's1', 'First')
+    expect((await readSessionMetadata('agent'))['s1']?.name).toBe('First')
+  })
+
+  it('re-reads after a write so a new session name is visible', async () => {
+    const { registerSession, readSessionMetadata } = await importService()
+    makeAgent('agent')
+    await registerSession('agent', 's1', 'First')
+    await readSessionMetadata('agent')
+    await registerSession('agent', 's2', 'Second')
+    const meta = await readSessionMetadata('agent')
+    expect(meta['s1']?.name).toBe('First')
+    expect(meta['s2']?.name).toBe('Second')
   })
 })

@@ -53,6 +53,13 @@ import {
   SESSION_SUMMARY_CACHE_TTL_MS,
   type SessionSummaryCacheValue,
 } from './session-summary-cache'
+import { MtimeFileCache } from '@shared/lib/utils/mtime-file-cache'
+
+const sessionMetadataReadCache = new MtimeFileCache<SessionMetadataMap>(structuredClone)
+
+export function _resetSessionMetadataMtimeCacheForTest(): void {
+  sessionMetadataReadCache.clear()
+}
 
 // Session transcripts and metadata live inside the agent workspace, which is
 // bind-mounted read/write into its container. They are therefore evidence that
@@ -250,8 +257,12 @@ async function readSessionMetadataStrict(agentSlug: string): Promise<SessionMeta
  * error still propagates (matches the original `readFileOrNull` behaviour).
  */
 export async function readSessionMetadata(agentSlug: string): Promise<SessionMetadataMap> {
+  const metadataPath = getAgentSessionMetadataPath(agentSlug)
   try {
-    return await readSessionMetadataStrict(agentSlug)
+    const cached = await sessionMetadataReadCache.get(metadataPath, () =>
+      readSessionMetadataStrict(agentSlug),
+    )
+    return cached ?? {}
   } catch (error) {
     if (error instanceof CorruptFileError) {
       console.error(

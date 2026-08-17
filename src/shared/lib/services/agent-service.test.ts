@@ -48,6 +48,7 @@ import {
   agentExists,
   getAgentClaudeMdContent,
   setAgentClaudeMdContent,
+  _resetAgentClaudeMdMtimeCacheForTest,
 } from './agent-service'
 
 describe('agent-service', () => {
@@ -66,9 +67,11 @@ describe('agent-service', () => {
 
     // Reset mocks
     vi.clearAllMocks()
+    _resetAgentClaudeMdMtimeCacheForTest()
   })
 
   afterEach(async () => {
+    _resetAgentClaudeMdMtimeCacheForTest()
     // Restore env
     if (originalEnv) {
       process.env.SUPERAGENT_DATA_DIR = originalEnv
@@ -455,6 +458,67 @@ Instructions`
 
       const content = await getAgentClaudeMdContent('test-agent')
       expect(content).toBe(newContent)
+    })
+  })
+
+  describe('CLAUDE.md mtime cache', () => {
+    function claudeMdPath(slug: string): string {
+      return path.join(testDir, 'agents', slug, 'workspace', 'CLAUDE.md')
+    }
+
+    function claudeReads(spy: ReturnType<typeof vi.spyOn>, slug: string): number {
+      return spy.mock.calls.filter((call: unknown[]) => String(call[0]) === claudeMdPath(slug)).length
+    }
+
+    it('skips readFile on a warm get when mtime is unchanged', async () => {
+      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await getAgent('test-agent')
+      const spy = vi.spyOn(fs.promises, 'readFile')
+
+      const agent = await getAgent('test-agent')
+
+      expect(agent?.frontmatter.name).toBe('Github Agent')
+      expect(claudeReads(spy, 'test-agent')).toBe(0)
+      spy.mockRestore()
+    })
+
+    it('re-reads after a container-style write so updateAgent does not clobber it', async () => {
+      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await getAgent('test-agent')
+      await fs.promises.writeFile(
+        claudeMdPath('test-agent'),
+        '---\nname: Container Rename\ncreatedAt: "2026-01-01T00:00:00.000Z"\n---\n# Container edit\n',
+      )
+
+      const updated = await updateAgent('test-agent', { description: 'from host' })
+
+      expect(updated?.name).toBe('Container Rename')
+      expect(updated?.description).toBe('from host')
+      expect((await getAgent('test-agent'))?.frontmatter.name).toBe('Container Rename')
+    })
+
+    it('overlapping gets share one CLAUDE.md read', async () => {
+      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      const target = claudeMdPath('test-agent')
+      let release!: () => void
+      const held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const actual = fs.promises.readFile.bind(fs.promises)
+      const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation((async (file, opts) => {
+        if (String(file) === target) await held
+        return actual(file, opts as never)
+      }) as typeof fs.promises.readFile)
+
+      const first = getAgent('test-agent')
+      const second = getAgent('test-agent')
+      release()
+      const [a, b] = await Promise.all([first, second])
+
+      expect(a?.frontmatter.name).toBe('Github Agent')
+      expect(b?.frontmatter.name).toBe('Github Agent')
+      expect(claudeReads(spy, 'test-agent')).toBe(1)
+      spy.mockRestore()
     })
   })
 })

@@ -34,6 +34,13 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { getSessionSummary } from './session-service'
+import { MtimeFileCache } from '@shared/lib/utils/mtime-file-cache'
+
+const claudeMdCache = new MtimeFileCache<AgentConfig>(structuredClone)
+
+export function _resetAgentClaudeMdMtimeCacheForTest(): void {
+  claudeMdCache.clear()
+}
 
 // ============================================================================
 // Internal to API Type Conversion
@@ -65,20 +72,9 @@ function toApiAgent(
 // Read Operations
 // ============================================================================
 
-/**
- * Parse CLAUDE.md file into AgentConfig
- */
-async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
-  const claudeMdPath = getAgentClaudeMdPath(slug)
-  const content = await readFileOrNull(claudeMdPath)
-
-  if (content === null) {
-    return null
-  }
-
+function parseAgentClaudeMdContent(slug: string, content: string): AgentConfig {
   const { frontmatter, body } = parseMarkdownWithFrontmatter<AgentFrontmatter>(content)
 
-  // Validate required fields
   if (!frontmatter.name) {
     console.warn(`Agent ${slug} has invalid CLAUDE.md: missing name`)
     frontmatter.name = slug
@@ -86,7 +82,6 @@ async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
   frontmatter.name = String(frontmatter.name)
 
   if (!frontmatter.createdAt) {
-    // Use directory creation time as fallback
     frontmatter.createdAt = new Date().toISOString()
   }
 
@@ -95,6 +90,16 @@ async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
     frontmatter,
     instructions: body,
   }
+}
+
+async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
+  const claudeMdPath = getAgentClaudeMdPath(slug)
+  const parsed = await claudeMdCache.get(claudeMdPath, async () => {
+    const content = await readFileOrNull(claudeMdPath)
+    if (content === null) return undefined
+    return parseAgentClaudeMdContent(slug, content)
+  })
+  return parsed ?? null
 }
 
 /**

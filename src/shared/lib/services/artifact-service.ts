@@ -16,11 +16,28 @@ export interface ArtifactInfo {
   firstRun?: boolean
 }
 
+// Overlapping list polls share one walk. The result is not kept — the next
+// call after this walk finishes reads disk again.
+const artifactListInflight = new Map<string, Promise<ArtifactInfo[]>>()
+
 /**
  * List dashboard artifacts for an agent by reading the host filesystem.
  * Used when the container is not running (all dashboards reported as 'stopped').
  */
 export async function listArtifactsFromFilesystem(
+  agentSlug: string
+): Promise<ArtifactInfo[]> {
+  const key = getAgentWorkspaceDir(agentSlug)
+  const existing = artifactListInflight.get(key)
+  if (existing) return existing
+  const pending = walkArtifactsFromFilesystem(agentSlug).finally(() => {
+    if (artifactListInflight.get(key) === pending) artifactListInflight.delete(key)
+  })
+  artifactListInflight.set(key, pending)
+  return pending
+}
+
+async function walkArtifactsFromFilesystem(
   agentSlug: string
 ): Promise<ArtifactInfo[]> {
   const workspaceDir = getAgentWorkspaceDir(agentSlug)

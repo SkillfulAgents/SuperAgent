@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -255,6 +255,42 @@ describe('artifact-service', () => {
       // Current implementation only checks access(R_OK), which succeeds for a
       // directory. Document that explicitly.
       expect(result[0].hasScreenshot).toBe(true)
+    })
+
+    it('overlapping lists share one artifacts walk', async () => {
+      createArtifactDir('test-agent', 'sales', { name: 'Sales' })
+      const artifactsDir = path.join(testDir, 'agents', 'test-agent', 'workspace', 'artifacts')
+      let release!: () => void
+      const held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const actual = fs.promises.readdir.bind(fs.promises)
+      const spy = vi.spyOn(fs.promises, 'readdir').mockImplementation((async (dir, opts) => {
+        if (String(dir) === artifactsDir) await held
+        return actual(dir, opts as never)
+      }) as typeof fs.promises.readdir)
+
+      const first = listArtifactsFromFilesystem('test-agent')
+      const second = listArtifactsFromFilesystem('test-agent')
+      release()
+      const [a, b] = await Promise.all([first, second])
+
+      expect(a.map((d) => d.slug)).toEqual(['sales'])
+      expect(b.map((d) => d.slug)).toEqual(['sales'])
+      expect(spy.mock.calls.filter((call) => String(call[0]) === artifactsDir)).toHaveLength(1)
+      spy.mockRestore()
+    })
+
+    it('a later list walks disk again', async () => {
+      createArtifactDir('test-agent', 'sales', { name: 'Sales' })
+      const artifactsDir = path.join(testDir, 'agents', 'test-agent', 'workspace', 'artifacts')
+      const spy = vi.spyOn(fs.promises, 'readdir')
+
+      await listArtifactsFromFilesystem('test-agent')
+      await listArtifactsFromFilesystem('test-agent')
+
+      expect(spy.mock.calls.filter((call) => String(call[0]) === artifactsDir)).toHaveLength(2)
+      spy.mockRestore()
     })
   })
 })
