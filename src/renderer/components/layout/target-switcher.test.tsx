@@ -52,6 +52,32 @@ describe('TargetSwitcher', () => {
     expect(screen.getByTestId('target-option-local')).toHaveAttribute('aria-pressed', 'false')
   })
 
+  // The options are named by tooltip, not by button text: text inside the
+  // button would have to appear on hover, moving the option next to it out from
+  // under a cursor already travelling toward it.
+  it('names the options without rendering text inside the buttons', () => {
+    state()
+    render(<TargetSwitcher />)
+
+    expect(screen.getByRole('button', { name: 'Local Agents (This computer)' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cloud Agents' })).toBeInTheDocument()
+    expect(screen.getByTestId('target-option-local')).toHaveTextContent('')
+    expect(screen.getByTestId('target-option-cloud')).toHaveTextContent('')
+  })
+
+  // The name does not change with state — `aria-pressed` carries that, and a
+  // name that moved with it would be announced twice over.
+  it('names each option the same whichever one is current', async () => {
+    state({ current: 'cloud' })
+    render(<TargetSwitcher />)
+
+    await userEvent.hover(screen.getByTestId('target-option-cloud'))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Cloud Agents')
+
+    await userEvent.hover(screen.getByTestId('target-option-local'))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Local Agents (This computer)')
+  })
+
   it('switches on click', async () => {
     state({ current: 'local' })
     render(<TargetSwitcher />)
@@ -61,12 +87,26 @@ describe('TargetSwitcher', () => {
     expect(switchTo).toHaveBeenCalledWith('cloud')
   })
 
-  it('is disabled while a switch is in flight', async () => {
+  // Marked disabled rather than `disabled`, so the button still emits the
+  // pointer events its tooltip needs — see the comment on the button.
+  it('reports itself disabled while a switch is in flight, and still explains itself', async () => {
     state({ switching: true })
     render(<TargetSwitcher />)
 
-    expect(screen.getByTestId('target-option-cloud')).toBeDisabled()
-    await userEvent.click(screen.getByTestId('target-option-cloud'))
-    expect(switchTo).not.toHaveBeenCalled()
+    const cloud = screen.getByTestId('target-option-cloud')
+    expect(cloud).toHaveAttribute('aria-disabled', 'true')
+
+    await userEvent.hover(cloud)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Switching…')
+  })
+
+  it('offers a reason to pick each option', async () => {
+    state({ current: 'local' })
+    render(<TargetSwitcher />)
+
+    await userEvent.hover(screen.getByTestId('target-option-cloud'))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      'Run 24/7. Access anywhere. Share and collaborate with your team',
+    )
   })
 })
