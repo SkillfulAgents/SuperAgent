@@ -140,11 +140,11 @@ export class AgentPage {
   }
 
   /**
-   * Open the agent settings dialog
+   * Open the agent settings popover (the gear on the agent header)
    */
   async openSettings() {
     await this.page.locator('[data-testid="agent-settings-button"]').click()
-    await expect(this.page.locator('[data-testid="agent-settings-dialog"]')).toBeVisible()
+    await expect(this.page.locator('[data-testid="agent-settings-popover"]')).toBeVisible()
   }
 
   /**
@@ -159,8 +159,8 @@ export class AgentPage {
     // Confirm deletion - use a longer timeout since deletion may take time
     await this.page.locator('[data-testid="confirm-button"]').click()
 
-    // Wait for settings dialog to close (with longer timeout for deletion to complete)
-    await expect(this.page.locator('[data-testid="agent-settings-dialog"]')).not.toBeVisible({ timeout: 10000 })
+    // Wait for the confirm dialog to close (with longer timeout for deletion to complete)
+    await expect(this.page.locator('[data-testid="confirm-button"]')).not.toBeVisible({ timeout: 10000 })
   }
 
   /**
