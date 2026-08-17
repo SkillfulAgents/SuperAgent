@@ -178,8 +178,27 @@ vi.mock('@renderer/components/agents/status-indicators', () => ({
   AwaitingDot: () => <span data-testid="awaiting-dot" />,
 }))
 
+// Stands in for the real Radix context menu: renders the row untouched and
+// reports "opened" when a contextmenu event reaches it — which is exactly how
+// the row's 3-dot button opens the menu it shares with right-click.
 vi.mock('@renderer/components/agents/agent-context-menu', () => ({
-  AgentContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  AgentContextMenu: ({
+    children,
+    onOpenChange,
+  }: {
+    children: React.ReactNode
+    onOpenChange?: (open: boolean) => void
+  }) => (
+    <div
+      data-testid="agent-context-menu"
+      onContextMenu={(e) => {
+        e.preventDefault()
+        onOpenChange?.(true)
+      }}
+    >
+      {children}
+    </div>
+  ),
 }))
 
 vi.mock('@renderer/components/sessions/session-context-menu', () => ({
@@ -660,6 +679,35 @@ describe('AppSidebar — agent row indicator', () => {
     const status = screen.getByTestId('agent-status-running')
     expect(status).toHaveAttribute('data-awaiting', 'true')
     expect(screen.queryByLabelText('unread notifications')).not.toBeInTheDocument()
+  })
+})
+
+// ============================================================================
+// Agent row 3-dot menu button
+// ----------------------------------------------------------------------------
+// Right-click was the only way into the agent menu and nobody found it. The
+// button takes over the status slot on hover and opens that same menu, so the
+// two gestures can never drift apart.
+// ============================================================================
+describe('AppSidebar — agent row menu button', () => {
+  it('opens the agent context menu, hiding the status indicator behind it', async () => {
+    renderWithProviders(<AppSidebar />)
+    // Status owns the slot until the menu opens.
+    expect(screen.getByTestId('agent-status-running').parentElement).not.toHaveClass('opacity-0')
+
+    await userEvent.click(screen.getByTestId('agent-menu-button-test-agent'))
+
+    expect(screen.getByTestId('agent-status-running').parentElement).toHaveClass('opacity-0')
+  })
+
+  it('keeps the button a sibling of the row link, never nested inside it', () => {
+    renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('agent-item-test-agent')
+    const button = screen.getByTestId('agent-menu-button-test-agent')
+    // A <button> inside the row's <a> would be invalid markup and its click
+    // would navigate; the row must stay a single interactive element.
+    expect(row.contains(button)).toBe(false)
+    expect(button).toHaveAccessibleName('Options for Test Agent')
   })
 })
 

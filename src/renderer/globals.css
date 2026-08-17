@@ -359,7 +359,13 @@ html[data-keyboard-open] [data-composer-footer] {
   background: rgba(0, 0, 0, 0.4) !important;
 }
 
-/* Semi-transparent hover/active states so vibrancy remains visible */
+/* Semi-transparent hover/active states so vibrancy remains visible.
+   The agent row's ⋮ and chevron are siblings painted over the row, so pointing
+   at either un-hovers the button itself. Without the `.group/agent-row:hover`
+   selectors below, this tint would drop out and the opaque Tailwind fallback
+   (bg-sidebar-accent, near-white) would paint instead — the row would flash
+   lighter the moment you reached for its menu. */
+.electron-vibrancy [data-sidebar="sidebar"] .group\/agent-row:hover [data-sidebar="menu-button"],
 .electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="menu-button"]:hover,
 .electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="menu-button"]:active,
 .electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="menu-button"][data-active="true"],
@@ -370,6 +376,7 @@ html[data-keyboard-open] [data-composer-footer] {
   background: rgba(0, 0, 0, 0.06) !important;
 }
 
+.electron-vibrancy.dark [data-sidebar="sidebar"] .group\/agent-row:hover [data-sidebar="menu-button"],
 .electron-vibrancy.dark [data-sidebar="sidebar"] [data-sidebar="menu-button"]:hover,
 .electron-vibrancy.dark [data-sidebar="sidebar"] [data-sidebar="menu-button"]:active,
 .electron-vibrancy.dark [data-sidebar="sidebar"] [data-sidebar="menu-button"][data-active="true"],

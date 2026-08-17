@@ -36,6 +36,13 @@ interface AgentContextMenuProps {
   onArrange?: () => void
   /** Let an explicit mobile arrange gesture own touch holds. */
   disableTouchLongPress?: boolean
+  /**
+   * Notified when the menu opens/closes. Call sites that reveal a trigger on
+   * hover (the sidebar's 3-dot button) need this: once the menu is open Radix
+   * takes pointer events off the page, so `:hover` drops and a hover-only
+   * affordance would disappear out from under its own menu.
+   */
+  onOpenChange?: (open: boolean) => void
 }
 
 export function AgentContextMenu({
@@ -44,6 +51,7 @@ export function AgentContextMenu({
   additionalOptions,
   onArrange,
   disableTouchLongPress,
+  onOpenChange,
 }: AgentContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showLeaveDialog, setShowLeaveDialog] = useState(false)
@@ -126,7 +134,7 @@ export function AgentContextMenu({
 
   return (
     <>
-      <ContextMenu>
+      <ContextMenu onOpenChange={onOpenChange}>
         <ContextMenuTrigger asChild disableTouchLongPress={disableTouchLongPress}>
           {children}
         </ContextMenuTrigger>
