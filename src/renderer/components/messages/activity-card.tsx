@@ -6,6 +6,7 @@ import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { RequestError } from './request-error'
 import { ACTIVITY_TREE_CONNECTORS, ACTIVITY_TREE_TRACER } from '@renderer/components/ui/tree-connectors'
 import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import type { Todo } from '@shared/lib/utils/derive-task-list'
 import { ActivityOrb, type ActivityOrbState } from './activity-orb'
 
@@ -190,25 +191,7 @@ export function ActivityCard({
                   <RowMark>
                     {item.status === 'completed' ? <span>✓</span> : null}
                   </RowMark>
-                  {/* Name, description and live progress all ride ONE line: a
-                      wrapped second line breaks the tree's row rhythm, and the
-                      elbows are pinned to a single 16px line box. Overflow is
-                      handled the way long names are in the sidebar — truncate,
-                      then pan on hover. */}
-                  <HoverScrollText className="flex-1" hoverTarget="parent">
-                    <span className="font-mono">{item.name}</span>
-                    {item.description && (
-                      <span className="text-muted-foreground">{' '}{item.description}</span>
-                    )}
-                    {item.progressSummary && item.status === 'running' && (
-                      <>
-                        {/* Spaces live in the text, not in margins, so the row
-                            reads (and copies) as one sentence. */}
-                        <span className="text-muted-foreground" aria-hidden="true">{' · '}</span>
-                        <span className="italic text-muted-foreground">{item.progressSummary}</span>
-                      </>
-                    )}
-                  </HoverScrollText>
+                  <SubagentActivityLabel item={item} />
                 </div>
               </li>
             ))}
@@ -257,6 +240,57 @@ export function ActivityErrorCard({ message }: { message: string }) {
 function formatActivityCount(count: number, singular: string, plural: string): string {
   if (count === 0) return ''
   return `${count} ${count === 1 ? singular : plural}`
+}
+
+function SubagentActivityLabel({ item }: { item: ActivitySubagentItem }) {
+  const progressSummary = item.status === 'running' ? item.progressSummary : null
+  const fullActivityText = [
+    item.name,
+    item.description,
+    progressSummary ? `· ${progressSummary}` : '',
+  ].filter(Boolean).join(' ')
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="min-w-0 flex-1 cursor-help rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label={`Show full activity: ${fullActivityText}`}
+          title={fullActivityText}
+        >
+          {/* Name, description and live progress all ride ONE line: a wrapped
+              second line breaks the tree's row rhythm, and the elbows are
+              pinned to a single 16px line box. Hover pans the label; the
+              button's popover supplies a static keyboard, touch and
+              reduced-motion path to the complete text. */}
+          <HoverScrollText hoverTarget="parent">
+            <span className="font-mono">{item.name}</span>
+            {item.description && (
+              <span className="text-muted-foreground">{' '}{item.description}</span>
+            )}
+            {progressSummary && (
+              <>
+                {/* Spaces live in the text, not in margins, so the row reads
+                    (and copies) as one sentence. */}
+                <span className="text-muted-foreground" aria-hidden="true">{' · '}</span>
+                <span className="italic text-muted-foreground">{progressSummary}</span>
+              </>
+            )}
+          </HoverScrollText>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="top"
+        align="start"
+        aria-label="Full activity details"
+        className="w-auto max-w-[min(24rem,calc(100vw-2rem))] break-words px-3 py-2 text-xs motion-reduce:!animate-none"
+        data-testid="subagent-activity-full-text"
+      >
+        {fullActivityText}
+      </PopoverContent>
+    </Popover>
+  )
 }
 
 type ActivitySummaryTickerStyle = CSSProperties & {

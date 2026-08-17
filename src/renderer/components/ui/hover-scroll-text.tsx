@@ -75,6 +75,10 @@ export function HoverScrollText({
   const startScrolling = useCallback(() => {
     isHoveredRef.current = true
     clearHoverTimer()
+    // Remove the animation before re-arming it. When rendered text changes
+    // during an active pan, leaving this true would keep the old CSS animation
+    // attached and make the delayed set-to-true below a no-op.
+    setIsScrolling(false)
 
     const distance = measureOverflow()
     if (!motionAllowed || distance === 0) return

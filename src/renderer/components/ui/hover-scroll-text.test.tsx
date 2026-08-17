@@ -95,8 +95,13 @@ describe('HoverScrollText', () => {
     // New words under the pointer: the old measurement is stale, so it restarts
     // from the dwell rather than either stalling or panning the wrong distance.
     rerender(<HoverScrollText data-testid="label">A different long session name</HoverScrollText>)
+    expect(viewport).toHaveAttribute('data-scrolling', 'false')
     setTextWidths(viewport, content, 100, 200)
-    act(() => vi.advanceTimersByTime(HOVER_SCROLL_DELAY_MS))
+
+    act(() => vi.advanceTimersByTime(HOVER_SCROLL_DELAY_MS - 1))
+    expect(viewport).toHaveAttribute('data-scrolling', 'false')
+
+    act(() => vi.advanceTimersByTime(1))
     expect(viewport).toHaveAttribute('data-scrolling', 'true')
     expect(viewport).toHaveStyle({ '--hover-scroll-distance': '100px' })
   })
