@@ -69,7 +69,11 @@ interface RelayResult {
  *
  * Alert routing: only the device whose mobile-device family started the
  * session (session metadata `createdByDeviceId`) gets a visible alert; every
- * other eligible device gets a silent background push. Sessions with no origin
+ * other eligible device gets a silent background push. The origin device gets
+ * the background push AS WELL as its alert: an alert alone runs no app code
+ * on iOS (no content-available → no background wake), so without the paired
+ * silent push the one phone the user is actually holding would keep stale
+ * widget snapshots until the app next opened. Sessions with no origin
  * (web/cron/webhook) are silent to everyone. An origin device whose owner
  * disabled the type degrades to a background push — never to nothing, so the
  * widget still refreshes.
@@ -108,8 +112,8 @@ export class ApnsRelayChannel implements NotificationChannel {
 
     const batch: Array<{ device: ApnsDeviceRow; push: ApnsRelayPush }> = []
     for (const device of devices) {
-      const push = await this.buildPushForDevice(event, device, originDeviceId, accessCache)
-      if (push) {
+      const pushes = await this.buildPushesForDevice(event, device, originDeviceId, accessCache)
+      for (const push of pushes) {
         batch.push({ device, push })
       }
     }
@@ -141,18 +145,18 @@ export class ApnsRelayChannel implements NotificationChannel {
     }
   }
 
-  /** Per-device gating + payload choice; null = skip this device entirely. */
-  private async buildPushForDevice(
+  /** Per-device gating + payload choice; empty = skip this device entirely. */
+  private async buildPushesForDevice(
     event: NotificationEvent,
     device: ApnsDeviceRow,
     originDeviceId: string | null,
     accessCache: Map<string, Promise<string[]>>
-  ): Promise<ApnsRelayPush | null> {
+  ): Promise<ApnsRelayPush[]> {
     if (isAuthMode()) {
       // An ownerless row in auth mode (e.g. registered before auth was
       // enabled) has no user to gate on — never deliver to it.
       if (!device.userId) {
-        return null
+        return []
       }
       let access = accessCache.get(device.userId)
       if (!access) {
@@ -162,7 +166,7 @@ export class ApnsRelayChannel implements NotificationChannel {
       // No access to the agent means no push at all — a silent push still
       // leaks that the agent ran.
       if (!(await access).includes(event.agentSlug)) {
-        return null
+        return []
       }
     }
 
@@ -174,11 +178,14 @@ export class ApnsRelayChannel implements NotificationChannel {
       const ownerId = isAuthMode() ? (device.userId as string) : 'local'
       const settings = getUserSettings(ownerId)
       if (isNotificationTypeEnabled(settings.notifications, event.type)) {
-        return buildApnsAlertPush(event, device)
+        // Alert AND background: the alert draws the banner but wakes no app
+        // code on iOS, so the paired silent push is what refreshes the
+        // origin device's widget snapshots.
+        return [buildApnsAlertPush(event, device), buildApnsBackgroundPush(event, device)]
       }
       // Prefs disabled: degrade to background so the widget still refreshes.
     }
-    return buildApnsBackgroundPush(event, device)
+    return [buildApnsBackgroundPush(event, device)]
   }
 
   private async sendChunk(

@@ -152,7 +152,7 @@ describe('kill switch / disabled config', () => {
 })
 
 describe('origin-device alert routing', () => {
-  it('origin device gets a visible alert; all others get background pushes', async () => {
+  it('origin device gets a visible alert PLUS a background push; others background only', async () => {
     mocks.listDeliverableApnsDevices.mockReturnValue([
       makeDevice(),
       makeDevice({ id: 'dev-row-2', token: TOKEN_B, mobileDeviceId: 'family-2' }),
@@ -162,10 +162,14 @@ describe('origin-device alert routing', () => {
     await channel.deliver(makeEvent())
 
     const pushes = sentPushes()
-    expect(pushes).toHaveLength(2)
-    const alert = pushes.find((p) => p.deviceToken === TOKEN_A)!
-    const background = pushes.find((p) => p.deviceToken === TOKEN_B)!
-    expect(alert.kind).toBe('alert')
+    expect(pushes).toHaveLength(3)
+    const originPushes = pushes.filter((p) => p.deviceToken === TOKEN_A)
+    const otherPushes = pushes.filter((p) => p.deviceToken === TOKEN_B)
+    // The alert draws the banner; the paired silent push is what wakes the
+    // app to refresh the origin device's widget snapshots (an alert alone
+    // runs no app code on iOS).
+    expect(originPushes.map((p) => p.kind).sort()).toEqual(['alert', 'background'])
+    const alert = originPushes.find((p) => p.kind === 'alert')!
     expect(alert.alert).toEqual({
       title: 'Session Complete',
       body: 'Demo Agent has finished running',
@@ -178,8 +182,9 @@ describe('origin-device alert routing', () => {
       navigatePath: '/agents/agent-x/sessions/sess-1',
       workspaceId: 'ws-1',
     })
-    expect(background.kind).toBe('background')
-    expect(background.alert).toBeUndefined()
+    expect(otherPushes).toHaveLength(1)
+    expect(otherPushes[0].kind).toBe('background')
+    expect(otherPushes[0].alert).toBeUndefined()
   })
 
   it('an alertDeviceId claim overrides the creation stamp', async () => {
@@ -196,8 +201,15 @@ describe('origin-device alert routing', () => {
     await channel.deliver(makeEvent())
 
     const pushes = sentPushes()
-    expect(pushes.find((p) => p.deviceToken === TOKEN_A)!.kind).toBe('background')
-    expect(pushes.find((p) => p.deviceToken === TOKEN_B)!.kind).toBe('alert')
+    expect(pushes.filter((p) => p.deviceToken === TOKEN_A).map((p) => p.kind)).toEqual([
+      'background',
+    ])
+    expect(
+      pushes
+        .filter((p) => p.deviceToken === TOKEN_B)
+        .map((p) => p.kind)
+        .sort()
+    ).toEqual(['alert', 'background'])
   })
 
   it('a null alertDeviceId (web spoke last) silences everyone despite a creation stamp', async () => {
