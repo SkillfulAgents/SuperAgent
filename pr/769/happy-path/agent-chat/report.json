@@ -1,26 +1,25 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Successfully navigated to the app, found and clicked the target agent, sent a test message, and received a correct response mentioning \"4\" within seconds.",
+  "reason": "Successfully navigated to the agent, sent a message \"Hello! What is 2+2?\", and verified the agent responded with \"4\" within the time limit.",
   "steps": [
-    "Navigated to http://localhost:47891 — page loaded successfully showing the Gamut application with sidebar containing agents",
-    "Found agent \"QA-20260815-011829-fogu\" in the sidebar with \"idle\" status — agent was clearly visible in the agent list",
-    "Clicked on the agent in the sidebar — navigated to the agent's detail page showing the message composer",
-    "Verified agent status is \"running\" or \"idle\" — status displayed as \"idle\", which meets the requirement",
-    "Clicked the message input textbox and typed \"Hello! What is 2+2?\" — message appeared in the input field",
-    "Clicked the send button — message was submitted and a new chat session was created titled \"Basic Math Question with QA-20260815\"",
-    "Waited for agent response — response appeared immediately (within seconds, no waiting required)",
-    "Verified response mentions \"4\" and took screenshot — response clearly displays \"4\" as the answer to the math question, captured in agent-response-screenshot.png"
+    "Navigated to http://localhost:47891 — Application loaded successfully with two agents visible in the sidebar (QA-20260817-180231-yhgf and QA-20260817-180230-jk9h)",
+    "Found and clicked the \"QA-20260817-180230-jk9h\" agent in the sidebar — Successfully navigated to the agent's detail page with the message composer visible",
+    "Verified agent status is \"running\" or \"idle\" — Status confirmed as \"idle\" (shown in the top right indicator)",
+    "Typed the message \"Hello! What is 2+2?\" in the message input field — Message successfully entered in the text input with the send button enabled",
+    "Clicked the send button to submit the message — Message was sent and the agent status changed to \"working\" with an activity indicator showing progress",
+    "Waited for the response (up to 3 minutes) — Response received within approximately 1 second, much faster than the 3-minute timeout",
+    "Verified the response mentions \"4\" and took a screenshot — Agent responded with \"4\", which is the correct answer to 2+2. Screenshot shows the response clearly displayed in the chat interface with the agent status returned to \"idle\""
   ],
   "bugs": [],
-  "durationMs": 64350,
-  "sessionId": "8e2b33a3-60fe-49b8-b8b7-5e8792b20bef",
+  "durationMs": 113610,
+  "sessionId": "519a440a-8d4f-4591-82c4-e5fe789e382c",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 10225,
-    "cacheCreationTokens": 117830,
-    "cacheReadTokens": 865855,
+    "inputTokens": 380,
+    "outputTokens": 12522,
+    "cacheCreationTokens": 122375,
+    "cacheReadTokens": 1084582,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.285318
+    "totalCostUsd": 0.324417
   }
 }
