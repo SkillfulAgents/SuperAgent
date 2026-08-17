@@ -1364,6 +1364,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const ws = this.wsConnections.get(sessionId)
     if (!ws) return
     ws.removeAllListeners()
+    // close() on CONNECTING emits 'error'; zero listeners is an uncaughtException.
+    ws.on('error', () => {})
     ws.close()
     this.wsConnections.delete(sessionId)
   }
