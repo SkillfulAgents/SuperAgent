@@ -23,6 +23,7 @@ import * as schema from '@shared/lib/db/schema'
 vi.hoisted(() => {
   process.env.X_AGENT_READ_RETRY_ATTEMPTS = '4'
   process.env.X_AGENT_READ_RETRY_INTERVAL_MS = '50'
+  process.env.X_AGENT_SUBSCRIBE_TIMEOUT_MS = '150'
 })
 
 // ----------------------------------------------------------------------------
@@ -118,6 +119,29 @@ vi.mock('@shared/lib/container/container-manager', () => ({
 }))
 
 // Message persister
+// Built by name, not by importing the class from the (wholesale-mocked) module:
+// the routes match timeout errors on error.name, and this mirrors that contract.
+// message-persister.test.ts pins the real class to this name.
+function waitForIdleTimeoutError(): Error {
+  return Object.assign(new Error('waitForIdle timeout after 120000ms'), {
+    name: 'WaitForIdleTimeoutError',
+  })
+}
+
+// Sync waits pass the REMAINING end-to-end budget (deadline stamped at handler
+// entry minus pre-wait work), so the exact timeoutMs varies — assert the shape
+// and that it stays within (0, 120s]. requireActiveFirst is off because sync
+// callers mark/observe the session active before waiting, so "inactive" means
+// the turn already finished.
+function expectBoundedSyncWait(sessionId: string): void {
+  expect(mockWaitForIdle).toHaveBeenCalledWith(sessionId, {
+    timeoutMs: expect.any(Number),
+    requireActiveFirst: false,
+  })
+  const opts = mockWaitForIdle.mock.calls.at(-1)?.[1] as { timeoutMs: number }
+  expect(opts.timeoutMs).toBeGreaterThan(0)
+  expect(opts.timeoutMs).toBeLessThanOrEqual(120_000)
+}
 const mockIsSessionActive = vi.fn((_sessionId?: string): boolean => false)
 const mockIsSessionAwaitingInput = vi.fn((_sessionId?: string): boolean => false)
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
@@ -176,7 +200,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 // Imports (after mocks)
 // ----------------------------------------------------------------------------
 
-import xAgentRoute from './x-agent'
+import xAgentRoute, { resolveSyncWaitTimeoutMs } from './x-agent'
 
 // ----------------------------------------------------------------------------
 // Test app + helpers
@@ -885,13 +909,13 @@ describe('/invoke', () => {
     )
   })
 
-  it('returns running + error (200, not 500) when sync=true and waitForIdle rejects', async () => {
-    // Sync invoke degrades gracefully when the target never idles: caller still
-    // gets the sessionId so they can poll/follow up via get-transcript later,
-    // plus an error string for visibility. This is intentionally NOT a 500 —
-    // the session was successfully created, it just didn't finish in time.
+  it('promotes sync=true to async (running + guidance note) when the wait times out', async () => {
+    // A slow target turn is not a failure: the caller gets the async contract
+    // (sessionId + status running) plus explicit guidance to poll the transcript
+    // rather than re-invoke. Left as a plain network error, callers retried the
+    // invoke and spawned duplicate runs (retry storm).
     reviewDecisions.push('allow')
-    mockWaitForIdle.mockRejectedValueOnce(new Error('waitForIdle timeout after 600000ms'))
+    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
       prompt: 'long-running task',
@@ -902,10 +926,288 @@ describe('/invoke', () => {
     expect(body).toEqual({
       sessionId: 'new-sess-id',
       status: 'running',
-      error: expect.stringMatching(/timeout/i),
+      error: expect.stringMatching(/still working/i),
     })
+    expect(body.error).toMatch(/do not re-invoke/i)
+    expect(body.error).toMatch(/get_agent_session_transcript/)
+    // The sync wait must be capped below the container fetch's 300s header
+    // timeout — an uncapped wait surfaces as "fetch failed" on the caller.
+    // The budget is end-to-end, so pre-wait work shrinks the passed timeout.
+    expectBoundedSyncWait('new-sess-id')
     // No transcript read should have been attempted since waitForIdle failed
     expect(mockGetTranscript).not.toHaveBeenCalled()
+  })
+
+  it('promotes sync=true on an existing session to async when the wait times out', async () => {
+    reviewDecisions.push('allow')
+    mockIsSessionActive.mockReturnValue(false)
+    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'follow-up',
+      sessionId: 'existing-sess',
+      sync: true,
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.sessionId).toBe('existing-sess')
+    expect(body.status).toBe('running')
+    expect(body.error).toMatch(/do not re-invoke/i)
+    expectBoundedSyncWait('existing-sess')
+  })
+
+  it('promotes to async without waiting when pre-delivery work exhausts the sync budget', async () => {
+    // Policy review and container startup run before the prompt is delivered
+    // and count against the same end-to-end budget — otherwise slow delivery
+    // plus a full wait could still cross the container fetch's 300s header
+    // timeout and resurface as "fetch failed".
+    reviewDecisions.push('allow')
+    const realNow = Date.now.bind(Date)
+    let clockOffsetMs = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffsetMs)
+    try {
+      // Mirror the real persister: marking active flips the activity flag, so
+      // the exhausted-budget check sees a genuinely still-running turn.
+      mockMarkSessionActive.mockImplementation(() => mockIsSessionActive.mockReturnValue(true))
+      mockSendMessage.mockImplementationOnce(async () => {
+        clockOffsetMs = 150_000
+      })
+      const res = await authedFetch('/x-agent/invoke', {
+        slug: TARGET_SLUG,
+        prompt: 'slow to deliver',
+        sessionId: 'existing-sess',
+        sync: true,
+      })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.sessionId).toBe('existing-sess')
+      expect(body.status).toBe('running')
+      expect(body.error).toMatch(/do not re-invoke/i)
+      // The prompt WAS delivered; only the wait was skipped.
+      expect(mockSendMessage).toHaveBeenCalled()
+      expect(mockWaitForIdle).not.toHaveBeenCalled()
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('returns completed with the reply when the turn finishes during budget-exhausting delivery', async () => {
+    // Exhausted budget + inactive session = the turn finished while we were
+    // delivering. That's a completion, not a 'running' the caller must poll.
+    reviewDecisions.push('allow')
+    const realNow = Date.now.bind(Date)
+    let clockOffsetMs = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffsetMs)
+    try {
+      const oldEntry = { type: 'assistant', uuid: 'a-old', message: { role: 'assistant', content: 'old answer' } }
+      const newEntry = { type: 'assistant', uuid: 'a-new', message: { role: 'assistant', content: 'fresh answer' } }
+      let transcript = [oldEntry]
+      mockGetTranscript.mockImplementation(async () => transcript)
+      mockMarkSessionActive.mockImplementation(() => mockIsSessionActive.mockReturnValue(true))
+      mockSendMessage.mockImplementationOnce(async () => {
+        clockOffsetMs = 150_000
+        mockIsSessionActive.mockReturnValue(false) // result arrived during delivery
+        transcript = [oldEntry, newEntry]
+      })
+      const res = await authedFetch('/x-agent/invoke', {
+        slug: TARGET_SLUG,
+        prompt: 'quick question',
+        sessionId: 'existing-sess',
+        sync: true,
+      })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.status).toBe('completed')
+      expect(body.lastMessage).toBe('fresh answer')
+      expect(mockWaitForIdle).not.toHaveBeenCalled()
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it("returns THIS turn's reply on an existing session, not the previous turn's", async () => {
+    // The turn's 'result' event clears isActive before the new assistant entry
+    // is flushed to the JSONL file. Without the pre-delivery boundary, the
+    // reader would grab the previous turn's answer and present it as this one's.
+    reviewDecisions.push('allow')
+    const oldEntry = { type: 'assistant', uuid: 'a-old', message: { role: 'assistant', content: 'old answer' } }
+    const newEntry = { type: 'assistant', uuid: 'a-new', message: { role: 'assistant', content: 'fresh answer' } }
+    let transcript = [oldEntry]
+    let reads = 0
+    mockGetTranscript.mockImplementation(async () => {
+      reads++
+      // Read 1 is the boundary capture, read 2 the first post-wait attempt —
+      // both see only the previous turn. The new reply flushes by read 3.
+      if (reads >= 3) transcript = [oldEntry, newEntry]
+      return transcript
+    })
+    mockMarkSessionActive.mockImplementation(() => mockIsSessionActive.mockReturnValue(true))
+    mockWaitForIdle.mockImplementation(async () => {
+      mockIsSessionActive.mockReturnValue(false)
+    })
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'follow-up',
+      sessionId: 'existing-sess',
+      sync: true,
+    })
+    const body = await res.json()
+    expect(body.status).toBe('completed')
+    expect(body.lastMessage).toBe('fresh answer')
+  })
+
+  it('refuses to deliver when startup exceeds the delivery cutoff (existing session)', async () => {
+    // Past ~240s the caller's fetch is already dead (undici 300s); delivering
+    // anyway creates a ghost run that the caller's retry then duplicates.
+    reviewDecisions.push('allow')
+    const realNow = Date.now.bind(Date)
+    let clockOffsetMs = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffsetMs)
+    try {
+      mockEnsureRunning.mockImplementationOnce(async () => {
+        clockOffsetMs = 250_000
+        return {
+          createSession: mockCreateSession,
+          sendMessage: mockSendMessage,
+          deleteSession: mockDeleteSession,
+        } as never
+      })
+      const res = await authedFetch('/x-agent/invoke', {
+        slug: TARGET_SLUG,
+        prompt: 'too late',
+        sessionId: 'existing-sess',
+        sync: true,
+      })
+      expect(res.status).toBe(504)
+      expect((await res.json()).error).toMatch(/not delivered/i)
+      expect(mockSendMessage).not.toHaveBeenCalled()
+      expect(mockMarkSessionActive).not.toHaveBeenCalled()
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('refuses to deliver when the stream attach eats the cutoff (existing session)', async () => {
+    // The cutoff is checked AFTER subscribe — a check before it could pass,
+    // then the unbounded pre-send awaits could carry delivery past the
+    // caller's 300s fetch timeout anyway.
+    reviewDecisions.push('allow')
+    const realNow = Date.now.bind(Date)
+    let clockOffsetMs = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffsetMs)
+    try {
+      mockSubscribeToSession.mockImplementationOnce(async () => {
+        clockOffsetMs = 250_000
+      })
+      const res = await authedFetch('/x-agent/invoke', {
+        slug: TARGET_SLUG,
+        prompt: 'too late',
+        sessionId: 'existing-sess',
+        sync: true,
+      })
+      expect(res.status).toBe(504)
+      expect((await res.json()).error).toMatch(/not delivered/i)
+      expect(mockSendMessage).not.toHaveBeenCalled()
+      expect(mockMarkSessionActive).not.toHaveBeenCalled()
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('fails fast instead of hanging when the stream attach stalls (existing session)', async () => {
+    // The persister's WebSocket ready promise has no timeout of its own; a
+    // wedged container must surface as an error before the prompt goes out,
+    // not hold the caller's fetch open indefinitely.
+    reviewDecisions.push('allow')
+    mockSubscribeToSession.mockImplementationOnce(() => new Promise(() => {}))
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'hello',
+      sessionId: 'existing-sess',
+      sync: true,
+    })
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toMatch(/attaching to session stream/i)
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('revokes a session created after the delivery cutoff', async () => {
+    // createSession cannot be cancelled mid-flight; when it lands after the
+    // caller's fetch is already dead, the session must be deleted the moment
+    // it materializes — otherwise the caller's retry duplicates the run.
+    reviewDecisions.push('allow')
+    const realNow = Date.now.bind(Date)
+    let clockOffsetMs = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffsetMs)
+    try {
+      // Enter createSession with ~50ms left to the cutoff; the create resolves
+      // 120ms later — past the deadline.
+      mockEnsureRunning.mockImplementationOnce(async () => {
+        clockOffsetMs = 239_950
+        return {
+          createSession: mockCreateSession,
+          sendMessage: mockSendMessage,
+          deleteSession: mockDeleteSession,
+        } as never
+      })
+      mockCreateSession.mockImplementationOnce(
+        () => new Promise((resolve) => setTimeout(() => resolve({ id: 'late-sess' }), 120)),
+      )
+      const res = await authedFetch('/x-agent/invoke', {
+        slug: TARGET_SLUG,
+        prompt: 'slow create',
+        sync: true,
+      })
+      expect(res.status).toBe(504)
+      expect((await res.json()).error).toMatch(/safe to retry/i)
+      expect(mockRegisterSession).not.toHaveBeenCalled()
+      await vi.waitFor(() => expect(mockDeleteSession).toHaveBeenCalledWith('late-sess'))
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('revokes the new session when the stream attach stalls, instead of leaving a ghost run', async () => {
+    // Post-delivery, an unsubscribed session would run with nothing persisting
+    // its transcript — delete it like a failed registration.
+    reviewDecisions.push('allow')
+    mockSubscribeToSession.mockImplementationOnce(() => new Promise(() => {}))
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'hello',
+      sync: true,
+    })
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toMatch(/attach/i)
+    expect(mockDeleteSession).toHaveBeenCalledWith('new-sess-id')
+  })
+
+  it('refuses to create a session past the delivery cutoff, even for async invokes', async () => {
+    // Async invokes also respond only after delivery, so the same ghost-run
+    // hazard applies without sync.
+    reviewDecisions.push('allow')
+    const realNow = Date.now.bind(Date)
+    let clockOffsetMs = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffsetMs)
+    try {
+      mockEnsureRunning.mockImplementationOnce(async () => {
+        clockOffsetMs = 250_000
+        return {
+          createSession: mockCreateSession,
+          sendMessage: mockSendMessage,
+          deleteSession: mockDeleteSession,
+        } as never
+      })
+      const res = await authedFetch('/x-agent/invoke', {
+        slug: TARGET_SLUG,
+        prompt: 'too late',
+      })
+      expect(res.status).toBe(504)
+      expect((await res.json()).error).toMatch(/not delivered/i)
+      expect(mockCreateSession).not.toHaveBeenCalled()
+    } finally {
+      nowSpy.mockRestore()
+    }
   })
 
   it('returns running + error (200) when sync=true on existing session and waitForIdle rejects', async () => {
@@ -964,7 +1266,7 @@ describe('/invoke', () => {
       sync: true,
     })
     const body = await res.json()
-    expect(mockWaitForIdle).toHaveBeenCalledWith('new-sess-id')
+    expectBoundedSyncWait('new-sess-id')
     expect(body.status).toBe('completed')
     expect(body.lastMessage).toBe('hi back')
   })
@@ -1314,9 +1616,132 @@ describe('/get-transcript', () => {
       sessionId: 'sess-1',
       sync: true,
     })
-    expect(mockWaitForIdle).toHaveBeenCalledWith('sess-1')
+    // Capped below the container fetch's 300s header timeout: sync reads are a
+    // bounded long-poll, not an unbounded wait.
+    expectBoundedSyncWait('sess-1')
     const body = await res.json()
     expect(body.status).toBe('idle')
+  })
+
+  it('returns transcript-so-far with status running (200) when the sync wait times out', async () => {
+    // Timeout is the long-poll expiring, not a failure: the caller gets the
+    // current transcript and can call again with sync=true to keep waiting.
+    reviewDecisions.push('allow')
+    mockIsSessionActive.mockReturnValue(true)
+    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    mockGetTranscript.mockResolvedValue([
+      { type: 'user', message: { role: 'user', content: 'hello' } },
+    ])
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      sync: true,
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.status).toBe('running')
+    expect(body.messages).toHaveLength(1)
+  })
+
+  it('reconciles after a sync wait so idle responses include the awaited reply', async () => {
+    // 'result' clears isActive before the final assistant entry is flushed —
+    // without reconciling against the pre-wait boundary, the handler returns
+    // status idle with a transcript missing the very reply it waited for.
+    reviewDecisions.push('allow')
+    const oldEntry = { type: 'assistant', uuid: 'a-old', message: { role: 'assistant', content: 'old answer' } }
+    const newEntry = { type: 'assistant', uuid: 'a-new', message: { role: 'assistant', content: 'fresh answer' } }
+    let transcript = [oldEntry]
+    let reads = 0
+    mockGetTranscript.mockImplementation(async () => {
+      reads++
+      // Read 1 = boundary capture, read 2 = first reconcile attempt (stale),
+      // read 3 onward sees the flushed reply.
+      if (reads >= 3) transcript = [oldEntry, newEntry]
+      return transcript
+    })
+    mockIsSessionActive.mockReturnValue(true)
+    mockWaitForIdle.mockImplementation(async () => {
+      mockIsSessionActive.mockReturnValue(false)
+    })
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      sync: true,
+    })
+    const body = await res.json()
+    expect(body.status).toBe('idle')
+    expect(body.messages.map((m: { content: string }) => m.content)).toContain('fresh answer')
+  })
+
+  it('reconciles when the turn ends between the wait timing out and the status read', async () => {
+    // A timeout followed by the turn finishing in the gap is the same flush
+    // race as a completion: without reconciling, the response reports idle
+    // with a transcript missing the reply it waited for.
+    reviewDecisions.push('allow')
+    const oldEntry = { type: 'assistant', uuid: 'a-old', message: { role: 'assistant', content: 'old answer' } }
+    const newEntry = { type: 'assistant', uuid: 'a-new', message: { role: 'assistant', content: 'fresh answer' } }
+    let transcript = [oldEntry]
+    let reads = 0
+    mockGetTranscript.mockImplementation(async () => {
+      reads++
+      if (reads >= 3) transcript = [oldEntry, newEntry]
+      return transcript
+    })
+    mockIsSessionActive.mockReturnValue(true)
+    mockWaitForIdle.mockImplementationOnce(async () => {
+      mockIsSessionActive.mockReturnValue(false) // turn ended...
+      throw waitForIdleTimeoutError() // ...but the wait had already timed out
+    })
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      sync: true,
+    })
+    const body = await res.json()
+    expect(body.status).toBe('idle')
+    expect(body.messages.map((m: { content: string }) => m.content)).toContain('fresh answer')
+  })
+
+  it('still 504s when the sync wait fails for a non-timeout reason', async () => {
+    reviewDecisions.push('allow')
+    mockIsSessionActive.mockReturnValue(true)
+    mockWaitForIdle.mockRejectedValueOnce(new Error('waitForIdle aborted'))
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      sync: true,
+    })
+    expect(res.status).toBe(504)
+    expect((await res.json()).error).toMatch(/did not idle.*aborted/)
+    // Only the pre-wait boundary capture read the transcript — the failure
+    // must short-circuit before the response transcript is assembled.
+    expect(mockGetTranscript).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('resolveSyncWaitTimeoutMs', () => {
+  it('defaults to 120s when unset or unparseable', () => {
+    expect(resolveSyncWaitTimeoutMs(undefined)).toBe(120_000)
+    expect(resolveSyncWaitTimeoutMs('')).toBe(120_000)
+    expect(resolveSyncWaitTimeoutMs('not-a-number')).toBe(120_000)
+  })
+
+  it('rejects non-positive and non-finite overrides', () => {
+    // A zero/negative budget would promote every sync call immediately, and
+    // Infinity would restore the unbounded wait behind the transport cliff.
+    expect(resolveSyncWaitTimeoutMs('0')).toBe(120_000)
+    expect(resolveSyncWaitTimeoutMs('-5000')).toBe(120_000)
+    expect(resolveSyncWaitTimeoutMs('Infinity')).toBe(120_000)
+    expect(resolveSyncWaitTimeoutMs('NaN')).toBe(120_000)
+  })
+
+  it('lets overrides shorten the wait but never extend it', () => {
+    expect(resolveSyncWaitTimeoutMs('30000')).toBe(30_000)
+    expect(resolveSyncWaitTimeoutMs('120000')).toBe(120_000)
+    // The tool docs promise "up to ~2 minutes" and the transport dies at 300s
+    // — a longer override would break the former and threaten the latter.
+    expect(resolveSyncWaitTimeoutMs('240000')).toBe(120_000)
+    expect(resolveSyncWaitTimeoutMs('600000')).toBe(120_000)
   })
 })
 

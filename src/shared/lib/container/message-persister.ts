@@ -257,6 +257,16 @@ export function redactStreamedToolInput(toolName: string | undefined, partialInp
   return partialInput.replace(/("secret"\s*:\s*")(?:\\.|[^"\\])*/g, '$1***')
 }
 
+// Thrown by waitForIdle when the session is still active past timeoutMs.
+// Callers use this to tell "target is still working" (recoverable — poll later)
+// apart from genuine failures like "session never became active".
+export class WaitForIdleTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`waitForIdle timeout after ${timeoutMs}ms`)
+    this.name = 'WaitForIdleTimeoutError'
+  }
+}
+
 // TODO this file is too big, this class is HUGE. Needs breaking up
 class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
@@ -619,7 +629,7 @@ class MessagePersister {
         }
         if (Date.now() - startedAt > timeoutMs) {
           cleanup()
-          reject(new Error(`waitForIdle timeout after ${timeoutMs}ms`))
+          reject(new WaitForIdleTimeoutError(timeoutMs))
           return
         }
         timer = setTimeout(tick, 250)

@@ -173,7 +173,7 @@ vi.mock('./container-manager', () => ({
 }))
 
 // Import after mocks are set up
-import { messagePersister, redactStreamedToolInput } from './message-persister'
+import { messagePersister, redactStreamedToolInput, WaitForIdleTimeoutError } from './message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 
@@ -5804,9 +5804,15 @@ describe('MessagePersister', () => {
       // Once the session is active, observeMs no longer applies — timeoutMs is
       // the stop-gap. Verifies the timeout branch (not the never-active branch).
       messagePersister.markSessionActive(WAIT_SESSION, AGENT_SLUG)
-      await expect(
-        messagePersister.waitForIdle(WAIT_SESSION, { timeoutMs: 200 }),
-      ).rejects.toThrow(/timeout after 200ms/)
+      const err: unknown = await messagePersister
+        .waitForIdle(WAIT_SESSION, { timeoutMs: 200 })
+        .then(() => null, (e: unknown) => e)
+      expect(err).toBeInstanceOf(WaitForIdleTimeoutError)
+      // The x-agent routes distinguish timeout from other failures by error
+      // NAME (their tests mock this module wholesale, so instanceof is out).
+      // If this name changes, sync invoke stops promoting to async on timeout.
+      expect((err as Error).name).toBe('WaitForIdleTimeoutError')
+      expect((err as Error).message).toMatch(/timeout after 200ms/)
     })
 
     it('resolves once an active session goes idle (and preserves isActive across subscribe)', async () => {
