@@ -1140,6 +1140,50 @@ describe('iterateJsonlLinesBackward', () => {
     }
   })
 
+  it('an abort during short-read refills stops before the next physical read', async () => {
+    // One logical chunk can take many physical reads on filesystems that
+    // short-read; each is RPC-priced, so the refill loop must observe the
+    // signal per read rather than only at chunk boundaries.
+    const filePath = path.join(testDir, 'backward-refill-abort.jsonl')
+    await fs.promises.writeFile(filePath, 'alpha\nbeta\ngamma\n')
+
+    const controller = new AbortController()
+    let reads = 0
+    const realOpen = fs.promises.open.bind(fs.promises)
+    const openSpy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await realOpen(...(args as Parameters<typeof fs.promises.open>))
+      const realRead = handle.read.bind(handle) as (
+        buf: Buffer, off: number, len: number, pos: number
+      ) => Promise<{ bytesRead: number }>
+      return new Proxy(handle, {
+        get(target, prop, receiver) {
+          if (prop === 'read') {
+            return (buf: Buffer, off: number, len: number, pos: number) => {
+              reads++
+              controller.abort() // lands while the first short read is in flight
+              return realRead(buf, off, Math.min(3, len), pos)
+            }
+          }
+          const value = Reflect.get(target, prop, receiver)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      }) as Awaited<ReturnType<typeof fs.promises.open>>
+    })
+
+    try {
+      await expect(
+        (async () => {
+          for await (const item of iterateJsonlLinesBackward(filePath, controller.signal)) {
+            void item
+          }
+        })()
+      ).rejects.toMatchObject({ name: 'AbortError' })
+      expect(reads).toBe(1)
+    } finally {
+      openSpy.mockRestore()
+    }
+  })
+
   it('stops with AbortError before the next chunk read after an abort', async () => {
     // Multi-chunk file (>64KB) so the walk needs several reads: abort after
     // the first yielded line and the iterator must stop at the next chunk

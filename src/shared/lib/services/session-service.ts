@@ -931,11 +931,17 @@ const MAX_TAIL_LINES = 50_000
 // (one sacrificial head plus one servable), so a single item larger than the
 // budget still serves instead of yielding an empty page.
 const MESSAGES_PAGE_BYTE_BUDGET = 4 * 1024 * 1024
-// Unconditional ceiling on the window — the structural memory bound. The
-// two-item floor above does not apply here: a run of non-display rows (tool
-// results between two visible items) larger than this makes the history
-// behind it unreachable through paging, which is the accepted trade-off for
-// never letting one request materialize an unbounded window.
+// Ceiling on the window — the structural memory bound. The true per-request
+// bound is O(hardCap + one turn's span + largest single row): the cap yields
+// only to three exceptions, each bounded by content that must be materialized
+// to serve anything at all — (a) at least one complete servable display item
+// (a session whose newest turn just wrote a huge tool-result run must still
+// render), (b) closing an assistant merge group whose entries straddle the
+// boundary (a cut group's item id vanishes on the next window and terminates
+// pagination), and (c) a single JSONL row, which has to be assembled whole
+// even to classify it. Multi-MB embedded content stops hitting this path
+// entirely when large payloads move behind references (the media-ref
+// follow-up ticket).
 const MESSAGES_PAGE_HARD_CAP_FACTOR = 2
 // A cursor page's window extends at least this far past the cursor line so
 // tool_use blocks near the page's newest edge still meet their tool_result
@@ -1100,6 +1106,48 @@ function graceEndOffset(lineOffsets: number[], cursorLineEnd: number): number | 
   return undefined
 }
 
+/** How a row behaves at the extension boundary after a counting stop.
+ *
+ * 'system': a system display item — the run continues, and the row becomes
+ * the window's deepest COMPLETE item. 'filtered': removed by readEntriesRange
+ * or skipped by the transform before ordering (meta rows, non-display entry
+ * types, malformed lines, compact summaries, an informational's synthetic
+ * user copy) — invisible to transform adjacency, so it cannot split a logical
+ * system run and the extension walks through it. 'settle': acts as an anchor
+ * in the transform (a real user/assistant row, including tool-result-only
+ * ones, which genuinely split the system-attachment grouping) — the run ends
+ * just above it. */
+function classifyExtensionRow(
+  normalized: JsonlEntry | undefined,
+  state: DisplayCountState
+): 'system' | 'filtered' | 'settle' {
+  if (normalized === undefined) return 'filtered'
+  if (!isMessageOrSystemDisplayEntry(normalized)) return 'filtered'
+  if ('isMeta' in normalized && normalized.isMeta) return 'filtered'
+  if (normalized.type === 'system') {
+    const sys = normalized as JsonlSystemEntry
+    // Mirror countsAsDisplayStart's synthetic-copy tracking so the copy of an
+    // informational consumed here is recognized on the next (older) line.
+    state.pendingInformationalContent =
+      sys.subtype === 'informational' ? (sys.content ?? '') : null
+    return 'system'
+  }
+  const msg = normalized as JsonlMessageEntry
+  const pendingInfo = state.pendingInformationalContent
+  state.pendingInformationalContent = null
+  if (msg.type === 'user') {
+    if (
+      pendingInfo !== null &&
+      typeof msg.message.content === 'string' &&
+      msg.message.content === pendingInfo
+    ) {
+      return 'filtered'
+    }
+    if (msg.isCompactSummary) return 'filtered'
+  }
+  return 'settle'
+}
+
 /** Pass 1 of the paged read: walk backward from EOF, parsing each line
  * transiently to count display-item starts (and locate the cursor), retaining
  * only offsets and id sets. Counting stops at `limit + 1` items, the byte
@@ -1149,6 +1197,9 @@ async function scanMessagesPageWindow(
   let hitLineCap = false
   // Conservative default: with nothing counted, treat the head as partial.
   let deepestCountedIsGroup = true
+  // message.id of an assistant merge group whose span may extend below the
+  // current line — set while walking its (possibly interleaved) turn.
+  let openGroupId: string | null = null
 
   for await (const { line, offset } of iterateJsonlLinesBackward(jsonlPath, signal)) {
     linesScanned++
@@ -1175,6 +1226,7 @@ async function scanMessagesPageWindow(
         displayCount = 0
         windowBytes = 0
         deepestCountedIsGroup = true
+        openGroupId = null
         startOffset = offset
         endOffset = graceEndOffset(lineOffsets!, offset + line.length + 1)
         continue
@@ -1189,15 +1241,11 @@ async function scanMessagesPageWindow(
     const normalized = parsed !== undefined ? normalizeQueuedCommandEntry(parsed) : undefined
 
     if (mode === 'extending') {
-      const isSystemDisplay =
-        normalized !== undefined &&
-        normalized.type === 'system' &&
-        isMessageOrSystemDisplayEntry(normalized) &&
-        !normalized.isMeta
-      if (isSystemDisplay && windowBytes + line.length + 1 < hardCap) {
+      const kind = classifyExtensionRow(normalized, state)
+      if (kind !== 'settle' && windowBytes + line.length + 1 < hardCap) {
         windowBytes += line.length + 1
         startOffset = offset
-        deepestCountedIsGroup = false
+        if (kind === 'system') deepestCountedIsGroup = false
         continue
       }
       mode = 'settled'
@@ -1208,20 +1256,48 @@ async function scanMessagesPageWindow(
     // counting
     windowBytes += line.length + 1
     startOffset = offset
+    const msgEntry =
+      normalized !== undefined && (normalized.type === 'user' || normalized.type === 'assistant')
+        ? (normalized as JsonlMessageEntry)
+        : undefined
     if (normalized !== undefined && countsAsDisplayStart(normalized, state)) {
       displayCount++
-      deepestCountedIsGroup =
-        normalized.type === 'assistant' &&
-        !!(normalized as JsonlMessageEntry).message.id
-      if (displayCount >= targetItems) mode = 'extending'
+      deepestCountedIsGroup = msgEntry?.type === 'assistant' && !!msgEntry.message.id
     }
-    // The budget stop waits for two items: one sacrificial head plus at least
-    // one servable item, so a single display item larger than the budget is
-    // still delivered instead of an empty page.
-    if (mode === 'counting' && windowBytes >= byteBudget && displayCount >= 2) {
+    // Merge-group span tracking. An assistant group's older entries can lie
+    // below queued/system/filtered rows interleaved inside its turn, so a
+    // window boundary placed while a group is "open" would cut it — the cut
+    // item gets a non-canonical id that vanishes from the next (deeper)
+    // window, terminating the client's pagination. No stop condition may fire
+    // while a group is open; a group closes at the first row that proves the
+    // turn boundary (a different assistant response, or a non-queued user
+    // row), which bounds the overshoot by one turn's span.
+    if (msgEntry !== undefined) {
+      if (msgEntry.type === 'assistant') {
+        openGroupId = msgEntry.message.id ?? null
+      } else if (!msgEntry.isQueuedCommand && !('isMeta' in msgEntry && msgEntry.isMeta)) {
+        openGroupId = null
+      }
+    }
+    const groupOpen = openGroupId !== null
+    if (displayCount >= targetItems && !groupOpen) {
+      mode = 'extending'
+    } else if (windowBytes >= byteBudget && displayCount >= 2 && !groupOpen) {
+      // The budget stop waits for two items: one sacrificial head plus at
+      // least one servable item, so a single display item larger than the
+      // budget is still delivered instead of an empty page.
       mode = 'extending'
     }
-    if (windowBytes >= hardCap) {
+    // The hard cap has its own floor: at least one servable item (two when
+    // the deepest item is a merge group the head-drop would sacrifice), so a
+    // run of non-display rows at EOF — a turn's freshly written tool results
+    // — cannot produce an empty terminal page while visible history exists.
+    if (
+      mode === 'counting' &&
+      windowBytes >= hardCap &&
+      !groupOpen &&
+      displayCount >= (deepestCountedIsGroup ? 2 : 1)
+    ) {
       mode = 'settled'
       if (!cursorNeedle) break
     }

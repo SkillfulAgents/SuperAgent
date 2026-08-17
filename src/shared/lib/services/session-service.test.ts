@@ -1148,9 +1148,9 @@ describe('session-service', () => {
     it('hard cap bounds a huge non-display gap and still serves the trailing item', async () => {
       // Tool-result-only rows are not display items, so the two-item budget
       // floor alone would scan through an arbitrarily large run of them. The
-      // hard cap stops the scan unconditionally; the trailing item (complete,
-      // single-entry) must still be served rather than sacrificed, and the
-      // walk must terminate rather than error on the unreachable gap.
+      // hard cap stops the scan once its one-servable-item floor is met; the
+      // trailing item (complete, single-entry) must be served rather than
+      // sacrificed, and cursor paging must cross the gap to older history.
       const ts = (s: number) => new Date(Date.UTC(2026, 0, 8, 0, 0, s)).toISOString()
       const rows: object[] = [
         ...makeThread(2),
@@ -1182,6 +1182,93 @@ describe('session-service', () => {
       }
       expect(cursor).toBeNull()
       expect(hops).toBeLessThanOrEqual(2)
+    })
+
+    it('serves the visible history behind a capped trailing tool-result run', async () => {
+      // A turn that just wrote its tool results leaves only non-display rows
+      // at EOF. The hard cap must not settle before at least one servable
+      // item is in the window — an empty terminal page here would blank the
+      // whole session in the client.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 9, 0, 0, s)).toISOString()
+      const rows: object[] = [
+        { type: 'user', uuid: 'u-0', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q0' } },
+        { type: 'assistant', uuid: 'A-use', timestamp: ts(1), sessionId: 's', parentUuid: null, message: { id: 'msg-A', role: 'assistant', content: [{ type: 'tool_use', id: 'tg', name: 'Bash', input: {} }] } },
+      ]
+      for (let i = 0; i < 10; i++) {
+        rows.push({ type: 'user', uuid: `rg-${i}`, timestamp: ts(2 + i), sessionId: 's', parentUuid: 'A-use', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tg', content: 'y'.repeat(1024) }] } })
+      }
+      await createSessionFile('test-agent', 'page-session', rows)
+
+      // budget 512 -> hard cap 1024, far below the trailing 10KB result run.
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        byteBudget: 512,
+      })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-0', 'A-use'])
+      const use = page.messages[1]
+      expect(use!.type === 'assistant' && use!.toolCalls[0]?.result).toBeDefined()
+    })
+
+    it('never cuts a merge group split by an interleaved queued message', async () => {
+      // old -> A0(id=M) -> queued Q -> A1(id=M) -> N: the group's older entry
+      // lies below the queued row. A window boundary between Q and A0 would
+      // serve a partial item under A1's non-canonical id, which then vanishes
+      // from the next window and terminates pagination.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 10, 0, 0, s)).toISOString()
+      await createSessionFile('test-agent', 'page-session', [
+        { type: 'user', uuid: 'old', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'earlier' } },
+        { type: 'assistant', uuid: 'A0', timestamp: ts(1), sessionId: 's', parentUuid: null, message: { id: 'M', role: 'assistant', content: [{ type: 'text', text: 'part one ' }] } },
+        { type: 'attachment', uuid: 'q-raw', timestamp: ts(2), parentUuid: null, attachment: { type: 'queued_command', commandMode: 'prompt', prompt: 'steer', source_uuid: 'Q' } },
+        { type: 'assistant', uuid: 'A1', timestamp: ts(3), sessionId: 's', parentUuid: null, message: { id: 'M', role: 'assistant', content: [{ type: 'text', text: 'part two' }] } },
+        { type: 'user', uuid: 'N', timestamp: ts(4), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'newest' } },
+      ])
+
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 2 })
+      expect(first.messages.map((m) => m.id)).toEqual(['Q', 'N'])
+
+      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 2,
+        cursor: first.nextCursor!,
+      })
+      expect(older.messages.map((m) => m.id)).toEqual(['old', 'A0'])
+      expect(older.messages[1]).toMatchObject({ content: { text: 'part one part two' } })
+      expect(older.nextCursor).toBeNull()
+    })
+
+    it('walks system runs split by meta rows without losing items', async () => {
+      // A meta row between system entries is filtered out before the
+      // transform runs, so the entries on either side are adjacent in
+      // transform semantics and reorder as one run — the scan boundary must
+      // treat them the same way.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 11, 0, 0, s)).toISOString()
+      const sys = (uuid: string, subtype: string, s: number, extra: object = {}) => ({
+        type: 'system', uuid, subtype, content: '', isMeta: false, timestamp: ts(s), ...extra,
+      })
+      await createSessionFile('test-agent', 'page-session', [
+        { type: 'user', uuid: 'u-0', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q0' } },
+        sys('info1', 'informational', 1, { content: 'note one' }),
+        { type: 'user', uuid: 'meta-x', timestamp: ts(2), sessionId: 's', parentUuid: null, isMeta: true, message: { role: 'user', content: 'meta' } },
+        sys('mr', 'memory_recall', 3, { memory_paths: ['M.md'] }),
+        sys('cb', 'compact_boundary', 4, { compactMetadata: { trigger: 'manual', preTokens: 1 } }),
+        sys('info2', 'informational', 5, { content: 'note two' }),
+      ])
+
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 1 })
+      const collected = [...first.messages.map((m) => m.id)]
+      let cursor = first.nextCursor
+      for (let i = 0; i < 10 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 1,
+          cursor,
+        })
+        collected.unshift(...page.messages.map((m) => m.id))
+        cursor = page.nextCursor
+      }
+
+      expect(cursor).toBeNull()
+      expect(collected).toEqual(full.messages.map((m) => m.id))
+      expect(collected).toContain('info1')
     })
 
     it('attaches a tool result recorded past the cursor line', async () => {

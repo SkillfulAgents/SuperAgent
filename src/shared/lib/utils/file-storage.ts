@@ -368,14 +368,19 @@ const TAIL_READ_CHUNK = 64 * 1024
 /** Fill `buf` from an absolute file position, looping over legal short reads
  * (network filesystems may return fewer bytes than requested mid-file).
  * Returns the bytes actually filled — less than `buf.length` only when the
- * file ended early, i.e. it was truncated concurrently with the walk. */
+ * file ended early, i.e. it was truncated concurrently with the walk.
+ *
+ * `signal` is observed before every physical read: one logical chunk can take
+ * many RPC-priced reads on the filesystems where short reads happen at all. */
 async function readFileRangeFully(
   fileHandle: fs.promises.FileHandle,
   buf: Buffer,
-  position: number
+  position: number,
+  signal?: AbortSignal
 ): Promise<number> {
   let filled = 0
   while (filled < buf.length) {
+    signal?.throwIfAborted()
     const { bytesRead } = await fileHandle.read(buf, filled, buf.length - filled, position + filled)
     if (bytesRead === 0) break
     filled += bytesRead
@@ -426,7 +431,7 @@ export async function readJsonlTailLines(
       const size = Math.min(TAIL_READ_CHUNK, pos)
       pos -= size
       const buf = Buffer.allocUnsafe(size)
-      const filled = await readFileRangeFully(fileHandle, buf, pos)
+      const filled = await readFileRangeFully(fileHandle, buf, pos, signal)
       signal?.throwIfAborted()
       if (filled < size) {
         // The file shrank while we walked it (rewrite race). Splicing a short
@@ -511,7 +516,7 @@ export async function* iterateJsonlLinesBackward(
       const size = Math.min(TAIL_READ_CHUNK, pos)
       pos -= size
       const buf = Buffer.allocUnsafe(size)
-      const filled = await readFileRangeFully(fileHandle, buf, pos)
+      const filled = await readFileRangeFully(fileHandle, buf, pos, signal)
       signal?.throwIfAborted()
       if (filled < size) {
         // File shrank while we walked it (rewrite race): the bytes above were
@@ -542,7 +547,14 @@ export async function* iterateJsonlLinesBackward(
     }
 
     if (carryBytes > 0) {
-      yield { line: Buffer.concat(carryParts), offset: 0 }
+      // Release the source fragments BEFORE yielding: the yield suspends the
+      // generator, and holding both the fragments and their concatenation
+      // would double the resident memory of exactly the oversized rows this
+      // reader is sized for (same pattern as streamFileLines' pending).
+      const firstLine = Buffer.concat(carryParts)
+      carryParts = []
+      carryBytes = 0
+      yield { line: firstLine, offset: 0 }
     }
   } finally {
     await fileHandle.close()
@@ -623,6 +635,10 @@ export async function* streamFileLines(
       if (start < chunk.length) pending.push(chunk.subarray(start))
     }
 
+    // An abort can arrive together with the stream's end event, after the
+    // last per-chunk check — observe it before paying for the concatenation
+    // of an unterminated trailing row.
+    signal?.throwIfAborted()
     // Process any remaining content (file not terminated by a newline)
     if (pending.length > 0) {
       // Same as above: drop the source chunks before suspending on yield
