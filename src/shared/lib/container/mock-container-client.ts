@@ -1594,11 +1594,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'This is a delayed mock response.',
       3000
     )],
-    // A viewport-overflowing streamed reply (~700 words over ~3.7s) so
+    // A viewport-overflowing streamed reply (~1200 words over ~6s) so
     // transcript follow/scroll behavior can be observed while it grows
     ['stream a long story', new SimpleTextResponseScenario(
       'Here begins a long story that overflows the viewport so live-edge following can be observed while it streams. ' +
-      'The quick brown fox jumps over the lazy dog while the transcript keeps growing line after line without pause. '.repeat(40),
+      'The quick brown fox jumps over the lazy dog while the transcript keeps growing line after line without pause. '.repeat(70),
     )],
     // Register user input request scenarios for E2E testing
     ['ask secret', new UserInputRequestScenario([
