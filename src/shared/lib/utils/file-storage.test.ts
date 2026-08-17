@@ -1100,6 +1100,46 @@ describe('iterateJsonlLinesBackward', () => {
     expect(await collect(emptyPath)).toEqual([])
   })
 
+  it('survives legal short reads without skipping bytes', async () => {
+    // Network filesystems may return fewer bytes than requested mid-file.
+    // Cap every positional read at 3 bytes: the walk must loop until each
+    // chunk range is filled instead of leaving unread gaps that splice lines.
+    const filePath = path.join(testDir, 'backward-short-reads.jsonl')
+    await fs.promises.writeFile(filePath, 'alpha\nbeta\ngamma\n')
+
+    const realOpen = fs.promises.open.bind(fs.promises)
+    const openSpy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await realOpen(...(args as Parameters<typeof fs.promises.open>))
+      const realRead = handle.read.bind(handle) as (
+        buf: Buffer, off: number, len: number, pos: number
+      ) => Promise<{ bytesRead: number }>
+      return new Proxy(handle, {
+        get(target, prop, receiver) {
+          if (prop === 'read') {
+            return (buf: Buffer, off: number, len: number, pos: number) =>
+              realRead(buf, off, Math.min(3, len), pos)
+          }
+          const value = Reflect.get(target, prop, receiver)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      }) as Awaited<ReturnType<typeof fs.promises.open>>
+    })
+
+    try {
+      const out: string[] = []
+      for await (const { line } of iterateJsonlLinesBackward(filePath)) {
+        out.push(line.toString('utf-8'))
+      }
+      expect(out).toEqual(['gamma', 'beta', 'alpha'])
+
+      const { lines, reachedStart } = await readJsonlTailLines(filePath, 10)
+      expect(lines.map((l) => l.toString('utf-8'))).toEqual(['alpha', 'beta', 'gamma'])
+      expect(reachedStart).toBe(true)
+    } finally {
+      openSpy.mockRestore()
+    }
+  })
+
   it('stops with AbortError before the next chunk read after an abort', async () => {
     // Multi-chunk file (>64KB) so the walk needs several reads: abort after
     // the first yielded line and the iterator must stop at the next chunk
@@ -1161,5 +1201,28 @@ describe('streamFileLines with a byte range', () => {
       out.push(line.toString('utf-8'))
     }
     expect(out).toEqual([])
+  })
+
+  it('aborts between chunks instead of reading the rest of the file', async () => {
+    // Chunk-level abort granularity: a consumer-level per-line check is not
+    // enough because a multi-MB row spans many chunks before it yields. Abort
+    // after the first line: iteration must stop within one chunk's worth of
+    // lines, not drain the remaining chunks.
+    const filePath = path.join(testDir, 'stream-abort.jsonl')
+    const row = `${'x'.repeat(1023)}\n`
+    await fs.promises.writeFile(filePath, row.repeat(300)) // ~300KB, ~5 chunks
+
+    const controller = new AbortController()
+    const received: number[] = []
+    await expect(
+      (async () => {
+        for await (const line of streamFileLines(filePath, undefined, controller.signal)) {
+          received.push(line.length)
+          controller.abort()
+        }
+      })()
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(received.length).toBeGreaterThan(0)
+    expect(received.length).toBeLessThanOrEqual(65)
   })
 })

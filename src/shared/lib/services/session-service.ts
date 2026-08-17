@@ -922,24 +922,31 @@ export interface SessionMessagesPage {
 // EOF, so history beyond this many raw JSONL lines is unreachable (walk is
 // O(depth²)). Lifting it needs an offset-carrying cursor that seeks instead.
 const MAX_TAIL_LINES = 50_000
-// Hard cap on the raw bytes a single page window may materialize. A window
+// Soft cap on the raw bytes a single page window may materialize. A window
 // that hits it is served short with a nextCursor, and the client's existing
 // scroll-up paging fetches the rest — this is what makes the endpoint's
 // per-request memory bounded regardless of transcript geometry (a single turn
-// with huge tool results used to pull the whole file into one window).
+// with huge tool results used to pull the whole file into one window). Soft:
+// the scan runs past it until the window holds at least two display items
+// (one sacrificial head plus one servable), so a single item larger than the
+// budget still serves instead of yielding an empty page.
 const MESSAGES_PAGE_BYTE_BUDGET = 4 * 1024 * 1024
-// A cursor page's window extends this far past the cursor line so tool_use
-// blocks near the page's newest edge still meet their tool_result entries
-// (results land within the same turn, typically adjacent lines). The old
-// implementation read from the cursor to EOF; results further out than this
-// are not attached — bounded staleness on a historical page, never on the
+// Unconditional ceiling on the window — the structural memory bound. The
+// two-item floor above does not apply here: a run of non-display rows (tool
+// results between two visible items) larger than this makes the history
+// behind it unreachable through paging, which is the accepted trade-off for
+// never letting one request materialize an unbounded window.
+const MESSAGES_PAGE_HARD_CAP_FACTOR = 2
+// A cursor page's window extends at least this far past the cursor line so
+// tool_use blocks near the page's newest edge still meet their tool_result
+// entries (results land within the same turn, typically adjacent lines). The
+// boundary is then rounded UP to the next line start, so any row that BEGINS
+// inside the grace region is included whole — a fixed byte end would cut a
+// large result row mid-line and drop it as malformed. The old implementation
+// read from the cursor to EOF; results starting beyond the grace region are
+// not attached — bounded staleness on a historical page, never on the
 // trailing page (whose window always ends at EOF).
 const CURSOR_WINDOW_GRACE_BYTES = 512 * 1024
-
-function dropPartialHead<T>(items: T[], reachedStart: boolean): T[] {
-  if (reachedStart || items.length === 0) return items
-  return items.slice(1)
-}
 
 function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | null {
   return hasOlder && messages[0] ? messages[0].id : null
@@ -1010,17 +1017,16 @@ interface DisplayCountState {
   pendingInformationalContent: string | null
 }
 
-/** Whether this raw line starts a new display item, by the same rules
- * transformMessages applies (uuid dedup, assistant merge by message.id,
- * meta/tool-result-only/task-notification/compact-summary skips). Lines are
- * visited NEWEST-FIRST, so "first occurrence" checks invert: the newest copy
- * of a duplicate uuid / merged message.id is the one counted. That can place
- * a count on a different line than the forward transform keeps, which shifts
- * the window boundary by at most the affected item — absorbed by the
- * sacrificial head item the page slicing already drops. */
-function countsAsDisplayStart(raw: JsonlEntry | undefined, state: DisplayCountState): boolean {
-  if (!raw) return false
-  const entry = normalizeQueuedCommandEntry(raw)
+/** Whether this (already normalized) entry starts a new display item, by the
+ * same rules transformMessages applies (uuid dedup, assistant merge by
+ * message.id, meta/tool-result-only/task-notification/compact-summary skips).
+ * Entries are visited NEWEST-FIRST, so "first occurrence" checks invert: the
+ * newest copy of a duplicate uuid / merged message.id is the one counted.
+ * That can place a count on a different line than the forward transform
+ * keeps, which shifts the window boundary by at most the affected item —
+ * absorbed by the sacrificial head item the page slicing drops when the
+ * window's deepest item may be partial. */
+function countsAsDisplayStart(entry: JsonlEntry, state: DisplayCountState): boolean {
   if (!isMessageOrSystemDisplayEntry(entry)) return false
   if ('isMeta' in entry && entry.isMeta) return false
 
@@ -1073,92 +1079,171 @@ interface PageWindowScan {
   endOffset: number | undefined
   /** Window start coincides with the file start. */
   reachedStart: boolean
+  /** The window's deepest display item may be partially merged (an assistant
+   * group whose older entries lie below the window start) — page slicing must
+   * sacrifice it. False when the deepest item is single-entry (user, system,
+   * id-less assistant): those are complete wherever the window starts, and
+   * dropping them would lose data (an empty page behind a huge tool-result
+   * run, a trailing system item swallowed by display reordering). */
+  dropHead: boolean
+}
+
+/** Smallest recorded line-start offset at or past the grace distance, so the
+ * window end lands on a line boundary: any row BEGINNING inside the grace
+ * region is included whole. undefined = grace reaches past the newest scanned
+ * line, read to EOF. `lineOffsets` is newest-first (descending). */
+function graceEndOffset(lineOffsets: number[], cursorLineEnd: number): number | undefined {
+  const target = cursorLineEnd + CURSOR_WINDOW_GRACE_BYTES
+  for (let i = lineOffsets.length - 1; i >= 0; i--) {
+    if (lineOffsets[i]! >= target) return lineOffsets[i]
+  }
+  return undefined
 }
 
 /** Pass 1 of the paged read: walk backward from EOF, parsing each line
  * transiently to count display-item starts (and locate the cursor), retaining
- * only offsets and id sets. Stops at `limit + 1` items (the head item is
- * sacrificial — see dropPartialHead), the byte budget, MAX_TAIL_LINES, or the
- * file start. Never materializes entries, so scan depth costs CPU, not memory.
+ * only offsets and id sets. Counting stops at `limit + 1` items, the byte
+ * budget (two-item floor), or unconditionally at the hard cap; the whole scan
+ * is bounded by MAX_TAIL_LINES and the file start. Never materializes
+ * entries, so scan depth costs CPU, not memory.
  *
- * While searching for the cursor, lines are only JSON-parsed when their raw
- * bytes contain the quoted cursor id — a deep cursor scan is a byte search,
- * not a parse of everything above the cursor. */
+ * Cursor resolution is canonical: the forward transform deduplicates uuids to
+ * their OLDEST occurrence, so the scan keeps byte-searching below the first
+ * match and re-anchors on every deeper verified occurrence (a resume-replayed
+ * transcript otherwise paginates in a cycle, serving the same pages forever).
+ * Between matches, lines are only JSON-parsed when their raw bytes contain
+ * the quoted cursor id — the search is memchr, not a parse of the transcript.
+ *
+ * When counting stops on a system entry, the scan extends through the rest of
+ * the contiguous system run: the transform reorders adjacent system items
+ * (recalls, then boundaries, then informationals) regardless of file order,
+ * and a window boundary inside the run makes pagination skip the reordered
+ * items entirely. */
 async function scanMessagesPageWindow(
   jsonlPath: string,
   opts: { limit: number; cursor?: string; byteBudget: number; signal?: AbortSignal }
 ): Promise<PageWindowScan> {
   const { limit, cursor, byteBudget, signal } = opts
+  const hardCap = byteBudget * MESSAGES_PAGE_HARD_CAP_FACTOR
   const cursorNeedle = cursor !== undefined ? Buffer.from(JSON.stringify(cursor)) : null
+  // Items needed below the cursor (or below EOF): the page plus the head
+  // item that slicing sacrifices when the window start may cut it.
+  const targetItems = limit + 1
+  // Line-start offsets of every scanned line, for grace-boundary placement on
+  // (re-)anchor. Bounded by MAX_TAIL_LINES numbers. Cursor pages only.
+  const lineOffsets: number[] | null = cursorNeedle ? [] : null
 
-  const state: DisplayCountState = {
+  let mode: 'searching' | 'counting' | 'extending' | 'settled' =
+    cursorNeedle ? 'searching' : 'counting'
+  let anchored = cursorNeedle === null
+  let state: DisplayCountState = {
     seenUuids: new Set(),
     seenAssistantMessageIds: new Set(),
     pendingInformationalContent: null,
   }
-  // Items needed below the cursor (or below EOF): the page plus the
-  // sacrificial head item that page slicing drops when the window start is
-  // not the file start.
-  const targetItems = limit + 1
-  let searching = cursorNeedle !== null
   let endOffset: number | undefined
   let linesScanned = 0
   let displayCount = 0
   let windowBytes = 0
   let startOffset = 0
-  let reachedStart = true
+  let hitLineCap = false
+  // Conservative default: with nothing counted, treat the head as partial.
+  let deepestCountedIsGroup = true
 
   for await (const { line, offset } of iterateJsonlLinesBackward(jsonlPath, signal)) {
     linesScanned++
     if (linesScanned > MAX_TAIL_LINES) {
       // Same reachability contract as the old tail reader: history deeper
       // than MAX_TAIL_LINES raw lines from EOF cannot be paged to.
-      reachedStart = false
-      return searching
-        ? { found: false, startOffset: 0, endOffset: undefined, reachedStart }
-        : { found: true, startOffset, endOffset, reachedStart }
+      hitLineCap = true
+      break
+    }
+    lineOffsets?.push(offset)
+
+    if (cursorNeedle && line.includes(cursorNeedle)) {
+      const parsed = parseJsonlLine<JsonlEntry>(line)
+      const normalized = parsed !== undefined ? normalizeQueuedCommandEntry(parsed) : undefined
+      if (normalized !== undefined && (normalized as { uuid?: string }).uuid === cursor) {
+        // (Re-)anchor at this occurrence — the deepest seen so far wins.
+        mode = 'counting'
+        anchored = true
+        state = {
+          seenUuids: new Set(),
+          seenAssistantMessageIds: new Set(),
+          pendingInformationalContent: null,
+        }
+        displayCount = 0
+        windowBytes = 0
+        deepestCountedIsGroup = true
+        startOffset = offset
+        endOffset = graceEndOffset(lineOffsets!, offset + line.length + 1)
+        continue
+      }
+      // A quoted-id byte match inside content or parentUuid parses to a
+      // different uuid — not an occurrence.
     }
 
-    if (searching) {
-      if (cursorNeedle && line.includes(cursorNeedle)) {
-        const parsed = parseJsonlLine<JsonlEntry>(line)
-        const normalized = parsed !== undefined ? normalizeQueuedCommandEntry(parsed) : undefined
-        if (normalized !== undefined && (normalized as { uuid?: string }).uuid === cursor) {
-          searching = false
-          // Window extends past the cursor line so the cursor item's own
-          // merged blocks and the surrounding turn's tool results are in view.
-          endOffset = offset + line.length + 1 + CURSOR_WINDOW_GRACE_BYTES
-          startOffset = offset
-        }
-        // A quoted-id byte match inside content or parentUuid parses to a
-        // different uuid — keep searching.
+    if (mode === 'searching' || mode === 'settled') continue
+
+    const parsed = parseJsonlLine<JsonlEntry>(line)
+    const normalized = parsed !== undefined ? normalizeQueuedCommandEntry(parsed) : undefined
+
+    if (mode === 'extending') {
+      const isSystemDisplay =
+        normalized !== undefined &&
+        normalized.type === 'system' &&
+        isMessageOrSystemDisplayEntry(normalized) &&
+        !normalized.isMeta
+      if (isSystemDisplay && windowBytes + line.length + 1 < hardCap) {
+        windowBytes += line.length + 1
+        startOffset = offset
+        deepestCountedIsGroup = false
+        continue
       }
+      mode = 'settled'
+      if (!cursorNeedle) break
       continue
     }
 
+    // counting
     windowBytes += line.length + 1
     startOffset = offset
-    if (countsAsDisplayStart(parseJsonlLine<JsonlEntry>(line), state)) {
+    if (normalized !== undefined && countsAsDisplayStart(normalized, state)) {
       displayCount++
-      if (displayCount >= targetItems) {
-        reachedStart = false
-        break
-      }
+      deepestCountedIsGroup =
+        normalized.type === 'assistant' &&
+        !!(normalized as JsonlMessageEntry).message.id
+      if (displayCount >= targetItems) mode = 'extending'
     }
-    // The budget is a hard cap, but never below two items: one sacrificial
-    // head plus at least one servable item, so a single display item larger
-    // than the whole budget is still delivered instead of an empty page.
-    if (windowBytes >= byteBudget && displayCount >= 2) {
-      reachedStart = false
-      break
+    // The budget stop waits for two items: one sacrificial head plus at least
+    // one servable item, so a single display item larger than the budget is
+    // still delivered instead of an empty page.
+    if (mode === 'counting' && windowBytes >= byteBudget && displayCount >= 2) {
+      mode = 'extending'
+    }
+    if (windowBytes >= hardCap) {
+      mode = 'settled'
+      if (!cursorNeedle) break
     }
   }
 
-  if (searching) {
-    // Cursor never found and the scan covered the whole file: vanished id.
-    return { found: false, startOffset: 0, endOffset: undefined, reachedStart: true }
+  if (!anchored) {
+    // Cursor never found: vanished id, or deeper than the line cap.
+    return {
+      found: false,
+      startOffset: 0,
+      endOffset: undefined,
+      reachedStart: !hitLineCap,
+      dropHead: true,
+    }
   }
-  return { found: true, startOffset, endOffset, reachedStart }
+  return {
+    found: true,
+    startOffset,
+    endOffset,
+    reachedStart: startOffset === 0,
+    dropHead: deepestCountedIsGroup,
+  }
 }
 
 /** Pass 2 of the paged read: parse + normalize + filter the entries of a byte
@@ -1171,8 +1256,13 @@ async function readEntriesRange(
   signal?: AbortSignal
 ): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
   const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
-  for await (const line of streamFileLines(jsonlPath, { start: startOffset, end: endOffset })) {
-    signal?.throwIfAborted()
+  // The signal is threaded into the reader itself (checked per chunk): a
+  // multi-MB row spans many chunks before it ever surfaces as a line here.
+  for await (const line of streamFileLines(
+    jsonlPath,
+    { start: startOffset, end: endOffset },
+    signal
+  )) {
     const parsed = parseJsonlLine<JsonlEntry>(line)
     if (!parsed) continue
     const normalized = normalizeQueuedCommandEntry(parsed)
@@ -1228,6 +1318,7 @@ export async function getSessionMessagesPage(
   signal?.throwIfAborted()
   const transformed = transformMessages(entries)
   const reachedStart = scan.reachedStart
+  const dropHead = scan.dropHead && !reachedStart
 
   if (cursor) {
     const idx = transformed.findIndex((item) => item.id === cursor)
@@ -1242,22 +1333,28 @@ export async function getSessionMessagesPage(
       )
       return { messages: [], nextCursor: null }
     }
-    const start = reachedStart ? Math.max(0, idx - limit) : Math.max(1, idx - limit)
+    const start = Math.max(dropHead ? 1 : 0, idx - limit)
     const messages = transformed.slice(start, idx)
     const hasOlder = messages.length > 0 && (!reachedStart || start > 0)
-    // Sequential walks end here when the cap truncates the page to empty.
+    // Sequential walks end here when a cap truncates the page to empty.
     if (messages.length === 0 && !reachedStart) {
       console.warn(
-        `getSessionMessagesPage: pagination for session ${sessionId} hit the ` +
-        `${MAX_TAIL_LINES}-line depth cap; deeper history is unreachable`
+        `getSessionMessagesPage: pagination for session ${sessionId} hit a ` +
+        `scan cap below cursor ${cursor}; deeper history is unreachable`
       )
     }
     return { messages, nextCursor: pageCursor(messages, hasOlder) }
   }
 
-  const usable = dropPartialHead(transformed, reachedStart)
+  const usable = dropHead ? transformed.slice(1) : transformed
   const messages = usable.slice(-limit)
   const hasOlder = messages.length > 0 && (!reachedStart || usable.length > messages.length)
+  if (messages.length === 0 && !reachedStart) {
+    console.warn(
+      `getSessionMessagesPage: window for session ${sessionId} hit the byte ` +
+      `hard cap before a complete display item; serving an empty page`
+    )
+  }
   return { messages, nextCursor: pageCursor(messages, hasOlder) }
 }
 
