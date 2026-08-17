@@ -322,18 +322,70 @@ describe('useMessages forward delta', () => {
     await waitFor(() => expect(inflight).toHaveLength(3))
     inflight[2].resolve({ messages: [], anchor: null, resync: true })
     await waitFor(() => expect(inflight).toHaveLength(4))
-    inflight[3].resolve({ messages: [user('u9')], nextCursor: null })
+    inflight[3].resolve({ messages: [user('u9')], nextCursor: 'c2' })
     await waitFor(() => expect(result.current.data?.map((m) => m.id)).toEqual(['u9']))
 
-    // The pre-resync older page finally lands — stale history from the old
-    // transcript generation must not commit.
-    inflight[1].resolve({ messages: [user('u0-stale')], nextCursor: null })
+    // The reset aborts the stale request outright — fencing alone would let a
+    // hung request hold isFetchingOlder and block all fresh paging.
+    expect(inflight[1].init?.signal?.aborted).toBe(true)
     await act(async () => {
       expect(await olderDone).toBe(false)
     })
     expect(result.current.data?.map((m) => m.id)).toEqual(['u9'])
-    // Nor may the stale page's terminal cursor latch older-history loading off.
-    expect(result.current.hasOlder).toBe(false)
+    expect(result.current.isFetchingOlder).toBe(false)
+
+    // Fresh paging starts immediately against the post-resync cursor.
+    act(() => {
+      void result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(5))
+    expect(inflight[4].url).toContain('cursor=c2')
+  })
+
+  it('drops an item deleted remotely from within the covered range on a periodic full fetch', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const wrapper = createWrapper()
+      const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+      await settleInitialPage(wrapper, result, [user('u1'), assistant('a1'), user('u2'), assistant('a2')])
+
+      vi.setSystemTime(Date.now() + MESSAGES_FULL_REFETCH_INTERVAL_MS + 1000)
+      act(() => {
+        void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+      })
+      await waitFor(() => expect(inflight).toHaveLength(2))
+      // Another client deleted a1; the page still starts at u1, so a1's
+      // absence is a rewrite, not turnover — it must not survive in `older`.
+      inflight[1].resolve({ messages: [user('u1'), user('u2'), assistant('a2')], nextCursor: null })
+      await waitFor(() => expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'u2', 'a2']))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('items before the new page start still slide into older history', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const wrapper = createWrapper()
+      const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+      await settleInitialPage(wrapper, result, [user('u1'), assistant('a1'), user('u2'), assistant('a2')])
+
+      vi.setSystemTime(Date.now() + MESSAGES_FULL_REFETCH_INTERVAL_MS + 1000)
+      act(() => {
+        void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+      })
+      await waitFor(() => expect(inflight).toHaveLength(2))
+      // The page advanced: u1/a1 fell off its start — genuine turnover.
+      inflight[1].resolve({
+        messages: [user('u2'), assistant('a2'), user('u3'), assistant('a3')],
+        nextCursor: 'u2',
+      })
+      await waitFor(() =>
+        expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'u3', 'a3'])
+      )
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('falls back to a full fetch when the delta window predates the cache', async () => {

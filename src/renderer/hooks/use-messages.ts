@@ -177,10 +177,15 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
   // Bumped whenever older-history state is reset (session switch, resync).
   // An in-flight fetchOlder from a previous generation must not commit — it
   // could repopulate rewritten-away history or latch a stale terminal cursor.
+  // The request is also aborted outright: fencing alone leaves a hung request
+  // holding isFetchingOlder, which blocks every fresh fetchOlder call.
   const olderGenRef = useRef(0)
+  const olderAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     olderGenRef.current++
+    olderAbortRef.current?.abort()
+    olderAbortRef.current = null
     setOlder([])
     setOlderCursor(undefined)
     prevLatestRef.current = EMPTY_MESSAGES
@@ -198,6 +203,8 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     if (resyncedAt === undefined || resyncedAt === lastResyncRef.current) return
     lastResyncRef.current = resyncedAt
     olderGenRef.current++
+    olderAbortRef.current?.abort()
+    olderAbortRef.current = null
     prevLatestRef.current = EMPTY_MESSAGES
     setOlder([])
     setOlderCursor(undefined)
@@ -208,7 +215,16 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     prevLatestRef.current = latestMessages
     if (prev.length === 0) return
     const nextIds = new Set(latestMessages.map((m) => m.id))
-    const slidOff = prev.filter((m) => !nextIds.has(m.id) && !deleted.has(m.id))
+    // Only items that sat BEFORE the new page's first item can have slid off
+    // the trailing window. An item missing from within the still-covered
+    // range was rewritten away (e.g. deleted by another client) — retaining
+    // it as scrolled-off history would resurrect it indefinitely. When the
+    // new first item isn't in prev (the page advanced wholesale between
+    // fetches), fall back to treating everything missing as turnover.
+    const firstId = latestMessages[0]?.id
+    const boundary = firstId !== undefined ? prev.findIndex((m) => m.id === firstId) : -1
+    const candidates = boundary >= 0 ? prev.slice(0, boundary) : prev
+    const slidOff = candidates.filter((m) => !nextIds.has(m.id) && !deleted.has(m.id))
     if (slidOff.length === 0) return
     setOlder((cur) => {
       const seen = new Set(cur.map((m) => m.id))
@@ -231,11 +247,14 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
       olderCursor ?? latest.data?.nextCursor ?? older[0]?.id ?? latestMessages[0]?.id
     if (!cursor) return false
     const gen = olderGenRef.current
+    const controller = new AbortController()
+    olderAbortRef.current = controller
     setIsFetchingOlder(true)
     try {
       const page = await fetchMessagesPage(agentSlug, sessionId, {
         limit: MESSAGES_PAGE_OLDER_LIMIT,
         cursor,
+        signal: controller.signal,
       })
       // Older-history state was reset while this page was in flight (resync
       // or session switch): the response belongs to the previous transcript
@@ -251,12 +270,15 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
       setOlderCursor(page.nextCursor)
       return prepended.length > 0
     } catch (error) {
+      // Rejection caused by our own generation reset (abort) — not an error.
+      if (gen !== olderGenRef.current) return false
       console.warn('Failed to fetch older messages:', error)
       if (!(error instanceof TranscriptNotFoundError)) {
         captureRendererException(error, { tags: { area: 'messages', op: 'fetch-older' } })
       }
       return false
     } finally {
+      if (olderAbortRef.current === controller) olderAbortRef.current = null
       setIsFetchingOlder(false)
     }
   }, [sessionId, agentSlug, isFetchingOlder, hasOlder, older, olderCursor, latest.data?.nextCursor, latestMessages, deleted])
