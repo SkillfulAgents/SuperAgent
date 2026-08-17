@@ -154,6 +154,15 @@ html[data-keyboard-open] [data-composer-footer] {
 .markdown-composer-editor {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* prosemirror-view's own stylesheet sets `font-variant-ligatures: none` on
+   .ProseMirror, which also disables Inter's contextual alternates — the calt
+   substitutions that draw ->, --> and => as arrows. That stylesheet is imported
+   by the editor component, so it lands after this file in the bundle and a
+   same-specificity override loses the cascade. Double the class so this rule
+   wins regardless of import order. */
+.markdown-composer-editor.markdown-composer-editor {
   -webkit-font-variant-ligatures: normal;
   font-variant-ligatures: normal;
   font-feature-settings: normal;
