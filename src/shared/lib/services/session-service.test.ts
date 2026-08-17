@@ -1271,6 +1271,118 @@ describe('session-service', () => {
       expect(collected).toContain('info1')
     })
 
+    it('pages across a capped gap when the cursor sits in a reordered system run', async () => {
+      // The system run after the gap reorders (recalls before boundaries
+      // before informationals), so the raw rows below a system cursor can
+      // transform to display-AFTER it. If they satisfied the item count, the
+      // page would come out empty and terminate paging while older visible
+      // history exists behind the gap.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 12, 0, 0, s)).toISOString()
+      const rows: object[] = [
+        { type: 'user', uuid: 'old-u', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'older q' } },
+        { type: 'assistant', uuid: 'old-a', timestamp: ts(1), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'older r' }] } },
+        { type: 'assistant', uuid: 'A-use', timestamp: ts(2), sessionId: 's', parentUuid: null, message: { id: 'msg-A', role: 'assistant', content: [{ type: 'tool_use', id: 'tg', name: 'Bash', input: {} }] } },
+      ]
+      for (let i = 0; i < 10; i++) {
+        rows.push({ type: 'user', uuid: `rg-${i}`, timestamp: ts(3 + i), sessionId: 's', parentUuid: 'A-use', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tg', content: 'y'.repeat(1024) }] } })
+      }
+      rows.push(
+        { type: 'system', uuid: 'cb', subtype: 'compact_boundary', content: '', isMeta: false, timestamp: ts(20), compactMetadata: { trigger: 'auto', preTokens: 1 } },
+        { type: 'system', uuid: 'mr', subtype: 'memory_recall', content: '', isMeta: false, timestamp: ts(21), memory_paths: ['M.md'] },
+        { type: 'system', uuid: 'info', subtype: 'informational', content: 'note', isMeta: false, timestamp: ts(22) },
+        { type: 'user', uuid: 'new-u', timestamp: ts(23), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'new q' } },
+        { type: 'assistant', uuid: 'new-a', timestamp: ts(24), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'new r' }] } },
+      )
+      await createSessionFile('test-agent', 'page-session', rows)
+
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      const first = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        byteBudget: 512,
+      })
+      expect(first.messages.map((m) => m.id)).toEqual(['mr', 'cb', 'info', 'new-u', 'new-a'])
+      const collected = [...first.messages.map((m) => m.id)]
+      let cursor = first.nextCursor
+      for (let i = 0; i < 10 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 5,
+          cursor,
+          byteBudget: 512,
+        })
+        collected.unshift(...page.messages.map((m) => m.id))
+        cursor = page.nextCursor
+      }
+      expect(cursor).toBeNull()
+      expect(collected).toEqual(full.messages.map((m) => m.id))
+    })
+
+    it('keeps a heterogeneous system run whole under a small hard cap', async () => {
+      // Every row is individually below the cap, but the run collectively
+      // exceeds it: run completion is cap-exempt, so no window boundary may
+      // land inside the reorderable group.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 13, 0, 0, s)).toISOString()
+      const pad = 'p'.repeat(300)
+      await createSessionFile('test-agent', 'page-session', [
+        { type: 'user', uuid: 'older-u', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'older' } },
+        { type: 'assistant', uuid: 'older-a', timestamp: ts(1), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'older r' }] } },
+        { type: 'system', uuid: 'recall', subtype: 'memory_recall', content: pad, isMeta: false, timestamp: ts(2), memory_paths: ['M.md'] },
+        { type: 'system', uuid: 'boundary', subtype: 'compact_boundary', content: pad, isMeta: false, timestamp: ts(3), compactMetadata: { trigger: 'auto', preTokens: 1 } },
+        { type: 'system', uuid: 'info1', subtype: 'informational', content: `note one ${pad}`, isMeta: false, timestamp: ts(4) },
+        { type: 'system', uuid: 'info2', subtype: 'informational', content: `note two ${pad}`, isMeta: false, timestamp: ts(5) },
+        { type: 'user', uuid: 'newer-u', timestamp: ts(6), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'newer' } },
+        { type: 'assistant', uuid: 'newer-a', timestamp: ts(7), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'newer r' }] } },
+      ])
+
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      for (const [limit, byteBudget] of [[2, 400], [3, 700], [1, 400]] as const) {
+        const first = await getSessionMessagesPage('test-agent', 'page-session', { limit, byteBudget })
+        const collected = [...first.messages.map((m) => m.id)]
+        let cursor = first.nextCursor
+        for (let i = 0; i < 15 && cursor; i++) {
+          const page = await getSessionMessagesPage('test-agent', 'page-session', {
+            limit,
+            cursor,
+            byteBudget,
+          })
+          collected.unshift(...page.messages.map((m) => m.id))
+          cursor = page.nextCursor
+        }
+        expect(cursor).toBeNull()
+        expect(collected).toEqual(full.messages.map((m) => m.id))
+      }
+    })
+
+    it('collapses repeated compact boundaries like the transform does', async () => {
+      // Boundary/summary pairs with no message between them all share one
+      // anchor; the transform keeps only the newest. Counting each would
+      // satisfy the page target with items that never display, and the
+      // system-cursor page below the surviving boundary must reach the real
+      // older messages.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 14, 0, 0, s)).toISOString()
+      const rows: object[] = [
+        { type: 'user', uuid: 'U', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q' } },
+        { type: 'assistant', uuid: 'A', timestamp: ts(1), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'r' }] } },
+      ]
+      for (let i = 1; i <= 4; i++) {
+        rows.push({ type: 'system', uuid: `c${i}`, subtype: 'compact_boundary', content: '', isMeta: false, timestamp: ts(1 + i), compactMetadata: { trigger: 'auto', preTokens: i } })
+        rows.push({ type: 'user', uuid: `s${i}`, timestamp: ts(6 + i), sessionId: 's', parentUuid: null, isCompactSummary: true, message: { role: 'user', content: `summary ${i}` } })
+      }
+      rows.push({ type: 'user', uuid: 'N', timestamp: ts(20), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'after' } })
+      await createSessionFile('test-agent', 'page-session', rows)
+
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      expect(full.messages.map((m) => m.id)).toEqual(['U', 'A', 'c4', 'N'])
+
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 2 })
+      expect(first.messages.map((m) => m.id)).toEqual(['c4', 'N'])
+      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 2,
+        cursor: first.nextCursor!,
+      })
+      expect(older.messages.map((m) => m.id)).toEqual(['U', 'A'])
+      expect(older.nextCursor).toBeNull()
+    })
+
     it('attaches a tool result recorded past the cursor line', async () => {
       // A queued user message lands between a tool_use and its result, and
       // becomes the page cursor: the result then sits ABOVE the cursor line,

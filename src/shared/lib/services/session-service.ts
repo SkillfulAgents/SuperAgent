@@ -1200,6 +1200,18 @@ async function scanMessagesPageWindow(
   // message.id of an assistant merge group whose span may extend below the
   // current line — set while walking its (possibly interleaved) turn.
   let openGroupId: string | null = null
+  // While the cursor is a system item, rows below it may belong to the same
+  // contiguous system run and reorder display-AFTER the cursor (recalls sort
+  // before boundaries before informationals regardless of file order). Such
+  // rows must not satisfy the item count: a page counted from them can
+  // transform to empty and terminate paging while older history exists.
+  // Suppression lifts at the first anchor row below the cursor's run; every
+  // item counted after that is provably display-before the cursor.
+  let suppressUntilAnchorRow = false
+  // The transform keeps only the NEWEST compact boundary before each anchor
+  // (a single-slot map keyed by the next message), so deeper boundaries in
+  // the same span collapse away and must not count as display items.
+  let boundaryCountedSinceAnchor = false
 
   for await (const { line, offset } of iterateJsonlLinesBackward(jsonlPath, signal)) {
     linesScanned++
@@ -1227,6 +1239,8 @@ async function scanMessagesPageWindow(
         windowBytes = 0
         deepestCountedIsGroup = true
         openGroupId = null
+        suppressUntilAnchorRow = normalized.type === 'system'
+        boundaryCountedSinceAnchor = false
         startOffset = offset
         endOffset = graceEndOffset(lineOffsets!, offset + line.length + 1)
         continue
@@ -1242,7 +1256,11 @@ async function scanMessagesPageWindow(
 
     if (mode === 'extending') {
       const kind = classifyExtensionRow(normalized, state)
-      if (kind !== 'settle' && windowBytes + line.length + 1 < hardCap) {
+      if (kind !== 'settle') {
+        // Cap-exempt: the transform reorders an entire contiguous system run
+        // as one unit, so a cap-placed boundary inside it loses items exactly
+        // like a cut merge group would. Bounded by the run's span — system
+        // and filtered rows are small.
         windowBytes += line.length + 1
         startOffset = offset
         if (kind === 'system') deepestCountedIsGroup = false
@@ -1260,9 +1278,37 @@ async function scanMessagesPageWindow(
       normalized !== undefined && (normalized.type === 'user' || normalized.type === 'assistant')
         ? (normalized as JsonlMessageEntry)
         : undefined
-    if (normalized !== undefined && countsAsDisplayStart(normalized, state)) {
-      displayCount++
-      deepestCountedIsGroup = msgEntry?.type === 'assistant' && !!msgEntry.message.id
+    const pendingInfoBefore = state.pendingInformationalContent
+    const counted = normalized !== undefined && countsAsDisplayStart(normalized, state)
+    // An anchor row is one the transform attaches system items to — a real
+    // message entry, not a filtered/skipped one (meta rows, compact
+    // summaries, an informational's synthetic user copy).
+    const isAnchorRow =
+      msgEntry !== undefined &&
+      !('isMeta' in msgEntry && msgEntry.isMeta) &&
+      !msgEntry.isCompactSummary &&
+      !(
+        pendingInfoBefore !== null &&
+        msgEntry.type === 'user' &&
+        typeof msgEntry.message.content === 'string' &&
+        msgEntry.message.content === pendingInfoBefore
+      )
+    if (isAnchorRow) {
+      suppressUntilAnchorRow = false
+      boundaryCountedSinceAnchor = false
+    }
+    if (counted && !suppressUntilAnchorRow) {
+      const isBoundary =
+        normalized!.type === 'system' &&
+        (normalized as JsonlSystemEntry).subtype === 'compact_boundary'
+      if (isBoundary && boundaryCountedSinceAnchor) {
+        // Collapsed by the transform — the newest boundary in this span,
+        // already counted, is the only one that displays.
+      } else {
+        if (isBoundary) boundaryCountedSinceAnchor = true
+        displayCount++
+        deepestCountedIsGroup = msgEntry?.type === 'assistant' && !!msgEntry.message.id
+      }
     }
     // Merge-group span tracking. An assistant group's older entries can lie
     // below queued/system/filtered rows interleaved inside its turn, so a
@@ -1287,19 +1333,18 @@ async function scanMessagesPageWindow(
       // least one servable item, so a single display item larger than the
       // budget is still delivered instead of an empty page.
       mode = 'extending'
-    }
-    // The hard cap has its own floor: at least one servable item (two when
-    // the deepest item is a merge group the head-drop would sacrifice), so a
-    // run of non-display rows at EOF — a turn's freshly written tool results
-    // — cannot produce an empty terminal page while visible history exists.
-    if (
-      mode === 'counting' &&
+    } else if (
       windowBytes >= hardCap &&
       !groupOpen &&
       displayCount >= (deepestCountedIsGroup ? 2 : 1)
     ) {
-      mode = 'settled'
-      if (!cursorNeedle) break
+      // The hard cap has its own floor: at least one servable item (two when
+      // the deepest item is a merge group the head-drop would sacrifice), so
+      // a run of non-display rows at EOF — a turn's freshly written tool
+      // results — cannot produce an empty terminal page while visible
+      // history exists. Routed through extension rather than settling
+      // directly, so a cap landing on a system run still completes the run.
+      mode = 'extending'
     }
   }
 
