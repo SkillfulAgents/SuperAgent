@@ -1,29 +1,25 @@
 import { Page, expect } from '@playwright/test'
 
 /**
- * Page object for agent access tab (ACL management)
+ * Page object for agent access management (ACL) — the Share popover on the
+ * agent home header. Formerly the "Access" tab in the agent settings dialog.
  */
 export class AccessPage {
   constructor(private page: Page) {}
 
-  /** Open agent settings via context menu and navigate to Access tab */
+  /** Select the agent in the sidebar and open the Share popover from its header */
   async openAccessTab(agentName: string) {
-    // Right-click on the agent to open context menu (find by name text, slug has random suffix)
-    await this.page.locator(`[data-testid^="agent-item-"]`, { hasText: agentName }).click({ button: 'right' })
-    // Click Settings in context menu
-    await this.page.locator('[data-testid="agent-settings-item"]').click()
-    // Wait for agent settings dialog
-    await expect(this.page.locator('[data-testid="agent-settings-dialog"]')).toBeVisible()
-    // Navigate to Access tab
-    await this.page.locator('[data-testid="agent-settings-nav-access"]').click()
+    // Click the agent in the sidebar to land on its home page (find by name
+    // text, slug has random suffix)
+    await this.page.locator(`[data-testid^="agent-item-"]`, { hasText: agentName }).click()
+    // Open the Share popover
+    await this.page.locator('[data-testid="agent-share-button"]').click()
+    await expect(this.page.locator('[data-testid="agent-share-popover"]')).toBeVisible()
   }
 
   /** Invite a user by searching and selecting them */
   async inviteUser(searchQuery: string, role: 'viewer' | 'user' | 'owner' = 'user') {
-    // Click Invite button
-    await this.page.locator('[data-testid="invite-user-button"]').click()
-
-    // Search for user
+    // Search for user (the invite input is always visible in the popover)
     await this.page.locator('[data-testid="invite-search-input"]').fill(searchQuery)
 
     // Wait for search results and click the first one
@@ -38,8 +34,9 @@ export class AccessPage {
     // Click Add
     await this.page.locator('[data-testid="invite-add-button"]').click()
 
-    // Wait for invite form to close (indicates success)
-    await expect(this.page.locator('[data-testid="invite-search-input"]')).not.toBeVisible()
+    // The form resets to the empty search input on success; the new entry
+    // appearing in the list is the reliable success signal.
+    await expect(this.page.locator('[data-testid^="access-entry-"]').filter({ hasText: searchQuery })).toBeVisible()
   }
 
   /** Change a user's role in the access list */
@@ -50,14 +47,21 @@ export class AccessPage {
     await expect(this.page.locator(`[data-testid="access-role-${userId}"]`)).toContainText(label)
   }
 
-  /** Verify the no-permission overlay is shown */
+  /** Remove a user via the Remove item inside their role dropdown */
+  async removeUser(userId: string) {
+    await this.page.locator(`[data-testid="access-role-${userId}"]`).click()
+    await this.page.locator(`[data-testid="access-remove-${userId}"]`).click()
+    await expect(this.page.locator(`[data-testid="access-entry-${userId}"]`)).not.toBeVisible()
+  }
+
+  /** Verify the no-permission overlay is shown (agent settings dialog) */
   async expectNoPermissionOverlay() {
     await expect(this.page.locator('[data-testid="agent-settings-no-permission"]')).toBeVisible()
   }
 
-  /** Close the agent settings dialog */
+  /** Close the Share popover */
   async closeSettings() {
     await this.page.keyboard.press('Escape')
-    await expect(this.page.locator('[data-testid="agent-settings-dialog"]')).not.toBeVisible()
+    await expect(this.page.locator('[data-testid="agent-share-popover"]')).not.toBeVisible()
   }
 }
