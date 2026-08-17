@@ -441,6 +441,81 @@ export async function readJsonlTailLines(
 }
 
 /**
+ * Iterate a file's raw lines BACKWARD from EOF without retaining the file.
+ * Yields `{ line, offset }` per line — `offset` is the byte position of the
+ * line's first byte; the newline is excluded from `line`. Memory held between
+ * iterations is one read chunk plus the partial head of the line currently
+ * being assembled, so walking an arbitrarily deep tail is O(chunk) — the
+ * property the paged messages reader's index scan relies on. Yielded buffers
+ * may alias an internal read chunk: consume them within the iteration, don't
+ * retain them.
+ *
+ * Missing file yields nothing. `signal` aborts between chunk reads (throws the
+ * abort reason), same contract as readJsonlTailLines.
+ */
+export async function* iterateJsonlLinesBackward(
+  filePath: string,
+  signal?: AbortSignal
+): AsyncGenerator<{ line: Buffer; offset: number }> {
+  signal?.throwIfAborted()
+  let fileHandle: fs.promises.FileHandle
+  try {
+    fileHandle = await fs.promises.open(filePath, 'r')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+
+  try {
+    const stat = await fileHandle.stat()
+    let pos = stat.size
+    // Bytes below the lowest newline processed so far — the tail fragment of
+    // the line whose start lies in a chunk not yet read.
+    let carry = Buffer.alloc(0)
+    // The first candidate is the region between the last newline and EOF —
+    // empty when the file ends with a newline. Skip only that empty
+    // pseudo-line; interior empty lines are yielded (parseJsonlLine treats
+    // them as blanks), matching readJsonlTailLines.
+    let first = true
+
+    while (pos > 0) {
+      signal?.throwIfAborted()
+      const size = Math.min(TAIL_READ_CHUNK, pos)
+      pos -= size
+      const buf = Buffer.allocUnsafe(size)
+      const { bytesRead } = await fileHandle.read(buf, 0, size, pos)
+      signal?.throwIfAborted()
+      const chunk = bytesRead === size ? buf : buf.subarray(0, bytesRead)
+
+      // Unprocessed region of this chunk, scanned high-to-low.
+      let high = chunk.length
+      let idx = high > 0 ? chunk.lastIndexOf(NEWLINE_BYTE, high - 1) : -1
+      while (idx !== -1) {
+        const segment = chunk.subarray(idx + 1, high)
+        const line = carry.length > 0 ? Buffer.concat([segment, carry]) : segment
+        carry = Buffer.alloc(0)
+        if (line.length > 0 || !first) {
+          yield { line, offset: pos + idx + 1 }
+        }
+        first = false
+        high = idx
+        idx = high > 0 ? chunk.lastIndexOf(NEWLINE_BYTE, high - 1) : -1
+      }
+      carry =
+        carry.length > 0
+          ? Buffer.concat([chunk.subarray(0, high), carry])
+          : Buffer.from(chunk.subarray(0, high))
+    }
+
+    if (carry.length > 0) {
+      yield { line: carry, offset: 0 }
+    }
+  } finally {
+    await fileHandle.close()
+  }
+}
+
+/**
  * Stream-read JSONL file line by line (for large files)
  * Yields parsed objects one at a time
  *
@@ -464,11 +539,23 @@ export async function* streamJsonlFile<T = unknown>(
  * excluded; a `\r` from a CRLF line is kept). Lines are never decoded or
  * re-encoded, so a consumer that copies them back out preserves the original
  * bytes exactly — the property the transcript rewriters rely on.
+ *
+ * `range` restricts the read to `[start, end)` byte offsets. `start` must be a
+ * line boundary; a range ending mid-line yields the truncated head of that
+ * line, which JSONL consumers drop as malformed.
  */
-export async function* streamFileLines(filePath: string): AsyncIterable<Buffer> {
+export async function* streamFileLines(
+  filePath: string,
+  range?: { start?: number; end?: number }
+): AsyncIterable<Buffer> {
+  if (range?.end !== undefined && range.end <= (range.start ?? 0)) return
   const fileHandle = await fs.promises.open(filePath, 'r')
   try {
-    const stream = fileHandle.createReadStream()
+    const stream = fileHandle.createReadStream({
+      ...(range?.start !== undefined ? { start: range.start } : {}),
+      // createReadStream's `end` is inclusive; the range contract is exclusive.
+      ...(range?.end !== undefined ? { end: range.end - 1 } : {}),
+    })
     // Chunks holding the trailing, not-yet-terminated line. Concatenated only
     // once its newline arrives, so a row spanning many chunks is joined once.
     let pending: Buffer[] = []

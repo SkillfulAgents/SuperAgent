@@ -21,6 +21,8 @@ import {
   parseJsonl,
   readJsonlFile,
   readJsonlTailLines,
+  iterateJsonlLinesBackward,
+  streamFileLines,
   streamJsonlFile,
   createJsonArrayStringifyTransform,
   getAgentsDir,
@@ -1043,5 +1045,121 @@ describe('path helpers', () => {
   it('getSessionJsonlPath rejects session ids that escape the sessions directory', () => {
     expect(() => getSessionJsonlPath('my-agent', '../outside')).toThrow('Invalid session ID')
     expect(() => getSessionJsonlPath('my-agent', '/tmp/outside')).toThrow('Invalid session ID')
+  })
+})
+
+describe('iterateJsonlLinesBackward', () => {
+  async function collect(filePath: string, signal?: AbortSignal) {
+    const out: Array<{ text: string; offset: number }> = []
+    for await (const { line, offset } of iterateJsonlLinesBackward(filePath, signal)) {
+      // Copy: yielded buffers may alias the iterator's internal chunk.
+      out.push({ text: line.toString('utf-8'), offset })
+    }
+    return out
+  }
+
+  it('yields lines newest-first with their byte offsets', async () => {
+    const filePath = path.join(testDir, 'backward.jsonl')
+    const content = 'alpha\nbeta\ngamma\n'
+    await fs.promises.writeFile(filePath, content)
+
+    const lines = await collect(filePath)
+    expect(lines.map((l) => l.text)).toEqual(['gamma', 'beta', 'alpha'])
+    for (const { text, offset } of lines) {
+      expect(content.slice(offset, offset + text.length)).toBe(text)
+    }
+  })
+
+  it('handles a file without a trailing newline', async () => {
+    const filePath = path.join(testDir, 'backward-no-eol.jsonl')
+    await fs.promises.writeFile(filePath, 'a\nb\nlast')
+
+    const lines = await collect(filePath)
+    expect(lines.map((l) => l.text)).toEqual(['last', 'b', 'a'])
+    expect(lines[0].offset).toBe(4)
+  })
+
+  it('reassembles a line larger than the read chunk', async () => {
+    const filePath = path.join(testDir, 'backward-huge.jsonl')
+    // One row far larger than the 64KB chunk, so its bytes span several
+    // backward reads and must be stitched through the carry buffer.
+    const huge = 'H'.repeat(200 * 1024)
+    const content = `first\n${huge}\nlast\n`
+    await fs.promises.writeFile(filePath, content)
+
+    const lines = await collect(filePath)
+    expect(lines.map((l) => l.text.length)).toEqual([4, huge.length, 5])
+    expect(lines[1].text).toBe(huge)
+    expect(lines[1].offset).toBe('first\n'.length)
+  })
+
+  it('yields nothing for a missing or empty file', async () => {
+    expect(await collect(path.join(testDir, 'nope.jsonl'))).toEqual([])
+    const emptyPath = path.join(testDir, 'empty.jsonl')
+    await fs.promises.writeFile(emptyPath, '')
+    expect(await collect(emptyPath)).toEqual([])
+  })
+
+  it('stops with AbortError before the next chunk read after an abort', async () => {
+    // Multi-chunk file (>64KB) so the walk needs several reads: abort after
+    // the first yielded line and the iterator must stop at the next chunk
+    // boundary instead of paying for the rest of the file.
+    const filePath = path.join(testDir, 'backward-abort.jsonl')
+    const row = `${'x'.repeat(1023)}\n`
+    await fs.promises.writeFile(filePath, row.repeat(300)) // ~300KB, ~5 chunks
+
+    const controller = new AbortController()
+    const iterated: string[] = []
+    await expect(
+      (async () => {
+        for await (const { line } of iterateJsonlLinesBackward(filePath, controller.signal)) {
+          iterated.push(line.toString('utf-8'))
+          controller.abort()
+        }
+      })()
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    // Only the lines of the first chunk (64 rows of 1KB) can have been
+    // yielded — the abort stops the walk before the second chunk read.
+    expect(iterated.length).toBeGreaterThan(0)
+    expect(iterated.length).toBeLessThanOrEqual(65)
+  })
+})
+
+describe('streamFileLines with a byte range', () => {
+  it('reads only lines inside [start, end)', async () => {
+    const filePath = path.join(testDir, 'range.jsonl')
+    const rows = ['zero', 'one', 'two', 'three']
+    const content = rows.map((r) => `${r}\n`).join('')
+    await fs.promises.writeFile(filePath, content)
+
+    const start = 'zero\n'.length
+    const end = 'zero\none\ntwo\n'.length
+    const out: string[] = []
+    for await (const line of streamFileLines(filePath, { start, end })) {
+      out.push(line.toString('utf-8'))
+    }
+    expect(out).toEqual(['one', 'two'])
+  })
+
+  it('a range ending mid-line yields the truncated head of that line', async () => {
+    const filePath = path.join(testDir, 'range-cut.jsonl')
+    await fs.promises.writeFile(filePath, 'aaa\nbbbbbb\n')
+
+    const out: string[] = []
+    for await (const line of streamFileLines(filePath, { start: 0, end: 7 })) {
+      out.push(line.toString('utf-8'))
+    }
+    // 'bbb' is the cut tail — JSONL consumers drop it as malformed.
+    expect(out).toEqual(['aaa', 'bbb'])
+  })
+
+  it('an empty or inverted range yields nothing', async () => {
+    const filePath = path.join(testDir, 'range-empty.jsonl')
+    await fs.promises.writeFile(filePath, 'aaa\nbbb\n')
+    const out: string[] = []
+    for await (const line of streamFileLines(filePath, { start: 4, end: 4 })) {
+      out.push(line.toString('utf-8'))
+    }
+    expect(out).toEqual([])
   })
 })

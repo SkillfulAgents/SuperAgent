@@ -940,6 +940,156 @@ describe('session-service', () => {
       expect(page.messages.map((m) => m.id)).toEqual(['a-7', 'u-8', 'a-8', 'u-9', 'a-9'])
       expect(page.nextCursor).toBe('a-7')
     })
+
+    it('byte budget truncates a page short and cursor paging walks the remainder', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(30))
+
+      // ~1KB budget against ~180-byte rows: each window holds a handful of
+      // items, far fewer than the requested limit.
+      const first = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 20,
+        byteBudget: 1024,
+      })
+      expect(first.messages.length).toBeGreaterThan(0)
+      expect(first.messages.length).toBeLessThan(20)
+      expect(first.nextCursor).toBe(first.messages[0]!.id)
+
+      const collected = [...first.messages.map((m) => m.id)]
+      let cursor = first.nextCursor
+      for (let i = 0; i < 100 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 20,
+          cursor,
+          byteBudget: 1024,
+        })
+        collected.unshift(...page.messages.map((m) => m.id))
+        cursor = page.nextCursor
+      }
+
+      const expected: string[] = []
+      for (let i = 0; i < 30; i++) expected.push(`u-${i}`, `a-${i}`)
+      expect(collected).toEqual(expected)
+    })
+
+    it('serves a single item larger than the whole byte budget', async () => {
+      const giant = {
+        type: 'assistant',
+        uuid: 'a-giant',
+        timestamp: '2026-01-01T00:10:00.000Z',
+        sessionId: 'page-session',
+        parentUuid: null,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'G'.repeat(64 * 1024) }],
+        },
+      }
+      await createSessionFile('test-agent', 'page-session', [...makeThread(5), giant])
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        byteBudget: 1024,
+      })
+      // The budget floor guarantees at least one servable item beyond the
+      // sacrificial head — the giant trailing item must not become an empty page.
+      expect(page.messages.map((m) => m.id)).toEqual(['a-giant'])
+      expect(page.nextCursor).toBe('a-giant')
+
+      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        cursor: 'a-giant',
+        byteBudget: 1024,
+      })
+      expect(older.messages.length).toBeGreaterThan(0)
+    })
+
+    it('paged walk over a mixed transcript matches the full transform', async () => {
+      // Every classification the backward index scan replicates: meta rows,
+      // split assistant merges with tool results, queued_command attachments,
+      // task notifications, informational banners with their synthetic user
+      // copy, memory recalls, compact boundaries with summaries.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 2, 0, 0, s)).toISOString()
+      const entries: object[] = [
+        { type: 'user', uuid: 'u-0', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q0' } },
+        { type: 'assistant', uuid: 'a-0', timestamp: ts(1), sessionId: 's', parentUuid: 'u-0', message: { role: 'assistant', content: [{ type: 'text', text: 'r0' }] } },
+        { type: 'user', uuid: 'meta-0', timestamp: ts(2), sessionId: 's', parentUuid: null, isMeta: true, message: { role: 'user', content: 'meta' } },
+        { type: 'user', uuid: 'u-1', timestamp: ts(3), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q1' } },
+        { type: 'assistant', uuid: 'A1a', timestamp: ts(4), sessionId: 's', parentUuid: 'u-1', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'text', text: 'part1 ' }] } },
+        { type: 'assistant', uuid: 'A1b', timestamp: ts(5), sessionId: 's', parentUuid: 'u-1', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }] } },
+        { type: 'user', uuid: 'r-1', timestamp: ts(6), sessionId: 's', parentUuid: 'A1b', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } },
+        { type: 'user', uuid: 'task-note', timestamp: ts(7), sessionId: 's', parentUuid: null, origin: { kind: 'task-notification' }, message: { role: 'user', content: 'subagent done' } },
+        { type: 'attachment', uuid: 'qc-raw', timestamp: ts(8), parentUuid: null, attachment: { type: 'queued_command', commandMode: 'prompt', prompt: 'steer', source_uuid: 'qc-u' } },
+        { type: 'assistant', uuid: 'a-2', timestamp: ts(9), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'r2' }] } },
+        { type: 'user', uuid: 'stop-user', timestamp: ts(10), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'Operation stopped by hook: X' } },
+        { type: 'system', uuid: 'info-1', subtype: 'informational', content: 'Operation stopped by hook: X', isMeta: false, timestamp: ts(11) },
+        { type: 'system', uuid: 'mr-1', subtype: 'memory_recall', content: '', isMeta: false, timestamp: ts(12), memory_paths: ['MEMORY.md'] },
+        { type: 'system', uuid: 'cb-1', subtype: 'compact_boundary', content: '', isMeta: false, timestamp: ts(13), compactMetadata: { trigger: 'manual', preTokens: 5 } },
+        { type: 'user', uuid: 'cs-1', timestamp: ts(14), sessionId: 's', parentUuid: null, isCompactSummary: true, message: { role: 'user', content: 'summary' } },
+        { type: 'user', uuid: 'u-3', timestamp: ts(15), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q3' } },
+        { type: 'assistant', uuid: 'a-3', timestamp: ts(16), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'r3' }] } },
+      ]
+      await createSessionFile('test-agent', 'page-session', entries)
+
+      // Reference: one page big enough to hold everything.
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      expect(full.messages.map((m) => m.id)).toEqual([
+        'u-0', 'a-0', 'u-1', 'A1a', 'qc-u', 'a-2', 'mr-1', 'cb-1', 'info-1', 'u-3', 'a-3',
+      ])
+
+      // Small pages + small budget: the same items must come back, in order,
+      // with the split assistant still merged and its tool result attached.
+      const first = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 3,
+        byteBudget: 600,
+      })
+      const collected = [...first.messages]
+      let cursor = first.nextCursor
+      for (let i = 0; i < 50 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 3,
+          cursor,
+          byteBudget: 600,
+        })
+        collected.unshift(...page.messages)
+        cursor = page.nextCursor
+      }
+
+      expect(collected.map((m) => m.id)).toEqual(full.messages.map((m) => m.id))
+      const merged = collected.find((m) => m.id === 'A1a')
+      expect(merged).toMatchObject({ type: 'assistant', content: { text: 'part1 ' } })
+      expect(merged!.type === 'assistant' && merged!.toolCalls[0]).toMatchObject({
+        id: 't1',
+        result: 'ok',
+      })
+      const queued = collected.find((m) => m.id === 'qc-u')
+      expect(queued).toMatchObject({ type: 'user', queued: true, content: { text: 'steer' } })
+    })
+
+    it('attaches a tool result recorded past the cursor line', async () => {
+      // A queued user message lands between a tool_use and its result, and
+      // becomes the page cursor: the result then sits ABOVE the cursor line,
+      // inside the window's forward grace region.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 3, 0, 0, s)).toISOString()
+      const entries: object[] = [
+        ...makeThread(2),
+        { type: 'user', uuid: 'u-ask', timestamp: ts(10), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'run it' } },
+        { type: 'assistant', uuid: 'X-use', timestamp: ts(11), sessionId: 's', parentUuid: 'u-ask', message: { id: 'msg-X', role: 'assistant', content: [{ type: 'tool_use', id: 't9', name: 'Bash', input: { command: 'sleep' } }] } },
+        { type: 'attachment', uuid: 'qc2-raw', timestamp: ts(12), parentUuid: null, attachment: { type: 'queued_command', commandMode: 'prompt', prompt: 'steer2', source_uuid: 'qc-2' } },
+        { type: 'user', uuid: 'r-9', timestamp: ts(13), sessionId: 's', parentUuid: 'X-use', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: 'late-ok' }] } },
+        { type: 'assistant', uuid: 'a-done', timestamp: ts(14), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+      ]
+      await createSessionFile('test-agent', 'page-session', entries)
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 2,
+        cursor: 'qc-2',
+      })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-ask', 'X-use'])
+      const use = page.messages[1]
+      expect(use!.type === 'assistant' && use!.toolCalls[0]).toMatchObject({
+        id: 't9',
+        result: 'late-ok',
+      })
+    })
   })
 
   describe('getSessionMessagesDelta', () => {
