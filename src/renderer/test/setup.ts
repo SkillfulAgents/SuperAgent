@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 import { beforeEach, vi } from 'vitest'
-import { createElement } from 'react'
+import { createElement, forwardRef } from 'react'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 
 // Auth mode is now derived from the resolved API target, and reading it before
@@ -98,24 +98,34 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 // have neither, so stub it as a plain anchor that forwards the props tests
 // inspect (onClick, className, data-testid). A file-level vi.mock overrides this
 // where a test needs the real link.
-vi.mock('@renderer/components/ui/app-link', () => ({
+vi.mock('@renderer/components/ui/app-link', () => {
   // Strip the link-specific props so they don't land as DOM attributes; forward
-  // the rest (onClick/className/data-testid) to a plain anchor.
-  AppLink: ({ children, to, params, search, activeClassName: _ac, activeOptions: _ao, noDrag: _nd, ...props }: Record<string, unknown> & { children?: unknown }) =>
-    createElement(
-      'a',
-      {
-        href: '#',
-        // Expose the route target so tests can assert navigation (the real
-        // <a href> isn't built in jsdom; data-* attrs avoid React DOM warnings).
-        'data-to': to,
-        'data-params': params ? JSON.stringify(params) : undefined,
-        'data-search': search ? JSON.stringify(search) : undefined,
-        ...props,
-      },
-      children as never,
-    ),
-}))
+  // the rest (onClick/className/data-testid) to a plain anchor. forwardRef like
+  // the real AppLink: callers ref the anchor (the sidebar's cmd-hint targets and
+  // its agent-menu button both reach the row that way).
+  const AppLink = forwardRef(
+    (
+      { children, to, params, search, activeClassName: _ac, activeOptions: _ao, noDrag: _nd, ...props }: Record<string, unknown> & { children?: unknown },
+      ref,
+    ) =>
+      createElement(
+        'a',
+        {
+          ref,
+          href: '#',
+          // Expose the route target so tests can assert navigation (the real
+          // <a href> isn't built in jsdom; data-* attrs avoid React DOM warnings).
+          'data-to': to,
+          'data-params': params ? JSON.stringify(params) : undefined,
+          'data-search': search ? JSON.stringify(search) : undefined,
+          ...props,
+        },
+        children as never,
+      ),
+  )
+  AppLink.displayName = 'AppLink'
+  return { AppLink }
+})
 
 // DialogContext drives global settings via the router. Renderer unit
 // tests have no RouterProvider, so stub it — DialogProvider passes children
