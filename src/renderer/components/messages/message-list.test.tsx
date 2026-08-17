@@ -203,6 +203,135 @@ describe('MessageList', () => {
     expect(screen.getByText('Hello!')).toBeInTheDocument()
   })
 
+  describe('session time flags', () => {
+    it('renders a flag immediately before the first actual user message', () => {
+      mockMessagesData.data = [
+        createUserMessage({
+          content: { text: '[SYSTEM] Hidden setup message' },
+          createdAt: new Date(2026, 7, 17, 8, 59, 0),
+        }),
+        createUserMessage({
+          content: { text: 'First actual prompt' },
+          createdAt: new Date(2026, 7, 17, 9, 0, 0),
+        }),
+        createAssistantMessage({
+          content: { text: 'First response' },
+          createdAt: new Date(2026, 7, 17, 9, 1, 0),
+        }),
+      ]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.queryByText('[SYSTEM] Hidden setup message')).not.toBeInTheDocument()
+      const flag = screen.getByTestId('session-time-flag')
+      const firstUserMessage = screen.getByText('First actual prompt')
+      expect(
+        flag.compareDocumentPosition(firstUserMessage) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).not.toBe(0)
+    })
+
+    it('renders another flag when the user replies more than 15 minutes after the latest assistant response', () => {
+      mockMessagesData.data = [
+        createUserMessage({
+          content: { text: 'Initial prompt' },
+          createdAt: new Date(2026, 7, 17, 9, 0, 0),
+        }),
+        createAssistantMessage({
+          content: { text: 'Interim response' },
+          createdAt: new Date(2026, 7, 17, 9, 1, 0),
+        }),
+        createAssistantMessage({
+          content: { text: 'Latest response' },
+          createdAt: new Date(2026, 7, 17, 9, 10, 0),
+        }),
+        {
+          id: 'notice-between-response-and-reply',
+          type: 'informational',
+          content: 'Background notice',
+          createdAt: new Date(2026, 7, 17, 9, 11, 0),
+        },
+        createUserMessage({
+          content: { text: 'Delayed follow-up' },
+          createdAt: new Date(2026, 7, 17, 9, 25, 1),
+        }),
+      ]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      const flags = screen.getAllByTestId('session-time-flag')
+      expect(flags).toHaveLength(2)
+      expect(
+        flags[1].compareDocumentPosition(screen.getByText('Delayed follow-up')) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).not.toBe(0)
+    })
+
+    it('does not render another flag at exactly 15 minutes from the latest assistant response', () => {
+      mockMessagesData.data = [
+        createUserMessage({
+          content: { text: 'Initial prompt' },
+          createdAt: new Date(2026, 7, 17, 9, 0, 0),
+        }),
+        createAssistantMessage({
+          content: { text: 'Older response' },
+          createdAt: new Date(2026, 7, 17, 9, 1, 0),
+        }),
+        createAssistantMessage({
+          content: { text: 'Latest response' },
+          createdAt: new Date(2026, 7, 17, 9, 15, 0),
+        }),
+        createUserMessage({
+          content: { text: 'Exactly-on-the-boundary follow-up' },
+          createdAt: new Date(2026, 7, 17, 9, 30, 0),
+        }),
+      ]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByTestId('session-time-flag')).toHaveLength(1)
+    })
+
+    it('does not treat the first loaded user message as the session start when older messages exist', () => {
+      mockMessagesData.data = [
+        createUserMessage({
+          content: { text: 'First message in the loaded page' },
+          createdAt: new Date(2026, 7, 17, 9, 0, 0),
+        }),
+        createAssistantMessage({
+          content: { text: 'Loaded response' },
+          createdAt: new Date(2026, 7, 17, 9, 1, 0),
+        }),
+      ]
+      mockMessagesData.hasOlder = true
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.queryByTestId('session-time-flag')).not.toBeInTheDocument()
+    })
+
+    it('shows the first-user flag immediately for an optimistic message', () => {
+      mockMessagesData.data = []
+
+      renderWithProviders(
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{
+            localId: 'pending-first-user',
+            text: 'Optimistic first prompt',
+            sentAt: new Date(2026, 7, 17, 9, 0, 0).getTime(),
+          }]}
+        />
+      )
+
+      const flag = screen.getByTestId('session-time-flag')
+      const pendingMessage = screen.getByText('Optimistic first prompt')
+      expect(
+        flag.compareDocumentPosition(pendingMessage) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).not.toBe(0)
+    })
+  })
+
   it('reserves clearance for an overlaid session footer', () => {
     mockMessagesData.data = []
     renderWithProviders(
