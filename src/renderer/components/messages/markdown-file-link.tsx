@@ -19,7 +19,10 @@ function MarkdownAnchor({
     return (
       <button
         type="button"
-        className={cn(LINK_CLASS, 'cursor-pointer border-0 bg-transparent p-0 font-[inherit]')}
+        className={cn(
+          LINK_CLASS,
+          'max-w-full cursor-pointer border-0 bg-transparent p-0 text-left font-[inherit]',
+        )}
         onClick={onActivate}
       >
         {children}

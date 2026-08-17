@@ -1928,6 +1928,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     )],
     // Wide, many-column markdown table to exercise table breakout (SUP-319).
     // Longer 'link *' triggers first: substring match is first-hit.
+    ['link long file', new SimpleTextResponseScenario(
+      `See [${'a'.repeat(240)}](/workspace/output/report.md).`
+    )],
     ['link missing file', new SimpleTextResponseScenario(
       'See [the missing file](/workspace/output/missing.md).'
     )],
