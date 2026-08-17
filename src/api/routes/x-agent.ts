@@ -516,6 +516,50 @@ function deliveryCutoffError(): string {
   )
 }
 
+function lateDeliveryRevokedError(): string {
+  return (
+    `Target agent took too long to start the session (over ${Math.round(DELIVERY_CUTOFF_MS / 1000)}s total). ` +
+    'The invocation was cancelled and any late-created session is revoked, so nothing is running — ' +
+    'it is safe to retry; prefer sync=false.'
+  )
+}
+
+const DEADLINE = Symbol('deadline')
+
+// Race a promise against an absolute deadline. The losing promise keeps
+// running — callers that receive DEADLINE must decide what to do when (or if)
+// it eventually settles, and must attach their own rejection handler to it.
+async function raceDeadline<T>(promise: Promise<T>, deadline: number): Promise<T | typeof DEADLINE> {
+  const remainingMs = deadline - Date.now()
+  if (remainingMs <= 0) return DEADLINE
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<typeof DEADLINE>((resolve) => {
+        timer = setTimeout(() => resolve(DEADLINE), remainingMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+// Bounds the persister's stream attach — its WebSocket `ready` promise has no
+// timeout of its own, so a wedged container would otherwise hold the caller's
+// fetch open past its 300s header timeout.
+const SUBSCRIBE_TIMEOUT_MS = Number(process.env.X_AGENT_SUBSCRIBE_TIMEOUT_MS) || 30_000
+
+async function subscribeWithTimeout(subscribe: Promise<void>): Promise<void> {
+  const result = await raceDeadline(subscribe, Date.now() + SUBSCRIBE_TIMEOUT_MS)
+  if (result === DEADLINE) {
+    // The stalled attach may still settle later; swallow its rejection so a
+    // late failure doesn't become an unhandled rejection.
+    subscribe.catch(() => {})
+    throw new Error(`Timed out attaching to session stream after ${SUBSCRIBE_TIMEOUT_MS}ms`)
+  }
+}
+
 // Matched by name rather than instanceof: the persister module is wholesale-
 // mocked in many test suites, and an instanceof against a possibly-undefined
 // mock export throws instead of returning false.
@@ -639,11 +683,20 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
       // container's 300s fetch header timeout and surface as a retry-inducing
       // network error. Other failures stay hard errors.
       const outcome = await waitForTurnWithinBudget(sessionId, syncDeadline)
-      if (outcome === 'completed') {
-        // The turn's 'result' event clears isActive before its final assistant
-        // entry hits the JSONL file. Reconcile (bounded, ~5s) until an entry
-        // newer than the pre-wait boundary appears, so an "idle" response
-        // doesn't ship a transcript missing the reply it waited for.
+      // The turn's 'result' event clears isActive before its final assistant
+      // entry hits the JSONL file. When the turn we observed running has ended
+      // — the wait said so, or it timed out and the turn ended in the gap
+      // before the status read below — reconcile (bounded, ~5s) until an entry
+      // newer than the pre-wait boundary appears, so an "idle" response
+      // doesn't ship a transcript missing the reply it waited for.
+      //
+      // Deliberately gated on activity observed IN THIS REQUEST: the JSONL is
+      // written by the container process, so the host has no write queue to
+      // barrier on, and reconciling on every idle response would burn the full
+      // poll budget on sessions that are simply idle. A session that went idle
+      // just before the isSessionActive check above keeps plain read-what's-
+      // flushed semantics.
+      if (outcome === 'completed' || !messagePersister.isSessionActive(sessionId)) {
         await readLastAssistantMessage(targetSlug, sessionId, boundaryEntry?.uuid)
       }
     } catch (error) {
@@ -776,14 +829,6 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         }
         stage = 'ensure_running'
         const client = await containerManager.ensureRunning(targetSlug)
-        if (Date.now() > deliveryCutoff) {
-          console.warn('[x-agent] delivery cutoff exceeded before send; prompt not delivered', {
-            callerSlug,
-            targetSlug,
-            sessionId: existingSessionId,
-          })
-          return c.json({ error: deliveryCutoffError() }, 504)
-        }
         // Last reply flushed before THIS prompt goes out — used to make sure a
         // fast turn's answer isn't confused with the previous turn's while the
         // new entry is still being written to the JSONL file.
@@ -792,7 +837,21 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           : null
         stage = 'subscribe'
         if (!messagePersister.isSubscribed(existingSessionId)) {
-          await messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug)
+          await subscribeWithTimeout(
+            messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug),
+          )
+        }
+        // Checked AFTER every unbounded pre-send await (container startup and
+        // the stream attach above) so only fast local writes remain between
+        // here and sendMessage — a check followed by a slow await could still
+        // deliver to a caller whose fetch died at the 300s header timeout.
+        if (Date.now() > deliveryCutoff) {
+          console.warn('[x-agent] delivery cutoff exceeded before send; prompt not delivered', {
+            callerSlug,
+            targetSlug,
+            sessionId: existingSessionId,
+          })
+          return c.json({ error: deliveryCutoffError() }, 504)
         }
         messagePersister.markSessionActive(existingSessionId, targetSlug)
         stage = 'send_message'
@@ -878,7 +937,12 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         return c.json({ error: deliveryCutoffError() }, 504)
       }
       stage = 'create_session'
-      const containerSession = await client.createSession({
+      // createSession IS the delivery (initialMessage carries the prompt) and
+      // cannot be cancelled mid-flight, so race it against the cutoff: if it
+      // lands after the caller's fetch is already dead, revoke the session the
+      // moment it materializes instead of leaving a ghost run for the caller's
+      // retry to duplicate.
+      const createPromise = client.createSession({
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
         initialMessage: prompt,
         ...(initialMessageUuid ? { initialMessageUuid } : {}),
@@ -894,6 +958,25 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
         maxBrowserTabs: getSettings().app?.maxBrowserTabs,
       })
+      const created = await raceDeadline(createPromise, deliveryCutoff)
+      if (created === DEADLINE) {
+        console.warn('[x-agent] delivery cutoff exceeded during create; late session will be revoked', {
+          callerSlug,
+          targetSlug,
+        })
+        void createPromise.then(
+          (lateSession) =>
+            client.deleteSession(lateSession.id).catch((cleanupErr) => {
+              console.error('[x-agent] failed to revoke late-created session', {
+                sessionId: lateSession.id,
+                error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+              })
+            }),
+          () => {}, // create itself failed — nothing to revoke
+        )
+        return c.json({ error: lateDeliveryRevokedError() }, 504)
+      }
+      const containerSession = created
       const newSessionId = containerSession.id
       await reserveSessionOwnership(targetSlug, newSessionId)
       // Mark active before any await so waitForIdle sees state if result arrives early.
@@ -952,7 +1035,38 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       }
 
       stage = 'subscribe'
-      await messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug)
+      try {
+        await subscribeWithTimeout(
+          messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug),
+        )
+      } catch (subscribeErr) {
+        const message = subscribeErr instanceof Error ? subscribeErr.message : String(subscribeErr)
+        console.error('[x-agent] invoke failed', {
+          callerSlug,
+          targetSlug,
+          sessionId: newSessionId,
+          stage,
+          error: message,
+        })
+        captureException(subscribeErr, {
+          tags: { ...X_AGENT_SENTRY, stage },
+          extra: { callerSlug, targetSlug, sessionId: newSessionId },
+        })
+        // Without the stream attach nothing would persist this session's
+        // transcript — it would run as an invisible ghost. Revoke it, same
+        // remediation as a failed registration above.
+        await client.deleteSession(newSessionId).catch((cleanupErr) => {
+          console.error('[x-agent] failed to clean up orphaned container session', {
+            sessionId: newSessionId,
+            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          })
+        })
+        if (authorRecorded && initialMessageUuid) {
+          await deleteMessageAuthorBestEffort(initialMessageUuid)
+        }
+        messagePersister.unsubscribeFromSession(newSessionId)
+        return c.json({ error: `Failed to attach to invoked session: ${message}` }, 500)
+      }
       if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
         messagePersister.setSlashCommands(newSessionId, containerSession.slashCommands)
       }

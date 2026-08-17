@@ -23,6 +23,7 @@ import * as schema from '@shared/lib/db/schema'
 vi.hoisted(() => {
   process.env.X_AGENT_READ_RETRY_ATTEMPTS = '4'
   process.env.X_AGENT_READ_RETRY_INTERVAL_MS = '50'
+  process.env.X_AGENT_SUBSCRIBE_TIMEOUT_MS = '150'
 })
 
 // ----------------------------------------------------------------------------
@@ -1086,6 +1087,101 @@ describe('/invoke', () => {
     }
   })
 
+  it('refuses to deliver when the stream attach eats the cutoff (existing session)', async () => {
+    // The cutoff is checked AFTER subscribe — a check before it could pass,
+    // then the unbounded pre-send awaits could carry delivery past the
+    // caller's 300s fetch timeout anyway.
+    reviewDecisions.push('allow')
+    const realNow = Date.now.bind(Date)
+    let clockOffsetMs = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffsetMs)
+    try {
+      mockSubscribeToSession.mockImplementationOnce(async () => {
+        clockOffsetMs = 250_000
+      })
+      const res = await authedFetch('/x-agent/invoke', {
+        slug: TARGET_SLUG,
+        prompt: 'too late',
+        sessionId: 'existing-sess',
+        sync: true,
+      })
+      expect(res.status).toBe(504)
+      expect((await res.json()).error).toMatch(/not delivered/i)
+      expect(mockSendMessage).not.toHaveBeenCalled()
+      expect(mockMarkSessionActive).not.toHaveBeenCalled()
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('fails fast instead of hanging when the stream attach stalls (existing session)', async () => {
+    // The persister's WebSocket ready promise has no timeout of its own; a
+    // wedged container must surface as an error before the prompt goes out,
+    // not hold the caller's fetch open indefinitely.
+    reviewDecisions.push('allow')
+    mockSubscribeToSession.mockImplementationOnce(() => new Promise(() => {}))
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'hello',
+      sessionId: 'existing-sess',
+      sync: true,
+    })
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toMatch(/attaching to session stream/i)
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('revokes a session created after the delivery cutoff', async () => {
+    // createSession cannot be cancelled mid-flight; when it lands after the
+    // caller's fetch is already dead, the session must be deleted the moment
+    // it materializes — otherwise the caller's retry duplicates the run.
+    reviewDecisions.push('allow')
+    const realNow = Date.now.bind(Date)
+    let clockOffsetMs = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffsetMs)
+    try {
+      // Enter createSession with ~50ms left to the cutoff; the create resolves
+      // 120ms later — past the deadline.
+      mockEnsureRunning.mockImplementationOnce(async () => {
+        clockOffsetMs = 239_950
+        return {
+          createSession: mockCreateSession,
+          sendMessage: mockSendMessage,
+          deleteSession: mockDeleteSession,
+        } as never
+      })
+      mockCreateSession.mockImplementationOnce(
+        () => new Promise((resolve) => setTimeout(() => resolve({ id: 'late-sess' }), 120)),
+      )
+      const res = await authedFetch('/x-agent/invoke', {
+        slug: TARGET_SLUG,
+        prompt: 'slow create',
+        sync: true,
+      })
+      expect(res.status).toBe(504)
+      expect((await res.json()).error).toMatch(/safe to retry/i)
+      expect(mockRegisterSession).not.toHaveBeenCalled()
+      await vi.waitFor(() => expect(mockDeleteSession).toHaveBeenCalledWith('late-sess'))
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('revokes the new session when the stream attach stalls, instead of leaving a ghost run', async () => {
+    // Post-delivery, an unsubscribed session would run with nothing persisting
+    // its transcript — delete it like a failed registration.
+    reviewDecisions.push('allow')
+    mockSubscribeToSession.mockImplementationOnce(() => new Promise(() => {}))
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'hello',
+      sync: true,
+    })
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toMatch(/attach/i)
+    expect(mockDeleteSession).toHaveBeenCalledWith('new-sess-id')
+  })
+
   it('refuses to create a session past the delivery cutoff, even for async invokes', async () => {
     // Async invokes also respond only after delivery, so the same ghost-run
     // hazard applies without sync.
@@ -1566,6 +1662,35 @@ describe('/get-transcript', () => {
     mockIsSessionActive.mockReturnValue(true)
     mockWaitForIdle.mockImplementation(async () => {
       mockIsSessionActive.mockReturnValue(false)
+    })
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      sync: true,
+    })
+    const body = await res.json()
+    expect(body.status).toBe('idle')
+    expect(body.messages.map((m: { content: string }) => m.content)).toContain('fresh answer')
+  })
+
+  it('reconciles when the turn ends between the wait timing out and the status read', async () => {
+    // A timeout followed by the turn finishing in the gap is the same flush
+    // race as a completion: without reconciling, the response reports idle
+    // with a transcript missing the reply it waited for.
+    reviewDecisions.push('allow')
+    const oldEntry = { type: 'assistant', uuid: 'a-old', message: { role: 'assistant', content: 'old answer' } }
+    const newEntry = { type: 'assistant', uuid: 'a-new', message: { role: 'assistant', content: 'fresh answer' } }
+    let transcript = [oldEntry]
+    let reads = 0
+    mockGetTranscript.mockImplementation(async () => {
+      reads++
+      if (reads >= 3) transcript = [oldEntry, newEntry]
+      return transcript
+    })
+    mockIsSessionActive.mockReturnValue(true)
+    mockWaitForIdle.mockImplementationOnce(async () => {
+      mockIsSessionActive.mockReturnValue(false) // turn ended...
+      throw waitForIdleTimeoutError() // ...but the wait had already timed out
     })
     const res = await authedFetch('/x-agent/get-transcript', {
       slug: TARGET_SLUG,
