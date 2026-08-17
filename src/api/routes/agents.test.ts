@@ -304,6 +304,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(),
   getSessionMessagesPage: vi.fn(),
+  getSessionMessagesDelta: vi.fn(),
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true),
@@ -559,7 +560,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -3870,6 +3871,100 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     })
     expect(res.status).toBe(499)
     expect(res.body).toBeNull()
+  })
+})
+
+describe('GET /:id/sessions/:sessionId/messages forward delta (?after=)', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+  })
+
+  it('answers a delta envelope and forwards after + abort signal to the reader', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({
+      messages: [
+        { id: 'm5', type: 'user', content: { text: 'anchor' }, toolCalls: [], createdAt: new Date() },
+        { id: 'm6', type: 'assistant', content: { text: 'new' }, toolCalls: [], createdAt: new Date() },
+      ],
+      anchor: 'm5',
+    })
+
+    const res = await getReq(app, `${URL}?after=m5&limit=300`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.messages.map((m: { id: string }) => m.id)).toEqual(['m5', 'm6'])
+    expect(body.anchor).toBe('m5')
+    expect(body).not.toHaveProperty('resync')
+    expect(body).not.toHaveProperty('nextCursor')
+    expect(getSessionMessagesDelta).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      after: 'm5',
+      signal: expect.any(AbortSignal),
+    })
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('passes resync through so the client falls back to a full fetch', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({
+      messages: [],
+      anchor: null,
+      resync: true,
+    })
+
+    const res = await getReq(app, `${URL}?after=vanished`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toEqual({ messages: [], anchor: null, resync: true })
+  })
+
+  it('rejects a request mixing after with cursor', async () => {
+    const res = await getReq(app, `${URL}?after=m5&cursor=m1`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesDelta).not.toHaveBeenCalled()
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('propagates the request abort into the delta reader and answers 499', async () => {
+    vi.mocked(getSessionMessagesDelta).mockImplementation(async (_agent, _session, opts) => {
+      opts.signal?.throwIfAborted()
+      return { messages: [], anchor: null }
+    })
+
+    const controller = new AbortController()
+    controller.abort()
+    const res = await app.request(`http://localhost${URL}?after=m5`, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+    expect(res.status).toBe(499)
+  })
+
+  it('stamps settled input-request outcomes onto open tool calls in the delta window', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({
+      messages: [
+        {
+          id: 'm5',
+          type: 'assistant',
+          content: { text: '' },
+          toolCalls: [{ id: 'tool-1', name: 'AskUserQuestion', input: {}, result: undefined }],
+          createdAt: new Date(),
+        },
+      ],
+      anchor: 'm4',
+    })
+    vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
+      new Map([['tool-1', 'answered']])
+    )
+
+    const res = await getReq(app, `${URL}?after=m4`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.messages[0].toolCalls[0].result).toBe('User provided input')
   })
 })
 

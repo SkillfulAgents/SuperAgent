@@ -59,6 +59,7 @@ import {
   registerSession,
   getSessionMessagesWithCompact,
   getSessionMessagesPage,
+  getSessionMessagesDelta,
   getSession,
   getSessionMetadata,
   sessionExists,
@@ -1751,10 +1752,15 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
   }
 })
 
-const messagesListQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(MESSAGES_PAGE_MAX_LIMIT).optional(),
-  cursor: z.string().min(1).max(200).optional(),
-})
+const messagesListQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(MESSAGES_PAGE_MAX_LIMIT).optional(),
+    cursor: z.string().min(1).max(200).optional(),
+    after: z.string().min(1).max(200).optional(),
+  })
+  // Backward paging and the forward delta are different protocols; a request
+  // mixing them has no coherent meaning.
+  .refine((q) => !(q.cursor && q.after), { message: 'cursor and after are mutually exclusive' })
 
 async function annotateAndRecoverMessages(
   transformed: TransformedItem[],
@@ -1790,6 +1796,9 @@ async function annotateAndRecoverMessages(
   const userMessageIds = transformed.filter((m) => m.type === 'user').map((m) => m.id)
   if (userMessageIds.length === 0) return
 
+  // Scope the lookup to the ids actually in this response — a delta window is
+  // a handful of items, and loading the whole session's author history per
+  // refetch would erase the bounded-memory benefit on auth deployments.
   const authors = await db
     .select({
       messageId: messageAuthor.id,
@@ -1799,7 +1808,7 @@ async function annotateAndRecoverMessages(
     })
     .from(messageAuthor)
     .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
-    .where(eq(messageAuthor.sessionId, sessionId))
+    .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds)))
 
   const authorMap = new Map(authors.map((a) => [a.messageId, a]))
   for (const msg of transformed) {
@@ -1834,10 +1843,12 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
 
     const rawLimit = c.req.query('limit')
     const rawCursor = c.req.query('cursor')
-    if (rawLimit !== undefined || rawCursor !== undefined) {
+    const rawAfter = c.req.query('after')
+    if (rawLimit !== undefined || rawCursor !== undefined || rawAfter !== undefined) {
       const parsed = messagesListQuerySchema.safeParse({
         ...(rawLimit !== undefined ? { limit: rawLimit } : {}),
         ...(rawCursor !== undefined ? { cursor: rawCursor } : {}),
+        ...(rawAfter !== undefined ? { after: rawAfter } : {}),
       })
       if (!parsed.success) {
         return c.json({ error: 'Invalid pagination' }, 400)
@@ -1847,6 +1858,24 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       // stops paying for transcript reads (multi-second on network volumes)
       // instead of running the full read/parse/serialize pipeline to
       // completion for a client that hung up.
+      if (parsed.data.after !== undefined) {
+        // Forward delta: upserted items at-or-after the anchor (a live-session
+        // refetch only cares about lines appended since the last read). The
+        // window is bounded by the active turn near EOF, so this stays a few
+        // KB while the full trailing page is multi-MB on long sessions.
+        const delta = await getSessionMessagesDelta(agentSlug, sessionId, {
+          after: parsed.data.after,
+          signal: c.req.raw.signal,
+        })
+        c.req.raw.signal.throwIfAborted()
+        await annotateAndRecoverMessages(delta.messages, agentSlug, sessionId)
+        c.req.raw.signal.throwIfAborted()
+        return c.json({
+          messages: delta.messages,
+          anchor: delta.anchor,
+          ...(delta.resync ? { resync: true as const } : {}),
+        })
+      }
       const page = await getSessionMessagesPage(agentSlug, sessionId, {
         limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
         cursor: parsed.data.cursor,
