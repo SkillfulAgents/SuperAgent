@@ -39,6 +39,7 @@ import {
   type ReactNode,
   type UIEvent as ReactUIEvent,
 } from 'react'
+import { useStickToBottom } from 'use-stick-to-bottom'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
@@ -58,34 +59,23 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
 const BASE_WINDOW = MESSAGES_PAGE_LIMIT
 const LOAD_STEP = MESSAGES_PAGE_OLDER_LIMIT
 const TURN_ANCHOR_TOP = 100
-const TURN_ANCHOR_ANIMATION_MS = 220
-// Following the live edge by assigning scrollTop teleports the viewport by the
-// full height of whatever just arrived — a paragraph, a tool card — so the
-// thread reads as a series of jumps. Instead the viewport chases the edge on a
-// critically damped spring: it carries velocity across retargets, so a chunk
-// landing mid-motion bends the existing curve instead of kicking the speed to a
-// new value. Critically damped means it converges without overshoot, which
-// matters here because overshoot past the live edge would bounce the text.
+// Live-edge following (engage/escape/resume and the smooth chase) is owned by
+// use-stick-to-bottom: it derives escape from user-attributable signals (wheel
+// direction, scroll direction, text selection) and drives the viewport from
+// content resizes — scroll-event echoes of its own writes can never disengage
+// it. The layer in this file only manages what sits on top of that: the
+// new-turn reading-line reserve (the spacer) and windowed history loading.
 //
-// Stiffness is in rad/s (higher = tighter tracking, closer to the old snap);
-// ~7 closes most of a burst inside the first half second and fully settles in
-// about a second, letting the viewport trail the text and drift up to it. The
-// velocity ceiling stops a tall tool card from whipping past, and past the
-// snap distance any easing reads as sluggish drift rather than float, so we
-// jump instead.
-const FOLLOW_STIFFNESS = 7
-const FOLLOW_MAX_VELOCITY_PX_S = 2400
-const FOLLOW_SNAP_PX = 900
-const FOLLOW_SETTLE_PX = 0.5
-// A dropped frame or a backgrounded window must not integrate one huge step.
-const FOLLOW_MAX_FRAME_S = 1 / 15
-// Beyond this the viewport moved without us. The scroll handler releases the
-// glide when an event deviates from the spring's position; this covers the
-// same-frame window before that event dispatches, resyncing to reality rather
-// than fighting toward a stale position for a frame.
-const FOLLOW_RESYNC_PX = 2
+// Scroll events cannot say who caused them, so the reserve adjustments below
+// only act on events that closely follow a real gesture (wheel/touch/keys, or
+// a held-down pointer for scrollbar drags). A layout clamp from shrinking
+// content carries no fresh gesture and passes through untouched.
+const SCROLL_GESTURE_WINDOW_MS = 400
 const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
 const SCROLL_KEYS = new Set(['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '])
+
+const prefersReducedMotion = () =>
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
 interface CompletedTurn {
   id: string
@@ -412,23 +402,29 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return () => clearTimeout(timerId)
   }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
 
-  const scrollRef = useRef<HTMLDivElement>(null)
+  // Live-edge following. `isAtBottom` goes false only on a user-attributable
+  // escape (wheel up, upward scroll, selection drag) and comes back when the
+  // reader returns near the bottom — geometry sampled from our own writes can
+  // never disengage it. Content growth is followed from the library's
+  // ResizeObserver on `contentRef`, so the bottom inset below must be a real
+  // element (content-box), not container padding.
+  const {
+    scrollRef,
+    contentRef,
+    scrollToBottom: stickScrollToBottom,
+    isAtBottom,
+    state: stickState,
+  } = useStickToBottom({
+    initial: 'instant',
+    ...(prefersReducedMotion() ? { resize: 'instant' as const } : {}),
+  })
   const contentBodyRef = useRef<HTMLDivElement>(null)
   const bottomSpacerRef = useRef<HTMLDivElement>(null)
   const bottomSpacerHeightRef = useRef(0)
   const anchoredTurnRef = useRef<{ localId: string; scrollTop: number } | null>(null)
-  const programmaticScrollTopRef = useRef<number | null>(null)
-  const userScrollIntentRef = useRef(false)
   const lastScrollTopRef = useRef(0)
-  const scrollAnimationFrameRef = useRef<number | null>(null)
-  const followFrameRef = useRef<number | null>(null)
-  const followTargetRef = useRef(0)
-  const followPositionRef = useRef(0)
-  const followVelocityRef = useRef(0)
-  const followLastFrameRef = useRef(0)
-  const animateNextTurnRef = useRef(false)
-  const isScrolledToBottomRef = useRef(true)
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const lastGestureAtRef = useRef(0)
+  const pointerDownRef = useRef(false)
 
   // How many trailing (visible) messages to render. Grows on scroll-up and while
   // the user is scrolled up during streaming. Starts at BASE_WINDOW; the component
@@ -471,10 +467,17 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   useLayoutEffect(() => {
     const grown = visibleMessages.length - prevVisibleLenRef.current
     prevVisibleLenRef.current = visibleMessages.length
-    if (grown > 0 && (!isScrolledToBottomRef.current || anchoredTurnRef.current)) {
+    // Grow while the reader is away from the live edge (escaped), during the
+    // new-turn reserve, or when an older-page prepend is landing (a pending
+    // scroll capture marks that) — so the rows the user is reading keep their
+    // position instead of sliding off the trailing window.
+    if (
+      grown > 0 &&
+      (!stickState.isAtBottom || anchoredTurnRef.current || prevScrollHeightRef.current != null)
+    ) {
       setWindowSize((n) => n + grown)
     }
-  }, [visibleMessages])
+  }, [visibleMessages, stickState])
 
   const setBottomSpacerHeight = useCallback((height: number) => {
     const spacer = bottomSpacerRef.current
@@ -485,206 +488,52 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     spacer.hidden = nextHeight === 0
   }, [])
 
-  const setScrollTop = useCallback((el: HTMLDivElement, scrollTop: number) => {
-    const nextScrollTop = Math.min(
-      Math.max(0, scrollTop),
-      Math.max(0, el.scrollHeight - el.clientHeight),
-    )
-    userScrollIntentRef.current = false
-    programmaticScrollTopRef.current = nextScrollTop
-    lastScrollTopRef.current = nextScrollTop
-    el.scrollTop = nextScrollTop
-  }, [])
-
-  const cancelScrollAnimation = useCallback(() => {
-    if (scrollAnimationFrameRef.current == null) return
-    cancelAnimationFrame(scrollAnimationFrameRef.current)
-    scrollAnimationFrameRef.current = null
-  }, [])
-
-  const cancelFollowAnimation = useCallback(() => {
-    followVelocityRef.current = 0
-    if (followFrameRef.current == null) return
-    cancelAnimationFrame(followFrameRef.current)
-    followFrameRef.current = null
-  }, [])
-
-  // Chase the live edge instead of snapping to it. Re-entrant by design:
-  // streaming calls this on every content change, and an in-flight chase simply
-  // retargets. Because the spring carries its velocity, retargeting bends the
-  // curve rather than restarting it — restart-per-chunk is exactly what makes
-  // fixed-duration animations stutter under a stream.
-  const followLiveEdge = useCallback((el: HTMLDivElement) => {
-    const target = Math.max(0, el.scrollHeight - el.clientHeight)
-    followTargetRef.current = target
-    const distance = target - el.scrollTop
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
-    // Settled, moving backwards, or so far out that easing would read as drift.
-    if (reduceMotion || distance <= FOLLOW_SETTLE_PX || distance > FOLLOW_SNAP_PX) {
-      cancelFollowAnimation()
-      setScrollTop(el, target)
-      return
-    }
-
-    if (followFrameRef.current != null) return
-
-    // Integrate against our own float position. Reading scrollTop back each
-    // frame would re-quantize to the compositor's rounding, and at the low
-    // speeds this settles into that lost fraction is visible as judder.
-    followPositionRef.current = el.scrollTop
-    followLastFrameRef.current = performance.now()
-
-    const tick = (now: number) => {
-      const viewport = scrollRef.current
-      if (!viewport) {
-        followFrameRef.current = null
-        return
-      }
-
-      const elapsed = Math.min((now - followLastFrameRef.current) / 1000, FOLLOW_MAX_FRAME_S)
-      followLastFrameRef.current = now
-
-      if (Math.abs(viewport.scrollTop - followPositionRef.current) > FOLLOW_RESYNC_PX) {
-        followPositionRef.current = viewport.scrollTop
-        followVelocityRef.current = 0
-      }
-
-      const goal = followTargetRef.current
-      const remaining = goal - followPositionRef.current
-      if (remaining <= FOLLOW_SETTLE_PX || remaining > FOLLOW_SNAP_PX) {
-        followFrameRef.current = null
-        followVelocityRef.current = 0
-        setScrollTop(viewport, goal)
-        return
-      }
-
-      // Analytic step of a critically damped spring, so the motion is identical
-      // at 60Hz and 120Hz and a long frame cannot overshoot.
-      const offset = followPositionRef.current - goal
-      const detached = followVelocityRef.current + FOLLOW_STIFFNESS * offset
-      const decay = Math.exp(-FOLLOW_STIFFNESS * elapsed)
-      followPositionRef.current = goal + (offset + detached * elapsed) * decay
-      followVelocityRef.current = Math.max(
-        -FOLLOW_MAX_VELOCITY_PX_S,
-        Math.min(
-          FOLLOW_MAX_VELOCITY_PX_S,
-          (followVelocityRef.current - FOLLOW_STIFFNESS * detached * elapsed) * decay,
-        ),
-      )
-
-      setScrollTop(viewport, followPositionRef.current)
-      followFrameRef.current = requestAnimationFrame(tick)
-    }
-    followFrameRef.current = requestAnimationFrame(tick)
-  }, [cancelFollowAnimation, setScrollTop])
-
-  const animateScrollTop = useCallback((el: HTMLDivElement, targetScrollTop: number) => {
-    cancelScrollAnimation()
-    // A follow glide still in flight would keep writing scrollTop toward a
-    // stale live edge underneath this animation — two drivers, one viewport.
-    cancelFollowAnimation()
-    userScrollIntentRef.current = false
-    const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
-    const target = Math.min(Math.max(0, targetScrollTop), maxScrollTop)
-    const start = el.scrollTop
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (reduceMotion || Math.abs(target - start) <= 1) {
-      setScrollTop(el, target)
-      return
-    }
-
-    const startedAt = performance.now()
-    const tick = (now: number) => {
-      const progress = Math.min(1, (now - startedAt) / TURN_ANCHOR_ANIMATION_MS)
-      const eased = 1 - Math.pow(1 - progress, 3)
-      setScrollTop(el, start + (target - start) * eased)
-
-      if (progress < 1) {
-        scrollAnimationFrameRef.current = requestAnimationFrame(tick)
-        return
-      }
-
-      scrollAnimationFrameRef.current = null
-      const anchoredTurn = anchoredTurnRef.current
-      setScrollTop(el, anchoredTurn ? anchoredTurn.scrollTop : el.scrollHeight)
-    }
-    scrollAnimationFrameRef.current = requestAnimationFrame(tick)
-  }, [cancelFollowAnimation, cancelScrollAnimation, setScrollTop])
-
-  useEffect(() => cancelScrollAnimation, [cancelScrollAnimation])
-  useEffect(() => cancelFollowAnimation, [cancelFollowAnimation])
-
   // Keep the newly-sent turn fixed at its reading line while the response uses
-  // up the reserved room below it. Once that room reaches zero, following the
-  // live edge naturally takes over.
-  const syncFollowPosition = useCallback(() => {
+  // up the reserved room below it. The spacer inflates scrollHeight so that the
+  // reading line IS the scroll target: from the follow library's perspective
+  // the reader simply sits at the bottom, and content growth paired with an
+  // equal spacer shrink is a net-zero resize — no motion. Once the reserve
+  // reaches zero the anchor retires and real growth resumes normal following.
+  const syncTurnReserve = useCallback(() => {
     const el = scrollRef.current
-    if (!el) return
-
     const anchoredTurn = anchoredTurnRef.current
-    if (anchoredTurn) {
-      const naturalScrollHeight = el.scrollHeight - bottomSpacerHeightRef.current
-      const requiredSpacer = Math.max(
-        0,
-        anchoredTurn.scrollTop + el.clientHeight - naturalScrollHeight,
-      )
-      setBottomSpacerHeight(requiredSpacer)
+    if (!el || !anchoredTurn) return
+    const naturalScrollHeight = el.scrollHeight - bottomSpacerHeightRef.current
+    const requiredSpacer = Math.max(
+      0,
+      anchoredTurn.scrollTop + el.clientHeight - naturalScrollHeight,
+    )
+    setBottomSpacerHeight(requiredSpacer)
+    // The response now fills the viewport. Retire the special turn state so
+    // long-thread windowing can return to its bounded trailing slice.
+    if (requiredSpacer === 0) anchoredTurnRef.current = null
+  }, [scrollRef, setBottomSpacerHeight])
 
-      const targetScrollTop = requiredSpacer > 0 ? anchoredTurn.scrollTop : el.scrollHeight
-      if (requiredSpacer === 0) {
-        // The response now fills the viewport. Retire the special turn state so
-        // long-thread windowing can return to its bounded trailing slice.
-        anchoredTurnRef.current = null
-      }
-
-      if (animateNextTurnRef.current) {
-        animateNextTurnRef.current = false
-        animateScrollTop(el, targetScrollTop)
-        return
-      }
-
-      if (!isScrolledToBottomRef.current || scrollAnimationFrameRef.current != null) return
-      // While the reserve holds the turn at its reading line the position is
-      // static, so there is nothing to smooth — only the live-edge case glides.
-      if (requiredSpacer > 0) setScrollTop(el, targetScrollTop)
-      else followLiveEdge(el)
-      return
-    }
-
-    animateNextTurnRef.current = false
-    if (!isScrolledToBottomRef.current || scrollAnimationFrameRef.current != null) return
-    followLiveEdge(el)
-  }, [animateScrollTop, followLiveEdge, setBottomSpacerHeight, setScrollTop])
+  // Pin the viewport to the live edge before first paint. The library's own
+  // initial scroll runs from its ResizeObserver callback, which lands after
+  // paint — without this, opening a session flashes the top of the transcript
+  // for a frame. Guarded and dep-free because the scroll container mounts only
+  // after loading/error states resolve.
+  const pinnedInitialRef = useRef(false)
+  useLayoutEffect(() => {
+    if (pinnedInitialRef.current || !scrollRef.current) return
+    pinnedInitialRef.current = true
+    stickState.scrollTop = Math.max(0, stickState.calculatedTargetScrollTop)
+    lastScrollTopRef.current = scrollRef.current.scrollTop
+  })
 
   const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     const el = event.currentTarget
     const previousScrollTop = lastScrollTopRef.current
     lastScrollTopRef.current = el.scrollTop
 
-    // A glide writes scrollTop every frame, so its scroll events echo the
-    // spring's own position (give or take compositor quantization). An event
-    // that deviates means the viewport moved without us — a scrollbar drag,
-    // which unlike wheel/touch/keys fires no intent event, or a layout clamp.
-    // Hand the viewport back and read the event as the user's; if it was
-    // really a layout shift near the edge, the distance check below keeps
-    // following engaged and the next content change resumes the chase.
-    const followDriven =
-      followFrameRef.current != null &&
-      Math.abs(el.scrollTop - followPositionRef.current) <= 1
-    if (followFrameRef.current != null && !followDriven) {
-      cancelFollowAnimation()
-      programmaticScrollTopRef.current = null
-    }
-
-    const programmaticTarget = programmaticScrollTopRef.current
-    const isProgrammatic =
-      scrollAnimationFrameRef.current != null ||
-      followDriven ||
-      (programmaticTarget != null && Math.abs(el.scrollTop - programmaticTarget) <= 1)
-    if (isProgrammatic) {
-      programmaticScrollTopRef.current = null
-    }
+    // Only scroll events that closely follow a real gesture may adjust the
+    // reserve. Programmatic writes (the follow animation) and layout clamps
+    // from shrinking content reach this handler too, but carry no fresh
+    // wheel/touch/key stamp and no held pointer, so they pass through.
+    const gestureDriven =
+      pointerDownRef.current ||
+      performance.now() - lastGestureAtRef.current < SCROLL_GESTURE_WINDOW_MS
 
     // Blank reserve is one-way. When the reader moves upward, consume the same
     // number of pixels from the spacer. The new scroll position becomes the
@@ -692,7 +541,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const anchoredTurn = anchoredTurnRef.current
     const upwardDelta = Math.max(0, previousScrollTop - el.scrollTop)
     const downwardDelta = Math.max(0, el.scrollTop - previousScrollTop)
-    if (!isProgrammatic && anchoredTurn && upwardDelta > 0 && bottomSpacerHeightRef.current > 0) {
+    if (gestureDriven && anchoredTurn && upwardDelta > 0 && bottomSpacerHeightRef.current > 0) {
       const discard = Math.min(upwardDelta, bottomSpacerHeightRef.current)
       const remainingSpacer = bottomSpacerHeightRef.current - discard
       anchoredTurn.scrollTop = Math.max(0, anchoredTurn.scrollTop - discard)
@@ -700,37 +549,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       if (remainingSpacer === 0) anchoredTurnRef.current = null
     }
 
-    // Reaching the actual live edge through a user scroll transfers ownership
-    // back to bottom-following. Keeping the turn anchor alive here lets the next
-    // subagent/layout update restore its old reading-line scrollTop, which is
-    // the visible snap-up even after the reader manually scrolled all the way
-    // down. Drop the reserve first; the browser clamps scrollTop to the new
-    // natural maximum synchronously.
-    const distanceFromBottomBeforeRelease = el.scrollHeight - el.scrollTop - el.clientHeight
+    // Reaching the actual live edge through a user scroll is an explicit trip
+    // to the bottom: retire the reserve so its blank room doesn't keep the
+    // streamed content away from the reader. The browser clamps scrollTop to
+    // the new natural maximum synchronously.
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
     if (
-      !isProgrammatic &&
-      userScrollIntentRef.current &&
+      gestureDriven &&
       downwardDelta > 0 &&
       anchoredTurnRef.current &&
-      distanceFromBottomBeforeRelease <= 1
+      distanceFromBottom <= 1
     ) {
       anchoredTurnRef.current = null
-      animateNextTurnRef.current = false
       setBottomSpacerHeight(0)
       lastScrollTopRef.current = el.scrollTop
-    }
-
-    // Proximity to the live edge is the auto-follow contract: moving beyond
-    // this threshold pauses following, and returning within it resumes.
-    const threshold = 80
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    // A glide trails the live edge on purpose, and that lag can exceed the
-    // threshold. Reading it as "the user scrolled away" would disengage
-    // auto-follow mid-response, so while we are driving, following stands.
-    if (!followDriven) {
-      isScrolledToBottomRef.current = distanceFromBottom < threshold
-      // Show "scroll to bottom" button when scrolled up more than 300px
-      setShowScrollToBottom(distanceFromBottom > 300)
     }
 
     // Near the top: reveal the next local chunk, or fetch the next API page.
@@ -739,21 +571,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     if (el.scrollTop < 200 && prevScrollHeightRef.current == null) {
       if (hiddenCount > 0) {
         prevScrollHeightRef.current = el.scrollHeight
-        isScrolledToBottomRef.current = false
         setWindowSize((n) => n + LOAD_STEP)
       } else if (hasOlder && !isFetchingOlder && fetchOlder) {
-        isScrolledToBottomRef.current = false
         void fetchOlder(() => {
           // Back at the bottom mid-fetch: the trailing window doesn't move on
           // prepend, so skip the capture — a lingering guard would block the
-          // next scroll-up gesture.
-          if (scrollRef.current && !isScrolledToBottomRef.current) {
-            prevScrollHeightRef.current = scrollRef.current.scrollHeight
+          // next scroll-up gesture. Derived from geometry at capture time.
+          const viewport = scrollRef.current
+          if (
+            viewport &&
+            viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100
+          ) {
+            prevScrollHeightRef.current = viewport.scrollHeight
           }
         })
       }
     }
-  }, [cancelFollowAnimation, hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight])
+  }, [hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight, scrollRef])
 
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).
@@ -767,19 +601,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       el.scrollTop += el.scrollHeight - prevScrollHeightRef.current
       prevScrollHeightRef.current = null
     }
-  }, [windowSize])
+    // scrollRef is a stable library ref — windowSize remains the sole trigger.
+  }, [windowSize, scrollRef])
 
-  const scrollToBottom = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    cancelScrollAnimation()
-    cancelFollowAnimation()
-    userScrollIntentRef.current = false
+  const handleScrollToBottom = useCallback(() => {
+    // Drop the turn reserve first so the scroll target is the true live edge,
+    // not the blank reading-line reserve.
     anchoredTurnRef.current = null
-    animateNextTurnRef.current = false
     setBottomSpacerHeight(0)
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-  }, [cancelFollowAnimation, cancelScrollAnimation, setBottomSpacerHeight])
+    void stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined)
+  }, [setBottomSpacerHeight, stickScrollToBottom])
 
   // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
   // messages, compaction is done and the SSE compact_complete event was missed.
@@ -1180,11 +1011,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
 
     if (hasNewSend) {
-      cancelScrollAnimation()
-      userScrollIntentRef.current = false
-      isScrolledToBottomRef.current = true
-      setShowScrollToBottom(false)
-
       if (newestTurnStart) {
         const viewport = scrollRef.current
         const anchor = Array.from(
@@ -1201,19 +1027,33 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             localId: newestTurnStart.localId,
             scrollTop: Math.max(0, anchorTop - TURN_ANCHOR_TOP),
           }
-          animateNextTurnRef.current = true
         } else {
           anchoredTurnRef.current = null
-          animateNextTurnRef.current = false
+          setBottomSpacerHeight(0)
         }
       } else {
         anchoredTurnRef.current = null
-        animateNextTurnRef.current = false
         setBottomSpacerHeight(0)
       }
+
+      // Size the reserve before scrolling so the scroll target IS the new
+      // turn's reading line (the spacer inflates scrollHeight to end there).
+      syncTurnReserve()
+      // A send always returns the reader to the thread: re-engage following
+      // and glide to the reading line (or the live edge for queued sends).
+      // Under reduced motion, position synchronously instead of gliding.
+      if (prefersReducedMotion()) {
+        stickState.scrollTop = Math.max(0, stickState.calculatedTargetScrollTop)
+      }
+      void stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined)
+      // Programmatic writes fire their scroll event asynchronously (and not at
+      // all in jsdom) — resync the gesture-delta baseline now so the write
+      // isn't misread as a user delta.
+      lastScrollTopRef.current = scrollRef.current?.scrollTop ?? 0
+      return
     }
 
-    syncFollowPosition()
+    syncTurnReserve()
   }, [
     messages,
     pendingUserMessages,
@@ -1223,15 +1063,18 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     isCompacting,
     pendingRequestCount,
     activeSubagents,
-    syncFollowPosition,
+    syncTurnReserve,
     setBottomSpacerHeight,
-    cancelScrollAnimation,
+    scrollRef,
+    stickState,
+    stickScrollToBottom,
     bottomInset,
   ])
 
   // Markdown, images, and expanded tool cards can change height without a
   // message-state update. Feed those layout changes through the same reserve
-  // calculation so they cannot make the anchored turn jump.
+  // calculation so they cannot make the anchored turn jump. Re-attach after
+  // the loading/error states resolve — the scroll container mounts only then.
   useEffect(() => {
     const content = contentBodyRef.current
     const viewport = scrollRef.current
@@ -1239,7 +1082,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     let frameId = 0
     const observer = new ResizeObserver(() => {
       cancelAnimationFrame(frameId)
-      frameId = requestAnimationFrame(syncFollowPosition)
+      frameId = requestAnimationFrame(syncTurnReserve)
     })
     observer.observe(content)
     observer.observe(viewport)
@@ -1247,16 +1090,32 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       cancelAnimationFrame(frameId)
       observer.disconnect()
     }
-  }, [syncFollowPosition])
+  }, [syncTurnReserve, scrollRef, isLoading, error])
 
+  // Escape from following is owned by the stick-to-bottom library (wheel
+  // direction, scroll direction, selection). These stamps exist only so the
+  // scroll handler can attribute reserve adjustments to a live gesture.
   const handleUserScrollIntent = useCallback(() => {
-    userScrollIntentRef.current = true
-    programmaticScrollTopRef.current = null
-    cancelScrollAnimation()
-    // Hand the viewport back immediately — a glide that keeps running under a
-    // wheel gesture feels like the thread is fighting the reader.
-    cancelFollowAnimation()
-  }, [cancelFollowAnimation, cancelScrollAnimation])
+    lastGestureAtRef.current = performance.now()
+  }, [])
+
+  // Scrollbar drags emit no wheel/touch/key events — track the held pointer so
+  // a multi-second drag stays attributable beyond the gesture window.
+  const handlePointerDown = useCallback(() => {
+    pointerDownRef.current = true
+    lastGestureAtRef.current = performance.now()
+  }, [])
+  useEffect(() => {
+    const release = () => {
+      pointerDownRef.current = false
+    }
+    window.addEventListener('pointerup', release)
+    window.addEventListener('pointercancel', release)
+    return () => {
+      window.removeEventListener('pointerup', release)
+      window.removeEventListener('pointercancel', release)
+    }
+  }, [])
 
   const handleScrollKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (SCROLL_KEYS.has(event.key)) handleUserScrollIntent()
@@ -1427,9 +1286,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         onScroll={handleScroll}
         onWheel={handleUserScrollIntent}
         onTouchMove={handleUserScrollIntent}
-        // Scrollbar drags emit no wheel/touch/key events, only pointerdown +
-        // scroll — without this they would never register as user intent.
-        onPointerDown={handleUserScrollIntent}
+        onPointerDown={handlePointerDown}
         onKeyDown={handleScrollKey}
         role="region"
         aria-label="Messages"
@@ -1437,10 +1294,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         data-testid="message-list"
         data-message-content-area
       >
-        <div
-          className="mx-auto w-full max-w-[720px] px-4 pb-4"
-          style={bottomInset > 0 ? { paddingBottom: bottomInset + 16 } : undefined}
-        >
+        <div ref={contentRef} className="mx-auto w-full max-w-[720px] px-4">
         <div
           ref={contentBodyRef}
           className={`space-y-4 ${readOnly ? 'pt-3' : 'pt-[100px]'}`}
@@ -1706,12 +1560,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           aria-hidden="true"
           hidden
         />
+        {/* Live-edge clearance above the overlaid footer. A real element
+            rather than container padding: the follow library's ResizeObserver
+            measures the content box, so footer growth must change it. */}
+        <div
+          data-testid="live-edge-clearance"
+          aria-hidden="true"
+          style={{ height: bottomInset > 0 ? bottomInset + 16 : 16 }}
+        />
         </div>
       </div>
       {/* eslint-enable jsx-a11y/no-noninteractive-tabindex */}
-      {showScrollToBottom && !suppressScrollToBottom && (
+      {!isAtBottom && !suppressScrollToBottom && (
         <button
-          onClick={scrollToBottom}
+          onClick={handleScrollToBottom}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-3 py-1.5 text-xs font-medium shadow-lg hover:bg-primary/90 transition-opacity cursor-pointer"
           style={bottomInset > 0 ? { bottom: bottomInset + 16 } : undefined}
         >
