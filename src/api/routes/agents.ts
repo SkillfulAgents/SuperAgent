@@ -1679,14 +1679,15 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // still wins the race with early container output.
     await reserveSessionOwnership(slug, sessionId)
 
-    // Persist only what the user explicitly chose. The server-side fallback is
-    // applied at session creation but should not masquerade as a user choice in
-    // metadata — otherwise a later change to the global default wouldn't be
-    // reflected when the composer reloads.
-    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
-    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
-    if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
-    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
+    // Runtime choices are SESSION state once the first turn starts, including
+    // inherited defaults. Persist the effective values, not merely explicit
+    // overrides, so changing an agent/app default later cannot silently change
+    // an existing conversation's next turn or make the composer claim it will.
+    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {
+      model: resolved.model,
+      ...(resolved.effort ? { effort: resolved.effort } : {}),
+      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    }
     if (isAuthMode()) {
       initialMetadata.createdByUserId = getCurrentUserId(c)
       // Origin-device stamp: which mobile device family (if any) started this
@@ -1749,6 +1750,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         lastActivityAt: new Date(),
         messageCount: 0,
         isActive: true,
+        model: resolved.model,
+        ...(resolved.effort ? { effort: resolved.effort } : {}),
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
         initialMessageUuid,
       },
       201
@@ -2276,6 +2280,17 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       } catch (error) {
         console.error(error)
       }
+    }
+    const runtimeSelectionChanged =
+      runtimeOptions.effort !== undefined ||
+      runtimeOptions.speed !== undefined ||
+      runtimeOptions.model !== undefined
+    if (runtimeSelectionChanged) {
+      // Other windows/devices may already have seeded their composer from the
+      // previous session metadata. Tell both the local session stream and the
+      // global event stream to refresh before their next send.
+      messagePersister.broadcastSessionUpdate(sessionId)
+      messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
     }
 
     return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
