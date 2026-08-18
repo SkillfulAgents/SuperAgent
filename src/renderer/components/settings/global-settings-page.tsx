@@ -128,7 +128,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
     },
     ...(showAdminSettings
       ? [
-          { id: 'skillsets', label: 'Skillsets', icon: <Layers className="h-4 w-4" />, render: () => deferredTab(<SkillsetsTab />) },
+          { id: 'skillsets', label: 'Libraries', icon: <Layers className="h-4 w-4" />, render: () => deferredTab(<SkillsetsTab />) },
           { id: 'web', label: 'Web Search', icon: <Search className="h-4 w-4" />, render: () => deferredTab(<WebTab />) },
           { id: 'browser', label: 'Browser Use', icon: <MousePointer2 className="h-4 w-4" />, render: () => deferredTab(<BrowserTab />) },
           // Computer Use drives the machine the agent runs on, and its whole

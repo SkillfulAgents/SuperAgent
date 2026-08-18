@@ -14,7 +14,7 @@ test.describe('Public Skillset Provider', () => {
     await appPage.waitForAgentsLoaded()
   })
 
-  test('public skillset appears in Settings > Skillsets with Public badge', async ({ page }) => {
+  test('public skillset appears in Settings > Libraries with Public badge', async ({ page }) => {
     await page.locator('[data-testid="settings-button"]').click()
     // Settings nav items are now links (URL-driven tabs), so target the stable
     // testid rather than a button role.

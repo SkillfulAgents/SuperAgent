@@ -416,6 +416,81 @@ describe('PlatformSkillsetProvider.getQueueItemStatuses', () => {
   })
 })
 
+describe('PlatformSkillsetProvider.getDisplayInfo', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('titles the list row from the connected org name', () => {
+    mockGetPlatformAuthStatus.mockReturnValue({
+      connected: true,
+      source: 'settings',
+      orgId: 'org_A',
+      orgName: 'Datawizz Test',
+    })
+    expect(provider.getDisplayInfo({
+      id: 'platform--repo-x--datawizz-test',
+      url: 'http://platform/v1/skills/repo',
+      name: 'datawizz-test',
+      description: 'Default skillset for Datawizz Test',
+      addedAt: '2026-01-01T00:00:00.000Z',
+      provider: 'platform',
+      providerData: { repoId: 'repo-x', orgId: 'org_A' },
+    })).toEqual({
+      badgeLabel: 'Platform',
+      showUrl: false,
+      title: 'Datawizz Test Team Library',
+      description: 'Default library for Datawizz Test',
+    })
+  })
+
+  it('keeps a custom stored description', () => {
+    mockGetPlatformAuthStatus.mockReturnValue({
+      connected: true,
+      source: 'settings',
+      orgId: 'org_A',
+      orgName: 'Acme',
+    })
+    expect(provider.getDisplayInfo({
+      id: 'platform--repo-x--acme',
+      url: 'http://platform/v1/skills/repo',
+      name: 'acme',
+      description: 'Shared skills for the engineering team',
+      addedAt: '2026-01-01T00:00:00.000Z',
+      provider: 'platform',
+    }).description).toBe('Shared skills for the engineering team')
+  })
+
+  it('falls back to stored org name, then Team Library', () => {
+    mockGetPlatformAuthStatus.mockReturnValue({
+      connected: true,
+      source: 'settings',
+      orgId: 'org_A',
+      orgName: null,
+    })
+    expect(provider.getDisplayInfo({
+      id: 'platform--repo-x--acme',
+      url: 'http://platform/v1/skills/repo',
+      name: 'acme',
+      description: '',
+      addedAt: '2026-01-01T00:00:00.000Z',
+      provider: 'platform',
+      providerData: { repoId: 'repo-x', orgId: 'org_A', orgName: 'Acme' },
+    }).title).toBe('Acme Team Library')
+
+    const fallback = provider.getDisplayInfo({
+      id: 'platform--repo-x--acme',
+      url: 'http://platform/v1/skills/repo',
+      name: 'acme',
+      description: '',
+      addedAt: '2026-01-01T00:00:00.000Z',
+      provider: 'platform',
+    })
+    expect(fallback.title).toBe('Team Library')
+    expect(fallback.description).toBe('Default team library')
+  })
+})
+
 describe('PlatformSkillsetProvider.isConfigValid / isInstalledValid', () => {
   beforeEach(() => {
     vi.clearAllMocks()

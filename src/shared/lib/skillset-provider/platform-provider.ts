@@ -103,8 +103,14 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     }
   }
 
-  override getDisplayInfo() {
-    return { badgeLabel: 'Platform', showUrl: false }
+  override getDisplayInfo(config?: SkillsetConfig) {
+    const orgName = this.resolveConnectedOrgName(config)
+    return {
+      badgeLabel: 'Platform',
+      showUrl: false,
+      title: orgName ? `${orgName} Team Library` : 'Team Library',
+      description: this.rewriteListDescription(config?.description, orgName),
+    }
   }
 
   override getRegistrationUrl(url: string): string {
@@ -485,6 +491,22 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
   private readString(value: unknown): string | undefined {
     return typeof value === 'string' && value.length > 0 ? value : undefined
+  }
+
+  private resolveConnectedOrgName(config?: SkillsetConfig): string | undefined {
+    const auth = getPlatformAuthStatus()
+    return auth.orgName?.trim()
+      || this.getPlatformData(config).orgName
+      || this.getPlatformOrgName(config?.description)
+  }
+
+  private rewriteListDescription(stored: string | undefined, orgName?: string): string {
+    const trimmed = stored?.trim()
+    const isDefaultBoilerplate = !trimmed || trimmed.startsWith('Default skillset for ')
+    if (isDefaultBoilerplate) {
+      return orgName ? `Default library for ${orgName}` : 'Default team library'
+    }
+    return trimmed
   }
 
   private getPlatformOrgName(description?: string): string | undefined {

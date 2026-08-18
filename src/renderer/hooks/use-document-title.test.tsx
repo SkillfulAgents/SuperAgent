@@ -90,6 +90,9 @@ describe('getDocumentTitle', () => {
     expect(getDocumentTitle({ location: location({ kind: 'home' }), isSettingsRoute: true, settingsTab: 'llm' })).toBe(
       `Settings${DASH}Model Provider`,
     )
+    expect(getDocumentTitle({ location: location({ kind: 'home' }), isSettingsRoute: true, settingsTab: 'skillsets' })).toBe(
+      `Settings${DASH}Libraries`,
+    )
   })
 })
 

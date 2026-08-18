@@ -105,14 +105,15 @@ skillsets.use('*', Authenticated())
 
 function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCount: number = 0, error?: string): ApiSkillsetConfig {
   const provider = getSkillsetProvider(config.provider)
-  const display = provider.getDisplayInfo()
+  const display = provider.getDisplayInfo(config)
   const credentialId = getCredentialId(config)
   const credential = credentialId ? getSettings().skillsetCredentials?.[credentialId] : undefined
   return {
     id: config.id,
     url: config.url,
     name: config.name,
-    description: config.description,
+    displayName: display.title ?? config.name,
+    description: display.description ?? config.description,
     skillCount,
     agentCount,
     addedAt: config.addedAt,
