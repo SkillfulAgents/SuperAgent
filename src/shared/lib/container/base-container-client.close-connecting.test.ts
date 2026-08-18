@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import net from 'net'
 import type { AddressInfo } from 'net'
 import type { ContainerConfig, ContainerInfo } from './types'
