@@ -24,13 +24,19 @@ import {
   readJsonlFile,
   streamJsonlFile,
   readJsonlTailLines,
+  iterateJsonlLinesBackward,
   parseJsonl,
   streamFileLines,
   parseJsonlLine,
   writeFileAtomicStream,
   ensureDirectory,
 } from '@shared/lib/utils/file-storage'
-import { transformMessages, type TransformedItem } from '@shared/lib/utils/message-transform'
+import {
+  transformMessages,
+  isToolResultOnlyMessage,
+  isTaskNotificationMessage,
+  type TransformedItem,
+} from '@shared/lib/utils/message-transform'
 import { findDeltaWindowStart } from '@shared/lib/messages-delta'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
 import { isHiddenAutomatedSession } from './session-visibility'
@@ -912,16 +918,41 @@ export interface SessionMessagesPage {
   nextCursor: string | null
 }
 
-const INITIAL_TAIL_FACTOR = 4
 // Hard bound on how deep paging can reach: every cursor request re-scans from
 // EOF, so history beyond this many raw JSONL lines is unreachable (walk is
 // O(depth²)). Lifting it needs an offset-carrying cursor that seeks instead.
 const MAX_TAIL_LINES = 50_000
-
-function dropPartialHead<T>(items: T[], reachedStart: boolean): T[] {
-  if (reachedStart || items.length === 0) return items
-  return items.slice(1)
-}
+// Soft cap on the raw bytes a single page window may materialize. A window
+// that hits it is served short with a nextCursor, and the client's existing
+// scroll-up paging fetches the rest — this is what makes the endpoint's
+// per-request memory bounded regardless of transcript geometry (a single turn
+// with huge tool results used to pull the whole file into one window). Soft:
+// the scan runs past it until the window holds at least two display items
+// (one sacrificial head plus one servable), so a single item larger than the
+// budget still serves instead of yielding an empty page.
+const MESSAGES_PAGE_BYTE_BUDGET = 4 * 1024 * 1024
+// Ceiling on the window — the structural memory bound. The true per-request
+// bound is O(hardCap + one turn's span + largest single row): the cap yields
+// only to three exceptions, each bounded by content that must be materialized
+// to serve anything at all — (a) at least one complete servable display item
+// (a session whose newest turn just wrote a huge tool-result run must still
+// render), (b) closing an assistant merge group whose entries straddle the
+// boundary (a cut group's item id vanishes on the next window and terminates
+// pagination), and (c) a single JSONL row, which has to be assembled whole
+// even to classify it. Multi-MB embedded content stops hitting this path
+// entirely when large payloads move behind references (the media-ref
+// follow-up ticket).
+const MESSAGES_PAGE_HARD_CAP_FACTOR = 2
+// A cursor page's window extends at least this far past the cursor line so
+// tool_use blocks near the page's newest edge still meet their tool_result
+// entries (results land within the same turn, typically adjacent lines). The
+// boundary is then rounded UP to the next line start, so any row that BEGINS
+// inside the grace region is included whole — a fixed byte end would cut a
+// large result row mid-line and drop it as malformed. The old implementation
+// read from the cursor to EOF; results starting beyond the grace region are
+// not attached — bounded staleness on a historical page, never on the
+// trailing page (whose window always ends at EOF).
+const CURSOR_WINDOW_GRACE_BYTES = 512 * 1024
 
 function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | null {
   return hasOlder && messages[0] ? messages[0].id : null
@@ -981,11 +1012,415 @@ function toolResultIdsAfterEntry(
   return ids
 }
 
-/** Trailing (or `cursor`-before) display page. Parses only a tail of the JSONL. */
+/** Bookkeeping for the backward display-item count. Mirrors the parts of
+ * transformMessages that decide whether an entry STARTS a new display item;
+ * only counters, uuids, and message ids are retained — never entry content. */
+interface DisplayCountState {
+  seenUuids: Set<string>
+  seenAssistantMessageIds: Set<string>
+  /** Content of an informational banner whose synthetic user copy (the
+   * adjacent older entry with identical string content) must not count. */
+  pendingInformationalContent: string | null
+}
+
+/** Whether this (already normalized) entry starts a new display item, by the
+ * same rules transformMessages applies (uuid dedup, assistant merge by
+ * message.id, meta/tool-result-only/task-notification/compact-summary skips).
+ * Entries are visited NEWEST-FIRST, so "first occurrence" checks invert: the
+ * newest copy of a duplicate uuid / merged message.id is the one counted.
+ * That can place a count on a different line than the forward transform
+ * keeps, which shifts the window boundary by at most the affected item —
+ * absorbed by the sacrificial head item the page slicing drops when the
+ * window's deepest item may be partial. */
+function countsAsDisplayStart(entry: JsonlEntry, state: DisplayCountState): boolean {
+  if (!isMessageOrSystemDisplayEntry(entry)) return false
+  if ('isMeta' in entry && entry.isMeta) return false
+
+  if (entry.type === 'system') {
+    const sys = entry as JsonlSystemEntry
+    if (state.seenUuids.has(sys.uuid)) return false
+    state.seenUuids.add(sys.uuid)
+    state.pendingInformationalContent =
+      sys.subtype === 'informational' ? (sys.content ?? '') : null
+    return true
+  }
+
+  const msg = entry as JsonlMessageEntry
+  const pendingInfo = state.pendingInformationalContent
+  state.pendingInformationalContent = null
+  if (
+    pendingInfo !== null &&
+    msg.type === 'user' &&
+    typeof msg.message.content === 'string' &&
+    msg.message.content === pendingInfo
+  ) {
+    // The CLI's synthetic stop-text copy directly before an informational
+    // banner — hidden by the transform, the banner is the visible surface.
+    return false
+  }
+  if (msg.uuid) {
+    if (state.seenUuids.has(msg.uuid)) return false
+    state.seenUuids.add(msg.uuid)
+  }
+  if (msg.type === 'user') {
+    if (msg.isCompactSummary) return false
+    if (isToolResultOnlyMessage(msg)) return false
+    if (isTaskNotificationMessage(msg)) return false
+    return true
+  }
+  const messageId = msg.message.id
+  if (messageId) {
+    if (state.seenAssistantMessageIds.has(messageId)) return false
+    state.seenAssistantMessageIds.add(messageId)
+  }
+  return true
+}
+
+interface PageWindowScan {
+  /** Cursor located (always true for the no-cursor trailing page). */
+  found: boolean
+  /** Byte offset of the window's first line. */
+  startOffset: number
+  /** Exclusive end of the window; undefined = read to EOF (trailing page). */
+  endOffset: number | undefined
+  /** Window start coincides with the file start. */
+  reachedStart: boolean
+  /** The window's deepest display item may be partially merged (an assistant
+   * group whose older entries lie below the window start) — page slicing must
+   * sacrifice it. False when the deepest item is single-entry (user, system,
+   * id-less assistant): those are complete wherever the window starts, and
+   * dropping them would lose data (an empty page behind a huge tool-result
+   * run, a trailing system item swallowed by display reordering). */
+  dropHead: boolean
+}
+
+/** Smallest recorded line-start offset at or past the grace distance, so the
+ * window end lands on a line boundary: any row BEGINNING inside the grace
+ * region is included whole. undefined = grace reaches past the newest scanned
+ * line, read to EOF. `lineOffsets` is newest-first (descending). */
+function graceEndOffset(lineOffsets: number[], cursorLineEnd: number): number | undefined {
+  const target = cursorLineEnd + CURSOR_WINDOW_GRACE_BYTES
+  for (let i = lineOffsets.length - 1; i >= 0; i--) {
+    if (lineOffsets[i]! >= target) return lineOffsets[i]
+  }
+  return undefined
+}
+
+/** How a row behaves at the extension boundary after a counting stop.
+ *
+ * 'system': a system display item — the run continues, and the row becomes
+ * the window's deepest COMPLETE item. 'filtered': removed by readEntriesRange
+ * or skipped by the transform before ordering (meta rows, non-display entry
+ * types, malformed lines, compact summaries, an informational's synthetic
+ * user copy) — invisible to transform adjacency, so it cannot split a logical
+ * system run and the extension walks through it. 'settle': acts as an anchor
+ * in the transform (a real user/assistant row, including tool-result-only
+ * ones, which genuinely split the system-attachment grouping) — the run ends
+ * just above it. */
+function classifyExtensionRow(
+  normalized: JsonlEntry | undefined,
+  state: DisplayCountState
+): 'system' | 'filtered' | 'settle' {
+  if (normalized === undefined) return 'filtered'
+  if (!isMessageOrSystemDisplayEntry(normalized)) return 'filtered'
+  if ('isMeta' in normalized && normalized.isMeta) return 'filtered'
+  if (normalized.type === 'system') {
+    const sys = normalized as JsonlSystemEntry
+    // Mirror countsAsDisplayStart's synthetic-copy tracking so the copy of an
+    // informational consumed here is recognized on the next (older) line.
+    state.pendingInformationalContent =
+      sys.subtype === 'informational' ? (sys.content ?? '') : null
+    return 'system'
+  }
+  const msg = normalized as JsonlMessageEntry
+  const pendingInfo = state.pendingInformationalContent
+  state.pendingInformationalContent = null
+  if (msg.type === 'user') {
+    if (
+      pendingInfo !== null &&
+      typeof msg.message.content === 'string' &&
+      msg.message.content === pendingInfo
+    ) {
+      return 'filtered'
+    }
+    if (msg.isCompactSummary) return 'filtered'
+  }
+  return 'settle'
+}
+
+/** Pass 1 of the paged read: walk backward from EOF, parsing each line
+ * transiently to count display-item starts (and locate the cursor), retaining
+ * only offsets and id sets. Counting stops at `limit + 1` items, the byte
+ * budget (two-item floor), or unconditionally at the hard cap; the whole scan
+ * is bounded by MAX_TAIL_LINES and the file start. Never materializes
+ * entries, so scan depth costs CPU, not memory.
+ *
+ * Cursor resolution is canonical: the forward transform deduplicates uuids to
+ * their OLDEST occurrence, so the scan keeps byte-searching below the first
+ * match and re-anchors on every deeper verified occurrence (a resume-replayed
+ * transcript otherwise paginates in a cycle, serving the same pages forever).
+ * Between matches, lines are only JSON-parsed when their raw bytes contain
+ * the quoted cursor id — the search is memchr, not a parse of the transcript.
+ *
+ * When counting stops on a system entry, the scan extends through the rest of
+ * the contiguous system run: the transform reorders adjacent system items
+ * (recalls, then boundaries, then informationals) regardless of file order,
+ * and a window boundary inside the run makes pagination skip the reordered
+ * items entirely. */
+async function scanMessagesPageWindow(
+  jsonlPath: string,
+  opts: { limit: number; cursor?: string; byteBudget: number; signal?: AbortSignal }
+): Promise<PageWindowScan> {
+  const { limit, cursor, byteBudget, signal } = opts
+  const hardCap = byteBudget * MESSAGES_PAGE_HARD_CAP_FACTOR
+  const cursorNeedle = cursor !== undefined ? Buffer.from(JSON.stringify(cursor)) : null
+  // Items needed below the cursor (or below EOF): the page plus the head
+  // item that slicing sacrifices when the window start may cut it.
+  const targetItems = limit + 1
+  // Line-start offsets of every scanned line, for grace-boundary placement on
+  // (re-)anchor. Bounded by MAX_TAIL_LINES numbers. Cursor pages only.
+  const lineOffsets: number[] | null = cursorNeedle ? [] : null
+
+  let mode: 'searching' | 'counting' | 'extending' | 'settled' =
+    cursorNeedle ? 'searching' : 'counting'
+  let anchored = cursorNeedle === null
+  let state: DisplayCountState = {
+    seenUuids: new Set(),
+    seenAssistantMessageIds: new Set(),
+    pendingInformationalContent: null,
+  }
+  let endOffset: number | undefined
+  let linesScanned = 0
+  let displayCount = 0
+  let windowBytes = 0
+  let startOffset = 0
+  let hitLineCap = false
+  // Conservative default: with nothing counted, treat the head as partial.
+  let deepestCountedIsGroup = true
+  // message.id of an assistant merge group whose span may extend below the
+  // current line — set while walking its (possibly interleaved) turn.
+  let openGroupId: string | null = null
+  // While the cursor is a system item, rows below it may belong to the same
+  // contiguous system run and reorder display-AFTER the cursor (recalls sort
+  // before boundaries before informationals regardless of file order). Such
+  // rows must not satisfy the item count: a page counted from them can
+  // transform to empty and terminate paging while older history exists.
+  // Suppression lifts at the first anchor row below the cursor's run; every
+  // item counted after that is provably display-before the cursor.
+  let suppressUntilAnchorRow = false
+  // The transform keeps only the NEWEST compact boundary before each anchor
+  // (a single-slot map keyed by the next message), so deeper boundaries in
+  // the same span collapse away and must not count as display items.
+  let boundaryCountedSinceAnchor = false
+
+  for await (const { line, offset } of iterateJsonlLinesBackward(jsonlPath, signal)) {
+    linesScanned++
+    if (linesScanned > MAX_TAIL_LINES) {
+      // Same reachability contract as the old tail reader: history deeper
+      // than MAX_TAIL_LINES raw lines from EOF cannot be paged to.
+      hitLineCap = true
+      break
+    }
+    lineOffsets?.push(offset)
+
+    if (cursorNeedle && line.includes(cursorNeedle)) {
+      const parsed = parseJsonlLine<JsonlEntry>(line)
+      const normalized = parsed !== undefined ? normalizeQueuedCommandEntry(parsed) : undefined
+      if (normalized !== undefined && (normalized as { uuid?: string }).uuid === cursor) {
+        // (Re-)anchor at this occurrence — the deepest seen so far wins.
+        mode = 'counting'
+        anchored = true
+        state = {
+          seenUuids: new Set(),
+          seenAssistantMessageIds: new Set(),
+          pendingInformationalContent: null,
+        }
+        displayCount = 0
+        windowBytes = 0
+        deepestCountedIsGroup = true
+        openGroupId = null
+        suppressUntilAnchorRow = normalized.type === 'system'
+        boundaryCountedSinceAnchor = false
+        startOffset = offset
+        endOffset = graceEndOffset(lineOffsets!, offset + line.length + 1)
+        continue
+      }
+      // A quoted-id byte match inside content or parentUuid parses to a
+      // different uuid — not an occurrence.
+    }
+
+    if (mode === 'searching' || mode === 'settled') continue
+
+    const parsed = parseJsonlLine<JsonlEntry>(line)
+    const normalized = parsed !== undefined ? normalizeQueuedCommandEntry(parsed) : undefined
+
+    if (mode === 'extending') {
+      const kind = classifyExtensionRow(normalized, state)
+      if (kind !== 'settle') {
+        // Cap-exempt: the transform reorders an entire contiguous system run
+        // as one unit, so a cap-placed boundary inside it loses items exactly
+        // like a cut merge group would. Bounded by the run's span — system
+        // and filtered rows are small.
+        windowBytes += line.length + 1
+        startOffset = offset
+        if (kind === 'system') deepestCountedIsGroup = false
+        continue
+      }
+      mode = 'settled'
+      if (!cursorNeedle) break
+      continue
+    }
+
+    // counting
+    windowBytes += line.length + 1
+    startOffset = offset
+    const msgEntry =
+      normalized !== undefined && (normalized.type === 'user' || normalized.type === 'assistant')
+        ? (normalized as JsonlMessageEntry)
+        : undefined
+    const pendingInfoBefore = state.pendingInformationalContent
+    // Checked BEFORE the classifier registers this row's uuid: a
+    // byte-identical replayed row shares its original's uuid, and the
+    // transform keys system-item anchors BY uuid — a duplicate row is the
+    // same anchor, not a new one. Treating it as new would reset the
+    // boundary-collapse span and lift system-cursor suppression, letting the
+    // page target be satisfied by items that never display.
+    const isDuplicateRow =
+      msgEntry !== undefined && !!msgEntry.uuid && state.seenUuids.has(msgEntry.uuid)
+    const counted = normalized !== undefined && countsAsDisplayStart(normalized, state)
+    // An anchor row is one the transform attaches system items to — a real
+    // message entry, not a filtered/skipped one (meta rows, compact
+    // summaries, an informational's synthetic user copy) and not a replayed
+    // duplicate of an anchor already seen.
+    const isAnchorRow =
+      msgEntry !== undefined &&
+      !isDuplicateRow &&
+      !('isMeta' in msgEntry && msgEntry.isMeta) &&
+      !msgEntry.isCompactSummary &&
+      !(
+        pendingInfoBefore !== null &&
+        msgEntry.type === 'user' &&
+        typeof msgEntry.message.content === 'string' &&
+        msgEntry.message.content === pendingInfoBefore
+      )
+    if (isAnchorRow) {
+      suppressUntilAnchorRow = false
+      boundaryCountedSinceAnchor = false
+    }
+    if (counted && !suppressUntilAnchorRow) {
+      const isBoundary =
+        normalized!.type === 'system' &&
+        (normalized as JsonlSystemEntry).subtype === 'compact_boundary'
+      if (isBoundary && boundaryCountedSinceAnchor) {
+        // Collapsed by the transform — the newest boundary in this span,
+        // already counted, is the only one that displays.
+      } else {
+        if (isBoundary) boundaryCountedSinceAnchor = true
+        displayCount++
+        deepestCountedIsGroup = msgEntry?.type === 'assistant' && !!msgEntry.message.id
+      }
+    }
+    // Merge-group span tracking. An assistant group's older entries can lie
+    // below queued/system/filtered rows interleaved inside its turn, so a
+    // window boundary placed while a group is "open" would cut it — the cut
+    // item gets a non-canonical id that vanishes from the next (deeper)
+    // window, terminating the client's pagination. No stop condition may fire
+    // while a group is open; a group closes at the first row that proves the
+    // turn boundary (a different assistant response, or a non-queued user
+    // row), which bounds the overshoot by one turn's span.
+    if (msgEntry !== undefined) {
+      if (msgEntry.type === 'assistant') {
+        openGroupId = msgEntry.message.id ?? null
+      } else if (!msgEntry.isQueuedCommand && !('isMeta' in msgEntry && msgEntry.isMeta)) {
+        openGroupId = null
+      }
+    }
+    const groupOpen = openGroupId !== null
+    if (displayCount >= targetItems && !groupOpen) {
+      mode = 'extending'
+    } else if (windowBytes >= byteBudget && displayCount >= 2 && !groupOpen) {
+      // The budget stop waits for two items: one sacrificial head plus at
+      // least one servable item, so a single display item larger than the
+      // budget is still delivered instead of an empty page.
+      mode = 'extending'
+    } else if (
+      windowBytes >= hardCap &&
+      !groupOpen &&
+      displayCount >= (deepestCountedIsGroup ? 2 : 1)
+    ) {
+      // The hard cap has its own floor: at least one servable item (two when
+      // the deepest item is a merge group the head-drop would sacrifice), so
+      // a run of non-display rows at EOF — a turn's freshly written tool
+      // results — cannot produce an empty terminal page while visible
+      // history exists. Routed through extension rather than settling
+      // directly, so a cap landing on a system run still completes the run.
+      mode = 'extending'
+    }
+  }
+
+  if (!anchored) {
+    // Cursor never found: vanished id, or deeper than the line cap.
+    return {
+      found: false,
+      startOffset: 0,
+      endOffset: undefined,
+      reachedStart: !hitLineCap,
+      dropHead: true,
+    }
+  }
+  return {
+    found: true,
+    startOffset,
+    endOffset,
+    reachedStart: startOffset === 0,
+    dropHead: deepestCountedIsGroup,
+  }
+}
+
+/** Pass 2 of the paged read: parse + normalize + filter the entries of a byte
+ * range chosen by pass 1. Identical filtering to readTransformedTail; memory
+ * is bounded by the range, which pass 1 bounded by the byte budget. */
+async function readEntriesRange(
+  jsonlPath: string,
+  startOffset: number,
+  endOffset: number | undefined,
+  signal?: AbortSignal
+): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
+  const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+  // The signal is threaded into the reader itself (checked per chunk): a
+  // multi-MB row spans many chunks before it ever surfaces as a line here.
+  for await (const line of streamFileLines(
+    jsonlPath,
+    { start: startOffset, end: endOffset },
+    signal
+  )) {
+    const parsed = parseJsonlLine<JsonlEntry>(line)
+    if (!parsed) continue
+    const normalized = normalizeQueuedCommandEntry(parsed)
+    if (
+      isMessageOrSystemDisplayEntry(normalized) &&
+      !('isMeta' in normalized && normalized.isMeta)
+    ) {
+      entries.push(normalized)
+    }
+  }
+  return entries
+}
+
+/** Trailing (or `cursor`-before) display page.
+ *
+ * Two passes, O(window) memory: a backward index scan picks the window's byte
+ * range without materializing anything (see scanMessagesPageWindow), then a
+ * forward read parses only that range and hands it to the same
+ * transformMessages the whole-file path uses — so page content matches the
+ * old grow-and-re-read implementation, while a transcript's size no longer
+ * sets the request's memory footprint. Pages truncated by the byte budget are
+ * valid short pages: nextCursor points at their first item and the client's
+ * scroll-up paging walks the rest. */
 export async function getSessionMessagesPage(
   agentSlug: string,
   sessionId: string,
-  opts: { limit: number; cursor?: string; signal?: AbortSignal }
+  opts: { limit: number; cursor?: string; signal?: AbortSignal; byteBudget?: number }
 ): Promise<SessionMessagesPage> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   if (!(await fileExists(jsonlPath))) {
@@ -993,58 +1428,65 @@ export async function getSessionMessagesPage(
   }
 
   const { limit, cursor, signal } = opts
-  let maxLines = Math.min(MAX_TAIL_LINES, Math.max(limit * INITIAL_TAIL_FACTOR, 32))
+  const byteBudget = opts.byteBudget ?? MESSAGES_PAGE_BYTE_BUDGET
 
-  for (let attempt = 0; attempt < 32; attempt++) {
-    const { transformed, reachedStart } = await readTransformedTail(jsonlPath, maxLines, signal)
-
-    if (cursor) {
-      const idx = transformed.findIndex((item) => item.id === cursor)
-      if (idx === -1) {
-        // Deep cursors from sequential scroll-up paging are legitimate — keep growing.
-        if (!reachedStart && maxLines < MAX_TAIL_LINES) {
-          maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
-          continue
-        }
-        // Vanished id (or cursor deeper than MAX_TAIL_LINES): terminate paging.
-        // Never point the client at a newer message — it would loop on
-        // already-loaded pages.
-        if (!reachedStart) {
-          console.warn(
-            `getSessionMessagesPage: cursor ${cursor} not found within ` +
-            `${MAX_TAIL_LINES} tail lines of session ${sessionId}; ending pagination`
-          )
-        }
-        return { messages: [], nextCursor: null }
-      }
-      if (!reachedStart && idx <= limit && maxLines < MAX_TAIL_LINES) {
-        maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
-        continue
-      }
-      const start = reachedStart ? Math.max(0, idx - limit) : Math.max(1, idx - limit)
-      const messages = transformed.slice(start, idx)
-      const hasOlder = messages.length > 0 && (!reachedStart || start > 0)
-      // Sequential walks end here when the cap truncates the page to empty.
-      if (messages.length === 0 && !reachedStart) {
-        console.warn(
-          `getSessionMessagesPage: pagination for session ${sessionId} hit the ` +
-          `${MAX_TAIL_LINES}-line depth cap; deeper history is unreachable`
-        )
-      }
-      return { messages, nextCursor: pageCursor(messages, hasOlder) }
+  const scan = await scanMessagesPageWindow(jsonlPath, { limit, cursor, byteBudget, signal })
+  signal?.throwIfAborted()
+  if (!scan.found) {
+    // Vanished id (or cursor deeper than MAX_TAIL_LINES): terminate paging.
+    // Never point the client at a newer message — it would loop on
+    // already-loaded pages.
+    if (!scan.reachedStart) {
+      console.warn(
+        `getSessionMessagesPage: cursor ${cursor} not found within ` +
+        `${MAX_TAIL_LINES} tail lines of session ${sessionId}; ending pagination`
+      )
     }
+    return { messages: [], nextCursor: null }
+  }
 
-    if (!reachedStart && transformed.length <= limit && maxLines < MAX_TAIL_LINES) {
-      maxLines = Math.min(MAX_TAIL_LINES, maxLines * 2)
-      continue
+  const entries = await readEntriesRange(jsonlPath, scan.startOffset, scan.endOffset, signal)
+  signal?.throwIfAborted()
+  const transformed = transformMessages(entries)
+  const reachedStart = scan.reachedStart
+  const dropHead = scan.dropHead && !reachedStart
+
+  if (cursor) {
+    const idx = transformed.findIndex((item) => item.id === cursor)
+    if (idx === -1) {
+      // The index scan located the cursor's line but the transform of the
+      // materialized window disagrees — a concurrent rewrite between the two
+      // passes, or a replayed duplicate id. Terminate like a vanished cursor
+      // rather than serving a mislabeled page.
+      console.warn(
+        `getSessionMessagesPage: cursor ${cursor} vanished between scan and ` +
+        `read for session ${sessionId}; ending pagination`
+      )
+      return { messages: [], nextCursor: null }
     }
-    const usable = dropPartialHead(transformed, reachedStart)
-    const messages = usable.slice(-limit)
-    const hasOlder = messages.length > 0 && (!reachedStart || usable.length > messages.length)
+    const start = Math.max(dropHead ? 1 : 0, idx - limit)
+    const messages = transformed.slice(start, idx)
+    const hasOlder = messages.length > 0 && (!reachedStart || start > 0)
+    // Sequential walks end here when a cap truncates the page to empty.
+    if (messages.length === 0 && !reachedStart) {
+      console.warn(
+        `getSessionMessagesPage: pagination for session ${sessionId} hit a ` +
+        `scan cap below cursor ${cursor}; deeper history is unreachable`
+      )
+    }
     return { messages, nextCursor: pageCursor(messages, hasOlder) }
   }
 
-  throw new Error('getSessionMessagesPage exceeded tail growth attempts')
+  const usable = dropHead ? transformed.slice(1) : transformed
+  const messages = usable.slice(-limit)
+  const hasOlder = messages.length > 0 && (!reachedStart || usable.length > messages.length)
+  if (messages.length === 0 && !reachedStart) {
+    console.warn(
+      `getSessionMessagesPage: window for session ${sessionId} hit the byte ` +
+      `hard cap before a complete display item; serving an empty page`
+    )
+  }
+  return { messages, nextCursor: pageCursor(messages, hasOlder) }
 }
 
 export interface SessionMessagesDelta {

@@ -1824,6 +1824,19 @@ async function annotateAndRecoverMessages(
   }
 }
 
+// Buffers, not strings: Readable.toWeb hands chunks straight to the web
+// ReadableStream, whose byte consumers reject non-Uint8Array chunks.
+function* messagesPageJsonChunks(page: {
+  messages: TransformedItem[]
+  nextCursor: string | null
+}): Generator<Buffer> {
+  yield Buffer.from('{"messages":[')
+  for (let i = 0; i < page.messages.length; i++) {
+    yield Buffer.from((i === 0 ? '' : ',') + JSON.stringify(page.messages[i]))
+  }
+  yield Buffer.from(`],"nextCursor":${JSON.stringify(page.nextCursor)}}`)
+}
+
 // Unpaginated path stays inlined so the stream-pipe PR can still land on `return c.json(transformed)`.
 // GET /api/agents/:id/sessions/:sessionId/messages - Get messages for a session
 agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
@@ -1884,7 +1897,14 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       c.req.raw.signal.throwIfAborted()
       await annotateAndRecoverMessages(page.messages, agentSlug, sessionId)
       c.req.raw.signal.throwIfAborted()
-      return c.json({ messages: page.messages, nextCursor: page.nextCursor })
+      // Serialize item-by-item instead of one JSON.stringify of the whole
+      // envelope: pages hold multi-MB tool results, and a monolithic response
+      // string was one of the transients that made concurrent page fetches
+      // OOM the process. Readable.from pulls lazily, so writes see real
+      // backpressure from the socket.
+      return c.body(Readable.toWeb(Readable.from(messagesPageJsonChunks(page))) as ReadableStream, 200, {
+        'Content-Type': 'application/json',
+      })
     }
 
     const messages = await getSessionMessagesWithCompact(agentSlug, sessionId)
