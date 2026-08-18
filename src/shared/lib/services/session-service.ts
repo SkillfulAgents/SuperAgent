@@ -298,19 +298,25 @@ async function mutateSessionMetadata(
 }
 
 /**
- * Update metadata for a single session
+ * Update metadata for a single session. Returns the session's previous
+ * metadata entry (undefined when it had none), captured under the same lock
+ * as the write, so callers can tell whether an update actually changed a
+ * value without racing a concurrent update.
  */
 export async function updateSessionMetadata(
   agentSlug: string,
   sessionId: string,
   updates: Partial<SessionMetadata>
-): Promise<void> {
+): Promise<SessionMetadata | undefined> {
+  let previous: SessionMetadata | undefined
   await mutateSessionMetadata(agentSlug, (metadata) => {
+    previous = metadata[sessionId]
     metadata[sessionId] = {
       ...metadata[sessionId],
       ...updates,
     }
   })
+  return previous
 }
 
 export type AutomationStatusResult = 'updated' | 'not-automation' | 'already-final'

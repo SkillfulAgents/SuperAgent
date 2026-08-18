@@ -96,6 +96,20 @@ describe('lost-update protection (serialized read-modify-write)', () => {
     const meta = await getSessionMetadata('agent', 's1')
     expect(meta).toMatchObject({ name: 'Original', starred: true, effort: 'high', model: 'opus' })
   })
+
+  it('updateSessionMetadata returns the pre-update entry so callers can detect real changes', async () => {
+    const { registerSession, updateSessionMetadata } = await importService()
+    makeAgent('agent')
+
+    // No entry yet → undefined (the caller treats every value as a change).
+    const beforeRegister = await updateSessionMetadata('agent', 'fresh', { model: 'opus' })
+    expect(beforeRegister).toBeUndefined()
+
+    await registerSession('agent', 's1', 'Original')
+    await updateSessionMetadata('agent', 's1', { model: 'opus', effort: 'high' })
+    const previous = await updateSessionMetadata('agent', 's1', { model: 'haiku' })
+    expect(previous).toMatchObject({ name: 'Original', model: 'opus', effort: 'high' })
+  })
 })
 
 describe('atomic writes', () => {

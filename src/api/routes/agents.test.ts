@@ -3576,6 +3576,43 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     })
   })
 
+  it('does not broadcast when the accepted selection matches the stored metadata', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    // Seeded composers re-send their whole selection on every fresh turn; a
+    // value the metadata already records must not fan out list/detail
+    // refetches to every open window.
+    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({ model: 'claude-haiku-4-5' } as never)
+
+    const res = await postJson(app, URL, { content: 'hello again', model: 'claude-haiku-4-5' })
+    expect(res.status).toBe(201)
+    expect(updateSessionMetadata).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      model: 'claude-haiku-4-5',
+    })
+    expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  it('broadcasts when any one option differs from the stored metadata', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({
+      model: 'claude-haiku-4-5',
+      effort: 'medium',
+    } as never)
+
+    const res = await postJson(app, URL, {
+      content: 'hello',
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+    })
+    expect(res.status).toBe(201)
+    expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('sess-1')
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+      type: 'session_updated',
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+    })
+  })
+
   it('forwards both effort and model when both are present', async () => {
     mockIsAuthMode.mockReturnValue(false)
 

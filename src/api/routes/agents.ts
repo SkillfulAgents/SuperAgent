@@ -2276,21 +2276,27 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
     if (Object.keys(updates).length > 0) {
       try {
-        await updateSessionMetadata(agentSlug, sessionId, updates)
+        const previous = await updateSessionMetadata(agentSlug, sessionId, updates)
+        // The composer re-sends its whole selection on every fresh turn, so
+        // option presence alone doesn't mean anything changed. Compare against
+        // the previous metadata (captured under the update's lock) — otherwise
+        // every send would make every open window refetch the session list and
+        // detail for a no-op. A failed metadata write skips the broadcast too:
+        // peers would only refetch the stale values.
+        const runtimeSelectionChanged =
+          (updates.effort !== undefined && previous?.effort !== updates.effort) ||
+          (updates.speed !== undefined && previous?.speed !== updates.speed) ||
+          (updates.model !== undefined && previous?.model !== updates.model)
+        if (runtimeSelectionChanged) {
+          // Other windows/devices may already have seeded their composer from
+          // the previous session metadata. Tell both the local session stream
+          // and the global event stream to refresh before their next send.
+          messagePersister.broadcastSessionUpdate(sessionId)
+          messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
+        }
       } catch (error) {
         console.error(error)
       }
-    }
-    const runtimeSelectionChanged =
-      runtimeOptions.effort !== undefined ||
-      runtimeOptions.speed !== undefined ||
-      runtimeOptions.model !== undefined
-    if (runtimeSelectionChanged) {
-      // Other windows/devices may already have seeded their composer from the
-      // previous session metadata. Tell both the local session stream and the
-      // global event stream to refresh before their next send.
-      messagePersister.broadcastSessionUpdate(sessionId)
-      messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
     }
 
     return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
