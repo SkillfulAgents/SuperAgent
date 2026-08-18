@@ -62,6 +62,10 @@ import { pruneInstalledTemplateIfInvalid } from './skillset-reconcile'
 const MAX_UNCOMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 export const MAX_COMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 const MAX_FILE_COUNT = 2000
+export const MAX_TEMPLATE_PROMPT_SIZE = 16 * 1024 // 16KB
+
+/** Canonical prompt handoff file, plus a lowercase compatibility spelling. */
+const TEMPLATE_PROMPT_FILE_NAMES = ['PROMPT.md', 'prompt.md'] as const
 
 /** Files/dirs excluded from templates (matched by name at any level) */
 const TEMPLATE_EXCLUDE = new Set([
@@ -703,6 +707,41 @@ export async function hasOnboardingSkill(agentSlug: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * Read the optional prompt handoff supplied by an installed template.
+ * Empty, oversized, non-file, and unreadable candidates are treated as absent
+ * so this best-effort probe can never fail an otherwise successful install.
+ */
+export async function getAgentTemplatePrompt(agentSlug: string): Promise<string | undefined> {
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  for (const fileName of TEMPLATE_PROMPT_FILE_NAMES) {
+    let handle: Awaited<ReturnType<typeof fs.promises.open>> | undefined
+    try {
+      handle = await fs.promises.open(path.join(workspaceDir, fileName), 'r')
+      const stats = await handle.stat()
+      if (!stats.isFile() || stats.size === 0 || stats.size > MAX_TEMPLATE_PROMPT_SIZE) continue
+
+      // Allocate only after the size check and keep the read bounded even if
+      // the file grows between stat() and read().
+      const buffer = Buffer.alloc(stats.size)
+      let bytesRead = 0
+      while (bytesRead < buffer.length) {
+        const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead)
+        if (result.bytesRead === 0) break
+        bytesRead += result.bytesRead
+      }
+      const prompt = buffer.subarray(0, bytesRead).toString('utf8').trim()
+      if (prompt) return prompt
+    } catch {
+      // PROMPT.md is an optional handoff. Filesystem errors must not strand an
+      // agent after its workspace and owner ACL have already been created.
+    } finally {
+      await handle?.close().catch(() => undefined)
+    }
+  }
+  return undefined
 }
 
 /**

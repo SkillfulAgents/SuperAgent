@@ -5,7 +5,7 @@ import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
-import type { ApiAgent, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
+import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
 import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 
 /** Normalize discoverable agent path `agents/<dir>/` → `<dir>` (website template_slug). */
@@ -106,13 +106,13 @@ export function useImportAgentTemplate() {
   const { track } = useAnalyticsTracking()
 
   return useMutation<
-    ApiAgent & { hasOnboarding?: boolean },
+    ApiAgentTemplateInstallResult,
     Error,
     { file: File; mode?: 'template' | 'full'; onProgress?: (p: ImportProgress) => void }
   >({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ file, mode, onProgress }) => {
-      return uploadFileChunked<ApiAgent & { hasOnboarding?: boolean }>({
+      return uploadFileChunked<ApiAgentTemplateInstallResult>({
         url: '/api/agents/import-template',
         file,
         fields: { mode: mode || 'template' },
@@ -132,7 +132,7 @@ export function useInstallAgentFromSkillset() {
   const { track } = useAnalyticsTracking()
 
   return useMutation<
-    ApiAgent & { hasOnboarding?: boolean },
+    ApiAgentTemplateInstallResult,
     Error,
     {
       skillsetId: string

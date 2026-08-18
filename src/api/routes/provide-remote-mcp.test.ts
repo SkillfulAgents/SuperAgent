@@ -169,6 +169,7 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
   publishAgentToSkillset: vi.fn(),
   refreshAgentTemplates: vi.fn(),
   hasOnboardingSkill: vi.fn(),
+  getAgentTemplatePrompt: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@shared/lib/utils/retry', () => ({

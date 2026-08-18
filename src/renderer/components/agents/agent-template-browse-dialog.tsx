@@ -13,7 +13,9 @@ import { useNavigate } from '@tanstack/react-router'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useQueryClient } from '@tanstack/react-query'
-import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
+import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
+import { useDraftsStore } from '@renderer/context/drafts-context'
+import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
 
 interface AgentTemplateBrowseDialogProps {
   open: boolean
@@ -32,6 +34,7 @@ export function AgentTemplateBrowseDialog({
   const { track } = useAnalyticsTracking()
   const startOnboardingSession = useStartOnboardingSession()
   const queryClient = useQueryClient()
+  const draftsStore = useDraftsStore()
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
 
   useEffect(() => {
@@ -39,17 +42,21 @@ export function AgentTemplateBrowseDialog({
   }, [open])
 
   const handleInstalled = useCallback(
-    async (agent: ApiAgent, meta: { hasOnboarding?: boolean }) => {
+    async (agent: ApiAgentTemplateInstallResult) => {
       track('agent_created', { source: 'skillset', num_skills_added_at_creation: 0 })
       await queryClient.refetchQueries({ queryKey: ['agents'] })
-      void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
-      if (meta.hasOnboarding) {
-        await startOnboardingSession(agent.slug)
-      }
+      await completeAgentTemplateHandoff({
+        draftsStore,
+        agentSlug: agent.slug,
+        hasOnboarding: agent.hasOnboarding,
+        templatePrompt: agent.templatePrompt,
+        openAgent: () => { void navigate({ to: '/agents/$slug', params: { slug: agent.slug } }) },
+        startOnboardingSession,
+      })
       onOpenChange(false)
       await onInstalled?.()
     },
-    [track, queryClient, navigate, startOnboardingSession, onOpenChange, onInstalled],
+    [track, queryClient, draftsStore, navigate, startOnboardingSession, onOpenChange, onInstalled],
   )
 
   const hasTemplates = discoverableAgents && discoverableAgents.length > 0

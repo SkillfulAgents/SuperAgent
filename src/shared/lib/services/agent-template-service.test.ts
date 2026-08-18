@@ -63,6 +63,8 @@ import {
   getAgentTemplateStatus,
   getInstalledAgentMetadata,
   hasOnboardingSkill,
+  getAgentTemplatePrompt,
+  MAX_TEMPLATE_PROMPT_SIZE,
   getDiscoverableAgents,
 } from './agent-template-service'
 import { createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/lib/services/agent-service'
@@ -1682,6 +1684,65 @@ describe('hasOnboardingSkill', () => {
   it('returns false when workspace does not exist', async () => {
     const result = await hasOnboardingSkill('nonexistent-agent')
     expect(result).toBe(false)
+  })
+})
+
+// ============================================================================
+// getAgentTemplatePrompt
+// ============================================================================
+
+describe('getAgentTemplatePrompt', () => {
+  let testDir: string
+  let originalEnv: string | undefined
+
+  beforeEach(async () => {
+    testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'agent-prompt-test-'))
+    originalEnv = process.env.SUPERAGENT_DATA_DIR
+    process.env.SUPERAGENT_DATA_DIR = testDir
+  })
+
+  afterEach(async () => {
+    process.env.SUPERAGENT_DATA_DIR = originalEnv
+    await fs.promises.rm(testDir, { recursive: true, force: true })
+  })
+
+  it('reads and trims a root PROMPT.md', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'PROMPT.md'), '\n  Research this market  \n')
+
+    await expect(getAgentTemplatePrompt('test-agent')).resolves.toBe('Research this market')
+  })
+
+  it('accepts the lowercase prompt.md spelling from existing templates', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'prompt.md'), 'Draft the launch plan')
+
+    await expect(getAgentTemplatePrompt('test-agent')).resolves.toBe('Draft the launch plan')
+  })
+
+  it('treats a missing or blank prompt as absent', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'PROMPT.md'), '  \n')
+
+    await expect(getAgentTemplatePrompt('test-agent')).resolves.toBeUndefined()
+  })
+
+  it('skips a PROMPT.md directory without failing the completed install', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
+    fs.mkdirSync(path.join(workspaceDir, 'PROMPT.md'), { recursive: true })
+
+    await expect(getAgentTemplatePrompt('test-agent')).resolves.toBeUndefined()
+  })
+
+  it('skips prompt files larger than the composer handoff limit', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'PROMPT.md'), Buffer.alloc(MAX_TEMPLATE_PROMPT_SIZE + 1, 'a'))
+
+    await expect(getAgentTemplatePrompt('test-agent')).resolves.toBeUndefined()
   })
 })
 

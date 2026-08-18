@@ -37,6 +37,13 @@ export interface ApiAgent {
   dashboards?: ApiAgentDashboard[]
 }
 
+/** Response returned when an agent template has been installed or imported. */
+export interface ApiAgentTemplateInstallResult extends ApiAgent {
+  hasOnboarding?: boolean
+  /** Optional root PROMPT.md contents to prefill on the new agent's home page. */
+  templatePrompt?: string
+}
+
 export interface ApiAgentDashboard {
   slug: string
   name: string
