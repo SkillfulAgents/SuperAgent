@@ -19,6 +19,7 @@ import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { InformationalItem } from './informational-item'
+import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, ChevronRight, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
@@ -446,6 +447,49 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       return true
     })
   }, [messages])
+
+  // Time flags are derived from all loaded history rather than the trailing DOM
+  // window, so scrolling/windowing cannot change which turns qualify. When an
+  // older page still exists, the first loaded user is not assumed to be the
+  // first user in the session.
+  const timeFlagState = useMemo(() => {
+    const messageIds = new Set<string>()
+    let hasSeenUser = hasOlder
+    let hasUserSinceLastAssistant = hasOlder
+    let lastAssistantAt: Date | null = null
+
+    for (const item of visibleMessages) {
+      if (item.type === 'assistant') {
+        const createdAt = new Date(item.createdAt)
+        lastAssistantAt = Number.isNaN(createdAt.getTime()) ? null : createdAt
+        hasUserSinceLastAssistant = false
+        continue
+      }
+
+      if (
+        item.type !== 'user' ||
+        item.queued ||
+        isInterruptMarkerMessage(item)
+      ) continue
+
+      const createdAt = new Date(item.createdAt)
+      if (
+        !hasSeenUser ||
+        (!hasUserSinceLastAssistant && isSessionTimeGap(createdAt, lastAssistantAt))
+      ) {
+        messageIds.add(item.id)
+      }
+      hasSeenUser = true
+      hasUserSinceLastAssistant = true
+    }
+
+    return {
+      messageIds,
+      hasSeenUser,
+      hasUserSinceLastAssistant,
+      lastAssistantAt,
+    }
+  }, [visibleMessages, hasOlder])
 
   // The trailing slice we actually render. The other derived values below still
   // compute over the FULL message list, so turn boundaries / elapsed times / etc.
@@ -1141,6 +1185,40 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     [peerUserMessages, messages, user?.id]
   )
 
+  // New-turn ghosts should receive the same flag immediately, before their
+  // persisted transcript entry arrives. Process them in their render order and
+  // show at most one flag before the next assistant response.
+  const optimisticTimeFlagIds = useMemo(() => {
+    const ids = new Set<string>()
+    let {
+      hasSeenUser,
+      hasUserSinceLastAssistant,
+      lastAssistantAt,
+    } = timeFlagState
+    const ghosts = [
+      ...visiblePeerMessages
+        .filter((peer) => !peer.queued)
+        .map((peer) => ({ id: peer.uuid, sentAt: peer.receivedAt })),
+      ...(pendingUserMessages ?? [])
+        .filter((pending) => !pending.queued)
+        .map((pending) => ({ id: pending.localId, sentAt: pending.sentAt })),
+    ]
+
+    for (const ghost of ghosts) {
+      const sentAt = new Date(ghost.sentAt)
+      if (
+        !hasSeenUser ||
+        (!hasUserSinceLastAssistant && isSessionTimeGap(sentAt, lastAssistantAt))
+      ) {
+        ids.add(ghost.id)
+      }
+      hasSeenUser = true
+      hasUserSinceLastAssistant = true
+    }
+
+    return ids
+  }, [timeFlagState, visiblePeerMessages, pendingUserMessages])
+
   // Cancel a queued message before the agent picks it up. cancelled: false
   // means we lost the race — the agent already has the message, so flip the
   // ghost to a picked-up state (no Cancel) until it materializes.
@@ -1403,6 +1481,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                   }
                 />
               )}
+              {timeFlagState.messageIds.has(item.id) && (
+                <SessionTimeFlag date={new Date(item.createdAt)} />
+              )}
               {renderedItem}
             </Fragment>
           )
@@ -1412,11 +1493,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             them, so they render before any streaming content. Queued ghosts
             (sent mid-turn) render at the bottom instead, below the current
             turn's streaming output and running tools. */}
-        {visiblePeerMessages.filter((p) => !p.queued).map(renderPeerGhost)}
+        {visiblePeerMessages.filter((p) => !p.queued).map((peer) => (
+          <Fragment key={peer.uuid}>
+            {optimisticTimeFlagIds.has(peer.uuid) && (
+              <SessionTimeFlag date={new Date(peer.receivedAt)} />
+            )}
+            {renderPeerGhost(peer)}
+          </Fragment>
+        ))}
         {pendingUserMessages?.filter((p) => !p.queued).map((pending) => (
-          <div key={pending.localId} data-turn-anchor-id={pending.localId}>
-            {renderPendingGhost(pending)}
-          </div>
+          <Fragment key={pending.localId}>
+            {optimisticTimeFlagIds.has(pending.localId) && (
+              <SessionTimeFlag date={new Date(pending.sentAt)} />
+            )}
+            <div data-turn-anchor-id={pending.localId}>
+              {renderPendingGhost(pending)}
+            </div>
+          </Fragment>
         ))}
 
         {/* Typing indicator - shown when ANOTHER user is typing. The server echoes
