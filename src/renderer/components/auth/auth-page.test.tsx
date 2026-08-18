@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { apiFetch } = vi.hoisted(() => ({
   apiFetch: vi.fn(),
@@ -36,6 +36,11 @@ describe('AuthPage', () => {
     })
   })
 
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
   it('shows loading while fetching auth config', () => {
     apiFetch.mockReturnValue(new Promise(() => {}))
 
@@ -57,6 +62,64 @@ describe('AuthPage', () => {
     })
     expect(screen.queryByTestId('signin-submit')).not.toBeInTheDocument()
     expect(screen.queryByTestId('auth-provider-platform')).not.toBeInTheDocument()
+  })
+
+  it('keeps loading through deployment_unavailable and never shows the error code', async () => {
+    apiFetch.mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: 'deployment_unavailable', state: 'waking' }),
+    })
+
+    render(<AuthPage />)
+
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith('/api/auth-config')
+    })
+    expect(screen.getByTestId('auth-config-loading')).toBeInTheDocument()
+    expect(screen.queryByTestId('auth-config-error')).not.toBeInTheDocument()
+    expect(screen.queryByText('deployment_unavailable')).not.toBeInTheDocument()
+  })
+
+  it('retries auth config after deployment_unavailable and reloads once the origin answers', async () => {
+    vi.useFakeTimers()
+    const reload = vi.fn()
+    vi.stubGlobal('location', { ...window.location, reload })
+
+    apiFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: async () => ({ error: 'deployment_unavailable', state: 'waking' }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          signupMode: 'open',
+          allowLocalAuth: true,
+          allowSocialAuth: false,
+          providers: [],
+          passwordMinLength: 8,
+          passwordRequireComplexity: false,
+          requireAdminApproval: false,
+          hasUsers: false,
+        }),
+      })
+
+    render(<AuthPage />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(apiFetch).toHaveBeenCalledTimes(1)
+    expect(reload).not.toHaveBeenCalled()
+    expect(screen.getByTestId('auth-config-loading')).toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500)
+    })
+    expect(apiFetch).toHaveBeenCalledTimes(2)
+    expect(reload).toHaveBeenCalledOnce()
   })
 
   it('renders configured providers from auth config', async () => {

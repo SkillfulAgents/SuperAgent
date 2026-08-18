@@ -37,6 +37,17 @@ const DEFAULT_AUTH_CONFIG: AuthConfig = {
   hasUsers: false,
 }
 
+const AUTH_CONFIG_RETRY_MS = 2500
+
+function isDeploymentUnavailable(body: unknown): boolean {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    'error' in body &&
+    (body as { error: unknown }).error === 'deployment_unavailable'
+  )
+}
+
 function useAuthConfig() {
   const [config, setConfig] = useState<AuthConfig>(DEFAULT_AUTH_CONFIG)
   const [isLoading, setIsLoading] = useState(true)
@@ -44,28 +55,49 @@ function useAuthConfig() {
 
   useEffect(() => {
     let cancelled = false
-    apiFetch('/api/auth-config')
-      .then(async (res) => {
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let sawUnavailable = false
+
+    const load = async () => {
+      try {
+        const res = await apiFetch('/api/auth-config')
+        if (cancelled) return
         if (!res.ok) {
-          const data = await res.json().catch(() => ({}))
-          throw new Error(data.error || 'Failed to load authentication configuration')
+          const data: unknown = await res.json().catch(() => ({}))
+          // Edge 503 while the origin is still booting — keep the spinner.
+          if (isDeploymentUnavailable(data)) {
+            sawUnavailable = true
+            retryTimer = setTimeout(() => {
+              void load()
+            }, AUTH_CONFIG_RETRY_MS)
+            return
+          }
+          const message =
+            typeof data === 'object' && data !== null && 'error' in data && typeof data.error === 'string'
+              ? data.error
+              : 'Failed to load authentication configuration'
+          throw new Error(message)
         }
-        return res.json() as Promise<AuthConfig>
-      })
-      .then((data) => {
+        if (sawUnavailable) {
+          window.location.reload()
+          return
+        }
+        const data = (await res.json()) as AuthConfig
         if (cancelled) return
         setConfig(data)
         setError(null)
-      })
-      .catch((err) => {
+        setIsLoading(false)
+      } catch (err) {
         if (cancelled) return
         setError(err instanceof Error ? err.message : 'Failed to load authentication configuration')
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false)
-      })
+        setIsLoading(false)
+      }
+    }
+
+    void load()
     return () => {
       cancelled = true
+      if (retryTimer !== undefined) clearTimeout(retryTimer)
     }
   }, [])
 
