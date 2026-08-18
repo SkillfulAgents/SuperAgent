@@ -41,6 +41,8 @@ describe('generateSystemPrompt rendering', () => {
     // platformServices shares PLATFORM_AUTH_ACTIVE with webhookEndpoints
     expect(out.includes('## Built-in media generation')).toBe(webhook)
     expect(out.includes('v1/replicate')).toBe(webhook)
+    expect(out.includes('## Built-in lead enrichment')).toBe(webhook)
+    expect(out.includes('v1/apollo')).toBe(webhook)
     expect(out.includes('ANTHROPIC_AUTH_TOKEN')).toBe(webhook)
   })
 

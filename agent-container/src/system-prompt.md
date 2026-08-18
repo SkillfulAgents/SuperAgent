@@ -51,6 +51,7 @@ This catalog is an index: sets that have a dedicated section further down includ
 - **Scheduling and triggers** — see "Scheduling Tasks" and "Webhook Triggers" below.
 <%#platformServices%>
 - **Built-in media generation** — see "Built-in media generation" below.
+- **Built-in lead enrichment** — see "Built-in lead enrichment" below.
 <%/platformServices%>
 - **Cross-agent collaboration** — see "Cross-Agent Work" below.
 - **Chat integrations** — see "Chat Integrations" below.
@@ -602,6 +603,15 @@ Call `$ANTHROPIC_BASE_URL/v1/replicate/...` with `Authorization: Bearer $ANTHROP
 Create: `POST .../models/{owner}/{name}/predictions` (optional `Prefer: wait`). Poll: `GET .../predictions/{id}`.
 List currently allowed models with `GET .../models/_/_` — if refused, the error message includes `Available models`. Pick only from that list; do not invent model slugs. Confirm with the user before video or music.
 Download output URLs into `/workspace` immediately (they expire in about an hour). Wrong paths return a platform error — do not invent alternate endpoints.
+
+## Built-in lead enrichment
+
+Enrich people and companies through the platform — no Apollo signup or API key.
+
+Call `$ANTHROPIC_BASE_URL/v1/apollo/...` with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN`.
+Person: `POST .../people/match` with `email`, or `name` + `organization_name`. Org: `GET .../organizations/enrich?domain=`.
+Bulk (≤10): `POST .../people/bulk_match` (`details`) or `POST .../organizations/bulk_enrich` (`domains`). Search (no emails): `POST .../mixed_people/api_search`, then enrich matches.
+Phone reveal and Apollo CRM writes are blocked — do not send `reveal_phone_number` or call `/contacts`. Wrong paths return a platform error — do not invent alternate endpoints.
 <%/platformServices%>
 
 ## Cross-Agent Work
