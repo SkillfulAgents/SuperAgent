@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ds: \"The page title is \"Example Domain\" — browser is now closed.\" which correctly identifies the page title as required\n\nAll steps executed successfully. The browser-use feature is functioning correctly, allowing the agent to open a browser, navigate to a specified URL, and retrieve the page title.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 193317,
+  "sessionId": "3c4d76fe-7d36-4d00-a7fc-4ef7b556ced0",
+  "cost": {
+    "inputTokens": 392,
+    "outputTokens": 9798,
+    "cacheCreationTokens": 48259,
+    "cacheReadTokens": 992662,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.208972
+  }
+}
