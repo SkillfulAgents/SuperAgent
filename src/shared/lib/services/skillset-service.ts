@@ -22,6 +22,7 @@ import {
   readFileOrNull,
   ensureDirectory,
   directoryExists,
+  fileExists,
   removeDirectory,
 } from '@shared/lib/utils/file-storage'
 import type {
@@ -823,7 +824,7 @@ async function recloneSkillsetCache(ref: SkillsetRef, repoDir: string, cause: st
   console.warn(`[refreshSkillset] Re-cloning corrupt skillset cache at ${repoDir}: ${cause}`)
   await fs.promises.rm(repoDir, { recursive: true, force: true })
   await ensureSkillsetCached(ref)
-  if (!fs.existsSync(path.join(repoDir, 'index.json'))) {
+  if (!(await fileExists(path.join(repoDir, 'index.json')))) {
     throw new Error(
       `Skillset repository has no index.json at its root (re-cloned ${repoDir} after: ${cause})`,
     )
@@ -865,7 +866,7 @@ async function refreshSkillsetCache(
       return readIndexJson(repoDir)
     }
 
-    if (!fs.existsSync(path.join(repoDir, 'index.json'))) {
+    if (!(await fileExists(path.join(repoDir, 'index.json')))) {
       if (pullResult === 'skipped-offline') {
         // The cache is incomplete but we can't re-clone right now. Don't nuke
         // it while offline — retry on the next refresh instead.
@@ -877,7 +878,7 @@ async function refreshSkillsetCache(
     }
   } else {
     await ensureSkillsetCached(ref)
-    if (!fs.existsSync(path.join(repoDir, 'index.json'))) {
+    if (!(await fileExists(path.join(repoDir, 'index.json')))) {
       throw new Error(
         `Skillset repository has no index.json at its root (fresh clone at ${repoDir})`,
       )
@@ -1079,7 +1080,7 @@ export async function getAgentSkillsWithStatus(
 ): Promise<SkillWithStatus[]> {
   const skillsDir = getAgentSkillsDir(agentSlug)
 
-  if (!fs.existsSync(skillsDir)) {
+  if (!(await directoryExists(skillsDir))) {
     return []
   }
 
@@ -1246,7 +1247,7 @@ export async function refreshAgentSkills(
   }
 
   const skillsDir = getAgentSkillsDir(agentSlug)
-  if (!fs.existsSync(skillsDir)) return
+  if (!(await directoryExists(skillsDir))) return
 
   const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
 
@@ -1382,7 +1383,7 @@ export async function getDiscoverableSkills(
   const skillsDir = getAgentSkillsDir(agentSlug)
   const installedDirs = new Set<string>()
 
-  if (fs.existsSync(skillsDir)) {
+  if (await directoryExists(skillsDir)) {
     const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
     for (const entry of entries) {
       if (entry.isDirectory()) installedDirs.add(entry.name)
