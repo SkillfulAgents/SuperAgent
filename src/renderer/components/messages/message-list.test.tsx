@@ -2660,6 +2660,86 @@ describe('MessageList', () => {
       expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
     })
 
+    it('honors a keyboard escape whose scroll classification the collapse shield swallowed', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Long question' } }),
+        createAssistantMessage({
+          content: { text: 'Final answer' },
+          toolCalls: [createToolCall({ name: 'Bash' })],
+        }),
+      ]
+      mockStreamState.isActive = true
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // baseline at the live edge
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      // The turn completes and collapses — the transition shield arms, and the
+      // browser clamp's echo is rightly discarded…
+      mockStreamState.isActive = false
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      geometry.setNaturalScrollHeight(900)
+      geometry.setScrollTop(300)
+      fireEvent.scroll(el)
+
+      // …but inside the same window the reader pages up. The shield swallows
+      // that scroll's classification too (only wheel escapes bypass it), so
+      // the deferred verification must recognize the upward gesture and mark
+      // the escape itself.
+      fireEvent.keyDown(el, { key: 'PageUp' })
+      geometry.setScrollTop(100)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+
+      // Following stays disengaged: later growth must not pull the reader
+      // back down to the live edge.
+      geometry.setNaturalScrollHeight(1600)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1600)
+      })
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+      expect(geometry.scrollTop).toBe(100)
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+    })
+
+    it('does not let the reserve restore preempt the send glide before its first frame', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      // Real motion: the send scrolls via the animated glide, which the
+      // library only registers in its first animation frame.
+      const geometry = mockTurnGeometry(el, { reducedMotion: false })
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+      expect(geometry.scrollTop).toBe(700) // pre-glide position; the glide travels from here
+
+      // The POST response assigns the uuid before the glide's first frame —
+      // a commit in the gap where state.animation is still unset. The reserve
+      // restore must not fire here and snap the viewport to the reading line.
+      rerender(
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{ ...pending, uuid: 'server-uuid-1' }]}
+        />,
+      )
+      expect(geometry.scrollTop).toBe(700)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+    })
+
     it('spends the reserved room before following streamed content at the live edge', async () => {
       installFakeResizeObserver()
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]

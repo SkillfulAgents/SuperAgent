@@ -413,6 +413,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     scrollRef,
     contentRef,
     scrollToBottom: stickScrollToBottom,
+    stopScroll: stickStopScroll,
     isAtBottom,
     state: stickState,
   } = useStickToBottom({
@@ -425,7 +426,17 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const anchoredTurnRef = useRef<{ localId: string; scrollTop: number } | null>(null)
   const lastScrollTopRef = useRef(0)
   const lastGestureAtRef = useRef(0)
+  // Stamped when a gesture-attributed scroll event actually moved the reader
+  // upward — a stronger signal than lastGestureAtRef (which a downward wheel
+  // also stamps), used to honor escapes the transition shield swallowed.
+  const lastUpwardGestureAtRef = useRef(0)
   const pointerDownRef = useRef(false)
+  // True from a send until its scroll-to-reading-line settles. The library
+  // only assigns state.animation in its first animation frame, so this is the
+  // signal that covers the whole interval (a commit landing between the send
+  // effect and that first frame would otherwise let the reserve restore
+  // preempt the glide with an instant jump).
+  const sendScrollInFlightRef = useRef(false)
 
   // How many trailing (visible) messages to render. Grows on scroll-up and while
   // the user is scrolled up during streaming. Starts at BASE_WINDOW; the component
@@ -563,9 +574,25 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         pointerDownRef.current || lastGestureAtRef.current >= transitionAt
       if (!gestured && !stickState.isAtBottom) {
         void stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined)
+        return
+      }
+      // The shield cuts both ways: while it holds, the library also discards
+      // the scroll classification of genuine keyboard, touch, and scrollbar
+      // escapes (wheel-up escapes through its own handler and is unaffected).
+      // If a gesture moved the reader upward during the window yet following
+      // still reads engaged and they are beyond the re-stick range, that
+      // escape was swallowed — honor it, or the next growth would yank them
+      // back down. Reserve eating is unaffected: it re-bases the reading line
+      // onto the reader, keeping them within the re-stick range.
+      if (
+        stickState.isAtBottom &&
+        lastUpwardGestureAtRef.current >= transitionAt &&
+        !stickState.isNearBottom
+      ) {
+        stickStopScroll()
       }
     }, 40)
-  }, [stickState, stickScrollToBottom])
+  }, [stickState, stickScrollToBottom, stickStopScroll])
 
   // Keep the newly-sent turn fixed at its reading line while the response uses
   // up the reserved room below it. The spacer inflates scrollHeight so that the
@@ -573,7 +600,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // the reader simply sits at the bottom, and content growth paired with an
   // equal spacer shrink is a net-zero resize — no motion. Once the reserve
   // reaches zero the anchor retires and real growth resumes normal following.
-  const syncTurnReserve = useCallback((options?: { skipRestore?: boolean }) => {
+  const syncTurnReserve = useCallback(() => {
     const el = scrollRef.current
     const anchoredTurn = anchoredTurnRef.current
     if (!el || !anchoredTurn) return
@@ -596,15 +623,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // it back until content grows again, so the held turn visibly sags. The
     // anchored reading line IS the scroll target while the reserve holds, so
     // put the viewport back on it. Skip while the reader is gesturing (their
-    // scroll owns the position — reserve eating re-bases the anchor) and
-    // while a scroll animation is in flight (the send glide starts below the
-    // target by construction).
+    // scroll owns the position — reserve eating re-bases the anchor), while a
+    // send's scroll to the reading line is pending or animating (it starts
+    // below the target by construction), and while any other scroll
+    // animation is in flight.
     const gestureDriven =
       pointerDownRef.current ||
       performance.now() - lastGestureAtRef.current < SCROLL_GESTURE_WINDOW_MS
     const target = Math.max(0, stickState.calculatedTargetScrollTop)
     if (
-      !options?.skipRestore &&
+      !sendScrollInFlightRef.current &&
       !gestureDriven &&
       stickState.isAtBottom &&
       !stickState.animation &&
@@ -648,6 +676,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const anchoredTurn = anchoredTurnRef.current
     const upwardDelta = Math.max(0, previousScrollTop - el.scrollTop)
     const downwardDelta = Math.max(0, el.scrollTop - previousScrollTop)
+    if (gestureDriven && upwardDelta > 0) {
+      lastUpwardGestureAtRef.current = performance.now()
+    }
     if (gestureDriven && anchoredTurn && upwardDelta > 0 && bottomSpacerHeightRef.current > 0) {
       const discard = Math.min(upwardDelta, bottomSpacerHeightRef.current)
       const remainingSpacer = bottomSpacerHeightRef.current - discard
@@ -1155,11 +1186,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         setBottomSpacerHeight(0)
       }
 
+      // The viewport intentionally sits below the new reading line until the
+      // scroll below travels there — hold the reserve restore off for the
+      // whole interval (state.animation alone starts too late: the library
+      // assigns it in its first animation frame, and a commit can land first).
+      sendScrollInFlightRef.current = true
       // Size the reserve before scrolling so the scroll target IS the new
       // turn's reading line (the spacer inflates scrollHeight to end there).
-      // Skip the reading-line restore: this call runs with the viewport still
-      // at the pre-send position on purpose — the glide below travels there.
-      syncTurnReserve({ skipRestore: true })
+      syncTurnReserve()
       // The collapse of the finished turn above (same commit as the ghost)
       // shrinks content and can clamp scrollTop — guard the transition so
       // that clamp echo cannot latch an escape under the send.
@@ -1170,7 +1204,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       if (prefersReducedMotion()) {
         stickState.scrollTop = Math.max(0, stickState.calculatedTargetScrollTop)
       }
-      void stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined)
+      void Promise.resolve(
+        stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined),
+      ).finally(() => {
+        sendScrollInFlightRef.current = false
+      })
       // Programmatic writes fire their scroll event asynchronously (and not at
       // all in jsdom) — resync the gesture-delta baseline now so the write
       // isn't misread as a user delta.
@@ -1237,8 +1275,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       }
       lastContentHeight = contentHeight
       cancelAnimationFrame(frameId)
-      // Wrapped so the rAF timestamp doesn't arrive as the options argument.
-      frameId = requestAnimationFrame(() => syncTurnReserve())
+      frameId = requestAnimationFrame(syncTurnReserve)
     })
     observer.observe(content)
     observer.observe(viewport)
