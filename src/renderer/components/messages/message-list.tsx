@@ -573,7 +573,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // the reader simply sits at the bottom, and content growth paired with an
   // equal spacer shrink is a net-zero resize — no motion. Once the reserve
   // reaches zero the anchor retires and real growth resumes normal following.
-  const syncTurnReserve = useCallback(() => {
+  const syncTurnReserve = useCallback((options?: { skipRestore?: boolean }) => {
     const el = scrollRef.current
     const anchoredTurn = anchoredTurnRef.current
     if (!el || !anchoredTurn) return
@@ -585,8 +585,36 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     setBottomSpacerHeight(requiredSpacer)
     // The response now fills the viewport. Retire the special turn state so
     // long-thread windowing can return to its bounded trailing slice.
-    if (requiredSpacer === 0) anchoredTurnRef.current = null
-  }, [scrollRef, setBottomSpacerHeight])
+    if (requiredSpacer === 0) {
+      anchoredTurnRef.current = null
+      return
+    }
+    // A transient content shrink during the reserve hold (a working indicator
+    // swapping forms, a streamed block replaced by its shorter persisted copy)
+    // clamps scrollTop below the reading line for the instant before the
+    // spacer write above re-inflates the scroll range — and nothing else moves
+    // it back until content grows again, so the held turn visibly sags. The
+    // anchored reading line IS the scroll target while the reserve holds, so
+    // put the viewport back on it. Skip while the reader is gesturing (their
+    // scroll owns the position — reserve eating re-bases the anchor) and
+    // while a scroll animation is in flight (the send glide starts below the
+    // target by construction).
+    const gestureDriven =
+      pointerDownRef.current ||
+      performance.now() - lastGestureAtRef.current < SCROLL_GESTURE_WINDOW_MS
+    const target = Math.max(0, stickState.calculatedTargetScrollTop)
+    if (
+      !options?.skipRestore &&
+      !gestureDriven &&
+      stickState.isAtBottom &&
+      !stickState.animation &&
+      el.scrollTop < target
+    ) {
+      protectFollowTransition()
+      stickState.scrollTop = target
+      lastScrollTopRef.current = el.scrollTop
+    }
+  }, [scrollRef, setBottomSpacerHeight, stickState, protectFollowTransition])
 
   // Pin the viewport to the live edge before first paint. The library's own
   // initial scroll runs from its ResizeObserver callback, which lands after
@@ -1129,7 +1157,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
       // Size the reserve before scrolling so the scroll target IS the new
       // turn's reading line (the spacer inflates scrollHeight to end there).
-      syncTurnReserve()
+      // Skip the reading-line restore: this call runs with the viewport still
+      // at the pre-send position on purpose — the glide below travels there.
+      syncTurnReserve({ skipRestore: true })
       // The collapse of the finished turn above (same commit as the ghost)
       // shrinks content and can clamp scrollTop — guard the transition so
       // that clamp echo cannot latch an escape under the send.
@@ -1207,7 +1237,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       }
       lastContentHeight = contentHeight
       cancelAnimationFrame(frameId)
-      frameId = requestAnimationFrame(syncTurnReserve)
+      // Wrapped so the rAF timestamp doesn't arrive as the options argument.
+      frameId = requestAnimationFrame(() => syncTurnReserve())
     })
     observer.observe(content)
     observer.observe(viewport)

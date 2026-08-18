@@ -2618,6 +2618,48 @@ describe('MessageList', () => {
       expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
     })
 
+    it('restores the reading line when a transient shrink clamps the held reserve', async () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(1099)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+      fireEvent.scroll(el) // baseline at the reading line
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      // A working indicator swapping forms (streamed block replaced by its
+      // shorter persisted copy) shrinks natural content while the reserve
+      // holds. The browser clamps scrollTop against the momentarily smaller
+      // scroll range and leaves it there — the spacer re-inflating afterwards
+      // restores the range but not the position. Model the sticky clamp.
+      geometry.setNaturalScrollHeight(1240)
+      geometry.setScrollTop(1040)
+      fireEvent.scroll(el)
+      mockStreamState.streamingMessage = 'A different working indicator'
+      mockStreamState.isStreaming = true
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+
+      // The reserve re-inflates AND the viewport returns to the reading line
+      // in the same pass — the held turn must not visibly sag.
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '460px' })
+      expect(geometry.scrollTop).toBe(1099)
+      // The clamp's scroll echo must not have latched an escape either.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+      expect(geometry.scrollTop).toBe(1099)
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+    })
+
     it('spends the reserved room before following streamed content at the live edge', async () => {
       installFakeResizeObserver()
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]

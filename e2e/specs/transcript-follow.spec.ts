@@ -108,6 +108,33 @@ test.describe('Transcript live-edge follow', () => {
     await expect(pill).toBeHidden()
   })
 
+  test('holds the reading line steady while the agent works', async ({ page }) => {
+    // The slow-work scenario streams a working indicator, then (~5s in) swaps
+    // it for its shorter persisted copy — a content shrink under the held
+    // reserve. The browser clamps scrollTop against the momentarily smaller
+    // scroll range; the transcript must restore the reading line in the same
+    // pass, not leave the held turn visibly sagging until content grows again.
+    await sessionPage.sendMessage('work slowly please')
+    await expect(page.getByTestId('turn-anchor-spacer')).toBeVisible({ timeout: 15000 })
+    await expect
+      .poll(async () => (await scrollMetrics(page)).distanceFromBottom, { timeout: 15000 })
+      .toBeLessThan(5)
+
+    // Ride through the swap: the persisted copy appearing means the clamp has
+    // already happened. The follow spring may trail transiently after content
+    // changes (by design), but the clamp's sag has no growth to recover it —
+    // only the same-pass restore can. So the discriminating assertion is that
+    // the viewport re-converges to the reading line and the reserve is still
+    // holding; without the restore the sag freezes ~40px deep and never comes
+    // back.
+    await expect(page.getByText('Finished the slow work.')).toBeVisible({ timeout: 20000 })
+    await expect(page.getByTestId('turn-anchor-spacer')).toBeVisible()
+    await expect
+      .poll(async () => (await scrollMetrics(page)).distanceFromBottom, { timeout: 3000 })
+      .toBeLessThan(5)
+    await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeHidden()
+  })
+
   test('keeps the live edge pinned through vertical window resizes', async ({ page }) => {
     await sessionPage.sendMessage(SAGA_PROMPT)
     await sessionPage.waitForResponse(15000)
