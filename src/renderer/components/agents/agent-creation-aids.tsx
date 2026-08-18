@@ -19,13 +19,9 @@ import { useImportAgentTemplate, useDiscoverableAgents, type ImportProgress } fr
 import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
-import type { ApiAgent, ApiAgentTemplateInstallResult } from '@shared/lib/types/api'
+import type { ApiAgentTemplateInstallResult } from '@shared/lib/types/api'
 
-export interface ImportResult {
-  agent: ApiAgent
-  hasOnboarding?: ApiAgentTemplateInstallResult['hasOnboarding']
-  templatePrompt?: ApiAgentTemplateInstallResult['templatePrompt']
-}
+export type ImportResult = ApiAgentTemplateInstallResult
 
 export interface AgentCreationAidsProps {
   /** Called after the voice agent interview completes with its tool-call args. */
@@ -145,11 +141,7 @@ export function AgentCreationAids({
 
   const finishImport = useCallback(
     async (agent: ApiAgentTemplateInstallResult) => {
-      await onImportComplete({
-        agent,
-        hasOnboarding: agent.hasOnboarding,
-        templatePrompt: agent.templatePrompt,
-      })
+      await onImportComplete(agent)
     },
     [onImportComplete],
   )

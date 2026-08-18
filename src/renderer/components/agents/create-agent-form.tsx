@@ -22,8 +22,9 @@ import {
 import { deriveAgentName } from '@renderer/lib/derive-agent-name'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
-import { seedAgentTemplatePrompt, useDraftsStore } from '@renderer/context/drafts-context'
+import { useDraftsStore } from '@renderer/context/drafts-context'
 import { useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
+import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
 import {
   ComposerOptions,
   findCatalogModel,
@@ -32,7 +33,7 @@ import {
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
-import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
+import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 /**
  * Ceiling, not a delay: the offer resolves the instant the discoverable list
@@ -171,18 +172,19 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
 
   const finishCreatedAgent = useCallback(
     async (
-      agent: ApiAgent,
-      source: 'new' | 'import' | 'skillset',
-      hasOnboarding?: boolean,
-      templatePrompt?: string,
+      agent: ImportResult,
+      source: 'import' | 'skillset',
     ) => {
       await discardWarmAgent()
       track('agent_created', { source, num_skills_added_at_creation: 0 })
-      const hasTemplatePrompt = seedAgentTemplatePrompt(draftsStore, agent.slug, templatePrompt)
-      void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
-      if (!hasTemplatePrompt && hasOnboarding) {
-        await startOnboardingSession(agent.slug)
-      }
+      await completeAgentTemplateHandoff({
+        draftsStore,
+        agentSlug: agent.slug,
+        hasOnboarding: agent.hasOnboarding,
+        templatePrompt: agent.templatePrompt,
+        openAgent: () => { void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } }) },
+        startOnboardingSession,
+      })
       await onAgentCreated?.()
     },
     [discardWarmAgent, track, draftsStore, navigate, startOnboardingSession, onAgentCreated],
@@ -341,9 +343,7 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
   )
 
   const handleImportComplete = useCallback(
-    ({ agent, hasOnboarding, templatePrompt }: ImportResult) => (
-      finishCreatedAgent(agent, 'import', hasOnboarding, templatePrompt)
-    ),
+    (agent: ImportResult) => finishCreatedAgent(agent, 'import'),
     [finishCreatedAgent],
   )
 
@@ -432,9 +432,7 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
         template={templateToInstall}
         handoffOrigin
         onClose={() => setTemplateToInstall(null)}
-        onInstalled={(agent, { hasOnboarding, templatePrompt }) => (
-          finishCreatedAgent(agent, 'skillset', hasOnboarding, templatePrompt)
-        )}
+        onInstalled={(agent) => finishCreatedAgent(agent, 'skillset')}
       />
     </div>
   )

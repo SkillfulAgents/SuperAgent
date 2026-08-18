@@ -100,8 +100,10 @@ describe('TemplateInstallDialog handoffOrigin', () => {
 
     await user.click(screen.getByRole('button', { name: 'Install' }))
     await waitFor(() => expect(onInstalled).toHaveBeenCalledWith(
-      expect.objectContaining({ slug: 'research-bot' }),
-      { hasOnboarding: undefined, templatePrompt: 'Investigate this company' },
+      expect.objectContaining({
+        slug: 'research-bot',
+        templatePrompt: 'Investigate this company',
+      }),
     ))
   })
 })

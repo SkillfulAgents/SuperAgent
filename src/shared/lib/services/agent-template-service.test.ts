@@ -64,6 +64,7 @@ import {
   getInstalledAgentMetadata,
   hasOnboardingSkill,
   getAgentTemplatePrompt,
+  MAX_TEMPLATE_PROMPT_SIZE,
   getDiscoverableAgents,
 } from './agent-template-service'
 import { createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/lib/services/agent-service'
@@ -1725,6 +1726,21 @@ describe('getAgentTemplatePrompt', () => {
     const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
     fs.writeFileSync(path.join(workspaceDir, 'PROMPT.md'), '  \n')
+
+    await expect(getAgentTemplatePrompt('test-agent')).resolves.toBeUndefined()
+  })
+
+  it('skips a PROMPT.md directory without failing the completed install', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
+    fs.mkdirSync(path.join(workspaceDir, 'PROMPT.md'), { recursive: true })
+
+    await expect(getAgentTemplatePrompt('test-agent')).resolves.toBeUndefined()
+  })
+
+  it('skips prompt files larger than the composer handoff limit', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'PROMPT.md'), Buffer.alloc(MAX_TEMPLATE_PROMPT_SIZE + 1, 'a'))
 
     await expect(getAgentTemplatePrompt('test-agent')).resolves.toBeUndefined()
   })

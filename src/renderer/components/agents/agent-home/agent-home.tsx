@@ -53,7 +53,8 @@ import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
-import { seedAgentTemplatePrompt, useDraftsStore } from '@renderer/context/drafts-context'
+import { useDraftsStore } from '@renderer/context/drafts-context'
+import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
 
 interface AgentHomeProps {
   agent: ApiAgent
@@ -203,7 +204,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   })
 
   const warmStartEnabled = useWarmStartOnTypeEnabled()
-  useWarmStartOnType({
+  const { noteProgrammaticChange } = useWarmStartOnType({
     agentSlug: agent.slug,
     message: composer.message,
     enabled: warmStartEnabled,
@@ -254,17 +255,23 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   )
 
   const handleImportComplete = useCallback(
-    async ({ agent: imported, hasOnboarding, templatePrompt }: ImportResult) => {
-      const hasTemplatePrompt = seedAgentTemplatePrompt(draftsStore, imported.slug, templatePrompt)
-      void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })
-      if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
-        deleteAgent.mutate(agent.slug)
-      }
-      if (!hasTemplatePrompt && hasOnboarding) {
-        await startOnboardingSession(imported.slug)
-      }
+    async (imported: ImportResult) => {
+      await completeAgentTemplateHandoff({
+        draftsStore,
+        agentSlug: imported.slug,
+        hasOnboarding: imported.hasOnboarding,
+        templatePrompt: imported.templatePrompt,
+        noteProgrammaticChange,
+        openAgent: () => {
+          void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })
+          if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
+            deleteAgent.mutate(agent.slug)
+          }
+        },
+        startOnboardingSession,
+      })
     },
-    [draftsStore, navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
+    [draftsStore, noteProgrammaticChange, navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
   )
 
   const formatDate = useCallback(
