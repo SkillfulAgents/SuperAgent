@@ -1383,6 +1383,46 @@ describe('session-service', () => {
       expect(older.nextCursor).toBeNull()
     })
 
+    it('replayed duplicate anchors do not reopen a collapsed boundary span', async () => {
+      // Byte-identical replayed rows share their original's uuid, and the
+      // transform keys boundary collapse BY uuid — so boundaries separated
+      // only by duplicates of one anchor all collapse to the newest. If each
+      // duplicate reset the span, the collapsed boundaries would satisfy the
+      // page target and the cursor page below the survivor would come out
+      // empty, hiding the real older messages.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 15, 0, 0, s)).toISOString()
+      const boundary = (uuid: string, s: number) => ({
+        type: 'system', uuid, subtype: 'compact_boundary', content: '', isMeta: false,
+        timestamp: ts(s), compactMetadata: { trigger: 'auto', preTokens: 1 },
+      })
+      const X = { type: 'user', uuid: 'X', timestamp: ts(10), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'anchor msg' } }
+      await createSessionFile('test-agent', 'page-session', [
+        { type: 'user', uuid: 'U', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q' } },
+        { type: 'assistant', uuid: 'A', timestamp: ts(1), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'r' }] } },
+        boundary('c1', 2), X,
+        boundary('c2', 3), X,
+        boundary('c3', 4), X,
+        boundary('c4', 5), X,
+      ])
+
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      expect(full.messages.map((m) => m.id)).toEqual(['U', 'A', 'c4', 'X'])
+
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 2 })
+      const collected = [...first.messages.map((m) => m.id)]
+      let cursor = first.nextCursor
+      for (let i = 0; i < 10 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 2,
+          cursor,
+        })
+        collected.unshift(...page.messages.map((m) => m.id))
+        cursor = page.nextCursor
+      }
+      expect(cursor).toBeNull()
+      expect(collected).toEqual(['U', 'A', 'c4', 'X'])
+    })
+
     it('attaches a tool result recorded past the cursor line', async () => {
       // A queued user message lands between a tool_use and its result, and
       // becomes the page cursor: the result then sits ABOVE the cursor line,

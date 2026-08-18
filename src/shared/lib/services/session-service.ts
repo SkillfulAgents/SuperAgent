@@ -1279,12 +1279,22 @@ async function scanMessagesPageWindow(
         ? (normalized as JsonlMessageEntry)
         : undefined
     const pendingInfoBefore = state.pendingInformationalContent
+    // Checked BEFORE the classifier registers this row's uuid: a
+    // byte-identical replayed row shares its original's uuid, and the
+    // transform keys system-item anchors BY uuid — a duplicate row is the
+    // same anchor, not a new one. Treating it as new would reset the
+    // boundary-collapse span and lift system-cursor suppression, letting the
+    // page target be satisfied by items that never display.
+    const isDuplicateRow =
+      msgEntry !== undefined && !!msgEntry.uuid && state.seenUuids.has(msgEntry.uuid)
     const counted = normalized !== undefined && countsAsDisplayStart(normalized, state)
     // An anchor row is one the transform attaches system items to — a real
     // message entry, not a filtered/skipped one (meta rows, compact
-    // summaries, an informational's synthetic user copy).
+    // summaries, an informational's synthetic user copy) and not a replayed
+    // duplicate of an anchor already seen.
     const isAnchorRow =
       msgEntry !== undefined &&
+      !isDuplicateRow &&
       !('isMeta' in msgEntry && msgEntry.isMeta) &&
       !msgEntry.isCompactSummary &&
       !(
