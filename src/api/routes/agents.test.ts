@@ -426,6 +426,7 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
   publishAgentToSkillset: vi.fn(),
   refreshAgentTemplates: vi.fn(),
   hasOnboardingSkill: vi.fn(),
+  getAgentTemplatePrompt: vi.fn(),
 }))
 
 vi.mock('@shared/lib/utils/retry', () => ({
@@ -553,6 +554,7 @@ import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
   importAgentFromTemplate,
   hasOnboardingSkill,
+  getAgentTemplatePrompt,
 } from '@shared/lib/services/agent-template-service'
 import {
   deleteSkill,
@@ -1278,6 +1280,7 @@ describe('POST /api/agents/import-template', () => {
       name: 'Imported Agent',
     } as any)
     vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(getAgentTemplatePrompt).mockResolvedValue(undefined)
   })
 
   function buildImportForm(mode?: 'template' | 'full') {
@@ -1300,6 +1303,19 @@ describe('POST /api/agents/import-template', () => {
     expect(res.status).toBe(201)
     expect(importAgentFromTemplate).toHaveBeenCalledWith(expect.any(Buffer), undefined, 'template')
   })
+
+  it('returns the optional template prompt for the post-install composer handoff', async () => {
+    vi.mocked(getAgentTemplatePrompt).mockResolvedValue('Summarize the latest customer interviews')
+
+    const res = await postFormData(app, '/api/agents/import-template', buildImportForm('template'))
+
+    expect(res.status).toBe(201)
+    await expect(res.json()).resolves.toEqual(expect.objectContaining({
+      slug: 'imported-agent',
+      templatePrompt: 'Summarize the latest customer interviews',
+    }))
+    expect(getAgentTemplatePrompt).toHaveBeenCalledWith('imported-agent')
+  })
 })
 
 // ============================================================================
@@ -1317,6 +1333,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
       name: 'Imported Agent',
     } as any)
     vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(getAgentTemplatePrompt).mockResolvedValue(undefined)
   })
 
   function buildChunkForm(opts: {

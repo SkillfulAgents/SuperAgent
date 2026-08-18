@@ -161,6 +161,7 @@ import {
   publishAgentToSkillset,
   refreshAgentTemplates,
   hasOnboardingSkill,
+  getAgentTemplatePrompt,
 } from '@shared/lib/services/agent-template-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
@@ -689,9 +690,12 @@ async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) 
 
   const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
   await createOwnerAclOrRollback(c, agent.slug)
-  const hasOnboarding = await hasOnboardingSkill(agent.slug)
+  const [hasOnboarding, templatePrompt] = await Promise.all([
+    hasOnboardingSkill(agent.slug),
+    getAgentTemplatePrompt(agent.slug),
+  ])
   logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name } })
-  return c.json({ ...agent, hasOnboarding }, 201)
+  return c.json({ ...agent, hasOnboarding, templatePrompt }, 201)
 }
 
 // GET /api/agents/discoverable-agents - List agents available from skillsets
@@ -735,9 +739,12 @@ agents.post('/install-from-skillset', async (c) => {
     )
 
     await createOwnerAclOrRollback(c, agent.slug)
-    const hasOnboarding = await hasOnboardingSkill(agent.slug)
+    const [hasOnboarding, templatePrompt] = await Promise.all([
+      hasOnboardingSkill(agent.slug),
+      getAgentTemplatePrompt(agent.slug),
+    ])
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name, skillsetId } })
-    return c.json({ ...agent, hasOnboarding }, 201)
+    return c.json({ ...agent, hasOnboarding, templatePrompt }, 201)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to install agent from skillset'
     console.error('Failed to install agent from skillset:', error)

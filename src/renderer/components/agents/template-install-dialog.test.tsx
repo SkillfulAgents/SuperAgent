@@ -80,4 +80,28 @@ describe('TemplateInstallDialog handoffOrigin', () => {
     await user.click(screen.getByRole('button', { name: 'Install' }))
     await waitFor(() => expect(order).toEqual(['close', 'onInstalled']))
   })
+
+  it('passes the template prompt through to the navigation handoff', async () => {
+    const user = userEvent.setup()
+    const onInstalled = vi.fn()
+    mutateAsync.mockResolvedValue({
+      slug: 'research-bot',
+      displaySlug: 'research-bot',
+      templatePrompt: 'Investigate this company',
+    })
+
+    render(
+      <TemplateInstallDialog
+        template={template}
+        onClose={() => {}}
+        onInstalled={onInstalled}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() => expect(onInstalled).toHaveBeenCalledWith(
+      expect.objectContaining({ slug: 'research-bot' }),
+      { hasOnboarding: undefined, templatePrompt: 'Investigate this company' },
+    ))
+  })
 })

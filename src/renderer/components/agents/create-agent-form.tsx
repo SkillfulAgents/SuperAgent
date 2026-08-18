@@ -22,6 +22,7 @@ import {
 import { deriveAgentName } from '@renderer/lib/derive-agent-name'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
+import { seedAgentTemplatePrompt, useDraftsStore } from '@renderer/context/drafts-context'
 import { useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import {
   ComposerOptions,
@@ -80,6 +81,7 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
   const startOnboardingSession = useStartOnboardingSession()
+  const draftsStore = useDraftsStore()
   const warmStartEnabled = useWarmStartOnTypeEnabled()
   const { signupHandoff, setSignupHandoff } = useNavTransient()
   const { data: modelSettings } = useModelSettings()
@@ -168,16 +170,22 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const finishCreatedAgent = useCallback(
-    async (agent: ApiAgent, source: 'new' | 'import' | 'skillset', hasOnboarding?: boolean) => {
+    async (
+      agent: ApiAgent,
+      source: 'new' | 'import' | 'skillset',
+      hasOnboarding?: boolean,
+      templatePrompt?: string,
+    ) => {
       await discardWarmAgent()
       track('agent_created', { source, num_skills_added_at_creation: 0 })
+      const hasTemplatePrompt = seedAgentTemplatePrompt(draftsStore, agent.slug, templatePrompt)
       void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
-      if (hasOnboarding) {
+      if (!hasTemplatePrompt && hasOnboarding) {
         await startOnboardingSession(agent.slug)
       }
       await onAgentCreated?.()
     },
-    [discardWarmAgent, track, navigate, startOnboardingSession, onAgentCreated],
+    [discardWarmAgent, track, draftsStore, navigate, startOnboardingSession, onAgentCreated],
   )
 
   const composer = useMessageComposer({
@@ -333,7 +341,9 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
   )
 
   const handleImportComplete = useCallback(
-    ({ agent, hasOnboarding }: ImportResult) => finishCreatedAgent(agent, 'import', hasOnboarding),
+    ({ agent, hasOnboarding, templatePrompt }: ImportResult) => (
+      finishCreatedAgent(agent, 'import', hasOnboarding, templatePrompt)
+    ),
     [finishCreatedAgent],
   )
 
@@ -422,7 +432,9 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
         template={templateToInstall}
         handoffOrigin
         onClose={() => setTemplateToInstall(null)}
-        onInstalled={(agent, { hasOnboarding }) => finishCreatedAgent(agent, 'skillset', hasOnboarding)}
+        onInstalled={(agent, { hasOnboarding, templatePrompt }) => (
+          finishCreatedAgent(agent, 'skillset', hasOnboarding, templatePrompt)
+        )}
       />
     </div>
   )

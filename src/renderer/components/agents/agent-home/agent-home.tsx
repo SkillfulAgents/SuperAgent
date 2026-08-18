@@ -53,6 +53,7 @@ import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
+import { seedAgentTemplatePrompt, useDraftsStore } from '@renderer/context/drafts-context'
 
 interface AgentHomeProps {
   agent: ApiAgent
@@ -85,6 +86,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     if (introStagger) setJustCreatedSlug(null)
   }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
+  const draftsStore = useDraftsStore()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
@@ -252,16 +254,17 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   )
 
   const handleImportComplete = useCallback(
-    async ({ agent: imported, hasOnboarding }: ImportResult) => {
+    async ({ agent: imported, hasOnboarding, templatePrompt }: ImportResult) => {
+      const hasTemplatePrompt = seedAgentTemplatePrompt(draftsStore, imported.slug, templatePrompt)
       void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })
       if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
         deleteAgent.mutate(agent.slug)
       }
-      if (hasOnboarding) {
+      if (!hasTemplatePrompt && hasOnboarding) {
         await startOnboardingSession(imported.slug)
       }
     },
-    [navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
+    [draftsStore, navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
   )
 
   const formatDate = useCallback(

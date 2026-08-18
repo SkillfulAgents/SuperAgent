@@ -19,11 +19,12 @@ import { useImportAgentTemplate, useDiscoverableAgents, type ImportProgress } fr
 import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
-import type { ApiAgent } from '@shared/lib/types/api'
+import type { ApiAgent, ApiAgentTemplateInstallResult } from '@shared/lib/types/api'
 
 export interface ImportResult {
   agent: ApiAgent
-  hasOnboarding?: boolean
+  hasOnboarding?: ApiAgentTemplateInstallResult['hasOnboarding']
+  templatePrompt?: ApiAgentTemplateInstallResult['templatePrompt']
 }
 
 export interface AgentCreationAidsProps {
@@ -143,8 +144,12 @@ export function AgentCreationAids({
   }, [resetImport])
 
   const finishImport = useCallback(
-    async (agent: ApiAgent, hasOnboarding?: boolean) => {
-      await onImportComplete({ agent, hasOnboarding })
+    async (agent: ApiAgentTemplateInstallResult) => {
+      await onImportComplete({
+        agent,
+        hasOnboarding: agent.hasOnboarding,
+        templatePrompt: agent.templatePrompt,
+      })
     },
     [onImportComplete],
   )
@@ -165,7 +170,7 @@ export function AgentCreationAids({
 
         setShowImportDialog(false)
         resetImport()
-        await finishImport(result, result.hasOnboarding)
+        await finishImport(result)
       } catch (error) {
         setUploadProgress(null)
         console.error('Failed to import template:', error)

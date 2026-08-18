@@ -63,6 +63,9 @@ const MAX_UNCOMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 export const MAX_COMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 const MAX_FILE_COUNT = 2000
 
+/** Canonical prompt handoff file, plus a lowercase compatibility spelling. */
+const TEMPLATE_PROMPT_FILE_NAMES = ['PROMPT.md', 'prompt.md'] as const
+
 /** Files/dirs excluded from templates (matched by name at any level) */
 const TEMPLATE_EXCLUDE = new Set([
   '.env',
@@ -703,6 +706,20 @@ export async function hasOnboardingSkill(agentSlug: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * Read the optional prompt handoff supplied by an installed template.
+ * Empty prompt files are treated as absent so they do not suppress onboarding.
+ */
+export async function getAgentTemplatePrompt(agentSlug: string): Promise<string | undefined> {
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  for (const fileName of TEMPLATE_PROMPT_FILE_NAMES) {
+    const content = await readFileOrNull(path.join(workspaceDir, fileName))
+    const prompt = content?.trim()
+    if (prompt) return prompt
+  }
+  return undefined
 }
 
 /**

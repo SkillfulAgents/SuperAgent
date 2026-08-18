@@ -11,13 +11,13 @@ import {
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { useInstallAgentFromSkillset } from '@renderer/hooks/use-agent-templates'
-import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
+import type { ApiAgent, ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 interface TemplateInstallDialogProps {
   template: ApiDiscoverableAgent | null
   onClose: () => void
   /** Called after the agent is fully installed. */
-  onInstalled: (agent: ApiAgent, meta: { hasOnboarding?: boolean }) => void | Promise<void>
+  onInstalled: (agent: ApiAgent, meta: Pick<ApiAgentTemplateInstallResult, 'hasOnboarding' | 'templatePrompt'>) => void | Promise<void>
   /** Signup handoff: softer name-field focus (no autofocus steal). */
   handoffOrigin?: boolean
 }
@@ -55,7 +55,10 @@ export function TemplateInstallDialog({ template, onClose, onInstalled, handoffO
         // Close before onInstalled — that path may open the onboarding
         // "Setting up your agent..." dialog; stacking both looks broken.
         onClose()
-        await onInstalled(agent, { hasOnboarding: agent.hasOnboarding })
+        await onInstalled(agent, {
+          hasOnboarding: agent.hasOnboarding,
+          templatePrompt: agent.templatePrompt,
+        })
       } catch (error) {
         console.error('Failed to install agent from skillset:', error)
       }
