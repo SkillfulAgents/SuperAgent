@@ -532,6 +532,41 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     spacer.hidden = nextHeight === 0
   }, [])
 
+  // A programmatic follow transition — the send-anchor scroll (where the
+  // previous turn collapses to a summary row and content shrinks above), or a
+  // viewport re-pin — can coincide with a browser clamp whose scroll event
+  // reads as the reader scrolling up. Two defenses: shield the library's
+  // deferred classification across the transition (it skips scroll events
+  // while a resize is in flight), and verify shortly after — an escape with
+  // no user gesture inside the window can only be such an echo, so reverse
+  // it. Real gestures (wheel, touch, held pointer, scroll keys) suppress the
+  // reversal, so a reader who actually leaves during the window stays left.
+  const verifyFollowTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(verifyFollowTimerRef.current), [])
+  const protectFollowTransition = useCallback(() => {
+    if (stickState.resizeDifference === 0) {
+      stickState.resizeDifference = 1
+      // Mirror the library's own reset: the clamp's deferred classification
+      // (a tick after its scroll event) must land inside the shield, so drop
+      // it a frame + a tick later. The guard keeps a concurrent real content
+      // resize's value intact.
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          if (stickState.resizeDifference === 1) stickState.resizeDifference = 0
+        }, 1)
+      })
+    }
+    const transitionAt = performance.now()
+    clearTimeout(verifyFollowTimerRef.current)
+    verifyFollowTimerRef.current = setTimeout(() => {
+      const gestured =
+        pointerDownRef.current || lastGestureAtRef.current >= transitionAt
+      if (!gestured && !stickState.isAtBottom) {
+        void stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined)
+      }
+    }, 40)
+  }, [stickState, stickScrollToBottom])
+
   // Keep the newly-sent turn fixed at its reading line while the response uses
   // up the reserved room below it. The spacer inflates scrollHeight so that the
   // reading line IS the scroll target: from the follow library's perspective
@@ -1010,6 +1045,18 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     hasTurnStartingPendingMessage,
   ])
 
+  // A turn completing collapses its whole work phase into a summary row — a
+  // massive one-commit shrink whose browser clamp reads as the reader
+  // scrolling up, stranding the viewport above the final answer. Guard the
+  // transition from the same commit (this runs before the clamp's scroll
+  // event can dispatch, so the shield is race-free here).
+  const prevCompletedTurnCountRef = useRef(completedTurns.length)
+  useLayoutEffect(() => {
+    const grew = completedTurns.length > prevCompletedTurnCountRef.current
+    prevCompletedTurnCountRef.current = completedTurns.length
+    if (grew && stickState.isAtBottom) protectFollowTransition()
+  }, [completedTurns, stickState, protectFollowTransition])
+
   // Drop expansion state for turns that no longer exist after edits/refetches.
   useEffect(() => {
     const validIds = new Set(completedTurns.map((turn) => turn.id))
@@ -1083,6 +1130,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       // Size the reserve before scrolling so the scroll target IS the new
       // turn's reading line (the spacer inflates scrollHeight to end there).
       syncTurnReserve()
+      // The collapse of the finished turn above (same commit as the ghost)
+      // shrinks content and can clamp scrollTop — guard the transition so
+      // that clamp echo cannot latch an escape under the send.
+      protectFollowTransition()
       // A send always returns the reader to the thread: re-engage following
       // and glide to the reading line (or the live edge for queued sends).
       // Under reduced motion, position synchronously instead of gliding.
@@ -1112,6 +1163,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     scrollRef,
     stickState,
     stickScrollToBottom,
+    protectFollowTransition,
     bottomInset,
   ])
 
@@ -1124,7 +1176,36 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const viewport = scrollRef.current
     if (!content || !viewport || typeof ResizeObserver === 'undefined') return
     let frameId = 0
+    let lastViewportHeight = viewport.clientHeight
+    let lastContentHeight = content.offsetHeight
     const observer = new ResizeObserver(() => {
+      // A vertical viewport resize is invisible to the follow library (it
+      // observes only the content element), and browsers anchor the TOP edge
+      // on resize — so a window shrink would slide the live edge behind the
+      // fold. Re-pin immediately while following, guarded against the grow
+      // clamp's scroll echo being read as an escape (a viewport GROW lowers
+      // the scroll range, and the browser's clamp fires a scroll event that
+      // classifies as the reader scrolling up). During the turn reserve the
+      // spacer math already keeps the reading line valid, so no pin there.
+      const viewportHeight = viewport.clientHeight
+      if (viewportHeight !== lastViewportHeight) {
+        lastViewportHeight = viewportHeight
+        if (stickState.isAtBottom && !anchoredTurnRef.current) {
+          protectFollowTransition()
+          stickState.scrollTop = Math.max(0, stickState.calculatedTargetScrollTop)
+          lastScrollTopRef.current = viewport.scrollTop
+        }
+      }
+      // Catch-all for content shrinks at the live edge (a thinking card
+      // collapsing, a streamed block swapped for its shorter persisted form):
+      // each one clamps scrollTop and can latch a spurious escape the same
+      // way. The commit-hooked guards cover the big known transitions
+      // race-free; this covers the rest via the deferred verification.
+      const contentHeight = content.offsetHeight
+      if (contentHeight < lastContentHeight && stickState.isAtBottom) {
+        protectFollowTransition()
+      }
+      lastContentHeight = contentHeight
       cancelAnimationFrame(frameId)
       frameId = requestAnimationFrame(syncTurnReserve)
     })
@@ -1134,7 +1215,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       cancelAnimationFrame(frameId)
       observer.disconnect()
     }
-  }, [syncTurnReserve, scrollRef, isLoading, error])
+  }, [syncTurnReserve, scrollRef, stickState, protectFollowTransition, isLoading, error])
 
   // Escape from following is owned by the stick-to-bottom library (wheel
   // direction, scroll direction, selection). These stamps exist only so the
