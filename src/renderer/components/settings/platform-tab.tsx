@@ -4,6 +4,7 @@ import { ArrowUpRight, BadgeX, ChevronsUpDown, Loader2, RefreshCw } from 'lucide
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Progress } from '@renderer/components/ui/progress'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { RequestError } from '@renderer/components/messages/request-error'
@@ -306,6 +307,47 @@ function HoverArrow() {
   )
 }
 
+interface WorkspaceSwitcherProps {
+  orgName: string
+  /** Re-auth is rejected in auth mode and pointless mid-launch — see ReconnectRow. */
+  switchDisabled: boolean
+  onSwitch: () => void
+}
+
+function WorkspaceSwitcher({ orgName, switchDisabled, onSwitch }: WorkspaceSwitcherProps) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-expanded={open}
+          className="flex items-center gap-1 max-w-[260px] rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="truncate">{orgName}</span>
+          <ChevronsUpDown className="h-3 w-3 shrink-0 text-foreground" aria-hidden />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-auto p-1">
+        <Button
+          size="sm"
+          variant="ghost"
+          className="w-full justify-between gap-6 text-xs font-normal"
+          disabled={switchDisabled}
+          onClick={() => {
+            setOpen(false)
+            onSwitch()
+          }}
+        >
+          Switch workspace
+          <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
+        </Button>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function AccessKeyInput({ onClose }: { onClose: () => void }) {
   const [key, setKey] = useState('')
   const saveKey = useSavePlatformAccessKey()
@@ -489,19 +531,13 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
           <SettingRow
             name="Workspace"
             right={
-              // Switching workspaces means re-authenticating, so this opens the
-              // same platform login the Reconnect button below launches.
-              <button
-                type="button"
-                onClick={() => {
-                  void handleConnect()
-                }}
-                disabled={readOnly || isLaunching}
-                className="flex items-center gap-1 max-w-[260px] rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-              >
-                <span className="truncate">{data?.orgName ?? '—'}</span>
-                <ChevronsUpDown className="h-3 w-3 shrink-0 text-foreground" aria-hidden />
-              </button>
+              // Switching workspaces means re-authenticating, so the popover's
+              // action opens the same platform login Reconnect below launches.
+              <WorkspaceSwitcher
+                orgName={data?.orgName ?? '—'}
+                switchDisabled={readOnly || isLaunching}
+                onSwitch={handleConnect}
+              />
             }
           />
           <SettingRow
