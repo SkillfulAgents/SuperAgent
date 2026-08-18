@@ -3925,6 +3925,152 @@ describe('MessagePersister', () => {
     })
   })
 
+  describe('automation stream release on settle (SUP-572)', () => {
+    // A leaked stream per cron/webhook run holds a runtime-container WebSocket
+    // open forever (keepalives defeat idle cuts); runtimes that cap concurrent
+    // connections per container then block new sessions. The persister must
+    // release the stream once an unpromoted automation session truly settles.
+
+    afterEach(() => {
+      // mockResolvedValue survives clearAllMocks — restore the suite default.
+      vi.mocked(getSessionMetadata).mockImplementation(() => Promise.resolve(null))
+    })
+
+    // Re-subscribe AFTER pointing the metadata mock at the desired session
+    // shape, then let the async subscribe-time resolution land.
+    async function resubscribeWithMetadata(meta: Record<string, unknown> | null) {
+      vi.mocked(getSessionMetadata).mockResolvedValue(meta as never)
+      await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    function settleSession() {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      // State-events authority: the runtime's own idle proves the queue drained.
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+    }
+
+    it('releases the stream when a scheduled session settles', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      settleSession()
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+      const lastSubscription = vi.mocked(mockClient.subscribeToStream).mock.results.at(-1)!
+        .value as { unsubscribe: ReturnType<typeof vi.fn> }
+      expect(lastSubscription.unsubscribe).toHaveBeenCalled()
+    })
+
+    it('releases the stream when a scheduled session settles with an error', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+      mockClient._sendMessage({
+        type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    })
+
+    it('releases the stream when a webhook session settles', async () => {
+      await resubscribeWithMetadata({ isWebhookExecution: true, webhookTriggerId: 'trigger-1' })
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    })
+
+    it('keeps the stream for an interactive session', async () => {
+      await resubscribeWithMetadata(null)
+
+      settleSession()
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('keeps the stream for a promoted automation session', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, promotedToInteractive: true })
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('keeps the stream when a scheduled session is promoted mid-run', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      await messagePersister.promoteAutomatedSession(SESSION_ID, AGENT_SLUG)
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('does not let a stale subscribe-time metadata read undo a promotion', async () => {
+      const unpromoted = { isScheduledExecution: true, scheduledTaskId: 'task-1' }
+      let resolveSubscribeMeta: ((value: typeof unpromoted) => void) | undefined
+      let metaCalls = 0
+      vi.mocked(getSessionMetadata).mockImplementation(() => {
+        metaCalls += 1
+        if (metaCalls === 1) {
+          return new Promise((resolve) => { resolveSubscribeMeta = resolve })
+        }
+        return Promise.resolve(unpromoted as never)
+      })
+
+      await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+      await messagePersister.promoteAutomatedSession(SESSION_ID, AGENT_SLUG)
+      resolveSubscribeMeta!(unpromoted)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('does not release on a legacy result-driven idle (no state-events authority)', async () => {
+      // Without the runtime's own idle event there is no proof the container's
+      // message queue is drained — a queued message could still start a turn
+      // on this stream, so the release must not fire.
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('a released session re-subscribes cleanly for a later wake', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+      settleSession()
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+
+      // The wake path checks isSubscribed and re-subscribes on demand.
+      await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+
+      // And the resumed run releases again at its own settle.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      settleSession()
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    })
+  })
+
   // ============================================================================
   // Script run request detection
   // ============================================================================
