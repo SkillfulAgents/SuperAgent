@@ -2044,8 +2044,10 @@ class MessagePersister {
             this.resetSessionCompleteResponse(state)
             state.queuedTurnCount = 0
             state.resetAssistantBeforeNextTurnOutput = false
-            state.lastResultSubtype = null
-            state.lastResultCleanSuccess = false
+            // Preserve the prior result guard. Some runtimes emit a stray
+            // running → idle pair without another result; clearing the guard
+            // here would leave isActive stuck until disconnect. The response
+            // reset above keeps any duplicate completion notification generic.
             this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
             this.broadcastGlobal({
               type: 'session_active',

@@ -552,7 +552,7 @@ describe('MessagePersister', () => {
       )
     })
 
-    it('clears the prior result guard when a running event self-heals a new turn', () => {
+    it('settles a self-healed running event followed by idle without a new result', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       mockClient._sendMessage({
         type: 'system',
@@ -592,8 +592,13 @@ describe('MessagePersister', () => {
         state: 'idle',
       })
 
-      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
-      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        { responseText: '', responseCompletedAtMs: null },
+      )
     })
 
     it('does not notify for a modern success-subtype error result', () => {
