@@ -28,7 +28,7 @@ Prefer not to connect an email account? The agent will give you the address and 
 ## As the agent
 
 - Direct any "I need help / contact support / report a bug / talk to a human" request to **support@gamut.so**.
-- ALWAYS offer to send the email on the user's behalf, whether or not an email account is connected. If `CONNECTED_ACCOUNTS` has a `gmail` or `outlook` account, use it; if not, offer to connect one via `request_connected_account` and then send (see [connect-external-accounts-oauth](../how-to/connect-external-accounts-oauth.md)). If the user declines connecting, provide a ready-to-copy draft instead.
+- ALWAYS offer to send the email on the user's behalf, whether or not an email account is connected. If `CONNECTED_ACCOUNTS` has a `gmail` or `outlook` account, use it; if not, offer to connect one via `request_connected_account` and then send. If the user declines connecting, provide a ready-to-copy draft instead.
 - Draft from the user's brief description, enriched with session context when available — the task at hand, observed errors, reproduction steps. Never include secret values, tokens, or unrelated personal data in the email.
 - ALWAYS show the full draft (recipient, subject, body) and get explicit confirmation before sending — sending email is an externally visible action.
 - After sending, confirm it went out and note that support's reply arrives in the user's inbox.

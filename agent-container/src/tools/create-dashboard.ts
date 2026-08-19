@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { dashboardManager } from '../dashboard-manager'
 
 export const DASHBOARD_GUIDANCE_HINT =
-  'Required guidance: read `/opt/gamut/docs/building-dashboards.md` before editing or starting this dashboard (unless you already read it in this conversation).'
+  'Required guidance: load the `dashboards` skill before editing or starting this dashboard (unless you already loaded it in this conversation).'
 
 export const createDashboardTool = tool(
   'create_dashboard',

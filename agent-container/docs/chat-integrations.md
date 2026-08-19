@@ -42,6 +42,14 @@ Sending is immediate and externally visible. Follow the system prompt's
 approval rules before sending unless the user has already authorized the exact
 message and destination.
 
+`mcp__chat__send_chat_message` does not require an active chat session. It is
+the way to reach the user proactively from a session they are not watching — a
+scheduled task, a webhook-triggered run, or a long autonomous job. Use it when
+such a session produces a result the user asked for, hits a decision only the
+user can make, or fails in a way that needs attention. Pick the destination the
+same way as in an interactive session: resolve it explicitly rather than
+relying on the single-active-chat default.
+
 The optional `context` field is an internal note and is not delivered. Use it
 to preserve useful trigger or workflow context for later agent turns, never to
 hide content the user intended to send.

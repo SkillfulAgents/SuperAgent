@@ -6,13 +6,13 @@ source_url:
   - https://www.gamut.so/docs/using-superagent/getting-started/core-concepts
 ---
 
-## What is SuperAgent
+## What is Gamut
 
-SuperAgent is a platform for building and running personal AI agents. You create agents, give them instructions, connect them to your accounts, and let them work autonomously in the background -- inside secure, containerized sandboxes.
+Gamut is a platform for building and running personal AI agents. You create agents, give them instructions, connect them to your accounts, and let them work autonomously in the background -- inside secure, containerized sandboxes.
 
 ### How it works
 
-Each agent you create in SuperAgent runs inside its own isolated container (Docker, Podman, or other supported runtimes). Inside that container, the agent is powered by Claude, Anthropic's large language model. The agent has access to a set of tools -- a shell, file system, web browser, and any external services you connect -- and uses them to carry out the tasks you describe in natural language.
+Each agent you create in Gamut runs inside its own isolated container (Docker, Podman, or other supported runtimes). Inside that container, the agent is powered by Claude, Anthropic's large language model. The agent has access to a set of tools -- a shell, file system, web browser, and any external services you connect -- and uses them to carry out the tasks you describe in natural language.
 
 You interact with agents through a chat interface. You can send messages, ask questions, assign tasks, and watch the agent work in real time. Agents remember context across sessions, learn your preferences over time, and can be scheduled to run tasks on their own.
 
@@ -24,7 +24,7 @@ Every agent runs in its own sandboxed container. The agent can execute code, ins
 
 #### Connected accounts
 
-SuperAgent integrates with dozens of external services through OAuth -- Gmail, Slack, GitHub, Linear, Salesforce, Google Drive, and many more. You connect an account once, and any agent you authorize can use it. API calls are proxied outside the container, so agents never see your OAuth tokens. You get an audit trail of every action taken on your behalf.
+Gamut integrates with dozens of external services through OAuth -- Gmail, Slack, GitHub, Linear, Salesforce, Google Drive, and many more. You connect an account once, and any agent you authorize can use it. API calls are proxied outside the container, so agents never see your OAuth tokens. You get an audit trail of every action taken on your behalf.
 
 #### Browser automation
 
@@ -36,7 +36,7 @@ Agents can schedule recurring or one-time tasks using cron expressions or specif
 
 #### Dashboards and artifacts
 
-Agents can build interactive dashboards -- small web apps rendered inside SuperAgent -- to surface information, charts, or controls. Agents can also deliver files and other artifacts directly to you during a conversation.
+Agents can build interactive dashboards -- small web apps rendered inside Gamut -- to surface information, charts, or controls. Agents can also deliver files and other artifacts directly to you during a conversation.
 
 #### Multi-agent orchestration
 
@@ -48,14 +48,14 @@ As agents develop reusable capabilities, you can package them into skillsets -- 
 
 ### Deployment options
 
-SuperAgent runs in two modes:
+Gamut runs in two modes:
 
 - **Desktop app** -- Download for Mac or Windows and run locally. The desktop app bundles everything and manages containers through Docker Desktop, OrbStack, or Podman.
-- **Web app / server** -- Run SuperAgent as a Docker container or from source and access it through your browser. Supports multi-user auth mode with role-based access control for team deployments.
+- **Web app / server** -- Run Gamut as a Docker container or from source and access it through your browser. Supports multi-user auth mode with role-based access control for team deployments.
 
 ### Prerequisites
 
-To run SuperAgent, you need:
+To run Gamut, you need:
 
 1. **A container runtime** -- [Docker Desktop](https://docs.docker.com/desktop/), [OrbStack](https://orbstack.dev/), or [Podman](https://podman.io/).
 2. **An Anthropic API key** -- Get one from the [Anthropic Console](https://platform.claude.com/settings/keys).
@@ -68,11 +68,11 @@ To run SuperAgent, you need:
 
 ## Core Concepts
 
-SuperAgent is built around a small set of concepts that compose together. Understanding them will help you get the most out of the platform.
+Gamut is built around a small set of concepts that compose together. Understanding them will help you get the most out of the platform.
 
 ### Agents
 
-An agent is the central unit in SuperAgent. Each agent has a name, a description, and a set of **instructions** that define its behavior -- essentially a system prompt written in Markdown.
+An agent is the central unit in Gamut. Each agent has a name, a description, and a set of **instructions** that define its behavior -- essentially a system prompt written in Markdown.
 
 On disk, every agent is stored as a directory containing a `CLAUDE.md` file. This file holds YAML frontmatter (name, creation date, description) followed by the agent's instructions in the body. The agent learns and evolves over time by appending preferences and project notes to this file.
 
@@ -112,7 +112,7 @@ See [Sessions](https://www.gamut.so/docs/using-superagent/agents/sessions) for m
 
 ### Containers
 
-Every agent runs inside an isolated container. SuperAgent manages the full container lifecycle -- building the image, starting and stopping containers, health-checking, and resource cleanup.
+Every agent runs inside an isolated container. Gamut manages the full container lifecycle -- building the image, starting and stopping containers, health-checking, and resource cleanup.
 
 Supported container runtimes include:
 
@@ -123,7 +123,7 @@ Supported container runtimes include:
 - **Apple Containers** (macOS native)
 - **WSL2** (Windows)
 
-Inside the container, the agent runs a Node.js server built on the Claude Agent SDK. This server manages Claude Code sessions, tool execution, file I/O, and communication with the SuperAgent host. Each container is wired up with:
+Inside the container, the agent runs a Node.js server built on the Claude Agent SDK. This server manages Claude Code sessions, tool execution, file I/O, and communication with the Gamut host. Each container is wired up with:
 
 - The agent's workspace directory (mounted from the host)
 - Environment variables (API keys, secrets)
@@ -134,9 +134,9 @@ Containers are started on demand when you send a message and can be stopped manu
 
 ### Connected accounts
 
-Connected accounts let agents interact with external services like Gmail, Slack, GitHub, Google Calendar, Salesforce, and dozens more. SuperAgent brokers OAuth connections through [Composio](https://composio.dev), so you authenticate once and then grant access to specific agents.
+Connected accounts let agents interact with external services like Gmail, Slack, GitHub, Google Calendar, Salesforce, and dozens more. Gamut brokers OAuth connections through [Composio](https://composio.dev), so you authenticate once and then grant access to specific agents.
 
-The key security property: **agents never see your OAuth tokens**. When an agent needs to call an external API, the request is proxied through the SuperAgent host, which injects the real credentials outside the container. This means a compromised or misbehaving agent cannot leak your tokens.
+The key security property: **agents never see your OAuth tokens**. When an agent needs to call an external API, the request is proxied through the Gamut host, which injects the real credentials outside the container. This means a compromised or misbehaving agent cannot leak your tokens.
 
 Each connected account can be mapped to one or more agents. You control which API scopes are allowed, reviewed, or blocked using [scope policies](https://www.gamut.so/docs/using-superagent/integrations/scope-policies). Every proxied API call is logged in an audit trail.
 
@@ -144,7 +144,7 @@ For setup details, see [Connected Accounts](https://www.gamut.so/docs/using-supe
 
 ### Tools
 
-Tools are the actions an agent can take. SuperAgent provides a rich set of built-in tools, and you can extend agents with external tool servers.
+Tools are the actions an agent can take. Gamut provides a rich set of built-in tools, and you can extend agents with external tool servers.
 
 #### Built-in tools
 
@@ -202,4 +202,4 @@ Skillsets enable:
 - **Templates** -- Create new agents from a skillset template, complete with pre-configured instructions and onboarding flows.
 - **Version tracking** -- Skills track which version they were installed from and can be updated when the upstream skillset changes.
 
-SuperAgent supports skillsets hosted on GitHub (cloned via Git) and on public URLs. See [Skillsets](https://www.gamut.so/docs/using-superagent/skillsets/overview) for the full guide.
+Gamut supports skillsets hosted on GitHub (cloned via Git) and on public URLs. See [Skillsets](https://www.gamut.so/docs/using-superagent/skillsets/overview) for the full guide.

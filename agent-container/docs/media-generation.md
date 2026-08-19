@@ -1,7 +1,7 @@
 # Built-In Media Generation
 
-Read this guide before generating an image, video, or audio asset through the
-Gamut platform service.
+Read this guide before generating or editing an image, video, speech, music,
+3D asset, or talking-head clip through the Gamut platform service.
 
 ## Availability and Endpoint
 
@@ -18,40 +18,70 @@ Authorization: Bearer $ANTHROPIC_AUTH_TOKEN
 
 Never print either environment variable.
 
-## Discover Models
+## The Three Calls: List, Schema, Create
 
-List the currently allowed models before choosing one:
+Always run them in this order. The list is the allowlist; nothing outside it
+works, and there is no separate Gamut allowlist to consult.
+
+### 1. List
 
 ```bash
-curl -sS "$ANTHROPIC_BASE_URL/v1/replicate/models/_/_" \
+curl -sS "$ANTHROPIC_BASE_URL/v1/replicate/models?kind=image" \
   -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN"
 ```
 
-If listing is refused, the platform error includes the available models. Use
-only an exact returned model slug; do not guess slugs or substitute an
-unadvertised model.
+Always pass `kind`. Valid values are `image`, `video`, `audio`,
+`talking_head`, `3d`, and `document`. Each returned row carries the model slug,
+its kind, and what a run costs.
 
-Choose a model that matches the requested medium and transformation. Preserve
-the user's stated style, aspect ratio, duration, fidelity, and file-format
-requirements. Confirm with the user before generating video or music.
+Pick the row that matches the requested medium and transformation, and preserve
+the user's stated style, aspect ratio, duration, fidelity, and file format.
+Never invent a slug or substitute a model the list did not return — the table
+is the menu, and it changes without notice.
 
-## Create and Poll
+### 2. Schema
 
-Create a prediction with:
+```text
+GET /models/{owner}/{name}
+```
+
+Read the input fields before building a request. Only slugs from the list
+resolve here.
+
+### 3. Create
 
 ```text
 POST /models/{owner}/{name}/predictions
 ```
 
-Send the model-specific input in the JSON body. Add `Prefer: wait` when a short
-synchronous wait is appropriate. If the response is still processing, poll:
+Send `{"input": {...}}` shaped by the schema. Add `Prefer: wait` for images and
+speech, which finish quickly; omit it for video or anything else long-running,
+and poll instead:
 
 ```text
 GET /predictions/{id}
 ```
 
-Do not invent alternate paths when the platform rejects a request. Inspect the
-returned error and the allowed-model response instead.
+A `403` means the slug is not on the current list — go back to step 1 rather
+than retrying or guessing a variant. Do not invent alternate paths when the
+platform rejects a request.
+
+## Confirm Cost Before Expensive Runs
+
+Before video, music, 3D, talking-head, or voice cloning, tell the user what the
+run costs — the figure is in the model's list row — and get an explicit OK.
+Quote the cost from the row you actually intend to use; do not estimate it or
+carry over a figure from a different model.
+
+Images and ordinary speech do not need a cost confirmation unless the user
+asked to be consulted.
+
+## Supplying Source Media
+
+When a model's schema takes a media input, pass a reachable `http(s)` URL to
+the file itself — not a page that embeds it, and not a text description. A link
+to a viewer page fails or produces garbage, because the model fetches the URL
+directly.
 
 ## Save Outputs Immediately
 

@@ -27,7 +27,9 @@ new session and loses the conversational state that made the wait meaningful.
 
 - `scheduleType: "at"` for one-time work, with expressions such as `at tomorrow
   9am`, `at now + 2 hours`, or `at 2026-09-01 14:00`;
-- `scheduleType: "cron"` for recurring work, using standard five-field cron.
+- `scheduleType: "cron"` for recurring work, using standard cron — five fields
+  (minute hour day-of-month month day-of-week), or six with a leading seconds
+  field.
 
 Common cron expressions:
 

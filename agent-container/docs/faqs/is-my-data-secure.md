@@ -10,13 +10,15 @@ Honest answers to the security questions users ask most. Where a detail depends 
 
 ## Where does the agent actually run?
 
-Each agent runs in its own isolated container with its own filesystem and its own persistent workspace. Agents do not share files, secrets, or sessions with each other **unless you explicitly connect them**: cross-agent collaboration ([work-with-other-agents](../how-to/work-with-other-agents.md)) is opt-in — calls between agents require your approval (or a policy you've saved), and even connected agents exchange prompts and session transcripts, never each other's secrets. Mounting the same host folder into two agents likewise shares those files by your choice. The agent process runs as a non-root user inside the container. See [where-am-i-running](../platform/where-am-i-running.md) for the runtime options.
+Each agent runs in its own isolated container with its own filesystem and its own persistent workspace. Agents do not share files, secrets, or sessions with each other **unless you explicitly connect them**: cross-agent collaboration is opt-in — calls between agents require your approval (or a policy you've saved), and even connected agents exchange prompts and session transcripts, never each other's secrets. Mounting the same host folder into two agents likewise shares those files by your choice. The agent process runs as a non-root user inside the container.
+
+The container itself runs on whichever runtime the deployment uses — Docker, OrbStack, Podman, Lima, Apple Containers, or WSL2 on the desktop app, or the managed runtime in a cloud deployment. The isolation properties above hold in all of them.
 
 ## Can the agent see my passwords or OAuth tokens?
 
-For connected accounts (Gmail, GitHub, Slack, …): **no**. API calls go through a secure proxy. The agent holds only a synthetic token that is valid for proxy requests from that one agent; the proxy validates the request, checks the target host against a per-provider allowlist, enforces scope policies, and injects the real OAuth token on the server side. The real token never enters the agent's container. Details: [connect-external-accounts-oauth](../how-to/connect-external-accounts-oauth.md).
+For connected accounts (Gmail, GitHub, Slack, …): **no**. API calls go through a secure proxy. The agent holds only a synthetic token that is valid for proxy requests from that one agent; the proxy validates the request, checks the target host against a per-provider allowlist, enforces scope policies, and injects the real OAuth token on the server side. The real token never enters the agent's container.
 
-Secrets the user explicitly gives the agent (API keys, tokens added in Settings → Secrets or via a request in chat) are different: those exist so the agent can use them, and they are available inside that agent's container as environment variables. They are stored per-agent on disk (not additionally encrypted by Gamut — at-rest protection comes from your disk encryption), are not visible to other agents, and are included in **full agent exports** (the export dialog warns about this) though never in shareable templates. See [use-secrets-and-api-keys](../how-to/use-secrets-and-api-keys.md).
+Secrets the user explicitly gives the agent (API keys, tokens added in Settings → Secrets or via a request in chat) are different: those exist so the agent can use them, and they are available inside that agent's container as environment variables. They are stored per-agent on disk (not additionally encrypted by Gamut — at-rest protection comes from your disk encryption), are not visible to other agents, and are included in **full agent exports** (the export dialog warns about this) though never in shareable templates.
 
 ## What can the agent access?
 
@@ -30,12 +32,12 @@ It cannot read other agents' workspaces or secrets, and it cannot use accounts t
 ## What stops the agent from doing something destructive?
 
 - **Permission modes**: tool calls run behind a user-selected permission mode; calls not automatically allowed prompt the user for approval.
-- **Scope policies**: per-provider API scopes can be set to allow, require review, or block — so e.g. reading email can be allowed while sending requires approval. See [control-what-the-agent-can-access](../how-to/control-what-the-agent-can-access.md).
+- **Scope policies**: per-provider API scopes can be set to allow, require review, or block — so e.g. reading email can be allowed while sending requires approval. The equivalent per-tool control exists for remote MCP servers, and cross-agent policies control which agents may invoke which.
 - **Agent guidelines**: agents are instructed to confirm before hard-to-reverse or externally visible actions (sending messages, deleting data, spending money).
 
 ## Is there an audit trail?
 
-Every proxied API request is logged with the agent, account, target host, path, method, status, matched scopes, and the policy decision. Self-hosted deployments additionally have audit logging described in [self-hosting-setup-and-administration](../platform/self-hosting-setup-and-administration.md).
+Every proxied API request is logged with the agent, account, target host, path, method, status, matched scopes, and the policy decision. Self-hosted deployments additionally record an administrative audit trail of settings and access changes.
 
 ## What about data from webhooks and web pages?
 

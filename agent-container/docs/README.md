@@ -33,8 +33,11 @@ itself important.
 - `media-generation.md`
 - `chat-integrations.md`
 - `browser-use.md`
-- `building-dashboards.md`
 - `computer-use.md`
+
+Dashboard guidance is not here — it lives in the `dashboards` skill
+(`agent-container/skills/dashboards/`), which the agent already discovers
+through the skill mechanism. Do not add a second copy under this directory.
 
 ## Product FAQs
 

@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { buildSystemPromptVars, generateSystemPrompt } from './claude-code'
+import { SERVICES } from './tools/search-connected-account-services'
 
 const KEYS = ['COMPOSIO_PLATFORM_MODE', 'PLATFORM_AUTH_ACTIVE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM']
 let saved: Record<string, string | undefined>
@@ -43,8 +44,33 @@ describe('generateSystemPrompt rendering', () => {
     // its procedural API details now live in the on-demand guide.
     expect(out.includes('## Built-in media generation')).toBe(webhook)
     expect(out.includes('/opt/gamut/docs/media-generation.md')).toBe(webhook)
+    // Spending the user's money is an approval rule, so the cost confirmation
+    // and the no-invented-slugs rule stay in the prompt even though the API
+    // procedure moved out.
+    expect(out.includes('cost from that model')).toBe(webhook)
+    expect(out.includes('Never invent a model slug')).toBe(webhook)
     expect(out).not.toContain('v1/replicate')
     expect(out).not.toContain('ANTHROPIC_AUTH_TOKEN')
+  })
+
+  // The platform's model table replaced a scraped catalog: listing is filtered
+  // by `kind`, the list row carries the cost the confirmation must quote, and a
+  // 403 means re-list rather than retry.
+  it('teaches the list-then-schema-then-create Replicate contract in the guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'media-generation.md'), 'utf8')
+
+    expect(guide).toContain('/v1/replicate/models?kind=')
+    for (const kind of ['image', 'video', 'audio', 'talking_head', '3d', 'document']) {
+      expect(guide, `kind ${kind} must be documented`).toContain(`\`${kind}\``)
+    }
+    expect(guide).toContain('GET /models/{owner}/{name}')
+    expect(guide).toContain('POST /models/{owner}/{name}/predictions')
+    expect(guide).toContain('403')
+    expect(guide).toMatch(/`Prefer: wait`/)
+
+    // The scraped-catalog endpoint and its error-message fallback are gone.
+    expect(guide).not.toContain('models/_/_')
+    expect(guide).not.toContain('Available models')
   })
 
   it('references every image-owned capability guide and keeps its source file present', () => {
@@ -58,7 +84,6 @@ describe('generateSystemPrompt rendering', () => {
       'media-generation.md',
       'chat-integrations.md',
       'browser-use.md',
-      'building-dashboards.md',
       'computer-use.md',
     ]
 
@@ -68,6 +93,88 @@ describe('generateSystemPrompt rendering', () => {
       expect(existsSync(sourcePath), `${guide} must be copied into the image`).toBe(true)
       expect(readFileSync(sourcePath, 'utf8').trim().length).toBeGreaterThan(100)
     }
+  })
+
+  // A `/opt/gamut/docs/...` path the prompt names but the image does not ship
+  // sends the agent into a failed Read mid-task, so the reference set and the
+  // shipped set must match exactly in both directions.
+  it('never names a guide path the image does not ship, in any gate combination', () => {
+    const referenced = new Set<string>()
+    for (const composio of [false, true]) {
+      for (const webhook of [false, true]) {
+        for (const host of ['linux', 'darwin']) {
+          for (const subagents of ['allow', 'block'] as const) {
+            process.env.COMPOSIO_PLATFORM_MODE = String(composio)
+            process.env.PLATFORM_AUTH_ACTIVE = String(webhook)
+            process.env.HOST_PLATFORM = host
+            const out = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents })
+            for (const match of out.matchAll(/\/opt\/gamut\/docs\/([\w./-]+\.md)/g)) {
+              referenced.add(match[1])
+            }
+          }
+        }
+      }
+    }
+
+    expect(referenced.size).toBeGreaterThan(0)
+    for (const path of referenced) {
+      expect(existsSync(join(__dirname, '..', 'docs', path)), `${path} is referenced but not shipped`).toBe(true)
+    }
+    const shipped = readdirSync(join(__dirname, '..', 'docs'))
+      .filter(name => name.endsWith('.md') && name !== 'README.md')
+    expect([...referenced].sort()).toEqual(shipped.sort())
+  })
+
+  // Dashboard guidance lives in the `dashboards` skill, not a docs guide — a
+  // second copy under docs/ is what this PR removed.
+  it('routes dashboard work to the skill rather than a docs guide', () => {
+    for (const subagents of ['allow', 'block'] as const) {
+      const out = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents })
+      expect(out).toContain('`dashboards` skill')
+      expect(out).not.toContain('building-dashboards.md')
+    }
+    expect(existsSync(join(__dirname, '..', 'skills', 'dashboards', 'SKILL.md'))).toBe(true)
+  })
+
+  // Every relative link inside the shipped docs resolves to a shipped file.
+  // Links to a docs tree that only exists on the website leave the agent
+  // Read-ing a path that is not in the image.
+  it('keeps every relative link inside the shipped docs resolvable', () => {
+    const docsDir = join(__dirname, '..', 'docs')
+    const files = [
+      ...readdirSync(docsDir).filter(name => name.endsWith('.md')).map(name => join(docsDir, name)),
+      ...readdirSync(join(docsDir, 'faqs')).map(name => join(docsDir, 'faqs', name)),
+    ]
+
+    for (const file of files) {
+      for (const match of readFileSync(file, 'utf8').matchAll(/]\((?!https?:|#)([^)]+)\)/g)) {
+        const target = join(dirname(file), match[1])
+        expect(existsSync(target), `${basename(file)} links to missing ${match[1]}`).toBe(true)
+      }
+    }
+  })
+
+  // The prompt's toolkit list is what the agent picks a `request_connected_account`
+  // slug from without a discovery round-trip, so it has to stay in step with the
+  // catalog `search_connected_account_services` answers from.
+  it('keeps the prompt toolkit list in step with the searchable service catalog', () => {
+    const line = generateSystemPrompt()
+      .split('\n')
+      .find(candidate => candidate.startsWith('**Supported services include:**'))
+    expect(line, 'prompt no longer has a "Supported services include" line').toBeDefined()
+
+    const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
+    expect(new Set(promptSlugs).size, 'prompt lists a slug twice').toBe(promptSlugs.length)
+    expect(promptSlugs.sort()).toEqual(SERVICES.map(service => service.slug).sort())
+  })
+
+  // The FAQ used to carry its own copy of the toolkit list, which drifted
+  // silently against the two real sources.
+  it('does not let the integrations FAQ grow a second toolkit list', () => {
+    const faq = readFileSync(join(__dirname, '..', 'docs', 'faqs', 'what-integrations-are-supported.md'), 'utf8')
+    const catalogSlugs = SERVICES.map(service => service.slug)
+    const echoed = catalogSlugs.filter(slug => new RegExp(`\`${slug}\``).test(faq))
+    expect(echoed, 'FAQ should point at the prompt/search tool, not restate slugs').toEqual([])
   })
 
   it('routes product questions through the complete image-owned FAQ directory', () => {

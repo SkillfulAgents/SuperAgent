@@ -1,37 +1,28 @@
 ---
 title: What integrations are supported?
-description: Directory of supported connected-account services (OAuth), chat platforms, remote MCP servers, and other integration paths.
+description: The four ways an agent reaches outside services — connected accounts (OAuth), chat platforms, remote MCP servers, and secrets/webhooks/browser.
 ---
 
 There are four distinct ways an agent integrates with the outside world. Pick by what exists for the service in question — and note the agent's actual tool list decides what is enabled for a specific agent.
 
 ## Connected accounts (OAuth)
 
-Managed OAuth with proxied, policy-controlled API access ([how it works](../how-to/connect-external-accounts-oauth.md)). Supported toolkits include:
+Managed OAuth with proxied, policy-controlled API access: tokens stay outside the container, hosts are allowlisted per provider, scopes are policy-controlled, and every call is audited. For these services, connecting an account is always preferred over pasting raw API keys.
 
-- **Google Workspace**: `gmail`, `googlecalendar`, `googledrive`, `googlesheets`, `googledocs`, `googleslides`, `googlemeet`, `googletasks`, `youtube`
-- **Microsoft**: `outlook`, `microsoft_teams`
-- **Communication**: `slack`, `discord`, `zoom`
-- **Developer tools**: `github`, `gitlab`, `bitbucket`, `sentry`
-- **Project management**: `notion`, `linear`, `confluence`, `asana`, `monday`, `clickup`, `trello`
-- **CRM & support**: `hubspot`, `salesforce`, `zendesk`, `intercom`
-- **Storage & data**: `airtable`, `dropbox`, `box`
-- **Social**: `linkedin`, `instagram`
-- **Finance**: `stripe`, `quickbooks`, `xero`
-- **Marketing / design / scheduling**: `mailchimp`, `figma`, `calendly`, `typeform`
+Coverage spans Google Workspace, Microsoft, communication tools, developer tools, project management, CRM and support, storage and data, social, finance, and marketing/design/scheduling.
 
-For these services, connecting an account is always preferred over pasting raw API keys — tokens stay outside the container and access is scoped and audited.
+**As the agent:** do not recite a supported-service list from this file. The authoritative list of toolkit slugs is in your system prompt under "Requesting Connected Accounts (OAuth)", and `search_connected_account_services` returns the live catalog with descriptions. Use one of those to answer "do you support X?" or to pick a slug for `request_connected_account`.
 
 ## Chat integrations
 
-Talk to the agent from **Slack**, **Telegram**, or **iMessage**; the agent can also proactively message the user there (e.g. from a scheduled task). See [connect-slack-telegram-imessage](../how-to/connect-slack-telegram-imessage.md).
+Talk to the agent from **Slack**, **Telegram**, or **iMessage**. The agent can also send messages on those platforms on its own initiative — including from a scheduled task or a webhook-triggered session, with no chat conversation in progress.
 
 ## Remote MCP servers
 
-Any service exposing a remote MCP (Model Context Protocol) endpoint can be connected, adding its tools to the agent. This is the extension point for services not in the toolkit list above. See [use-remote-mcp-servers](../how-to/use-remote-mcp-servers.md).
+Any service exposing a remote MCP (Model Context Protocol) endpoint can be connected, adding its tools to the agent. This is the extension point for services with no managed OAuth toolkit.
 
 ## Everything else
 
-- **Secrets + direct APIs**: for services with an API key and no toolkit/MCP, store the key as a per-agent secret and call the API from code. See [use-secrets-and-api-keys](../how-to/use-secrets-and-api-keys.md).
-- **Webhooks in**: any service that can POST a webhook can trigger the agent, with signature verification. See [set-up-webhook-triggers](../how-to/set-up-webhook-triggers.md).
-- **The browser**: services with no API at all can still be automated through the agent's real browser. See [browse-the-web](../how-to/browse-the-web.md).
+- **Secrets + direct APIs**: for services with an API key and no toolkit/MCP, store the key as a per-agent secret and call the API from code.
+- **Webhooks in**: any service that can POST a webhook can trigger the agent, with signature verification.
+- **The browser**: services with no API at all can still be automated through the agent's real browser.
