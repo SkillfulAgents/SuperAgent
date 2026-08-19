@@ -43,7 +43,11 @@ export function AgentTemplateBrowseDialog({
 
   const handleInstalled = useCallback(
     async (agent: ApiAgentTemplateInstallResult) => {
-      track('agent_created', { source: 'skillset', num_skills_added_at_creation: 0 })
+      track('agent_created', {
+        source: 'skillset',
+        num_skills_added_at_creation: 0,
+        has_template_prompt: Boolean(agent.templatePrompt),
+      })
       await queryClient.refetchQueries({ queryKey: ['agents'] })
       await completeAgentTemplateHandoff({
         draftsStore,
