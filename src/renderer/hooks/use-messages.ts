@@ -3,7 +3,7 @@ import { captureRendererException } from '@renderer/lib/error-reporting'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
+import type { ApiMessage, ApiMessageOrBoundary, ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
@@ -293,6 +293,7 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
 }
 
 export function useSendMessage() {
+  const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (data: { sessionId: string; agentSlug: string; content: string; effort?: EffortLevel; speed?: SpeedLevel; model?: string }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions/${data.sessionId}/messages`, {
@@ -310,7 +311,26 @@ export function useSendMessage() {
       // optimistic pending copy by exact id match.
       return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean }>
     },
-    // No onSuccess - we'll handle the pending message via props
+    onSuccess: (result, variables) => {
+      // Keep every cached spelling of this session detail (canonical agent id
+      // or a pre-resolution display slug) aligned with the runtime options the
+      // server accepted. Without this, leaving and returning to the session
+      // remounts the composer from the old model and the next request can
+      // switch the live session back. Queued messages intentionally carry no
+      // runtime changes; trust the server's decision rather than the client's
+      // possibly stale activity snapshot.
+      if (result.queued) return
+      const patch = {
+        ...(variables.effort !== undefined ? { effort: variables.effort } : {}),
+        ...(variables.speed !== undefined ? { speed: variables.speed } : {}),
+        ...(variables.model !== undefined ? { model: variables.model } : {}),
+      }
+      if (Object.keys(patch).length === 0) return
+      queryClient.setQueriesData<ApiSession>(
+        { queryKey: ['session', variables.sessionId] },
+        (session) => (session ? { ...session, ...patch } : session),
+      )
+    },
   })
 }
 

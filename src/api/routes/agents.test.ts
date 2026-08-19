@@ -565,7 +565,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -3568,6 +3568,52 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const res = await postJson(app, URL, { content: 'hello', model: 'claude-haiku-4-5' })
     expect(res.status).toBe(201)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { model: 'claude-haiku-4-5' })
+    expect(updateSessionMetadata).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      model: 'claude-haiku-4-5',
+    })
+    expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('sess-1')
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+      type: 'session_updated',
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+    })
+  })
+
+  it('does not broadcast when the accepted selection matches the stored metadata', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    // Seeded composers re-send their whole selection on every fresh turn; a
+    // value the metadata already records must not fan out list/detail
+    // refetches to every open window.
+    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({ model: 'claude-haiku-4-5' } as never)
+
+    const res = await postJson(app, URL, { content: 'hello again', model: 'claude-haiku-4-5' })
+    expect(res.status).toBe(201)
+    expect(updateSessionMetadata).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      model: 'claude-haiku-4-5',
+    })
+    expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  it('broadcasts when any one option differs from the stored metadata', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({
+      model: 'claude-haiku-4-5',
+      effort: 'medium',
+    } as never)
+
+    const res = await postJson(app, URL, {
+      content: 'hello',
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+    })
+    expect(res.status).toBe(201)
+    expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('sess-1')
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+      type: 'session_updated',
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+    })
   })
 
   it('forwards both effort and model when both are present', async () => {
@@ -3629,6 +3675,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const body = await res.json()
     expect(body.queued).toBe(true)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {})
+    expect(updateSessionMetadata).not.toHaveBeenCalled()
+    expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
   })
 })
 
@@ -6526,6 +6574,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     vi.mocked(readJsonFileStrict).mockResolvedValue({
       defaultModel: 'haiku',
       defaultEffort: 'high',
+      defaultSpeed: 'fast',
     } as never)
 
     const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
@@ -6535,8 +6584,15 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('haiku')
     expect(args.effort).toBe('high')
+    expect(args.speed).toBe('fast')
     expect(args.prewarmDefaults.model).toBe('haiku')
     expect(args.prewarmDefaults.effort).toBe('high')
+    expect(registerSession).toHaveBeenCalledWith('test-agent', 'session-123', 'New Session', {
+      model: 'haiku',
+      effort: 'high',
+      speed: 'fast',
+    })
+    expect(await res.json()).toMatchObject({ model: 'haiku', effort: 'high', speed: 'fast' })
   })
 
   it('reserves ownership before publishing global lifecycle state', async () => {
@@ -6568,6 +6624,12 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     expect(args.effort).toBe('low')
     expect(args.prewarmDefaults.model).toBe('haiku')
     expect(args.prewarmDefaults.effort).toBe('high')
+    expect(registerSession).toHaveBeenCalledWith(
+      'test-agent',
+      'session-123',
+      'New Session',
+      expect.objectContaining({ model: 'claude-opus-4', effort: 'low' }),
+    )
   })
 
   it('uses the global default model and effort when the agent has no preferences', async () => {
@@ -6580,6 +6642,12 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     expect(args.effort).toBe('medium')
     expect(args.prewarmDefaults.model).toBe('global-agent-model')
     expect(args.prewarmDefaults.effort).toBe('medium')
+    expect(registerSession).toHaveBeenCalledWith(
+      'test-agent',
+      'session-123',
+      'New Session',
+      expect.objectContaining({ model: 'global-agent-model', effort: 'medium' }),
+    )
   })
 })
 
