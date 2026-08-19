@@ -195,10 +195,16 @@ export function templateCategory(template: ApiDiscoverableAgent): string | undef
 
 
 /**
- * Templates authored by us rather than contributed — the 8 hand-built agents
- * that predate the bulk Bot Directory import, and the only ones shipping real
- * `.claude/skills/` directories. It's a first-party signal from the index, not
- * editorial curation: the index has no `featured` flag.
+ * TODO: switch this to a real `featured` flag once the skillset READMEs carry
+ * one. Authorship is a stand-in, and it gets the two obvious cases wrong: a
+ * contributor shipping something excellent can never be featured, and anything
+ * mediocre we publish always is. The flag belongs in the README frontmatter
+ * beside `category` and `icon`, which means adding it to SkillsetIndexAgent
+ * and its Zod schema; this predicate then reads `template.featured === true`.
+ *
+ * Until then: templates authored by us rather than contributed — the 8
+ * hand-built agents that predate the bulk Bot Directory import, and the only
+ * ones shipping real `.claude/skills/` directories.
  */
 export const FEATURED_SECTION_LABEL = 'Featured'
 
