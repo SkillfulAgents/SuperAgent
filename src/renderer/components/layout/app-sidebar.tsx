@@ -98,7 +98,9 @@ import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
-import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
+
+/** Set once Explore has been opened, which retires its "New" badge. */
+const EXPLORE_SEEN_KEY = 'explore.seen'
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
 // agents-list group; pull out as a constant so the call site stays readable.
@@ -743,7 +745,13 @@ export function AppSidebar() {
           ? null
           : discoverableAgents.length > 0
   const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
-  const [marketplaceOpen, setMarketplaceOpen] = useState(false)
+  const exploreVisited = pathname === '/explore' || pathname.startsWith('/explore/')
+  // Sticky across reloads, and read once at mount so the badge doesn't vanish
+  // out from under the pointer mid-click.
+  const [seenExplore] = useState(() => localStorage.getItem(EXPLORE_SEEN_KEY) === '1')
+  useEffect(() => {
+    if (exploreVisited) localStorage.setItem(EXPLORE_SEEN_KEY, '1')
+  }, [exploreVisited])
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
@@ -948,11 +956,22 @@ export function AppSidebar() {
                 {hasMarketplace && (
                   <SidebarMenuItem>
                     <SidebarMenuButton
-                      onClick={() => setMarketplaceOpen(true)}
+                      asChild
+                      // Prefix match: the details page (/explore/...) is still Explore.
+                      isActive={exploreVisited}
                       data-testid="marketplace-button"
                     >
-                      <Compass className="h-4 w-4" />
-                      <span>Explore</span>
+                      <AppLink to="/explore">
+                        <Compass className="h-4 w-4" />
+                        <span>Discover New Agents</span>
+                        {/* Retires itself the first time the page is opened —
+                            a badge that says "New" forever says nothing. */}
+                        {!seenExplore && (
+                          <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
+                            New
+                          </span>
+                        )}
+                      </AppLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 )}
@@ -1040,8 +1059,6 @@ export function AppSidebar() {
 
       <SidebarRail />
       </Sidebar>
-
-      <AgentTemplateBrowseDialog open={marketplaceOpen} onOpenChange={setMarketplaceOpen} />
     </>
   )
 }

@@ -9,13 +9,8 @@ import {
 import { AgentTemplateBrowseContent } from './agent-template-browse-content'
 import { TemplateInstallDialog } from './template-install-dialog'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
-import { useNavigate } from '@tanstack/react-router'
-import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
-import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import { useQueryClient } from '@tanstack/react-query'
+import { useCompleteTemplateInstall } from '@renderer/hooks/use-complete-template-install'
 import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
-import { useDraftsStore } from '@renderer/context/drafts-context'
-import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
 
 interface AgentTemplateBrowseDialogProps {
   open: boolean
@@ -30,11 +25,7 @@ export function AgentTemplateBrowseDialog({
   onInstalled,
 }: AgentTemplateBrowseDialogProps) {
   const { data: discoverableAgents } = useDiscoverableAgents()
-  const navigate = useNavigate()
-  const { track } = useAnalyticsTracking()
-  const startOnboardingSession = useStartOnboardingSession()
-  const queryClient = useQueryClient()
-  const draftsStore = useDraftsStore()
+  const completeInstall = useCompleteTemplateInstall()
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
 
   useEffect(() => {
@@ -43,24 +34,11 @@ export function AgentTemplateBrowseDialog({
 
   const handleInstalled = useCallback(
     async (agent: ApiAgentTemplateInstallResult) => {
-      track('agent_created', {
-        source: 'skillset',
-        num_skills_added_at_creation: 0,
-        has_template_prompt: Boolean(agent.templatePrompt),
-      })
-      await queryClient.refetchQueries({ queryKey: ['agents'] })
-      await completeAgentTemplateHandoff({
-        draftsStore,
-        agentSlug: agent.slug,
-        hasOnboarding: agent.hasOnboarding,
-        templatePrompt: agent.templatePrompt,
-        openAgent: () => { void navigate({ to: '/agents/$slug', params: { slug: agent.slug } }) },
-        startOnboardingSession,
-      })
+      await completeInstall(agent)
       onOpenChange(false)
       await onInstalled?.()
     },
-    [track, queryClient, draftsStore, navigate, startOnboardingSession, onOpenChange, onInstalled],
+    [completeInstall, onOpenChange, onInstalled],
   )
 
   const hasTemplates = discoverableAgents && discoverableAgents.length > 0
