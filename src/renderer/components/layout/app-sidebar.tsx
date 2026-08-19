@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, MoonStar } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, MoreVertical, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
@@ -453,6 +453,36 @@ export const AgentMenuItem = React.forwardRef<
 
   const { ref: hintRef, hint } = useCmdHintTarget()
 
+  // Right-click on the row was the only way to reach the agent menu, which
+  // nobody discovers. A 3-dot button now takes over the status slot on hover
+  // and opens that same menu — one menu surface, not two: the button
+  // synthesizes the `contextmenu` event the row's trigger already listens for
+  // (same trick as the touch long-press in ui/context-menu.tsx).
+  const [menuOpen, setMenuOpen] = useState(false)
+  const rowRef = React.useRef<HTMLAnchorElement | null>(null)
+  const setRowRef = useCallback(
+    (element: HTMLAnchorElement | null) => {
+      rowRef.current = element
+      hintRef(element)
+    },
+    [hintRef]
+  )
+  const handleMenuButtonClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const row = rowRef.current
+    if (!row) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    row.dispatchEvent(
+      new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: rect.right,
+        clientY: rect.bottom,
+      })
+    )
+  }
+
   return (
     <Collapsible asChild open={isOpen} onOpenChange={setIsOpen}>
       <SidebarMenuItem ref={ref} style={style} {...rest} onMouseEnter={handleMouseEnter}>
@@ -461,15 +491,23 @@ export const AgentMenuItem = React.forwardRef<
           chevron tracks the row height, not the (potentially expanded) menu
           item that also contains CollapsibleContent below.
         */}
-        <div className="relative">
-          <AgentContextMenu agent={agent}>
+        <div className="relative group/agent-row">
+          <AgentContextMenu agent={agent} onOpenChange={setMenuOpen}>
             <SidebarMenuButton
               asChild
               isActive={isSelected}
-              className="justify-between pl-7"
+              className={cn(
+                'justify-between pl-7',
+                // The row's own `hover:` can't hold the highlight: the 3-dot
+                // button and the chevron are siblings painted over it, so
+                // pointing at either makes the row itself un-hovered and the
+                // background drops out. Drive it from the wrapper instead —
+                // anywhere in the row, including its controls, keeps the wash.
+                'group-hover/agent-row:bg-sidebar-accent group-hover/agent-row:text-sidebar-accent-foreground'
+              )}
               data-testid={`agent-item-${agent.slug}`}
             >
-              <AppLink ref={hintRef} to="/agents/$slug" params={{ slug: agent.displaySlug }}>
+              <AppLink ref={setRowRef} to="/agents/$slug" params={{ slug: agent.displaySlug }}>
                 <span className="flex items-center gap-1.5 min-w-0">
                   <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
                   {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
@@ -477,11 +515,55 @@ export const AgentMenuItem = React.forwardRef<
                 {hint !== null ? (
                   <CmdHintBadge hint={hint} />
                 ) : (
-                  <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+                  // Yields the slot to the 3-dot button on hover (and for as
+                  // long as the menu it opened stays open).
+                  <span
+                    className={cn(
+                      'flex items-center transition-opacity group-hover/agent-row:opacity-0',
+                      menuOpen && 'opacity-0'
+                    )}
+                  >
+                    <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+                  </span>
                 )}
               </AppLink>
             </SidebarMenuButton>
           </AgentContextMenu>
+          {/*
+            Sibling of the row (not a child) for the same reason as the chevron
+            below: the row is a single <a>, and nesting a button inside it is
+            invalid. Sits over the indicator slot the row just faded out. Hidden
+            while the cmd-hint overlay owns that slot.
+          */}
+          {hint === null && (
+            <button
+              type="button"
+              onClick={handleMenuButtonClick}
+              aria-label={`Options for ${agent.name}`}
+              aria-haspopup="menu"
+              title="Agent options"
+              data-testid={`agent-menu-button-${agent.slug}`}
+              className={cn(
+                // right-1.5 + w-5 centers the icon exactly where the w-4
+                // indicator slot sits, so the swap doesn't shift the row.
+                'absolute right-1.5 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-md',
+                'text-muted-foreground/60 opacity-0 transition-[opacity,background-color,color]',
+                // One step darker than the row's #f4f4f5 wash it sits on
+                // (composites to ~#e2e2e4). Translucent rather than a fixed
+                // token so dark mode gets the same one-step contrast — there it
+                // reads as a lighter chip on the #303030 row, not a darker one.
+                'hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground',
+                // Scoped to the row, not the menu item: an expanded agent's
+                // session sub-rows live in the same <li>, and hovering one of
+                // them must not swap the parent row's indicator.
+                'group-hover/agent-row:opacity-100 focus-visible:opacity-100',
+                'focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none',
+                menuOpen && 'opacity-100 text-sidebar-foreground'
+              )}
+            >
+              <MoreVertical className="h-3.5 w-3.5" />
+            </button>
+          )}
           {/*
             Sibling chevron button overlays its slot in the row so the row stays a
             single <button> (no nested interactive controls). Only rendered when
@@ -494,11 +576,21 @@ export const AgentMenuItem = React.forwardRef<
               onClick={handleChevronClick}
               aria-label={isOpen ? 'Collapse' : 'Expand'}
               aria-expanded={isOpen}
-              className="absolute left-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
+              className={cn(
+                // Same chip as the 3-dot button at the other end of the row.
+                'absolute left-1.5 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-md',
+                'text-muted-foreground/60 transition-[background-color,color]',
+                // Brightening with the row is pre-existing behaviour; scoped to
+                // the row rather than the menu item so an expanded agent's
+                // session sub-rows no longer brighten their parent's chevron.
+                'group-hover/agent-row:text-sidebar-foreground',
+                'hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground',
+                'focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none'
+              )}
             >
               <ChevronRight
                 className={cn(
-                  'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
+                  'h-3.5 w-3.5 transition-transform',
                   isOpen && 'rotate-90'
                 )}
               />
