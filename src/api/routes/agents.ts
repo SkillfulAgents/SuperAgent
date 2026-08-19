@@ -4740,26 +4740,27 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
  * display name (slugs are opaque minted ids), encoded per the same quoted +
  * RFC 5987 `filename*` convention as workspace-file downloads.
  */
-function packageDownloadResponse(zipBuffer: Buffer, filename: string): Response {
+function packageDownloadResponse(body: Readable | Buffer, filename: string): Response {
   const encoded = encodeURIComponent(filename)
-  return new Response(new Uint8Array(zipBuffer), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
-      'Content-Length': zipBuffer.byteLength.toString(),
-    },
-  })
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
+  }
+  if (Buffer.isBuffer(body)) {
+    headers['Content-Length'] = body.byteLength.toString()
+  }
+  const nodeStream = Buffer.isBuffer(body) ? Readable.from(body) : body
+  return new Response(Readable.toWeb(nodeStream) as ReadableStream, { status: 200, headers })
 }
 
 // POST /api/agents/:id/export-template - Export agent as ZIP download
 agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentTemplate(slug)])
+    const [agent, zipStream] = await Promise.all([getAgent(slug), exportAgentTemplate(slug, c.req.raw.signal)])
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
-    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
+    return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export template'
     console.error('Failed to export template:', error)
@@ -4771,10 +4772,10 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
 agents.post('/:id/export-full', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentFull(slug)])
+    const [agent, zipStream] = await Promise.all([getAgent(slug), exportAgentFull(slug, c.req.raw.signal)])
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
-    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
+    return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export agent'
     console.error('Failed to export full agent:', error)

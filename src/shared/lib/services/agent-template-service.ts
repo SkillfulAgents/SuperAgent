@@ -8,6 +8,7 @@
 import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
+import { Readable } from 'stream'
 import archiver from 'archiver'
 import {
   openZipFromBuffer,
@@ -227,15 +228,15 @@ async function walkTemplateFiles(workspaceDir: string): Promise<string[]> {
   return files
 }
 
-/**
- * Walk the agent workspace for a full export, returning all file paths.
- * Uses explicit walking instead of archive.glob() to avoid hangs on Windows
- * caused by broken symlinks and permission issues with readdir-glob.
- */
-async function walkFullExportFiles(workspaceDir: string): Promise<string[]> {
-  const files: string[] = []
-
+// Visitor walk (not glob — glob hangs on Windows broken symlinks). No path list in RAM.
+async function walkFullExportFiles(
+  workspaceDir: string,
+  onFile: (relativePath: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
   async function walk(dir: string, relativeBase: string): Promise<void> {
+    if (signal?.aborted) return
+
     let entries: fs.Dirent[]
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true })
@@ -244,6 +245,7 @@ async function walkFullExportFiles(workspaceDir: string): Promise<string[]> {
     }
 
     for (const entry of entries) {
+      if (signal?.aborted) return
       if (FULL_EXPORT_EXCLUDE.has(entry.name)) continue
 
       const relativePath = relativeBase ? path.join(relativeBase, entry.name) : entry.name
@@ -254,23 +256,52 @@ async function walkFullExportFiles(workspaceDir: string): Promise<string[]> {
       if (entry.isDirectory()) {
         await walk(path.join(dir, entry.name), relativePath)
       } else if (entry.isFile()) {
-        files.push(relativePath)
+        onFile(relativePath)
       }
     }
   }
 
   await walk(workspaceDir, '')
-  return files
 }
 
 // ============================================================================
 // ZIP Export
 // ============================================================================
 
-/**
- * Export an agent's workspace as a ZIP template buffer.
- */
-export async function exportAgentTemplate(agentSlug: string): Promise<Buffer> {
+// Queue files into an archiver and return it immediately so the HTTP response
+// can start flushing. Level 1: level 9 pegged 0.5 vCPU hosts on large exports.
+function createWorkspaceZipStream(
+  addFiles: (archive: ReturnType<typeof archiver>) => Promise<void>,
+  signal?: AbortSignal,
+): Readable {
+  const archive = archiver('zip', { zlib: { level: 1 } })
+  const onAbort = () => {
+    if (!archive.destroyed) archive.destroy()
+  }
+  signal?.addEventListener('abort', onAbort, { once: true })
+
+  void (async () => {
+    try {
+      if (signal?.aborted) {
+        onAbort()
+        return
+      }
+      await addFiles(archive)
+      if (signal?.aborted || archive.destroyed) return
+      await archive.finalize()
+    } catch (err) {
+      if (!archive.destroyed) {
+        archive.destroy(err instanceof Error ? err : new Error(String(err)))
+      }
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+    }
+  })()
+
+  return archive
+}
+
+export async function exportAgentTemplate(agentSlug: string, signal?: AbortSignal): Promise<Readable> {
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
 
   if (!(await directoryExists(workspaceDir))) {
@@ -284,52 +315,26 @@ export async function exportAgentTemplate(agentSlug: string): Promise<Buffer> {
   }
 
   const templateFiles = await walkTemplateFiles(workspaceDir)
-
-  return new Promise((resolve, reject) => {
-    const archive = archiver('zip', { zlib: { level: 9 } })
-    const chunks: Buffer[] = []
-
-    archive.on('data', (chunk: Buffer) => chunks.push(chunk))
-    archive.on('end', () => resolve(Buffer.concat(chunks)))
-    archive.on('error', reject)
-
+  return createWorkspaceZipStream(async (archive) => {
     for (const relativePath of templateFiles) {
-      const fullPath = path.join(workspaceDir, relativePath)
-      archive.file(fullPath, { name: relativePath })
+      if (signal?.aborted) return
+      archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
     }
-
-    archive.finalize()
-  })
+  }, signal)
 }
 
-/**
- * Export a full agent workspace as a ZIP buffer (includes .env, sessions, etc).
- * Used for migrating agents between machines.
- */
-export async function exportAgentFull(agentSlug: string): Promise<Buffer> {
+export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): Promise<Readable> {
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
 
   if (!(await directoryExists(workspaceDir))) {
     throw new Error('Agent workspace not found')
   }
 
-  const fullFiles = await walkFullExportFiles(workspaceDir)
-
-  return new Promise((resolve, reject) => {
-    const archive = archiver('zip', { zlib: { level: 9 } })
-    const chunks: Buffer[] = []
-
-    archive.on('data', (chunk: Buffer) => chunks.push(chunk))
-    archive.on('end', () => resolve(Buffer.concat(chunks)))
-    archive.on('error', reject)
-
-    for (const relativePath of fullFiles) {
-      const fullPath = path.join(workspaceDir, relativePath)
-      archive.file(fullPath, { name: relativePath })
-    }
-
-    archive.finalize()
-  })
+  return createWorkspaceZipStream(async (archive) => {
+    await walkFullExportFiles(workspaceDir, (relativePath) => {
+      archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
+    }, signal)
+  }, signal)
 }
 
 // ============================================================================

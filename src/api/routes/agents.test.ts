@@ -555,10 +555,13 @@ vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStream
 import agents from './agents'
 import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
+  exportAgentFull,
+  exportAgentTemplate,
   importAgentFromTemplate,
   hasOnboardingSkill,
   getAgentTemplatePrompt,
 } from '@shared/lib/services/agent-template-service'
+import { Readable } from 'stream'
 import {
   deleteSkill,
   exportSkill,
@@ -6028,6 +6031,70 @@ describe('POST /api/agents/:id/keep-alive', () => {
 // ============================================================================
 // Skill ZIP Export / Import Tests
 // ============================================================================
+
+describe('POST /api/agents/:id/export-full', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    app = createApp()
+  })
+
+  it('streams the zip without Content-Length', async () => {
+    const fakeZip = Buffer.from('PK\x03\x04full-export')
+    vi.mocked(exportAgentFull).mockResolvedValue(Readable.from(fakeZip))
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('application/octet-stream')
+    expect(res.headers.get('Content-Disposition')).toContain('Nutrition%20Agent-full.agent')
+    expect(res.headers.get('Content-Length')).toBeNull()
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(fakeZip)
+    expect(exportAgentFull).toHaveBeenCalledWith('pvb86kldy6', expect.any(AbortSignal))
+  })
+
+  it('returns 500 when export throws before the stream starts', async () => {
+    vi.mocked(exportAgentFull).mockRejectedValue(new Error('Agent workspace not found'))
+
+    const res = await app.request('http://localhost/api/agents/missing/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Agent workspace not found' })
+  })
+})
+
+describe('POST /api/agents/:id/export-template', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    app = createApp()
+  })
+
+  it('streams the template zip', async () => {
+    const fakeZip = Buffer.from('PK\x03\x04template')
+    vi.mocked(exportAgentTemplate).mockResolvedValue(Readable.from(fakeZip))
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Disposition')).toContain('Nutrition%20Agent-template.agent')
+    expect(res.headers.get('Content-Length')).toBeNull()
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(fakeZip)
+    expect(exportAgentTemplate).toHaveBeenCalledWith('pvb86kldy6', expect.any(AbortSignal))
+  })
+})
 
 describe('POST /api/agents/:id/skills/:dir/export', () => {
   let app: ReturnType<typeof createApp>

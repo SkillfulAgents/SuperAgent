@@ -55,8 +55,8 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 import {
   validateAgentTemplate,
   validateTemplateEntries,
-  exportAgentTemplate,
-  exportAgentFull,
+  exportAgentTemplate as exportAgentTemplateStream,
+  exportAgentFull as exportAgentFullStream,
   importAgentFromTemplate,
   installAgentFromSkillset,
   computeAgentTemplateHash,
@@ -73,6 +73,22 @@ import { getSkillsetIndex } from '@shared/lib/services/skillset-service'
 // ============================================================================
 // Shared Constants & Helpers
 // ============================================================================
+
+async function readableToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+  return Buffer.concat(chunks)
+}
+
+async function exportAgentTemplate(slug: string): Promise<Buffer> {
+  return readableToBuffer(await exportAgentTemplateStream(slug))
+}
+
+async function exportAgentFull(slug: string): Promise<Buffer> {
+  return readableToBuffer(await exportAgentFullStream(slug))
+}
 
 const MINIMAL_CLAUDE_MD = `---
 name: Test Agent
@@ -1929,6 +1945,20 @@ describe('exportAgentFull', () => {
     await expect(exportAgentFull('nonexistent-agent')).rejects.toThrow(
       'Agent workspace not found'
     )
+  })
+
+  it('returns a readable zip stream', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+
+    const stream = await exportAgentFullStream('full-agent')
+    expect(typeof stream.pipe).toBe('function')
+    const zipBuffer = await readableToBuffer(stream)
+    const reader = await openZipFromBuffer(zipBuffer)
+    const entryNames = reader.entries.map((e) => e.fileName)
+    reader.close()
+    expect(entryNames).toContain('CLAUDE.md')
   })
 
   it('includes .env in the export', async () => {
