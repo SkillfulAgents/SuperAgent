@@ -19,8 +19,13 @@ import { tabManager } from '../tab-manager'
 import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
+// Conditional on purpose: it has to agree with the prompt, which tells a parent
+// with a web-browser subagent to delegate rather than read. An unconditional
+// "required" here would either undo that saving or train the model to ignore
+// these hints — including in the no-subagent case where the read is the only
+// source of browsing guidance.
 export const BROWSER_USE_GUIDANCE_HINT =
-  'Required guidance: read `/opt/gamut/docs/browser-use.md` before continuing browser interaction (unless you already read it in this conversation).'
+  'Guidance: if you will drive the browser yourself rather than delegate to the web-browser agent, read `/opt/gamut/docs/browser-use.md` before interacting (unless you already read it in this conversation).'
 
 function errorResult(message: string) {
   return {

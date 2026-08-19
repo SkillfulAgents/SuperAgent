@@ -10,8 +10,10 @@ import { z } from 'zod'
 import { resizeBase64Screenshot } from '../image-utils'
 import { inputManager } from '../input-manager'
 
+// Conditional to match the prompt, which tells a parent with a computer-use
+// subagent to delegate rather than read. See BROWSER_USE_GUIDANCE_HINT.
 export const COMPUTER_USE_GUIDANCE_HINT =
-  'Required guidance: read `/opt/gamut/docs/computer-use.md` before continuing native app interaction (unless you already read it in this conversation).'
+  'Guidance: if you will drive the app yourself rather than delegate to the computer-use agent, read `/opt/gamut/docs/computer-use.md` before interacting (unless you already read it in this conversation).'
 
 const COMPUTER_USE_GUIDANCE_METHODS = new Set(['apps', 'windows', 'launch', 'grab'])
 

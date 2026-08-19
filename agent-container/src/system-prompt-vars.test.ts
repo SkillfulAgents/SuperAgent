@@ -3,6 +3,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { buildSystemPromptVars, generateSystemPrompt } from './claude-code'
 import { SERVICES } from './tools/search-connected-account-services'
+import { BROWSER_USE_GUIDANCE_HINT } from './tools/browser'
+import { COMPUTER_USE_GUIDANCE_HINT } from './tools/computer-use'
 
 const KEYS = ['COMPOSIO_PLATFORM_MODE', 'PLATFORM_AUTH_ACTIVE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM']
 let saved: Record<string, string | undefined>
@@ -123,6 +125,28 @@ describe('generateSystemPrompt rendering', () => {
     const shipped = readdirSync(join(__dirname, '..', 'docs'))
       .filter(name => name.endsWith('.md') && name !== 'README.md')
     expect([...referenced].sort()).toEqual(shipped.sort())
+  })
+
+  // The tool-result hints and the prompt must agree. When a specialist subagent
+  // exists the prompt says to delegate instead of reading; an unconditional
+  // "read this now" hint on the same call either undoes that or teaches the
+  // model to ignore these hints — including where the read is the only source.
+  it('keeps the browser and computer-use hints conditional, matching the delegate-first prompt', () => {
+    process.env.HOST_PLATFORM = 'darwin'
+    const delegating = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents: 'allow' })
+    expect(delegating).toContain('only when you drive the browser yourself')
+    expect(delegating).toContain('only when you drive the app yourself')
+
+    for (const hint of [BROWSER_USE_GUIDANCE_HINT, COMPUTER_USE_GUIDANCE_HINT]) {
+      expect(hint).toContain('rather than delegate')
+      expect(hint).not.toContain('Required guidance')
+    }
+
+    // Without a specialist there is nothing to delegate to, so the prompt must
+    // ask for the read outright.
+    const solo = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents: 'block' })
+    expect(solo).toContain('Read `/opt/gamut/docs/browser-use.md` before browser work')
+    expect(solo).toContain('Read `/opt/gamut/docs/computer-use.md` before app interaction')
   })
 
   // Dashboard guidance lives in the `dashboards` skill, not a docs guide — a
