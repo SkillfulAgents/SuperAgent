@@ -414,7 +414,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                   <div className="relative h-60 overflow-hidden rounded-lg bg-gradient-to-b from-muted/70 to-transparent" aria-hidden="true">
                     {/* Dashed arrows: pill → cloud, cloud → each teammate.
                         Painted first so the circles sit on top. */}
-                    <svg className="absolute inset-0 h-full w-full text-[#0099FF]" viewBox="0 0 416 240" preserveAspectRatio="none">
+                    <svg className="absolute inset-0 h-full w-full text-foreground" viewBox="0 0 416 240" preserveAspectRatio="none">
                       <defs>
                         {/* Open chevron head, lucide-arrow style */}
                         <marker
