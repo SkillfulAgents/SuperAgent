@@ -103,7 +103,7 @@ export function AgentSettingsPopover({ agent, onRename }: AgentSettingsPopoverPr
         </PopoverTrigger>
         <PopoverContent
           align="end"
-          className="w-96 p-1.5"
+          className="w-96 p-1"
           onCloseAutoFocus={(e) => {
             if (skipRestoreFocusRef.current) {
               e.preventDefault()
@@ -161,7 +161,7 @@ export function AgentSettingsPopover({ agent, onRename }: AgentSettingsPopoverPr
             />
           </div>
 
-          <div className="my-1 border-t" />
+          <div className="-mx-1 my-1 border-t" />
 
           <button
             type="button"
