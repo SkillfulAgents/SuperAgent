@@ -1631,7 +1631,8 @@ const TAIL_WINDOW_MAX_BYTES = 4 * 1024 * 1024
  */
 async function readSessionEntriesFromTail(
   jsonlPath: string,
-  windowBytes: number
+  windowBytes: number,
+  endOffset?: number,
 ): Promise<{
   entries: (JsonlMessageEntry | JsonlSystemEntry)[]
   coveredWholeFile: boolean
@@ -1645,8 +1646,14 @@ async function readSessionEntriesFromTail(
   }
   try {
     const { size } = await fileHandle.stat()
-    const offset = Math.max(0, size - windowBytes)
-    const length = size - offset
+    // Callers may anchor a read to a transcript byte offset captured at turn
+    // completion. Clamp it to the current file size so truncation/replacement
+    // degrades to the surviving prefix without crossing into a later turn.
+    const effectiveEnd = endOffset == null
+      ? size
+      : Math.min(size, Math.max(0, Math.floor(endOffset)))
+    const offset = Math.max(0, effectiveEnd - windowBytes)
+    const length = effectiveEnd - offset
     const buffer = Buffer.alloc(length)
     let bytesReadTotal = 0
     while (bytesReadTotal < length) {
@@ -1689,23 +1696,33 @@ async function readSessionEntriesFromTail(
  * merge or reorder lines, and compact boundaries are ordinary standalone
  * lines), so the newest matching entry within a complete-line tail window is
  * exactly the entry a full parse would select. A window with no match is only
- * trusted when it covered the whole file; otherwise the window escalates and
- * finally falls back to one full parse, so the result always equals the
- * full-parse result — it is just cheaper in the common case.
+ * trusted when it covered the whole file; otherwise the window escalates.
+ * Unanchored reads finally fall back to the existing streaming full parse so
+ * they remain exact. Anchored reads deliberately stop at the tail budget:
+ * materializing an arbitrarily large captured prefix would defeat the bounded
+ * reader, and their caller supports omitting request context.
+ *
+ * `endOffset` constrains the search to a byte position captured from this same
+ * transcript. It is the ordering primitive for completion-notification context:
+ * unlike timestamps, file offsets do not compare host and container clocks.
  */
 export async function findLastSessionEntry(
   agentSlug: string,
   sessionId: string,
-  predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean
+  predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean,
+  options: { endOffset?: number | null } = {},
 ): Promise<JsonlMessageEntry | JsonlSystemEntry | null> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const endOffset = options.endOffset == null || !Number.isFinite(options.endOffset)
+    ? undefined
+    : Math.max(0, Math.floor(options.endOffset))
 
   for (
     let windowBytes = TAIL_WINDOW_INITIAL_BYTES;
     windowBytes <= TAIL_WINDOW_MAX_BYTES;
     windowBytes *= TAIL_WINDOW_GROWTH_FACTOR
   ) {
-    const tail = await readSessionEntriesFromTail(jsonlPath, windowBytes)
+    const tail = await readSessionEntriesFromTail(jsonlPath, windowBytes, endOffset)
     if (tail === null) return null // no transcript file
     for (let i = tail.entries.length - 1; i >= 0; i--) {
       if (predicate(tail.entries[i])) return tail.entries[i]
@@ -1713,8 +1730,15 @@ export async function findLastSessionEntry(
     if (tail.coveredWholeFile) return null
   }
 
-  // The match (if any) starts earlier than the capped window: parse the whole
-  // file once so behavior is never worse than the pre-tail-read path.
+  // An anchored lookup must never turn its captured byte offset into an
+  // unbounded Buffer + UTF-16 string. Missing context is an explicit supported
+  // outcome for completion summaries, so stop after the 4 MB tail budget.
+  if (endOffset !== undefined) {
+    return null
+  }
+
+  // Unanchored callers keep exact pre-existing behavior via the line-streaming
+  // whole-file parser (never one readFile-sized string).
   const entries = await getSessionMessagesWithCompact(agentSlug, sessionId)
   for (let i = entries.length - 1; i >= 0; i--) {
     if (predicate(entries[i])) return entries[i]

@@ -72,6 +72,7 @@ vi.mock('fs', () => ({
 }))
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
+  getSessionJsonlPath: vi.fn(() => '/mock/sessions/test-session-1.jsonl'),
 }))
 
 // Mock computer-use modules
@@ -174,6 +175,7 @@ vi.mock('./container-manager', () => ({
 
 // Import after mocks are set up
 import { messagePersister, redactStreamedToolInput, WaitForIdleTimeoutError } from './message-persister'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 
@@ -334,6 +336,393 @@ describe('MessagePersister', () => {
       })
 
       expect(mockRecordSessionActivity).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('completion notification response selection', () => {
+    it('passes only the newest merged textual assistant response at authoritative idle', async () => {
+      mockStat.mockResolvedValueOnce({ size: 12_345 })
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-entry',
+        message: {
+          id: 'msg-working',
+          content: [{ type: 'text', text: 'I am still working.' }],
+        },
+      })
+      // A new late frame for that older message ID also merges into its
+      // original UI bubble; arrival order must not make it the final answer.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-late-tool-entry',
+        message: {
+          id: 'msg-working',
+          content: [
+            { type: 'tool_use', id: 'tool-late', name: 'Read', input: {} },
+          ],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-thinking-entry',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'thinking', thinking: 'Hidden reasoning' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-text-entry-1',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'Final ' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-tool-entry',
+        message: {
+          id: 'msg-final',
+          content: [
+            { type: 'tool_use', id: 'tool-1', name: 'Read', input: {} },
+          ],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-text-entry-2',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'answer.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-late-after-final',
+        message: {
+          id: 'msg-working',
+          content: [
+            { type: 'tool_use', id: 'tool-latest', name: 'Read', input: {} },
+          ],
+        },
+      })
+      // Replaying an older group after the final group must not roll the
+      // candidate backward either; transcript UUID dedupe is turn-wide.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-entry',
+        replayed: true,
+        message: {
+          id: 'msg-working',
+          content: [{ type: 'text', text: 'I am still working.' }],
+        },
+      })
+      // A reattached CLI can replay a persisted frame verbatim. The UI
+      // deduplicates by UUID, so the notification source must do the same.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-text-entry-2',
+        replayed: true,
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'answer.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      const call = vi.mocked(notificationManager.triggerSessionComplete).mock.calls.at(-1)
+      expect(call?.slice(0, 2)).toEqual([SESSION_ID, AGENT_SLUG])
+      expect(call?.[2]?.responseText).toBe('Final answer.')
+      await expect(call?.[2]?.responseTranscriptEndOffset).resolves.toBe(12_345)
+    })
+
+    it('dispatches completion without waiting for the transcript stat', async () => {
+      let resolveStat: ((value: { size: number }) => void) | undefined
+      mockStat.mockImplementationOnce(
+        () => new Promise<{ size: number }>((resolve) => {
+          resolveStat = resolve
+        }),
+      )
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-entry',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'Finished.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      const offset = vi.mocked(notificationManager.triggerSessionComplete)
+        .mock.calls[0][2]?.responseTranscriptEndOffset
+      resolveStat?.({ size: 99 })
+      await expect(offset).resolves.toBe(99)
+    })
+
+    it('does not reuse working text when the newest assistant item is tool-only', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-entry',
+        message: {
+          id: 'msg-working',
+          content: [{ type: 'text', text: 'Earlier working note.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'tool-only-entry',
+        message: {
+          id: 'msg-tool-only',
+          content: [
+            { type: 'tool_use', id: 'tool-2', name: 'Read', input: {} },
+          ],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        {
+          responseText: '',
+          responseTranscriptEndOffset: expect.any(Promise),
+        },
+      )
+    })
+
+    it('does not reuse the prior answer when a queued turn produces no assistant item', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'turn-a-answer',
+        message: {
+          id: 'msg-turn-a',
+          content: [{ type: 'text', text: 'Answer for the first request.' }],
+        },
+      })
+
+      // The second request is queued before turn A's result. It then ends with
+      // no assistant frame (for example, a prompt hook blocks it).
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      // A delayed frame for turn A must still merge into turn A in the UI; it
+      // cannot resurrect A as turn B's notification response.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'turn-a-late-frame',
+        message: {
+          id: 'msg-turn-a',
+          content: [{ type: 'text', text: 'Stale turn-A text.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        { responseText: '', responseTranscriptEndOffset: expect.any(Promise) },
+      )
+    })
+
+    it.each([
+      {
+        label: 'resume',
+        result: {
+          type: 'result',
+          subtype: 'resume',
+          is_error: false,
+          num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+      {
+        label: 'graceful interrupt',
+        result: {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          terminal_reason: 'aborted_tools',
+          num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+    ])('does not consume the queued-turn guard on $label results', ({ result }) => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      mockClient._sendMessage(result)
+
+      const state = (messagePersister as any).streamingStates.get(SESSION_ID)
+      expect(state.queuedTurnCount).toBe(1)
+      expect(state.resetAssistantBeforeNextTurnOutput).toBe(false)
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(state.queuedTurnCount).toBe(0)
+      expect(state.resetAssistantBeforeNextTurnOutput).toBe(true)
+    })
+
+    it('settles a self-healed running event followed by idle without a new result', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'completed-answer',
+        message: {
+          id: 'msg-completed',
+          content: [{ type: 'text', text: 'Completed.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+      vi.mocked(notificationManager.triggerSessionComplete).mockClear()
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'running',
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        { responseText: '', responseTranscriptEndOffset: expect.any(Promise) },
+      )
+    })
+
+    it('does not notify for a modern success-subtype error result', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        terminal_reason: 'api_error',
+        errors: ['provider failed'],
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+    })
+
+    it('does not notify when a legacy turn exits for resume', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'resume-answer',
+        message: {
+          id: 'msg-resume',
+          content: [{ type: 'text', text: 'Pausing for resume.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'resume',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
     })
   })
 

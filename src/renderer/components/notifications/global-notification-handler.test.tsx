@@ -280,11 +280,21 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       notificationType: 'session_complete',
       sessionId: 'sess-1',
       agentSlug: 'my-agent',
-      title: 'Done',
-      body: 'Session complete',
+      title: 'Demo Agent finished',
+      body: 'The report is ready.',
     })
 
-    expect(showOSNotification).toHaveBeenCalled()
+    expect(showOSNotification).toHaveBeenCalledWith(
+      'Demo Agent finished',
+      'The report is ready.',
+      undefined,
+      expect.objectContaining({
+        context: expect.objectContaining({
+          agentSlug: 'my-agent',
+          sessionId: 'sess-1',
+        }),
+      }),
+    )
   })
 
   it('session_complete suppressed when notifyWhenUnfocused is off and viewing session', async () => {
