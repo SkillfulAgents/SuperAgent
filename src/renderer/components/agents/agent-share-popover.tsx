@@ -438,7 +438,8 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                         type="button"
                         className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
                         onClick={() => toggleUser(u)}
-                        aria-pressed={isSelected}
+                        role="checkbox"
+                        aria-checked={isSelected}
                         data-testid={`invite-user-result-${u.id}`}
                       >
                         <UserAvatar name={u.name} />
@@ -446,13 +447,15 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                           <div className="truncate">{u.name}</div>
                           <div className="truncate text-xs text-muted-foreground">{u.email}</div>
                         </div>
-                        {isSelected ? (
-                          <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#0099FF] text-white">
-                            <Check className="h-3 w-3" />
-                          </div>
-                        ) : (
-                          <div className="h-5 w-5 shrink-0 rounded-full border border-muted-foreground/30" />
-                        )}
+                        {/* Visual-only checkbox (the row is the control) — mirrors ui/checkbox */}
+                        <span
+                          className={cn(
+                            'flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border border-primary shadow',
+                            isSelected && 'bg-primary text-primary-foreground'
+                          )}
+                        >
+                          {isSelected && <Check className="h-3 w-3" />}
+                        </span>
                       </button>
                     )
                   })}
