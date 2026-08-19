@@ -64,9 +64,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 const mockReaddir = vi.fn()
 const mockStat = vi.fn()
-const mockStatSync = vi.fn()
 vi.mock('fs', () => ({
-  statSync: (...args: unknown[]) => mockStatSync(...args),
   promises: {
     readdir: (...args: unknown[]) => mockReaddir(...args),
     stat: (...args: unknown[]) => mockStat(...args),
@@ -342,8 +340,8 @@ describe('MessagePersister', () => {
   })
 
   describe('completion notification response selection', () => {
-    it('passes only the newest merged textual assistant response at authoritative idle', () => {
-      mockStatSync.mockReturnValueOnce({ size: 12_345 })
+    it('passes only the newest merged textual assistant response at authoritative idle', async () => {
+      mockStat.mockResolvedValueOnce({ size: 12_345 })
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       mockClient._sendMessage({
         type: 'system',
@@ -451,14 +449,41 @@ describe('MessagePersister', () => {
         state: 'idle',
       })
 
-      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
-        SESSION_ID,
-        AGENT_SLUG,
-        {
-          responseText: 'Final answer.',
-          responseTranscriptEndOffset: 12_345,
-        },
+      const call = vi.mocked(notificationManager.triggerSessionComplete).mock.calls.at(-1)
+      expect(call?.slice(0, 2)).toEqual([SESSION_ID, AGENT_SLUG])
+      expect(call?.[2]?.responseText).toBe('Final answer.')
+      await expect(call?.[2]?.responseTranscriptEndOffset).resolves.toBe(12_345)
+    })
+
+    it('dispatches completion without waiting for the transcript stat', async () => {
+      let resolveStat: ((value: { size: number }) => void) | undefined
+      mockStat.mockImplementationOnce(
+        () => new Promise<{ size: number }>((resolve) => {
+          resolveStat = resolve
+        }),
       )
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-entry',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'Finished.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      const offset = vi.mocked(notificationManager.triggerSessionComplete)
+        .mock.calls[0][2]?.responseTranscriptEndOffset
+      resolveStat?.({ size: 99 })
+      await expect(offset).resolves.toBe(99)
     })
 
     it('does not reuse working text when the newest assistant item is tool-only', () => {
@@ -494,7 +519,7 @@ describe('MessagePersister', () => {
         AGENT_SLUG,
         {
           responseText: '',
-          responseTranscriptEndOffset: null,
+          responseTranscriptEndOffset: expect.any(Promise),
         },
       )
     })
@@ -552,7 +577,7 @@ describe('MessagePersister', () => {
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
         SESSION_ID,
         AGENT_SLUG,
-        { responseText: '', responseTranscriptEndOffset: null },
+        { responseText: '', responseTranscriptEndOffset: expect.any(Promise) },
       )
     })
 
@@ -650,7 +675,7 @@ describe('MessagePersister', () => {
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
         SESSION_ID,
         AGENT_SLUG,
-        { responseText: '', responseTranscriptEndOffset: null },
+        { responseText: '', responseTranscriptEndOffset: expect.any(Promise) },
       )
     })
 

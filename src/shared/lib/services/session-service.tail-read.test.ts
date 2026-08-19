@@ -267,6 +267,28 @@ describe('findLastSessionEntry', () => {
     expect(result).toEqual(await fullParseOracle(isAssistant))
   })
 
+  it('anchored lookup returns null instead of materializing a prefix beyond the tail budget', async () => {
+    const filler: object[] = []
+    for (let i = 0; i < 6; i++) filler.push(bigLine(i, 900 * KB)) // ~5.4MB
+    await writeTranscript(toJsonl([
+      userEntry(1, 'request before a very large tool-heavy turn'),
+      ...filler,
+    ]))
+    const endOffset = (await fs.promises.stat(jsonlPath())).size
+    const openSpy = vi.spyOn(fs.promises, 'open')
+
+    const result = await findLastSessionEntry(
+      AGENT,
+      SESSION,
+      (entry) => entry.type === 'user' && typeof entry.message.content === 'string',
+      { endOffset },
+    )
+
+    expect(result).toBeNull()
+    // 256KB → 1MB → 4MB, then stop. No anchored whole-prefix read.
+    expect(openSpy).toHaveBeenCalledTimes(3)
+  })
+
   it('match misses capped windows but file smaller than cap: found without fallback', async () => {
     const filler: object[] = []
     for (let i = 0; i < 2; i++) filler.push(bigLine(i, 900 * KB)) // ~1.8MB, < 4MB cap

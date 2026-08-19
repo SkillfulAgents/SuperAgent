@@ -32,8 +32,8 @@ import { buildSessionCompleteBody } from './session-complete-summary'
 interface SessionCompleteNotificationOptions {
   /** Final top-level assistant text, already selected by MessagePersister. */
   responseText?: string | null
-  /** Same-file byte boundary for selecting the request this answered. */
-  responseTranscriptEndOffset?: number | null
+  /** In-flight same-file byte-boundary snapshot for this completed turn. */
+  responseTranscriptEndOffset?: Promise<number | null>
 }
 
 type NotificationBody = string | {
@@ -243,7 +243,7 @@ class NotificationManager {
               agentSlug,
               responseText: options.responseText,
               responseTranscriptEndOffset:
-                options.responseTranscriptEndOffset,
+                await options.responseTranscriptEndOffset,
               fallbackBody,
             })
           } catch (error) {

@@ -1100,16 +1100,19 @@ class MessagePersister {
   }
 
   /**
-   * Capture ordering in the transcript's own byte domain. This runs
-   * synchronously inside the terminal frame handler, before another request
-   * can append a later turn on the host event loop.
+   * Start a non-blocking snapshot of the transcript's observed byte boundary
+   * when the terminal frame arrives. The CLI owns transcript writes in another
+   * process, so this is not a cross-process barrier; it simply gives the later
+   * context lookup a same-file bound without blocking the WebSocket handler.
    */
-  private getSessionTranscriptEndOffset(
+  private async getSessionTranscriptEndOffset(
     agentSlug: string,
     sessionId: string,
-  ): number | null {
+  ): Promise<number | null> {
     try {
-      return fs.statSync(getSessionJsonlPath(agentSlug, sessionId)).size
+      return (await fs.promises.stat(
+        getSessionJsonlPath(agentSlug, sessionId),
+      )).size
     } catch {
       return null
     }
