@@ -195,6 +195,12 @@ RUN if [ -d /root/.agent-browser/browsers ]; then \
 # (see agent-container/src/session-manager.ts:ensureClaudeSettings).
 COPY --chown=claude:claude skills/ /home/claude/.claude/skills/
 
+# Platform capability guides are image-owned rather than stored in /workspace,
+# which is replaced by a writable per-agent bind mount at runtime. The agent can
+# read these guides on demand but cannot edit them.
+COPY --chown=root:root docs/ /opt/gamut/docs/
+RUN chmod -R a-w /opt/gamut/docs
+
 # Switch to non-root user
 USER claude
 
