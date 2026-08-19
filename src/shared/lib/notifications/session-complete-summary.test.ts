@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   createSummarizerText: vi.fn(),
   resolveActiveProviderModel: vi.fn(() => 'resolved-summarizer'),
   getEffectiveModels: vi.fn(() => ({ summarizerModel: 'configured-summarizer' })),
+  captureException: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/session-service', () => ({
@@ -24,6 +25,9 @@ vi.mock('@shared/lib/llm-provider', () => ({
 }))
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: mocks.getEffectiveModels,
+}))
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: mocks.captureException,
 }))
 
 import {
@@ -118,7 +122,7 @@ describe('buildSessionCompleteBody', () => {
   })
 
   it('summarizes a longer response with the latest real user request as context', async () => {
-    const responseCompletedAtMs = Date.parse('2026-08-18T20:00:01.000Z')
+    const responseTranscriptEndOffset = 12_345
     const entries: Array<JsonlMessageEntry | JsonlSystemEntry> = [
       userEntry('Please ship the finished-notification change.', {
         timestamp: '2026-08-18T20:00:00.000Z',
@@ -134,11 +138,6 @@ describe('buildSessionCompleteBody', () => {
       userEntry('<task-notification>Task abc completed</task-notification>'),
       userEntry('[SYSTEM] internal host instruction'),
       userEntry('<local-command-stdout>internal command output</local-command-stdout>'),
-      // A new turn can start while the previous completion body is being
-      // prepared. It must not become context for the older response.
-      userEntry('Unrelated request from the next turn.', {
-        timestamp: '2026-08-18T20:00:02.000Z',
-      }),
     ]
     mocks.findLastSessionEntry.mockImplementation(
       async (
@@ -147,7 +146,11 @@ describe('buildSessionCompleteBody', () => {
         predicate: (
           entry: JsonlMessageEntry | JsonlSystemEntry,
         ) => boolean,
-      ) => [...entries].reverse().find(predicate) ?? null,
+        options?: { endOffset?: number },
+      ) => {
+        expect(options).toEqual({ endOffset: responseTranscriptEndOffset })
+        return [...entries].reverse().find(predicate) ?? null
+      },
     )
     mocks.createSummarizerText.mockResolvedValue(
       '**Shipped:** notifications now show the final answer.',
@@ -158,7 +161,7 @@ describe('buildSessionCompleteBody', () => {
       buildSessionCompleteBody({
         ...params,
         responseText,
-        responseCompletedAtMs,
+        responseTranscriptEndOffset,
       }),
     ).resolves.toBe('Shipped: notifications now show the final answer.')
 
@@ -186,6 +189,13 @@ describe('buildSessionCompleteBody', () => {
     expect(Array.from(body)).toHaveLength(SESSION_COMPLETE_BODY_MAX_CHARS)
     expect(body.endsWith('…')).toBe(true)
     expect(body).toBe(truncateSessionCompleteBody(responseText))
+    expect(mocks.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'provider down' }),
+      expect.objectContaining({
+        level: 'warning',
+        tags: { area: 'notifications', op: 'session-complete-summary' },
+      }),
+    )
   })
 
   it.each([null, '   '])(
@@ -197,6 +207,18 @@ describe('buildSessionCompleteBody', () => {
       await expect(
         buildSessionCompleteBody({ ...params, responseText }),
       ).resolves.toBe(truncateSessionCompleteBody(responseText))
+      expect(mocks.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Completion summarizer returned no usable text',
+        }),
+        expect.objectContaining({
+          level: 'warning',
+          tags: {
+            area: 'notifications',
+            op: 'session-complete-summary-empty',
+          },
+        }),
+      )
     },
   )
 
@@ -217,8 +239,16 @@ describe('buildSessionCompleteBody', () => {
     vi.useFakeTimers()
     try {
       const responseText = 't'.repeat(SESSION_COMPLETE_BODY_MAX_CHARS + 1)
+      let providerSignal: AbortSignal | undefined
       mocks.createSummarizerText.mockImplementation(
-        () => new Promise<string>(() => {}),
+        (_client: unknown, _request: unknown, signal?: AbortSignal) => {
+          providerSignal = signal
+          return new Promise<string>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason), {
+              once: true,
+            })
+          })
+        },
       )
 
       const body = buildSessionCompleteBody({ ...params, responseText })
@@ -226,9 +256,42 @@ describe('buildSessionCompleteBody', () => {
       await vi.advanceTimersByTimeAsync(SESSION_COMPLETE_SUMMARY_TIMEOUT_MS)
 
       await expect(body).resolves.toBe(truncateSessionCompleteBody(responseText))
+      expect(providerSignal?.aborted).toBe(true)
+      expect(mocks.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: `Completion summary exceeded ${SESSION_COMPLETE_SUMMARY_TIMEOUT_MS}ms`,
+        }),
+        expect.objectContaining({
+          level: 'warning',
+          tags: {
+            area: 'notifications',
+            op: 'session-complete-summary-timeout',
+          },
+        }),
+      )
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('reports request-context read failures and still summarizes the response', async () => {
+    const contextError = new Error('transcript unavailable')
+    mocks.findLastSessionEntry.mockRejectedValueOnce(contextError)
+    const responseText = 'r'.repeat(SESSION_COMPLETE_BODY_MAX_CHARS + 1)
+
+    await expect(buildSessionCompleteBody({
+      ...params,
+      responseText,
+      responseTranscriptEndOffset: 500,
+    })).resolves.toBe('A concise completion summary.')
+
+    expect(mocks.captureException).toHaveBeenCalledWith(
+      contextError,
+      expect.objectContaining({
+        level: 'warning',
+        tags: { area: 'notifications', op: 'session-complete-context' },
+      }),
+    )
   })
 
   it.each([null, '', '   ', '<task-notification>Task done</task-notification>'])(

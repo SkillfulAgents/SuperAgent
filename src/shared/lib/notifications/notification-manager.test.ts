@@ -4,6 +4,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 // references a `vi.fn()` must define it inside `vi.hoisted` to be available.
 const mocks = vi.hoisted(() => ({
   createNotification: vi.fn(async () => 'notif-id'),
+  getAgentAccessUserIds: vi.fn(async (_agentSlug: string) => ['user-a']),
   getSessionMetadata: vi.fn(),
   findLastSessionEntry: vi.fn(async () => null),
   getConfiguredLlmClient: vi.fn(() => ({ messages: {} })),
@@ -11,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   resolveActiveProviderModel: vi.fn(() => 'resolved-summarizer'),
   getEffectiveModels: vi.fn(() => ({ summarizerModel: 'configured-summarizer' })),
   getAgent: vi.fn(async () => ({ frontmatter: { name: 'Demo Agent' } })),
-  getUserSettings: vi.fn(() => ({
+  getUserSettings: vi.fn((_userId: string) => ({
     notifications: {
       enabled: true,
       sessionComplete: true,
@@ -21,10 +22,13 @@ const mocks = vi.hoisted(() => ({
   })),
   broadcastGlobal: vi.fn(),
   promoteAutomatedSession: vi.fn(async () => {}),
+  isAuthMode: vi.fn(() => false),
+  captureException: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   createNotification: mocks.createNotification,
+  getAgentAccessUserIds: mocks.getAgentAccessUserIds,
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: mocks.getSessionMetadata,
@@ -47,7 +51,10 @@ vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: mocks.getUserSettings,
 }))
 vi.mock('@shared/lib/auth/mode', () => ({
-  isAuthMode: () => false,
+  isAuthMode: mocks.isAuthMode,
+}))
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: mocks.captureException,
 }))
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
@@ -74,6 +81,16 @@ import { notificationManager } from './notification-manager'
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.isAuthMode.mockReturnValue(false)
+  mocks.getAgentAccessUserIds.mockResolvedValue(['user-a'])
+  mocks.getUserSettings.mockReturnValue({
+    notifications: {
+      enabled: true,
+      sessionComplete: true,
+      sessionWaiting: true,
+      sessionScheduled: true,
+    },
+  })
   mockGetSessionMetadata.mockResolvedValue(null)
   mocks.createSummarizerText.mockResolvedValue('A concise completion summary.')
 })
@@ -129,6 +146,53 @@ describe('triggerSessionComplete — automated-session gating', () => {
 
     expect(mocks.createSummarizerText).not.toHaveBeenCalled()
     expect(mockCreateNotification).not.toHaveBeenCalled()
+  })
+
+  it('does not call the summarizer in auth mode when every recipient disabled completion notifications', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    mocks.getAgentAccessUserIds.mockResolvedValue(['user-a', 'user-b'])
+    mocks.getUserSettings.mockImplementation(() => ({
+      notifications: {
+        enabled: true,
+        sessionComplete: false,
+        sessionWaiting: true,
+        sessionScheduled: true,
+      },
+    }))
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(mocks.createSummarizerText).not.toHaveBeenCalled()
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session_complete',
+        body: 'Demo Agent has finished running',
+      }),
+    )
+  })
+
+  it('summarizes in auth mode when at least one recipient enabled completion notifications', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    mocks.getAgentAccessUserIds.mockResolvedValue(['user-off', 'user-on'])
+    mocks.getUserSettings.mockImplementation((userId: string) => ({
+      notifications: {
+        enabled: true,
+        sessionComplete: userId === 'user-on',
+        sessionWaiting: true,
+        sessionScheduled: true,
+      },
+    }))
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(mocks.createSummarizerText).toHaveBeenCalledTimes(1)
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ body: 'A concise completion summary.' }),
+    )
   })
 
   it('preserves per-session notification order when an earlier summary is slow', async () => {

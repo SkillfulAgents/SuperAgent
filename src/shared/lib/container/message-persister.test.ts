@@ -64,7 +64,9 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 const mockReaddir = vi.fn()
 const mockStat = vi.fn()
+const mockStatSync = vi.fn()
 vi.mock('fs', () => ({
+  statSync: (...args: unknown[]) => mockStatSync(...args),
   promises: {
     readdir: (...args: unknown[]) => mockReaddir(...args),
     stat: (...args: unknown[]) => mockStat(...args),
@@ -72,6 +74,7 @@ vi.mock('fs', () => ({
 }))
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
+  getSessionJsonlPath: vi.fn(() => '/mock/sessions/test-session-1.jsonl'),
 }))
 
 // Mock computer-use modules
@@ -340,6 +343,7 @@ describe('MessagePersister', () => {
 
   describe('completion notification response selection', () => {
     it('passes only the newest merged textual assistant response at authoritative idle', () => {
+      mockStatSync.mockReturnValueOnce({ size: 12_345 })
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       mockClient._sendMessage({
         type: 'system',
@@ -452,7 +456,7 @@ describe('MessagePersister', () => {
         AGENT_SLUG,
         {
           responseText: 'Final answer.',
-          responseCompletedAtMs: expect.any(Number),
+          responseTranscriptEndOffset: 12_345,
         },
       )
     })
@@ -490,7 +494,7 @@ describe('MessagePersister', () => {
         AGENT_SLUG,
         {
           responseText: '',
-          responseCompletedAtMs: expect.any(Number),
+          responseTranscriptEndOffset: null,
         },
       )
     })
@@ -548,8 +552,57 @@ describe('MessagePersister', () => {
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
         SESSION_ID,
         AGENT_SLUG,
-        { responseText: '', responseCompletedAtMs: null },
+        { responseText: '', responseTranscriptEndOffset: null },
       )
+    })
+
+    it.each([
+      {
+        label: 'resume',
+        result: {
+          type: 'result',
+          subtype: 'resume',
+          is_error: false,
+          num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+      {
+        label: 'graceful interrupt',
+        result: {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          terminal_reason: 'aborted_tools',
+          num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+    ])('does not consume the queued-turn guard on $label results', ({ result }) => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      mockClient._sendMessage(result)
+
+      const state = (messagePersister as any).streamingStates.get(SESSION_ID)
+      expect(state.queuedTurnCount).toBe(1)
+      expect(state.resetAssistantBeforeNextTurnOutput).toBe(false)
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(state.queuedTurnCount).toBe(0)
+      expect(state.resetAssistantBeforeNextTurnOutput).toBe(true)
     })
 
     it('settles a self-healed running event followed by idle without a new result', () => {
@@ -597,7 +650,7 @@ describe('MessagePersister', () => {
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
         SESSION_ID,
         AGENT_SLUG,
-        { responseText: '', responseCompletedAtMs: null },
+        { responseText: '', responseTranscriptEndOffset: null },
       )
     })
 

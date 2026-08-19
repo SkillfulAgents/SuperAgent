@@ -77,10 +77,11 @@ import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-pro
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
-import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
+import { getAgentSessionsDir, getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { SubagentCapture } from './subagent-capture'
+import * as fs from 'fs'
 import * as path from 'path'
 import { randomUUID } from 'crypto'
 // Per-subagent streaming state (supports multiple concurrent background agents)
@@ -170,7 +171,6 @@ interface StreamingState {
   assistantMessageIds: Set<string>
   assistantEntryUuids: Set<string>
   lastAssistantText: string
-  lastAssistantTimestampMs: number | null
   // A user message accepted while active may become a continuation turn after
   // the current result. Delay the response reset until that next turn actually
   // produces an assistant/result frame: if the queued message was steered into
@@ -502,8 +502,6 @@ class MessagePersister {
         priorIsActive ? new Set(prior?.assistantEntryUuids ?? []) : new Set(),
       lastAssistantText:
         priorIsActive ? (prior?.lastAssistantText ?? '') : '',
-      lastAssistantTimestampMs:
-        priorIsActive ? (prior?.lastAssistantTimestampMs ?? null) : null,
       queuedTurnCount: priorIsActive ? (prior?.queuedTurnCount ?? 0) : 0,
       resetAssistantBeforeNextTurnOutput:
         priorIsActive ? (prior?.resetAssistantBeforeNextTurnOutput ?? false) : false,
@@ -1099,7 +1097,22 @@ class MessagePersister {
   private resetSessionCompleteResponse(state: StreamingState): void {
     state.lastAssistantMessageId = null
     state.lastAssistantText = ''
-    state.lastAssistantTimestampMs = null
+  }
+
+  /**
+   * Capture ordering in the transcript's own byte domain. This runs
+   * synchronously inside the terminal frame handler, before another request
+   * can append a later turn on the host event loop.
+   */
+  private getSessionTranscriptEndOffset(
+    agentSlug: string,
+    sessionId: string,
+  ): number | null {
+    try {
+      return fs.statSync(getSessionJsonlPath(agentSlug, sessionId)).size
+    } catch {
+      return null
+    }
   }
 
   // Mark session as active (when user sends a message)
@@ -1128,7 +1141,6 @@ class MessagePersister {
         assistantMessageIds: new Set(),
         assistantEntryUuids: new Set(),
         lastAssistantText: '',
-        lastAssistantTimestampMs: null,
         queuedTurnCount: 0,
         resetAssistantBeforeNextTurnOutput: false,
         activeBackgroundTasks: new Map(),
@@ -1590,20 +1602,12 @@ class MessagePersister {
         const assistantEntryUuid =
           typeof content.uuid === 'string' && content.uuid ? content.uuid : null
         const assistantText = this.extractAssistantText(content)
-        // Captured replays can carry the serialized ISO form even though live
-        // ContainerClient messages use Date instances.
-        const assistantTimestampMs = message.timestamp instanceof Date
-          ? message.timestamp.getTime()
-          : Date.parse(String(message.timestamp))
         // Resumed CLI processes can replay already-persisted frames. The
         // renderer deduplicates those by transcript UUID before merging, so
         // ignore a duplicate even if it arrives after a newer message group.
         if (!assistantEntryUuid || !state.assistantEntryUuids.has(assistantEntryUuid)) {
           if (assistantMessageId && assistantMessageId === state.lastAssistantMessageId) {
             state.lastAssistantText += assistantText
-            if (Number.isFinite(assistantTimestampMs)) {
-              state.lastAssistantTimestampMs = assistantTimestampMs
-            }
           } else if (assistantMessageId && state.assistantMessageIds.has(assistantMessageId)) {
             // A later frame can belong to an older assistant group (typically a
             // delayed tool block). transformMessages merges it into that older
@@ -1612,9 +1616,6 @@ class MessagePersister {
           } else {
             state.lastAssistantMessageId = assistantMessageId
             state.lastAssistantText = assistantText
-            state.lastAssistantTimestampMs = Number.isFinite(assistantTimestampMs)
-              ? assistantTimestampMs
-              : null
           }
           if (assistantMessageId) state.assistantMessageIds.add(assistantMessageId)
           if (assistantEntryUuid) state.assistantEntryUuids.add(assistantEntryUuid)
@@ -2027,7 +2028,10 @@ class MessagePersister {
                 if (state.lastResultSubtype === 'success' && state.agentSlug) {
                   notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
                     responseText: state.lastAssistantText,
-                    responseCompletedAtMs: state.lastAssistantTimestampMs,
+                    responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
+                      state.agentSlug,
+                      sessionId,
+                    ),
                   }).catch((err) => {
                     console.error('[MessagePersister] Failed to trigger session complete notification:', err)
                   })
@@ -2113,19 +2117,25 @@ class MessagePersister {
       }
 
       case 'result': {
-        if (state.resetAssistantBeforeNextTurnOutput) {
-          this.resetSessionCompleteResponse(state)
-          state.resetAssistantBeforeNextTurnOutput = false
-        }
-        if (state.queuedTurnCount > 0) {
-          state.queuedTurnCount -= 1
-          state.resetAssistantBeforeNextTurnOutput = true
-        }
         // Query completed. Classification handles both error shapes — the
         // legacy error subtypes and the modern success-subtype-with-is_error
         // (terminal_reason: api_error etc.) that a subtype check alone misses.
         const classification = classifyResult(content)
         const isError = classification.isError
+        // Resume and graceful-interrupt results are pauses inside the current
+        // turn. They must not consume the queued-turn boundary or reset its
+        // response candidate one result early.
+        const completesTurn = !classification.isInterrupt && content.subtype !== 'resume'
+        if (completesTurn) {
+          if (state.resetAssistantBeforeNextTurnOutput) {
+            this.resetSessionCompleteResponse(state)
+            state.resetAssistantBeforeNextTurnOutput = false
+          }
+          if (state.queuedTurnCount > 0) {
+            state.queuedTurnCount -= 1
+            state.resetAssistantBeforeNextTurnOutput = true
+          }
+        }
         state.isStreaming = false
         // On error the turn ends here, so settle isActive too BEFORE the single
         // emit. Collapsing every terminal flag change into ONE emit (reflecting
@@ -2272,7 +2282,10 @@ class MessagePersister {
         if (content.subtype !== 'resume' && state.agentSlug) {
           notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
             responseText: state.lastAssistantText,
-            responseCompletedAtMs: state.lastAssistantTimestampMs,
+            responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
+              state.agentSlug,
+              sessionId,
+            ),
           }).catch((err) => {
             console.error('[MessagePersister] Failed to trigger session complete notification:', err)
           })

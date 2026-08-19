@@ -1625,7 +1625,8 @@ const TAIL_WINDOW_MAX_BYTES = 4 * 1024 * 1024
  */
 async function readSessionEntriesFromTail(
   jsonlPath: string,
-  windowBytes: number
+  windowBytes: number,
+  endOffset?: number,
 ): Promise<{
   entries: (JsonlMessageEntry | JsonlSystemEntry)[]
   coveredWholeFile: boolean
@@ -1639,8 +1640,14 @@ async function readSessionEntriesFromTail(
   }
   try {
     const { size } = await fileHandle.stat()
-    const offset = Math.max(0, size - windowBytes)
-    const length = size - offset
+    // Callers may anchor a read to a transcript byte offset captured at turn
+    // completion. Clamp it to the current file size so truncation/replacement
+    // degrades to the surviving prefix without crossing into a later turn.
+    const effectiveEnd = endOffset == null
+      ? size
+      : Math.min(size, Math.max(0, Math.floor(endOffset)))
+    const offset = Math.max(0, effectiveEnd - windowBytes)
+    const length = effectiveEnd - offset
     const buffer = Buffer.alloc(length)
     let bytesReadTotal = 0
     while (bytesReadTotal < length) {
@@ -1686,20 +1693,28 @@ async function readSessionEntriesFromTail(
  * trusted when it covered the whole file; otherwise the window escalates and
  * finally falls back to one full parse, so the result always equals the
  * full-parse result — it is just cheaper in the common case.
+ *
+ * `endOffset` constrains the search to a byte position captured from this same
+ * transcript. It is the ordering primitive for completion-notification context:
+ * unlike timestamps, file offsets do not compare host and container clocks.
  */
 export async function findLastSessionEntry(
   agentSlug: string,
   sessionId: string,
-  predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean
+  predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean,
+  options: { endOffset?: number | null } = {},
 ): Promise<JsonlMessageEntry | JsonlSystemEntry | null> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const endOffset = options.endOffset == null || !Number.isFinite(options.endOffset)
+    ? undefined
+    : Math.max(0, Math.floor(options.endOffset))
 
   for (
     let windowBytes = TAIL_WINDOW_INITIAL_BYTES;
     windowBytes <= TAIL_WINDOW_MAX_BYTES;
     windowBytes *= TAIL_WINDOW_GROWTH_FACTOR
   ) {
-    const tail = await readSessionEntriesFromTail(jsonlPath, windowBytes)
+    const tail = await readSessionEntriesFromTail(jsonlPath, windowBytes, endOffset)
     if (tail === null) return null // no transcript file
     for (let i = tail.entries.length - 1; i >= 0; i--) {
       if (predicate(tail.entries[i])) return tail.entries[i]
@@ -1707,8 +1722,19 @@ export async function findLastSessionEntry(
     if (tail.coveredWholeFile) return null
   }
 
-  // The match (if any) starts earlier than the capped window: parse the whole
-  // file once so behavior is never worse than the pre-tail-read path.
+  // The match (if any) starts earlier than the capped window. For an anchored
+  // lookup, parse exactly the captured prefix — a later user turn may already
+  // have appended to the same file. Unanchored callers keep the pre-existing
+  // whole-file fallback.
+  if (endOffset !== undefined) {
+    const prefix = await readSessionEntriesFromTail(jsonlPath, endOffset, endOffset)
+    if (!prefix) return null
+    for (let i = prefix.entries.length - 1; i >= 0; i--) {
+      if (predicate(prefix.entries[i])) return prefix.entries[i]
+    }
+    return null
+  }
+
   const entries = await getSessionMessagesWithCompact(agentSlug, sessionId)
   for (let i = entries.length - 1; i >= 0; i--) {
     if (predicate(entries[i])) return entries[i]

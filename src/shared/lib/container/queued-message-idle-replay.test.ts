@@ -84,6 +84,8 @@ vi.mock('@shared/lib/db/schema', () => ({ connectedAccounts: {} }))
 vi.mock('drizzle-orm', () => ({ eq: vi.fn() }))
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: (_agentSlug: string) => '/nonexistent',
+  getSessionJsonlPath: (_agentSlug: string, _sessionId: string) =>
+    '/nonexistent/session.jsonl',
 }))
 
 // ----- Fixture loading -----
@@ -207,7 +209,7 @@ describe('queued-message-during-final-response replay (real capture, session d6c
       {
         responseText:
           '"Color" is the name physicists gave to a kind of charge that quarks carry — like electric charge, but with three varieties.',
-        responseCompletedAtMs: Date.parse('2026-06-11T17:49:39.404Z'),
+        responseTranscriptEndOffset: null,
       },
     )
 
@@ -239,7 +241,7 @@ describe('queued-message-during-final-response replay (real capture, session d6c
       {
         responseText:
           '"Color" is the name physicists gave to a kind of charge that quarks carry — like electric charge, but with three varieties.',
-        responseCompletedAtMs: Date.parse('2026-06-11T17:49:39.404Z'),
+        responseTranscriptEndOffset: null,
       },
     )
 
