@@ -337,7 +337,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
           <div className="flex items-start gap-2">
             {/* label: clicking anywhere in the chip box natively focuses the input.
                 The role select sits inside the box, pinned top-right (Notion-style). */}
-            <label className="flex min-h-8 min-w-0 flex-1 cursor-text items-start gap-1 rounded-md border bg-transparent px-1.5 py-1 has-[input:focus]:border-primary has-[input:focus]:ring-1 has-[input:focus]:ring-primary">
+            <label className="flex min-h-8 min-w-0 flex-1 cursor-text items-start gap-1 rounded-md border bg-transparent px-1.5 py-0.5 has-[input:focus]:border-primary has-[input:focus]:ring-1 has-[input:focus]:ring-primary">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
                 {selectedUsers.map((u) => (
                   <span
@@ -410,7 +410,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
         {/* People list. While typing it becomes two filtered sections,
             Notion-style: access holders ("Already shared with") and
             invitable candidates ("Not shared with"). */}
-        <div className="max-h-72 overflow-y-auto p-1.5">
+        <div className="max-h-72 overflow-y-auto px-1 pb-1">
           {isLoading ? (
             <div className="flex items-center justify-center py-6">
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
