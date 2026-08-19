@@ -268,7 +268,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                   disabled={isLastOwner}
                 >
                   <SelectTrigger
-                    className="h-7 w-auto shrink-0 gap-1 border-none bg-transparent px-1.5 text-xs text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
+                    className="h-7 w-auto shrink-0 gap-1 border-none bg-transparent px-1.5 text-sm text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
                     data-testid={`access-role-${entry.userId}`}
                   >
                     <SelectValue>{ROLE_LABELS[entry.role]}</SelectValue>
@@ -388,7 +388,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
             </label>
             <Button
               size="sm"
-              className="h-8 shrink-0"
+              className="h-8 shrink-0 text-sm"
               onClick={() => {
                 if (inviteUsers.isPending) return
                 // No disabled state: with nothing selected, just refocus the input
