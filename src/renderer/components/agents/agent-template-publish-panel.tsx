@@ -115,7 +115,7 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
             </a>
           )}
           <div className="flex justify-end">
-            <Button type="button" size="sm" onClick={onBack}>
+            <Button type="button" size="sm" className="text-sm" onClick={onBack}>
               Done
             </Button>
           </div>
@@ -184,7 +184,7 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
             <Button
               type="submit"
               size="sm"
-              className="gap-1"
+              className="gap-1 text-sm"
               disabled={!title.trim() || !body.trim()}
               data-testid="publish-flow-submit"
             >
