@@ -184,7 +184,7 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
             <Button
               type="submit"
               size="sm"
-              className="gap-1 bg-[#0099FF] text-white hover:bg-[#007DED]"
+              className="gap-1"
               disabled={!title.trim() || !body.trim()}
               data-testid="publish-flow-submit"
             >
@@ -230,7 +230,7 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
             })}
           </div>
           <Button
-            className="w-full gap-1.5 bg-[#0099FF] text-white hover:bg-[#007DED]"
+            className="w-full gap-1.5"
             onClick={() => void handlePublish()}
             data-testid="publish-flow-publish"
           >

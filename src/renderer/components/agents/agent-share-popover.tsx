@@ -4,6 +4,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { Tabs, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
 import {
   Select,
   SelectContent,
@@ -359,30 +360,29 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
         data-testid="agent-share-popover"
       >
         {/* Tab bar — Share only exists in auth mode (no ACL without auth).
-            The publish flow replaces it with its own back navigation. */}
+            The publish flow replaces it with its own back navigation. Same
+            segmented Tabs control as the connection directory's APIs/MCPs. */}
         {!(tab === 'publish' && publishFlowOpen) && (
-        <div className="flex items-center gap-4 border-b px-3">
-          {([
-            ...(isAuthMode ? [{ id: 'share', label: 'Share' } as const] : []),
-            { id: 'publish', label: 'Publish' } as const,
-            { id: 'export', label: 'Export' } as const,
-          ]).map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className={cn(
-                '-mb-px border-b-2 py-2 text-sm',
-                tab === t.id
-                  ? 'border-foreground font-medium text-foreground'
-                  : 'border-transparent text-muted-foreground hover:text-foreground'
-              )}
-              onClick={() => setTab(t.id)}
-              data-testid={`agent-share-tab-${t.id}`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+          <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
+            <div className="border-b p-2">
+              <TabsList className="h-8">
+                {([
+                  ...(isAuthMode ? [{ id: 'share', label: 'Share' } as const] : []),
+                  { id: 'publish', label: 'Publish' } as const,
+                  { id: 'export', label: 'Export' } as const,
+                ]).map((t) => (
+                  <TabsTrigger
+                    key={t.id}
+                    value={t.id}
+                    className="px-2.5 text-xs"
+                    data-testid={`agent-share-tab-${t.id}`}
+                  >
+                    {t.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
+          </Tabs>
         )}
 
         {tab === 'publish' && (
@@ -494,7 +494,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                   </div>
 
                   <Button
-                    className="w-full gap-1.5 bg-[#0099FF] text-white hover:bg-[#007DED]"
+                    className="w-full gap-1.5"
                     onClick={() => setPublishFlowOpen(true)}
                     data-testid="publish-skillset-button"
                   >
@@ -564,7 +564,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
               })}
             </div>
             <Button
-              className="w-full gap-1.5 bg-[#0099FF] text-white hover:bg-[#007DED]"
+              className="w-full gap-1.5"
               onClick={() => {
                 if (exportPending) return
                 if (exportChoice === 'template') {
