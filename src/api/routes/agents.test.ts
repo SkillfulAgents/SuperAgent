@@ -6081,6 +6081,17 @@ describe('POST /api/agents/:id/export-full', () => {
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({ error: 'An export is already in progress' })
   })
+
+  it('never starts the export (and its lock) when getAgent fails', async () => {
+    vi.mocked(getAgent).mockRejectedValue(new Error('agent metadata unreadable'))
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(exportAgentFull).not.toHaveBeenCalled()
+  })
 })
 
 describe('POST /api/agents/:id/export-template', () => {
@@ -6119,6 +6130,17 @@ describe('POST /api/agents/:id/export-template', () => {
 
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({ error: 'An export is already in progress' })
+  })
+
+  it('never starts the export (and its lock) when getAgent fails', async () => {
+    vi.mocked(getAgent).mockRejectedValue(new Error('agent metadata unreadable'))
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(exportAgentTemplate).not.toHaveBeenCalled()
   })
 })
 

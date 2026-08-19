@@ -4766,7 +4766,10 @@ function exportRouteError(c: Context, error: unknown, fallback: string) {
 agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipStream] = await Promise.all([getAgent(slug), exportAgentTemplate(slug, c.req.raw.signal)])
+    const agent = await getAgent(slug)
+    // Lock is taken inside the export call and released only when the stream
+    // closes, so it must be the last throwing step before the Response.
+    const zipStream = await exportAgentTemplate(slug, c.req.raw.signal)
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
     return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
@@ -4779,7 +4782,10 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
 agents.post('/:id/export-full', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipStream] = await Promise.all([getAgent(slug), exportAgentFull(slug, c.req.raw.signal)])
+    const agent = await getAgent(slug)
+    // Lock is taken inside the export call and released only when the stream
+    // closes, so it must be the last throwing step before the Response.
+    const zipStream = await exportAgentFull(slug, c.req.raw.signal)
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
     return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
