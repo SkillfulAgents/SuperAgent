@@ -217,16 +217,12 @@ export function isFeaturedTemplate(template: ApiDiscoverableAgent): boolean {
 // ── Connections ──────────────────────────────────────────────────────────────
 
 /**
- * Slugs the index references that have no matching SVG in
- * public/service-icons. They render with the generic fallback glyph rather
- * than a stand-in logo — a wrong brand mark is worse than none.
+ * Not every slug the index names has an SVG in public/service-icons (`granola`
+ * and `microsoft_teams` don't today). Those are left to `ServiceIcon`'s own
+ * onError fallback — a generic glyph beside the service's NAME still says which
+ * service it is, and deriving it from the actual load keeps no list to rot as
+ * the index and the icon set each move on.
  */
-const MISSING_CONNECTION_ICONS = new Set(['granola', 'microsoft_teams'])
-
-/** The service-icon slug for a connection, or undefined when we have no logo. */
-export function connectionIconSlug(slug: string): string | undefined {
-  return MISSING_CONNECTION_ICONS.has(slug) ? undefined : slug
-}
 
 /** Human label for a connection slug (the index only carries the slug). */
 export function connectionLabel(slug: string): string {

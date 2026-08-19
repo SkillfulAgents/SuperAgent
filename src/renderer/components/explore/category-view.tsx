@@ -3,8 +3,9 @@ import { useNavigate } from '@tanstack/react-router'
 import { Button } from '@renderer/components/ui/button'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
-import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
+import { slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { ExploreTemplateCard } from './explore-template-card'
+import { NoTemplatesEmptyState, useExploreTemplates } from './explore-templates'
 import { FEATURED_SECTION_LABEL, isFeaturedTemplate, templateCategory } from './template-meta'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 
@@ -15,14 +16,15 @@ import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
  */
 export function CategoryView({ category }: { category: string }) {
   const navigate = useNavigate()
-  const { data: discoverableAgents, isLoading } = useDiscoverableAgents()
+  const { templates: all, hasSkillsets, isLoading } = useExploreTemplates()
 
-  const templates = useMemo(() => {
-    const all = discoverableAgents ?? []
-    return category === FEATURED_SECTION_LABEL
-      ? all.filter(isFeaturedTemplate)
-      : all.filter((t) => templateCategory(t) === category)
-  }, [discoverableAgents, category])
+  const templates = useMemo(
+    () =>
+      category === FEATURED_SECTION_LABEL
+        ? all.filter(isFeaturedTemplate)
+        : all.filter((t) => templateCategory(t) === category),
+    [all, category],
+  )
 
   const openTemplate = (template: ApiDiscoverableAgent) => {
     void navigate({
@@ -46,12 +48,14 @@ export function CategoryView({ category }: { category: string }) {
       />
 
       <div data-testid="explore-category-view">
-        {isLoading || discoverableAgents === undefined ? (
+        {isLoading ? (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-[180px] rounded-3xl" />
             ))}
           </div>
+        ) : !hasSkillsets ? (
+          <NoTemplatesEmptyState />
         ) : templates.length === 0 ? (
           <div className="flex flex-col items-center gap-3 py-16 text-center">
             <p className="text-sm text-muted-foreground">No templates in {category}.</p>

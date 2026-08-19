@@ -1,26 +1,20 @@
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import {
-  connectionIconSlug,
-  connectionLabel,
-  getTemplateAccent,
-  getTemplateIcon,
-} from './template-meta'
+import { connectionLabel, getTemplateAccent, getTemplateIcon } from './template-meta'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 /**
- * Named chips for the services a template connects to. Only connections with a
- * real logo are shown — a chip bearing the generic fallback glyph carries no
- * information, and a row of identical fallbacks reads as broken.
+ * Named chips for the services a template connects to. Every declared
+ * connection is listed, logo or not: the chip carries the service's name, so
+ * one falling back to a generic glyph still says what it connects to — and a
+ * card that hides connections misrepresents what the template needs.
  */
 function ToolStack({ template }: { template: ApiDiscoverableAgent }) {
-  const withLogos = (template.worksWith ?? [])
-    .map((c) => ({ ...c, iconSlug: connectionIconSlug(c.slug) }))
-    .filter((c) => c.iconSlug)
-  if (withLogos.length === 0) return null
+  const connections = template.worksWith ?? []
+  if (connections.length === 0) return null
   // Named chips are far wider than the bare coins were, so only the first few
   // fit on one line — the rest collapse into a count.
-  const shown = withLogos.slice(0, MAX_NAMED_CONNECTIONS)
-  const overflow = withLogos.length - shown.length
+  const shown = connections.slice(0, MAX_NAMED_CONNECTIONS)
+  const overflow = connections.length - shown.length
   return (
     <span className="flex items-center gap-0.5">
       {shown.map((connection) => (
@@ -28,13 +22,17 @@ function ToolStack({ template }: { template: ApiDiscoverableAgent }) {
           key={`${connection.type}-${connection.slug}`}
           className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-1.5 text-[11px] text-muted-foreground"
         >
-          <ServiceIcon slug={connection.iconSlug} className="size-[15px]" />
+          <ServiceIcon
+            slug={connection.slug}
+            fallback={connection.type === 'mcp' ? 'mcp' : 'oauth'}
+            className="size-[15px] shrink-0"
+          />
           {connectionLabel(connection.slug)}
         </span>
       ))}
       {overflow > 0 && (
         <span
-          title={withLogos.slice(MAX_NAMED_CONNECTIONS).map((c) => connectionLabel(c.slug)).join(', ')}
+          title={connections.slice(MAX_NAMED_CONNECTIONS).map((c) => connectionLabel(c.slug)).join(', ')}
           className="inline-flex h-7 shrink-0 items-center rounded-lg px-1.5 text-[11px] text-muted-foreground"
         >
           +{overflow}
@@ -94,17 +92,22 @@ export function ExploreTemplateCard({
     // not it fills them, and the 28px chip row. That sums to exactly 179px of
     // content + 32px padding, so the height is fixed at 180 with no leftover
     // slack — no `mt-auto`, which is what made the gaps uneven before.
-    <div
+    //
+    // The card IS the button rather than carrying an `absolute inset-0` overlay
+    // one: a positioned overlay paints above the static content beneath it, so
+    // the chip row's `title` never surfaced. Everything inside is a span, so it
+    // nests legally.
+    <button
+      type="button"
       data-testid="explore-template-card"
-      className="relative flex h-[180px] flex-col items-start gap-5 rounded-3xl border border-black/[0.06] bg-card p-4 text-left shadow-none transition-[box-shadow,transform] duration-500 ease-out hover:-translate-y-0.5 hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.16)] dark:border-white/[0.06] dark:hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.5)]"
+      onClick={() => onOpen(template)}
+      aria-label={`${template.name} — details`}
+      // 200ms: hover is feedback, not an animation. The lift is 2px, so a
+      // longer curve spends its tail finishing a sub-pixel move that already
+      // looks arrived — which reads as lag. Matches the renderer's dominant
+      // duration and the see-more tile beside it.
+      className="flex h-[180px] w-full flex-col items-start gap-5 rounded-3xl border border-black/[0.06] bg-card p-4 text-left shadow-none transition-[box-shadow,transform] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/[0.06] dark:hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.5)]"
     >
-      <button
-        type="button"
-        onClick={() => onOpen(template)}
-        aria-label={`${template.name} — details`}
-        className="absolute inset-0 rounded-3xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      />
-
       <span className="flex w-full items-center gap-2">
         {/* The glyph is debossed — it drops a 1px light highlight beneath its
             strokes, the bevel your eye reads as "carved in". Dark mode flips
@@ -130,6 +133,6 @@ export function ExploreTemplateCard({
       <span className="flex w-full items-center gap-2 overflow-hidden">
         <ToolStack template={template} />
       </span>
-    </div>
+    </button>
   )
 }

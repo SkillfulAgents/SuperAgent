@@ -36,7 +36,7 @@ import type {
   SkillProvider,
   SkillsetCredentialInput,
 } from '@shared/lib/types/skillset'
-import { InstalledSkillMetadataSchema, SkillsetIndexSchema } from '@shared/lib/types/skillset-schema'
+import { InstalledSkillMetadataSchema, parseSkillsetIndex } from '@shared/lib/types/skillset-schema'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
   copyDirectoryFiltered,
@@ -746,12 +746,22 @@ export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
     throw new Error('index.json contains invalid JSON')
   }
 
-  const parsed = SkillsetIndexSchema.safeParse(raw)
-  if (!parsed.success) {
-    throw new Error(`Invalid index.json: ${parsed.error.issues[0]?.message ?? 'does not match the skillset index schema'}`)
+  const parsed = parseSkillsetIndex(raw)
+  if (!parsed.ok) {
+    throw new Error(`Invalid index.json: ${parsed.error}`)
   }
 
-  return parsed.data
+  // Individual bad entries are dropped, not fatal (see parseSkillsetIndex).
+  // Say so — the alternative is a skillset that quietly ships fewer templates
+  // than its repo lists, with nothing anywhere explaining why.
+  if (parsed.dropped.length > 0) {
+    console.warn(
+      `[readIndexJson] ${indexPath}: skipped ${parsed.dropped.length} malformed ` +
+      `entr${parsed.dropped.length === 1 ? 'y' : 'ies'}: ${parsed.dropped.join('; ')}`,
+    )
+  }
+
+  return parsed.index
 }
 
 // ============================================================================

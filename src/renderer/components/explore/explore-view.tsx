@@ -7,12 +7,10 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
-import { useSkillsets } from '@renderer/hooks/use-skillsets'
-import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
-import { useDialogs } from '@renderer/context/dialog-context'
+import { slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { ExploreTemplateCard } from './explore-template-card'
+import { NoTemplatesEmptyState, useExploreTemplates } from './explore-templates'
 import {
-  connectionIconSlug,
   connectionLabel,
   FEATURED_SECTION_LABEL,
   getTemplateAccent,
@@ -41,9 +39,7 @@ const OTHER_CATEGORY = 'Other'
  */
 export function ExploreView() {
   const navigate = useNavigate()
-  const { openSettings } = useDialogs()
-  const { data: skillsets } = useSkillsets()
-  const { data: discoverableAgents, isLoading } = useDiscoverableAgents()
+  const { templates, hasSkillsets, isLoading } = useExploreTemplates()
 
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -56,8 +52,6 @@ export function ExploreView() {
     const id = setTimeout(() => setDebouncedSearch(search), 150)
     return () => clearTimeout(id)
   }, [search])
-
-  const templates = useMemo(() => discoverableAgents ?? [], [discoverableAgents])
 
   // The categories this roster actually declares, with counts — most populated
   // first so the long tail of one-off categories sorts last.
@@ -165,9 +159,6 @@ export function ExploreView() {
     })
   }
 
-  const hasSkillsets = skillsets === undefined || skillsets.length > 0
-  const showSkeleton = skillsets === undefined || (hasSkillsets && isLoading)
-
   return (
     // `pt-12` rather than `fullScreen`'s `pt-4`: the notifications page sits a
     // back button above its heading, and this page has none — without the extra
@@ -236,7 +227,7 @@ export function ExploreView() {
                               count={count}
                               checked={selectedConnections?.has(slug) ?? false}
                               onToggle={() => toggleIn(selectedConnections, slug, setSelectedConnections)}
-                              icon={<ServiceIcon slug={connectionIconSlug(slug)} className="size-3.5" />}
+                              icon={<ServiceIcon slug={slug} className="size-3.5 shrink-0" />}
                             />
                           ))}
                         </>
@@ -287,7 +278,13 @@ export function ExploreView() {
                             const next = new Set(activeSkillsets)
                             if (checked) next.delete(ss.id)
                             else next.add(ss.id)
-                            setSelectedSkillsets(next.size === skillsetList.length ? null : next)
+                            // Same rule as `toggleIn`: all checked and none
+                            // checked both mean "no filter". Letting the set
+                            // empty out would strand the page on zero results
+                            // with no filter chip explaining why.
+                            setSelectedSkillsets(
+                              next.size === 0 || next.size === skillsetList.length ? null : next,
+                            )
                           }}
                           className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent ${
                             checked ? 'bg-accent' : ''
@@ -309,26 +306,19 @@ export function ExploreView() {
           descendant selector that outranks a margin utility here, so a margin
           would be silently ignored. */}
       <div className="space-y-4 pt-6" data-testid="explore-view">
-        {showSkeleton ? (
+        {isLoading ? (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-40 rounded-2xl" />
             ))}
           </div>
         ) : !hasSkillsets || templates.length === 0 ? (
-          <div className="flex flex-col items-center gap-3 py-16 text-center">
-            <p className="text-sm text-muted-foreground">
-              No agent templates available. Connect a skillset with agent templates to get started.
-            </p>
-            <Button type="button" variant="outline" size="sm" onClick={() => openSettings('skillsets')}>
-              Manage skillsets
-            </Button>
-          </div>
+          <NoTemplatesEmptyState />
         ) : filtered.length === 0 ? (
           <p className="py-16 text-center text-sm text-muted-foreground">
             {debouncedSearch.trim()
               ? `No templates matching "${debouncedSearch}"`
-              : 'No templates in this category'}
+              : 'No templates match these filters'}
           </p>
         ) : grouped ? (
           <div className="space-y-10">
@@ -430,16 +420,22 @@ function FilterRow({
 }
 
 /**
- * The section's sixth grid slot: a count header, a few of the hidden templates
- * by name, and a footer link. Clicking anywhere filters the page to that
- * category.
+ * The section's sixth grid slot: a few of the hidden templates by name over a
+ * call to action. Clicking anywhere opens that category's page.
+ *
+ * The call to action is unconditional — the tile is only ever a link, so one
+ * without it reads as a card that failed to render. Only the "+ N" count is
+ * conditional, since a section hiding no more than it names has no remainder
+ * to count (Featured, at eight templates, is exactly that case).
  */
 function SeeMoreCard({ rest, onClick }: { rest: ApiDiscoverableAgent[]; onClick: () => void }) {
+  const unnamed = rest.length - Math.min(rest.length, SEE_MORE_NAMED_COUNT)
   return (
     <button
       type="button"
+      data-testid="explore-see-more"
       onClick={onClick}
-      className="group flex h-[180px] w-full flex-col gap-3 rounded-3xl bg-muted/50 p-4 text-left transition-colors hover:bg-muted"
+      className="group flex h-[180px] w-full flex-col gap-3 rounded-3xl bg-muted/50 p-4 text-left transition-colors duration-200 hover:bg-muted"
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-2">
         {rest.slice(0, SEE_MORE_NAMED_COUNT).map((template) => {
@@ -456,22 +452,29 @@ function SeeMoreCard({ rest, onClick }: { rest: ApiDiscoverableAgent[]; onClick:
             </span>
           )
         })}
-        {rest.length > SEE_MORE_NAMED_COUNT && (
-          // The ellipsis sits in the glyph column, so the count lines up with
-          // the names above it.
-          <span className="flex min-w-0 items-center gap-2">
-            <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-card shadow-[0_1px_2px_0_rgba(0,0,0,0.06)]">
+        {/* The glyph sits in the same column as the icons above, so the label
+            lines up with the names. */}
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-card shadow-[0_1px_2px_0_rgba(0,0,0,0.06)]">
+            {unnamed > 0 ? (
               <Plus className="size-4 text-muted-foreground/50" aria-hidden />
-            </span>
-            <span className="flex min-w-0 items-center gap-1 truncate text-[13px] text-muted-foreground/70">
-              Show {rest.length - SEE_MORE_NAMED_COUNT} more
+            ) : (
               <ArrowRight
-                className="size-3.5 shrink-0 transition-transform group-hover:translate-x-0.5"
+                className="size-4 text-muted-foreground/50 transition-transform duration-200 group-hover:translate-x-0.5"
                 aria-hidden
               />
-            </span>
+            )}
           </span>
-        )}
+          <span className="flex min-w-0 items-center gap-1 truncate text-[13px] text-muted-foreground/70">
+            {unnamed > 0 ? `Show ${unnamed} more` : 'See all'}
+            {unnamed > 0 && (
+              <ArrowRight
+                className="size-3.5 shrink-0 transition-transform duration-200 group-hover:translate-x-0.5"
+                aria-hidden
+              />
+            )}
+          </span>
+        </span>
       </span>
 
     </button>

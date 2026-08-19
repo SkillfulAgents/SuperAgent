@@ -58,13 +58,93 @@ export const SkillsetIndexAgentSchema = z.object({
     .optional(),
 })
 
-export const SkillsetIndexSchema = z.object({
+/**
+ * The document minus its entry lists. Those stay raw here and are parsed a row
+ * at a time by `parseSkillsetIndex` — see the note there on why one bad row
+ * must not fail the document.
+ */
+const SkillsetIndexEnvelopeSchema = z.object({
   skillset_name: z.string(),
   description: z.string().default(''),
   version: z.string().default(''),
+  skills: z.array(z.unknown()).default([]),
+  agents: z.array(z.unknown()).optional(),
+})
+
+/**
+ * The document once parsed. Nothing runs this directly — it exists to name the
+ * shape `parseSkillsetIndex` returns, which assembles it row by row.
+ */
+const SkillsetIndexSchema = SkillsetIndexEnvelopeSchema.extend({
   skills: z.array(SkillsetIndexSkillSchema).default([]),
   agents: z.array(SkillsetIndexAgentSchema).optional(),
 })
+
+/** `<list>[<i>]: <path>: <message>` for one entry that failed to parse. */
+function describeDrop(list: string, index: number, error: z.ZodError): string {
+  const issue = error.issues[0]
+  const at = issue?.path.length ? `${issue.path.join('.')}: ` : ''
+  return `${list}[${index}]: ${at}${issue?.message ?? 'does not match the schema'}`
+}
+
+function parseRows<T extends z.ZodType>(
+  schema: T,
+  list: string,
+  rows: unknown[],
+  dropped: string[],
+): z.output<T>[] {
+  const kept: z.output<T>[] = []
+  rows.forEach((row, index) => {
+    const parsed = schema.safeParse(row)
+    if (parsed.success) kept.push(parsed.data)
+    else dropped.push(describeDrop(list, index, parsed.error))
+  })
+  return kept
+}
+
+export type SkillsetIndexParse =
+  | {
+      ok: true
+      index: z.output<typeof SkillsetIndexSchema>
+      /** Entries that didn't match and were left out, for logging. */
+      dropped: string[]
+    }
+  | { ok: false; error: string }
+
+/**
+ * Parse a skillset repo's `index.json`.
+ *
+ * The envelope must be right — with no `skillset_name` there is no skillset.
+ * Individual skill and agent entries are parsed one at a time and the ones that
+ * don't match are DROPPED rather than failing the document, because a document
+ * failure is not recoverable downstream: `getSkillsetIndex` turns any throw
+ * into `null`, which removes the skillset from Explore *and* from skill
+ * discovery with nothing shown to the user. One malformed row in a third-party
+ * repo — a missing `path`, `tags` written as a string — is not worth taking the
+ * other 167 entries offline with it.
+ */
+export function parseSkillsetIndex(raw: unknown): SkillsetIndexParse {
+  const envelope = SkillsetIndexEnvelopeSchema.safeParse(raw)
+  if (!envelope.success) {
+    const issue = envelope.error.issues[0]
+    const at = issue?.path.length ? `${issue.path.join('.')}: ` : ''
+    return { ok: false, error: `${at}${issue?.message ?? 'does not match the skillset index schema'}` }
+  }
+
+  const dropped: string[] = []
+  const { skills, agents, ...rest } = envelope.data
+  return {
+    ok: true,
+    dropped,
+    index: {
+      ...rest,
+      skills: parseRows(SkillsetIndexSkillSchema, 'skills', skills, dropped),
+      ...(agents === undefined
+        ? {}
+        : { agents: parseRows(SkillsetIndexAgentSchema, 'agents', agents, dropped) }),
+    },
+  }
+}
 
 export const SkillsetProviderDataSchema = z.record(z.string(), z.unknown())
 

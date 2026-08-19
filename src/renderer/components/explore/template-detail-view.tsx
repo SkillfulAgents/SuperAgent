@@ -1,8 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Button } from '@renderer/components/ui/button'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import {
@@ -11,13 +10,15 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@renderer/components/ui/tooltip'
+import { Button } from '@renderer/components/ui/button'
 import { SettingsPageContainer, PageTitle } from '@renderer/components/layout/settings-page'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
-import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
+import { slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { useCompleteTemplateInstall } from '@renderer/hooks/use-complete-template-install'
+import { markdownUrlTransform, safeHref } from '@renderer/lib/markdown-url-transform'
 import { TemplateAvatar } from './explore-template-card'
+import { NoTemplatesEmptyState, useExploreTemplates } from './explore-templates'
 import {
-  connectionIconSlug,
   connectionLabel,
   INVENTORY_SECTION_LABEL,
   INVENTORY_SECTION_TITLES,
@@ -33,6 +34,47 @@ import { ArrowUp } from 'lucide-react'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 const DETAILS_REMARK_PLUGINS = [remarkGfm]
+
+/**
+ * Whether a details-body href may be rendered as a link at all.
+ *
+ * Two things are being refused. `safeHref` (the renderer's single link policy,
+ * shared with the Electron shell opener) blanks dangerous schemes. Everything
+ * relative is refused on top of that: the imported templates' `Credits`
+ * sections link `../../sources/botdirectory/NOTICE.md`, a path inside the
+ * skillset repo that resolves against *this app's* document URL and means
+ * nothing here. Refused hrefs render as plain text rather than as a link that
+ * goes somewhere wrong.
+ */
+function externalHref(href: string | undefined): string | undefined {
+  if (!href || !safeHref(href)) return undefined
+  return /^https?:\/\//i.test(href) ? href : undefined
+}
+
+/**
+ * `target="_blank"` is what makes an outbound link safe here, on both targets:
+ * on the web it opens a tab, and in Electron it is the ONLY path that reaches
+ * `setWindowOpenHandler` → `safeOpenExternal` → the default browser. A
+ * same-window navigation has no guard in front of it — no `will-navigate`
+ * handler, no Reload or Back in the app menu — so it replaces the app with the
+ * destination and the only way back is relaunching.
+ */
+const DETAILS_MARKDOWN_COMPONENTS: Components = {
+  a: ({ children, href }) => {
+    const external = externalHref(href)
+    if (!external) return <>{children}</>
+    return (
+      <a
+        href={external}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-foreground underline underline-offset-2"
+      >
+        {children}
+      </a>
+    )
+  },
+}
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -66,16 +108,16 @@ export function TemplateDetailView({
   templateSlug: string
 }) {
   const navigate = useNavigate()
-  const { data: discoverableAgents, isLoading } = useDiscoverableAgents()
+  const { templates, hasSkillsets, isLoading } = useExploreTemplates()
   const completeInstall = useCompleteTemplateInstall()
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
 
   const template = useMemo(
     () =>
-      discoverableAgents?.find(
+      templates.find(
         (t) => t.skillsetId === skillsetId && slugFromAgentPath(t.path) === templateSlug,
       ),
-    [discoverableAgents, skillsetId, templateSlug],
+    [templates, skillsetId, templateSlug],
   )
   const backToExplore = {
     onClick: () => void navigate({ to: '/explore' }),
@@ -84,14 +126,19 @@ export function TemplateDetailView({
 
   if (!template) {
     return (
-      <SettingsPageContainer className="max-w-[768px] px-[88px]">
+      // `space-y-4`, not the container's default `space-y-10`: a margin utility
+      // on the child would lose to `.space-y-10 > :not([hidden]) ~ :not([hidden])`
+      // on specificity and do nothing at all.
+      <SettingsPageContainer className="max-w-[768px] px-[88px] space-y-4">
         <PageTitle title="" back={backToExplore} />
-        {isLoading || discoverableAgents === undefined ? (
+        {isLoading ? (
           <div className="space-y-4">
             <Skeleton className="size-16 rounded-2xl" />
             <Skeleton className="h-7 w-56" />
             <Skeleton className="h-48 rounded-2xl" />
           </div>
+        ) : !hasSkillsets ? (
+          <NoTemplatesEmptyState />
         ) : (
           <p className="py-16 text-center text-sm text-muted-foreground" data-testid="template-not-found">
             This template is no longer available in your connected skillsets.
@@ -107,10 +154,13 @@ export function TemplateDetailView({
   const useCases = getTemplateExamples(template.details)
 
   return (
-    <SettingsPageContainer className="max-w-[768px] px-[88px]">
+    // `space-y-4` on the container rather than a `-mt-*` pull on the child: the
+    // container's own `.space-y-10 > :not([hidden]) ~ :not([hidden])` outranks a
+    // margin utility, so the margin would be silently dropped.
+    <SettingsPageContainer className="max-w-[768px] px-[88px] space-y-4">
       <PageTitle title="" back={backToExplore} />
 
-      <div data-testid="template-detail-view" className="-mt-6">
+      <div data-testid="template-detail-view">
         {/* ── Header ───────────────────────────────────────────────────── */}
         <div data-testid="template-detail-header">
           <div className="flex items-center justify-between gap-6">
@@ -167,7 +217,7 @@ export function TemplateDetailView({
                   className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] text-muted-foreground"
                 >
                   <ServiceIcon
-                    slug={connectionIconSlug(connection.slug)}
+                    slug={connection.slug}
                     fallback={connection.type === 'mcp' ? 'mcp' : 'oauth'}
                     className="size-[15px] shrink-0"
                   />
@@ -218,7 +268,13 @@ export function TemplateDetailView({
                 </TooltipProvider>
               ) : (
                 <div className="prose prose-sm max-w-none break-words text-sm text-muted-foreground dark:prose-invert prose-headings:mt-5 prose-headings:mb-1.5 prose-headings:text-sm prose-headings:font-medium prose-headings:text-foreground prose-p:my-2 prose-p:leading-relaxed prose-li:my-0.5 prose-a:text-foreground prose-strong:text-foreground prose-code:text-foreground">
-                  <ReactMarkdown remarkPlugins={DETAILS_REMARK_PLUGINS}>{section.body}</ReactMarkdown>
+                  <ReactMarkdown
+                    remarkPlugins={DETAILS_REMARK_PLUGINS}
+                    components={DETAILS_MARKDOWN_COMPONENTS}
+                    urlTransform={markdownUrlTransform}
+                  >
+                    {section.body}
+                  </ReactMarkdown>
                 </div>
               )}
             </Section>
@@ -231,11 +287,14 @@ export function TemplateDetailView({
             {category && <InfoRow label="Category">{category}</InfoRow>}
             {template.developer && (
               <InfoRow label="Developer">
-                {template.developer.url ? (
+                {/* Same policy as the body links: the URL is third-party
+                    content from index.json, so it is only a link when it is one
+                    we would open, and it opens out of the window. */}
+                {externalHref(template.developer.url) ? (
                   <a
-                    href={template.developer.url}
+                    href={externalHref(template.developer.url)}
                     target="_blank"
-                    rel="noreferrer noopener"
+                    rel="noopener noreferrer"
                     className="underline underline-offset-2 hover:text-foreground"
                   >
                     {template.developer.name}
