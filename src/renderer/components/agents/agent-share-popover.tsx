@@ -58,7 +58,7 @@ function RoleSelectItems() {
   return (
     <>
       {ROLE_OPTIONS.map((role) => (
-        <SelectItem key={role.value} value={role.value} className="pr-8">
+        <SelectItem key={role.value} value={role.value} className="pr-8 text-sm">
           <div className="flex flex-col items-start gap-0.5">
             <span>{role.label}</span>
             <span className="text-xs text-muted-foreground">{role.description}</span>
@@ -278,7 +278,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                     <SelectSeparator />
                     <SelectItem
                       value={REMOVE_SENTINEL}
-                      className="pr-8 text-destructive focus:text-destructive"
+                      className="pr-8 text-sm text-destructive focus:text-destructive"
                       data-testid={`access-remove-${entry.userId}`}
                     >
                       Remove
