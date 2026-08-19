@@ -337,7 +337,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
           <div className="flex items-start gap-2">
             {/* label: clicking anywhere in the chip box natively focuses the input.
                 The role select sits inside the box, pinned top-right (Notion-style). */}
-            <label className="flex min-h-8 min-w-0 flex-1 cursor-text items-start gap-1 rounded-md border bg-transparent px-1.5 py-1 has-[input:focus]:border-[#0099FF] has-[input:focus]:ring-1 has-[input:focus]:ring-[#0099FF]">
+            <label className="flex min-h-8 min-w-0 flex-1 cursor-text items-start gap-1 rounded-md border bg-transparent px-1.5 py-1 has-[input:focus]:border-primary has-[input:focus]:ring-1 has-[input:focus]:ring-primary">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
                 {selectedUsers.map((u) => (
                   <span
@@ -388,8 +388,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
             </label>
             <Button
               size="sm"
-              // Effort-slider blue (see effort-slider.tsx): #0099FF fill, #007DED accent
-              className="h-8 shrink-0 bg-[#0099FF] text-white hover:bg-[#007DED]"
+              className="h-8 shrink-0"
               onClick={() => {
                 if (inviteUsers.isPending) return
                 // No disabled state: with nothing selected, just refocus the input
