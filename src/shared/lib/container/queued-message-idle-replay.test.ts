@@ -201,6 +201,15 @@ describe('queued-message-during-final-response replay (real capture, session d6c
     expect(countIdle(sseEvents)).toBe(1)
     expect(messagePersister.isSessionActive(sessionId)).toBe(false)
     expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+    expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+      sessionId,
+      agentSlug,
+      {
+        responseText:
+          '"Color" is the name physicists gave to a kind of charge that quarks carry — like electric charge, but with three varieties.',
+        responseCompletedAtMs: Date.parse('2026-06-11T17:49:39.404Z'),
+      },
+    )
 
     cleanup()
     messagePersister.unsubscribeFromSession(sessionId)
@@ -213,11 +222,8 @@ describe('queued-message-during-final-response replay (real capture, session d6c
         e.message.content?.subtype !== 'capabilities' &&
         e.message.content?.subtype !== 'session_state_changed'
     )
-    const { messagePersister, sseEvents, cleanup, sendRange } = await setUpReplay(
-      legacyEntries,
-      sessionId,
-      agentSlug
-    )
+    const { messagePersister, notificationManager, sseEvents, cleanup, sendRange } =
+      await setUpReplay(legacyEntries, sessionId, agentSlug)
 
     await sendRange(0, legacyEntries.length)
 
@@ -227,6 +233,15 @@ describe('queued-message-during-final-response replay (real capture, session d6c
     // session is never left stuck).
     expect(countIdle(sseEvents)).toBeGreaterThanOrEqual(1)
     expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+    expect(notificationManager.triggerSessionComplete).toHaveBeenLastCalledWith(
+      sessionId,
+      agentSlug,
+      {
+        responseText:
+          '"Color" is the name physicists gave to a kind of charge that quarks carry — like electric charge, but with three varieties.',
+        responseCompletedAtMs: Date.parse('2026-06-11T17:49:39.404Z'),
+      },
+    )
 
     cleanup()
     messagePersister.unsubscribeFromSession(sessionId)

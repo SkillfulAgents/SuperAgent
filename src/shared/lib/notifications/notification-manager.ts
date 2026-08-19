@@ -25,8 +25,22 @@ import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibilit
 import { getNotificationChannels } from './channels'
 import { isNotificationTypeEnabled } from './notification-preferences'
 import type { NotificationEvent } from './notification-event'
+import { buildSessionCompleteBody } from './session-complete-summary'
+
+interface SessionCompleteNotificationOptions {
+  agentName?: string
+  /** Final top-level assistant text, already selected by MessagePersister. */
+  responseText?: string | null
+  /** Transcript-time upper bound for selecting the request this answered. */
+  responseCompletedAtMs?: number | null
+}
 
 class NotificationManager {
+  // Long responses may require a model call. Keep completion notifications for
+  // one session in lifecycle order even when a later short response is ready
+  // first; unrelated sessions remain fully parallel.
+  private readonly sessionCompleteChains = new Map<string, Promise<void>>()
+
   /**
    * Get the display name for an agent (name if available, otherwise slug)
    */
@@ -64,7 +78,7 @@ class NotificationManager {
     sessionId: string
     agentSlug: string
     title: string
-    body: string
+    body: string | (() => Promise<string>)
     actions?: Array<{ text: string }>
     actionContext?: Record<string, unknown>
     extra?: Omit<Record<string, unknown>, 'type' | 'notificationType' | 'notificationId' | 'sessionId' | 'agentSlug' | 'title' | 'body' | 'actions' | 'actionContext'>
@@ -89,13 +103,18 @@ class NotificationManager {
       return
     }
 
+    // Completion bodies can require one summarizer call. Resolve them only
+    // after preferences pass so a disabled notification never spends model
+    // tokens. Other notification types keep their immediate string bodies.
+    const resolvedBody = typeof body === 'function' ? await body() : body
+
     // Always create DB notification (for badge/dropdown history)
     const notificationId = await createNotification({
       type,
       sessionId,
       agentSlug,
       title,
-      body,
+      body: resolvedBody,
     })
 
     // Stamp the actionContext with notificationId so the renderer dispatcher
@@ -112,7 +131,7 @@ class NotificationManager {
       sessionId,
       agentSlug,
       title,
-      body,
+      body: resolvedBody,
       navigatePath: `/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}`,
       ...(actions ? { actions } : {}),
       ...(stampedActionContext ? { actionContext: stampedActionContext } : {}),
@@ -138,19 +157,58 @@ class NotificationManager {
   async triggerSessionComplete(
     sessionId: string,
     agentSlug: string,
-    agentName?: string
+    options: SessionCompleteNotificationOptions = {},
+  ): Promise<void> {
+    const key = `${agentSlug}\0${sessionId}`
+    const previous = this.sessionCompleteChains.get(key) ?? Promise.resolve()
+    const current = previous
+      .catch(() => undefined)
+      .then(() => this.triggerSessionCompleteNow(sessionId, agentSlug, options))
+    this.sessionCompleteChains.set(key, current)
+
+    try {
+      await current
+    } finally {
+      if (this.sessionCompleteChains.get(key) === current) {
+        this.sessionCompleteChains.delete(key)
+      }
+    }
+  }
+
+  private async triggerSessionCompleteNow(
+    sessionId: string,
+    agentSlug: string,
+    options: SessionCompleteNotificationOptions,
   ): Promise<void> {
     const meta = await getSessionMetadata(agentSlug, sessionId)
     if (isHiddenAutomatedSession(meta)) {
       return
     }
-    const displayName = agentName || await this.getAgentDisplayName(agentSlug)
+    const displayName = options.agentName || await this.getAgentDisplayName(agentSlug)
+    const fallbackBody = `${displayName} has finished running`
     await this.triggerNotification({
       type: 'session_complete',
       sessionId,
       agentSlug,
-      title: 'Session Complete',
-      body: `${displayName} has finished running`,
+      // The old body carried the only agent identity. Keep that context after
+      // replacing it with the response preview, especially on APNs / desktop.
+      title: `${displayName} finished`,
+      body: async () => {
+        try {
+          return await buildSessionCompleteBody({
+            sessionId,
+            agentSlug,
+            responseText: options.responseText,
+            responseCompletedAtMs: options.responseCompletedAtMs,
+            fallbackBody,
+          })
+        } catch (error) {
+          // Body enrichment must never turn a successful session into a lost
+          // notification. The helper is defensive too; this is the last guard.
+          console.error('[NotificationManager] Failed to build completion body:', error)
+          return fallbackBody
+        }
+      },
     })
   }
 

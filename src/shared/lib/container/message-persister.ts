@@ -161,6 +161,23 @@ interface StreamingState {
   // card. Entries are consumed on match; the rest die with this state.
   cancelledCapabilityReviews: Set<string>
   lastApiErrorCode: string | null // SDK error code from last assistant message (e.g., 'authentication_failed', 'rate_limit')
+  // Text from the newest top-level assistant message group. Complete assistant
+  // frames sharing a message id are merged the same way transformMessages
+  // merges the persisted transcript. A newer id replaces the candidate even
+  // when it has no text, so a tool/thinking-only final response cannot reuse
+  // an earlier working note as the completion-notification body.
+  lastAssistantMessageId: string | null
+  assistantMessageIds: Set<string>
+  assistantEntryUuids: Set<string>
+  lastAssistantText: string
+  lastAssistantTimestampMs: number | null
+  // A user message accepted while active may become a continuation turn after
+  // the current result. Delay the response reset until that next turn actually
+  // produces an assistant/result frame: if the queued message was steered into
+  // the current response and idle follows immediately, that response is still
+  // the correct final answer.
+  queuedTurnCount: number
+  resetAssistantBeforeNextTurnOutput: boolean
   // Backgrounded Bash commands + dynamic workflows still running, keyed by the SDK task_id.
   // For workflows we also carry the launching tool's id, the meta.name, and — once the
   // Workflow tool result arrives — the real on-disk runId (`wf_…`), which is DISTINCT from
@@ -477,6 +494,19 @@ class MessagePersister {
       settledInputRequests: priorSettledInputRequests,
       cancelledCapabilityReviews: new Set(),
       lastApiErrorCode: null,
+      lastAssistantMessageId:
+        priorIsActive ? (prior?.lastAssistantMessageId ?? null) : null,
+      assistantMessageIds:
+        priorIsActive ? new Set(prior?.assistantMessageIds ?? []) : new Set(),
+      assistantEntryUuids:
+        priorIsActive ? new Set(prior?.assistantEntryUuids ?? []) : new Set(),
+      lastAssistantText:
+        priorIsActive ? (prior?.lastAssistantText ?? '') : '',
+      lastAssistantTimestampMs:
+        priorIsActive ? (prior?.lastAssistantTimestampMs ?? null) : null,
+      queuedTurnCount: priorIsActive ? (prior?.queuedTurnCount ?? 0) : 0,
+      resetAssistantBeforeNextTurnOutput:
+        priorIsActive ? (prior?.resetAssistantBeforeNextTurnOutput ?? false) : false,
       activeBackgroundTasks: priorBackgroundTasks,
       bgTasksSnapshot: prior?.bgTasksSnapshot ?? null,
       // Carried with the snapshot it describes — the incoming handshake is what
@@ -1066,6 +1096,12 @@ class MessagePersister {
     this.broadcastToSSE(sessionId, { type: 'session_updated' })
   }
 
+  private resetSessionCompleteResponse(state: StreamingState): void {
+    state.lastAssistantMessageId = null
+    state.lastAssistantText = ''
+    state.lastAssistantTimestampMs = null
+  }
+
   // Mark session as active (when user sends a message)
   markSessionActive(sessionId: string, agentSlug?: string): void {
     let state = this.streamingStates.get(sessionId)
@@ -1088,6 +1124,13 @@ class MessagePersister {
         settledInputRequests: new Map(),
         cancelledCapabilityReviews: new Set(),
         lastApiErrorCode: null,
+        lastAssistantMessageId: null,
+        assistantMessageIds: new Set(),
+        assistantEntryUuids: new Set(),
+        lastAssistantText: '',
+        lastAssistantTimestampMs: null,
+        queuedTurnCount: 0,
+        resetAssistantBeforeNextTurnOutput: false,
         activeBackgroundTasks: new Map(),
         bgTasksSnapshot: null,
         processInstanceId: null,
@@ -1104,6 +1147,7 @@ class MessagePersister {
         this.capture.recordNote(sessionId, 'state_created', { agentSlug }).catch(() => {})
       }
     }
+    const wasActive = state.isActive
     state.isActive = true
     state.isInterrupted = false // Reset interrupted flag on new message
     state.isAwaitingInput = false // Reset awaiting input on new message
@@ -1121,6 +1165,17 @@ class MessagePersister {
     // completion notification against the turn this message is starting.
     state.lastResultSubtype = null
     state.lastResultCleanSuccess = false
+    // Re-marking an already-active session is how queued/steering messages are
+    // accepted mid-turn. Preserve the current candidate in that case; the next
+    // assistant message group will replace it. A genuinely new turn must never
+    // inherit the prior turn's answer.
+    if (!wasActive) {
+      this.resetSessionCompleteResponse(state)
+      state.queuedTurnCount = 0
+      state.resetAssistantBeforeNextTurnOutput = false
+    } else {
+      state.queuedTurnCount += 1
+    }
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
@@ -1520,6 +1575,51 @@ class MessagePersister {
 
     switch (content.type) {
       case 'assistant': {
+        if (state.resetAssistantBeforeNextTurnOutput) {
+          this.resetSessionCompleteResponse(state)
+          state.resetAssistantBeforeNextTurnOutput = false
+        }
+        // Preserve exactly the text portion the transcript UI can render. The
+        // SDK persists one complete frame per content block, so several frames
+        // can share an assistant message id (thinking, text, tool use). Merge
+        // their text here and let a newer id replace the candidate entirely.
+        const assistantMessageId =
+          typeof content.message?.id === 'string' && content.message.id
+            ? content.message.id
+            : null
+        const assistantEntryUuid =
+          typeof content.uuid === 'string' && content.uuid ? content.uuid : null
+        const assistantText = this.extractAssistantText(content)
+        // Captured replays can carry the serialized ISO form even though live
+        // ContainerClient messages use Date instances.
+        const assistantTimestampMs = message.timestamp instanceof Date
+          ? message.timestamp.getTime()
+          : Date.parse(String(message.timestamp))
+        // Resumed CLI processes can replay already-persisted frames. The
+        // renderer deduplicates those by transcript UUID before merging, so
+        // ignore a duplicate even if it arrives after a newer message group.
+        if (!assistantEntryUuid || !state.assistantEntryUuids.has(assistantEntryUuid)) {
+          if (assistantMessageId && assistantMessageId === state.lastAssistantMessageId) {
+            state.lastAssistantText += assistantText
+            if (Number.isFinite(assistantTimestampMs)) {
+              state.lastAssistantTimestampMs = assistantTimestampMs
+            }
+          } else if (assistantMessageId && state.assistantMessageIds.has(assistantMessageId)) {
+            // A later frame can belong to an older assistant group (typically a
+            // delayed tool block). transformMessages merges it into that older
+            // bubble without changing which assistant item is last, so neither
+            // should the notification candidate.
+          } else {
+            state.lastAssistantMessageId = assistantMessageId
+            state.lastAssistantText = assistantText
+            state.lastAssistantTimestampMs = Number.isFinite(assistantTimestampMs)
+              ? assistantTimestampMs
+              : null
+          }
+          if (assistantMessageId) state.assistantMessageIds.add(assistantMessageId)
+          if (assistantEntryUuid) state.assistantEntryUuids.add(assistantEntryUuid)
+        }
+
         // Complete assistant message - JSONL is the source of truth
         // Track SDK error code from assistant message (e.g., 'authentication_failed', 'rate_limit')
         if (content.error) {
@@ -1925,7 +2025,10 @@ class MessagePersister {
                 // Completion notification at the real end of the work. Skip
                 // resume-exits: the session is pausing for a resume, not done.
                 if (state.lastResultSubtype === 'success' && state.agentSlug) {
-                  notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+                  notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
+                    responseText: state.lastAssistantText,
+                    responseCompletedAtMs: state.lastAssistantTimestampMs,
+                  }).catch((err) => {
                     console.error('[MessagePersister] Failed to trigger session complete notification:', err)
                   })
                 }
@@ -1938,6 +2041,11 @@ class MessagePersister {
             // The runtime started a turn we didn't initiate via POST (e.g. a
             // queued message picked up after an out-of-order idle) — self-heal.
             state.isActive = true
+            this.resetSessionCompleteResponse(state)
+            state.queuedTurnCount = 0
+            state.resetAssistantBeforeNextTurnOutput = false
+            state.lastResultSubtype = null
+            state.lastResultCleanSuccess = false
             this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
             this.broadcastGlobal({
               type: 'session_active',
@@ -2003,6 +2111,14 @@ class MessagePersister {
       }
 
       case 'result': {
+        if (state.resetAssistantBeforeNextTurnOutput) {
+          this.resetSessionCompleteResponse(state)
+          state.resetAssistantBeforeNextTurnOutput = false
+        }
+        if (state.queuedTurnCount > 0) {
+          state.queuedTurnCount -= 1
+          state.resetAssistantBeforeNextTurnOutput = true
+        }
         // Query completed. Classification handles both error shapes — the
         // legacy error subtypes and the modern success-subtype-with-is_error
         // (terminal_reason: api_error etc.) that a subtype check alone misses.
@@ -2152,7 +2268,10 @@ class MessagePersister {
         // `notifyWhenUnfocused` toggle. Skip for 'resume' exits — the
         // session is pausing for a resume, not truly finished.
         if (content.subtype !== 'resume' && state.agentSlug) {
-          notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+          notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
+            responseText: state.lastAssistantText,
+            responseCompletedAtMs: state.lastAssistantTimestampMs,
+          }).catch((err) => {
             console.error('[MessagePersister] Failed to trigger session complete notification:', err)
           })
         }

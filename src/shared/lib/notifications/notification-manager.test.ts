@@ -5,6 +5,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   createNotification: vi.fn(async () => 'notif-id'),
   getSessionMetadata: vi.fn(),
+  findLastSessionEntry: vi.fn(async () => null),
+  getConfiguredLlmClient: vi.fn(() => ({ messages: {} })),
+  createSummarizerText: vi.fn(),
+  resolveActiveProviderModel: vi.fn(() => 'resolved-summarizer'),
+  getEffectiveModels: vi.fn(() => ({ summarizerModel: 'configured-summarizer' })),
   getAgent: vi.fn(async () => ({ frontmatter: { name: 'Demo Agent' } })),
   getUserSettings: vi.fn(() => ({
     notifications: {
@@ -23,6 +28,17 @@ vi.mock('@shared/lib/services/notification-service', () => ({
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: mocks.getSessionMetadata,
+  findLastSessionEntry: mocks.findLastSessionEntry,
+}))
+vi.mock('@shared/lib/llm-provider/helpers', () => ({
+  getConfiguredLlmClient: mocks.getConfiguredLlmClient,
+  createSummarizerText: mocks.createSummarizerText,
+}))
+vi.mock('@shared/lib/llm-provider', () => ({
+  resolveActiveProviderModel: mocks.resolveActiveProviderModel,
+}))
+vi.mock('@shared/lib/config/settings', () => ({
+  getEffectiveModels: mocks.getEffectiveModels,
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({
   getAgent: mocks.getAgent,
@@ -59,9 +75,94 @@ import { notificationManager } from './notification-manager'
 beforeEach(() => {
   vi.clearAllMocks()
   mockGetSessionMetadata.mockResolvedValue(null)
+  mocks.createSummarizerText.mockResolvedValue('A concise completion summary.')
 })
 
 describe('triggerSessionComplete — automated-session gating', () => {
+  it('uses the final visible response as the canonical body on every channel', async () => {
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: '**Done.** The report is ready.',
+    })
+
+    expect(mockCreateNotification).toHaveBeenCalledWith({
+      type: 'session_complete',
+      sessionId: 'sess-1',
+      agentSlug: 'agent-x',
+      title: 'Demo Agent finished',
+      body: 'Done. The report is ready.',
+    })
+    expect(mockBroadcastGlobal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'os_notification',
+        title: 'Demo Agent finished',
+        body: 'Done. The report is ready.',
+      }),
+    )
+  })
+
+  it('keeps the generic body when the final assistant item has no text', async () => {
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: '',
+    })
+
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Demo Agent finished',
+        body: 'Demo Agent has finished running',
+      }),
+    )
+  })
+
+  it('does not call the summarizer when completion notifications are disabled', async () => {
+    mocks.getUserSettings.mockReturnValueOnce({
+      notifications: {
+        enabled: true,
+        sessionComplete: false,
+        sessionWaiting: true,
+        sessionScheduled: true,
+      },
+    })
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(mocks.createSummarizerText).not.toHaveBeenCalled()
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+  })
+
+  it('preserves per-session notification order when an earlier summary is slow', async () => {
+    let resolveFirstSummary: ((value: string) => void) | undefined
+    mocks.createSummarizerText.mockImplementationOnce(
+      () => new Promise<string>((resolve) => {
+        resolveFirstSummary = resolve
+      }),
+    )
+
+    const first = notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+    await vi.waitFor(() => {
+      expect(mocks.createSummarizerText).toHaveBeenCalledTimes(1)
+    })
+
+    const second = notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'Second response finished.',
+    })
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+
+    resolveFirstSummary?.('First response finished.')
+    await Promise.all([first, second])
+
+    const created = mockCreateNotification.mock.calls as unknown as Array<[
+      { body: string },
+    ]>
+    expect(created.map(([notification]) => notification.body)).toEqual([
+      'First response finished.',
+      'Second response finished.',
+    ])
+  })
+
   it('creates a notification for a regular (non-automated) session', async () => {
     mockGetSessionMetadata.mockResolvedValue({
       isScheduledExecution: false,
@@ -92,6 +193,7 @@ describe('triggerSessionComplete — automated-session gating', () => {
     await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
     expect(mockCreateNotification).not.toHaveBeenCalled()
     expect(mockBroadcastGlobal).not.toHaveBeenCalled()
+    expect(mocks.createSummarizerText).not.toHaveBeenCalled()
   })
 
   it('skips creation for a webhook-execution session', async () => {
