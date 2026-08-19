@@ -2,12 +2,15 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { DashboardHeaderProvider } from '@renderer/context/dashboard-header-context'
+import { DashboardHeaderActions } from './dashboard-header-actions'
 import { DashboardView } from './dashboard-view'
 
 const mocks = vi.hoisted(() => ({
   agentSlug: 'agent',
   agentStatus: 'running',
   dashboardStatus: 'crashed',
+  dashboardDescription: '',
   dashboardStartupPhase: undefined as undefined | 'installing-dependencies' | 'starting-server',
   dashboardFirstRun: undefined as boolean | undefined,
   start: {
@@ -40,7 +43,7 @@ vi.mock('@renderer/hooks/use-artifacts', () => ({
     data: [{
       slug: 'dashboard',
       name: 'Dashboard',
-      description: '',
+      description: mocks.dashboardDescription,
       status: mocks.dashboardStatus,
       port: 0,
       startupPhase: mocks.dashboardStartupPhase,
@@ -82,12 +85,26 @@ vi.mock('@renderer/lib/perf', () => ({
   useRenderTracker: vi.fn(),
 }))
 
+function DashboardHarness({ agentSlug = 'agent' }: { agentSlug?: string }) {
+  return (
+    <DashboardHeaderProvider>
+      <DashboardHeaderActions agentSlug={agentSlug} dashboardSlug="dashboard" />
+      <DashboardView agentSlug={agentSlug} dashboardSlug="dashboard" />
+    </DashboardHeaderProvider>
+  )
+}
+
+function renderDashboard(agentSlug = 'agent') {
+  return render(<DashboardHarness agentSlug={agentSlug} />)
+}
+
 describe('DashboardView restart', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.agentSlug = 'agent'
     mocks.agentStatus = 'running'
     mocks.dashboardStatus = 'crashed'
+    mocks.dashboardDescription = ''
     mocks.dashboardStartupPhase = undefined
     mocks.dashboardFirstRun = undefined
     mocks.start.mutateAsync.mockResolvedValue({})
@@ -101,15 +118,13 @@ describe('DashboardView restart', () => {
       }),
     )
 
-    const view = render(
-      <DashboardView agentSlug="agent" dashboardSlug="dashboard" />,
-    )
+    const view = renderDashboard()
     await userEvent.click(screen.getByRole('button', { name: 'Restart agent' }))
 
     expect(mocks.stop.mutateAsync).toHaveBeenCalledOnce()
 
     mocks.agentStatus = 'stopped'
-    view.rerender(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
+    view.rerender(<DashboardHarness />)
 
     expect(mocks.start.mutate).not.toHaveBeenCalled()
 
@@ -123,7 +138,7 @@ describe('DashboardView restart', () => {
     mocks.dashboardStartupPhase = 'installing-dependencies'
     mocks.dashboardFirstRun = true
 
-    render(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
+    renderDashboard()
 
     expect(screen.getByText('Preparing dashboard for first use…')).toBeInTheDocument()
     expect(screen.getByText('Installing dependencies. This only happens once.')).toBeInTheDocument()
@@ -134,19 +149,17 @@ describe('DashboardView restart', () => {
     const frame = () => document.querySelector('iframe')
     const waiting = () => screen.queryByText('Waiting for dashboard…')
 
-    const view = render(
-      <DashboardView agentSlug="agent" dashboardSlug="dashboard" />,
-    )
+    const view = renderDashboard()
     expect(frame()).not.toBeNull()
     expect(waiting()).toBeNull()
 
     // The agent leaves running through a control outside this view.
     mocks.agentStatus = 'stopped'
-    view.rerender(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
+    view.rerender(<DashboardHarness />)
     expect(frame()).toBeNull()
 
     mocks.agentStatus = 'running'
-    view.rerender(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
+    view.rerender(<DashboardHarness />)
 
     expect(frame()).not.toBeNull()
     expect(waiting()).toBeNull()
@@ -154,7 +167,7 @@ describe('DashboardView restart', () => {
 
   it('shows the toolbar spinner until the first iframe document loads', () => {
     mocks.dashboardStatus = 'running'
-    render(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
+    renderDashboard()
     const frame = document.querySelector('iframe')!
 
     expect(screen.getByRole('button', { name: 'Loading dashboard' })).toBeDisabled()
@@ -168,9 +181,7 @@ describe('DashboardView restart', () => {
     mocks.agentSlug = 'abc1234567'
     mocks.dashboardStatus = 'running'
 
-    render(
-      <DashboardView agentSlug="My Agent-abc1234567" dashboardSlug="dashboard" />,
-    )
+    renderDashboard('My Agent-abc1234567')
 
     expect(document.querySelector('iframe')?.getAttribute('src')).toBe(
       '/api/agents/abc1234567/artifacts/dashboard/',
@@ -179,7 +190,7 @@ describe('DashboardView restart', () => {
 
   it('shows refresh progress until the new iframe document loads', async () => {
     mocks.dashboardStatus = 'running'
-    render(<DashboardView agentSlug="agent" dashboardSlug="dashboard" />)
+    renderDashboard()
     const frame = document.querySelector('iframe')!
     fireEvent.load(frame)
 
@@ -190,5 +201,17 @@ describe('DashboardView restart', () => {
     fireEvent.load(frame)
 
     expect(screen.getByRole('button', { name: 'Refresh dashboard' })).not.toBeDisabled()
+  })
+
+  it('moves dashboard actions into the shared header and omits the description chrome', async () => {
+    mocks.dashboardStatus = 'running'
+    mocks.dashboardDescription = 'Day-by-day calorie and macro tracking'
+    renderDashboard()
+
+    expect(screen.getByTestId('dashboard-header-actions')).toBeInTheDocument()
+    expect(screen.queryByText(mocks.dashboardDescription)).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open dashboard in new window' }))
+    expect(mocks.openDashboardExternal).toHaveBeenCalledWith('agent', 'dashboard', 'Dashboard')
   })
 })
