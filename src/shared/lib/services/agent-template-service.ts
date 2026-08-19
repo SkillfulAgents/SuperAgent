@@ -268,14 +268,57 @@ async function walkFullExportFiles(
 // ZIP Export
 // ============================================================================
 
+export class ExportInProgressError extends Error {
+  constructor() {
+    super('An export is already in progress')
+    this.name = 'ExportInProgressError'
+  }
+}
+
+let hostExportBusy = false
+
+function beginHostExport(): void {
+  if (hostExportBusy) throw new ExportInProgressError()
+  hostExportBusy = true
+}
+
+function endHostExport(): void {
+  hostExportBusy = false
+}
+
+export function resetHostExportLockForTests(): void {
+  hostExportBusy = false
+}
+
+async function withHostExportLock<T>(fn: () => Promise<T>): Promise<T> {
+  beginHostExport()
+  try {
+    return await fn()
+  } catch (err) {
+    endHostExport()
+    throw err
+  }
+}
+
 // Queue files into an archiver and return it immediately so the HTTP response
 // can start flushing. Level 1: level 9 pegged 0.5 vCPU hosts on large exports.
 function createWorkspaceZipStream(
   addFiles: (archive: ReturnType<typeof archiver>) => Promise<void>,
   signal?: AbortSignal,
 ): Readable {
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    endHostExport()
+  }
+
   const archive = archiver('zip', { zlib: { level: 1 } })
+  archive.once('close', release)
+  archive.once('error', release)
+
   const onAbort = () => {
+    release()
     if (!archive.destroyed) archive.destroy()
   }
   signal?.addEventListener('abort', onAbort, { once: true })
@@ -293,6 +336,7 @@ function createWorkspaceZipStream(
       if (!archive.destroyed) {
         archive.destroy(err instanceof Error ? err : new Error(String(err)))
       }
+      release()
     } finally {
       signal?.removeEventListener('abort', onAbort)
     }
@@ -302,39 +346,43 @@ function createWorkspaceZipStream(
 }
 
 export async function exportAgentTemplate(agentSlug: string, signal?: AbortSignal): Promise<Readable> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  return withHostExportLock(async () => {
+    const workspaceDir = getAgentWorkspaceDir(agentSlug)
 
-  if (!(await directoryExists(workspaceDir))) {
-    throw new Error('Agent workspace not found')
-  }
-
-  const claudeMdPath = getAgentClaudeMdPath(agentSlug)
-  const claudeMdContent = await readFileOrNull(claudeMdPath)
-  if (!claudeMdContent) {
-    throw new Error('CLAUDE.md not found in agent workspace')
-  }
-
-  const templateFiles = await walkTemplateFiles(workspaceDir)
-  return createWorkspaceZipStream(async (archive) => {
-    for (const relativePath of templateFiles) {
-      if (signal?.aborted) return
-      archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
+    if (!(await directoryExists(workspaceDir))) {
+      throw new Error('Agent workspace not found')
     }
-  }, signal)
+
+    const claudeMdPath = getAgentClaudeMdPath(agentSlug)
+    const claudeMdContent = await readFileOrNull(claudeMdPath)
+    if (!claudeMdContent) {
+      throw new Error('CLAUDE.md not found in agent workspace')
+    }
+
+    const templateFiles = await walkTemplateFiles(workspaceDir)
+    return createWorkspaceZipStream(async (archive) => {
+      for (const relativePath of templateFiles) {
+        if (signal?.aborted) return
+        archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
+      }
+    }, signal)
+  })
 }
 
 export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): Promise<Readable> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  return withHostExportLock(async () => {
+    const workspaceDir = getAgentWorkspaceDir(agentSlug)
 
-  if (!(await directoryExists(workspaceDir))) {
-    throw new Error('Agent workspace not found')
-  }
+    if (!(await directoryExists(workspaceDir))) {
+      throw new Error('Agent workspace not found')
+    }
 
-  return createWorkspaceZipStream(async (archive) => {
-    await walkFullExportFiles(workspaceDir, (relativePath) => {
-      archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
+    return createWorkspaceZipStream(async (archive) => {
+      await walkFullExportFiles(workspaceDir, (relativePath) => {
+        archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
+      }, signal)
     }, signal)
-  }, signal)
+  })
 }
 
 // ============================================================================

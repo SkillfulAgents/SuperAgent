@@ -4753,6 +4753,15 @@ function packageDownloadResponse(body: Readable | Buffer, filename: string): Res
   return new Response(Readable.toWeb(nodeStream) as ReadableStream, { status: 200, headers })
 }
 
+function exportRouteError(c: Context, error: unknown, fallback: string) {
+  if (error instanceof Error && error.name === 'ExportInProgressError') {
+    return c.json({ error: error.message }, 409)
+  }
+  const message = error instanceof Error ? error.message : fallback
+  console.error(fallback, error)
+  return c.json({ error: message }, 500)
+}
+
 // POST /api/agents/:id/export-template - Export agent as ZIP download
 agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   try {
@@ -4762,9 +4771,7 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
     return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export template'
-    console.error('Failed to export template:', error)
-    return c.json({ error: message }, 500)
+    return exportRouteError(c, error, 'Failed to export template')
   }
 })
 
@@ -4777,9 +4784,7 @@ agents.post('/:id/export-full', AgentAdmin(), async (c) => {
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
     return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export agent'
-    console.error('Failed to export full agent:', error)
-    return c.json({ error: message }, 500)
+    return exportRouteError(c, error, 'Failed to export agent')
   }
 })
 

@@ -6068,6 +6068,19 @@ describe('POST /api/agents/:id/export-full', () => {
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Agent workspace not found' })
   })
+
+  it('returns 409 when another export is already in progress', async () => {
+    const err = new Error('An export is already in progress')
+    err.name = 'ExportInProgressError'
+    vi.mocked(exportAgentFull).mockRejectedValue(err)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'An export is already in progress' })
+  })
 })
 
 describe('POST /api/agents/:id/export-template', () => {
@@ -6093,6 +6106,19 @@ describe('POST /api/agents/:id/export-template', () => {
     expect(res.headers.get('Content-Length')).toBeNull()
     expect(Buffer.from(await res.arrayBuffer())).toEqual(fakeZip)
     expect(exportAgentTemplate).toHaveBeenCalledWith('pvb86kldy6', expect.any(AbortSignal))
+  })
+
+  it('returns 409 when another export is already in progress', async () => {
+    const err = new Error('An export is already in progress')
+    err.name = 'ExportInProgressError'
+    vi.mocked(exportAgentTemplate).mockRejectedValue(err)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'An export is already in progress' })
   })
 })
 

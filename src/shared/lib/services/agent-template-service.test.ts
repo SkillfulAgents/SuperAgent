@@ -57,6 +57,8 @@ import {
   validateTemplateEntries,
   exportAgentTemplate as exportAgentTemplateStream,
   exportAgentFull as exportAgentFullStream,
+  ExportInProgressError,
+  resetHostExportLockForTests,
   importAgentFromTemplate,
   installAgentFromSkillset,
   computeAgentTemplateHash,
@@ -89,6 +91,10 @@ async function exportAgentTemplate(slug: string): Promise<Buffer> {
 async function exportAgentFull(slug: string): Promise<Buffer> {
   return readableToBuffer(await exportAgentFullStream(slug))
 }
+
+afterEach(() => {
+  resetHostExportLockForTests()
+})
 
 const MINIMAL_CLAUDE_MD = `---
 name: Test Agent
@@ -1899,6 +1905,7 @@ describe('exportAgentTemplate - error cases', () => {
   })
 
   afterEach(async () => {
+    resetHostExportLockForTests()
     process.env.SUPERAGENT_DATA_DIR = originalEnv
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
@@ -1917,6 +1924,18 @@ describe('exportAgentTemplate - error cases', () => {
     await expect(exportAgentTemplate('no-claude')).rejects.toThrow(
       'CLAUDE.md not found'
     )
+  })
+
+  it('does not hold the lock when CLAUDE.md is missing', async () => {
+    const missingDir = path.join(testDir, 'agents', 'no-claude', 'workspace')
+    fs.mkdirSync(missingDir, { recursive: true })
+    await expect(exportAgentTemplate('no-claude')).rejects.toThrow('CLAUDE.md not found')
+
+    const workspaceDir = path.join(testDir, 'agents', 'ok-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    const zipBuffer = await exportAgentTemplate('ok-agent')
+    expect(zipBuffer.length).toBeGreaterThan(0)
   })
 })
 
@@ -1937,6 +1956,7 @@ describe('exportAgentFull', () => {
   })
 
   afterEach(async () => {
+    resetHostExportLockForTests()
     process.env.SUPERAGENT_DATA_DIR = originalEnv
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
@@ -1945,6 +1965,32 @@ describe('exportAgentFull', () => {
     await expect(exportAgentFull('nonexistent-agent')).rejects.toThrow(
       'Agent workspace not found'
     )
+  })
+
+  it('rejects a second export while the first stream is still open', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+
+    const first = await exportAgentFullStream('full-agent')
+    await expect(exportAgentFullStream('full-agent')).rejects.toBeInstanceOf(ExportInProgressError)
+    await expect(exportAgentTemplateStream('full-agent')).rejects.toBeInstanceOf(ExportInProgressError)
+
+    await readableToBuffer(first)
+    const second = await exportAgentFullStream('full-agent')
+    const zipBuffer = await readableToBuffer(second)
+    const reader = await openZipFromBuffer(zipBuffer)
+    reader.close()
+    expect(reader.entries.some((e) => e.fileName === 'CLAUDE.md')).toBe(true)
+  })
+
+  it('does not hold the lock when the workspace is missing', async () => {
+    await expect(exportAgentFull('missing')).rejects.toThrow('Agent workspace not found')
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    const zipBuffer = await exportAgentFull('full-agent')
+    expect(zipBuffer.length).toBeGreaterThan(0)
   })
 
   it('returns a readable zip stream', async () => {
