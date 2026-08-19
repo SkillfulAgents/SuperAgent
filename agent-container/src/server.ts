@@ -44,6 +44,7 @@ import {
 import { getEditingCommands } from './cdp-editing-commands';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
+import { decodeChromeTargetTitle } from './chrome-target-title';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -2217,7 +2218,7 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
       return pages.map(p => ({
         id: p.id,
         url: p.url,
-        title: p.title || '',
+        title: decodeChromeTargetTitle(p.title || ''),
         wsUrl: p.webSocketDebuggerUrl,
         requiresSession: false,
       }));
