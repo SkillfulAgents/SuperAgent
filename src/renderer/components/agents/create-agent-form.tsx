@@ -176,7 +176,11 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
       source: 'import' | 'skillset',
     ) => {
       await discardWarmAgent()
-      track('agent_created', { source, num_skills_added_at_creation: 0 })
+      track('agent_created', {
+        source,
+        num_skills_added_at_creation: 0,
+        has_template_prompt: Boolean(agent.templatePrompt),
+      })
       await completeAgentTemplateHandoff({
         draftsStore,
         agentSlug: agent.slug,

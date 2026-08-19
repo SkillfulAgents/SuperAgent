@@ -119,8 +119,11 @@ export function useImportAgentTemplate() {
         onProgress,
       })
     },
-    onSuccess: () => {
-      track('agent_created', { source: 'file_import' })
+    onSuccess: (result) => {
+      track('agent_created', {
+        source: 'file_import',
+        has_template_prompt: Boolean(result.templatePrompt),
+      })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
@@ -154,8 +157,11 @@ export function useInstallAgentFromSkillset() {
       }
       return res.json()
     },
-    onSuccess: () => {
-      track('agent_created', { source: 'skillset' })
+    onSuccess: (result) => {
+      track('agent_created', {
+        source: 'skillset',
+        has_template_prompt: Boolean(result.templatePrompt),
+      })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
