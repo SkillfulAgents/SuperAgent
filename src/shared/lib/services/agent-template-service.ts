@@ -892,6 +892,13 @@ export async function getDiscoverableAgents(
         description: agent.description,
         version: agent.version,
         path: agent.path,
+        // `works_with` is snake_case in index.json; the rest pass through as-is.
+        details: agent.details,
+        category: agent.category,
+        icon: agent.icon,
+        tags: agent.tags,
+        worksWith: agent.works_with,
+        developer: agent.developer,
       })
     }
   }

@@ -11,6 +11,61 @@ import { z } from 'zod'
 
 export const SkillProviderSchema = z.enum(['github', 'platform', 'public'])
 
+/**
+ * A skillset repo's `index.json`.
+ *
+ * Everything past `name`/`path`/`description`/`version` is OPTIONAL on
+ * purpose: the marketplace fields (category, icon, tags, works_with,
+ * developer, details) were added to the public skillset after the format
+ * shipped, and a skillset repo pinned to the older shape must keep loading.
+ * Unknown keys are stripped rather than rejected so the repo can add fields
+ * ahead of the app understanding them.
+ */
+export const SkillsetIndexSkillSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  description: z.string().default(''),
+  version: z.string().default(''),
+})
+
+export const SkillsetIndexAgentSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  description: z.string().default(''),
+  version: z.string().default(''),
+  /** Long-form markdown shown on the template details page. */
+  details: z.string().optional(),
+  createdAt: z.string().optional(),
+  /** Free-form marketplace category, e.g. "Marketing", "Customer Success". */
+  category: z.string().optional(),
+  /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
+  icon: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  /** Services the template connects to; `slug` matches our service-icon set. */
+  works_with: z
+    .array(
+      z.object({
+        type: z.string(),
+        slug: z.string(),
+      }),
+    )
+    .optional(),
+  developer: z
+    .object({
+      name: z.string(),
+      url: z.string().optional(),
+    })
+    .optional(),
+})
+
+export const SkillsetIndexSchema = z.object({
+  skillset_name: z.string(),
+  description: z.string().default(''),
+  version: z.string().default(''),
+  skills: z.array(SkillsetIndexSkillSchema).default([]),
+  agents: z.array(SkillsetIndexAgentSchema).optional(),
+})
+
 export const SkillsetProviderDataSchema = z.record(z.string(), z.unknown())
 
 export const SkillsetConfigSchema = z.object({

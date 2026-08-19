@@ -22,6 +22,14 @@ const NotificationDetailRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/notification-detail-route'),
   'NotificationDetailRoute',
 )
+const ExploreRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/explore-route'),
+  'ExploreRoute',
+)
+const ExploreTemplateRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/explore-route'),
+  'ExploreTemplateRoute',
+)
 const AgentShell = lazyRouteComponent(
   () => import('@renderer/components/layout/agent-shell'),
   'AgentShell',
@@ -85,6 +93,24 @@ export const notificationDetailRoute = createRoute({
   path: 'notifications/$id',
   params: { parse: (raw) => ({ id: z.string().min(1).parse(raw.id) }) },
   component: NotificationDetailRoute,
+})
+
+export const exploreRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'explore',
+  component: ExploreRoute,
+})
+
+export const exploreTemplateRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'explore/$skillsetId/$templateSlug',
+  params: {
+    parse: (raw) => ({
+      skillsetId: z.string().min(1).parse(raw.skillsetId),
+      templateSlug: z.string().min(1).parse(raw.templateSlug),
+    }),
+  },
+  component: ExploreTemplateRoute,
 })
 
 // ── AGENT LAYOUT: /agents/$slug — mount-survival anchor #2 (chat/SSE shell) ────
@@ -217,6 +243,8 @@ export const routeTree = rootRoute.addChildren([
     homeRoute,
     notificationsRoute,
     notificationDetailRoute,
+    exploreRoute,
+    exploreTemplateRoute,
     agentLayoutRoute.addChildren([
       agentHomeRoute,
       sessionRoute,

@@ -98,7 +98,6 @@ import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
-import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
 // agents-list group; pull out as a constant so the call site stays readable.
@@ -743,7 +742,6 @@ export function AppSidebar() {
           ? null
           : discoverableAgents.length > 0
   const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
-  const [marketplaceOpen, setMarketplaceOpen] = useState(false)
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
@@ -948,11 +946,15 @@ export function AppSidebar() {
                 {hasMarketplace && (
                   <SidebarMenuItem>
                     <SidebarMenuButton
-                      onClick={() => setMarketplaceOpen(true)}
+                      asChild
+                      // Prefix match: the details page (/explore/...) is still Explore.
+                      isActive={pathname === '/explore' || pathname.startsWith('/explore/')}
                       data-testid="marketplace-button"
                     >
-                      <Compass className="h-4 w-4" />
-                      <span>Explore</span>
+                      <AppLink to="/explore">
+                        <Compass className="h-4 w-4" />
+                        <span>Discover New Agents</span>
+                      </AppLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 )}
@@ -1040,8 +1042,6 @@ export function AppSidebar() {
 
       <SidebarRail />
       </Sidebar>
-
-      <AgentTemplateBrowseDialog open={marketplaceOpen} onOpenChange={setMarketplaceOpen} />
     </>
   )
 }

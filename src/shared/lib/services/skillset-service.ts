@@ -36,7 +36,7 @@ import type {
   SkillProvider,
   SkillsetCredentialInput,
 } from '@shared/lib/types/skillset'
-import { InstalledSkillMetadataSchema } from '@shared/lib/types/skillset-schema'
+import { InstalledSkillMetadataSchema, SkillsetIndexSchema } from '@shared/lib/types/skillset-schema'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
   copyDirectoryFiltered,
@@ -746,12 +746,12 @@ export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
     throw new Error('index.json contains invalid JSON')
   }
 
-  const parsed = raw as Record<string, unknown>
-  if (!parsed.skillset_name || !Array.isArray(parsed.skills)) {
-    throw new Error('Invalid index.json: missing skillset_name or skills array')
+  const parsed = SkillsetIndexSchema.safeParse(raw)
+  if (!parsed.success) {
+    throw new Error(`Invalid index.json: ${parsed.error.issues[0]?.message ?? 'does not match the skillset index schema'}`)
   }
 
-  return raw as SkillsetIndex
+  return parsed.data
 }
 
 // ============================================================================
