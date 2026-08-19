@@ -1,0 +1,24 @@
+{
+  "storyId": "agent-chat",
+  "passed": true,
+  "reason": "Successfully tested agent chat functionality: sent a math question to the QA-20260819-185145-5avc agent and verified it responded with the correct answer \"4\".",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page with sidebar showing available agents.",
+    "Step 2: Found and clicked the \"QA-20260819-185145-5avc\" agent in the sidebar — Successfully navigated to the agent's home page. Verified agent exists in sidebar with the exact name match.",
+    "Step 3: Verified agent status is \"running\" or \"idle\" — Agent status confirmed as \"idle\" (ref=e172), which meets the test requirement. Status indicator displayed green/idle icon.",
+    "Step 4: Sent message \"Hello! What is 2+2?\" — Successfully typed the message into the message input field (ref=e189) and clicked the \"Send message\" button (ref=e324). Message was sent and page navigated to new chat session URL.",
+    "Step 5: Waited up to 3 minutes for a response — Agent began processing immediately (working indicator appeared). Response was received within seconds. Used polling code to monitor for response completion. No timeout occurred.",
+    "Step 6: Verified the response mentions \"4\" and took a screenshot — Agent responded with \"4\" (ref=e433 in accessibility snapshot). Screenshot captured showing the complete chat exchange with user message \"Hello! What is 2+2?\" and agent response \"4\". Agent status returned to \"idle\" indicating processing complete."
+  ],
+  "bugs": [],
+  "durationMs": 68940,
+  "sessionId": "4ecb761a-e347-41fc-9b45-a036d5f688bc",
+  "cost": {
+    "inputTokens": 344,
+    "outputTokens": 11139,
+    "cacheCreationTokens": 114845,
+    "cacheReadTokens": 936956,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.293291
+  }
+}
