@@ -10,6 +10,11 @@ import { z } from 'zod'
 import { resizeBase64Screenshot } from '../image-utils'
 import { inputManager } from '../input-manager'
 
+export const COMPUTER_USE_GUIDANCE_HINT =
+  'Required guidance: read `/opt/gamut/docs/computer-use.md` before continuing native app interaction (unless you already read it in this conversation).'
+
+const COMPUTER_USE_GUIDANCE_METHODS = new Set(['apps', 'windows', 'launch', 'grab'])
+
 /**
  * Shared helper: creates a pending input request that blocks until the host
  * resolves (executes) or rejects (denies) the computer use command.
@@ -67,8 +72,12 @@ async function computerUseRequest(
       }
     }
 
+    const text = output || `${method} completed successfully.`
+    const guidance = COMPUTER_USE_GUIDANCE_METHODS.has(method)
+      ? `\n\n${COMPUTER_USE_GUIDANCE_HINT}`
+      : ''
     return {
-      content: [{ type: 'text' as const, text: output || `${method} completed successfully.` }],
+      content: [{ type: 'text' as const, text: `${text}${guidance}` }],
     }
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import { buildSystemPromptVars, generateSystemPrompt } from './claude-code'
 
 const KEYS = ['COMPOSIO_PLATFORM_MODE', 'PLATFORM_AUTH_ACTIVE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM']
@@ -38,10 +39,58 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('### Custom Webhook Endpoints')).toBe(composio && webhook) // child heading needs a sibling
     expect(out.includes('Prefer `setup_trigger`')).toBe(composio && webhook)  // composio-only bullet nested in webhook body
     expect(out.includes('platform-dependent')).toBe(!composio && !webhook)    // disconnected fallback
-    // platformServices shares PLATFORM_AUTH_ACTIVE with webhookEndpoints
+    // platformServices shares PLATFORM_AUTH_ACTIVE with webhookEndpoints, but
+    // its procedural API details now live in the on-demand guide.
     expect(out.includes('## Built-in media generation')).toBe(webhook)
-    expect(out.includes('v1/replicate')).toBe(webhook)
-    expect(out.includes('ANTHROPIC_AUTH_TOKEN')).toBe(webhook)
+    expect(out.includes('/opt/gamut/docs/media-generation.md')).toBe(webhook)
+    expect(out).not.toContain('v1/replicate')
+    expect(out).not.toContain('ANTHROPIC_AUTH_TOKEN')
+  })
+
+  it('references every image-owned capability guide and keeps its source file present', () => {
+    process.env.COMPOSIO_PLATFORM_MODE = 'true'
+    process.env.PLATFORM_AUTH_ACTIVE = 'true'
+    process.env.HOST_PLATFORM = 'darwin'
+    const out = generateSystemPrompt()
+    const guides = [
+      'scheduling-and-resuming.md',
+      'webhooks.md',
+      'media-generation.md',
+      'chat-integrations.md',
+      'browser-use.md',
+      'building-dashboards.md',
+      'computer-use.md',
+    ]
+
+    for (const guide of guides) {
+      expect(out).toContain(`/opt/gamut/docs/${guide}`)
+      const sourcePath = join(__dirname, '..', 'docs', basename(guide))
+      expect(existsSync(sourcePath), `${guide} must be copied into the image`).toBe(true)
+      expect(readFileSync(sourcePath, 'utf8').trim().length).toBeGreaterThan(100)
+    }
+  })
+
+  it('routes product questions through the complete image-owned FAQ directory', () => {
+    const out = generateSystemPrompt()
+    const faqDir = join(__dirname, '..', 'docs', 'faqs')
+    const expectedFaqs = [
+      'how-do-i-get-help-or-report-a-bug.md',
+      'is-my-data-secure.md',
+      'what-can-the-agent-do.md',
+      'what-integrations-are-supported.md',
+      'what-is-gamut-and-how-does-it-work.md',
+    ]
+
+    expect(out).toContain('## Product Knowledge FAQs')
+    expect(out).toContain('ls /opt/gamut/docs/faqs')
+    expect(out).toContain('Use Read specifically')
+    expect(out).toContain('do not read FAQ contents with Bash')
+    expect(readdirSync(faqDir).sort()).toEqual(expectedFaqs)
+    for (const faq of expectedFaqs) {
+      const content = readFileSync(join(faqDir, faq), 'utf8')
+      expect(content).toMatch(/^---\n/)
+      expect(content.trim().length).toBeGreaterThan(100)
+    }
   })
 
   // The pause/resume guidance must always render: without it agents reach for

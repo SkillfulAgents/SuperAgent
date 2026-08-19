@@ -19,6 +19,8 @@ import { tabManager } from '../tab-manager'
 import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
+export const BROWSER_USE_GUIDANCE_HINT =
+  'Required guidance: read `/opt/gamut/docs/browser-use.md` before continuing browser interaction (unless you already read it in this conversation).'
 
 function errorResult(message: string) {
   return {
@@ -127,7 +129,7 @@ Omit location to keep using the current browser where it is; when no browser is 
         content: [
           {
             type: 'text' as const,
-            text: `Switched to existing tab ${data.tabId} in ${locationText}, which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}`,
+            text: `Switched to existing tab ${data.tabId} in ${locationText}, which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`,
           },
         ],
       }
@@ -137,7 +139,7 @@ Omit location to keep using the current browser where it is; when no browser is 
       content: [
         {
           type: 'text' as const,
-          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}`,
+          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`,
         },
       ],
     }

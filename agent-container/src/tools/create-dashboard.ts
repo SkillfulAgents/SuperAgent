@@ -2,6 +2,9 @@ import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { dashboardManager } from '../dashboard-manager'
 
+export const DASHBOARD_GUIDANCE_HINT =
+  'Required guidance: read `/opt/gamut/docs/building-dashboards.md` before editing or starting this dashboard (unless you already read it in this conversation).'
+
 export const createDashboardTool = tool(
   'create_dashboard',
   `Scaffold a new dashboard project at /workspace/artifacts/<slug>/. This creates the directory structure, package.json, and starter code.
@@ -38,7 +41,7 @@ Arguments:
         content: [
           {
             type: 'text' as const,
-            text: `Dashboard "${args.name}" created at /workspace/artifacts/${args.slug}/\n\nYou can now edit the source files and use start_dashboard to start the server.`,
+            text: `Dashboard "${args.name}" created at /workspace/artifacts/${args.slug}/\n\nYou can now edit the source files and use start_dashboard to start the server.\n\n${DASHBOARD_GUIDANCE_HINT}`,
           },
         ],
       }
