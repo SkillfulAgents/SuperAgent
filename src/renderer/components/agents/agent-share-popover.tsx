@@ -553,11 +553,9 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                       <p className="text-xs text-muted-foreground">{option.description}</p>
                     </div>
                     {isSelected ? (
-                      <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#0099FF] text-white">
-                        <Check className="h-3 w-3" />
-                      </div>
+                      <Check className="h-4 w-4 shrink-0" />
                     ) : (
-                      <div className="h-5 w-5 shrink-0 rounded-full border border-muted-foreground/30" />
+                      <span className="h-4 w-4 shrink-0" />
                     )}
                   </button>
                 )
