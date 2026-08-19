@@ -501,6 +501,9 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
   readJsonlFile: vi.fn(),
   getAgentWorkspaceDir: (slug: string) => mockGetAgentWorkspaceDir(slug),
+  // The skills-files route checks the skill dir via directoryExists; delegate
+  // to the same mock the tests already use for fs.existsSync.
+  directoryExists: async (p: string) => mockFsExistsSync(p),
   getAgentPreferencesPath: vi.fn((slug: string) => `/mock/workspace/${slug}/agent-preferences.json`),
   getTempUploadsDir: vi.fn(() => '/mock/tmp/uploads'),
   ensureDirectory: vi.fn(),

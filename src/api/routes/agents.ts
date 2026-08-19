@@ -72,7 +72,7 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform, directoryExists } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
@@ -4972,7 +4972,7 @@ agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
 
     const skillDir = path.join(getAgentWorkspaceDir(agentSlug), '.claude', 'skills', dir)
 
-    if (!fs.existsSync(skillDir)) {
+    if (!(await directoryExists(skillDir))) {
       return c.json({ error: 'Skill directory not found' }, 404)
     }
 
@@ -5357,7 +5357,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
 agents.get('/:id/mounts', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const mounts = getMountsWithHealth(agentSlug)
+    const mounts = await getMountsWithHealth(agentSlug)
     return c.json(mounts)
   } catch (error) {
     console.error('Failed to list mounts:', error)
@@ -5374,7 +5374,7 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
 
     let mount
     try {
-      mount = addMount(agentSlug, hostPath)
+      mount = await addMount(agentSlug, hostPath)
     } catch (err: any) {
       return c.json({ error: err.message || 'Invalid path' }, 400)
     }
@@ -5401,7 +5401,7 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
     const mountId = c.req.param('mountId')
     const restart = c.req.query('restart') === 'true'
 
-    removeMount(agentSlug, mountId)
+    await removeMount(agentSlug, mountId)
 
     if (restart) {
       const cachedInfo = containerManager.getCachedInfo(agentSlug)
