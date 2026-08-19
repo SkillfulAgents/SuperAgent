@@ -106,6 +106,9 @@ export const PlatformAccountInfoSchema = z.object({
   memberId: z.string(),
   orgId: z.string(),
   orgName: z.string().nullish().transform((v) => v ?? null),
+  // Added by newer Platform proxies. Nullish keeps deployments compatible
+  // during a rolling rollout where the upstream field may not exist yet.
+  orgIconUrl: z.string().nullish().transform((v) => v ?? null),
   role: z.string().nullish().transform((v) => v ?? null),
   userId: z.string(),
   email: z.string().nullish().transform((v) => v ?? null),
