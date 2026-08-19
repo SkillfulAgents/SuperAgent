@@ -1,6 +1,6 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { Play, RefreshCw, SquareMousePointer, ExternalLink, Dock, Loader2 } from 'lucide-react'
+import { Play, RefreshCw, Loader2 } from 'lucide-react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useKeepAlive } from '@renderer/hooks/use-keep-alive'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
@@ -10,6 +10,7 @@ import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
 import { AddToDockDialog } from './add-to-dock-dialog'
 import { PendingAgentReviews } from './pending-agent-reviews'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { useRegisterDashboardHeader } from '@renderer/context/dashboard-header-context'
 import {
   DASHBOARD_WAIT_BOUND_MS,
   resolveDashboardViewState,
@@ -102,6 +103,10 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     openDashboardExternal(dashboardAgentSlug, dashboardSlug, dashboard?.name)
   }, [dashboardAgentSlug, dashboardSlug, dashboard?.name])
 
+  const handleAddToDock = useCallback(() => {
+    setDockDialogOpen(true)
+  }, [])
+
   const handleStartAgent = useCallback(() => {
     startAgent.mutate(agentSlug)
   }, [startAgent, agentSlug])
@@ -136,6 +141,31 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const showFrame = isAgentRunning && dashboard?.status === 'running'
   const actionPending = restarting || stopAgent.isPending || startAgent.isPending
 
+  const dashboardHeader = useMemo(() => ({
+    agentSlug,
+    dashboardSlug,
+    dashboardName: dashboard?.name || dashboardSlug,
+    actions: showFrame
+      ? {
+          onOpenExternal: handlePopOut,
+          onRefresh: handleRefresh,
+          ...(isElectron() && getPlatform() === 'darwin' ? { onAddToDock: handleAddToDock } : {}),
+          refreshState: refreshing ? 'refreshing' as const : frameLoading ? 'loading' as const : 'idle' as const,
+        }
+      : null,
+  }), [
+    agentSlug,
+    dashboardSlug,
+    dashboard?.name,
+    showFrame,
+    handlePopOut,
+    handleRefresh,
+    handleAddToDock,
+    refreshing,
+    frameLoading,
+  ])
+  useRegisterDashboardHeader(dashboardHeader)
+
   useEffect(() => {
     if (showFrame) setFrameLoading(true)
   }, [iframeSrc, showFrame])
@@ -164,42 +194,6 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <div className="shrink-0 flex items-center gap-2 pl-4 pr-2 py-2 border-b bg-muted/30">
-        <SquareMousePointer className="h-4 w-4 text-muted-foreground shrink-0" />
-        <span className="text-sm font-medium">{dashboard?.name || dashboardSlug}</span>
-        {dashboard?.description && (
-          <span className="text-xs text-muted-foreground truncate">
-            — {dashboard.description}
-          </span>
-        )}
-        <div className="ml-auto flex items-center gap-1">
-          {/* TODO: Add Windows support — create .lnk shortcut and pin to taskbar */}
-          {isElectron() && getPlatform() === 'darwin' && (
-            <Button variant="ghost" size="sm" onClick={() => setDockDialogOpen(true)} title="Add to Dock">
-              <Dock className="h-3 w-3" />
-            </Button>
-          )}
-          <Button variant="ghost" size="sm" onClick={handlePopOut} title="Open in new window">
-            <ExternalLink className="h-3 w-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleRefresh}
-            disabled={frameLoading}
-            title={refreshing ? 'Refreshing…' : frameLoading ? 'Loading dashboard…' : 'Refresh'}
-            aria-label={refreshing
-              ? 'Refreshing dashboard'
-              : frameLoading
-                ? 'Loading dashboard'
-                : 'Refresh dashboard'}
-          >
-            {frameLoading
-              ? <Loader2 className="h-3 w-3 animate-spin" />
-              : <RefreshCw className="h-3 w-3" />}
-          </Button>
-        </div>
-      </div>
       <PendingAgentReviews agentSlug={agentSlug} onReviewResolved={handleRefresh} />
       <AddToDockDialog
         open={dockDialogOpen}
