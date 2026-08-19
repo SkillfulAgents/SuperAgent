@@ -364,7 +364,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
             segmented Tabs control as the connection directory's APIs/MCPs. */}
         {!(tab === 'publish' && publishFlowOpen) && (
           <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
-            <div className="border-b p-2">
+            <div className="px-3 pt-3">
               <TabsList className="h-8">
                 {([
                   ...(isAuthMode ? [{ id: 'share', label: 'Share' } as const] : []),
@@ -393,7 +393,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
               onBack={() => setPublishFlowOpen(false)}
             />
           ) : (
-            <div className="p-4" data-testid="agent-publish-pane">
+            <div className="p-3" data-testid="agent-publish-pane">
               {canPublish ? (
                 <div className="space-y-4">
                   {/* Hero (Notion "Publish to web"-style) */}
@@ -524,7 +524,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
         {tab === 'export' && (
           /* ── Export pane: template + full-agent downloads ── */
           <div className="space-y-3 p-3" data-testid="agent-export-pane">
-            <div role="radiogroup" aria-label="Export type" className="space-y-1">
+            <div role="radiogroup" aria-label="Export type" className="-mx-2 space-y-1">
               {([
                 {
                   id: 'template',

@@ -80,7 +80,7 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
   return (
     <div data-testid="agent-publish-flow">
       {/* Back navigation — takes the place of the popover's tab bar */}
-      <div className="flex items-center gap-1 border-b px-3 py-1.5">
+      <div className="flex items-center gap-1 border-b px-3 py-2">
         <Button
           type="button"
           size="icon"
@@ -199,7 +199,7 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
         </p>
       ) : (
         <div className="space-y-3">
-          <div role="radiogroup" aria-label="Library" className="space-y-1">
+          <div role="radiogroup" aria-label="Library" className="-mx-2 space-y-1">
             {skillsets.map((ss) => {
               const isSelected = selectedId === ss.id
               return (
