@@ -38,6 +38,7 @@ import {
   type TransformedItem,
 } from '@shared/lib/utils/message-transform'
 import { findDeltaWindowStart } from '@shared/lib/messages-delta'
+import { replaceInlineMediaWithRefs } from './session-media'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
 import { isHiddenAutomatedSession } from './session-visibility'
 import {
@@ -960,6 +961,10 @@ const MESSAGES_PAGE_HARD_CAP_FACTOR = 2
 // trailing page (whose window always ends at EOF).
 const CURSOR_WINDOW_GRACE_BYTES = 512 * 1024
 
+/** Session identity for minting media refs during a read. Absent (the default)
+ * keeps images inline as base64, which is what pre-`media=ref` clients expect. */
+type MediaRefMode = { agentSlug: string; sessionId: string }
+
 function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | null {
   return hasOlder && messages[0] ? messages[0].id : null
 }
@@ -972,18 +977,20 @@ function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | nu
 async function readTransformedTail(
   jsonlPath: string,
   maxLines: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  media?: MediaRefMode
 ): Promise<{
   transformed: TransformedItem[]
   entries: (JsonlMessageEntry | JsonlSystemEntry)[]
   reachedStart: boolean
 }> {
-  const { lines, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines, signal)
+  const { lines, offsets, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines, signal)
   // An abort landing on the last chunk read still saves the parse/transform
   // below — on large transcripts that is seconds of synchronous work.
   signal?.throwIfAborted()
   const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
     const parsed = parseJsonlLine<JsonlEntry>(line)
     if (!parsed) continue
     const normalized = normalizeQueuedCommandEntry(parsed)
@@ -991,6 +998,9 @@ async function readTransformedTail(
       isMessageOrSystemDisplayEntry(normalized) &&
       !('isMeta' in normalized && normalized.isMeta)
     ) {
+      if (media) {
+        replaceInlineMediaWithRefs(normalized, { ...media, line, lineOffset: offsets[i]! })
+      }
       entries.push(normalized)
     }
   }
@@ -1390,9 +1400,14 @@ async function readEntriesRange(
   jsonlPath: string,
   startOffset: number,
   endOffset: number | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  media?: MediaRefMode
 ): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
   const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+  // Rows arrive in file order from a line-boundary start, so accumulating
+  // their lengths reproduces each row's absolute offset — what media refs
+  // address into. The +1 is the newline the reader strips.
+  let lineOffset = startOffset
   // The signal is threaded into the reader itself (checked per chunk): a
   // multi-MB row spans many chunks before it ever surfaces as a line here.
   for await (const line of streamFileLines(
@@ -1400,6 +1415,8 @@ async function readEntriesRange(
     { start: startOffset, end: endOffset },
     signal
   )) {
+    const offset = lineOffset
+    lineOffset += line.length + 1
     const parsed = parseJsonlLine<JsonlEntry>(line)
     if (!parsed) continue
     const normalized = normalizeQueuedCommandEntry(parsed)
@@ -1407,6 +1424,12 @@ async function readEntriesRange(
       isMessageOrSystemDisplayEntry(normalized) &&
       !('isMeta' in normalized && normalized.isMeta)
     ) {
+      // Before the entries accumulate: the window holds every row at once, so
+      // dropping the base64 here keeps it out of the page's peak memory too,
+      // not just off the wire.
+      if (media) {
+        replaceInlineMediaWithRefs(normalized, { ...media, line, lineOffset: offset })
+      }
       entries.push(normalized)
     }
   }
@@ -1426,7 +1449,14 @@ async function readEntriesRange(
 export async function getSessionMessagesPage(
   agentSlug: string,
   sessionId: string,
-  opts: { limit: number; cursor?: string; signal?: AbortSignal; byteBudget?: number }
+  opts: {
+    limit: number
+    cursor?: string
+    signal?: AbortSignal
+    byteBudget?: number
+    /** `'ref'` replaces inline base64 images with media refs (see session-media). */
+    media?: 'ref'
+  }
 ): Promise<SessionMessagesPage> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   if (!(await fileExists(jsonlPath))) {
@@ -1451,7 +1481,13 @@ export async function getSessionMessagesPage(
     return { messages: [], nextCursor: null }
   }
 
-  const entries = await readEntriesRange(jsonlPath, scan.startOffset, scan.endOffset, signal)
+  const entries = await readEntriesRange(
+    jsonlPath,
+    scan.startOffset,
+    scan.endOffset,
+    signal,
+    opts.media === 'ref' ? { agentSlug, sessionId } : undefined
+  )
   signal?.throwIfAborted()
   const transformed = transformMessages(entries)
   const reachedStart = scan.reachedStart
@@ -1524,7 +1560,7 @@ const DELTA_MAX_TAIL_LINES = 10_000
 export async function getSessionMessagesDelta(
   agentSlug: string,
   sessionId: string,
-  opts: { after: string; signal?: AbortSignal }
+  opts: { after: string; signal?: AbortSignal; media?: 'ref' }
 ): Promise<SessionMessagesDelta> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   if (!(await fileExists(jsonlPath))) {
@@ -1538,7 +1574,8 @@ export async function getSessionMessagesDelta(
     const { transformed, entries, reachedStart } = await readTransformedTail(
       jsonlPath,
       maxLines,
-      signal
+      signal,
+      opts.media === 'ref' ? { agentSlug, sessionId } : undefined
     )
     const canGrow = !reachedStart && maxLines < DELTA_MAX_TAIL_LINES
 

@@ -1,9 +1,9 @@
 
 import { cn } from '@shared/lib/utils/cn'
-import { Check, X, Ban, ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react'
+import { Check, X, Ban, ChevronDown, ChevronRight, ImageOff, Loader2, Search } from 'lucide-react'
 import { useState, useRef, useMemo, memo } from 'react'
 import { getToolRenderer } from './tool-renderers'
-import { parseToolResult } from '@renderer/lib/parse-tool-result'
+import { parseToolResult, type ParsedToolResultImage } from '@renderer/lib/parse-tool-result'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiToolCall } from '@shared/lib/types/api'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
@@ -85,6 +85,35 @@ export function StatusIndicator({ status }: { status: string }) {
     <span className="h-4 w-4 shrink-0 rounded-full bg-zinc-200 dark:bg-zinc-700 flex items-center justify-center">
       <Ban className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={2.5} />
     </span>
+  )
+}
+
+/** A tool result's image. Refs load from the media endpoint the first time the
+ * card is expanded — the expanded branch is what mounts this, so nothing is
+ * fetched for a collapsed call, and the immutable response is cached for every
+ * later expand. A ref that no longer resolves (410 after the transcript was
+ * edited) shows a placeholder instead of a broken image. */
+function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
+  const [failed, setFailed] = useState(false)
+
+  if (failed) {
+    return (
+      <div className="flex items-center gap-2 rounded border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
+        <ImageOff className="h-3.5 w-3.5 shrink-0" />
+        <span>Image is no longer available in this transcript</span>
+      </div>
+    )
+  }
+
+  return (
+    <img
+      src={image.src}
+      alt="Tool result"
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+      className="max-w-full rounded border"
+    />
   )
 }
 
@@ -208,12 +237,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
           {resultImages.length > 0 && (
             <div className="mt-2 space-y-2">
               {resultImages.map((img, i) => (
-                <img
-                  key={i}
-                  src={`data:${img.mimeType};base64,${img.data}`}
-                  alt="Tool result"
-                  className="max-w-full rounded border"
-                />
+                <ToolResultImage key={img.src || i} image={img} />
               ))}
             </div>
           )}

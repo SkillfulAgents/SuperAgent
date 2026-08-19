@@ -62,7 +62,7 @@ async function fetchMessagesPage(
   sessionId: string,
   opts: { limit: number; cursor?: string; signal?: AbortSignal }
 ): Promise<MessagesPage> {
-  const params = new URLSearchParams({ limit: String(opts.limit) })
+  const params = new URLSearchParams({ limit: String(opts.limit), media: 'ref' })
   if (opts.cursor) params.set('cursor', opts.cursor)
   const res = await apiFetch(
     `/api/agents/${agentSlug}/sessions/${sessionId}/messages?${params.toString()}`,
@@ -81,7 +81,11 @@ async function fetchMessagesDelta(
   sessionId: string,
   opts: { after: string; signal?: AbortSignal }
 ): Promise<MessagesDelta | MessagesPage> {
-  const params = new URLSearchParams({ limit: String(MESSAGES_PAGE_LIMIT), after: opts.after })
+  const params = new URLSearchParams({
+    limit: String(MESSAGES_PAGE_LIMIT),
+    after: opts.after,
+    media: 'ref',
+  })
   const res = await apiFetch(
     `/api/agents/${agentSlug}/sessions/${sessionId}/messages?${params.toString()}`,
     { signal: opts.signal }

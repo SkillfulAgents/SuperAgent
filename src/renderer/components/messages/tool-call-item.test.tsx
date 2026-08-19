@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { formatToolName } from './tool-call-item'
@@ -12,11 +12,13 @@ vi.mock('./tool-renderers', () => ({
 }))
 
 // Mock parseToolResult
+const { mockParseToolResult } = vi.hoisted(() => ({ mockParseToolResult: vi.fn() }))
+mockParseToolResult.mockImplementation((result: unknown) => ({
+  text: result != null ? String(result) : null,
+  images: [],
+}))
 vi.mock('@renderer/lib/parse-tool-result', () => ({
-  parseToolResult: (result: unknown) => ({
-    text: result != null ? String(result) : null,
-    images: [],
-  }),
+  parseToolResult: (result: unknown) => mockParseToolResult(result),
 }))
 
 // Mock useElapsedTimer for deterministic values
@@ -180,5 +182,61 @@ describe('StreamingToolCallItem', () => {
   it('shows waiting message when partialInput is empty', () => {
     render(<StreamingToolCallItem name="Bash" partialInput="" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
+  })
+})
+
+describe('ToolCallItem result images', () => {
+  const refImage = {
+    src: '/api/agents/a/sessions/s/media/ref-1',
+    bytes: 40960,
+    isRef: true,
+  }
+
+  // These override the shared parse mock; put it back so order stays irrelevant.
+  afterEach(() => {
+    mockParseToolResult.mockImplementation((result: unknown) => ({
+      text: result != null ? String(result) : null,
+      images: [],
+    }))
+  })
+
+  it('does not mount a referenced image until the call is expanded', async () => {
+    mockParseToolResult.mockReturnValue({ text: 'done', images: [refImage] })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'done' })} />
+    )
+    // Collapsed: nothing to fetch.
+    expect(container.querySelector('img')).toBeNull()
+
+    await userEvent.click(screen.getByRole('button'))
+    const img = container.querySelector('img')
+    expect(img).toHaveAttribute('src', refImage.src)
+    expect(img).toHaveAttribute('loading', 'lazy')
+  })
+
+  it('shows a placeholder when a referenced image no longer resolves', async () => {
+    mockParseToolResult.mockReturnValue({ text: 'done', images: [refImage] })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'done' })} />
+    )
+    await userEvent.click(screen.getByRole('button'))
+
+    const img = container.querySelector('img')!
+    fireEvent.error(img)
+
+    expect(container.querySelector('img')).toBeNull()
+    expect(screen.getByText(/no longer available/i)).toBeInTheDocument()
+  })
+
+  it('still renders inline base64 images', async () => {
+    mockParseToolResult.mockReturnValue({
+      text: null,
+      images: [{ src: 'data:image/png;base64,abc', isRef: false }],
+    })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'x' })} />
+    )
+    await userEvent.click(screen.getByRole('button'))
+    expect(container.querySelector('img')).toHaveAttribute('src', 'data:image/png;base64,abc')
   })
 })

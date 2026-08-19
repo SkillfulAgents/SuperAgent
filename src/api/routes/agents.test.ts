@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import { runInNewContext } from 'node:vm'
-import { Writable } from 'node:stream'
+import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
 
 // ============================================================================
@@ -297,6 +297,11 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: (...args: unknown[]) => mockAgentExists(...args),
 }))
 
+vi.mock('@shared/lib/services/session-media', () => ({
+  decodeMediaRef: vi.fn(),
+  openMediaBlob: vi.fn(),
+}))
+
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: vi.fn(),
   listSessionsByIds: vi.fn(),
@@ -553,6 +558,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStream
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
+import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
 import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
   importAgentFromTemplate,
@@ -3867,6 +3873,36 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(getSessionMessagesPage).not.toHaveBeenCalled()
   })
 
+  it('forwards the media mode to the page reader', async () => {
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+
+    const res = await getReq(app, `${URL}?limit=2&media=ref`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ media: 'ref' })
+    )
+  })
+
+  it('forwards the media mode to the delta reader', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages: [], anchor: null })
+
+    const res = await getReq(app, `${URL}?after=m1&media=ref`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesDelta).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ media: 'ref' })
+    )
+  })
+
+  it('rejects an unknown media mode rather than silently serving inline', async () => {
+    const res = await getReq(app, `${URL}?limit=2&media=inline`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
   it('caps first-page limit to MESSAGES_PAGE_LIMIT', async () => {
     process.env.MESSAGES_PAGE_LIMIT = '100'
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
@@ -4033,6 +4069,61 @@ describe('GET /:id/sessions/:sessionId/messages forward delta (?after=)', () => 
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.messages[0].toolCalls[0].result).toBe('User provided input')
+  })
+})
+
+// The read itself (offsets, validity, decoding) is covered against real files
+// in session-media.test.ts; `fs` is mocked wholesale here, so these cover what
+// the route owns: status codes, headers, and passing the stream through.
+describe('GET /:id/sessions/:sessionId/media/:ref', () => {
+  let app: ReturnType<typeof createApp>
+  const image = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(4096, 0x7f),
+  ])
+  const REF = 'encoded-ref'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+    vi.mocked(decodeMediaRef).mockReturnValue({ v: 1, u: 'u-1', o: 10, s: 100, l: 200 })
+    vi.mocked(openMediaBlob).mockResolvedValue({
+      stream: Readable.from([image]),
+      mimeType: 'image/png',
+      bytes: image.length,
+    })
+  })
+
+  it('streams the addressed image with its sniffed type', async () => {
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('image/png')
+    expect(res.headers.get('Content-Length')).toBe(String(image.length))
+    expect(res.headers.get('Cache-Control')).toContain('immutable')
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff')
+    expect(Buffer.from(await res.arrayBuffer()).equals(image)).toBe(true)
+  })
+
+  it('answers 410 once the transcript no longer holds the referenced bytes', async () => {
+    vi.mocked(openMediaBlob).mockResolvedValue(undefined)
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(410)
+  })
+
+  it('rejects a ref it could not have minted', async () => {
+    vi.mocked(decodeMediaRef).mockReturnValue(undefined)
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1/media/not-a-ref')
+    expect(res.status).toBe(400)
+    expect(openMediaBlob).not.toHaveBeenCalled()
+  })
+
+  it('404s for a session the agent does not own', async () => {
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(false)
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(404)
+    expect(openMediaBlob).not.toHaveBeenCalled()
   })
 })
 

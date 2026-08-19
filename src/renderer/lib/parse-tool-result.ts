@@ -1,3 +1,5 @@
+import { getApiBaseUrl } from './env'
+
 interface ContentBlock {
   type: string
   text?: string
@@ -5,11 +7,41 @@ interface ContentBlock {
   // MCP image format
   data?: string
   mimeType?: string
+  // Media ref (server answered a `media=ref` request): the image lives at `url`
+  // instead of inline. See shared/lib/services/session-media.ts.
+  url?: string
+  bytes?: number
+}
+
+export interface ParsedToolResultImage {
+  /** Ready for an <img> src: a data: URL for inline base64, an API URL for a ref. */
+  src: string
+  /** Decoded size when known (refs only) — the bytes aren't in hand to measure. */
+  bytes?: number
+  /** Refs are fetched over the network, so they can 404/410 after a transcript edit. */
+  isRef: boolean
 }
 
 export interface ParsedToolResult {
   text: string | null
-  images: Array<{ data: string; mimeType: string }>
+  images: ParsedToolResultImage[]
+}
+
+function imageFromBlock(block: ContentBlock): ParsedToolResultImage | null {
+  if (block.type === 'media_ref') {
+    if (!block.url) return null
+    return { src: `${getApiBaseUrl()}${block.url}`, bytes: block.bytes, isRef: true }
+  }
+  if (block.type !== 'image') return null
+  // Anthropic API format: { type: "image", source: { type: "base64", media_type, data } }
+  if (block.source?.data && block.source?.media_type) {
+    return { src: `data:${block.source.media_type};base64,${block.source.data}`, isRef: false }
+  }
+  // MCP format: { type: "image", data, mimeType }
+  if (block.data && block.mimeType) {
+    return { src: `data:${block.mimeType};base64,${block.data}`, isRef: false }
+  }
+  return null
 }
 
 /**
@@ -18,7 +50,7 @@ export interface ParsedToolResult {
  * or an array of content block objects (from MCP).
  */
 export function parseToolResult(result: unknown): ParsedToolResult {
-  const images: Array<{ data: string; mimeType: string }> = []
+  const images: ParsedToolResultImage[] = []
 
   if (result == null) return { text: null, images }
   if (typeof result === 'string') {
@@ -39,15 +71,9 @@ export function parseToolResult(result: unknown): ParsedToolResult {
     for (const block of result as ContentBlock[]) {
       if (block.type === 'text' && block.text) {
         textParts.push(block.text)
-      } else if (block.type === 'image') {
-        // Anthropic API format: { type: "image", source: { type: "base64", media_type, data } }
-        if (block.source?.data && block.source?.media_type) {
-          images.push({ data: block.source.data, mimeType: block.source.media_type })
-        }
-        // MCP format: { type: "image", data, mimeType }
-        else if (block.data && block.mimeType) {
-          images.push({ data: block.data, mimeType: block.mimeType })
-        }
+      } else {
+        const image = imageFromBlock(block)
+        if (image) images.push(image)
       }
     }
     return { text: textParts.length > 0 ? textParts.join('\n') : null, images }
@@ -58,12 +84,9 @@ export function parseToolResult(result: unknown): ParsedToolResult {
   if (block.type === 'text' && block.text) {
     return { text: block.text, images }
   }
-  if (block.type === 'image') {
-    if (block.source?.data && block.source?.media_type) {
-      images.push({ data: block.source.data, mimeType: block.source.media_type })
-    } else if (block.data && block.mimeType) {
-      images.push({ data: block.data, mimeType: block.mimeType })
-    }
+  const image = imageFromBlock(block)
+  if (image) {
+    images.push(image)
     return { text: null, images }
   }
 
