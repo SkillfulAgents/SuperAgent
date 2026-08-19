@@ -954,6 +954,9 @@ export function AppSidebar() {
                       <AppLink to="/explore">
                         <Compass className="h-4 w-4" />
                         <span>Discover New Agents</span>
+                        <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
+                          New
+                        </span>
                       </AppLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>

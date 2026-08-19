@@ -22,11 +22,11 @@ function ToolStack({ template }: { template: ApiDiscoverableAgent }) {
   const shown = withLogos.slice(0, MAX_NAMED_CONNECTIONS)
   const overflow = withLogos.length - shown.length
   return (
-    <span className="flex items-center gap-1.5">
+    <span className="flex items-center gap-0.5">
       {shown.map((connection) => (
         <span
           key={`${connection.type}-${connection.slug}`}
-          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg bg-card px-2 text-[11px] text-muted-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.07)]"
+          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-1.5 text-[11px] text-muted-foreground"
         >
           <ServiceIcon slug={connection.iconSlug} className="size-[15px]" />
           {connectionLabel(connection.slug)}
@@ -35,7 +35,7 @@ function ToolStack({ template }: { template: ApiDiscoverableAgent }) {
       {overflow > 0 && (
         <span
           title={withLogos.slice(MAX_NAMED_CONNECTIONS).map((c) => connectionLabel(c.slug)).join(', ')}
-          className="inline-flex h-7 shrink-0 items-center rounded-lg bg-card px-2 text-[11px] text-muted-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.07)]"
+          className="inline-flex h-7 shrink-0 items-center rounded-lg px-1.5 text-[11px] text-muted-foreground"
         >
           +{overflow}
         </span>
@@ -68,7 +68,7 @@ export function TemplateAvatar({
   const { tile, glyph } = AVATAR_SIZES[size]
   return (
     <span
-      className={`grid shrink-0 place-items-center bg-muted/50 shadow-[0_1px_2px_0_rgba(0,0,0,0.06)] ${tile}`}
+      className={`grid shrink-0 place-items-center bg-muted/50 shadow-[0_2px_6px_0_rgba(0,0,0,0.14)] ${tile}`}
     >
       <Icon className={`${accent} ${glyph}`} aria-hidden />
     </span>
@@ -89,14 +89,14 @@ export function ExploreTemplateCard({
 }) {
   const Icon = getTemplateIcon(template)
   return (
-    // Fixed 188px. A full two-line card needs ~175px (32px outer padding +
-    // 40px title row + 12px gap + 8px description lead-in + 39px of
-    // description + 8px gap + 36px chip row), so this leaves a little slack
-    // rather than pinning the chips against the text. Every field is bounded —
-    // the title truncates and the description clamps — so nothing outgrows it.
+    // Three evenly spaced blocks, one 20px gap between each: the 40px title
+    // row, a description that always reserves its two lines (39px) whether or
+    // not it fills them, and the 28px chip row. That sums to exactly 179px of
+    // content + 32px padding, so the height is fixed at 180 with no leftover
+    // slack — no `mt-auto`, which is what made the gaps uneven before.
     <div
       data-testid="explore-template-card"
-      className="relative flex h-[188px] flex-col items-start gap-3 rounded-3xl border border-black/[0.06] bg-card p-4 text-left transition-colors hover:border-black/15 dark:border-white/[0.06] dark:hover:border-white/15 hover:bg-accent/30"
+      className="relative flex h-[180px] flex-col items-start gap-5 rounded-3xl border border-black/[0.06] bg-card p-4 text-left shadow-none transition-[box-shadow,transform] duration-500 ease-out hover:-translate-y-0.5 hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.16)] dark:border-white/[0.06] dark:hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.5)]"
     >
       <button
         type="button"
@@ -106,23 +106,29 @@ export function ExploreTemplateCard({
       />
 
       <span className="flex w-full items-center gap-2">
+        {/* The glyph is debossed — it drops a 1px light highlight beneath its
+            strokes, the bevel your eye reads as "carved in". Dark mode flips
+            the highlight to a shadow, since white would read as embossed. */}
         <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-muted/50 shadow-[0_2px_6px_0_rgba(0,0,0,0.14)]">
-          <Icon className={`size-6 ${getTemplateAccent(template.name)}`} aria-hidden />
+          <Icon
+            className={`size-5 ${getTemplateAccent(template.name)} [filter:drop-shadow(0_1px_0_rgba(255,255,255,0.9))] dark:[filter:drop-shadow(0_1px_0_rgba(0,0,0,0.6))]`}
+            aria-hidden
+          />
         </span>
         <span className="min-w-0 flex-1 truncate pl-1 text-[13px] font-medium text-foreground">
           {template.name}
         </span>
       </span>
 
-      <span className="flex min-w-0 w-full flex-1 flex-col gap-2">
-        {/* No `block` here — it would override line-clamp's `-webkit-box`
-            display and the clamp would silently never apply. */}
-        <span className="line-clamp-2 pt-2 text-[13px] leading-normal text-muted-foreground/70">
-          {template.description}
-        </span>
-        <span className="mt-auto flex items-center gap-2 overflow-hidden pt-2">
-          <ToolStack template={template} />
-        </span>
+      {/* `h-[39px]` reserves both lines even for a one-line blurb, so the chip
+          row lands at the same height on every card. No `block` on the clamp —
+          it would override `-webkit-box` and the clamp would never apply. */}
+      <span className="line-clamp-2 h-[39px] w-full text-[13px] leading-normal text-muted-foreground/70">
+        {template.description}
+      </span>
+
+      <span className="flex w-full items-center gap-2 overflow-hidden">
+        <ToolStack template={template} />
       </span>
     </div>
   )

@@ -58,7 +58,6 @@
     "@aws-sdk/client-lambda-microvms": "^3.1075.0",
     "@hono/node-server": "^1.13.7",
     "@hono/zod-validator": "^0.8.0",
-    "@outpacelabs/avatars": "^0.4.1",
     "@sentry/node": "^10.48.0",
     "@skillful-agents/agent-computer": "^0.0.11",
     "@slack/bolt": "^4.7.0",

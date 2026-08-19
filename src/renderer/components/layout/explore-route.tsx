@@ -4,6 +4,7 @@ import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { ExploreView } from '@renderer/components/explore/explore-view'
+import { CategoryView } from '@renderer/components/explore/category-view'
 import { TemplateDetailView } from '@renderer/components/explore/template-detail-view'
 import { ContentShell } from './content-shell'
 
@@ -40,6 +41,16 @@ export function ExploreTemplateRoute() {
           <TemplateDetailView skillsetId={params.skillsetId} templateSlug={params.templateSlug} />
         )}
       </ErrorBoundary>
+    </ContentShell>
+  )
+}
+
+/** The `/explore/category/$category` route: every template in one category. */
+export function ExploreCategoryRoute() {
+  const params = useParams({ strict: false }) as { category?: string }
+  return (
+    <ContentShell {...useExploreShellProps()}>
+      <ErrorBoundary>{params.category && <CategoryView category={params.category} />}</ErrorBoundary>
     </ContentShell>
   )
 }

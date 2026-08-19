@@ -30,6 +30,10 @@ const ExploreTemplateRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/explore-route'),
   'ExploreTemplateRoute',
 )
+const ExploreCategoryRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/explore-route'),
+  'ExploreCategoryRoute',
+)
 const AgentShell = lazyRouteComponent(
   () => import('@renderer/components/layout/agent-shell'),
   'AgentShell',
@@ -99,6 +103,15 @@ export const exploreRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: 'explore',
   component: ExploreRoute,
+})
+
+// Static `category` outranks the `$skillsetId/$templateSlug` pattern below, so
+// this matches first despite both being two segments under /explore.
+export const exploreCategoryRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'explore/category/$category',
+  params: { parse: (raw) => ({ category: z.string().min(1).parse(raw.category) }) },
+  component: ExploreCategoryRoute,
 })
 
 export const exploreTemplateRoute = createRoute({
@@ -244,6 +257,7 @@ export const routeTree = rootRoute.addChildren([
     notificationsRoute,
     notificationDetailRoute,
     exploreRoute,
+    exploreCategoryRoute,
     exploreTemplateRoute,
     agentLayoutRoute.addChildren([
       agentHomeRoute,

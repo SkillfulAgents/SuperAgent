@@ -2,10 +2,15 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@renderer/components/ui/tooltip'
 import { SettingsPageContainer, PageTitle } from '@renderer/components/layout/settings-page'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
 import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
@@ -14,11 +19,17 @@ import { TemplateAvatar } from './explore-template-card'
 import {
   connectionIconSlug,
   connectionLabel,
-  costTier,
-  getSuggestedModels,
-  getTemplateCost,
+  INVENTORY_SECTION_LABEL,
+  INVENTORY_SECTION_TITLES,
+  getTemplateExamples,
+  getTemplateGradient,
+  inventoryIcon,
+  inventoryLabel,
+  parseInventory,
+  parseTemplateDetails,
   templateCategory,
 } from './template-meta'
+import { ArrowUp } from 'lucide-react'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 const DETAILS_REMARK_PLUGINS = [remarkGfm]
@@ -43,10 +54,9 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
 
 /**
  * The `/explore/$skillsetId/$templateSlug` details page — a single-column
- * marketplace listing. Name, description, category, icon, tags, connections,
- * developer, and the long-form body all come from the skillset index; only the
- * cost and model rows are illustrative (see `template-meta`), and the footnote
- * says so.
+ * marketplace listing. Every value on it comes from the skillset index: name,
+ * description, category, icon, tags, connections, developer, and the
+ * section-by-section body.
  */
 export function TemplateDetailView({
   skillsetId,
@@ -93,8 +103,8 @@ export function TemplateDetailView({
 
   const category = templateCategory(template)
   const connections = template.worksWith ?? []
-  const cost = getTemplateCost(template)
-  const tier = costTier(cost)
+  const detailSections = template.details ? parseTemplateDetails(template.details) : []
+  const useCases = getTemplateExamples(template.details)
 
   return (
     <SettingsPageContainer className="max-w-[768px] px-[88px]">
@@ -103,73 +113,117 @@ export function TemplateDetailView({
       <div data-testid="template-detail-view" className="-mt-6">
         {/* ── Header ───────────────────────────────────────────────────── */}
         <div data-testid="template-detail-header">
-          <TemplateAvatar template={template} size="lg" />
-          <div className="mt-5 flex items-start justify-between gap-6">
-            <div className="min-w-0">
-              <h2 className="text-3xl font-medium tracking-tight">{template.name}</h2>
-              <p className="mt-1.5 text-sm text-muted-foreground">{template.description}</p>
-            </div>
+          <div className="flex items-center justify-between gap-6">
+            <TemplateAvatar template={template} size="lg" />
             <Button
               type="button"
-              className="shrink-0 rounded-full px-5"
+              className="shrink-0"
               onClick={() => setTemplateToInstall(template)}
               data-testid="template-detail-install"
             >
               Install template
             </Button>
           </div>
+          <div className="mt-5 min-w-0">
+            <h2 className="text-2xl font-medium tracking-tight">{template.name}</h2>
+            <p className="mt-1.5 text-sm text-muted-foreground">{template.description}</p>
+          </div>
         </div>
 
-        {/* ── Tags ─────────────────────────────────────────────────────── */}
-        {template.tags && template.tags.length > 0 && (
-          <div className="mt-6 flex flex-wrap gap-2">
-            {template.tags.map((tag) => (
-              <span
-                key={tag}
-                className="inline-flex items-center rounded-full border px-3 py-1 text-xs text-muted-foreground"
-              >
-                {tag}
-              </span>
-            ))}
+        {/* ── Hero: the template's own sample use cases, as example prompts.
+            Decorative and inert — the arrows are part of the picture, not
+            controls. The wash is the template's accent hue over the grey. ── */}
+        {useCases.length > 0 && (
+          <div className="relative mt-8 overflow-hidden rounded-2xl bg-muted/60">
+            <div
+              className={`absolute inset-0 bg-gradient-to-tl ${getTemplateGradient(template.name)}`}
+              aria-hidden
+            />
+            <div className="relative flex flex-col items-center gap-3 px-6 py-12" aria-hidden>
+              {useCases.slice(0, 3).map((useCase) => (
+                <span
+                  key={useCase}
+                  className="flex w-full max-w-[88%] items-center gap-3 rounded-2xl bg-card/85 py-2.5 pl-4 pr-2.5 shadow-sm backdrop-blur-xl"
+                >
+                  <span className="min-w-0 flex-1 text-sm/6 text-foreground">
+                    <span className="font-medium">@{template.name}</span> {useCase}
+                  </span>
+                  <span className="grid size-7 shrink-0 place-items-center rounded-lg border bg-white text-black shadow-sm">
+                    <ArrowUp className="size-3.5" />
+                  </span>
+                </span>
+              ))}
+            </div>
           </div>
         )}
 
         {/* ── Apps ─────────────────────────────────────────────────────── */}
         {connections.length > 0 && (
           <Section title="Works with">
-            <div className="border-t">
+            <div className="flex flex-wrap gap-2">
               {connections.map((connection) => (
-                <div key={`${connection.type}-${connection.slug}`} className="flex items-center gap-3 border-b py-3">
-                  <span className="grid size-9 shrink-0 place-items-center rounded-lg border bg-card">
-                    <ServiceIcon
-                      slug={connectionIconSlug(connection.slug)}
-                      fallback={connection.type === 'mcp' ? 'mcp' : 'oauth'}
-                      className="size-4"
-                    />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm text-foreground">
-                      {connectionLabel(connection.slug)}
-                    </span>
-                    <span className="block truncate text-[13px] text-muted-foreground">
-                      {connection.type === 'mcp' ? 'MCP server' : 'Connected account'}
-                    </span>
-                  </span>
-                  <ChevronRight className="size-4 shrink-0 text-muted-foreground/60" aria-hidden />
-                </div>
+                <span
+                  key={`${connection.type}-${connection.slug}`}
+                  className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] text-muted-foreground"
+                >
+                  <ServiceIcon
+                    slug={connectionIconSlug(connection.slug)}
+                    fallback={connection.type === 'mcp' ? 'mcp' : 'oauth'}
+                    className="size-[15px] shrink-0"
+                  />
+                  {connectionLabel(connection.slug)}
+                </span>
               ))}
             </div>
           </Section>
         )}
 
-        {/* ── Long-form body, straight from the skillset repo ──────────── */}
-        {template.details && (
-          <Section title="About">
-            <div className="prose prose-sm max-w-none break-words text-sm text-muted-foreground dark:prose-invert prose-headings:mt-6 prose-headings:mb-2 prose-headings:text-sm prose-headings:font-medium prose-headings:text-foreground prose-p:my-2 prose-p:leading-relaxed prose-li:my-0.5 prose-a:text-foreground prose-strong:text-foreground prose-code:text-foreground">
-              <ReactMarkdown remarkPlugins={DETAILS_REMARK_PLUGINS}>{template.details}</ReactMarkdown>
-            </div>
-          </Section>
-        )}
+        {/* ── The repo's own copy, one Section per `##` heading ─────────── */}
+        {detailSections.map((section) => {
+          const isInventory = INVENTORY_SECTION_TITLES.has(section.title)
+          const files = isInventory ? parseInventory(section.body) : []
+          return (
+            <Section
+              key={section.title}
+              title={isInventory ? INVENTORY_SECTION_LABEL : section.title}
+            >
+              {files.length > 0 ? (
+                <TooltipProvider delayDuration={200}>
+                  <div className="flex flex-wrap gap-2">
+                    {files.map((file) => {
+                      const ItemIcon = inventoryIcon(file)
+                      return (
+                        <Tooltip key={file.name}>
+                          <TooltipTrigger asChild>
+                            <span className="inline-flex cursor-default items-center gap-1.5 rounded-lg border px-2.5 py-1 font-mono text-xs text-muted-foreground">
+                              <ItemIcon
+                                className="size-3.5 shrink-0 text-muted-foreground/60"
+                                aria-hidden
+                              />
+                              {inventoryLabel(file.name)}
+                            </span>
+                          </TooltipTrigger>
+                          {/* The chip shows only the leaf name, so the tooltip
+                              carries the full path along with the blurb. */}
+                          <TooltipContent className="max-w-xs">
+                            <span className="block font-mono text-[11px]">{file.name}</span>
+                            {file.description && (
+                              <span className="mt-1 block">{file.description}</span>
+                            )}
+                          </TooltipContent>
+                        </Tooltip>
+                      )
+                    })}
+                  </div>
+                </TooltipProvider>
+              ) : (
+                <div className="prose prose-sm max-w-none break-words text-sm text-muted-foreground dark:prose-invert prose-headings:mt-5 prose-headings:mb-1.5 prose-headings:text-sm prose-headings:font-medium prose-headings:text-foreground prose-p:my-2 prose-p:leading-relaxed prose-li:my-0.5 prose-a:text-foreground prose-strong:text-foreground prose-code:text-foreground">
+                  <ReactMarkdown remarkPlugins={DETAILS_REMARK_PLUGINS}>{section.body}</ReactMarkdown>
+                </div>
+              )}
+            </Section>
+          )
+        })}
 
         {/* ── Information ──────────────────────────────────────────────── */}
         <Section title="Information">
@@ -191,14 +245,6 @@ export function TemplateDetailView({
                 )}
               </InfoRow>
             )}
-            <InfoRow label="Cost to run">
-              ${cost.min}–${cost.max} /mo
-              <span className="ml-2 font-mono text-xs text-muted-foreground">
-                <span className="text-foreground">{'$'.repeat(tier)}</span>
-                {'$'.repeat(4 - tier)}
-              </span>
-            </InfoRow>
-            <InfoRow label="Suggested models">{getSuggestedModels().join(', ')}</InfoRow>
             <InfoRow label="Source">{template.skillsetName}</InfoRow>
             <InfoRow label="Version">{template.version}</InfoRow>
           </div>
@@ -206,8 +252,7 @@ export function TemplateDetailView({
 
         <p className="mt-12 border-t pt-6 text-[13px]/6 text-muted-foreground">
           This template may connect to one or more apps, as listed above. When connected, the agent
-          can read and write on your behalf within the limits you grant it. Cost estimates are
-          illustrative while the marketplace is in preview.
+          can read and write on your behalf within the limits you grant it.
         </p>
       </div>
 
