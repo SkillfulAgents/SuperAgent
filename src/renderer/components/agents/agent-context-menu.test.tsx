@@ -70,7 +70,7 @@ vi.mock('@renderer/components/ui/context-menu', async () => {
   }
 })
 
-import { render, screen, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 import { AgentContextMenu } from './agent-context-menu'
