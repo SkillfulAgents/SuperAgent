@@ -1,17 +1,24 @@
 {
   "storyId": "browser-test",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ds: \"The page title is \"Example Domain\" — browser is now closed.\" which correctly identifies the page title as required\n\nAll steps executed successfully. The browser-use feature is functioning correctly, allowing the agent to open a browser, navigate to a specified URL, and retrieve the page title.\n",
-  "steps": [],
+  "passed": true,
+  "reason": "QA agent successfully executed browser navigation task and retrieved page title \"Example Domain\" from https://example.com",
+  "steps": [
+    "Navigated to http://localhost:47891 - Successfully loaded Gamut application with agent sidebar visible",
+    "Found and clicked \"QA-20260819-013459-ux4h\" agent in sidebar - Agent details page opened at /agents/qa-20260819-013459-ux4h-i3jplhmvz8",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message successfully submitted and session created with title \"Browser Navigation and Page Title Check\"",
+    "Waited for agent response - Agent processed request in 10 seconds using 4 tool calls and 199,354 tokens",
+    "Verified response mentions \"Example Domain\" - Response clearly states: 'The page title is \"Example Domain\" — the page has that heading plus a short paragraph and a \"Learn more\" link. Browser closed.'",
+    "Took screenshot of response - Full page screenshot captured showing complete agent response with \"Example Domain\" text visible in the message"
+  ],
   "bugs": [],
-  "durationMs": 193317,
-  "sessionId": "3c4d76fe-7d36-4d00-a7fc-4ef7b556ced0",
+  "durationMs": 124052,
+  "sessionId": "34f9f84e-c32f-42c2-87ec-631b92869eac",
   "cost": {
-    "inputTokens": 392,
-    "outputTokens": 9798,
-    "cacheCreationTokens": 48259,
-    "cacheReadTokens": 992662,
+    "inputTokens": 314,
+    "outputTokens": 12056,
+    "cacheCreationTokens": 51948,
+    "cacheReadTokens": 775503,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.208972
+    "totalCostUsd": 0.203079
   }
 }
