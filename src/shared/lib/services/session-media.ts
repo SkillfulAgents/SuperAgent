@@ -496,11 +496,11 @@ export async function openMediaBlob(
       decoded.once('close', () => signal.removeEventListener('abort', abort))
     }
     return { stream: decoded, mimeType, bytes: decodedLength(ref.l, pad) }
-  } catch (error) {
-    // Validation returns undefined explicitly; reaching here means something
-    // unexpected failed, and the caller must not read that as "gone".
-    throw error
   } finally {
+    // Nothing catches here on purpose: every "the ref no longer resolves" case
+    // returns undefined explicitly above, so anything thrown is unexpected and
+    // must reach the caller rather than be reported as "gone". The handle is
+    // still released — the stream owns it once opened.
     if (!opened) await handle.close()
   }
 }
