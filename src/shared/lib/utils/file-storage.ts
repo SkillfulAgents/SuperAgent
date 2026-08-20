@@ -430,9 +430,9 @@ export async function readJsonlTailLines(
       // line-scanning the whole tail window).
       signal?.throwIfAborted()
       const size = Math.min(TAIL_READ_CHUNK, pos)
-      pos -= size
+      const chunkStart = pos - size
       const buf = Buffer.allocUnsafe(size)
-      const filled = await readFileRangeFully(fileHandle, buf, pos, signal)
+      const filled = await readFileRangeFully(fileHandle, buf, chunkStart, signal)
       signal?.throwIfAborted()
       if (filled < size) {
         // The file shrank while we walked it (rewrite race). Splicing a short
@@ -441,6 +441,11 @@ export async function readJsonlTailLines(
         truncated = true
         break
       }
+      // Only once the chunk is in hand: `pos` is the file offset that `parts`
+      // starts at, and every returned offset is derived from it. Lowering it
+      // before a read that then comes up short would leave it pointing a chunk
+      // below the bytes actually collected.
+      pos = chunkStart
       parts.unshift(buf)
       for (let i = 0; i < buf.length; i++) {
         if (buf[i] === NEWLINE_BYTE) newlineCount++
