@@ -980,8 +980,19 @@ class ContainerManager {
           if (!available) {
             const timeoutErr = new Error(`${getRunnerDisplayName(configuredRunner)} runtime failed to start within ${maxPollSeconds}s`)
             captureException(timeoutErr, {
-              tags: { component: 'runtime', operation: 'start-timeout' },
-              extra: { runner: configuredRunner, pollSeconds: maxPollSeconds },
+              tags: {
+                component: 'runtime',
+                operation: 'start-timeout',
+                runner: configuredRunner,
+                lifecycle_phase: 'availability_poll',
+                final_outcome: 'unavailable',
+              },
+              fingerprint: ['runtime-start-timeout', configuredRunner, 'availability_poll'],
+              extra: {
+                timeoutMs: maxPollSeconds * 1000,
+                attempts: maxPollSeconds,
+                finalReadiness: this._readiness.status,
+              },
             })
             this.setReadiness({
               status: 'RUNTIME_UNAVAILABLE',
