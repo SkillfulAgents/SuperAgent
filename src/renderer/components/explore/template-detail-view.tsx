@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { useLocation, useNavigate, useRouter } from '@tanstack/react-router'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Skeleton } from '@renderer/components/ui/skeleton'
@@ -108,6 +108,10 @@ export function TemplateDetailView({
   templateSlug: string
 }) {
   const navigate = useNavigate()
+  const router = useRouter()
+  const exploreReturnKey = useLocation({
+    select: (location) => location.state.exploreReturnKey,
+  })
   const { templates, hasSkillsets, isLoading } = useExploreTemplates()
   const completeInstall = useCompleteTemplateInstall()
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
@@ -120,7 +124,20 @@ export function TemplateDetailView({
     [templates, skillsetId, templateSlug],
   )
   const backToExplore = {
-    onClick: () => void navigate({ to: '/explore' }),
+    onClick: () => {
+      // A card click records the originating history entry. Return to that
+      // entry so ExploreView can restore its nested scroller; direct/deep links
+      // still have a deterministic route fallback.
+      if (
+        exploreReturnKey &&
+        router.history.location.state.__TSR_index > 0 &&
+        router.history.canGoBack()
+      ) {
+        router.history.back()
+        return
+      }
+      void navigate({ to: '/explore' })
+    },
     label: 'Discover New Agents',
   }
 

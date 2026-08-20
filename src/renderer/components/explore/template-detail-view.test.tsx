@@ -1,10 +1,25 @@
 // @vitest-environment jsdom
 
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const navigate = vi.fn()
-vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
+const historyBack = vi.fn()
+const canGoBack = vi.fn()
+let locationState: { __TSR_index: number; exploreReturnKey?: string } = { __TSR_index: 0 }
+vi.mock('@tanstack/react-router', () => ({
+  useNavigate: () => navigate,
+  useRouter: () => ({
+    history: {
+      location: { state: locationState },
+      canGoBack,
+      back: historyBack,
+    },
+  }),
+  useLocation: ({ select }: { select: (location: object) => unknown }) =>
+    select({ state: locationState }),
+}))
 
 const openSettings = vi.fn()
 vi.mock('@renderer/context/dialog-context', () => ({ useDialogs: () => ({ openSettings }) }))
@@ -53,9 +68,32 @@ function renderDetail(slug = 'account-expert') {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  locationState = { __TSR_index: 0 }
+  canGoBack.mockReturnValue(true)
   skillsets = [{ id: 'skillset-1' }]
   discoverable = [template]
   isLoading = false
+})
+
+describe('TemplateDetailView back navigation', () => {
+  it('returns to the originating marketplace history entry', async () => {
+    locationState = { __TSR_index: 1, exploreReturnKey: 'explore-entry' }
+    renderDetail()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Discover New Agents' }))
+
+    expect(historyBack).toHaveBeenCalledOnce()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the marketplace route for a directly opened template', async () => {
+    renderDetail()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Discover New Agents' }))
+
+    expect(historyBack).not.toHaveBeenCalled()
+    expect(navigate).toHaveBeenCalledWith({ to: '/explore' })
+  })
 })
 
 /**
