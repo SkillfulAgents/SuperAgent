@@ -321,7 +321,11 @@ function createWorkspaceZipStream(
 
   const archive = archiver('zip', { zlib: { level: zlibLevel } })
   archive.once('close', release)
-  archive.once('error', release)
+  // on(), not once(): a workspace that changes under the walk (agent deleted
+  // mid-export) makes archiver emit an ENOENT per queued file, and the first
+  // listener would be the only one. Zero listeners on the second error is an
+  // uncaughtException, which quits the app. release() is idempotent.
+  archive.on('error', release)
 
   const stopArchive = (err?: Error) => {
     if (archive.destroyed) return
