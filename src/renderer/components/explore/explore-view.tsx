@@ -435,7 +435,7 @@ function SeeMoreCard({ rest, onClick }: { rest: ApiDiscoverableAgent[]; onClick:
       type="button"
       data-testid="explore-see-more"
       onClick={onClick}
-      className="group flex h-[180px] w-full flex-col gap-3 rounded-3xl bg-muted/50 p-4 text-left transition-colors duration-200 hover:bg-muted"
+      className="group flex h-[180px] w-full flex-col gap-3 rounded-2xl bg-muted/50 p-4 text-left transition-colors duration-200 hover:bg-muted"
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-2">
         {rest.slice(0, SEE_MORE_NAMED_COUNT).map((template) => {

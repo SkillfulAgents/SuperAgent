@@ -17,7 +17,7 @@ let mockSignupHandoff: SignupHandoff | null = null
 let mockWarmStartEnabled = false
 let mockDiscoverableAgents: ApiDiscoverableAgent[] | undefined = []
 let mockDiscoverableAgentsFailed = false
-let lastDialogProps: { template: unknown; handoffOrigin?: boolean } | null = null
+let lastDialogProps: { template: unknown } | null = null
 let latestTranscriptUpdate: ((text: string) => void) | null = null
 let lastComposerAutoFocus: boolean | undefined
 let mockAgentModel = 'opus'
@@ -144,7 +144,7 @@ vi.mock('@renderer/hooks/use-voice-input', () => ({
 }))
 
 vi.mock('@renderer/components/agents/template-install-dialog', () => ({
-  TemplateInstallDialog: (props: { template: unknown; handoffOrigin?: boolean }) => {
+  TemplateInstallDialog: (props: { template: unknown }) => {
     lastDialogProps = props
     return props.template ? <div data-testid="template-install-dialog" /> : null
   },
@@ -354,7 +354,7 @@ describe('CreateAgentForm signup handoff', () => {
     expect(mockStartAgent).not.toHaveBeenCalled()
   })
 
-  it('opens install dialog with matched public template and handoffOrigin', async () => {
+  it('opens install dialog with the matched public template', async () => {
     mockDiscoverableAgents = [discoverable('research-bot')]
     mockSignupHandoff = { template_slug: 'research-bot' }
     renderForm()
@@ -362,7 +362,6 @@ describe('CreateAgentForm signup handoff', () => {
     await waitFor(() => {
       expect(screen.getByTestId('template-install-dialog')).toBeTruthy()
     })
-    expect(lastDialogProps?.handoffOrigin).toBe(true)
     expect(lastDialogProps?.template).toEqual(discoverable('research-bot'))
   })
 
@@ -604,7 +603,7 @@ describe('CreateAgentForm signup handoff', () => {
     await waitFor(() => {
       expect(screen.getByTestId('template-install-dialog')).toBeTruthy()
     })
-    expect(lastDialogProps?.handoffOrigin).toBe(true)
+    expect(lastDialogProps?.template).toEqual(discoverable('model-bot'))
   })
 
   it('opening a creation aid forfeits before a late match can open the dialog', async () => {

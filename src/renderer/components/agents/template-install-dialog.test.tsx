@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 
 import { render, screen, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mutateAsync = vi.fn()
@@ -27,37 +26,53 @@ const template: ApiDiscoverableAgent = {
   path: 'agents/research-bot/',
 }
 
-describe('TemplateInstallDialog handoffOrigin', () => {
+describe('TemplateInstallDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('suppresses autoFocus when handoffOrigin is true', () => {
-    render(
-      <TemplateInstallDialog
-        template={template}
-        handoffOrigin
-        onClose={() => {}}
-        onInstalled={() => {}}
-      />,
+  it('installs on open under the template name, with nothing to confirm', async () => {
+    mutateAsync.mockResolvedValue({ slug: 'research-bot', displaySlug: 'research-bot' })
+
+    render(<TemplateInstallDialog template={template} onClose={() => {}} onInstalled={() => {}} />)
+
+    await waitFor(() =>
+      expect(mutateAsync).toHaveBeenCalledWith({
+        skillsetId: 'skillset-1',
+        agentPath: 'agents/research-bot/',
+        agentName: 'Research Bot',
+        agentVersion: '1.0.0',
+      }),
     )
-    const input = screen.getByPlaceholderText('Agent name')
-    expect(input).not.toHaveAttribute('autofocus')
+    // The naming step is gone: no field, and no button to press to begin.
+    expect(screen.queryByPlaceholderText('Agent name')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Install' })).toBeNull()
   })
 
-  it('autoFocuses the name field when handoffOrigin is omitted', () => {
-    render(
+  it('shows progress while the install is in flight', () => {
+    mutateAsync.mockReturnValue(new Promise(() => {})) // never settles
+
+    render(<TemplateInstallDialog template={template} onClose={() => {}} onInstalled={() => {}} />)
+
+    expect(screen.getByTestId('template-install-status').textContent).toContain('Installing')
+  })
+
+  it('fires the install exactly once even if the parent re-renders', async () => {
+    mutateAsync.mockResolvedValue({ slug: 'research-bot', displaySlug: 'research-bot' })
+
+    const { rerender } = render(
       <TemplateInstallDialog template={template} onClose={() => {}} onInstalled={() => {}} />,
     )
-    const input = screen.getByPlaceholderText('Agent name')
-    expect(input).toHaveFocus()
+    rerender(<TemplateInstallDialog template={template} onClose={() => {}} onInstalled={() => {}} />)
+    rerender(<TemplateInstallDialog template={template} onClose={() => {}} onInstalled={() => {}} />)
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1))
   })
 
-  // No handoffOrigin: the close-before-install ordering is shared by EVERY caller,
-  // including AgentTemplateBrowseDialog, whose onInstalled awaits a refetch and an
+  // The close-before-install ordering is shared by EVERY caller, including
+  // AgentTemplateBrowseDialog, whose onInstalled awaits a refetch and an
   // onboarding session. Asserting it on the bare props keeps that caller covered.
-  it('closes the install dialog before onInstalled so setup UI is not stacked', async () => {
-    const user = userEvent.setup()
+  it('closes before onInstalled so setup UI is not stacked', async () => {
     const order: string[] = []
     mutateAsync.mockResolvedValue({
       slug: 'research-bot',
@@ -68,21 +83,17 @@ describe('TemplateInstallDialog handoffOrigin', () => {
     render(
       <TemplateInstallDialog
         template={template}
-        onClose={() => {
-          order.push('close')
-        }}
+        onClose={() => order.push('close')}
         onInstalled={async () => {
           order.push('onInstalled')
         }}
       />,
     )
 
-    await user.click(screen.getByRole('button', { name: 'Install' }))
     await waitFor(() => expect(order).toEqual(['close', 'onInstalled']))
   })
 
   it('passes the template prompt through to the navigation handoff', async () => {
-    const user = userEvent.setup()
     const onInstalled = vi.fn()
     mutateAsync.mockResolvedValue({
       slug: 'research-bot',
@@ -91,19 +102,31 @@ describe('TemplateInstallDialog handoffOrigin', () => {
     })
 
     render(
-      <TemplateInstallDialog
-        template={template}
-        onClose={() => {}}
-        onInstalled={onInstalled}
-      />,
+      <TemplateInstallDialog template={template} onClose={() => {}} onInstalled={onInstalled} />,
     )
 
-    await user.click(screen.getByRole('button', { name: 'Install' }))
-    await waitFor(() => expect(onInstalled).toHaveBeenCalledWith(
-      expect.objectContaining({
-        slug: 'research-bot',
-        templatePrompt: 'Investigate this company',
-      }),
-    ))
+    await waitFor(
+      () =>
+        expect(onInstalled).toHaveBeenCalledWith(
+          expect.objectContaining({
+            slug: 'research-bot',
+            templatePrompt: 'Investigate this company',
+          }),
+        ),
+      { timeout: 3000 },
+    )
+  })
+
+  it('surfaces a failure instead of closing on it', async () => {
+    const onInstalled = vi.fn()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    mutateAsync.mockRejectedValue(new Error('Skillset unreachable'))
+
+    render(
+      <TemplateInstallDialog template={template} onClose={() => {}} onInstalled={onInstalled} />,
+    )
+
+    await waitFor(() => expect(screen.getByText('Skillset unreachable')).toBeTruthy())
+    expect(onInstalled).not.toHaveBeenCalled()
   })
 })
