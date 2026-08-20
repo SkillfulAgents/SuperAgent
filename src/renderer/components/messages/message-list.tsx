@@ -74,6 +74,7 @@ const TURN_ANCHOR_TOP = 100
 const SCROLL_GESTURE_WINDOW_MS = 400
 const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
 const SCROLL_KEYS = new Set(['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '])
+const isManualCompactCommand = (text: string) => /^\/compact(?:\s|$)/.test(text.trim())
 
 const prefersReducedMotion = () =>
   window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -311,7 +312,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         match = findTextMatch(pending.text, pending.sentAt - 5000)
         if (match) claimed.add(match.id)
       }
-      if (!match && /^\/compact(?:\s|$)/.test(pending.text.trim())) {
+      if (!match && isManualCompactCommand(pending.text)) {
         match = messages.find(
           (m) =>
             m.type === 'compact_boundary' &&
@@ -389,13 +390,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // materializes above), so restoring it here would yank back a message that
   // is actually mid-delivery — it then lands in the transcript AND sits in
   // the composer, baiting a duplicate resend. Leave those pending.
+  //
+  // Manual /compact is also not restorable user text. It persists as a compact
+  // boundary rather than a user message, and compact_complete can beat the
+  // boundary refetch by more than this grace period. Consume its ghost at idle
+  // without prepending the command over a draft typed during compaction.
   useEffect(() => {
     if (isActive || ((pendingUserMessages?.length ?? 0) === 0 && peerUserMessages.length === 0)) return
     const undelivered = (pendingUserMessages ?? []).filter((p) => p.queued || p.uuid)
     const timerId = setTimeout(() => {
       if (undelivered.length > 0) {
-        const restored = undelivered.map((p) => p.text.trim()).filter(Boolean)
-        appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
+        const restored = undelivered
+          .filter((p) => !isManualCompactCommand(p.text))
+          .map((p) => p.text.trim())
+          .filter(Boolean)
+        if (restored.length > 0) {
+          appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
+        }
         for (const pending of undelivered) onPendingMessageAppeared?.(pending.localId)
       }
       clearPeerUserMessages(sessionId)

@@ -919,6 +919,7 @@ describe('MessageList', () => {
     try {
       mockMessagesData.data = []
       mockStreamState.isActive = true
+      mockStreamState.isCompacting = true
 
       const CompactRaceHarness = () => {
         const [pending, setPending] = useState([
@@ -948,10 +949,12 @@ describe('MessageList', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Type next message' }))
       expect(screen.getByTestId('draft-probe')).toHaveTextContent('the next message')
 
-      // Manual compaction persists a boundary, not a user message carrying the
-      // POST uuid. The compact command must still be considered delivered.
-      mockMessagesData.data = [createCompactBoundary({ createdAt: new Date() })]
+      // The completion event can reach the renderer before the refetched compact
+      // boundary. The accepted command has no persisted user-message counterpart,
+      // so the generic idle rescue must not mistake it for lost user text while
+      // the boundary is still absent.
       mockStreamState.isActive = false
+      mockStreamState.isCompacting = false
       rerender(<CompactRaceHarness />)
 
       await act(async () => {
@@ -960,6 +963,7 @@ describe('MessageList', () => {
 
       expect(screen.getByTestId('draft-probe')).toHaveTextContent('the next message')
       expect(screen.getByTestId('draft-probe')).not.toHaveTextContent('/compact')
+      expect(screen.queryByText('/compact')).not.toBeInTheDocument()
     } finally {
       vi.useRealTimers()
     }
