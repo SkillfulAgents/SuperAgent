@@ -292,7 +292,11 @@ export interface AppSettings {
   platformNotifications?: PlatformNotificationsSettings
   /** APNs relay push delivery for the native iOS companion app. */
   push?: PushSettings
-  /** Anthropic SDK tool search — defaults on; passed as `ENABLE_TOOL_SEARCH` to the container. */
+  /**
+   * Master switch for CLI tool search. Only ever switches it OFF: whether it
+   * may be on is the active provider's call, because the endpoint has to
+   * expand deferred tools (see BaseLlmProvider.toolSearchEnv).
+   */
   enableToolSearch?: boolean
   /** Launch policies for subagents (Task/Agent) and workflows (Workflow tool). */
   agentCapabilities?: AgentCapabilitySettings
