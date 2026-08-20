@@ -45,6 +45,7 @@ import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
+import { collectEmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts
@@ -237,6 +238,21 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       (m): m is ApiMessage => (m.type === 'user' || m.type === 'assistant')
     )
   }, [messages])
+
+  // Final answers commonly embed the container path reported by a screenshot
+  // tool. Resolve only paths that were reported alongside a real image block;
+  // the resulting src is either inline image data or this session's media API.
+  const embeddedImageAliases = useMemo(
+    () => collectEmbeddedImageAliases(
+      (messages ?? []).flatMap((item) =>
+        item.type === 'assistant'
+          ? (item as ApiMessage).toolCalls.map((toolCall) => toolCall.result)
+          : []
+      ),
+      { agentSlug, sessionId }
+    ),
+    [messages, agentSlug, sessionId]
+  )
 
   const {
     isActive,
@@ -1609,6 +1625,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                           ? turn.revealedToolCallIds
                           : undefined
                       }
+                      embeddedImageAliases={embeddedImageAliases}
                     />
                   </MessageErrorBoundary>
                   {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
@@ -1719,6 +1736,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 ...(apiErrorCode && { apiError: apiErrorCode }),
               }}
               isStreaming={isStreaming}
+              agentSlug={agentSlug}
+              sessionId={sessionId}
+              embeddedImageAliases={embeddedImageAliases}
             />
           </MessageErrorBoundary>
         )}
