@@ -11,6 +11,8 @@ interface ContentBlock {
   // from the session's media endpoint. See shared/lib/services/session-media.ts.
   id?: string
   bytes?: number
+  width?: number
+  height?: number
 }
 
 /** Whose transcript this result belongs to. Required before any ref becomes a
@@ -25,6 +27,10 @@ export interface ParsedToolResultImage {
   src: string
   /** Decoded size when known (refs only) — the bytes aren't in hand to measure. */
   bytes?: number
+  /** Intrinsic pixel size when the server could read it, so the layout can
+   * reserve the box before the bytes arrive. */
+  width?: number
+  height?: number
   /** Refs are fetched over the network, so they can 404/410 after a transcript edit. */
   isRef: boolean
 }
@@ -53,7 +59,14 @@ function imageFromBlock(
     const path =
       `/api/agents/${encodeURIComponent(media.agentSlug)}` +
       `/sessions/${encodeURIComponent(media.sessionId)}/media/${block.id}`
-    return { src: `${getApiBaseUrl()}${path}`, bytes: block.bytes, isRef: true }
+    return {
+      src: `${getApiBaseUrl()}${path}`,
+      bytes: block.bytes,
+      ...(typeof block.width === 'number' && typeof block.height === 'number'
+        ? { width: block.width, height: block.height }
+        : {}),
+      isRef: true,
+    }
   }
   if (block.type !== 'image') return null
   // Anthropic API format: { type: "image", source: { type: "base64", media_type, data } }

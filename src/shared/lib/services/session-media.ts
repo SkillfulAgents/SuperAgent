@@ -88,6 +88,11 @@ export interface MediaRefBlock {
   mimeType: string
   /** Decoded size, for sizing a placeholder before the bytes arrive. */
   bytes: number
+  /** Intrinsic pixel size, when the header gives it up. The client reserves
+   * this box before fetching, so the image settles into place instead of
+   * displacing everything below it. */
+  width?: number
+  height?: number
 }
 
 // Single-letter keys: this rides in the URL, and a page can carry dozens.
@@ -258,8 +263,13 @@ export function replaceInlineMediaWithRefs(entry: JsonlEntry, ctx: MediaRefConte
     // ICO, …) would become a ref that answers 410 forever — replacing an image
     // that renders inline today with a permanent placeholder. Those stay
     // inline: the type is decided here, once, for both ends.
-    const mimeType = sniffImageType(Buffer.from(payload.data.slice(0, 24), 'base64'))
+    // One decode serves both: the type decides whether a ref is mintable at
+    // all, and the dimensions ride along on the wire.
+    const probeChars = Math.min(payload.data.length, DIMENSION_PROBE_BYTES * 2) & ~3
+    const header = Buffer.from(payload.data.slice(0, probeChars), 'base64')
+    const mimeType = sniffImageType(header)
     if (!mimeType) return undefined
+    const size = imageDimensions(header)
     const at = findPayload(ctx.line, payload.data, cursor)
     if (at === -1) return undefined
     cursor = at + payload.data.length
@@ -271,7 +281,15 @@ export function replaceInlineMediaWithRefs(entry: JsonlEntry, ctx: MediaRefConte
       l: payload.data.length,
       h: fingerprintOf(payload.data),
     })
-    return { type: 'media_ref', id, mimeType, bytes }
+    return {
+      type: 'media_ref',
+      id,
+      mimeType,
+      bytes,
+      ...(size && size.width > 0 && size.height > 0
+        ? { width: size.width, height: size.height }
+        : {}),
+    }
   }
 
   if (Array.isArray(message?.content)) {
@@ -326,6 +344,83 @@ function sniffImageType(head: Buffer): string | undefined {
     head.subarray(8, 12).toString('latin1') === 'WEBP'
   ) {
     return 'image/webp'
+  }
+  return undefined
+}
+
+/** Decoded prefix inspected for intrinsic dimensions. JPEG keeps them in a
+ * frame header that can sit past several KB of EXIF, so this is generous —
+ * it costs nothing, since minting already holds the whole payload in memory. */
+const DIMENSION_PROBE_BYTES = 64 * 1024
+
+/** Markers that introduce a JPEG frame header, whose payload carries the size.
+ * The gaps are deliberate: C4, C8 and CC are tables and restarts, not frames. */
+function isJpegFrameMarker(code: number): boolean {
+  if (code < 0xc0 || code > 0xcf) return false
+  return code !== 0xc4 && code !== 0xc8 && code !== 0xcc
+}
+
+/**
+ * Intrinsic pixel size from an image's header, or undefined when it isn't
+ * where this knows to look.
+ *
+ * The point is layout: a ref replaces bytes that used to arrive inline, so the
+ * element now has nothing to size itself from until the fetch lands. Shipping
+ * the dimensions lets the client reserve the exact box up front, which is the
+ * difference between a placeholder settling into place and a screenshot
+ * shoving a thousand pixels of transcript down the page.
+ */
+export function imageDimensions(head: Buffer): { width: number; height: number } | undefined {
+  // PNG: IHDR is always the first chunk, so the size sits at a fixed offset.
+  if (head.length >= 24 && head.subarray(12, 16).toString('latin1') === 'IHDR') {
+    return { width: head.readUInt32BE(16), height: head.readUInt32BE(20) }
+  }
+  // GIF: logical screen descriptor, immediately after the signature.
+  if (head.length >= 10 && head.subarray(0, 3).toString('latin1') === 'GIF') {
+    return { width: head.readUInt16LE(6), height: head.readUInt16LE(8) }
+  }
+  // BMP: DIB header. Height is signed — negative means a top-down bitmap.
+  if (head.length >= 26 && head[0] === 0x42 && head[1] === 0x4d) {
+    return { width: head.readInt32LE(18), height: Math.abs(head.readInt32LE(22)) }
+  }
+  if (head.length >= 30 && head.subarray(0, 4).toString('latin1') === 'RIFF') {
+    const chunk = head.subarray(12, 16).toString('latin1')
+    if (chunk === 'VP8 ') {
+      return { width: head.readUInt16LE(26) & 0x3fff, height: head.readUInt16LE(28) & 0x3fff }
+    }
+    if (chunk === 'VP8L') {
+      const bits = head.readUInt32LE(21)
+      return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 }
+    }
+    if (chunk === 'VP8X') {
+      return {
+        width: (head.readUIntLE(24, 3) & 0xffffff) + 1,
+        height: (head.readUIntLE(27, 3) & 0xffffff) + 1,
+      }
+    }
+    return undefined
+  }
+  // JPEG: walk the segment chain to the frame header. Unlike the others the
+  // offset is not fixed — EXIF, ICC profiles and comments all come first.
+  if (head.length >= 4 && head[0] === 0xff && head[1] === 0xd8) {
+    let at = 2
+    while (at + 9 < head.length) {
+      if (head[at] !== 0xff) {
+        at++
+        continue
+      }
+      const code = head[at + 1]!
+      if (isJpegFrameMarker(code)) {
+        return { width: head.readUInt16BE(at + 7), height: head.readUInt16BE(at + 5) }
+      }
+      // Standalone markers carry no length field to skip over.
+      if (code === 0xd8 || code === 0x01 || (code >= 0xd0 && code <= 0xd7)) {
+        at += 2
+        continue
+      }
+      if (code === 0xda) return undefined // scan data: no header left to find
+      at += 2 + head.readUInt16BE(at + 2)
+    }
   }
   return undefined
 }

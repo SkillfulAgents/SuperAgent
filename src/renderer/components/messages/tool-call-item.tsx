@@ -4,6 +4,7 @@ import { Check, X, Ban, ChevronDown, ChevronRight, ImageOff, Loader2, Search } f
 import { useState, useRef, useMemo, memo } from 'react'
 import { getToolRenderer } from './tool-renderers'
 import { parseToolResult, type ParsedToolResultImage } from '@renderer/lib/parse-tool-result'
+import { Skeleton } from '@renderer/components/ui/skeleton'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiToolCall } from '@shared/lib/types/api'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
@@ -103,6 +104,7 @@ export function StatusIndicator({ status }: { status: string }) {
  * transcript no longer has it. */
 function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
   const [failed, setFailed] = useState(false)
+  const [loaded, setLoaded] = useState(false)
   const [attempt, setAttempt] = useState(0)
 
   if (failed) {
@@ -118,6 +120,7 @@ function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
           type="button"
           onClick={() => {
             setFailed(false)
+            setLoaded(false)
             setAttempt((n) => n + 1)
           }}
           className="underline underline-offset-2 hover:text-foreground transition-colors"
@@ -136,16 +139,44 @@ function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
       ? `${image.src}${image.src.includes('?') ? '&' : '?'}retry=${attempt}`
       : image.src
 
+  // Inline images arrive with the payload and paint immediately; only a fetched
+  // one has a gap worth covering.
+  const pending = image.isRef && !loaded
+  const sized = image.width !== undefined && image.height !== undefined
+
   return (
-    <img
-      key={attempt}
-      src={src}
-      alt="Tool result"
-      loading="lazy"
-      decoding="async"
-      onError={() => setFailed(true)}
-      className="max-w-full rounded border"
-    />
+    <div
+      className="relative overflow-hidden rounded border"
+      style={
+        sized
+          ? // The exact box, held from first paint: the width the image will
+            // actually occupy, and its own aspect ratio for the height. Without
+            // this the element is a 2px sliver until the bytes land and then
+            // displaces everything below it.
+            { width: image.width, maxWidth: '100%', aspectRatio: `${image.width} / ${image.height}` }
+          : // Nothing to go on — reserve enough that the card doesn't collapse.
+            { minHeight: pending ? '8rem' : undefined }
+      }
+    >
+      {pending && <Skeleton className="absolute inset-0 h-full w-full rounded-none" />}
+      <img
+        key={attempt}
+        src={src}
+        alt="Tool result"
+        {...(sized ? { width: image.width, height: image.height } : {})}
+        loading="lazy"
+        decoding="async"
+        onLoad={() => setLoaded(true)}
+        onError={() => setFailed(true)}
+        className={cn(
+          'block max-w-full',
+          sized ? 'h-full w-full' : 'h-auto',
+          // Held invisible rather than unmounted, so the browser is actually
+          // fetching it while the skeleton shows.
+          pending && 'opacity-0'
+        )}
+      />
+    </div>
   )
 }
 

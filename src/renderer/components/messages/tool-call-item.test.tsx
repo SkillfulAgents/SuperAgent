@@ -236,6 +236,40 @@ describe('ToolCallItem result images', () => {
     expect(retried.getAttribute('src')).toContain('retry=1')
   })
 
+  it('reserves the image box and shows a skeleton while a ref is in flight', async () => {
+    // The bytes no longer arrive with the payload, so without a reserved box
+    // the card is a sliver until the fetch lands and then displaces the page.
+    mockParseToolResult.mockReturnValue({
+      text: null,
+      images: [{ ...refImage, width: 919, height: 1998 }],
+    })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'x' })} />
+    )
+    await userEvent.click(screen.getByRole('button'))
+
+    const img = container.querySelector('img')!
+    expect(img).toHaveAttribute('width', '919')
+    expect(img).toHaveAttribute('height', '1998')
+    expect(img.parentElement).toHaveStyle({ aspectRatio: '919 / 1998' })
+    expect(container.querySelector('.animate-pulse')).toBeTruthy()
+
+    fireEvent.load(img)
+    expect(container.querySelector('.animate-pulse')).toBeNull()
+  })
+
+  it('does not show a skeleton for an inline image, which needs no fetch', async () => {
+    mockParseToolResult.mockReturnValue({
+      text: null,
+      images: [{ src: 'data:image/png;base64,abc', isRef: false }],
+    })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'x' })} />
+    )
+    await userEvent.click(screen.getByRole('button'))
+    expect(container.querySelector('.animate-pulse')).toBeNull()
+  })
+
   it('does not corrupt an inline data URL when retried', async () => {
     // A query nonce appended to a data: URL becomes part of the base64 payload,
     // turning a working image into a broken one.

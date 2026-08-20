@@ -6,6 +6,7 @@ import {
   MEDIA_INLINE_MAX_BYTES,
   decodeMediaRef,
   encodeMediaRef,
+  imageDimensions,
   openMediaBlob,
   replaceInlineMediaWithRefs,
   type MediaRefBlock,
@@ -530,6 +531,83 @@ describe('session-media', () => {
       spy.mockRestore()
       expect(blob).toBeDefined()
       expect((await collectStream(blob!.stream)).equals(BIG_PNG)).toBe(true)
+    })
+  })
+
+
+  describe('intrinsic dimensions', () => {
+    // A ref replaces bytes that used to arrive inline, so without these the
+    // element has nothing to size itself from until the fetch lands.
+    it('reads a PNG header', () => {
+      const png = Buffer.alloc(24)
+      PNG_MAGIC.copy(png)
+      png.write('IHDR', 12, 'latin1')
+      png.writeUInt32BE(919, 16)
+      png.writeUInt32BE(1998, 20)
+      expect(imageDimensions(png)).toEqual({ width: 919, height: 1998 })
+    })
+
+    it('walks JPEG segments past a leading EXIF block to the frame header', () => {
+      // The size is not at a fixed offset: metadata segments come first.
+      const exif = Buffer.alloc(2 + 2 + 400)
+      exif[0] = 0xff
+      exif[1] = 0xe1
+      exif.writeUInt16BE(2 + 400, 2)
+      const sof = Buffer.alloc(11)
+      sof[0] = 0xff
+      sof[1] = 0xc0
+      sof.writeUInt16BE(8, 2)
+      sof[4] = 8
+      sof.writeUInt16BE(1998, 5)
+      sof.writeUInt16BE(919, 7)
+      const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8]), exif, sof])
+      expect(imageDimensions(jpeg)).toEqual({ width: 919, height: 1998 })
+    })
+
+    it('reads GIF and BMP headers, including a top-down bitmap', () => {
+      const gif = Buffer.alloc(10)
+      gif.write('GIF89a', 0, 'latin1')
+      gif.writeUInt16LE(640, 6)
+      gif.writeUInt16LE(360, 8)
+      expect(imageDimensions(gif)).toEqual({ width: 640, height: 360 })
+
+      const bmp = Buffer.alloc(26)
+      bmp[0] = 0x42
+      bmp[1] = 0x4d
+      bmp.writeInt32LE(300, 18)
+      bmp.writeInt32LE(-200, 22) // negative height = top-down
+      expect(imageDimensions(bmp)).toEqual({ width: 300, height: 200 })
+    })
+
+    it('returns undefined rather than guessing when the header is unknown', () => {
+      expect(imageDimensions(Buffer.from('not an image at all'))).toBeUndefined()
+      expect(imageDimensions(Buffer.alloc(2))).toBeUndefined()
+      // JPEG that reaches scan data without a frame header.
+      expect(imageDimensions(Buffer.from([0xff, 0xd8, 0xff, 0xda, 0, 2, 0, 0, 0, 0]))).toBeUndefined()
+    })
+
+    it('puts the dimensions on the minted ref', async () => {
+      const png = Buffer.alloc(40 * 1024, 0xab)
+      PNG_MAGIC.copy(png)
+      png.write('IHDR', 12, 'latin1')
+      png.writeUInt32BE(919, 16)
+      png.writeUInt32BE(1998, 20)
+      const { entry } = await stripRow([toolResultEntry('u-1', 'tool-1', [imageBlock(png)])], 0)
+      const refs = refsIn(entry)
+      expect(refs).toHaveLength(1)
+      expect(refs[0]!.width).toBe(919)
+      expect(refs[0]!.height).toBe(1998)
+    })
+
+    it('still mints a ref when the size cannot be read', async () => {
+      // Sizing is a nicety; refusing to serve the image over it would not be.
+      const { entry } = await stripRow(
+        [toolResultEntry('u-1', 'tool-1', [imageBlock(fakeImage(JPEG_MAGIC, 30 * 1024, 0x5c))])],
+        0
+      )
+      const refs = refsIn(entry)
+      expect(refs).toHaveLength(1)
+      expect(refs[0]!.width).toBeUndefined()
     })
   })
 

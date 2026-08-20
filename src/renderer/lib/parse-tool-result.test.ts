@@ -187,6 +187,20 @@ describe('parseToolResult', () => {
       ])
     })
 
+    it('carries intrinsic dimensions through so the layout can reserve the box', () => {
+      const result = parseToolResult(
+        [{ type: 'media_ref', id: 'abc', bytes: 40960, width: 919, height: 1998 }],
+        ctx
+      )
+      expect(result.images[0]).toMatchObject({ width: 919, height: 1998 })
+    })
+
+    it('omits dimensions when the server could not read them', () => {
+      const result = parseToolResult([{ type: 'media_ref', id: 'abc', bytes: 40960 }], ctx)
+      expect(result.images[0]!.width).toBeUndefined()
+      expect(result.images[0]!.height).toBeUndefined()
+    })
+
     it('ignores refs when no session context is supplied', () => {
       // A caller that cannot vouch for the transcript must not turn its
       // contents into requests.
