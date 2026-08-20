@@ -256,7 +256,7 @@ const passwordManagerConfigurationSchema = z.object({
 // unlock/check flow stays with the browser_input request that needs it.
 settings.get('/password-managers', async (c) => {
   try {
-    const configured = new Set(getSettings().app?.configuredPasswordManagers ?? [])
+    const configured = new Set((getSettings().app?.configuredPasswordManagers ?? []).slice(0, 1))
     const providers = (await credentialBroker.connectionStatuses()).map((provider) => ({
       ...provider,
       configured: configured.has(provider.provider),
@@ -290,13 +290,24 @@ settings.put(
           }, 409)
         }
       }
-      mutateSettings((current) => {
-        const app = current.app ?? (current.app = {})
-        const configured = new Set(app.configuredPasswordManagers ?? [])
-        if (body.configured) configured.add(provider)
-        else configured.delete(provider)
-        app.configuredPasswordManagers = [...configured]
-      })
+      const before = (getSettings().app?.configuredPasswordManagers ?? []).slice(0, 1)
+      if (body.configured) {
+        mutateSettings((current) => {
+          const app = current.app ?? (current.app = {})
+          app.configuredPasswordManagers = [provider]
+        })
+        const previous = before[0]
+        if (previous && previous !== provider) await credentialBroker.shutdown(previous)
+      } else {
+        if (before[0] !== provider) {
+          return c.json({ success: true, provider, configured: false })
+        }
+        mutateSettings((current) => {
+          const app = current.app ?? (current.app = {})
+          app.configuredPasswordManagers = []
+        })
+        await credentialBroker.shutdown(provider)
+      }
       return c.json({ success: true, provider, configured: body.configured })
     } catch (error) {
       console.error('Failed to configure password manager:', error)

@@ -1,27 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, Copy, Eye, EyeOff, KeyRound, RefreshCw } from 'lucide-react'
+import { Check, Copy, Eye, EyeOff, KeyRound, Loader2, RefreshCw } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useUser } from '@renderer/context/user-context'
+import {
+  credentialSuggestionsResponseSchema,
+  type CredentialSuggestionsResponse,
+} from '@shared/lib/credentials/schemas'
+import { siteNameQuery } from '@shared/lib/onepassword/credential-index'
 
-interface CredentialSuggestion {
-  id: string
-  username: string
-  domain: string
-  title?: string
+type CredentialSuggestion = CredentialSuggestionsResponse['suggestions'][number]
+
+function suggestionPrimary(suggestion: CredentialSuggestion): string {
+  return suggestion.username || suggestion.title || 'Saved login'
 }
 
-interface CredentialSuggestionsResponse {
-  provider: string
-  providerLabel: string
-  status: 'unconfigured' | 'ready' | 'unavailable' | 'locked' | 'error'
-  installable: boolean
-  origin: string
-  message?: string
-  suggestions: CredentialSuggestion[]
+function suggestionSubtext(suggestion: CredentialSuggestion): string {
+  const primary = suggestionPrimary(suggestion)
+  return [suggestion.title !== primary ? suggestion.title : null, suggestion.domain]
+    .filter(Boolean)
+    .join(' · ')
 }
+
+type SuggestionsFetchResult = { kind: 'ok' } | { kind: 'terminal' } | { kind: 'failed' }
 
 interface VerificationRequest {
   type: 'numeric_code'
@@ -56,6 +59,10 @@ export function BrowserCredentialPicker({
   const [filled, setFilled] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reload, setReload] = useState(0)
+  const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [settled, setSettled] = useState(false)
   const [checking, setChecking] = useState(false)
   const [verification, setVerification] = useState<VerificationRequest | null>(null)
   const [code, setCode] = useState('')
@@ -72,42 +79,133 @@ export function BrowserCredentialPicker({
     }
   }, [])
 
+  const queryRef = useRef(debouncedQuery)
+  queryRef.current = debouncedQuery
+  const previousQuery = useRef<string | null>(null)
+  const appliedSiteNameSearch = useRef(false)
+
   useEffect(() => {
     return () => clearCopiedResetTimer()
   }, [clearCopiedResetTimer])
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => setDebouncedQuery(query), 300)
+    return () => window.clearTimeout(handle)
+  }, [query])
+
+  const loadSuggestions = useCallback(async ({
+    background,
+    refresh,
+    q,
+    signal,
+  }: {
+    background: boolean
+    refresh: boolean
+    q: string
+    signal: AbortSignal
+  }): Promise<SuggestionsFetchResult> => {
+    if (!background) {
+      setLoading(true)
+      setError(null)
+      setFilled(false)
+      setManualCredential(null)
+      setPasswordRevealed(false)
+      clearCopiedResetTimer()
+      setCopiedField(null)
+      setCopyError(null)
+    }
+    const refreshQuery = refresh ? '&refresh=true' : ''
+    const qQuery = q ? `&q=${encodeURIComponent(q)}` : ''
+    try {
+      const response = await apiFetch(
+        `/api/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}` +
+          `/browser-credentials?toolUseId=${encodeURIComponent(toolUseId)}${refreshQuery}${qQuery}`,
+        { signal },
+      )
+      const result = await response.json() as { error?: string }
+      if (response.status === 404) {
+        setSettled(true)
+        setData(null)
+        setError(null)
+        return { kind: 'terminal' }
+      }
+      if (!response.ok) throw new Error(result.error || 'Could not load saved credentials')
+      const parsed = credentialSuggestionsResponseSchema.safeParse(result)
+      if (!parsed.success) throw new Error('Could not load saved credentials')
+      setData(parsed.data)
+      if (background) setError(null)
+      return { kind: 'ok' }
+    } catch (reason: unknown) {
+      if (signal.aborted) return { kind: 'failed' }
+      setError(reason instanceof Error ? reason.message : 'Could not load saved credentials')
+      return { kind: 'failed' }
+    } finally {
+      if (!background && !signal.aborted) setLoading(false)
+    }
+  }, [agentSlug, clearCopiedResetTimer, sessionId, toolUseId])
 
   useEffect(() => {
     if (!canUsePasswordManagers) {
       setLoading(false)
       return
     }
+    if (settled) return
     const controller = new AbortController()
-    setLoading(true)
-    setError(null)
-    setFilled(false)
-    setManualCredential(null)
-    setPasswordRevealed(false)
-    clearCopiedResetTimer()
-    setCopiedField(null)
-    setCopyError(null)
-    const refreshQuery = reload > 0 ? '&refresh=true' : ''
-    void apiFetch(
-      `/api/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}` +
-        `/browser-credentials?toolUseId=${encodeURIComponent(toolUseId)}${refreshQuery}`,
-      { signal: controller.signal },
-    ).then(async (response) => {
-      const result = await response.json() as CredentialSuggestionsResponse & { error?: string }
-      if (!response.ok) throw new Error(result.error || 'Could not load saved credentials')
-      setData(result)
-    }).catch((reason: unknown) => {
-      if (!controller.signal.aborted) {
-        setError(reason instanceof Error ? reason.message : 'Could not load saved credentials')
-      }
-    }).finally(() => {
-      if (!controller.signal.aborted) setLoading(false)
+    void loadSuggestions({
+      background: false,
+      refresh: reload > 0,
+      q: queryRef.current,
+      signal: controller.signal,
     })
     return () => controller.abort()
-  }, [agentSlug, canUsePasswordManagers, clearCopiedResetTimer, sessionId, toolUseId, reload])
+  }, [agentSlug, canUsePasswordManagers, loadSuggestions, reload, sessionId, settled, toolUseId])
+
+  useEffect(() => {
+    if (!canUsePasswordManagers || settled) return
+    if (previousQuery.current === null) {
+      previousQuery.current = debouncedQuery
+      return
+    }
+    if (previousQuery.current === debouncedQuery) return
+    previousQuery.current = debouncedQuery
+    const controller = new AbortController()
+    void loadSuggestions({
+      background: true,
+      refresh: false,
+      q: debouncedQuery,
+      signal: controller.signal,
+    })
+    return () => controller.abort()
+  }, [canUsePasswordManagers, debouncedQuery, loadSuggestions, settled])
+
+  useEffect(() => {
+    if (appliedSiteNameSearch.current || settled) return
+    if (data?.status !== 'ready' || !data.searchable) return
+    if (data.suggestions.length > 0 || query) return
+    const label = siteNameQuery(data.origin)
+    if (!label) return
+    appliedSiteNameSearch.current = true
+    setQuery(label)
+  }, [data, query, settled])
+
+  useEffect(() => {
+    if (data?.status !== 'warming' || settled) return
+    const controller = new AbortController()
+    const interval = window.setInterval(() => {
+      void loadSuggestions({
+        background: true,
+        refresh: false,
+        q: '',
+        signal: controller.signal,
+      }).then((result) => {
+        if (result.kind === 'terminal') controller.abort()
+      })
+    }, 5000)
+    return () => {
+      window.clearInterval(interval)
+      controller.abort()
+    }
+  }, [data?.status, loadSuggestions, settled])
 
   const fill = useCallback(async (credentialId: string) => {
     setFillingId(credentialId)
@@ -219,7 +317,14 @@ export function BrowserCredentialPicker({
   }, [agentSlug, code, data, sessionId, toolUseId, verification])
 
   if (!canUsePasswordManagers) return null
-  if (!loading && data?.status === 'ready' && data.suggestions.length === 0 && !error) return null
+  if (
+    !loading
+    && data?.status === 'ready'
+    && data.suggestions.length === 0
+    && !data.searchable
+    && !query
+    && !error
+  ) return null
   if (!loading && data?.status === 'unconfigured' && !data.installable) return null
   if (loading) {
     return (
@@ -353,6 +458,20 @@ export function BrowserCredentialPicker({
     )
   }
 
+  if (data?.status === 'warming') {
+    return (
+      <div className="mt-3 rounded-md border border-border bg-muted/30 p-3 text-xs" data-testid="credential-picker-warming">
+        <div className="flex items-center gap-2 font-medium text-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          {data.providerLabel}
+        </div>
+        <p className="mt-1 text-muted-foreground">
+          Loading your saved logins.
+        </p>
+      </div>
+    )
+  }
+
   if (data?.status === 'locked') {
     return (
       <div className="mt-3 rounded-md border border-border bg-muted/30 p-3 text-xs" data-testid="credential-picker-status">
@@ -361,7 +480,7 @@ export function BrowserCredentialPicker({
           {data.providerLabel}
         </div>
         <p className="mt-1 text-muted-foreground">
-          Check your password manager to show saved logins for this page.
+          {data.message || 'Check your password manager to show saved logins for this page.'}
         </p>
         {verification ? (
           <form
@@ -473,36 +592,89 @@ export function BrowserCredentialPicker({
     ) : null
   }
 
+  const showSearchInput = data.searchable && (
+    searchOpen || data.suggestions.length === 0 || Boolean(query)
+  )
+  const searchFoundNothing = Boolean(debouncedQuery)
+    && query === debouncedQuery
+    && data.searchable
+    && data.suggestions.length === 0
+
   return (
     <div className="mt-3 rounded-md border border-border bg-muted/30 p-3" data-testid="credential-picker">
       <div className="flex items-center gap-2 text-xs font-medium text-foreground">
         <KeyRound className="h-3.5 w-3.5" />
         Fill from {data.providerLabel}
       </div>
+      {data.searchable && data.suggestions.length === 0 && !query && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          No saved logins matched this page. Search your vault by name.
+        </p>
+      )}
+      {searchFoundNothing && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          No logins matched “{query}”
+        </p>
+      )}
       <div className="mt-2 space-y-1.5">
-        {data.suggestions.map((suggestion) => (
-          <button
-            key={suggestion.id}
-            type="button"
-            className="flex w-full items-center gap-3 rounded-md border border-border bg-background px-2.5 py-2 text-left hover:bg-muted disabled:opacity-50"
-            onClick={() => fill(suggestion.id)}
-            disabled={disabled || fillingId !== null}
-            data-testid={`credential-suggestion-${suggestion.id}`}
-          >
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-medium text-foreground">
-                {suggestion.username || suggestion.title || 'Saved login'}
+        {data.suggestions.map((suggestion) => {
+          const primary = suggestionPrimary(suggestion)
+          const subtext = suggestionSubtext(suggestion)
+          return (
+            <button
+              key={suggestion.id}
+              type="button"
+              className="flex w-full items-center gap-3 rounded-md border border-border bg-background px-2.5 py-2 text-left hover:bg-muted disabled:opacity-50"
+              onClick={() => fill(suggestion.id)}
+              disabled={disabled || fillingId !== null}
+              data-testid={`credential-suggestion-${suggestion.id}`}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs font-medium text-foreground">
+                  {primary}
+                </span>
+                {subtext ? (
+                  <span className="block truncate text-2xs text-muted-foreground">
+                    {subtext}
+                  </span>
+                ) : null}
               </span>
-              <span className="block truncate text-2xs text-muted-foreground">
-                {suggestion.title && suggestion.username ? `${suggestion.title} · ` : ''}{suggestion.domain}
+              <span className="text-2xs font-medium text-blue-600 dark:text-blue-400">
+                {fillingId === suggestion.id ? 'Filling…' : 'Fill'}
               </span>
-            </span>
-            <span className="text-2xs font-medium text-blue-600 dark:text-blue-400">
-              {fillingId === suggestion.id ? 'Filling…' : 'Fill'}
-            </span>
-          </button>
-        ))}
+            </button>
+          )
+        })}
       </div>
+      {showSearchInput ? (
+        <Input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search your 1Password logins…"
+          aria-label="Search your 1Password logins"
+          className="mt-2 h-8"
+        />
+      ) : data.searchable ? (
+        <button
+          type="button"
+          className="mt-2 text-2xs text-muted-foreground hover:text-foreground"
+          onClick={() => setSearchOpen(true)}
+        >
+          Search 1Password for a different login…
+        </button>
+      ) : null}
+      {searchFoundNothing && (
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost"
+          className="mt-2"
+          onClick={() => openSettings('browser')}
+          disabled={disabled}
+        >
+          Switch password manager
+        </Button>
+      )}
       {error && (
         <div className="mt-2 flex items-center justify-between gap-2">
           <p className="text-xs text-destructive">{error}</p>

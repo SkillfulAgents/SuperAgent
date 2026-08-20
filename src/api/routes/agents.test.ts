@@ -89,12 +89,16 @@ const mockCredentialSuggest = vi.fn()
 const mockCredentialRetrieve = vi.fn()
 const mockCredentialBeginPairing = vi.fn()
 const mockCredentialCompletePairing = vi.fn()
+const mockCredentialWarmingProviderId = vi.fn()
+const mockCredentialProviderLabel = vi.fn()
 vi.mock('../credentials/credential-broker', () => ({
   credentialBroker: {
     suggest: (...args: unknown[]) => mockCredentialSuggest(...args),
     retrieve: (...args: unknown[]) => mockCredentialRetrieve(...args),
     beginPairing: (...args: unknown[]) => mockCredentialBeginPairing(...args),
     completePairing: (...args: unknown[]) => mockCredentialCompletePairing(...args),
+    warmingProviderId: (...args: unknown[]) => mockCredentialWarmingProviderId(...args),
+    providerLabel: (...args: unknown[]) => mockCredentialProviderLabel(...args),
   },
 }))
 
@@ -4345,8 +4349,102 @@ describe('browser credential broker routes', () => {
       { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
       'https://example.com/login',
       ['apple-passwords'],
+      undefined,
     )
     expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('answers warming without resolving the browser URL', async () => {
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tool-credential',
+      kind: 'browser_input',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {
+        browserContext: {
+          url: 'https://example.com/login',
+          capturedAt: Date.now() - 31_000,
+        },
+      },
+    })
+    mockCredentialWarmingProviderId.mockReturnValueOnce('onepassword')
+    mockCredentialProviderLabel.mockReturnValueOnce('1Password')
+
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential',
+    )
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      provider: 'onepassword',
+      providerLabel: '1Password',
+      status: 'warming',
+      searchable: true,
+      origin: 'https://example.com',
+      suggestions: [],
+    })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(mockCredentialSuggest).not.toHaveBeenCalled()
+  })
+
+  it('validates q (rejects >100 chars) and threads it to suggest', async () => {
+    const tooLong = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential&q=' +
+        'x'.repeat(101),
+    )
+    expect(tooLong.status).toBe(400)
+
+    mockCredentialSuggest.mockResolvedValueOnce({
+      provider: 'onepassword',
+      providerLabel: '1Password',
+      status: 'ready',
+      installable: true,
+      searchable: true,
+      origin: 'https://example.com',
+      suggestions: [],
+    })
+    const res = await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential&q=git',
+    )
+    expect(res.status).toBe(200)
+    expect(mockCredentialSuggest).toHaveBeenCalledWith(
+      { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
+      'https://example.com/login',
+      ['apple-passwords'],
+      'git',
+    )
+  })
+
+  it('serves only the first configured password manager', async () => {
+    mockRuntimeSettings.mockReturnValueOnce({
+      container: {},
+      skillsets: [],
+      app: { configuredPasswordManagers: ['apple-passwords', 'onepassword'] },
+    })
+    mockCredentialSuggest.mockResolvedValueOnce({
+      provider: 'apple-passwords',
+      providerLabel: 'Apple Passwords',
+      status: 'ready',
+      origin: 'https://example.com',
+      suggestions: [],
+    })
+
+    await getReq(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/browser-credentials?toolUseId=tool-credential',
+    )
+
+    expect(mockCredentialSuggest).toHaveBeenCalledWith(
+      { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
+      'https://example.com/login',
+      ['apple-passwords'],
+      undefined,
+    )
   })
 
   it('starts and verifies the configured provider from the open input request', async () => {
@@ -4411,6 +4509,7 @@ describe('browser credential broker routes', () => {
       { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
       'https://new.example/login',
       ['apple-passwords'],
+      undefined,
     )
     expect(userInputRequestManager.getOpenRequest('tool-credential')?.payload)
       .toMatchObject({ browserContext: { url: 'https://new.example/login' } })
@@ -4504,6 +4603,7 @@ describe('browser credential broker routes', () => {
       { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-credential' },
       'opaque-id',
       'https://example.com/login',
+      ['apple-passwords'],
     )
     const [fillPath, fillOptions] = mockContainerFetch.mock.calls[1]
     expect(fillPath).toBe('/browser/fill-credential')
