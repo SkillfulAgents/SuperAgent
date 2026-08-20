@@ -1307,12 +1307,29 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const err = error instanceof Error ? error : new Error(String(error))
 
       if (err.name === 'AbortError') {
+        addErrorBreadcrumb({
+          category: 'container.send',
+          message: 'Message send failed',
+          level: 'warning',
+          data: { runner: this.getRunnerCommand(), failureCause: 'timeout', lifecycle: 'unknown' },
+        })
         throw new Error(
           'Failed to send message - request timed out. Please check your connection and try again.'
         )
       }
 
       if (this.isConnectionError(err)) {
+        const code = String((err as NodeJS.ErrnoException).code ?? (err.cause as NodeJS.ErrnoException | undefined)?.code ?? '')
+        addErrorBreadcrumb({
+          category: 'container.send',
+          message: 'Message send failed',
+          level: 'warning',
+          data: {
+            runner: this.getRunnerCommand(),
+            failureCause: code === 'ECONNREFUSED' ? 'connection_refused' : code === 'ECONNRESET' ? 'connection_reset' : 'connection_lost',
+            lifecycle: 'unknown',
+          },
+        })
         this.handleConnectionError()
         throw new Error(
           'Failed to send message - connection lost. Please check that the agent is running and try again.'
