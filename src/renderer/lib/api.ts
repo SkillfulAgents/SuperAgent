@@ -1,6 +1,170 @@
 import { getApiBaseUrl } from './env'
 import { hasInteractiveLogin, isAuthMode } from './auth-mode'
 import { reportCloudSessionRejected } from './cloud-session'
+import { captureRendererException } from './error-reporting'
+
+const SAFE_ROUTE_SEGMENTS = new Set([
+  'api', 'accounts', 'agents', 'answer', 'auth', 'automations', 'billing', 'browser',
+  'cancel', 'chat-integrations', 'connections', 'credential', 'dashboards', 'deploy',
+  'events', 'files', 'folders', 'health', 'history', 'import', 'integrations', 'logs',
+  'messages', 'models', 'notifications', 'platform', 'preferences', 'refresh', 'roles',
+  'runtime-status', 'secrets', 'sessions', 'settings', 'skillsets', 'status', 'subagents',
+  'sync', 'typing', 'unread', 'update', 'usage', 'validate', 'workflows',
+])
+
+const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
+
+type ApiRequestFailureKind =
+  | 'offline'
+  | 'intentional_navigation_abort'
+  | 'aborted'
+  | 'transport_or_cors'
+  | 'forbidden'
+  | 'server'
+
+type ApiRequestMetadata = {
+  route: string
+  method: string
+  failureKind: ApiRequestFailureKind
+  statusClass: 'none' | '4xx' | '5xx'
+  status?: number
+  policyCode?: string
+  apiBaseKind: 'same-origin' | 'loopback' | 'other-first-party'
+  browser: 'firefox' | 'safari' | 'chromium' | 'embedded' | 'other'
+  online: 'yes' | 'no' | 'unknown'
+  visibility: 'visible' | 'hidden' | 'unknown'
+  lifecycle: 'active' | 'pagehide'
+  elapsedMsBucket: '<100' | '100-999' | '1000-9999' | '10000+'
+}
+
+let pageLifecycle: 'active' | 'pagehide' = 'active'
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => { pageLifecycle = 'pagehide' })
+  window.addEventListener('pageshow', () => { pageLifecycle = 'active' })
+}
+
+/**
+ * A request failure whose public fields are safe to send to diagnostics. The
+ * original URL, response body, headers and provider error are deliberately not
+ * retained, including as `cause` (Sentry recursively serializes causes).
+ */
+export class ApiRequestError extends Error {
+  constructor(public readonly metadata: ApiRequestMetadata) {
+    super(`API request failed: ${metadata.method} ${metadata.route} (${metadata.failureKind})`)
+    this.name = 'ApiRequestError'
+  }
+}
+
+/** Only a caller-owned abort coincident with page teardown is proven intentional. */
+export function isProvenIntentionalApiAbort(error: unknown): boolean {
+  return error instanceof ApiRequestError && error.metadata.failureKind === 'intentional_navigation_abort'
+}
+
+function normalizedMethod(init?: RequestInit): string {
+  const method = (init?.method ?? 'GET').toUpperCase()
+  return HTTP_METHODS.has(method) ? method : 'OTHER'
+}
+
+/**
+ * Retain only a small allowlist of route vocabulary. Every other segment is a
+ * parameter, so slugs, account/session IDs, tokens and encoded values cannot
+ * enter diagnostics. Query strings and fragments are discarded before parsing.
+ */
+export function normalizeApiRoute(path: string): string {
+  const pathname = path.split(/[?#]/, 1)[0]
+  if (!pathname.startsWith('/api/')) return '/api/:unknown'
+  const segments = pathname.split('/').filter(Boolean)
+  return `/${segments.map((segment) => SAFE_ROUTE_SEGMENTS.has(segment.toLowerCase())
+    ? segment.toLowerCase()
+    : ':param').join('/')}`
+}
+
+function apiBaseKind(baseUrl: string): ApiRequestMetadata['apiBaseKind'] {
+  if (!baseUrl) return 'same-origin'
+  try {
+    const host = new URL(baseUrl).hostname
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+      ? 'loopback'
+      : 'other-first-party'
+  } catch {
+    return 'other-first-party'
+  }
+}
+
+function browserKind(): ApiRequestMetadata['browser'] {
+  if (typeof navigator === 'undefined') return 'other'
+  const ua = navigator.userAgent.toLowerCase()
+  if (/\b(fbav|instagram|line|wv)\b/.test(ua)) return 'embedded'
+  if (ua.includes('firefox')) return 'firefox'
+  if (ua.includes('safari') && !ua.includes('chrome') && !ua.includes('chromium')) return 'safari'
+  if (ua.includes('chrome') || ua.includes('chromium')) return 'chromium'
+  return 'other'
+}
+
+function elapsedBucket(elapsedMs: number): ApiRequestMetadata['elapsedMsBucket'] {
+  if (elapsedMs < 100) return '<100'
+  if (elapsedMs < 1_000) return '100-999'
+  if (elapsedMs < 10_000) return '1000-9999'
+  return '10000+'
+}
+
+function safePolicyCode(response: Response): string | undefined {
+  // This explicitly allowlisted machine code is the only response metadata read.
+  // Request IDs and bodies are intentionally excluded by the global privacy rule.
+  const value = response.headers?.get?.('x-error-code')
+  return value && /^[A-Z][A-Z0-9_]{0,31}$/.test(value) ? value : undefined
+}
+
+function requestMetadata(
+  path: string,
+  init: RequestInit | undefined,
+  baseUrl: string,
+  startedAt: number,
+  failureKind: ApiRequestFailureKind,
+  status?: number,
+  policyCode?: string,
+): ApiRequestMetadata {
+  return {
+    route: normalizeApiRoute(path),
+    method: normalizedMethod(init),
+    failureKind,
+    statusClass: status === undefined ? 'none' : status >= 500 ? '5xx' : '4xx',
+    ...(status === undefined ? {} : { status }),
+    ...(policyCode ? { policyCode } : {}),
+    apiBaseKind: apiBaseKind(baseUrl),
+    browser: browserKind(),
+    online: typeof navigator === 'undefined' ? 'unknown' : navigator.onLine ? 'yes' : 'no',
+    visibility: typeof document === 'undefined'
+      ? 'unknown'
+      : document.visibilityState === 'hidden' ? 'hidden' : 'visible',
+    lifecycle: pageLifecycle,
+    elapsedMsBucket: elapsedBucket(performance.now() - startedAt),
+  }
+}
+
+function reportApiRequestFailure(error: ApiRequestError): void {
+  const { metadata } = error
+  captureRendererException(error, {
+    tags: {
+      source: 'api-fetch',
+      route: metadata.route,
+      method: metadata.method,
+      failure_kind: metadata.failureKind,
+      status_class: metadata.statusClass,
+      api_base_kind: metadata.apiBaseKind,
+      browser: metadata.browser,
+      online: metadata.online,
+      visibility: metadata.visibility,
+      lifecycle: metadata.lifecycle,
+      ...(metadata.policyCode ? { policy_code: metadata.policyCode } : {}),
+    },
+    extra: {
+      status: metadata.status,
+      elapsed_ms_bucket: metadata.elapsedMsBucket,
+    },
+    fingerprint: ['api-request', metadata.route, metadata.method, metadata.failureKind],
+  })
+}
 
 /**
  * Fetch wrapper that prepends the API base URL.
@@ -14,7 +178,36 @@ export async function apiFetch(
   init?: RequestInit
 ): Promise<Response> {
   const baseUrl = getApiBaseUrl()
-  const response = await fetch(`${baseUrl}${path}`, init)
+  const startedAt = performance.now()
+  let response: Response
+  try {
+    response = await fetch(`${baseUrl}${path}`, init)
+  } catch (cause) {
+    const aborted = init?.signal?.aborted === true || (cause instanceof DOMException && cause.name === 'AbortError')
+    const failureKind: ApiRequestFailureKind = typeof navigator !== 'undefined' && navigator.onLine === false
+      ? 'offline'
+      : aborted && pageLifecycle === 'pagehide'
+        ? 'intentional_navigation_abort'
+        : aborted
+          ? 'aborted'
+          : 'transport_or_cors'
+    const error = new ApiRequestError(requestMetadata(path, init, baseUrl, startedAt, failureKind))
+    if (failureKind !== 'intentional_navigation_abort') reportApiRequestFailure(error)
+    throw error
+  }
+
+  if (response.status === 403 || response.status >= 500) {
+    const failureKind: ApiRequestFailureKind = response.status === 403 ? 'forbidden' : 'server'
+    reportApiRequestFailure(new ApiRequestError(requestMetadata(
+      path,
+      init,
+      baseUrl,
+      startedAt,
+      failureKind,
+      response.status,
+      response.status === 403 ? safePolicyCode(response) : undefined,
+    )))
+  }
 
   // A 401 means three different things depending on what we're talking to, so
   // the handling is three-way (skip auth endpoints throughout, to avoid loops):

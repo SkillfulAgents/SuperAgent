@@ -10,6 +10,9 @@ vi.mock('./env', () => ({ getApiBaseUrl: () => '' }))
 const signOutMock = vi.fn().mockResolvedValue(undefined)
 vi.mock('./auth-client', () => ({ signOut: signOutMock }))
 
+const { captureMock } = vi.hoisted(() => ({ captureMock: vi.fn() }))
+vi.mock('./error-reporting', () => ({ captureRendererException: captureMock }))
+
 import { _resetApiTargetForTest, setActiveTarget } from './api-target'
 import { _resetCloudSessionForTest, onCloudSessionRejected } from './cloud-session'
 import {
@@ -22,6 +25,8 @@ import {
   clearRedirectStash,
   markDeliberateSignOut,
   clearDeliberateSignOut,
+  ApiRequestError,
+  normalizeApiRoute,
 } from './api'
 
 const KEY = 'superagent.redirect'
@@ -96,6 +101,80 @@ describe('redirect stash (post-login restore)', () => {
       expect(consumeRedirectStash()).toBe('/agents/foo')
       expect(peekRedirectStash()).toBe('/') // now cleared
     })
+  })
+})
+
+describe('apiFetch diagnostics', () => {
+  beforeEach(() => {
+    captureMock.mockClear()
+    vi.stubGlobal('__AUTH_MODE__', false)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('normalizes dynamic segments and strips query, fragment, and encoded secrets', () => {
+    expect(normalizeApiRoute('/api/agents/private-agent/sessions/user-123/messages?token=secret#body'))
+      .toBe('/api/agents/:param/sessions/:param/messages')
+    expect(normalizeApiRoute('/not-api/private?token=secret')).toBe('/api/:unknown')
+  })
+
+  it('reports offline transport failure with bounded request metadata only', async () => {
+    vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false)
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError(
+      'Failed to fetch https://host/api/agents/alice?token=top-secret',
+    )))
+
+    const failure = apiFetch('/api/agents/alice?token=top-secret', {
+      method: 'POST',
+      headers: { authorization: 'Bearer top-secret' },
+      body: 'private message',
+    })
+    await expect(failure).rejects.toSatisfy((error: unknown) =>
+      error instanceof ApiRequestError && error.metadata.failureKind === 'offline')
+
+    const serialized = JSON.stringify(captureMock.mock.calls)
+    expect(serialized).toContain('/api/agents/:param')
+    expect(serialized).toContain('offline')
+    expect(serialized).not.toMatch(/alice|top-secret|private message|https:\/\/host/)
+    expect(captureMock.mock.calls[0][1]).toMatchObject({
+      tags: { route: '/api/agents/:param', method: 'POST', failure_kind: 'offline' },
+      fingerprint: ['api-request', '/api/agents/:param', 'POST', 'offline'],
+    })
+  })
+
+  it('splits CORS-like transport, 5xx, and allowlisted 403 policy diagnostics', async () => {
+    vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(true)
+    vi.stubGlobal('fetch', vi.fn()
+      .mockRejectedValueOnce(new TypeError('Load failed'))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response('private response', {
+        status: 403,
+        headers: { 'x-error-code': 'POLICY_DENIED', 'x-request-id': 'private-id' },
+      })))
+
+    await expect(apiFetch('/api/settings')).rejects.toMatchObject({
+      metadata: { failureKind: 'transport_or_cors' },
+    })
+    await apiFetch('/api/settings')
+    await apiFetch('/api/settings')
+
+    expect(captureMock.mock.calls.map((call) => call[1]?.tags?.failure_kind))
+      .toEqual(['transport_or_cors', 'server', 'forbidden'])
+    expect(captureMock.mock.calls[2][1]).toMatchObject({ tags: { policy_code: 'POLICY_DENIED' } })
+    expect(JSON.stringify(captureMock.mock.calls)).not.toMatch(/private response|private-id/)
+  })
+
+  it('does not retain a provider error as a recursively serialized cause', async () => {
+    const providerError = new Error('token=secret and user content')
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(providerError))
+
+    let caught: unknown
+    try { await apiFetch('/api/runtime-status') } catch (error) { caught = error }
+    expect(caught).toBeInstanceOf(ApiRequestError)
+    expect(caught).not.toHaveProperty('cause')
+    expect(JSON.stringify(caught)).not.toContain('secret')
   })
 })
 
