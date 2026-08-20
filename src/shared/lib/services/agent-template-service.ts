@@ -275,6 +275,7 @@ export class ExportInProgressError extends Error {
   }
 }
 
+// One zip at a time on the host. Two large exports OOM a 1 GB box.
 let hostExportBusy = false
 
 function beginHostExport(): void {
@@ -305,10 +306,11 @@ async function withHostExportLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 // Queue files into an archiver and return it immediately so the HTTP response
-// can start flushing. Level 1: level 9 pegged 0.5 vCPU hosts on large exports.
+// can start flushing. zlibLevel is per-call: full export uses 1, templates stay at 9.
 function createWorkspaceZipStream(
   addFiles: (archive: ReturnType<typeof archiver>) => Promise<void>,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  zlibLevel: number,
 ): Readable {
   let released = false
   const release = () => {
@@ -317,13 +319,19 @@ function createWorkspaceZipStream(
     endHostExport()
   }
 
-  const archive = archiver('zip', { zlib: { level: 1 } })
+  const archive = archiver('zip', { zlib: { level: zlibLevel } })
   archive.once('close', release)
   archive.once('error', release)
 
+  const stopArchive = (err?: Error) => {
+    if (archive.destroyed) return
+    archive.abort()
+    archive.destroy(err)
+  }
+
   const onAbort = () => {
     release()
-    if (!archive.destroyed) archive.destroy()
+    stopArchive()
   }
   signal?.addEventListener('abort', onAbort, { once: true })
 
@@ -337,9 +345,7 @@ function createWorkspaceZipStream(
       if (signal?.aborted || archive.destroyed) return
       await archive.finalize()
     } catch (err) {
-      if (!archive.destroyed) {
-        archive.destroy(err instanceof Error ? err : new Error(String(err)))
-      }
+      stopArchive(err instanceof Error ? err : new Error(String(err)))
       release()
     } finally {
       signal?.removeEventListener('abort', onAbort)
@@ -369,7 +375,7 @@ export async function exportAgentTemplate(agentSlug: string, signal?: AbortSigna
         if (signal?.aborted) return
         archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
       }
-    }, signal)
+    }, signal, 9) // shareable .agent — size over host CPU
   })
 }
 
@@ -385,7 +391,7 @@ export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): 
       await walkFullExportFiles(workspaceDir, (relativePath) => {
         archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
       }, signal)
-    }, signal)
+    }, signal, 1) // large workspaces — level 9 pegs 0.5 vCPU hosts
   })
 }
 

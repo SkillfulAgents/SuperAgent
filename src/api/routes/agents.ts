@@ -4759,6 +4759,16 @@ function packageDownloadResponse(body: Readable | Buffer, filename: string): Res
   return new Response(Readable.toWeb(nodeStream) as ReadableStream, { status: 200, headers })
 }
 
+// Lock lives on the stream ('close' releases it). Destroy if Response construction throws.
+function sendLockedExportStream(zipStream: Readable, build: () => Response): Response {
+  try {
+    return build()
+  } catch (err) {
+    zipStream.destroy()
+    throw err
+  }
+}
+
 function exportRouteError(c: Context, error: unknown, fallback: string) {
   if (error instanceof Error && error.name === 'ExportInProgressError') {
     return c.json({ error: error.message }, 409)
@@ -4773,12 +4783,11 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
     const agent = await getAgent(slug)
-    // Lock is taken inside the export call and released only when the stream
-    // closes, so it must be the last throwing step before the Response.
     const zipStream = await exportAgentTemplate(slug, c.req.raw.signal)
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
-    return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
+    return sendLockedExportStream(zipStream, () => {
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
+      return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
+    })
   } catch (error) {
     return exportRouteError(c, error, 'Failed to export template')
   }
@@ -4789,12 +4798,11 @@ agents.post('/:id/export-full', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
     const agent = await getAgent(slug)
-    // Lock is taken inside the export call and released only when the stream
-    // closes, so it must be the last throwing step before the Response.
     const zipStream = await exportAgentFull(slug, c.req.raw.signal)
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
-    return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
+    return sendLockedExportStream(zipStream, () => {
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
+      return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
+    })
   } catch (error) {
     return exportRouteError(c, error, 'Failed to export agent')
   }

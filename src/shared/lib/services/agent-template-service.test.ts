@@ -2,8 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import http from 'node:http'
+import { Readable } from 'node:stream'
+import type { AddressInfo } from 'node:net'
+import { Hono } from 'hono'
+import { serve } from '@hono/node-server'
+import type { ServerType } from '@hono/node-server'
 import { createZipBuffer, openZipFromBuffer, type ZipEntryMeta } from '@shared/lib/utils/zip'
 import type { SkillsetConfig, InstalledAgentMetadata } from '@shared/lib/types/skillset'
+import { armAbortSignal } from '@/api/middleware/arm-abort-signal'
 
 // ============================================================================
 // Hoisted Mocks - must come before imports of the module under test
@@ -83,6 +90,15 @@ async function readableToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> 
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
   }
   return Buffer.concat(chunks)
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  throw new Error('timed out waiting for condition')
 }
 
 async function exportAgentTemplate(slug: string): Promise<Buffer> {
@@ -2091,6 +2107,97 @@ describe('exportAgentFull', () => {
     reader.close()
 
     expect(entryNames).not.toContain('.browser-profile/cookies.db')
+  })
+
+  it('releases the lock when the caller destroys the stream before reading it', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+
+    const first = await exportAgentFullStream('full-agent')
+    expect(isHostExportBusy()).toBe(true)
+    first.destroy()
+    await waitUntil(() => !isHostExportBusy())
+
+    const second = await exportAgentFullStream('full-agent')
+    const zipBuffer = await readableToBuffer(second)
+    expect(zipBuffer.length).toBeGreaterThan(0)
+    expect(isHostExportBusy()).toBe(false)
+  })
+
+  it('releases the lock when the abort signal fires mid-export', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    for (let i = 0; i < 40; i++) {
+      const blob = Buffer.alloc(64 * 1024)
+      for (let j = 0; j < blob.length; j++) blob[j] = (i + j * 31) & 0xff
+      fs.writeFileSync(path.join(workspaceDir, `blob-${i}.bin`), blob)
+    }
+
+    const ac = new AbortController()
+    const first = await exportAgentFullStream('full-agent', ac.signal)
+    first.resume()
+    ac.abort()
+    await waitUntil(() => !isHostExportBusy())
+
+    const second = await exportAgentFullStream('full-agent')
+    const zipBuffer = await readableToBuffer(second)
+    expect(zipBuffer.length).toBeGreaterThan(0)
+  })
+
+  it('releases the lock when the HTTP client hangs up mid-download', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    for (let i = 0; i < 8; i++) {
+      const blob = Buffer.alloc(256 * 1024)
+      for (let j = 0; j < blob.length; j++) blob[j] = (i * 17 + j * 13) & 0xff
+      fs.writeFileSync(path.join(workspaceDir, `blob-${i}.bin`), blob)
+    }
+
+    const app = new Hono()
+    app.use('*', armAbortSignal)
+    app.post('/export/:slug', async (c) => {
+      const zipStream = await exportAgentFullStream(c.req.param('slug'), c.req.raw.signal)
+      return new Response(Readable.toWeb(zipStream) as ReadableStream)
+    })
+
+    let server: ServerType | undefined
+    const port = await new Promise<number>((resolve) => {
+      server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, (info) =>
+        resolve((info as AddressInfo).port)
+      )
+    })
+
+    try {
+      await new Promise<void>((resolve) => {
+        const req = http.request(
+          { host: '127.0.0.1', port, path: '/export/full-agent', method: 'POST' },
+          (res) => {
+            let received = 0
+            res.on('data', (chunk: Buffer) => {
+              received += chunk.length
+              if (received >= 64 * 1024) req.destroy()
+            })
+            res.on('error', () => {})
+            res.on('close', () => resolve())
+          },
+        )
+        req.on('error', () => resolve())
+        req.end()
+      })
+
+      await waitUntil(() => !isHostExportBusy())
+      const second = await exportAgentFullStream('full-agent')
+      const zipBuffer = await readableToBuffer(second)
+      expect(zipBuffer.length).toBeGreaterThan(0)
+    } finally {
+      await new Promise<void>((resolve) => {
+        if (!server) return resolve()
+        server.close(() => resolve())
+      })
+    }
   })
 })
 

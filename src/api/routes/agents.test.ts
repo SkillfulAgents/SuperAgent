@@ -580,7 +580,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
-import { logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
+import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { readJsonFileStrict, readJsonlFile, writeJsonFileAtomic, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
@@ -6094,6 +6094,31 @@ describe('POST /api/agents/:id/export-full', () => {
     expect(res.status).toBe(500)
     expect(exportAgentFull).not.toHaveBeenCalled()
   })
+
+  it('destroys the zip stream when packaging the download throws', async () => {
+    const zipStream = Readable.from(Buffer.from('PK\x03\x04full-export'))
+    const destroy = vi.spyOn(zipStream, 'destroy')
+    vi.mocked(exportAgentFull).mockResolvedValue(zipStream)
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+    vi.mocked(logAuditEvent).mockImplementationOnce(() => {
+      throw new Error('audit failed')
+    })
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(destroy).toHaveBeenCalled()
+
+    const nextZip = Readable.from(Buffer.from('PK\x03\x04next'))
+    vi.mocked(exportAgentFull).mockResolvedValue(nextZip)
+    const next = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+    expect(next.status).toBe(200)
+    expect(Buffer.from(await next.arrayBuffer())).toEqual(Buffer.from('PK\x03\x04next'))
+  })
 })
 
 describe('POST /api/agents/:id/export-template', () => {
@@ -6143,6 +6168,30 @@ describe('POST /api/agents/:id/export-template', () => {
 
     expect(res.status).toBe(500)
     expect(exportAgentTemplate).not.toHaveBeenCalled()
+  })
+
+  it('destroys the zip stream when packaging the download throws', async () => {
+    const zipStream = Readable.from(Buffer.from('PK\x03\x04template'))
+    const destroy = vi.spyOn(zipStream, 'destroy')
+    vi.mocked(exportAgentTemplate).mockResolvedValue(zipStream)
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+    vi.mocked(logAuditEvent).mockImplementationOnce(() => {
+      throw new Error('audit failed')
+    })
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(destroy).toHaveBeenCalled()
+
+    const nextZip = Readable.from(Buffer.from('PK\x03\x04next'))
+    vi.mocked(exportAgentTemplate).mockResolvedValue(nextZip)
+    const next = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+    expect(next.status).toBe(200)
   })
 })
 
