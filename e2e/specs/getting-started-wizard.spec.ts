@@ -227,12 +227,9 @@ test.describe('Getting Started Wizard', () => {
     await page.getByRole('button', { name: /Browse Templates/ }).click()
     const marketplace = page.locator('[data-testid="agent-template-browse-dialog"]')
     await expect(marketplace).toBeVisible()
+    // Selecting a template immediately installs it under the template's name.
+    const agentName = 'E2E Onboarding Template'
     await marketplace.getByRole('button', { name: /E2E Onboarding Template/ }).click()
-
-    const installDialog = page.getByRole('dialog', { name: 'Install E2E Onboarding Template' })
-    const agentName = `Onboarding Template Agent ${Date.now()}`
-    await installDialog.getByPlaceholder('Agent name').fill(agentName)
-    await installDialog.getByRole('button', { name: 'Install' }).click()
 
     // Installing a template is a successful completion of the final onboarding
     // step, just like creating from a prompt or importing a local template.
