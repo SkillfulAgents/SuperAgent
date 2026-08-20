@@ -29,8 +29,9 @@ vi.mock('@renderer/lib/api', () => ({
   })),
 }))
 
-vi.mock('@renderer/components/agents/agent-template-browse-dialog', () => ({
-  AgentTemplateBrowseDialog: () => null,
+const mockNavigate = vi.fn()
+vi.mock('@tanstack/react-router', () => ({
+  useNavigate: () => mockNavigate,
 }))
 
 vi.mock('@renderer/components/ui/voice-agent', () => ({
@@ -56,6 +57,7 @@ describe('AgentCreationAids onAidOpened', () => {
 
     await user.click(screen.getByRole('button', { name: /Browse Templates/i }))
     expect(mockOnAidOpened).toHaveBeenCalledTimes(1)
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/explore' })
 
     await user.click(screen.getByRole('button', { name: /Brainstorm with Voice/i }))
     expect(mockOnAidOpened).toHaveBeenCalledTimes(2)

@@ -224,21 +224,23 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.clickNext() // Privacy -> Agent
     await wizardPage.expectStep(6)
 
+    // Browsing templates leaves the wizard for the marketplace page. The wizard
+    // renders above the router, so it must finish itself on the way out —
+    // that's what completes onboarding here, before anything is installed.
     await page.getByRole('button', { name: /Browse Templates/ }).click()
-    const marketplace = page.locator('[data-testid="agent-template-browse-dialog"]')
-    await expect(marketplace).toBeVisible()
-    await marketplace.getByRole('button', { name: /E2E Onboarding Template/ }).click()
-
-    const installDialog = page.getByRole('dialog', { name: 'Install E2E Onboarding Template' })
-    const agentName = `Onboarding Template Agent ${Date.now()}`
-    await installDialog.getByPlaceholder('Agent name').fill(agentName)
-    await installDialog.getByRole('button', { name: 'Install' }).click()
-
-    // Installing a template is a successful completion of the final onboarding
-    // step, just like creating from a prompt or importing a local template.
     await wizardPage.expectNotVisible()
+    await expect(page.locator('[data-testid="explore-view"]')).toBeVisible()
+
+    // Card → details page → install. The agent takes the template's own name;
+    // there is no naming step.
+    await page.getByRole('button', { name: /E2E Onboarding Template/ }).first().click()
+    await expect(page.locator('[data-testid="template-detail-view"]')).toBeVisible()
+    await page.locator('[data-testid="template-detail-install"]').click()
+
     await expect(page.locator('[data-testid="app-sidebar"]')).toBeVisible()
-    await expect(page.getByText(agentName, { exact: true }).first()).toBeVisible()
+    await expect(
+      page.getByText('E2E Onboarding Template', { exact: true }).first(),
+    ).toBeVisible()
 
     const response = await request.get('/api/user-settings')
     const settings = await response.json()
