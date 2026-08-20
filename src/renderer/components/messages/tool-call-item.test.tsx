@@ -236,6 +236,24 @@ describe('ToolCallItem result images', () => {
     expect(retried.getAttribute('src')).toContain('retry=1')
   })
 
+  it('does not corrupt an inline data URL when retried', async () => {
+    // A query nonce appended to a data: URL becomes part of the base64 payload,
+    // turning a working image into a broken one.
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgo='
+    mockParseToolResult.mockReturnValue({
+      text: null,
+      images: [{ src: dataUrl, isRef: false }],
+    })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'x' })} />
+    )
+    await userEvent.click(screen.getByRole('button'))
+    fireEvent.error(container.querySelector('img')!)
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }))
+
+    expect(container.querySelector('img')).toHaveAttribute('src', dataUrl)
+  })
+
   it('still renders inline base64 images', async () => {
     mockParseToolResult.mockReturnValue({
       text: null,

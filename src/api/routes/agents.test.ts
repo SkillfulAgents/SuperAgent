@@ -4150,6 +4150,15 @@ describe('GET /:id/sessions/:sessionId/media/:ref', () => {
     expect(openMediaBlob).not.toHaveBeenCalled()
   })
 
+  it('does not preflight existence, so storage failures are not read as gone', async () => {
+    // fileExists() answers false for any stat failure, so a preflight here
+    // would 404 on EIO/EACCES before the read could report anything.
+    vi.mocked(sessionExists).mockResolvedValue(false)
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(200)
+    expect(sessionExists).not.toHaveBeenCalled()
+  })
+
   it('404s for a session the agent does not own', async () => {
     vi.mocked(sessionBelongsToAgent).mockResolvedValue(false)
     const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)

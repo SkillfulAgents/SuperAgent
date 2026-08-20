@@ -2045,10 +2045,12 @@ agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
-    if (
-      !(await sessionBelongsToAgent(agentSlug, sessionId)) ||
-      !(await sessionExists(agentSlug, sessionId))
-    ) {
+    // Ownership only. There is deliberately no existence preflight here:
+    // fileExists() answers false for any stat failure, so EIO/EACCES/EMFILE
+    // would 404 — telling the client the image is gone when the truth is that
+    // this machine could not look. openMediaBlob distinguishes the two, and a
+    // genuinely missing transcript surfaces there as 410.
+    if (!(await sessionBelongsToAgent(agentSlug, sessionId))) {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
 

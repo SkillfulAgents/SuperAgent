@@ -30,18 +30,20 @@ import type { JsonlEntry, JsonlMessageEntry } from '@shared/lib/types/agent'
  *   - the source row's uuid AND the byte offset that uuid sat at, so a read
  *     confirms the row is still there with a 36-byte read rather than a scan;
  *   - exact quote delimiters, so the span is still one whole JSON string;
- *   - a sampled content fingerprint, because the first two still can't tell
+ *   - a digest of the whole payload, because the first two still can't tell
  *     two images inside ONE row apart — deleting the first can slide the
- *     second into the first's exact span with the uuid untouched.
+ *     second into the first's exact span with the uuid untouched. Sampling
+ *     part of the payload is not enough: equal-length images can differ only
+ *     between the samples.
  *
  * Together they make a stale ref fail closed (410) rather than serve the wrong
  * image, which is what lets the response be cached as immutable.
  *
  * The same checks are what make client-supplied refs safe to honor: a forged
- * span has to land on a quote-delimited base64 string that matches a
- * fingerprint the caller would have to already know and whose head decodes to
- * a known image type. The response's Content-Type comes from the sniff, never
- * from the ref, so a ref cannot dictate how bytes are interpreted.
+ * span has to land on a quote-delimited base64 string whose digest the caller
+ * would have to already know and whose head decodes to a known image type.
+ * The response's Content-Type comes from the sniff, never from the ref, so a
+ * ref cannot dictate how bytes are interpreted.
  *
  * Only formats the sniff recognizes are minted at all: a ref the endpoint
  * could never serve would replace a working inline image with a permanent
@@ -71,6 +73,9 @@ const MEDIA_MAX_BASE64_LENGTH = 64 * 1024 * 1024
 
 const QUOTE_BYTE = 0x22
 
+/** Read size for the pre-serve content verification pass. */
+const VERIFY_CHUNK_BYTES = 64 * 1024
+
 /** Wire shape replacing an inline image block.
  *
  * Deliberately carries no URL. Tool results are untrusted text that a client
@@ -96,8 +101,8 @@ const mediaRefSchema = z.object({
   s: z.number().int().nonnegative(),
   /** Length of the base64 payload in bytes. */
   l: z.number().int().positive().max(MEDIA_MAX_BASE64_LENGTH),
-  /** Sampled content fingerprint — what makes the address name one image
-   * rather than one location (see sampleFingerprint). */
+  /** Digest of the whole payload — what makes the address name one image
+   * rather than one location (see contentDigest). */
   h: z.string().min(1).max(32),
 })
 
@@ -128,43 +133,34 @@ function decodedLength(length: number, pad: number): number {
   return Math.max(0, Math.floor((length * 3) / 4) - pad)
 }
 
-/** Identity of the payload's *content*, cheap to verify without reading it all.
+/** Identity of the payload's *content*.
  *
- * Offsets and the row uuid together still can't distinguish two images inside
- * one row: deleting the first can slide the second into the first's exact span
- * with the uuid untouched, and the old ref would then serve the wrong image
- * under a year-long immutable cache. Sampling head/middle/tail pins content
- * with three small reads. Two payloads that agree on all of it are, for
- * serving purposes, the same image.
+ * Offsets and the row uuid together cannot distinguish two images inside one
+ * row: deleting the first can slide the second into the first's exact span
+ * with the uuid untouched. A sampled hash is not enough either — two
+ * equal-length payloads can differ only between the samples, which is easy to
+ * construct and would let an old address serve a new image. Since the response
+ * is cached as immutable, the address has to name the bytes exactly, so this
+ * covers the whole payload.
  */
-function sampleFingerprint(head: string, mid: string, tail: string, length: number): string {
-  return createHash('sha256')
-    .update(`${length}:${head}:${mid}:${tail}`)
-    .digest('base64url')
-    .slice(0, 16)
-}
-
-const FINGERPRINT_SAMPLE_LENGTH = 64
-
-/** Byte offsets of the three sampled windows within a payload of `length`. */
-function sampleOffsets(length: number): { head: number; mid: number; tail: number; size: number } {
-  const size = Math.min(FINGERPRINT_SAMPLE_LENGTH, length)
-  return {
-    head: 0,
-    mid: Math.max(0, Math.floor(length / 2)),
-    tail: Math.max(0, length - size),
-    size,
-  }
+function contentDigest(update: (hash: ReturnType<typeof createHash>) => void): string {
+  const hash = createHash('sha256')
+  update(hash)
+  return hash.digest('base64url').slice(0, 22)
 }
 
 function fingerprintOf(data: string): string {
-  const { head, mid, tail, size } = sampleOffsets(data.length)
-  return sampleFingerprint(
-    data.slice(head, head + size),
-    data.slice(mid, mid + size),
-    data.slice(tail, tail + size),
-    data.length
-  )
+  return contentDigest((hash) => hash.update(data, 'latin1'))
+}
+
+/** Base64 length that no valid payload can have: a 4-character quantum never
+ * decodes from one leftover character, and padding only ever completes a whole
+ * quantum. Left unchecked, an extraneous '=' makes the decoded length this
+ * computes disagree with the bytes the decoder actually emits — and that
+ * number is served as Content-Length. */
+function isValidBase64Length(length: number, pad: number): boolean {
+  if (length % 4 === 1) return false
+  return pad === 0 || length % 4 === 0
 }
 
 interface ImageBlockLike {
@@ -250,6 +246,10 @@ export function replaceInlineMediaWithRefs(entry: JsonlEntry, ctx: MediaRefConte
     const payload = imagePayload(block)
     if (!payload) return undefined
     const pad = payload.data.endsWith('==') ? 2 : payload.data.endsWith('=') ? 1 : 0
+    // A payload whose length is not a whole base64 quantum decodes to a
+    // different number of bytes than any length formula predicts, and that
+    // number would be served as Content-Length. Leave it inline.
+    if (!isValidBase64Length(payload.data.length, pad)) return undefined
     const bytes = decodedLength(payload.data.length, pad)
     if (bytes < MEDIA_INLINE_MAX_BYTES) return undefined
     if (payload.data.length > MEDIA_MAX_BASE64_LENGTH) return undefined
@@ -455,23 +455,32 @@ export async function openMediaBlob(
     if (closeQuote[0] !== QUOTE_BYTE) return undefined
 
     signal?.throwIfAborted()
-    // Sampled content check, three small reads. The uuid pins the row; this
-    // pins which image inside it, so a rewrite that slides a different payload
-    // into this exact span fails here instead of serving the wrong picture.
-    const { head, mid, tail, size } = sampleOffsets(ref.l)
-    const windows: string[] = []
-    for (const offset of [head, mid, tail]) {
-      const buf = Buffer.allocUnsafe(size)
-      if ((await readFully(handle, buf, ref.s + offset)) < size) return undefined
-      windows.push(buf.toString('latin1'))
+    // Full content check. The uuid pins the row; this pins which bytes, so a
+    // rewrite that slides a different payload into this exact span fails here
+    // instead of serving the wrong picture. It costs one extra pass over the
+    // span — the price of the immutable cache the response advertises, and
+    // still O(chunk) memory since nothing is retained.
+    const digest = createHash('sha256')
+    const scratch = Buffer.allocUnsafe(Math.min(VERIFY_CHUNK_BYTES, ref.l))
+    let head = ''
+    let tail = ''
+    for (let read = 0; read < ref.l; ) {
+      signal?.throwIfAborted()
+      const want = Math.min(scratch.length, ref.l - read)
+      const window = scratch.subarray(0, want)
+      if ((await readFully(handle, window, ref.s + read)) < want) return undefined
+      digest.update(window)
+      if (read === 0) head = window.subarray(0, Math.min(20, want)).toString('latin1')
+      tail = window.subarray(Math.max(0, want - 2)).toString('latin1')
+      read += want
     }
-    if (sampleFingerprint(windows[0]!, windows[1]!, windows[2]!, ref.l) !== ref.h) return undefined
+    if (digest.digest('base64url').slice(0, 22) !== ref.h) return undefined
 
-    const pad = windows[2]!.endsWith('==') ? 2 : windows[2]!.endsWith('=') ? 1 : 0
-    const headText = windows[0]!
-    if (BASE64_INVALID.test(headText)) return undefined
-    const usable = headText.length - (headText.length % 4)
-    const mimeType = sniffImageType(Buffer.from(headText.slice(0, usable), 'base64'))
+    const pad = tail.endsWith('==') ? 2 : tail.endsWith('=') ? 1 : 0
+    if (!isValidBase64Length(ref.l, pad)) return undefined
+    if (BASE64_INVALID.test(head)) return undefined
+    const usable = head.length - (head.length % 4)
+    const mimeType = sniffImageType(Buffer.from(head.slice(0, usable), 'base64'))
     if (!mimeType) return undefined
 
     signal?.throwIfAborted()

@@ -404,6 +404,58 @@ describe('session-media', () => {
       expect(served.equals(image)).toBe(true)
     })
 
+
+    it('refuses an equal-length image that differs outside any sampled window', async () => {
+      // A digest over part of the payload would pass here: these two differ
+      // only in a region no sample covers. The address is advertised as
+      // immutable, so it has to name the bytes exactly.
+      const bmp = (fill: number) => {
+        const size = 30_054
+        const b = Buffer.alloc(size, 0xaa)
+        b[0] = 0x42
+        b[1] = 0x4d // "BM"
+        b.fill(fill, Math.floor(size * 0.28), Math.floor(size * 0.28) + 200)
+        return b
+      }
+      const first = bmp(0x11)
+      const second = bmp(0x22)
+      expect(first.length).toBe(second.length)
+
+      const { entry, file } = await stripRow(
+        [
+          toolResultEntry('u-1', 'tool-1', [
+            imageBlock(first, 'image/bmp'),
+            imageBlock(second, 'image/bmp'),
+          ]),
+        ],
+        0
+      )
+      const refFirst = decodeMediaRef(refsIn(entry)[0]!.id)!
+
+      await fs.promises.writeFile(
+        file,
+        JSON.stringify(toolResultEntry('u-1', 'tool-1', [imageBlock(second, 'image/bmp')])) + '\n'
+      )
+      expect(await openMediaBlob(file, refFirst)).toBeUndefined()
+    })
+
+    it('leaves a payload with a malformed base64 length inline', async () => {
+      // One extraneous '=' makes every decoded-length formula disagree with
+      // what the decoder emits, and that number is served as Content-Length.
+      const image = fakeImage(PNG_MAGIC, 30 * 1024, 0x44)
+      const malformed = image.toString('base64').replace(/=+$/, '') + '='
+      expect(malformed.length % 4).toBe(1)
+      const { entry } = await stripRow(
+        [
+          toolResultEntry('u-1', 'tool-1', [
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: malformed } },
+          ]),
+        ],
+        0
+      )
+      expect(refsIn(entry)).toHaveLength(0)
+    })
+
     it('tears down the source and its handle when the consumer gives up', async () => {
       const { entry, file } = await stripRow(
         [toolResultEntry('u-1', 'tool-1', [imageBlock(BIG_PNG)])],

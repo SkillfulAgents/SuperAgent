@@ -107,7 +107,11 @@ function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
 
   if (failed) {
     return (
-      <div className="flex items-center gap-2 rounded border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex items-center gap-2 rounded border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground"
+      >
         <ImageOff className="h-3.5 w-3.5 shrink-0" />
         <span>Couldn&apos;t load image</span>
         <button
@@ -124,10 +128,18 @@ function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
     )
   }
 
+  // Cache-busting is for the fetched kind only: a query suffix on a data: URL
+  // becomes part of the base64 payload and breaks an image that was fine. An
+  // inline retry is just a remount, which `key` below already forces.
+  const src =
+    image.isRef && attempt > 0
+      ? `${image.src}${image.src.includes('?') ? '&' : '?'}retry=${attempt}`
+      : image.src
+
   return (
     <img
-      // Retrying has to re-request, not re-show a failed cache entry.
-      src={attempt === 0 ? image.src : `${image.src}${image.src.includes('?') ? '&' : '?'}retry=${attempt}`}
+      key={attempt}
+      src={src}
       alt="Tool result"
       loading="lazy"
       decoding="async"
