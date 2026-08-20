@@ -237,9 +237,16 @@ test.describe('Getting Started Wizard', () => {
     await expect(page.locator('[data-testid="template-detail-view"]')).toBeVisible()
     await page.locator('[data-testid="template-detail-install"]').click()
 
-    await expect(page.locator('[data-testid="app-sidebar"]')).toBeVisible()
+    // Both assertions have to be things the details page itself cannot satisfy.
+    // A bare `app-sidebar` check is not one: /explore renders inside the same
+    // shell, so it is already visible. Neither is an unscoped name match — the
+    // details page heading IS the template name. The install opens the new
+    // agent, so the URL leaves /explore and the name appears in the sidebar.
+    await expect(page).toHaveURL(/\/agents\//)
     await expect(
-      page.getByText('E2E Onboarding Template', { exact: true }).first(),
+      page
+        .locator('[data-testid="app-sidebar"]')
+        .getByText('E2E Onboarding Template', { exact: true }),
     ).toBeVisible()
 
     const response = await request.get('/api/user-settings')

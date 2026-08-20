@@ -10,8 +10,8 @@ import type { ApiAgentTemplateInstallResult } from '@shared/lib/types/api'
 /**
  * The one post-install path for a marketplace template: track, refresh the
  * agent list, then hand off (seed the template prompt or start onboarding)
- * and open the new agent. ONE definition shared by the browse dialog and the
- * Explore pages so the flows can't drift.
+ * and open the new agent. ONE definition shared by every Explore surface so
+ * the flows can't drift.
  */
 export function useCompleteTemplateInstall() {
   const navigate = useNavigate()
