@@ -7,10 +7,17 @@ interface ContentBlock {
   // MCP image format
   data?: string
   mimeType?: string
-  // Media ref (server answered a `media=ref` request): the image lives at `url`
-  // instead of inline. See shared/lib/services/session-media.ts.
-  url?: string
+  // Media ref (server answered a `media=ref` request): the image is fetched
+  // from the session's media endpoint. See shared/lib/services/session-media.ts.
+  id?: string
   bytes?: number
+}
+
+/** Whose transcript this result belongs to. Required before any ref becomes a
+ * network request — see below. */
+export interface ToolResultMediaContext {
+  agentSlug: string
+  sessionId: string
 }
 
 export interface ParsedToolResultImage {
@@ -27,10 +34,26 @@ export interface ParsedToolResult {
   images: ParsedToolResultImage[]
 }
 
-function imageFromBlock(block: ContentBlock): ParsedToolResultImage | null {
+/** Media ids are base64url — anything else cannot have been minted here, and
+ * must never reach a URL. */
+const MEDIA_ID_PATTERN = /^[A-Za-z0-9_-]{1,4096}$/
+
+function imageFromBlock(
+  block: ContentBlock,
+  media?: ToolResultMediaContext
+): ParsedToolResultImage | null {
   if (block.type === 'media_ref') {
-    if (!block.url) return null
-    return { src: `${getApiBaseUrl()}${block.url}`, bytes: block.bytes, isRef: true }
+    // A tool result is untrusted text, and this function is reached by JSON
+    // that a tool produced — so a block saying it is a media ref proves
+    // nothing. Provenance can only come from the caller: the address is built
+    // here, from a session identity the app already knows, and the block
+    // contributes only an id that has to look like one we minted. Anything
+    // else is dropped rather than fetched.
+    if (!media || typeof block.id !== 'string' || !MEDIA_ID_PATTERN.test(block.id)) return null
+    const path =
+      `/api/agents/${encodeURIComponent(media.agentSlug)}` +
+      `/sessions/${encodeURIComponent(media.sessionId)}/media/${block.id}`
+    return { src: `${getApiBaseUrl()}${path}`, bytes: block.bytes, isRef: true }
   }
   if (block.type !== 'image') return null
   // Anthropic API format: { type: "image", source: { type: "base64", media_type, data } }
@@ -49,7 +72,10 @@ function imageFromBlock(block: ContentBlock): ParsedToolResultImage | null {
  * Results can be: a plain string, a JSON string of content blocks,
  * or an array of content block objects (from MCP).
  */
-export function parseToolResult(result: unknown): ParsedToolResult {
+export function parseToolResult(
+  result: unknown,
+  media?: ToolResultMediaContext
+): ParsedToolResult {
   const images: ParsedToolResultImage[] = []
 
   if (result == null) return { text: null, images }
@@ -58,7 +84,7 @@ export function parseToolResult(result: unknown): ParsedToolResult {
     try {
       const parsed = JSON.parse(result)
       if (Array.isArray(parsed)) {
-        return parseToolResult(parsed)
+        return parseToolResult(parsed, media)
       }
     } catch {
       // Plain string
@@ -72,7 +98,7 @@ export function parseToolResult(result: unknown): ParsedToolResult {
       if (block.type === 'text' && block.text) {
         textParts.push(block.text)
       } else {
-        const image = imageFromBlock(block)
+        const image = imageFromBlock(block, media)
         if (image) images.push(image)
       }
     }
@@ -84,7 +110,7 @@ export function parseToolResult(result: unknown): ParsedToolResult {
   if (block.type === 'text' && block.text) {
     return { text: block.text, images }
   }
-  const image = imageFromBlock(block)
+  const image = imageFromBlock(block, media)
   if (image) {
     images.push(image)
     return { text: null, images }

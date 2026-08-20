@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -94,12 +94,7 @@ describe('session-media', () => {
     const raw = await fs.promises.readFile(file)
     const line = raw.subarray(offsets[index], raw.indexOf(0x0a, offsets[index]))
     const entry = JSON.parse(line.toString('utf-8')) as JsonlEntry
-    replaceInlineMediaWithRefs(entry, {
-      agentSlug: 'agent-1',
-      sessionId: 'session-1',
-      line,
-      lineOffset: offsets[index]!,
-    })
+    replaceInlineMediaWithRefs(entry, { line, lineOffset: offsets[index]! })
     return { entry, file }
   }
 
@@ -129,9 +124,8 @@ describe('session-media', () => {
       expect(refs).toHaveLength(1)
       expect(refs[0]!.mimeType).toBe('image/png')
       expect(refs[0]!.bytes).toBe(BIG_PNG.length)
-      expect(refs[0]!.url).toBe(
-        `/api/agents/agent-1/sessions/session-1/media/${refs[0]!.id}`
-      )
+      // No URL on the wire: the client builds it from trusted session context.
+      expect(refs[0] as unknown as Record<string, unknown>).not.toHaveProperty('url')
       // The text block beside it is untouched.
       const inner = (entry as unknown as { message: { content: Array<{ content: unknown[] }> } })
         .message.content[0]!.content
@@ -318,13 +312,172 @@ describe('session-media', () => {
     })
 
     it('returns undefined for a missing transcript', async () => {
-      const ref = { v: 1 as const, u: 'u-1', o: 10, s: 20, l: 40 }
+      const ref = { v: 1 as const, u: 'u-1', o: 10, s: 20, l: 40, h: 'abc' }
       expect(await openMediaBlob(path.join(testDir, 'gone.jsonl'), ref)).toBeUndefined()
     })
 
     it('round-trips a ref through its encoding', () => {
-      const ref = { v: 1 as const, u: 'abc-123', o: 42, s: 4096, l: 8192 }
+      const ref = { v: 1 as const, u: 'abc-123', o: 42, s: 4096, l: 8192, h: 'fp' }
       expect(decodeMediaRef(encodeMediaRef(ref))).toEqual(ref)
+    })
+  })
+
+
+  // Each of these reproduces a defect found in review; they fail against the
+  // code as it was when the reference scheme was first written.
+  describe('review regressions', () => {
+    it('does not mint a ref for a format the endpoint cannot serve', async () => {
+      // Sniffing recognizes raster signatures only, so an SVG ref could never
+      // be served — it must stay inline rather than become a dead image.
+      const svg = Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg">' + '<rect/>'.repeat(4000) + '</svg>'
+      )
+      expect(svg.length).toBeGreaterThan(MEDIA_INLINE_MAX_BYTES)
+      const { entry } = await stripRow(
+        [toolResultEntry('u-1', 'tool-1', [imageBlock(svg, 'image/svg+xml')])],
+        0
+      )
+      expect(refsIn(entry)).toHaveLength(0)
+      const inner = (
+        entry as unknown as { message: { content: Array<{ content: Array<{ type: string }> }> } }
+      ).message.content[0]!.content
+      expect(inner[0]!.type).toBe('image')
+    })
+
+    it('skips a textual copy of the payload and addresses the real field', async () => {
+      // The same base64 inside a text block is not a quote-delimited field of
+      // its own; minting there yields a ref that fails its own validation.
+      const image = fakeImage(PNG_MAGIC, 30 * 1024, 0xcd)
+      const { entry, file } = await stripRow(
+        [
+          toolResultEntry('u-1', 'tool-1', [
+            { type: 'text', text: `copy=${image.toString('base64')};end` },
+            imageBlock(image),
+          ]),
+        ],
+        0
+      )
+      const refs = refsIn(entry)
+      expect(refs).toHaveLength(1)
+      const blob = await openMediaBlob(file, decodeMediaRef(refs[0]!.id)!)
+      expect(blob).toBeDefined()
+      expect((await collectStream(blob!.stream)).equals(image)).toBe(true)
+    })
+
+    it('refuses to serve a different image that moved into the same span', async () => {
+      // Deleting the first of two images in one row slides the second into the
+      // first's exact bytes with the row uuid untouched, so only content
+      // identity can tell them apart.
+      const first = fakeImage(PNG_MAGIC, 30 * 1024, 0x11)
+      const second = fakeImage(PNG_MAGIC, 30 * 1024, 0x22)
+      const { entry, file } = await stripRow(
+        [toolResultEntry('u-1', 'tool-1', [imageBlock(first), imageBlock(second)])],
+        0
+      )
+      const refFirst = decodeMediaRef(refsIn(entry)[0]!.id)!
+
+      const rewritten = JSON.stringify(toolResultEntry('u-1', 'tool-1', [imageBlock(second)]))
+      await fs.promises.writeFile(file, rewritten + '\n')
+
+      expect(await openMediaBlob(file, refFirst)).toBeUndefined()
+    })
+
+    it('reports an exact integer size for unpadded base64', async () => {
+      const image = fakeImage(PNG_MAGIC, 20 * 1024, 0x33)
+      const unpadded = image.toString('base64').replace(/=+$/, '')
+      const { entry, file } = await stripRow(
+        [
+          toolResultEntry('u-1', 'tool-1', [
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: unpadded } },
+          ]),
+        ],
+        0
+      )
+      const refs = refsIn(entry)
+      expect(refs).toHaveLength(1)
+      expect(Number.isInteger(refs[0]!.bytes)).toBe(true)
+      const blob = await openMediaBlob(file, decodeMediaRef(refs[0]!.id)!)
+      expect(Number.isInteger(blob!.bytes)).toBe(true)
+      const served = await collectStream(blob!.stream)
+      // The advertised length is what a Content-Length header promises.
+      expect(blob!.bytes).toBe(served.length)
+      expect(served.equals(image)).toBe(true)
+    })
+
+    it('tears down the source and its handle when the consumer gives up', async () => {
+      const { entry, file } = await stripRow(
+        [toolResultEntry('u-1', 'tool-1', [imageBlock(BIG_PNG)])],
+        0
+      )
+      const handles: fs.promises.FileHandle[] = []
+      const realOpen = fs.promises.open
+      const spy = vi
+        .spyOn(fs.promises, 'open')
+        .mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+          const handle = await realOpen(...args)
+          handles.push(handle)
+          return handle
+        })
+      const blob = await openMediaBlob(file, decodeMediaRef(refsIn(entry)[0]!.id)!)
+      spy.mockRestore()
+      expect(blob).toBeDefined()
+
+      // What a browser cancelling an image request does to the response body.
+      blob!.stream.destroy()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      let open = true
+      try {
+        await handles[0]!.stat()
+      } catch {
+        open = false
+      }
+      expect(open).toBe(false)
+    })
+
+    it('surfaces storage failures instead of calling the media gone', async () => {
+      // EIO says nothing about whether the image still exists; answering 410
+      // would strand the client on a placeholder it never retries.
+      const { entry, file } = await stripRow(
+        [toolResultEntry('u-1', 'tool-1', [imageBlock(BIG_PNG)])],
+        0
+      )
+      const ref = decodeMediaRef(refsIn(entry)[0]!.id)!
+      const realOpen = fs.promises.open
+      const spy = vi.spyOn(fs.promises, 'open').mockImplementation(async () => {
+        const error: NodeJS.ErrnoException = new Error('simulated I/O failure')
+        error.code = 'EIO'
+        throw error
+      })
+      await expect(openMediaBlob(file, ref)).rejects.toThrow(/simulated I\/O failure/)
+      spy.mockRestore()
+      expect(realOpen).toBeDefined()
+    })
+
+    it('serves normally when reads come back short of the requested length', async () => {
+      // Positional reads may legally return fewer bytes than asked for before
+      // EOF; that is not a truncated transcript.
+      const { entry, file } = await stripRow(
+        [toolResultEntry('u-1', 'tool-1', [imageBlock(BIG_PNG)])],
+        0
+      )
+      const ref = decodeMediaRef(refsIn(entry)[0]!.id)!
+      const realOpen = fs.promises.open
+      const spy = vi
+        .spyOn(fs.promises, 'open')
+        .mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+          const handle = await realOpen(...args)
+          const realRead = handle.read.bind(handle)
+          // Only the small validation windows; the stream's large reads pass
+          // through so the test stays fast.
+          handle.read = ((buf: Buffer, off: number, len: number, pos: number) =>
+            realRead(buf, off, len <= 128 ? 1 : len, pos)) as typeof handle.read
+          return handle
+        })
+      const blob = await openMediaBlob(file, ref)
+      spy.mockRestore()
+      expect(blob).toBeDefined()
+      expect((await collectStream(blob!.stream)).equals(BIG_PNG)).toBe(true)
     })
   })
 

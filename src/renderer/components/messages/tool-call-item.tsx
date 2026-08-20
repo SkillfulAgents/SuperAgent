@@ -14,6 +14,10 @@ interface ToolCallItemProps {
   toolCall: ApiToolCall
   messageCreatedAt?: Date | string
   agentSlug?: string
+  /** With agentSlug, authorizes media refs in this result to become requests
+   * against this session — the result itself is not trusted to say where its
+   * images live (see parse-tool-result). */
+  sessionId?: string
   isSessionActive?: boolean
 }
 
@@ -91,23 +95,39 @@ export function StatusIndicator({ status }: { status: string }) {
 /** A tool result's image. Refs load from the media endpoint the first time the
  * card is expanded — the expanded branch is what mounts this, so nothing is
  * fetched for a collapsed call, and the immutable response is cached for every
- * later expand. A ref that no longer resolves (410 after the transcript was
- * edited) shows a placeholder instead of a broken image. */
+ * later expand.
+ *
+ * An <img> error event carries no reason: offline, a 5xx, a decode failure and
+ * an actually-deleted image all arrive the same way. So the failure state says
+ * only that it didn't load and offers a retry, rather than asserting the
+ * transcript no longer has it. */
 function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
   const [failed, setFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
 
   if (failed) {
     return (
       <div className="flex items-center gap-2 rounded border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
         <ImageOff className="h-3.5 w-3.5 shrink-0" />
-        <span>Image is no longer available in this transcript</span>
+        <span>Couldn&apos;t load image</span>
+        <button
+          type="button"
+          onClick={() => {
+            setFailed(false)
+            setAttempt((n) => n + 1)
+          }}
+          className="underline underline-offset-2 hover:text-foreground transition-colors"
+        >
+          Retry
+        </button>
       </div>
     )
   }
 
   return (
     <img
-      src={image.src}
+      // Retrying has to re-request, not re-show a failed cache entry.
+      src={attempt === 0 ? image.src : `${image.src}${image.src.includes('?') ? '&' : '?'}retry=${attempt}`}
       alt="Tool result"
       loading="lazy"
       decoding="async"
@@ -117,7 +137,7 @@ function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
   )
 }
 
-function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessionActive }: ToolCallItemProps) {
+function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionId, isSessionActive }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall, isSessionActive)
   const renderer = getToolRenderer(toolCall.name)
@@ -135,7 +155,10 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
   )
 
   // Parse result into text + images
-  const parsed = useMemo(() => parseToolResult(toolCall.result), [toolCall.result])
+  const parsed = useMemo(
+    () => parseToolResult(toolCall.result, agentSlug && sessionId ? { agentSlug, sessionId } : undefined),
+    [toolCall.result, agentSlug, sessionId]
+  )
   const resultStr = parsed.text
   const resultImages = parsed.images
 
@@ -237,7 +260,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
           {resultImages.length > 0 && (
             <div className="mt-2 space-y-2">
               {resultImages.map((img, i) => (
-                <ToolResultImage key={img.src || i} image={img} />
+                <ToolResultImage key={`${i}:${img.src}`} image={img} />
               ))}
             </div>
           )}

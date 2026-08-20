@@ -961,10 +961,6 @@ const MESSAGES_PAGE_HARD_CAP_FACTOR = 2
 // trailing page (whose window always ends at EOF).
 const CURSOR_WINDOW_GRACE_BYTES = 512 * 1024
 
-/** Session identity for minting media refs during a read. Absent (the default)
- * keeps images inline as base64, which is what pre-`media=ref` clients expect. */
-type MediaRefMode = { agentSlug: string; sessionId: string }
-
 function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | null {
   return hasOlder && messages[0] ? messages[0].id : null
 }
@@ -978,7 +974,9 @@ async function readTransformedTail(
   jsonlPath: string,
   maxLines: number,
   signal?: AbortSignal,
-  media?: MediaRefMode
+  /** True replaces inline base64 images with refs (see session-media); the
+   * default keeps them inline, which is what pre-`media=ref` clients expect. */
+  media?: boolean
 ): Promise<{
   transformed: TransformedItem[]
   entries: (JsonlMessageEntry | JsonlSystemEntry)[]
@@ -999,7 +997,7 @@ async function readTransformedTail(
       !('isMeta' in normalized && normalized.isMeta)
     ) {
       if (media) {
-        replaceInlineMediaWithRefs(normalized, { ...media, line, lineOffset: offsets[i]! })
+        replaceInlineMediaWithRefs(normalized, { line, lineOffset: offsets[i]! })
       }
       entries.push(normalized)
     }
@@ -1401,7 +1399,7 @@ async function readEntriesRange(
   startOffset: number,
   endOffset: number | undefined,
   signal?: AbortSignal,
-  media?: MediaRefMode
+  media?: boolean
 ): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
   const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
   // Rows arrive in file order from a line-boundary start, so accumulating
@@ -1428,7 +1426,7 @@ async function readEntriesRange(
       // dropping the base64 here keeps it out of the page's peak memory too,
       // not just off the wire.
       if (media) {
-        replaceInlineMediaWithRefs(normalized, { ...media, line, lineOffset: offset })
+        replaceInlineMediaWithRefs(normalized, { line, lineOffset: offset })
       }
       entries.push(normalized)
     }
@@ -1486,7 +1484,7 @@ export async function getSessionMessagesPage(
     scan.startOffset,
     scan.endOffset,
     signal,
-    opts.media === 'ref' ? { agentSlug, sessionId } : undefined
+    opts.media === 'ref'
   )
   signal?.throwIfAborted()
   const transformed = transformMessages(entries)
@@ -1575,7 +1573,7 @@ export async function getSessionMessagesDelta(
       jsonlPath,
       maxLines,
       signal,
-      opts.media === 'ref' ? { agentSlug, sessionId } : undefined
+      opts.media === 'ref'
     )
     const canGrow = !reachedStart && maxLines < DELTA_MAX_TAIL_LINES
 

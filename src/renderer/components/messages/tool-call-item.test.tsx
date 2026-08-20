@@ -214,7 +214,7 @@ describe('ToolCallItem result images', () => {
     expect(img).toHaveAttribute('loading', 'lazy')
   })
 
-  it('shows a placeholder when a referenced image no longer resolves', async () => {
+  it('offers a retry rather than declaring the image permanently gone', async () => {
     mockParseToolResult.mockReturnValue({ text: 'done', images: [refImage] })
     const { container } = render(
       <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'done' })} />
@@ -224,8 +224,16 @@ describe('ToolCallItem result images', () => {
     const img = container.querySelector('img')!
     fireEvent.error(img)
 
+    // An <img> error carries no reason, so the copy must not claim one.
     expect(container.querySelector('img')).toBeNull()
-    expect(screen.getByText(/no longer available/i)).toBeInTheDocument()
+    expect(screen.getByText(/couldn't load image/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no longer available/i)).not.toBeInTheDocument()
+
+    // Retrying re-requests instead of re-showing the failed load.
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }))
+    const retried = container.querySelector('img')!
+    expect(retried).toBeTruthy()
+    expect(retried.getAttribute('src')).toContain('retry=1')
   })
 
   it('still renders inline base64 images', async () => {

@@ -171,33 +171,60 @@ describe('parseToolResult', () => {
   })
 
   describe('media refs', () => {
-    it('turns a ref block into a fetchable image', () => {
-      const result = parseToolResult([
-        { type: 'text', text: 'screenshot' },
-        {
-          type: 'media_ref',
-          id: 'abc',
-          mimeType: 'image/png',
-          bytes: 40960,
-          url: '/api/agents/a/sessions/s/media/abc',
-        },
-      ])
+    const ctx = { agentSlug: 'a1', sessionId: 's1' }
+
+    it('builds the session media URL from trusted context, not the block', () => {
+      const result = parseToolResult(
+        [
+          { type: 'text', text: 'screenshot' },
+          { type: 'media_ref', id: 'abc', mimeType: 'image/png', bytes: 40960 },
+        ],
+        ctx
+      )
       expect(result.text).toBe('screenshot')
       expect(result.images).toEqual([
-        { src: '/api/agents/a/sessions/s/media/abc', bytes: 40960, isRef: true },
+        { src: '/api/agents/a1/sessions/s1/media/abc', bytes: 40960, isRef: true },
       ])
     })
 
-    it('skips a ref with no url rather than rendering a broken image', () => {
-      const result = parseToolResult([{ type: 'media_ref', id: 'abc', mimeType: 'image/png' }])
+    it('ignores refs when no session context is supplied', () => {
+      // A caller that cannot vouch for the transcript must not turn its
+      // contents into requests.
+      const result = parseToolResult([{ type: 'media_ref', id: 'abc', bytes: 99 }])
+      expect(result.images).toEqual([])
+    })
+
+    it('does not let a tool result name its own image address', () => {
+      // Tool output is untrusted text that reaches this parser as JSON, so a
+      // block claiming to be a ref proves nothing about where its bytes live.
+      const hostile = JSON.stringify([
+        { type: 'media_ref', id: 'abc', url: 'https://attacker.example/track?u=1' },
+      ])
+      const result = parseToolResult(hostile, ctx)
+      expect(result.images[0]!.src).toBe('/api/agents/a1/sessions/s1/media/abc')
+      expect(JSON.stringify(result.images)).not.toContain('attacker.example')
+    })
+
+    it('drops ids that could not have been minted here', () => {
+      const result = parseToolResult(
+        [
+          { type: 'media_ref', id: '../../../other/x' },
+          { type: 'media_ref', id: 'has spaces' },
+          { type: 'media_ref', id: '' },
+        ],
+        ctx
+      )
       expect(result.images).toEqual([])
     })
 
     it('handles a page that mixes refs and inline images', () => {
-      const result = parseToolResult([
-        { type: 'image', data: 'small', mimeType: 'image/png' },
-        { type: 'media_ref', id: 'abc', url: '/api/agents/a/sessions/s/media/abc', bytes: 99 },
-      ])
+      const result = parseToolResult(
+        [
+          { type: 'image', data: 'small', mimeType: 'image/png' },
+          { type: 'media_ref', id: 'abc', bytes: 99 },
+        ],
+        ctx
+      )
       expect(result.images.map((i) => i.isRef)).toEqual([false, true])
     })
   })

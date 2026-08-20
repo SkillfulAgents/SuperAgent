@@ -3903,6 +3903,27 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(getSessionMessagesPage).not.toHaveBeenCalled()
   })
 
+  it('honors media on its own, without any pagination parameter', async () => {
+    // Otherwise asking for refs quietly returns the full inline transcript.
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+
+    const res = await getReq(app, `${URL}?media=ref`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ media: 'ref' })
+    )
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('validates a media value even when it arrives alone', async () => {
+    const res = await getReq(app, `${URL}?media=bogus`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
   it('caps first-page limit to MESSAGES_PAGE_LIMIT', async () => {
     process.env.MESSAGES_PAGE_LIMIT = '100'
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
@@ -4088,7 +4109,7 @@ describe('GET /:id/sessions/:sessionId/media/:ref', () => {
     app = createApp()
     vi.mocked(sessionExists).mockResolvedValue(true)
     vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
-    vi.mocked(decodeMediaRef).mockReturnValue({ v: 1, u: 'u-1', o: 10, s: 100, l: 200 })
+    vi.mocked(decodeMediaRef).mockReturnValue({ v: 1, u: 'u-1', o: 10, s: 100, l: 200, h: 'fp' })
     vi.mocked(openMediaBlob).mockResolvedValue({
       stream: Readable.from([image]),
       mimeType: 'image/png',
@@ -4110,6 +4131,16 @@ describe('GET /:id/sessions/:sessionId/media/:ref', () => {
     vi.mocked(openMediaBlob).mockResolvedValue(undefined)
     const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
     expect(res.status).toBe(410)
+  })
+
+  it('answers 500, not 410, when the read fails for operational reasons', async () => {
+    // A disk error says nothing about whether the media still exists; 410
+    // would strand the client on a placeholder it never retries.
+    vi.mocked(openMediaBlob).mockRejectedValue(
+      Object.assign(new Error('I/O error'), { code: 'EIO' })
+    )
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(500)
   })
 
   it('rejects a ref it could not have minted', async () => {
