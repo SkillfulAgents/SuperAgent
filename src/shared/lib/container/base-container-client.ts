@@ -1624,10 +1624,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   // Merge order: provider defaults < runtime constants < config.envVars < extra.
   protected buildAgentEnv(extra?: Record<string, string>): Record<string, string> {
     const settings = getSettings()
+    const provider = getActiveLlmProvider()
     const merged: Record<string, string | undefined> = {
-      ...getActiveLlmProvider().getContainerEnvVars(this.agentIdentityForEnv()),
+      ...provider.getContainerEnvVars(this.agentIdentityForEnv()),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
-      ENABLE_TOOL_SEARCH: settings.enableToolSearch !== false ? 'true' : 'false',
+      // The setting only switches tool search OFF; whether it may be on is the
+      // provider's call, because it depends on the endpoint expanding deferred
+      // tools (see BaseLlmProvider.toolSearchEnv). Undefined leaves the var
+      // unset — the image must not define it either, or unset would read as on.
+      ENABLE_TOOL_SEARCH: settings.enableToolSearch === false ? 'false' : provider.toolSearchEnv,
       ...this.config.envVars,
       ...extra,
     }

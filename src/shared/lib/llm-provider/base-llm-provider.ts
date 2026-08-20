@@ -51,6 +51,22 @@ export abstract class BaseLlmProvider {
   /** Whether this provider can discover remote catalog models by search query. */
   readonly supportsModelSearch: boolean = false
 
+  /**
+   * Value of `ENABLE_TOOL_SEARCH` for containers on this provider, or
+   * undefined to leave the variable unset so the CLI decides for itself.
+   *
+   * Tool search omits tool definitions from the request and loads them back on
+   * demand, which the endpoint has to expand: the CLI re-sends a loaded tool
+   * with `defer_loading: true`, and since agent SDK 0.3.219 it also sends a
+   * `DeferredToolPlaceholder` tool carrying that flag on EVERY request.
+   * Endpoints that don't understand the flag reject the whole request
+   * (OpenRouter 400s it for every non-Anthropic model), so only providers whose
+   * endpoint handles it turn this on. Left unset, the CLI disables tool search
+   * for any base URL that isn't a first-party Anthropic host — the right
+   * default for endpoints we can't vouch for.
+   */
+  readonly toolSearchEnv: 'true' | undefined = undefined
+
   /** Check whether an API key is configured and its source. */
   getApiKeyStatus(): ApiKeyStatus {
     const settings = getSettings()

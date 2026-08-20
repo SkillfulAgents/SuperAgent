@@ -46,6 +46,11 @@ afterEach(() => {
 })
 
 describe('GenericLlmProvider — catalog and capabilities', () => {
+  // The endpoint is whatever the user pointed us at, so the CLI decides.
+  it('declares no ENABLE_TOOL_SEARCH value', () => {
+    expect(new GenericLlmProvider().toolSearchEnv).toBeUndefined()
+  })
+
   it('ships an empty built-in catalog and opts into model search', () => {
     expect(provider.getBuiltinCatalog()).toEqual([])
     expect(provider.supportsModelSearch).toBe(true)
