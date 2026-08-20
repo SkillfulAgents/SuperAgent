@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 // Captures SUPERAGENT_HOST_TOKEN and strips it from process.env — import early
 // so no later module can snapshot an environment that still contains it.
-import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
+import { HOST_TOKEN_HEADER, hostAuthEnabled, hostTokenId, isValidHostToken } from './host-auth';
 import { SessionManager } from './session-manager';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
@@ -87,7 +87,15 @@ app.use('*', async (c, next) => {
 
 // Health check endpoint
 app.get('/health', (c) => {
-  return c.json({ status: 'ok', timestamp: new Date().toISOString() });
+  // hostTokenId is a one-way id (never the token) of the host token this
+  // container was started with. The host compares it with the id of the token
+  // it is sending to tell "this container is holding a rotated/stale token,
+  // restart it" apart from a genuinely unauthorized caller.
+  return c.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    ...(hostTokenId() ? { hostTokenId: hostTokenId() } : {}),
+  });
 });
 
 // Session endpoints
