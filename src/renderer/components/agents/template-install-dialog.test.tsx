@@ -69,9 +69,9 @@ describe('TemplateInstallDialog', () => {
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1))
   })
 
-  // The close-before-install ordering is shared by EVERY caller, including
-  // AgentTemplateBrowseDialog, whose onInstalled awaits a refetch and an
-  // onboarding session. Asserting it on the bare props keeps that caller covered.
+  // The close-before-install ordering is shared by EVERY caller, including the
+  // Explore details page, whose onInstalled awaits a refetch and an onboarding
+  // session. Asserting it on the bare props keeps those callers covered.
   it('closes before onInstalled so setup UI is not stacked', async () => {
     const order: string[] = []
     mutateAsync.mockResolvedValue({

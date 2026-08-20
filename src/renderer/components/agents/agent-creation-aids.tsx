@@ -18,6 +18,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { useImportAgentTemplate, useDiscoverableAgents, type ImportProgress } from '@renderer/hooks/use-agent-templates'
 import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
+import { captureRendererException } from '@renderer/lib/error-reporting'
 import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
 import type { ApiAgentTemplateInstallResult } from '@shared/lib/types/api'
 
@@ -60,7 +61,18 @@ export function AgentCreationAids({
 
   const browseTemplates = useCallback(async () => {
     onAidOpened?.()
-    await onNavigateAway?.()
+    // The hook can reject — the wizard's is a settings PUT, and that mutation
+    // carries `skipGlobalErrorToast`, so a failure is otherwise silent. Leave
+    // for the marketplace either way: a click that does nothing at all is the
+    // worse outcome, and the host staying open is its own visible signal.
+    try {
+      await onNavigateAway?.()
+    } catch (error) {
+      console.error('[create-agent] navigate-away hook failed:', error)
+      captureRendererException(error, {
+        tags: { area: 'create-agent', op: 'browse-templates' },
+      })
+    }
     void navigate({ to: '/explore' })
   }, [onAidOpened, onNavigateAway, navigate])
 
