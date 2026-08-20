@@ -290,6 +290,10 @@ export function resetHostExportLockForTests(): void {
   hostExportBusy = false
 }
 
+export function isHostExportBusy(): boolean {
+  return hostExportBusy
+}
+
 async function withHostExportLock<T>(fn: () => Promise<T>): Promise<T> {
   beginHostExport()
   try {

@@ -58,6 +58,7 @@ import {
   exportAgentTemplate as exportAgentTemplateStream,
   exportAgentFull as exportAgentFullStream,
   ExportInProgressError,
+  isHostExportBusy,
   resetHostExportLockForTests,
   importAgentFromTemplate,
   installAgentFromSkillset,
@@ -1972,11 +1973,14 @@ describe('exportAgentFull', () => {
     fs.mkdirSync(workspaceDir, { recursive: true })
     fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
 
+    expect(isHostExportBusy()).toBe(false)
     const first = await exportAgentFullStream('full-agent')
+    expect(isHostExportBusy()).toBe(true)
     await expect(exportAgentFullStream('full-agent')).rejects.toBeInstanceOf(ExportInProgressError)
     await expect(exportAgentTemplateStream('full-agent')).rejects.toBeInstanceOf(ExportInProgressError)
 
     await readableToBuffer(first)
+    expect(isHostExportBusy()).toBe(false)
     const second = await exportAgentFullStream('full-agent')
     const zipBuffer = await readableToBuffer(second)
     const reader = await openZipFromBuffer(zipBuffer)
