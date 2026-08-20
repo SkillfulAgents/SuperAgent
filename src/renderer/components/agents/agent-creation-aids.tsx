@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { AudioLines, Upload, ArrowDownToLine, FileArchive, Loader2, Shapes } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
@@ -13,7 +14,6 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { VoiceAgent } from '@renderer/components/ui/voice-agent'
-import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
 import { apiFetch } from '@renderer/lib/api'
 import { useImportAgentTemplate, useDiscoverableAgents, type ImportProgress } from '@renderer/hooks/use-agent-templates'
 import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
@@ -32,8 +32,12 @@ export interface AgentCreationAidsProps {
   className?: string
   /** Fires when the user opens browse / voice / import (forfeits signup template handoff). */
   onAidOpened?: () => void
-  /** Called after a marketplace template has been installed and opened. */
-  onTemplateInstalled?: () => void | Promise<void>
+  /**
+   * Awaited before leaving for the marketplace. The wizard hosts this form in
+   * a full-screen overlay that sits ABOVE the router, so it has to finish
+   * itself first or the user navigates to a page they can't see.
+   */
+  onNavigateAway?: () => void | Promise<void>
 }
 
 /**
@@ -47,12 +51,18 @@ export function AgentCreationAids({
   onImportComplete,
   className,
   onAidOpened,
-  onTemplateInstalled,
+  onNavigateAway,
 }: AgentCreationAidsProps) {
+  const navigate = useNavigate()
   const hasVoiceConfigured = useIsVoiceAgentConfigured()
   const { data: discoverableAgents } = useDiscoverableAgents()
   const hasMarketplace = !!(discoverableAgents && discoverableAgents.length > 0)
-  const [showTemplatesDialog, setShowTemplatesDialog] = useState(false)
+
+  const browseTemplates = useCallback(async () => {
+    onAidOpened?.()
+    await onNavigateAway?.()
+    void navigate({ to: '/explore' })
+  }, [onAidOpened, onNavigateAway, navigate])
 
   // --- Voice agent flow ---
   const [showVoiceAgent, setShowVoiceAgent] = useState(false)
@@ -185,10 +195,7 @@ export function AgentCreationAids({
             title="Browse Templates"
             icon={<Shapes className="h-4 w-4" />}
             ariaDescription="Opens the agent template marketplace"
-            onClick={() => {
-              onAidOpened?.()
-              setShowTemplatesDialog(true)
-            }}
+            onClick={() => void browseTemplates()}
           />
         )}
 
@@ -211,12 +218,6 @@ export function AgentCreationAids({
           }}
         />
       </div>
-
-      <AgentTemplateBrowseDialog
-        open={showTemplatesDialog}
-        onOpenChange={setShowTemplatesDialog}
-        onInstalled={onTemplateInstalled}
-      />
 
       <Dialog open={showVoiceAgent} onOpenChange={(open) => { if (!open) closeVoiceAgent() }}>
         <DialogContent className="max-w-2xl p-0 overflow-hidden h-[420px] [grid-template-rows:minmax(0,1fr)] gap-0">
