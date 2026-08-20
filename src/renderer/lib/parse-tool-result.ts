@@ -49,6 +49,18 @@ export interface ParsedToolResult {
  */
 export type EmbeddedImageAliases = ReadonlyMap<string, string>
 
+/** Preserve a verified alias map's identity when a refetch rebuilds equal contents. */
+export function reuseEqualEmbeddedImageAliases(
+  previous: EmbeddedImageAliases | null,
+  next: EmbeddedImageAliases
+): EmbeddedImageAliases {
+  if (!previous || previous.size !== next.size) return next
+  for (const [path, src] of previous) {
+    if (next.get(path) !== src) return next
+  }
+  return previous
+}
+
 /** Media ids are base64url — anything else cannot have been minted here, and
  * must never reach a URL. */
 const MEDIA_ID_PATTERN = /^[A-Za-z0-9_-]{1,4096}$/
@@ -148,7 +160,7 @@ export function parseToolResult(
 // Keep this deliberately narrower than a general filesystem-path matcher: a
 // random path mentioned in tool output must not authorize a Markdown image.
 const REPORTED_IMAGE_PATH =
-  /(?:screenshot|image)[^:\r\n]{0,80}:\*{0,2}\s*`?((?:file:\/\/)?\/[^\r\n`]*?\.(?:avif|gif|jpe?g|png|webp))(?=[\s`]|$)/giu
+  /^\*{0,2}(?:screenshot|image)[^:\r\n]{0,80}:\*{0,2}\s*`?((?:file:\/\/)?\/[^\r\n`]*?\.(?:avif|gif|jpe?g|png|webp))(?=[\s`]|$)/gimu
 
 function reportedImagePaths(text: string): string[] {
   return Array.from(text.matchAll(REPORTED_IMAGE_PATH), (match) => match[1])

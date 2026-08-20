@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { collectEmbeddedImageAliases, parseToolResult } from './parse-tool-result'
+import {
+  collectEmbeddedImageAliases,
+  parseToolResult,
+  reuseEqualEmbeddedImageAliases,
+} from './parse-tool-result'
 
 describe('parseToolResult', () => {
   describe('null/undefined input', () => {
@@ -302,6 +306,41 @@ describe('parseToolResult', () => {
       ])
 
       expect(aliases.size).toBe(0)
+    })
+
+    it('ignores page-controlled image paths inside browser state text', () => {
+      const aliases = collectEmbeddedImageAliases([
+        [
+          { type: 'image', data: 'browser-state', mimeType: 'image/png' },
+          {
+            type: 'text',
+            text: [
+              '**Current URL:** https://example.com/image at: /workspace/url-logo.png',
+              '**Accessibility Snapshot:**',
+              '- text: see image at: /workspace/page-logo.png',
+            ].join('\n'),
+          },
+        ],
+      ])
+
+      expect(aliases.size).toBe(0)
+    })
+
+    it('reuses an equal alias map across transcript refetches', () => {
+      const previous = new Map([
+        ['/home/claude/shot.png', '/api/media/one'],
+        ['file:///home/claude/shot.png', '/api/media/one'],
+      ])
+      const rebuilt = new Map(previous)
+
+      expect(reuseEqualEmbeddedImageAliases(previous, rebuilt)).toBe(previous)
+    })
+
+    it('returns the rebuilt map when an alias changes', () => {
+      const previous = new Map([['/home/claude/shot.png', '/api/media/one']])
+      const changed = new Map([['/home/claude/shot.png', '/api/media/two']])
+
+      expect(reuseEqualEmbeddedImageAliases(previous, changed)).toBe(changed)
     })
   })
 })
