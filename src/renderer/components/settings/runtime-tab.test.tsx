@@ -35,6 +35,7 @@ const mockSettings = {
     ],
     runtimeReadiness: { status: 'READY', message: 'Ready' },
     hasRunningAgents: false,
+    runningAgentIds: [] as string[],
     customEnvVars: {},
     dataDir: '/tmp/superagent',
     app: { autoSleepTimeoutMinutes: 30 },
@@ -80,6 +81,10 @@ vi.mock('@renderer/hooks/use-settings', async (importOriginal) => ({
   useRefreshAvailability: () => mockRefreshAvailability,
 }))
 
+vi.mock('@renderer/hooks/use-agents', () => ({
+  useAgents: () => ({ data: [] }),
+}))
+
 describe('RuntimeTab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -88,6 +93,8 @@ describe('RuntimeTab', () => {
     mockSettings.data.container.runtimeSettings = {}
     mockSettings.data.hostTotalMemoryBytes = 64 * 1024 ** 3
     mockSettings.data.customEnvVars = {}
+    mockSettings.data.hasRunningAgents = false
+    mockSettings.data.runningAgentIds = []
     mockSettings.data.runnerAvailability = [
       {
         runner: 'docker',
@@ -110,6 +117,17 @@ describe('RuntimeTab', () => {
 
     expect(screen.getByText('Agent image is required.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('lists running agents and offers to stop all of them', () => {
+    mockSettings.data.hasRunningAgents = true
+    mockSettings.data.runningAgentIds = ['agent-1', 'agent-2']
+
+    renderWithProviders(<RuntimeTab />)
+
+    expect(screen.getByRole('list', { name: 'Running agents' })).toHaveTextContent('agent-1')
+    expect(screen.getByRole('list', { name: 'Running agents' })).toHaveTextContent('agent-2')
+    expect(screen.getByRole('button', { name: 'Stop all' })).toBeInTheDocument()
   })
 
   it('trims agent image before saving', async () => {

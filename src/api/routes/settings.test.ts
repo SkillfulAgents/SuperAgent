@@ -70,6 +70,9 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 const mockHasRunningAgents = vi.fn()
 const mockGetRunningAgentIds = vi.fn()
+const mockGetCachedInfo = vi.fn()
+const mockStopContainer = vi.fn()
+const mockEnsureRunning = vi.fn()
 const mockClearClients = vi.fn()
 const mockEnsureImageReady = vi.fn()
 const mockGetReadiness = vi.fn()
@@ -81,6 +84,9 @@ vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     hasRunningAgents: (...args: unknown[]) => mockHasRunningAgents(...args),
     getRunningAgentIds: (...args: unknown[]) => mockGetRunningAgentIds(...args),
+    getCachedInfo: (...args: unknown[]) => mockGetCachedInfo(...args),
+    stopContainer: (...args: unknown[]) => mockStopContainer(...args),
+    ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
     clearClients: (...args: unknown[]) => mockClearClients(...args),
     ensureImageReady: (...args: unknown[]) => mockEnsureImageReady(...args),
     getReadiness: (...args: unknown[]) => mockGetReadiness(...args),
@@ -264,7 +270,10 @@ function setupDefaults() {
     return s
   })
   mockHasRunningAgents.mockReturnValue(false)
-  mockGetRunningAgentIds.mockResolvedValue([])
+  mockGetRunningAgentIds.mockReturnValue([])
+  mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 })
+  mockStopContainer.mockResolvedValue(undefined)
+  mockEnsureRunning.mockResolvedValue(undefined)
   mockCheckAllRunnersAvailability.mockResolvedValue([])
   mockGetAnthropicApiKeyStatus.mockReturnValue({ isConfigured: true, source: 'settings' })
   mockGetComposioApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
@@ -856,10 +865,65 @@ describe('settings route', () => {
   // =========================================================================
   // Running agents guard
   // =========================================================================
+  describe('running agent actions', () => {
+    beforeEach(() => {
+      mockHasRunningAgents.mockReturnValue(true)
+      mockGetRunningAgentIds.mockReturnValue(['agent-1', 'agent-2'])
+    })
+
+    it('includes the running agent IDs in the settings response', async () => {
+      const res = await app.request('http://localhost/api/settings')
+
+      expect(res.status).toBe(200)
+      expect((await res.json()).runningAgentIds).toEqual(['agent-1', 'agent-2'])
+    })
+
+    it('stops every running agent', async () => {
+      const res = await app.request('http://localhost/api/settings/running-agents/stop', {
+        method: 'POST',
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockStopContainer).toHaveBeenCalledTimes(2)
+      expect(mockStopContainer).toHaveBeenNthCalledWith(1, 'agent-1')
+      expect(mockStopContainer).toHaveBeenNthCalledWith(2, 'agent-2')
+      expect(mockEnsureRunning).not.toHaveBeenCalled()
+    })
+
+    it('stops the full running set before restarting any agent', async () => {
+      const res = await app.request('http://localhost/api/settings/running-agents/restart', {
+        method: 'POST',
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockStopContainer).toHaveBeenCalledTimes(2)
+      expect(mockEnsureRunning).toHaveBeenCalledTimes(2)
+      expect(mockEnsureRunning).toHaveBeenNthCalledWith(1, 'agent-1')
+      expect(mockEnsureRunning).toHaveBeenNthCalledWith(2, 'agent-2')
+      const finalStopOrder = mockStopContainer.mock.invocationCallOrder.at(-1)!
+      const firstStartOrder = mockEnsureRunning.mock.invocationCallOrder[0]
+      expect(finalStopOrder).toBeLessThan(firstStartOrder)
+    })
+
+    it('reports partial failures without starting an agent that failed to stop', async () => {
+      mockStopContainer.mockRejectedValueOnce(new Error('stop failed'))
+
+      const res = await app.request('http://localhost/api/settings/running-agents/restart', {
+        method: 'POST',
+      })
+      const body = await res.json()
+
+      expect(res.status).toBe(500)
+      expect(body.failures).toEqual([{ agentId: 'agent-1', error: 'stop failed' }])
+      expect(mockEnsureRunning).toHaveBeenCalledOnce()
+      expect(mockEnsureRunning).toHaveBeenCalledWith('agent-2')
+    })
+  })
+
   describe('cannot change runner while agents running', () => {
     it('returns 409 when changing containerRunner while agents are running', async () => {
       mockHasRunningAgents.mockReturnValue(true)
-      mockGetRunningAgentIds.mockResolvedValue(['agent-1', 'agent-2'])
+      mockGetRunningAgentIds.mockReturnValue(['agent-1', 'agent-2'])
 
       const res = await putSettings({
         container: { containerRunner: 'podman' },
@@ -875,7 +939,7 @@ describe('settings route', () => {
 
     it('returns 409 when changing resourceLimits while agents are running', async () => {
       mockHasRunningAgents.mockReturnValue(true)
-      mockGetRunningAgentIds.mockResolvedValue(['agent-1'])
+      mockGetRunningAgentIds.mockReturnValue(['agent-1'])
 
       const res = await putSettings({
         container: { resourceLimits: { cpu: 8, memory: '16g' } },

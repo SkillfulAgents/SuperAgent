@@ -27,9 +27,10 @@ import {
   useRefreshAvailability,
   isWarmStartOnTypeEnabled,
 } from '@renderer/hooks/use-settings'
-import { AlertCircle, AlertTriangle, Play, Download, Loader2, RefreshCw, Plus, X } from 'lucide-react'
+import { AlertTriangle, Play, Download, Loader2, RefreshCw, Plus, X } from 'lucide-react'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
 import { RuntimeProvisionProgress } from '@renderer/components/runtime/runtime-provision-progress'
+import { RunningAgentsWarning } from '@renderer/components/settings/running-agents-warning'
 import { DEFAULT_LIMA_VM_MEMORY, VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
 import { assessVmMemory } from '@shared/lib/container/vm-memory'
 import { findReservedEnvVarKeys } from '@shared/lib/container/reserved-env-vars'
@@ -454,12 +455,13 @@ export function RuntimeTab() {
       )}
 
       {hasRunningAgents && (
-        <div className="flex items-start gap-2 p-3 text-sm bg-yellow-500/10 border border-yellow-500/20 rounded-md">
-          <AlertCircle className="h-4 w-4 text-yellow-500 mt-0.5 shrink-0" />
-          <p className="text-yellow-700 dark:text-yellow-400">
-            Some settings cannot be changed while agents are running. Stop all agents to modify container runtime or resource limits.
-          </p>
-        </div>
+        <RunningAgentsWarning
+          runningAgentIds={settings?.runningAgentIds}
+          action="stop"
+          actionLabel="Stop all"
+        >
+          Some settings cannot be changed while agents are running. Stop all agents to modify container runtime or resource limits.
+        </RunningAgentsWarning>
       )}
 
       <div className="space-y-2">

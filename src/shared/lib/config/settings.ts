@@ -350,6 +350,8 @@ export interface GlobalSettingsResponse {
   container: ContainerSettings
   app: AppPreferences
   hasRunningAgents: boolean
+  /** IDs of agents whose containers are currently running. */
+  runningAgentIds?: string[]
   runnerAvailability: RunnerAvailability[]
   llmProvider: LlmProviderId
   llmProviderStatus: LlmProviderInfo[]
