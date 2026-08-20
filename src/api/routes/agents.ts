@@ -149,6 +149,7 @@ import {
 import {
   exportAgentTemplate,
   exportAgentFull,
+  isHostExportBusy,
   importAgentFromTemplate,
   MAX_COMPRESSED_SIZE,
   installAgentFromSkillset,
@@ -716,6 +717,11 @@ agents.get('/discoverable-agents', async (c) => {
     console.error('Failed to fetch discoverable agents:', error)
     return c.json({ error: 'Failed to fetch discoverable agents' }, 500)
   }
+})
+
+// GET /api/agents/export-status — host-wide; registered before /:id
+agents.get('/export-status', (c) => {
+  return c.json({ inProgress: isHostExportBusy() })
 })
 
 // POST /api/agents/install-from-skillset - Install agent from skillset
@@ -4802,30 +4808,50 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
  * display name (slugs are opaque minted ids), encoded per the same quoted +
  * RFC 5987 `filename*` convention as workspace-file downloads.
  */
-function packageDownloadResponse(zipBuffer: Buffer, filename: string): Response {
+function packageDownloadResponse(body: Readable | Buffer, filename: string): Response {
   const encoded = encodeURIComponent(filename)
-  return new Response(new Uint8Array(zipBuffer), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
-      'Content-Length': zipBuffer.byteLength.toString(),
-    },
-  })
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
+  }
+  if (Buffer.isBuffer(body)) {
+    headers['Content-Length'] = body.byteLength.toString()
+  }
+  const nodeStream = Buffer.isBuffer(body) ? Readable.from(body) : body
+  return new Response(Readable.toWeb(nodeStream) as ReadableStream, { status: 200, headers })
+}
+
+// Lock lives on the stream ('close' releases it). Destroy if Response construction throws.
+function sendLockedExportStream(zipStream: Readable, build: () => Response): Response {
+  try {
+    return build()
+  } catch (err) {
+    zipStream.destroy()
+    throw err
+  }
+}
+
+function exportRouteError(c: Context, error: unknown, fallback: string) {
+  if (error instanceof Error && error.name === 'ExportInProgressError') {
+    return c.json({ error: error.message }, 409)
+  }
+  const message = error instanceof Error ? error.message : fallback
+  console.error(fallback, error)
+  return c.json({ error: message }, 500)
 }
 
 // POST /api/agents/:id/export-template - Export agent as ZIP download
 agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentTemplate(slug)])
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
-    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
+    const agent = await getAgent(slug)
+    const zipStream = await exportAgentTemplate(slug, c.req.raw.signal)
+    return sendLockedExportStream(zipStream, () => {
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
+      return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
+    })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export template'
-    console.error('Failed to export template:', error)
-    return c.json({ error: message }, 500)
+    return exportRouteError(c, error, 'Failed to export template')
   }
 })
 
@@ -4833,14 +4859,14 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
 agents.post('/:id/export-full', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentFull(slug)])
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
-    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
+    const agent = await getAgent(slug)
+    const zipStream = await exportAgentFull(slug, c.req.raw.signal)
+    return sendLockedExportStream(zipStream, () => {
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
+      return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
+    })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export agent'
-    console.error('Failed to export full agent:', error)
-    return c.json({ error: message }, 500)
+    return exportRouteError(c, error, 'Failed to export agent')
   }
 })
 
