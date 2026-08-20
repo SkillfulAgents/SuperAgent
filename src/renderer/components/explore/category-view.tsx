@@ -51,7 +51,7 @@ export function CategoryView({ category }: { category: string }) {
         {isLoading ? (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-[180px] rounded-3xl" />
+              <Skeleton key={i} className="h-[180px] rounded-2xl" />
             ))}
           </div>
         ) : !hasSkillsets ? (

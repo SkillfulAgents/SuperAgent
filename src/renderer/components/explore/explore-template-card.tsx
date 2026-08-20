@@ -106,7 +106,7 @@ export function ExploreTemplateCard({
       // longer curve spends its tail finishing a sub-pixel move that already
       // looks arrived — which reads as lag. Matches the renderer's dominant
       // duration and the see-more tile beside it.
-      className="flex h-[180px] w-full flex-col items-start gap-5 rounded-3xl border border-black/[0.06] bg-card p-4 text-left shadow-none transition-[box-shadow,transform] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/[0.06] dark:hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.5)]"
+      className="flex h-[180px] w-full flex-col items-start gap-5 rounded-2xl border border-black/[0.06] bg-card p-4 text-left shadow-none transition-[box-shadow,transform] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/[0.06] dark:hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.5)]"
     >
       <span className="flex w-full items-center gap-2">
         {/* The glyph is debossed — it drops a 1px light highlight beneath its

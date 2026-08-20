@@ -434,7 +434,6 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
 
       <TemplateInstallDialog
         template={templateToInstall}
-        handoffOrigin
         onClose={() => setTemplateToInstall(null)}
         onInstalled={(agent) => finishCreatedAgent(agent, 'skillset')}
       />
