@@ -5,7 +5,12 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const navigate = vi.fn()
-vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
+let historyEntryKey = 'explore-entry'
+vi.mock('@tanstack/react-router', () => ({
+  useNavigate: () => navigate,
+  useLocation: ({ select }: { select: (location: object) => unknown }) =>
+    select({ state: { __TSR_key: historyEntryKey }, href: '/explore' }),
+}))
 
 const openSettings = vi.fn()
 vi.mock('@renderer/context/dialog-context', () => ({ useDialogs: () => ({ openSettings }) }))
@@ -42,9 +47,39 @@ function roster(n: number, over: Partial<ApiDiscoverableAgent> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  sessionStorage.clear()
+  historyEntryKey = 'explore-entry'
   skillsets = [{ id: 'skillset-1', name: 'Public' }]
   discoverable = roster(9)
   isLoading = false
+})
+
+function getScrollContainer(): HTMLDivElement {
+  const container = screen
+    .getByTestId('explore-view')
+    .closest('[data-scroll-restoration-id="explore-marketplace"]')
+  if (!(container instanceof HTMLDivElement)) {
+    throw new Error('Explore scroll container not found')
+  }
+  return container
+}
+
+describe('ExploreView scroll restoration', () => {
+  it('restores its nested scroll position after opening a template', async () => {
+    const firstRender = render(<ExploreView />)
+    getScrollContainer().scrollTop = 640
+
+    await userEvent.click(screen.getAllByTestId('explore-template-card')[0]!)
+    expect(navigate).toHaveBeenCalledWith({
+      to: '/explore/$skillsetId/$templateSlug',
+      params: { skillsetId: 'skillset-1', templateSlug: 'agent-1' },
+      state: { exploreReturnKey: historyEntryKey },
+    })
+
+    firstRender.unmount()
+    render(<ExploreView />)
+    expect(getScrollContainer().scrollTop).toBe(640)
+  })
 })
 
 /**

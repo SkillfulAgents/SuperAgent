@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useNavigate } from '@tanstack/react-router'
 import { ArrowRight, Check, Filter, Plus, Search, Settings2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -10,6 +10,10 @@ import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/se
 import { slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { ExploreTemplateCard } from './explore-template-card'
 import { NoTemplatesEmptyState, useExploreTemplates } from './explore-templates'
+import {
+  getRememberedExploreScrollPosition,
+  rememberExploreScrollPosition,
+} from './explore-scroll-restoration'
 import {
   connectionLabel,
   FEATURED_SECTION_LABEL,
@@ -39,7 +43,12 @@ const OTHER_CATEGORY = 'Other'
  */
 export function ExploreView() {
   const navigate = useNavigate()
+  const historyEntryKey = useLocation({
+    select: (location) => location.state.__TSR_key ?? location.href,
+  })
   const { templates, hasSkillsets, isLoading } = useExploreTemplates()
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const restoredEntryRef = useRef<string | null>(null)
 
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -52,6 +61,19 @@ export function ExploreView() {
     const id = setTimeout(() => setDebouncedSearch(search), 150)
     return () => clearTimeout(id)
   }, [search])
+
+  // This page scrolls a nested container, not `window`, so the browser cannot
+  // restore it when the route remounts. Restore only after the cached roster is
+  // back in the DOM, before paint, and only once for this history entry.
+  useLayoutEffect(() => {
+    if (isLoading || restoredEntryRef.current === historyEntryKey) return
+
+    const scrollTop = getRememberedExploreScrollPosition(historyEntryKey)
+    if (scrollTop !== undefined && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollTop
+    }
+    restoredEntryRef.current = historyEntryKey
+  }, [historyEntryKey, isLoading])
 
   // The categories this roster actually declares, with counts — most populated
   // first so the long tail of one-off categories sorts last.
@@ -153,9 +175,11 @@ export function ExploreView() {
   }, [filtered, isBrowsing])
 
   const openTemplate = (template: ApiDiscoverableAgent) => {
+    rememberExploreScrollPosition(historyEntryKey, scrollContainerRef.current?.scrollTop ?? 0)
     void navigate({
       to: '/explore/$skillsetId/$templateSlug',
       params: { skillsetId: template.skillsetId, templateSlug: slugFromAgentPath(template.path) },
+      state: { exploreReturnKey: historyEntryKey },
     })
   }
 
@@ -163,7 +187,12 @@ export function ExploreView() {
     // `pt-12` rather than `fullScreen`'s `pt-4`: the notifications page sits a
     // back button above its heading, and this page has none — without the extra
     // lead-in the title crowds the header border.
-    <SettingsPageContainer fullScreen className="px-[88px] pb-16 pt-12">
+    <SettingsPageContainer
+      fullScreen
+      scrollContainerRef={scrollContainerRef}
+      scrollRestorationId="explore-marketplace"
+      className="px-[88px] pb-16 pt-12"
+    >
       <PageTitle
         title="Discover New Agents"
         actions={
