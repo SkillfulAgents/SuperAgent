@@ -70,10 +70,11 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
 
   return (
     <>
-      <HoverScrollText
-        className="min-w-0 flex-1 app-no-drag"
-        data-testid="breadcrumb-trail"
-      >
+      <div className="min-w-0 flex-1" data-testid="breadcrumb-drag-area">
+        <HoverScrollText
+          className="w-fit max-w-full app-no-drag"
+          data-testid="breadcrumb-trail"
+        >
         {agent ? (
           <AgentContextMenu agent={agent}>
             <AppLink
@@ -215,7 +216,8 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
             detail={view.kind === 'connections' ? view.detail ?? null : null}
           />
         )}
-      </HoverScrollText>
+        </HoverScrollText>
+      </div>
       <div className="flex items-center gap-0 md:gap-2 shrink-0 app-no-drag">
         <DashboardHeaderActions agentSlug={slug} dashboardSlug={dashboardSlug} />
         {dashboardHeader?.actions && (

@@ -189,6 +189,27 @@ describe('AgentHeader breadcrumbs', () => {
     expect(trail).toHaveStyle({ '--hover-scroll-distance': '180px' })
   })
 
+  it('keeps unused breadcrumb header space in the window drag region', () => {
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+
+    const dragArea = screen.getByTestId('breadcrumb-drag-area')
+    const trail = screen.getByTestId('breadcrumb-trail')
+
+    // ContentShell marks the header as draggable. Keep its flex-filling blank
+    // area in that region and opt out only the fitted, interactive breadcrumb.
+    expect(dragArea).toHaveClass('min-w-0', 'flex-1')
+    expect(dragArea).not.toHaveClass('app-no-drag')
+    expect(trail).toHaveClass('w-fit', 'max-w-full', 'app-no-drag')
+  })
+
   it('renders the dashboard name as a breadcrumb and its actions in the shared toolbar', () => {
     mocks.routeView = { kind: 'dashboard', slug: 'nutrition' }
     const mutation = { mutate: vi.fn(), isPending: false }
