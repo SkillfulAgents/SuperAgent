@@ -1,5 +1,5 @@
 import { cn } from '@shared/lib/utils/cn'
-import { useState, useCallback, useRef, useLayoutEffect, memo, type ReactNode } from 'react'
+import { useState, useCallback, useRef, useLayoutEffect, useMemo, memo, type ReactNode } from 'react'
 import { Check, Copy, Link2 } from 'lucide-react'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
@@ -22,6 +22,7 @@ import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { markdownLinkComponents } from './markdown-file-link'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 
 // Re-export for use by other components
@@ -178,30 +179,26 @@ const MARKDOWN_COMPONENTS: Components = {
       <div className="max-w-[32rem]">{children}</div>
     </td>
   ),
-  // Ensure links open in new tab
-  a: ({ children, href }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={cn(
-        'hover:underline',
-        'text-blue-500'
-      )}
-    >
-      {children}
-    </a>
-  ),
+  ...markdownLinkComponents(),
+}
+
+function markdownComponentsForAgent(agentSlug: string): Components {
+  return {
+    ...MARKDOWN_COMPONENTS,
+    ...markdownLinkComponents(agentSlug),
+  }
 }
 
 // A single markdown block. Memoized so that, while a response streams, each
 // already-settled block parses exactly once even though later deltas keep
 // re-rendering the parent MessageItem. See split-streaming-markdown.ts.
 // Exported so the agent-markdown link/scheme handling can be tested directly
-// (SUP-238) without standing up a full MessageItem.
-export const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+// (SUP-238) without standing up a full MessageItem. Passing agentSlug reaches
+// FilePreviewProvider via the file-link override — notifications must omit it.
+export const MarkdownBlock = memo(function MarkdownBlock({ text, agentSlug }: { text: string; agentSlug?: string }) {
+  const components = agentSlug ? markdownComponentsForAgent(agentSlug) : MARKDOWN_COMPONENTS
   return (
-    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={markdownUrlTransform}>
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components} urlTransform={markdownUrlTransform}>
       {text}
     </ReactMarkdown>
   )
@@ -210,7 +207,7 @@ export const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: strin
 // Only the still-growing Markdown tail uses the word wrapper. Settled blocks
 // switch back to MarkdownBlock, keeping the filter-animation surface small even
 // during long responses.
-const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text }: { text: string }) {
+const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, agentSlug }: { text: string; agentSlug?: string }) {
   const previousTextRef = useRef('')
   const batchStartsRef = useRef<number[]>([0])
   const previousText = previousTextRef.current
@@ -230,12 +227,16 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text }: { 
   const rehypePlugins: ReactMarkdownOptions['rehypePlugins'] = [[rehypeStreamingWordReveal, {
     batchStarts: batchStartsRef.current,
   }]]
+  const components = useMemo(
+    () => (agentSlug ? markdownComponentsForAgent(agentSlug) : MARKDOWN_COMPONENTS),
+    [agentSlug],
+  )
 
   return (
     <ReactMarkdown
       remarkPlugins={REMARK_PLUGINS}
       rehypePlugins={rehypePlugins}
-      components={MARKDOWN_COMPONENTS}
+      components={components}
       urlTransform={markdownUrlTransform}
     >
       {text}
@@ -327,10 +328,18 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const billingUrl = usePlatformBillingUrl(rawText ?? '')
   const showBillingCard = isAssistant && !!message.apiError && !!billingUrl
 
-  // Don't render assistant messages that have no text, no tool calls, and no
-  // thinking (and aren't streaming). These are transient empty entries from
-  // partially-persisted JSONL that will be filled in on the next refetch.
-  if (isAssistant && !hasText && toolCalls.length === 0 && thinking.length === 0 && !isStreaming) {
+  // Don't render assistant messages that have no text, no tool calls, no
+  // thinking, and no workflow result card (and aren't streaming). These are
+  // transient empty entries from partially-persisted JSONL that will be filled
+  // in on the next refetch.
+  if (
+    isAssistant
+    && !hasText
+    && toolCalls.length === 0
+    && thinking.length === 0
+    && workflowResults.length === 0
+    && !isStreaming
+  ) {
     return null
   }
 
@@ -422,17 +431,18 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                   {streamingSplit ? (
                     <>
                       {streamingSplit.settled.map((block, i) => (
-                        <MarkdownBlock key={i} text={block} />
+                        <MarkdownBlock key={i} text={block} agentSlug={agentSlug} />
                       ))}
                       {streamingSplit.tail && (
                         <StreamingMarkdownBlock
                           key={`tail-${streamingSplit.settled.length}`}
                           text={streamingSplit.tail}
+                          agentSlug={agentSlug}
                         />
                       )}
                     </>
                   ) : (
-                    <MarkdownBlock text={text} />
+                    <MarkdownBlock text={text} agentSlug={agentSlug} />
                   )}
                   {isStreaming && (
                     <span className="inline-block w-2 h-4 bg-current ml-0.5 animate-pulse" />
@@ -478,7 +488,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         {isAssistant && workflowResults.length > 0 && (
           <div className="w-full space-y-2">
             {workflowResults.map((wf, idx) => (
-              <WorkflowResultCard key={wf.runId ?? idx} notification={wf} />
+              <WorkflowResultCard key={wf.runId ?? idx} notification={wf} agentSlug={agentSlug} />
             ))}
           </div>
         )}

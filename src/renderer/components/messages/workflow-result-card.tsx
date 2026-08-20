@@ -2,6 +2,7 @@ import { CheckCircle2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { markdownLinkComponents } from './markdown-file-link'
 import { useWorkflow } from '@renderer/context/workflow-context'
 import type { WorkflowResultNotification } from '@shared/lib/utils/task-notifications'
 
@@ -15,7 +16,13 @@ import type { WorkflowResultNotification } from '@shared/lib/utils/task-notifica
  * live stream state is gone, but the result card (persisted in the transcript)
  * still knows its runId, and the drawer rehydrates the tree from disk.
  */
-export function WorkflowResultCard({ notification }: { notification: WorkflowResultNotification }) {
+export function WorkflowResultCard({
+  notification,
+  agentSlug,
+}: {
+  notification: WorkflowResultNotification
+  agentSlug?: string
+}) {
   const { openWorkflow } = useWorkflow()
   const runId = notification.runId
 
@@ -44,7 +51,11 @@ export function WorkflowResultCard({ notification }: { notification: WorkflowRes
         <div className="flex items-center gap-2 px-2 py-1.5 bg-muted/40">{header}</div>
       )}
       <div className="px-3 py-2 prose prose-sm max-w-none min-w-0 break-words dark:prose-invert prose-strong:font-medium">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={markdownLinkComponents(agentSlug)}
+          urlTransform={markdownUrlTransform}
+        >
           {notification.result}
         </ReactMarkdown>
       </div>

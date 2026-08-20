@@ -1,6 +1,7 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { markdownLinkComponents } from './markdown-file-link'
 import { ToolCallItem } from './tool-call-item'
 import type { ApiMessage, ApiMessageOrBoundary, ApiToolCall } from '@shared/lib/types/api'
 
@@ -35,10 +36,14 @@ export function flattenAssistantMessages(messages: ApiMessageOrBoundary[] | unde
 }
 
 /** A markdown text block styled for a transcript (prose, xs). */
-export function TranscriptText({ children }: { children: string }) {
+export function TranscriptText({ children, agentSlug }: { children: string; agentSlug?: string }) {
   return (
     <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={markdownLinkComponents(agentSlug)}
+        urlTransform={markdownUrlTransform}
+      >
         {children}
       </ReactMarkdown>
     </div>
@@ -64,7 +69,7 @@ export function TranscriptItems({
     <>
       {items.map((item) =>
         item.kind === 'text' ? (
-          <TranscriptText key={item.key}>{item.text}</TranscriptText>
+          <TranscriptText key={item.key} agentSlug={agentSlug}>{item.text}</TranscriptText>
         ) : (
           <ToolCallItem
             key={item.key}

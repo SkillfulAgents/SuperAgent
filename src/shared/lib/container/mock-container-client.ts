@@ -1933,6 +1933,31 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'I\'ve scheduled the daily issue summary task.'
     )],
     // Wide, many-column markdown table to exercise table breakout (SUP-319).
+    // Longer 'link *' triggers first: substring match is first-hit.
+    ['link long file', new SimpleTextResponseScenario(
+      `See [${'a'.repeat(240)}](/workspace/output/report.md).`
+    )],
+    ['link missing file', new SimpleTextResponseScenario(
+      'See [the missing file](/workspace/output/missing.md).'
+    )],
+    ['link spaced file', new SimpleTextResponseScenario(
+      'See [spaced report](/workspace/output/my%20report.md).'
+    )],
+    ['link spreadsheet', new SimpleTextResponseScenario(
+      'See [the sheet](/workspace/output/data.xlsx).'
+    )],
+    ['link workflow card', new SimpleTextResponseScenario(
+      'Done.\n<task-notification>{"result":"[card report](/workspace/output/report.md)","title":"Audit"}</task-notification>'
+    )],
+    ['link subagent drawer', new ToolUseScenario(
+      'Task',
+      { subagent_type: 'Explore', description: 'Scan the repo' },
+      'See [drawer report](/workspace/output/report.md)',
+      'The subagent finished.'
+    )],
+    ['link file', new SimpleTextResponseScenario(
+      'See [the report](/workspace/output/report.md) and [the site](https://example.com/x.md).'
+    )],
     ['wide table', new SimpleTextResponseScenario(
       'Here is the quarterly breakdown:\n\n' +
       '| Region | Q1 Revenue | Q2 Revenue | Q3 Revenue | Q4 Revenue | Headcount | Churn % | NPS | CAC | LTV |\n' +

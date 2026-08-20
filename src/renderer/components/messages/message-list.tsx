@@ -1718,6 +1718,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 createdAt: new Date(),
                 ...(apiErrorCode && { apiError: apiErrorCode }),
               }}
+              agentSlug={agentSlug}
               isStreaming={isStreaming}
             />
           </MessageErrorBoundary>

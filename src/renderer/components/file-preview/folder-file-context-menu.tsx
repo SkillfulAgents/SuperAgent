@@ -131,6 +131,7 @@ export function FolderEntryContextMenu({
 
   const handleCopy = async () => {
     try {
+      if (!fileApiPath) throw new Error('Invalid workspace file path')
       const response = await apiFetch(`${fileApiPath}?inline=true`)
       if (!response.ok) throw new Error(await getResponseError(response, 'Failed to copy file'))
       await navigator.clipboard.writeText(await response.text())
@@ -144,6 +145,7 @@ export function FolderEntryContextMenu({
 
   const handleDownload = async () => {
     try {
+      if (!fileApiPath) throw new Error('Invalid workspace file path')
       const response = await apiFetch(fileApiPath)
       if (!response.ok) throw new Error(await getResponseError(response, 'Failed to download file'))
       await downloadBlob(response, entry.name)
