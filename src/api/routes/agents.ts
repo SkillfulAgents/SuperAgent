@@ -72,6 +72,7 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
+import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
 import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform, directoryExists } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
@@ -1768,6 +1769,10 @@ const messagesListQuerySchema = z
     limit: z.coerce.number().int().min(1).max(MESSAGES_PAGE_MAX_LIMIT).optional(),
     cursor: z.string().min(1).max(200).optional(),
     after: z.string().min(1).max(200).optional(),
+    // Opt-in: images ship as refs to the media endpoint instead of inline
+    // base64. Absent means inline, so clients that predate the media endpoint
+    // (and the unpaginated path below) are unaffected.
+    media: z.literal('ref').optional(),
   })
   // Backward paging and the forward delta are different protocols; a request
   // mixing them has no coherent meaning.
@@ -1868,11 +1873,21 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     const rawLimit = c.req.query('limit')
     const rawCursor = c.req.query('cursor')
     const rawAfter = c.req.query('after')
-    if (rawLimit !== undefined || rawCursor !== undefined || rawAfter !== undefined) {
+    const rawMedia = c.req.query('media')
+    // `media` selects this branch too: it is only honored on the paginated
+    // path, so leaving it out would silently serve a full inline response to a
+    // client that asked for refs — and skip validating the value at all.
+    if (
+      rawLimit !== undefined ||
+      rawCursor !== undefined ||
+      rawAfter !== undefined ||
+      rawMedia !== undefined
+    ) {
       const parsed = messagesListQuerySchema.safeParse({
         ...(rawLimit !== undefined ? { limit: rawLimit } : {}),
         ...(rawCursor !== undefined ? { cursor: rawCursor } : {}),
         ...(rawAfter !== undefined ? { after: rawAfter } : {}),
+        ...(rawMedia !== undefined ? { media: rawMedia } : {}),
       })
       if (!parsed.success) {
         return c.json({ error: 'Invalid pagination' }, 400)
@@ -1890,6 +1905,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         const delta = await getSessionMessagesDelta(agentSlug, sessionId, {
           after: parsed.data.after,
           signal: c.req.raw.signal,
+          media: parsed.data.media,
         })
         c.req.raw.signal.throwIfAborted()
         await annotateAndRecoverMessages(delta.messages, agentSlug, sessionId)
@@ -1904,6 +1920,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
         cursor: parsed.data.cursor,
         signal: c.req.raw.signal,
+        media: parsed.data.media,
       })
       c.req.raw.signal.throwIfAborted()
       await annotateAndRecoverMessages(page.messages, agentSlug, sessionId)
@@ -2017,6 +2034,51 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     }
     console.error('Failed to fetch messages:', error)
     return c.json({ error: 'Failed to fetch messages' }, 500)
+  }
+})
+
+// GET /api/agents/:id/sessions/:sessionId/media/:ref - Bytes of one image a
+// `media=ref` page addressed. Served straight off the transcript as a ranged,
+// streaming base64 decode: the row holding it is multi-MB, and none of it is
+// materialized here.
+agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    // Ownership only. There is deliberately no existence preflight here:
+    // fileExists() answers false for any stat failure, so EIO/EACCES/EMFILE
+    // would 404 — telling the client the image is gone when the truth is that
+    // this machine could not look. openMediaBlob distinguishes the two, and a
+    // genuinely missing transcript surfaces there as 410.
+    if (!(await sessionBelongsToAgent(agentSlug, sessionId))) {
+      return c.json({ error: 'Session transcript not found' }, 404)
+    }
+
+    const ref = decodeMediaRef(c.req.param('ref'))
+    if (!ref) return c.json({ error: 'Invalid media reference' }, 400)
+
+    const blob = await openMediaBlob(getSessionJsonlPath(agentSlug, sessionId), ref, c.req.raw.signal)
+    // Deletion and retention rewrite transcripts in place, so a ref the client
+    // still holds can address bytes that have moved or gone. Gone for good —
+    // the client shows a placeholder rather than retrying.
+    if (!blob) return c.json({ error: 'Media no longer available' }, 410)
+
+    return c.body(Readable.toWeb(blob.stream) as ReadableStream, 200, {
+      'Content-Type': blob.mimeType,
+      'Content-Length': String(blob.bytes),
+      // A ref names an immutable byte span: any edit to the transcript
+      // invalidates it rather than changing what it points at.
+      'Cache-Control': 'private, max-age=31536000, immutable',
+      // The type comes from a magic-number sniff, never from the ref — keep
+      // the browser from second-guessing it.
+      'X-Content-Type-Options': 'nosniff',
+    })
+  } catch (error) {
+    if (c.req.raw.signal.aborted) {
+      return new Response(null, { status: 499 })
+    }
+    console.error('Failed to fetch session media:', error)
+    return c.json({ error: 'Failed to fetch media' }, 500)
   }
 })
 

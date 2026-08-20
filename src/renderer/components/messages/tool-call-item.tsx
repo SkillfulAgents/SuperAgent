@@ -1,9 +1,10 @@
 
 import { cn } from '@shared/lib/utils/cn'
-import { Check, X, Ban, ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react'
+import { Check, X, Ban, ChevronDown, ChevronRight, ImageOff, Loader2, Search } from 'lucide-react'
 import { useState, useRef, useMemo, memo } from 'react'
 import { getToolRenderer } from './tool-renderers'
-import { parseToolResult } from '@renderer/lib/parse-tool-result'
+import { parseToolResult, type ParsedToolResultImage } from '@renderer/lib/parse-tool-result'
+import { Skeleton } from '@renderer/components/ui/skeleton'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiToolCall } from '@shared/lib/types/api'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
@@ -14,6 +15,10 @@ interface ToolCallItemProps {
   toolCall: ApiToolCall
   messageCreatedAt?: Date | string
   agentSlug?: string
+  /** With agentSlug, authorizes media refs in this result to become requests
+   * against this session — the result itself is not trusted to say where its
+   * images live (see parse-tool-result). */
+  sessionId?: string
   isSessionActive?: boolean
 }
 
@@ -88,7 +93,94 @@ export function StatusIndicator({ status }: { status: string }) {
   )
 }
 
-function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessionActive }: ToolCallItemProps) {
+/** A tool result's image. Refs load from the media endpoint the first time the
+ * card is expanded — the expanded branch is what mounts this, so nothing is
+ * fetched for a collapsed call, and the immutable response is cached for every
+ * later expand.
+ *
+ * An <img> error event carries no reason: offline, a 5xx, a decode failure and
+ * an actually-deleted image all arrive the same way. So the failure state says
+ * only that it didn't load and offers a retry, rather than asserting the
+ * transcript no longer has it. */
+function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
+  const [failed, setFailed] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+
+  if (failed) {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex items-center gap-2 rounded border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground"
+      >
+        <ImageOff className="h-3.5 w-3.5 shrink-0" />
+        <span>Couldn&apos;t load image</span>
+        <button
+          type="button"
+          onClick={() => {
+            setFailed(false)
+            setLoaded(false)
+            setAttempt((n) => n + 1)
+          }}
+          className="underline underline-offset-2 hover:text-foreground transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+
+  // Cache-busting is for the fetched kind only: a query suffix on a data: URL
+  // becomes part of the base64 payload and breaks an image that was fine. An
+  // inline retry is just a remount, which `key` below already forces.
+  const src =
+    image.isRef && attempt > 0
+      ? `${image.src}${image.src.includes('?') ? '&' : '?'}retry=${attempt}`
+      : image.src
+
+  // Inline images arrive with the payload and paint immediately; only a fetched
+  // one has a gap worth covering.
+  const pending = image.isRef && !loaded
+  const sized = image.width !== undefined && image.height !== undefined
+
+  return (
+    <div
+      className="relative overflow-hidden rounded border"
+      style={
+        sized
+          ? // The exact box, held from first paint: the width the image will
+            // actually occupy, and its own aspect ratio for the height. Without
+            // this the element is a 2px sliver until the bytes land and then
+            // displaces everything below it.
+            { width: image.width, maxWidth: '100%', aspectRatio: `${image.width} / ${image.height}` }
+          : // Nothing to go on — reserve enough that the card doesn't collapse.
+            { minHeight: pending ? '8rem' : undefined }
+      }
+    >
+      {pending && <Skeleton className="absolute inset-0 h-full w-full rounded-none" />}
+      <img
+        key={attempt}
+        src={src}
+        alt="Tool result"
+        {...(sized ? { width: image.width, height: image.height } : {})}
+        loading="lazy"
+        decoding="async"
+        onLoad={() => setLoaded(true)}
+        onError={() => setFailed(true)}
+        className={cn(
+          'block max-w-full',
+          sized ? 'h-full w-full' : 'h-auto',
+          // Held invisible rather than unmounted, so the browser is actually
+          // fetching it while the skeleton shows.
+          pending && 'opacity-0'
+        )}
+      />
+    </div>
+  )
+}
+
+function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionId, isSessionActive }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall, isSessionActive)
   const renderer = getToolRenderer(toolCall.name)
@@ -106,7 +198,10 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
   )
 
   // Parse result into text + images
-  const parsed = useMemo(() => parseToolResult(toolCall.result), [toolCall.result])
+  const parsed = useMemo(
+    () => parseToolResult(toolCall.result, agentSlug && sessionId ? { agentSlug, sessionId } : undefined),
+    [toolCall.result, agentSlug, sessionId]
+  )
   const resultStr = parsed.text
   const resultImages = parsed.images
 
@@ -208,12 +303,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
           {resultImages.length > 0 && (
             <div className="mt-2 space-y-2">
               {resultImages.map((img, i) => (
-                <img
-                  key={i}
-                  src={`data:${img.mimeType};base64,${img.data}`}
-                  alt="Tool result"
-                  className="max-w-full rounded border"
-                />
+                <ToolResultImage key={`${i}:${img.src}`} image={img} />
               ))}
             </div>
           )}
