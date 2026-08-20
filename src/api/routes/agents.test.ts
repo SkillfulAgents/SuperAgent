@@ -569,7 +569,6 @@ import {
   hasOnboardingSkill,
   getAgentTemplatePrompt,
 } from '@shared/lib/services/agent-template-service'
-import { Readable } from 'stream'
 import {
   deleteSkill,
   exportSkill,
