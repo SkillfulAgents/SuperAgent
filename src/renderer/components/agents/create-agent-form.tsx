@@ -49,6 +49,12 @@ import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 const HANDOFF_TEMPLATE_WAIT_MS = 10000
 
 export interface CreateAgentFormProps {
+  /**
+   * Awaited before the form navigates away (Browse Templates → the
+   * marketplace). The wizard uses it to finish itself first, since it renders
+   * above the router and would otherwise cover the page we just went to.
+   */
+  onNavigateAway?: () => Promise<void> | void
   /** Fires after an agent is successfully created (via any path). Parent uses this to close the overlay/wizard. */
   onAgentCreated?: () => Promise<void> | void
   /** Form max width in the layout. Defaults to no cap (wrapper decides). */
@@ -57,7 +63,7 @@ export interface CreateAgentFormProps {
   exiting?: boolean
 }
 
-export function CreateAgentForm({ onAgentCreated, className, exiting = false }: CreateAgentFormProps) {
+export function CreateAgentForm({ onAgentCreated, onNavigateAway, className, exiting = false }: CreateAgentFormProps) {
   // Staggered reveal: items start hidden on first render, flip to visible on the next frame,
   // then flip back to hidden when `exiting` becomes true. Reverse the stagger on exit.
   const [revealed, setRevealed] = useState(false)
@@ -427,7 +433,7 @@ export function CreateAgentForm({ onAgentCreated, className, exiting = false }: 
             onVoiceResult={handleVoiceResult}
             onImportComplete={handleImportComplete}
             onAidOpened={forfeitHandoffTemplate}
-            onTemplateInstalled={onAgentCreated}
+            onNavigateAway={onNavigateAway}
           />
         </div>
       </div>
