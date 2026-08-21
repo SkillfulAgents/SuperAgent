@@ -14,12 +14,12 @@ import type {
   ContainerStats,
   CreateSessionOptions,
   HostPortProbeResult,
+  SendMessageOptions,
   StartOptions,
   StopOptions,
   StopResult,
   StreamMessage,
 } from './types'
-import type { RuntimeOptions } from './runtime-options'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
@@ -1251,13 +1251,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response.ok
   }
 
-  async sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
     const port = await this.getPortOrThrow()
     const timeoutMs = 30000 // 30 second timeout
     const effort = options?.effort
     const speed = options?.speed
     const model = resolveContainerModel(options?.model, 'agent')
     const shouldQuery = options?.shouldQuery
+    const isAutomated = options?.isAutomated
     // Refreshed on every message so a long-lived session tracks settings
     // changes; the container restarts its query only on a block-boundary flip.
     const capabilityPolicies = getAgentCapabilitySettings()
@@ -1278,6 +1279,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             ...(speed ? { speed } : {}),
             ...(model ? { model } : {}),
             ...(shouldQuery !== undefined ? { shouldQuery } : {}),
+            ...(isAutomated !== undefined ? { isAutomated } : {}),
             capabilityPolicies,
           }),
           signal: controller.signal,

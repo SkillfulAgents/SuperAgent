@@ -1,5 +1,10 @@
 import type { RuntimeOptions } from './runtime-options'
 
+export interface SendMessageOptions extends RuntimeOptions {
+  /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
+  isAutomated?: boolean
+}
+
 export const CONTAINER_RUNNER_IDS = [
   'docker',
   'podman',
@@ -214,7 +219,7 @@ export interface ContainerClient {
   deleteSession(sessionId: string): Promise<boolean>
 
   // Message operations
-  sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void>
+  sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void>
   // Cancel a queued (not yet picked up) message by the uuid it was sent with.
   // false = too late (already picked up) or session not live — never throws for that.
   cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>

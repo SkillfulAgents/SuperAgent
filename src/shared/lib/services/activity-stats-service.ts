@@ -317,11 +317,35 @@ export async function getAgentActivityStats(
   )
   const connectionById = dailyEventsById(connectionIds, requestEvents, { ...options, now, tzOffsetMinutes })
 
+  const inboundEvents: DailyActivityEvent[] = []
+  let inboundTotal = 0
+  let lastInvokedAt: string | null = null
+  let lastInvokedAtMs = Number.NEGATIVE_INFINITY
+  for (const meta of Object.values(metadata)) {
+    if (!meta.invokedByAgentSlug || !meta.createdAt) continue
+    const createdAt = new Date(meta.createdAt)
+    if (!Number.isFinite(createdAt.getTime())) continue
+    inboundTotal += 1
+    inboundEvents.push({
+      day: activityDayKey(createdAt, tzOffsetMinutes),
+      outcome: 'succeeded',
+    })
+    if (createdAt.getTime() > lastInvokedAtMs) {
+      lastInvokedAtMs = createdAt.getTime()
+      lastInvokedAt = createdAt.toISOString()
+    }
+  }
+
   return {
     days: options.days,
     generatedAt: now.toISOString(),
     cronByTaskId,
     webhookByTriggerId,
+    inboundXAgent: {
+      total: inboundTotal,
+      lastInvokedAt,
+      activity: buildDailyActivitySeries(inboundEvents, { ...options, now, tzOffsetMinutes }),
+    },
     connectionById,
   }
 }

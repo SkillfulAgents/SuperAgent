@@ -544,10 +544,10 @@ class MessagePersister {
     await ready
   }
 
-  // Resolve whether this subscription belongs to an unpromoted cron/webhook
-  // session. Non-blocking: automation runs last long enough that the verdict
-  // lands well before finalizeIdle consumes it, and an unresolved read just
-  // means the stream is kept (the pre-fix behavior). Scheduler and trigger
+  // Resolve whether this subscription belongs to an unpromoted cron, webhook,
+  // or x-agent session. Non-blocking: automation runs last long enough that
+  // the verdict lands well before finalizeIdle consumes it, and an unresolved
+  // read just means the stream is kept (the pre-fix behavior). Automation
   // paths register metadata before subscribing, so the read can't miss them.
   private resolveReleaseStreamOnSettle(sessionId: string, agentSlug?: string): void {
     if (!agentSlug) return
@@ -560,7 +560,7 @@ class MessagePersister {
         // Promote wins: its marker is set synchronously, this read may be stale.
         if (current.promotedToInteractive) return
         current.releaseStreamOnSettle = Boolean(
-          (meta?.isScheduledExecution || meta?.isWebhookExecution) &&
+          (meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.invokedByAgentSlug) &&
             !meta?.promotedToInteractive
         )
       })
@@ -1371,10 +1371,11 @@ class MessagePersister {
     this.syncSessionAwaiting(sessionId)
   }
 
-  // Promote an automated session (cron/webhook/chat) to a regular session so it
-  // appears in the sidebar and receives completion notifications. Public: the
-  // notification manager promotes on session_waiting so blocked automations
-  // surface in session lists instead of accruing unread rows nothing displays.
+  // Promote an automated session (cron/webhook/chat/x-agent) to a regular
+  // session so it appears in the sidebar and receives completion notifications.
+  // Public: the notification manager promotes on session_waiting so blocked
+  // automations surface in session lists instead of accruing unread rows
+  // nothing displays.
   async promoteAutomatedSession(sessionId: string, agentSlug: string): Promise<void> {
     const meta = await getSessionMetadata(agentSlug, sessionId)
     if (!isHiddenAutomatedSession(meta)) return

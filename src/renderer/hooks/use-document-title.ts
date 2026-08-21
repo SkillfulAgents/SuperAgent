@@ -98,6 +98,8 @@ function titleForAgentView(view: AgentView, input: DocumentTitleInput): string {
       return joinView(agentTitle, 'Scheduled Task')
     case 'webhook':
       return joinView(agentTitle, 'Webhook Trigger')
+    case 'inboundXAgent':
+      return joinView(agentTitle, 'Called from Other Agents')
     case 'chat':
       return joinView(agentTitle, 'Remote Chat')
     case 'dashboard':

@@ -131,6 +131,7 @@ import {
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
@@ -6582,6 +6583,27 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 // =============================================================================
 // X-Agent invoke policies (per-agent remembered cross-agent permissions)
 // =============================================================================
+
+// GET /api/agents/:id/inbound-x-agent - Sessions created by other agents, plus
+// every agent currently eligible to invoke this target. The target's read ACL
+// protects the page; caller rows remain visible but carry canAccess=false when
+// the viewing user cannot open that caller agent.
+agents.get('/:id/inbound-x-agent', AgentRead(), async (c) => {
+  try {
+    const authMode = isAuthMode()
+    const viewer = authMode
+      ? c.get('user' as never) as { role?: string } | undefined
+      : undefined
+    return c.json(await getInboundXAgentDetails(getAgentId(c), {
+      authMode,
+      viewerUserId: authMode ? getCurrentUserId(c) : undefined,
+      viewerCanAccessAll: viewer?.role === 'admin',
+    }))
+  } catch (error) {
+    console.error('Failed to fetch inbound x-agent activity:', error)
+    return c.json({ error: 'Failed to fetch calls from other agents' }, 500)
+  }
+})
 
 /**
  * Agents the caller may see: their agentAcl entries in auth mode, everything

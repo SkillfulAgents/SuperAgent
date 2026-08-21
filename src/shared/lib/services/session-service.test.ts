@@ -306,18 +306,20 @@ describe('session-service', () => {
       expect(sessions[0].messageCount).toBe(0)
     })
 
-    it('excludes scheduled/webhook sessions when excludeAutomated is set', async () => {
+    it('excludes scheduled/webhook/x-agent sessions when excludeAutomated is set', async () => {
       await createSessionFile('test-agent', 'manual-session', SAMPLE_JSONL_ENTRIES)
       await createSessionFile('test-agent', 'scheduled-session', SAMPLE_JSONL_ENTRIES)
       await createSessionFile('test-agent', 'webhook-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'x-agent-session', SAMPLE_JSONL_ENTRIES)
       await createSessionMetadata('test-agent', {
         'manual-session': { name: 'Manual' },
         'scheduled-session': { name: 'Scheduled', isScheduledExecution: true, scheduledTaskId: 'task-1' },
         'webhook-session': { name: 'Webhook', isWebhookExecution: true, webhookTriggerId: 'trigger-1' },
+        'x-agent-session': { name: 'X-Agent', invokedByAgentSlug: 'caller-agent' },
       })
 
       const allSessions = await listSessions('test-agent')
-      expect(allSessions.length).toBe(3)
+      expect(allSessions.length).toBe(4)
 
       const filtered = await listSessions('test-agent', { excludeAutomated: true })
       expect(filtered.length).toBe(1)
@@ -3742,15 +3744,19 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'cron-run', SAMPLE_JSONL_ENTRIES)
       await createSessionFile('test-agent', 'promoted', SAMPLE_JSONL_ENTRIES)
       await createSessionFile('test-agent', 'chat-run', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'x-agent-run', SAMPLE_JSONL_ENTRIES)
       await createSessionMetadata('test-agent', {
         'cron-run': { createdAt: '2026-01-01T00:00:00Z', isScheduledExecution: true },
         promoted: { createdAt: '2026-01-01T00:00:00Z', isScheduledExecution: true, promotedToInteractive: true },
         'chat-run': { createdAt: '2026-01-01T00:00:00Z', isChatIntegrationSession: true },
+        'x-agent-run': { createdAt: '2026-01-01T00:00:00Z', invokedByAgentSlug: 'caller-agent' },
       })
 
-      const sessions = await listSessionsByIds('test-agent', ['cron-run', 'promoted', 'chat-run'], {
-        excludeAutomated: true,
-      })
+      const sessions = await listSessionsByIds(
+        'test-agent',
+        ['cron-run', 'promoted', 'chat-run', 'x-agent-run'],
+        { excludeAutomated: true },
+      )
       expect(sessions.map((s) => s.id)).toEqual(['promoted'])
     })
 

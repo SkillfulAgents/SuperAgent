@@ -436,6 +436,10 @@ export function GlobalNotificationHandler() {
             if (sessionId) {
               queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
             }
+            if (agentSlug) {
+              queryClient.invalidateQueries({ queryKey: ['activity-stats', 'agent', agentSlug] })
+              queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', agentSlug] })
+            }
             break
           }
 

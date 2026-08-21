@@ -82,6 +82,14 @@ describe('HomeTriggers activity charts', () => {
             { date: '2026-07-09', succeeded: 1, failed: 0 },
           ],
         },
+        inboundXAgent: {
+          total: 2,
+          lastInvokedAt: '2026-07-09T11:30:00.000Z',
+          activity: [
+            { date: '2026-07-08', succeeded: 1, failed: 0 },
+            { date: '2026-07-09', succeeded: 1, failed: 0 },
+          ],
+        },
         connectionById: {},
       },
     })
@@ -93,6 +101,7 @@ describe('HomeTriggers activity charts', () => {
       scheduledTasks={[task]}
       onSelectTask={vi.fn()}
       onSelectWebhook={vi.fn()}
+      onSelectInboundXAgent={vi.fn()}
     />)
 
     expect(mockUseAgentActivityStats).toHaveBeenCalledWith('agent-a')
@@ -101,6 +110,10 @@ describe('HomeTriggers activity charts', () => {
     })).toBeInTheDocument()
     expect(screen.getByRole('img', {
       name: 'Inbound webhook activity: 4 calls over 2 days, 3 succeeded and 1 failed.',
+    })).toBeInTheDocument()
+    expect(screen.getByText('Called from Other Agents')).toBeInTheDocument()
+    expect(screen.getByRole('img', {
+      name: 'Calls from other agents: 2 calls over 2 days, 2 succeeded and 0 failed.',
     })).toBeInTheDocument()
   })
 
@@ -111,6 +124,7 @@ describe('HomeTriggers activity charts', () => {
       scheduledTasks={[task]}
       onSelectTask={vi.fn()}
       onSelectWebhook={vi.fn()}
+      onSelectInboundXAgent={vi.fn()}
     />)
 
     expect(screen.getAllByTestId('activity-chart-skeleton')).toHaveLength(2)
@@ -124,6 +138,7 @@ describe('HomeTriggers activity charts', () => {
       scheduledTasks={[task]}
       onSelectTask={vi.fn()}
       onSelectWebhook={vi.fn()}
+      onSelectInboundXAgent={vi.fn()}
     />)
 
     expect(screen.getByText('Hourly report')).toBeInTheDocument()

@@ -5409,6 +5409,43 @@ describe('typing indicator — POST /:id/sessions/:sessionId/typing', () => {
 // GET /api/agents - List with enriched summary
 // ============================================================================
 
+describe('GET /api/agents/:id/inbound-x-agent', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockIsAuthMode.mockReturnValue(false)
+    mockAgentExists.mockResolvedValue(true)
+  })
+
+  it('returns x-agent session history for the resolved target agent', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([{
+      slug: 'target',
+      displaySlug: 'target',
+      name: 'Target',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      status: 'stopped',
+      containerPort: null,
+    }])
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'session-a': {
+        invokedByAgentSlug: 'deleted-caller',
+        createdAt: '2026-08-20T12:00:00.000Z',
+      },
+    })
+
+    const res = await getReq(createApp(), '/api/agents/target/inbound-x-agent')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      sessions: [{
+        id: 'session-a',
+        createdAt: '2026-08-20T12:00:00.000Z',
+        triggeredBy: { slug: 'deleted-caller', name: 'deleted-caller' },
+      }],
+      callers: [],
+    })
+  })
+})
+
 describe('GET /api/agents (enriched summary)', () => {
   let app: ReturnType<typeof createApp>
 
@@ -5505,16 +5542,17 @@ describe('GET /api/agents (enriched summary)', () => {
   it('ignores unread notifications on hidden automated sessions — no session list shows them', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(getSessionSummary).mockResolvedValue({
-      sessionIds: ['sess-chat', 'sess-cron'],
-      sessionCount: 2,
+      sessionIds: ['sess-chat', 'sess-cron', 'sess-x-agent'],
+      sessionCount: 3,
       lastActivityAt: new Date(),
     })
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(
-      new Map([['agent-1', new Set(['sess-chat', 'sess-cron'])]]),
+      new Map([['agent-1', new Set(['sess-chat', 'sess-cron', 'sess-x-agent'])]]),
     )
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'sess-chat': { isChatIntegrationSession: true },
       'sess-cron': { isScheduledExecution: true },
+      'sess-x-agent': { invokedByAgentSlug: 'caller-agent' },
     })
 
     const res = await getReq(app, '/api/agents')

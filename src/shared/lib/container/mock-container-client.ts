@@ -9,11 +9,11 @@ import type {
   ContainerSession,
   ContainerStats,
   CreateSessionOptions,
+  SendMessageOptions,
   StartOptions,
   StopOptions,
   StreamMessage,
 } from './types'
-import type { RuntimeOptions } from './runtime-options'
 import { resolveContainerModel } from './resolve-model'
 import { getAgentWorkspaceDir, getSessionJsonlPath } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
@@ -2654,7 +2654,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Message operations
 
-  async sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
     // Resolve like the real container client so E2E sees the concrete wire id.
     const model = resolveContainerModel(options?.model, 'agent')
     // Record for E2E test assertions
