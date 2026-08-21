@@ -13,18 +13,16 @@ vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
 
-const MAX_LIFETIME_PROMPT =
-  'The previous turn was cut off because the runtime hit its 8-hour lifetime. Continue from where you left off. Check what already completed before redoing work.'
-const RUNTIME_LOST_PROMPT =
-  'The previous turn was interrupted because the runtime stopped unexpectedly. Continue from where you left off.'
-const GUEST_OOM_PROMPT =
-  'The previous turn was killed because the process ran out of memory. Continue from where you left off.'
+// The orchestrator treats reason and resumePrompt as opaque runtime-provided
+// values, so these are deliberately synthetic. Real wording lives in each runtime.
+const TEST_REASON = 'test-death-reason'
+const TEST_RESUME_PROMPT = 'test resume prompt from the runtime'
 
 function recoverPlan(overrides: Partial<Extract<UnexpectedDeathPlan, { action: 'recover' }>> = {}) {
   return {
     action: 'recover' as const,
-    reason: 'runtime_lost',
-    resumePrompt: RUNTIME_LOST_PROMPT,
+    reason: TEST_REASON,
+    resumePrompt: TEST_RESUME_PROMPT,
     replaceGeneration: true,
     ...overrides,
   }
@@ -108,11 +106,9 @@ describe('recoverFromUnexpectedDeath', () => {
     vi.clearAllMocks()
   })
 
-  it('restarts once and resumes mid-turn sessions with the plan-provided prompt', async () => {
+  it('restarts once when replaceGeneration is true and resumes with the plan-provided prompt', async () => {
     const deps = createDeps()
-    deps.observeUnexpectedDeath.mockResolvedValue(
-      recoverPlan({ reason: 'max_lifetime', resumePrompt: MAX_LIFETIME_PROMPT }),
-    )
+    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
 
     await recoverFromUnexpectedDeath(deps)
 
@@ -120,7 +116,7 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.ensureRunning).toHaveBeenCalledTimes(1)
     expect(deps.sendMessage).toHaveBeenCalledTimes(1)
     expect(deps.sendMessage.mock.calls[0][0]).toBe('sess-1')
-    expect(deps.sendMessage.mock.calls[0][1]).toBe(MAX_LIFETIME_PROMPT)
+    expect(deps.sendMessage.mock.calls[0][1]).toBe(TEST_RESUME_PROMPT)
     expect(deps.sendMessage.mock.calls[0][3]).toEqual({ shouldQuery: true })
     expect(deps.markRecovered).toHaveBeenCalledWith(['sess-1'])
     expect(deps.settleRecoveringSessions).not.toHaveBeenCalled()
@@ -128,7 +124,7 @@ describe('recoverFromUnexpectedDeath', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           agentId: 'agent-1',
-          reason: 'max_lifetime',
+          reason: TEST_REASON,
           replaceGeneration: true,
           sessionIds: ['sess-1'],
           oldGenerationId: 'mvm-old',
@@ -138,17 +134,11 @@ describe('recoverFromUnexpectedDeath', () => {
     )
   })
 
-  it('does not replace the generation on guest_oom and resumes with the OOM prompt', async () => {
+  it('reuses the current client when replaceGeneration is false and forwards the last fatal', async () => {
     const deps = createDeps({
       consumeLastFatal: () => 'oom_sigkill',
     })
-    deps.observeUnexpectedDeath.mockResolvedValue(
-      recoverPlan({
-        reason: 'guest_oom',
-        resumePrompt: GUEST_OOM_PROMPT,
-        replaceGeneration: false,
-      }),
-    )
+    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan({ replaceGeneration: false }))
 
     await recoverFromUnexpectedDeath(deps)
 
@@ -156,7 +146,7 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.ensureRunning).not.toHaveBeenCalled()
     expect(deps.sendMessage).toHaveBeenCalledWith(
       'sess-1',
-      GUEST_OOM_PROMPT,
+      TEST_RESUME_PROMPT,
       expect.any(String),
       { shouldQuery: true },
     )
@@ -289,7 +279,7 @@ describe('recoverFromUnexpectedDeath', () => {
 
     expect(deps.sendMessage).toHaveBeenCalledTimes(1)
     expect(deps.sendMessage.mock.calls[0][1]).toBe(
-      `${RUNTIME_LOST_PROMPT}\n\nThe user also sent:\nkeep going`,
+      `${TEST_RESUME_PROMPT}\n\nThe user also sent:\nkeep going`,
     )
   })
 
