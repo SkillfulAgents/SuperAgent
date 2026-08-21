@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import type { ApiAgent } from '@shared/lib/types/api'
+import type { ArtifactInfo } from '@renderer/hooks/use-artifacts'
 
 function matchesAgent(agent: ApiAgent, slug: string): boolean {
   return agent.slug === slug || agent.displaySlug === slug
@@ -39,8 +40,8 @@ export function updateAgentRuntimeCache(
   }))
 }
 
-/** Invalidate artifact queries for one agent, including decorative route aliases. */
-export function invalidateAgentArtifacts(queryClient: QueryClient, slug: string): void {
+/** All slugs an agent's artifact queries may be keyed by (canonical + decorative). */
+function artifactQueryAliases(queryClient: QueryClient, slug: string): Set<string> {
   const aliases = new Set([slug])
   const addAliases = (agent: ApiAgent | undefined) => {
     if (!agent || !matchesAgent(agent, slug)) return
@@ -53,7 +54,12 @@ export function invalidateAgentArtifacts(queryClient: QueryClient, slug: string)
   })) {
     addAliases(agent)
   }
+  return aliases
+}
 
+/** Invalidate artifact queries for one agent, including decorative route aliases. */
+export function invalidateAgentArtifacts(queryClient: QueryClient, slug: string): void {
+  const aliases = artifactQueryAliases(queryClient, slug)
   queryClient.invalidateQueries({
     predicate: (query) => (
       query.queryKey[0] === 'artifacts'
@@ -61,6 +67,32 @@ export function invalidateAgentArtifacts(queryClient: QueryClient, slug: string)
       && aliases.has(query.queryKey[1])
     ),
   })
+}
+
+/**
+ * Apply a pushed dashboard startup outcome directly to cached artifact lists,
+ * so the dashboard view flips without waiting for its next poll. Entries not
+ * present yet are left to the accompanying invalidation's refetch.
+ */
+export function applyDashboardRuntimeStatus(
+  queryClient: QueryClient,
+  agentSlug: string,
+  dashboardSlug: string,
+  status: ArtifactInfo['status'],
+): void {
+  const aliases = artifactQueryAliases(queryClient, agentSlug)
+  queryClient.setQueriesData<ArtifactInfo[]>(
+    {
+      predicate: (query) => (
+        query.queryKey[0] === 'artifacts'
+        && typeof query.queryKey[1] === 'string'
+        && aliases.has(query.queryKey[1])
+      ),
+    },
+    (artifacts) => artifacts?.map((artifact) => (
+      artifact.slug === dashboardSlug ? { ...artifact, status } : artifact
+    )),
+  )
 }
 
 /** Mark one dashboard thumbnail ready in every cached projection of its agent. */

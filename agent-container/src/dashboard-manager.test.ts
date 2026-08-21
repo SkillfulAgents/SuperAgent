@@ -20,6 +20,7 @@ const screenshotMocks = vi.hoisted(() => ({
   capture: vi.fn(),
   notifyReady: vi.fn(),
 }))
+const statusEventMock = vi.hoisted(() => vi.fn())
 
 vi.mock('./dashboard-screenshot', () => ({
   captureDashboardScreenshot: (...args: unknown[]) => screenshotMocks.capture(...args),
@@ -27,6 +28,7 @@ vi.mock('./dashboard-screenshot', () => ({
 
 vi.mock('./host-events', () => ({
   notifyDashboardScreenshotReady: (...args: unknown[]) => screenshotMocks.notifyReady(...args),
+  notifyDashboardStatusChanged: (...args: unknown[]) => statusEventMock(...args),
 }))
 
 vi.mock('child_process', async (importOriginal) => {
@@ -223,6 +225,7 @@ describe('DashboardManager log stream lifecycle', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok'))
     screenshotMocks.capture.mockReset().mockResolvedValue({ ok: false, reason: 'not captured' })
     screenshotMocks.notifyReady.mockReset().mockResolvedValue(true)
+    statusEventMock.mockReset().mockResolvedValue(true)
 
     // Fresh module (and singleton) pointed at the temp artifacts dir
     vi.resetModules()
@@ -378,6 +381,37 @@ describe('DashboardManager log stream lifecycle', () => {
       expect.stringContaining(`Invalid package.json metadata for ${slug}`),
       expect.anything(),
     )
+  })
+
+  describe('status change events', () => {
+    it('publishes running when the dashboard becomes serveable', async () => {
+      const slug = await scaffoldDashboard()
+
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(statusEventMock).toHaveBeenCalledWith(slug, 'running')
+    })
+
+    it('publishes crashed when the restart budget is exhausted', async () => {
+      const slug = await scaffoldDashboard()
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+      statusEventMock.mockClear()
+
+      info.restartTimestamps.push(Date.now(), Date.now(), Date.now())
+      procs[0].exit(1, null)
+
+      expect(statusEventMock).toHaveBeenCalledWith(slug, 'crashed')
+    })
+
+    it('publishes crashed when the process errors without exiting', async () => {
+      const slug = await scaffoldDashboard()
+      await manager.startDashboard(slug, { forceInstall: false })
+      statusEventMock.mockClear()
+
+      procs[0].emit('error', new Error('spawn ENOENT'))
+
+      expect(statusEventMock).toHaveBeenCalledWith(slug, 'crashed')
+    })
   })
 
   describe('build skip semantics', () => {

@@ -2,7 +2,7 @@ import { spawn, ChildProcess } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
 import { captureDashboardScreenshot, type ScreenshotResult } from './dashboard-screenshot'
-import { notifyDashboardScreenshotReady } from './host-events'
+import { notifyDashboardScreenshotReady, notifyDashboardStatusChanged } from './host-events'
 import { DashboardPackageSchema } from './dashboard-package-schema'
 
 const SCREENSHOT_FILENAME = 'screenshot.png'
@@ -197,6 +197,16 @@ class DashboardManager {
     const stream = info.logStream
     info.logStream = null
     stream?.end()
+  }
+
+  /**
+   * Push a terminal startup transition to the host (best-effort — the
+   * renderer's artifacts poll remains the fallback for a missed event).
+   */
+  private publishStatus(slug: string, status: 'running' | 'crashed'): void {
+    void notifyDashboardStatusChanged(slug, status).catch((error) => {
+      console.warn(`[DashboardManager] Failed to publish ${status} event for ${slug}:`, error)
+    })
   }
 
   async scanAndStartAll(): Promise<void> {
@@ -409,6 +419,7 @@ class DashboardManager {
         info.logStream?.write(`[process error] ${error.message}\n`)
         info.status = 'crashed'
         info.process = null
+        this.publishStatus(slug, 'crashed')
         // On spawn failure 'close' isn't guaranteed — close here too (no-op if
         // the 'close' handler already ran).
         this.closeLogStream(info)
@@ -421,6 +432,7 @@ class DashboardManager {
       if (ready && info.status === 'starting') {
         info.status = 'running'
         console.log(`[DashboardManager] Dashboard ${slug} is now running on port ${port}`)
+        this.publishStatus(slug, 'running')
       } else if (info.status === 'starting') {
         // Timed out waiting for port — process may be slow or broken
         console.error(`[DashboardManager] Dashboard ${slug} did not become ready in time`)
@@ -430,12 +442,14 @@ class DashboardManager {
           info.process.kill('SIGTERM')
           info.process = null
         }
+        this.publishStatus(slug, 'crashed')
       }
     } catch (error: any) {
       console.error(`[DashboardManager] Failed to start dashboard ${slug}:`, error)
       info.logStream?.write(`[DashboardManager] Failed to start: ${error?.message || error}\n`)
       this.closeLogStream(info)
       info.status = 'crashed'
+      this.publishStatus(slug, 'crashed')
     }
 
     return info
@@ -580,6 +594,7 @@ class DashboardManager {
     if (info.restartTimestamps.length >= MAX_RESTARTS) {
       console.log(`[DashboardManager] Dashboard ${slug} exhausted restart attempts`)
       info.status = 'crashed'
+      this.publishStatus(slug, 'crashed')
       return
     }
 
