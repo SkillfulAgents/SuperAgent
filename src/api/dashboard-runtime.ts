@@ -68,11 +68,70 @@ export function getDashboardRuntimeJs(basePath: string, slug: string): string {
     return resolved.pathname + resolved.search + resolved.hash;
   }
 
+  var dispatchSeq = 0;
+  var pendingDispatches = {};
+
+  window.addEventListener("message", function (event) {
+    var data = event && event.data;
+    if (!data || typeof data !== "object" || typeof data.id !== "string") return;
+    var pending = pendingDispatches[data.id];
+    if (!pending) return;
+    if (data.type === "gamut:dispatch-session-ack") {
+      if (pending.ackTimer !== null) {
+        clearTimeout(pending.ackTimer);
+        pending.ackTimer = null;
+      }
+      return;
+    }
+    if (data.type !== "gamut:dispatch-session-result") return;
+    delete pendingDispatches[data.id];
+    if (pending.ackTimer !== null) clearTimeout(pending.ackTimer);
+    var result = data.result;
+    if (result && typeof result.error === "string") {
+      pending.reject(new Error(result.error));
+    } else {
+      pending.resolve(result || {});
+    }
+  });
+
+  function dispatchSession(request) {
+    return new Promise(function (resolve, reject) {
+      var prompt = request && typeof request.prompt === "string" ? request.prompt : "";
+      if (!prompt.trim()) {
+        reject(new TypeError("dispatchSession requires a non-empty prompt"));
+        return;
+      }
+      if (window.parent === window) {
+        reject(new Error("Session dispatch is not available in this window"));
+        return;
+      }
+      var id = "gamut-dispatch-" + (++dispatchSeq) + "-" + Math.random().toString(36).slice(2);
+      var pending = { resolve: resolve, reject: reject, ackTimer: null };
+      // The parent may not speak the protocol (popped-out window, older app);
+      // reject unless the host acks quickly. The user decision itself has no
+      // deadline — the ack only proves someone is listening.
+      pending.ackTimer = setTimeout(function () {
+        delete pendingDispatches[id];
+        reject(new Error("Session dispatch is not available in this window"));
+      }, 2000);
+      pendingDispatches[id] = pending;
+      window.parent.postMessage({
+        type: "gamut:dispatch-session-request",
+        id: id,
+        payload: {
+          prompt: prompt,
+          title: request.title == null ? undefined : String(request.title)
+        }
+      }, "*");
+    });
+  }
+
   var runtime = {
     basePath: basePath,
     routerBasePath: basePath === "/" ? "/" : basePath.slice(0, -1),
     slug: ${scriptString(slug)},
-    url: dashboardUrl
+    url: dashboardUrl,
+    dispatchSession: dispatchSession
   };
   window.__GAMUT_DASHBOARD__ = Object.freeze(runtime);
 })();

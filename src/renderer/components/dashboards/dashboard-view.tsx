@@ -8,6 +8,8 @@ import { useUser } from '@renderer/context/user-context'
 import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
 import { AddToDockDialog } from './add-to-dock-dialog'
+import { DashboardDispatchDialog } from './dashboard-dispatch-dialog'
+import { useDashboardDispatch } from './use-dashboard-dispatch'
 import { PendingAgentReviews } from './pending-agent-reviews'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useRegisterDashboardHeader } from '@renderer/context/dashboard-header-context'
@@ -90,6 +92,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   // id even when the surrounding app route uses a decorative display slug.
   const dashboardAgentSlug = agent?.slug ?? agentSlug
   const iframeSrc = `${baseUrl}${buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)}`
+  const dashboardDispatch = useDashboardDispatch(iframeRef)
 
   const handleRefresh = useCallback(() => {
     if (iframeRef.current) {
@@ -201,6 +204,13 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
         agentSlug={dashboardAgentSlug}
         dashboardSlug={dashboardSlug}
         dashboardName={dashboard?.name || dashboardSlug}
+      />
+      <DashboardDispatchDialog
+        request={dashboardDispatch.pending}
+        dashboardAgentSlug={dashboardAgentSlug}
+        dashboardAgentName={agent?.name}
+        dashboardSlug={dashboardSlug}
+        onResolve={dashboardDispatch.resolvePending}
       />
       <div className="flex-1 min-h-0 relative">
         <iframe

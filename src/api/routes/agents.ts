@@ -34,6 +34,11 @@ import {
   updateRemoteMcpEnvironment,
 } from '@shared/lib/container/connection-runtime-sync'
 import { parseRuntimeOptions, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
+import {
+  sessionDashboardDispatchSchema,
+  type SessionDashboardDispatch,
+} from '@shared/lib/dashboard-dispatch-schema'
+import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
@@ -1633,6 +1638,17 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     const runtimeOptions = parseRuntimeOptions(body)
 
+    // Optional provenance: the renderer's dashboard-dispatch dialog marks the
+    // sessions it creates so they can show where they came from.
+    let dashboardDispatch: SessionDashboardDispatch | undefined
+    if (body.dashboardDispatch !== undefined) {
+      const parsed = sessionDashboardDispatchSchema.safeParse(body.dashboardDispatch)
+      if (!parsed.success) {
+        return c.json({ error: 'Invalid dashboardDispatch' }, 400)
+      }
+      dashboardDispatch = parsed.data
+    }
+
     const agent = await getAgent(slug)
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
@@ -1695,6 +1711,12 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       model: resolved.model,
       ...(resolved.effort ? { effort: resolved.effort } : {}),
       ...(resolved.speed ? { speed: resolved.speed } : {}),
+      ...(dashboardDispatch
+        ? {
+            dispatchedByDashboardSlug: dashboardDispatch.dashboardSlug,
+            dispatchedByDashboardAgentSlug: dashboardDispatch.agentSlug,
+          }
+        : {}),
     }
     if (isAuthMode()) {
       initialMetadata.createdByUserId = getCurrentUserId(c)
@@ -6094,6 +6116,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
     <div class="spinner"></div>
     <div id="status" class="status">Checking agent status…</div>
   </div>
+  <script>${getDashboardViewDispatchHostJs()}</script>
   <script>
     const agentSlug = ${JSON.stringify(agentSlug)};
     const artifactSlug = ${JSON.stringify(artifactSlug)};
@@ -6101,6 +6124,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
     const dashboardUrl = basePath + '/artifacts/' + encodeURIComponent(artifactSlug) + '/';
     const statusEl = document.getElementById('status');
     const loadingEl = document.getElementById('loading');
+    let agentName = null;
 
     function setTitle(name) {
       document.title = (name || artifactSlug) + ' \\u2014 Gamut';
@@ -6128,6 +6152,10 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
       iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads';
       iframe.allow = 'microphone; camera';
       document.body.appendChild(iframe);
+      // Host the session-dispatch confirmation dialog for the wrapped dashboard.
+      if (window.__gamutDispatchHost) {
+        window.__gamutDispatchHost.attach({ iframe, agentSlug, agentName, artifactSlug, basePath });
+      }
     }
 
     async function run() {
@@ -6140,6 +6168,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
         const agentRes = await fetch(basePath);
         if (!agentRes.ok) { throw new Error('Failed to fetch agent info'); }
         const agent = await agentRes.json();
+        agentName = agent.name || null;
         const agentWasRunning = agent.status === 'running';
 
         if (!agentWasRunning) {
