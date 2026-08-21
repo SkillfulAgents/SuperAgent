@@ -7,6 +7,7 @@ import { ExploreView } from '@renderer/components/explore/explore-view'
 import { CategoryView } from '@renderer/components/explore/category-view'
 import { TemplateDetailView } from '@renderer/components/explore/template-detail-view'
 import { ContentShell } from './content-shell'
+import { ScrollAwareNavTitle } from './scroll-aware-title'
 
 function useExploreShellProps() {
   const { state: sidebarState } = useSidebar()
@@ -15,7 +16,9 @@ function useExploreShellProps() {
     needsTrafficLightPadding:
       isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen,
     headerContent: (
-      <span className="truncate text-sm font-light text-foreground">Discover New Agents</span>
+      <ScrollAwareNavTitle className="truncate text-sm font-light text-foreground">
+        Discover New Agents
+      </ScrollAwareNavTitle>
     ),
   }
 }

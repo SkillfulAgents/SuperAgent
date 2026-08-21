@@ -19,6 +19,7 @@ import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import { useDashboardHeader } from '@renderer/context/dashboard-header-context'
 import { DashboardHeaderActions } from '@renderer/components/dashboards/dashboard-header-actions'
 import type { ContainerStatus } from '@shared/lib/container/types'
+import { ScrollAwareNavTitle } from './scroll-aware-title'
 
 interface AgentHeaderProps {
   slug: string
@@ -76,33 +77,35 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
           className="w-fit max-w-full app-no-drag"
           data-testid="breadcrumb-trail"
         >
-        {agent ? (
-          <AgentContextMenu agent={agent}>
+        <ScrollAwareNavTitle>
+          {agent ? (
+            <AgentContextMenu agent={agent}>
+              <AppLink
+                to="/agents/$slug"
+                params={{ slug }}
+                activeOptions={{ exact: true }}
+                noDrag
+                // Route-derived leaf styling: foreground only when this link is the
+                // exact active route (`data-status=active`), muted/clickable otherwise.
+                className="text-sm font-light transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground cursor-context-menu"
+                data-testid="agent-breadcrumb"
+              >
+                {agent.name}
+              </AppLink>
+            </AgentContextMenu>
+          ) : (
             <AppLink
               to="/agents/$slug"
               params={{ slug }}
               activeOptions={{ exact: true }}
               noDrag
-              // Route-derived leaf styling: foreground only when this link is the
-              // exact active route (`data-status=active`), muted/clickable otherwise.
-              className="text-sm font-light transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground cursor-context-menu"
+              className="text-sm font-light transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground"
               data-testid="agent-breadcrumb"
             >
-              {agent.name}
+              Loading...
             </AppLink>
-          </AgentContextMenu>
-        ) : (
-          <AppLink
-            to="/agents/$slug"
-            params={{ slug }}
-            activeOptions={{ exact: true }}
-            noDrag
-            className="text-sm font-light transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground"
-            data-testid="agent-breadcrumb"
-          >
-            Loading...
-          </AppLink>
-        )}
+          )}
+        </ScrollAwareNavTitle>
         {(() => {
           const taskCrumbId = scheduledTaskId ?? (sessionId ? session?.scheduledTaskId ?? null : null)
           const taskCrumbName = scheduledTask?.name ?? (sessionId ? session?.scheduledTaskName : null)

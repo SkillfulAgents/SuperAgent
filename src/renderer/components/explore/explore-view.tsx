@@ -195,6 +195,7 @@ export function ExploreView() {
     >
       <PageTitle
         title="Discover New Agents"
+        scrollAware
         actions={
           <div className="flex items-center gap-2">
               <div className="relative w-56">
