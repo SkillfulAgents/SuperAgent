@@ -31,10 +31,10 @@ export type RuntimeRecoveryDeps = {
 
 const OBSERVE_TIMEOUT_MS = 30_000
 const RESTART_TIMEOUT_MS = 5 * 60_000
-// Crash-loop brake: a runtime that dies after every resume would otherwise
-// restart + burn a model turn forever. Over budget -> settle as session_error.
+// Crash-loop brake only. Mid-turn deaths resume; this is the emergency stop
+// so a runtime that dies after every resume cannot burn model turns forever.
 const RECOVERY_WINDOW_MS = 30 * 60_000
-const MAX_RECOVERIES_PER_WINDOW = 3
+const MAX_RECOVERIES_PER_WINDOW = 5
 
 const inFlight = new Map<string, Promise<void>>()
 // Death signal arrived while a recovery was in flight; re-run once after it

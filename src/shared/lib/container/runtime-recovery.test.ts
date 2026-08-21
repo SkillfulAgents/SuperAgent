@@ -325,15 +325,15 @@ describe('recoverFromUnexpectedDeath', () => {
     const deps = createDeps()
     deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
 
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
       await recoverFromUnexpectedDeath(deps)
     }
     expect(deps.settleRecoveringSessions).not.toHaveBeenCalled()
-    expect(deps.sendMessage).toHaveBeenCalledTimes(3)
+    expect(deps.sendMessage).toHaveBeenCalledTimes(5)
 
     await recoverFromUnexpectedDeath(deps)
 
-    expect(deps.sendMessage).toHaveBeenCalledTimes(3)
+    expect(deps.sendMessage).toHaveBeenCalledTimes(5)
     expect(deps.settleRecoveringSessions).toHaveBeenCalledWith(['sess-1'])
     expect(deps.syncAgentStatus).toHaveBeenCalledTimes(1)
     expect(captureException).toHaveBeenCalledWith(
