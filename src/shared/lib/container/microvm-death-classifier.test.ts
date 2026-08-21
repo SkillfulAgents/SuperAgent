@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   MICROVM_MAX_LIFETIME_REASON,
+  MICROVM_RECOVERY_PROMPTS,
   classifyMicrovmDeath,
   planFromClassification,
 } from './microvm-death-classifier'
@@ -78,15 +79,18 @@ describe('classifyMicrovmDeath', () => {
 })
 
 describe('planFromClassification', () => {
-  it('recovers max_lifetime and runtime_lost with replace', () => {
+  it('recovers max_lifetime and runtime_lost with replace and reason-specific prompts', () => {
     expect(planFromClassification('max_lifetime')).toEqual({
       action: 'recover',
       reason: 'max_lifetime',
+      resumePrompt: MICROVM_RECOVERY_PROMPTS.max_lifetime,
       replaceGeneration: true,
     })
+    expect(MICROVM_RECOVERY_PROMPTS.max_lifetime).toContain('8-hour lifetime')
     expect(planFromClassification('runtime_lost')).toEqual({
       action: 'recover',
       reason: 'runtime_lost',
+      resumePrompt: MICROVM_RECOVERY_PROMPTS.runtime_lost,
       replaceGeneration: true,
     })
   })
@@ -95,6 +99,7 @@ describe('planFromClassification', () => {
     expect(planFromClassification('guest_oom')).toEqual({
       action: 'recover',
       reason: 'guest_oom',
+      resumePrompt: MICROVM_RECOVERY_PROMPTS.guest_oom,
       replaceGeneration: false,
     })
   })

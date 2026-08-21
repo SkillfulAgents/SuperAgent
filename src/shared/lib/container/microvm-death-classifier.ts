@@ -1,19 +1,27 @@
 import {
+  RECOVERY_PROMPTS,
   RUNTIME_DEATH_REASONS,
   type RecoverableDeathReason,
   type RuntimeFatalKind,
   type UnexpectedDeathPlan,
 } from './runtime-death'
 
-export const MICROVM_DEATH_REASONS = [...RUNTIME_DEATH_REASONS, 'not_dead'] as const
+// max_lifetime is MicroVM-specific (AWS 8h cap); it extends the generic reasons here.
+export const MICROVM_DEATH_REASONS = ['max_lifetime', ...RUNTIME_DEATH_REASONS, 'not_dead'] as const
 
-export type MicrovmDeathReason = RecoverableDeathReason | 'not_dead'
+export type MicrovmDeathReason = 'max_lifetime' | RecoverableDeathReason | 'not_dead'
 
 export type MicrovmFatalResult = RuntimeFatalKind
 export type MicrovmProbeResult = 'ok' | 'fail' | null
 
 // Verified in SUP-571: GetMicrovm stateReason when AWS hits the 8h cap.
 export const MICROVM_MAX_LIFETIME_REASON = 'MicroVM exceeded maximum lifetime.'
+
+export const MICROVM_RECOVERY_PROMPTS: Record<Exclude<MicrovmDeathReason, 'not_dead'>, string> = {
+  max_lifetime:
+    'The previous turn was cut off because the runtime hit its 8-hour lifetime. Continue from where you left off. Check what already completed before redoing work.',
+  ...RECOVERY_PROMPTS,
+}
 
 const TERMINAL = new Set(['TERMINATED', 'TERMINATING'])
 
@@ -49,6 +57,7 @@ export function planFromClassification(
     return {
       action: 'recover',
       reason,
+      resumePrompt: MICROVM_RECOVERY_PROMPTS[reason],
       replaceGeneration: reason !== 'guest_oom',
     }
   }

@@ -1528,6 +1528,7 @@ describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
     await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
       action: 'recover',
       reason: 'max_lifetime',
+      resumePrompt: expect.stringContaining('8-hour lifetime'),
       replaceGeneration: true,
     })
   })
@@ -1547,6 +1548,7 @@ describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
     ).resolves.toEqual({
       action: 'recover',
       reason: 'guest_oom',
+      resumePrompt: expect.stringContaining('ran out of memory'),
       replaceGeneration: false,
     })
   })
