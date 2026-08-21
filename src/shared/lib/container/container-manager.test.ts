@@ -152,7 +152,7 @@ vi.mock('./message-persister', () => ({
     snapshotMidTurnSessions: vi.fn(() => []),
     consumeLastFatal: vi.fn(() => null),
     settleRecoveringSessions: vi.fn(),
-    releaseRecovery: vi.fn(),
+    markRecovered: vi.fn(),
     takeCoalescedUserMessage: vi.fn(),
     isSessionRecovering: vi.fn(() => false),
     isSubscribed: vi.fn(() => false),

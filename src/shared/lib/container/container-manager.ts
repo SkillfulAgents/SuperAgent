@@ -93,7 +93,9 @@ class ContainerManager {
         onConnectionError: () => {
           if (this.stoppingAgents.has(agentId)) return
           if (this.startingAgents.has(agentId)) return
-          messagePersister.snapshotMidTurnSessions(agentId)
+          // No pre-snapshot here: the orchestrator snapshots synchronously, and
+          // a join during an in-flight recovery queues a re-run that catches
+          // sessions that became active in between.
           this.handleUnexpectedDeath(agentId)
         },
         // MicroVM dead-generation replace (and similar) must restart through the
@@ -118,7 +120,7 @@ class ContainerManager {
       snapshotMidTurnSessions: (slug) => messagePersister.snapshotMidTurnSessions(slug),
       consumeLastFatal: (slug) => messagePersister.consumeLastFatal(slug),
       settleRecoveringSessions: (ids) => messagePersister.settleRecoveringSessions(ids),
-      releaseRecovery: (ids) => messagePersister.releaseRecovery(ids),
+      markRecovered: (ids) => messagePersister.markRecovered(ids),
       takeCoalescedUserMessage: (id) => messagePersister.takeCoalescedUserMessage(id),
       isSessionRecovering: (id) => messagePersister.isSessionRecovering(id),
       isSubscribed: (id) => messagePersister.isSubscribed(id),

@@ -1040,7 +1040,7 @@ class MessagePersister {
     return text
   }
 
-  releaseRecovery(sessionIds: string[]): void {
+  markRecovered(sessionIds: string[]): void {
     for (const sessionId of sessionIds) {
       const state = this.streamingStates.get(sessionId)
       if (!state) continue
@@ -1054,6 +1054,16 @@ class MessagePersister {
       const state = this.streamingStates.get(sessionId)
       if (!state) continue
       state.isRecovering = false
+      if (state.coalescedUserMessage) {
+        console.warn(
+          `[MessagePersister] Dropping user message coalesced during failed recovery for ${sessionId}:`,
+          state.coalescedUserMessage,
+        )
+        captureException(new Error('Coalesced user message dropped on recovery settle'), {
+          tags: { area: 'container', op: 'runtime.recovery.dropCoalesced' },
+          extra: { sessionId, messageLength: state.coalescedUserMessage.length },
+        })
+      }
       state.coalescedUserMessage = undefined
       if (state.isActive && !state.isInterrupted) {
         this.markSessionInactive(sessionId, state)

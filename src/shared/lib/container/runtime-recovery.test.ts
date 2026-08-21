@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { addErrorBreadcrumb, captureException } from '@shared/lib/error-reporting'
 import { RECOVERY_PROMPTS } from './runtime-death'
 import {
   recoverFromUnexpectedDeath,
@@ -14,13 +14,26 @@ vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
 
+const MAX_LIFETIME_PROMPT =
+  'The previous turn was cut off because the runtime hit its 8-hour lifetime. Continue from where you left off. Check what already completed before redoing work.'
+
+function recoverPlan(overrides: Partial<Extract<UnexpectedDeathPlan, { action: 'recover' }>> = {}) {
+  return {
+    action: 'recover' as const,
+    reason: 'runtime_lost',
+    resumePrompt: RECOVERY_PROMPTS.runtime_lost,
+    replaceGeneration: true,
+    ...overrides,
+  }
+}
+
 function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecoveryDeps & {
   restartAgent: ReturnType<typeof vi.fn>
   ensureRunning: ReturnType<typeof vi.fn>
   sendMessage: ReturnType<typeof vi.fn>
   observeUnexpectedDeath: ReturnType<typeof vi.fn>
   settleRecoveringSessions: ReturnType<typeof vi.fn>
-  releaseRecovery: ReturnType<typeof vi.fn>
+  markRecovered: ReturnType<typeof vi.fn>
   subscribeToSession: ReturnType<typeof vi.fn>
   onIdleDeath: ReturnType<typeof vi.fn>
 } {
@@ -30,7 +43,7 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
   const restartAgent = vi.fn().mockResolvedValue(undefined)
   const ensureRunning = vi.fn()
   const settleRecoveringSessions = vi.fn()
-  const releaseRecovery = vi.fn()
+  const markRecovered = vi.fn()
   const subscribeToSession = vi.fn().mockResolvedValue(undefined)
   const onIdleDeath = vi.fn().mockResolvedValue(undefined)
   let recovering = new Set<string>()
@@ -61,8 +74,8 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
       settleRecoveringSessions(ids)
       for (const id of ids) recovering.delete(id)
     },
-    releaseRecovery: (ids) => {
-      releaseRecovery(ids)
+    markRecovered: (ids) => {
+      markRecovered(ids)
       for (const id of ids) recovering.delete(id)
     },
     takeCoalescedUserMessage: () => undefined,
@@ -80,7 +93,7 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
     sendMessage,
     observeUnexpectedDeath,
     settleRecoveringSessions,
-    releaseRecovery,
+    markRecovered,
     subscribeToSession,
     onIdleDeath,
   }
@@ -92,13 +105,11 @@ describe('recoverFromUnexpectedDeath', () => {
     vi.clearAllMocks()
   })
 
-  it('restarts once and resumes mid-turn sessions with the 8h prompt', async () => {
+  it('restarts once and resumes mid-turn sessions with the plan-provided prompt', async () => {
     const deps = createDeps()
-    deps.observeUnexpectedDeath.mockResolvedValue({
-      action: 'recover',
-      reason: 'max_lifetime',
-      replaceGeneration: true,
-    })
+    deps.observeUnexpectedDeath.mockResolvedValue(
+      recoverPlan({ reason: 'max_lifetime', resumePrompt: MAX_LIFETIME_PROMPT }),
+    )
 
     await recoverFromUnexpectedDeath(deps)
 
@@ -106,9 +117,9 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.ensureRunning).toHaveBeenCalledTimes(1)
     expect(deps.sendMessage).toHaveBeenCalledTimes(1)
     expect(deps.sendMessage.mock.calls[0][0]).toBe('sess-1')
-    expect(deps.sendMessage.mock.calls[0][1]).toBe(RECOVERY_PROMPTS.max_lifetime)
+    expect(deps.sendMessage.mock.calls[0][1]).toBe(MAX_LIFETIME_PROMPT)
     expect(deps.sendMessage.mock.calls[0][3]).toEqual({ shouldQuery: true })
-    expect(deps.releaseRecovery).toHaveBeenCalledWith(['sess-1'])
+    expect(deps.markRecovered).toHaveBeenCalledWith(['sess-1'])
     expect(deps.settleRecoveringSessions).not.toHaveBeenCalled()
     expect(addErrorBreadcrumb).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -128,11 +139,13 @@ describe('recoverFromUnexpectedDeath', () => {
     const deps = createDeps({
       consumeLastFatal: () => 'oom_sigkill',
     })
-    deps.observeUnexpectedDeath.mockResolvedValue({
-      action: 'recover',
-      reason: 'guest_oom',
-      replaceGeneration: false,
-    })
+    deps.observeUnexpectedDeath.mockResolvedValue(
+      recoverPlan({
+        reason: 'guest_oom',
+        resumePrompt: RECOVERY_PROMPTS.guest_oom,
+        replaceGeneration: false,
+      }),
+    )
 
     await recoverFromUnexpectedDeath(deps)
 
@@ -158,18 +171,28 @@ describe('recoverFromUnexpectedDeath', () => {
 
     expect(deps.restartAgent).not.toHaveBeenCalled()
     expect(deps.sendMessage).not.toHaveBeenCalled()
-    expect(deps.releaseRecovery).toHaveBeenCalledWith(['sess-1'])
+    expect(deps.markRecovered).toHaveBeenCalledWith(['sess-1'])
     expect(deps.settleRecoveringSessions).not.toHaveBeenCalled()
     expect(deps.subscribeToSession).toHaveBeenCalled()
   })
 
+  it('delivers a coalesced user message to the live session on ignore', async () => {
+    const deps = createDeps({
+      takeCoalescedUserMessage: (id) => (id === 'sess-1' ? 'keep going' : undefined),
+    })
+    deps.observeUnexpectedDeath.mockResolvedValue({ action: 'ignore' })
+
+    await recoverFromUnexpectedDeath(deps)
+
+    expect(deps.sendMessage).toHaveBeenCalledTimes(1)
+    expect(deps.sendMessage).toHaveBeenCalledWith('sess-1', 'keep going', expect.any(String), {
+      shouldQuery: true,
+    })
+  })
+
   it('does not resume when the agent is stopping', async () => {
     const deps = createDeps({ isStopping: () => true })
-    deps.observeUnexpectedDeath.mockResolvedValue({
-      action: 'recover',
-      reason: 'runtime_lost',
-      replaceGeneration: true,
-    })
+    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
 
     await recoverFromUnexpectedDeath(deps)
 
@@ -182,11 +205,7 @@ describe('recoverFromUnexpectedDeath', () => {
     const deps = createDeps({
       snapshotMidTurnSessions: () => [],
     })
-    deps.observeUnexpectedDeath.mockResolvedValue({
-      action: 'recover',
-      reason: 'max_lifetime',
-      replaceGeneration: true,
-    })
+    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
 
     await recoverFromUnexpectedDeath(deps)
 
@@ -196,58 +215,98 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.observeUnexpectedDeath).not.toHaveBeenCalled()
   })
 
-  it('single-flights concurrent deaths into one restart', async () => {
+  it('single-flights concurrent deaths and re-runs once for the joined signal', async () => {
     let releaseRestart!: () => void
     const restartGate = new Promise<void>((resolve) => {
       releaseRestart = resolve
     })
-    const deps = createDeps()
-    deps.restartAgent.mockImplementation(() => restartGate)
-    deps.observeUnexpectedDeath.mockResolvedValue({
-      action: 'recover',
-      reason: 'runtime_lost',
-      replaceGeneration: true,
+    const snapshots: number[] = []
+    const recovering = new Set<string>()
+    let call = 0
+    const deps = createDeps({
+      snapshotMidTurnSessions: () => {
+        call += 1
+        snapshots.push(call)
+        // First run recovers sess-1; the queued re-run finds nothing mid-turn.
+        if (call === 1) {
+          recovering.add('sess-1')
+          return ['sess-1']
+        }
+        return []
+      },
+      isSessionRecovering: (id) => recovering.has(id),
     })
+    deps.restartAgent.mockImplementation(() => restartGate)
+    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
 
     const first = recoverFromUnexpectedDeath(deps)
     const second = recoverFromUnexpectedDeath(deps)
     releaseRestart()
     await Promise.all([first, second])
+    await new Promise((r) => setTimeout(r, 0))
 
     expect(deps.restartAgent).toHaveBeenCalledTimes(1)
     expect(deps.sendMessage).toHaveBeenCalledTimes(1)
+    // The joined death signal triggered exactly one follow-up snapshot.
+    expect(snapshots).toEqual([1, 2])
   })
 
   it('settles as session_error when resume send fails', async () => {
     const deps = createDeps()
-    deps.observeUnexpectedDeath.mockResolvedValue({
-      action: 'recover',
-      reason: 'runtime_lost',
-      replaceGeneration: true,
-    })
+    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
     deps.sendMessage.mockRejectedValue(new Error('send failed'))
 
     await recoverFromUnexpectedDeath(deps)
 
     expect(deps.settleRecoveringSessions).toHaveBeenCalledWith(['sess-1'])
-    expect(deps.releaseRecovery).not.toHaveBeenCalled()
+    expect(deps.markRecovered).not.toHaveBeenCalled()
+  })
+
+  it('settles when observeUnexpectedDeath rejects', async () => {
+    const deps = createDeps()
+    deps.observeUnexpectedDeath.mockRejectedValue(new Error('observe failed'))
+
+    await recoverFromUnexpectedDeath(deps)
+
+    expect(deps.settleRecoveringSessions).toHaveBeenCalledWith(['sess-1'])
+    expect(deps.restartAgent).not.toHaveBeenCalled()
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ tags: { area: 'container', op: 'runtime.observeDeath' } }),
+    )
   })
 
   it('coalesces a user message onto the same resume send', async () => {
     const deps = createDeps({
       takeCoalescedUserMessage: () => 'keep going',
     })
-    deps.observeUnexpectedDeath.mockResolvedValue({
-      action: 'recover',
-      reason: 'runtime_lost',
-      replaceGeneration: true,
-    })
+    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
 
     await recoverFromUnexpectedDeath(deps)
 
     expect(deps.sendMessage).toHaveBeenCalledTimes(1)
     expect(deps.sendMessage.mock.calls[0][1]).toBe(
       `${RECOVERY_PROMPTS.runtime_lost}\n\nThe user also sent:\nkeep going`,
+    )
+  })
+
+  it('settles instead of recovering once the crash-loop budget is exhausted', async () => {
+    const deps = createDeps()
+    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
+
+    for (let i = 0; i < 3; i++) {
+      await recoverFromUnexpectedDeath(deps)
+    }
+    expect(deps.settleRecoveringSessions).not.toHaveBeenCalled()
+    expect(deps.sendMessage).toHaveBeenCalledTimes(3)
+
+    await recoverFromUnexpectedDeath(deps)
+
+    expect(deps.sendMessage).toHaveBeenCalledTimes(3)
+    expect(deps.settleRecoveringSessions).toHaveBeenCalledWith(['sess-1'])
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ tags: { area: 'container', op: 'runtime.recover.budget' } }),
     )
   })
 })

@@ -22,8 +22,8 @@ describe('inferOomSigkillFatal', () => {
 
 describe('buildRecoveryPrompt', () => {
   it('appends a coalesced user message onto the same resume', () => {
-    expect(buildRecoveryPrompt('max_lifetime')).toBe(RECOVERY_PROMPTS.max_lifetime)
-    expect(buildRecoveryPrompt('guest_oom', '  keep going  ')).toBe(
+    expect(buildRecoveryPrompt(RECOVERY_PROMPTS.runtime_lost)).toBe(RECOVERY_PROMPTS.runtime_lost)
+    expect(buildRecoveryPrompt(RECOVERY_PROMPTS.guest_oom, '  keep going  ')).toBe(
       `${RECOVERY_PROMPTS.guest_oom}\n\nThe user also sent:\nkeep going`,
     )
   })
