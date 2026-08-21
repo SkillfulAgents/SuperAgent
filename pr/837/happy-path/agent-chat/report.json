@@ -1,0 +1,17 @@
+{
+  "storyId": "agent-chat",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: esponded within timeout (response received in approximately 5 seconds)\n\n**[STEP]** Step 6: Verify response mentions \"4\" and take screenshot — Agent response is exactly \"4\", screenshot captured showing complete conversation\n\nAll test steps executed successfully with no errors or unexpected behavior.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 61332,
+  "sessionId": "34e4ef63-6d8b-4a69-b9bc-4e6a60f51d55",
+  "cost": {
+    "inputTokens": 320,
+    "outputTokens": 9593,
+    "cacheCreationTokens": 112187,
+    "cacheReadTokens": 841021,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.272621
+  }
+}
