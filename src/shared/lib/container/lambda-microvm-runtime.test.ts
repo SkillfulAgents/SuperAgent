@@ -38,8 +38,17 @@ vi.mock('@shared/lib/llm-provider', () => ({
 }))
 
 const autoSleepTimeoutMinutes = vi.fn((): number | undefined => 30)
+const autoResumeOnUnexpectedDeath = vi.fn((): boolean => true)
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({ app: { autoSleepTimeoutMinutes: autoSleepTimeoutMinutes() }, enableToolSearch: true }),
+  getSettings: () => ({
+    app: {
+      autoSleepTimeoutMinutes: autoSleepTimeoutMinutes(),
+      autoResumeOnUnexpectedDeath: autoResumeOnUnexpectedDeath(),
+    },
+    enableToolSearch: true,
+  }),
+  isAutoResumeOnUnexpectedDeathEnabled: (settings?: { app?: { autoResumeOnUnexpectedDeath?: boolean } }) =>
+    settings?.app?.autoResumeOnUnexpectedDeath !== false,
 }))
 
 import { addErrorBreadcrumb, captureException } from '@shared/lib/error-reporting'
@@ -1494,6 +1503,7 @@ describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
   beforeEach(() => {
     Object.assign(process.env, FULL_ENV)
     resetMicrovmRuntimeForTests()
+    autoResumeOnUnexpectedDeath.mockReturnValue(true)
   })
 
   function newClient() {
@@ -1533,6 +1543,19 @@ describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
     })
   })
 
+  it('settles a recover plan when the MicroVM auto-resume toggle is off', async () => {
+    autoResumeOnUnexpectedDeath.mockReturnValue(false)
+    const client = newClient()
+    await client.start()
+    responses.getState = 'TERMINATED'
+    responses.getStateReason = 'MicroVM exceeded maximum lifetime.'
+    sessionFetch(false)
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
   it('recovers guest_oom without replace when SIGKILL + RUNNING + probe fail', async () => {
     const client = newClient()
     await client.start()
@@ -1550,6 +1573,18 @@ describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
       reason: 'guest_oom',
       resumePrompt: expect.stringContaining('ran out of memory'),
       replaceGeneration: false,
+    })
+  })
+
+  it('still ignores a WS blip when the MicroVM auto-resume toggle is off', async () => {
+    autoResumeOnUnexpectedDeath.mockReturnValue(false)
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    sessionFetch(true)
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'ignore',
     })
   })
 

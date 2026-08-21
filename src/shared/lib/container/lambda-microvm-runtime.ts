@@ -28,6 +28,7 @@ import type {
   StopOptions,
   StopResult,
 } from './types'
+import { getSettings, isAutoResumeOnUnexpectedDeathEnabled } from '@shared/lib/config/settings'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { setBootstrapEnv, clearBootstrapEnv } from './agent-bootstrap-env-store'
 import {
@@ -818,6 +819,13 @@ function isUnreachableCreateSessionError(error: unknown): boolean {
   return false
 }
 
+function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): UnexpectedDeathPlan {
+  if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(getSettings())) {
+    return { action: 'settle' }
+  }
+  return plan
+}
+
 export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   static readonly runnerName = 'lambda-microvm'
   // Image is built once via create-microvm-image and run by AWS; nothing local.
@@ -850,29 +858,35 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const probeResult = await this.probeUnexpectedDeath(sessionIds, installed?.proxyPort)
 
     if (!installed) {
-      return planFromClassification(
-        classifyMicrovmDeath({ notFound: true, lastFatalResult, probeResult }),
-        { probeResult },
+      return honorMicrovmAutoResume(
+        planFromClassification(
+          classifyMicrovmDeath({ notFound: true, lastFatalResult, probeResult }),
+          { probeResult },
+        ),
       )
     }
 
     const config = getMicrovmRuntimeConfig()
     try {
       const mvm = await getMicrovm(config.region, installed.microvmId)
-      return planFromClassification(
-        classifyMicrovmDeath({
-          state: mvm.state,
-          stateReason: mvm.stateReason,
-          lastFatalResult,
-          probeResult,
-        }),
-        { state: mvm.state, probeResult },
+      return honorMicrovmAutoResume(
+        planFromClassification(
+          classifyMicrovmDeath({
+            state: mvm.state,
+            stateReason: mvm.stateReason,
+            lastFatalResult,
+            probeResult,
+          }),
+          { state: mvm.state, probeResult },
+        ),
       )
     } catch (error) {
       if (isNotFound(error)) {
-        return planFromClassification(
-          classifyMicrovmDeath({ notFound: true, lastFatalResult, probeResult }),
-          { probeResult },
+        return honorMicrovmAutoResume(
+          planFromClassification(
+            classifyMicrovmDeath({ notFound: true, lastFatalResult, probeResult }),
+            { probeResult },
+          ),
         )
       }
       captureException(error, {
