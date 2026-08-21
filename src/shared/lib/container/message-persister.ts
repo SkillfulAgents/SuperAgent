@@ -312,7 +312,7 @@ class MessagePersister {
   private containerClients: Map<string, ContainerClient> = new Map()
   // Callback to request stopping a container (registered by container-manager)
   private onStopContainerRequested: ((agentSlug: string) => void) | null = null
-  private onUnexpectedDeathRequested: ((agentSlug: string) => void) | null = null
+  private onUnexpectedDeathRequested: ((agentSlug: string, sessionId?: string) => void) | null = null
   private lastFatalByAgent: Map<string, RuntimeFatalKind> = new Map()
   // Dev-only capture for building fixture replay tests
   private capture: SubagentCapture | null = SubagentCapture.fromEnv()
@@ -990,11 +990,18 @@ class MessagePersister {
   }
 
   // Mark all sessions for an agent as inactive and clean up subscriptions (e.g., when container stops)
-  markAllSessionsInactiveForAgent(agentSlug: string): void {
+  markAllSessionsInactiveForAgent(
+    agentSlug: string,
+    options?: { settleRecovering?: boolean },
+  ): void {
     for (const [sessionId, state] of this.streamingStates) {
       if (state.agentSlug === agentSlug) {
         if (state.isRecovering) {
-          this.detachSessionTransport(sessionId)
+          if (options?.settleRecovering) {
+            this.settleRecoveringSessions([sessionId])
+          } else {
+            this.detachSessionTransport(sessionId)
+          }
           continue
         }
         if (state.isActive) {
@@ -1006,9 +1013,11 @@ class MessagePersister {
     }
   }
 
-  snapshotMidTurnSessions(agentSlug: string): string[] {
+  snapshotMidTurnSessions(agentSlug: string, restrictToSessionIds?: string[]): string[] {
+    const restrict = restrictToSessionIds ? new Set(restrictToSessionIds) : null
     const ids: string[] = []
     for (const [sessionId, state] of this.streamingStates) {
+      if (restrict && !restrict.has(sessionId)) continue
       if (state.agentSlug === agentSlug && state.isActive && !state.isInterrupted) {
         state.isRecovering = true
         ids.push(sessionId)
@@ -1129,7 +1138,7 @@ class MessagePersister {
     this.onStopContainerRequested = callback
   }
 
-  setUnexpectedDeathCallback(callback: ((agentSlug: string) => void) | null): void {
+  setUnexpectedDeathCallback(callback: ((agentSlug: string, sessionId?: string) => void) | null): void {
     this.onUnexpectedDeathRequested = callback
   }
 
@@ -2270,7 +2279,6 @@ class MessagePersister {
           this.containerClients.get(sessionId)?.onFatalResult('oom_sigkill') === 'defer_for_recovery'
         ) {
           this.recordLastFatal(state.agentSlug, 'oom_sigkill')
-          this.snapshotMidTurnSessions(state.agentSlug)
           this.onUnexpectedDeathRequested?.(state.agentSlug)
           break
         }
@@ -2468,8 +2476,10 @@ class MessagePersister {
   private handleConnectionClosed(sessionId: string, state: StreamingState): void {
     const diedMidTurn = state.isActive && !state.isInterrupted
     if (diedMidTurn && this.onUnexpectedDeathRequested && state.agentSlug) {
-      this.snapshotMidTurnSessions(state.agentSlug)
-      this.onUnexpectedDeathRequested(state.agentSlug)
+      // The socket is gone; detach so isSubscribed reports the truth and the
+      // recovery orchestrator's ignore/recover paths actually resubscribe.
+      this.detachSessionTransport(sessionId)
+      this.onUnexpectedDeathRequested(state.agentSlug, sessionId)
       return
     }
 

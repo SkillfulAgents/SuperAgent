@@ -13,7 +13,7 @@ export type RuntimeRecoveryDeps = {
   getClient: () => ContainerClient
   restartAgent: () => Promise<void>
   ensureRunning: () => Promise<ContainerClient>
-  snapshotMidTurnSessions: (agentId: string) => string[]
+  snapshotMidTurnSessions: (agentId: string, restrictToSessionIds?: string[]) => string[]
   consumeLastFatal: (agentId: string) => RuntimeFatalKind
   settleRecoveringSessions: (sessionIds: string[]) => void
   markRecovered: (sessionIds: string[]) => void
@@ -27,6 +27,8 @@ export type RuntimeRecoveryDeps = {
     agentSlug: string,
   ) => Promise<void>
   syncAgentStatus?: () => Promise<void>
+  // One-session connection_closed. Omitted = every mid-turn session on the agent.
+  restrictToSessionIds?: string[]
 }
 
 const OBSERVE_TIMEOUT_MS = 30_000
@@ -51,7 +53,7 @@ export function resetRuntimeRecoveryForTests(): void {
 export async function recoverFromUnexpectedDeath(deps: RuntimeRecoveryDeps): Promise<void> {
   const existing = inFlight.get(deps.agentId)
   if (existing) {
-    pendingRerun.set(deps.agentId, deps)
+    pendingRerun.set(deps.agentId, widenRecoveryScope(pendingRerun.get(deps.agentId), deps))
     return existing
   }
   const run = recoverFromUnexpectedDeathInner(deps).finally(() => {
@@ -59,24 +61,49 @@ export async function recoverFromUnexpectedDeath(deps: RuntimeRecoveryDeps): Pro
     const rerunDeps = pendingRerun.get(deps.agentId)
     if (rerunDeps) {
       pendingRerun.delete(deps.agentId)
-      void recoverFromUnexpectedDeath(rerunDeps)
+      recoverFromUnexpectedDeath(rerunDeps).catch((error) => {
+        captureException(error, {
+          tags: { area: 'container', op: 'runtime.recover.rerun' },
+          extra: { agentId: rerunDeps.agentId },
+        })
+      })
     }
   })
   inFlight.set(deps.agentId, run)
   return run
 }
 
-async function recoverFromUnexpectedDeathInner(deps: RuntimeRecoveryDeps): Promise<void> {
-  if (deps.isStopping()) return
+function widenRecoveryScope(
+  prev: RuntimeRecoveryDeps | undefined,
+  next: RuntimeRecoveryDeps,
+): RuntimeRecoveryDeps {
+  if (!prev) return next
+  const prevScope = prev.restrictToSessionIds
+  const nextScope = next.restrictToSessionIds
+  if (!prevScope || !nextScope) {
+    return { ...next, restrictToSessionIds: undefined }
+  }
+  return {
+    ...next,
+    restrictToSessionIds: [...new Set([...prevScope, ...nextScope])],
+  }
+}
 
-  const sessionIds = deps.snapshotMidTurnSessions(deps.agentId)
+async function recoverFromUnexpectedDeathInner(deps: RuntimeRecoveryDeps): Promise<void> {
+  // Consume unconditionally: a fatal left behind by an early return below must
+  // not leak into a later, unrelated recovery and skew its classification.
+  const lastFatalResult = deps.consumeLastFatal(deps.agentId)
+  const sessionIds = deps.snapshotMidTurnSessions(deps.agentId, deps.restrictToSessionIds)
+  if (deps.isStopping()) {
+    await settleAndSync(deps, sessionIds)
+    return
+  }
   if (sessionIds.length === 0) {
     await deps.syncAgentStatus?.()
     return
   }
 
   const client = deps.getClient()
-  const lastFatalResult = deps.consumeLastFatal(deps.agentId)
   const oldGenerationId = client.getRuntimeGenerationId()
 
   let plan: UnexpectedDeathPlan
@@ -96,12 +123,23 @@ async function recoverFromUnexpectedDeathInner(deps: RuntimeRecoveryDeps): Promi
   }
 
   if (deps.isStopping()) {
-    deps.settleRecoveringSessions(sessionIds)
+    await settleAndSync(deps, sessionIds)
     return
   }
 
   if (plan.action === 'ignore') {
-    await ignoreDeath(deps, client, sessionIds, plan.liveSessionIds)
+    try {
+      await ignoreDeath(deps, client, sessionIds, plan.liveSessionIds)
+    } catch (error) {
+      captureException(error, {
+        tags: { area: 'container', op: 'runtime.recover.ignore' },
+        extra: { agentId: deps.agentId, sessionIds },
+      })
+      await settleAndSync(
+        deps,
+        sessionIds.filter((id) => deps.isSessionRecovering(id)),
+      )
+    }
     return
   }
 
@@ -160,7 +198,7 @@ async function ignoreDeath(
   const live = new Set(liveSessionIds ?? sessionIds)
   const dead = sessionIds.filter((id) => !live.has(id))
   const keep = sessionIds.filter((id) => live.has(id))
-  if (dead.length > 0) deps.settleRecoveringSessions(dead)
+  if (dead.length > 0) await settleAndSync(deps, dead)
 
   // Take coalesced messages before markRecovered clears them; the turn is
   // still running on the container, so deliver them as normal queued sends.

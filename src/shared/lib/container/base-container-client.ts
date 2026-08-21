@@ -389,13 +389,20 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         try {
           const session = await this.getSession(sessionId)
           if (session?.isRunning) liveSessionIds.push(sessionId)
-        } catch {
-          // Session probe failed; treat as not live and try siblings.
+        } catch (error) {
+          captureException(error, {
+            tags: { area: 'container', op: 'runtime.observeDeath.probeSession' },
+            extra: { agentId: this.config.agentId, sessionId },
+          })
         }
       }
       if (liveSessionIds.length === 0) return { action: 'settle' }
       return { action: 'ignore', liveSessionIds }
-    } catch {
+    } catch (error) {
+      captureException(error, {
+        tags: { area: 'container', op: 'runtime.observeDeath.default' },
+        extra: { agentId: this.config.agentId },
+      })
       return { action: 'settle' }
     }
   }

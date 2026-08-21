@@ -959,4 +959,23 @@ describe('BaseContainerClient.observeUnexpectedDeath', () => {
       action: 'settle',
     })
   })
+
+  it('settles when health check throws', async () => {
+    vi.spyOn(client, 'isHealthy').mockRejectedValue(new Error('health exploded'))
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
+  it('treats a failed session probe as not live and keeps live siblings', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(true)
+    vi.spyOn(client, 'getSession').mockImplementation(async (sessionId: string) => {
+      if (sessionId === 'dead') throw new Error('probe failed')
+      return { isRunning: true } as never
+    })
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['live', 'dead'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['live'],
+    })
+  })
 })

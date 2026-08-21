@@ -7445,6 +7445,27 @@ describe('MessagePersister mid-turn recovery snapshot', () => {
     expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
   })
 
+  it('snapshots only the requested session ids', async () => {
+    const otherId = 'recover-session-2'
+    await messagePersister.subscribeToSession(otherId, mockClient, otherId, AGENT_SLUG)
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.markSessionActive(otherId, AGENT_SLUG)
+
+    expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG, [SESSION_ID])).toEqual([SESSION_ID])
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionRecovering(otherId)).toBe(false)
+
+    messagePersister.unsubscribeFromSession(otherId)
+  })
+
+  it('settles recovering sessions when the agent is stopped', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    messagePersister.markAllSessionsInactiveForAgent(AGENT_SLUG, { settleRecovering: true })
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+  })
+
   it('does not snapshot idle or interrupted sessions', async () => {
     expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG)).toEqual([])
     messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
@@ -7507,7 +7528,7 @@ describe('MessagePersister mid-turn recovery snapshot', () => {
     })
 
     expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
-    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
     expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG)
     expect(messagePersister.consumeLastFatal(AGENT_SLUG)).toBe('oom_sigkill')
     messagePersister.setUnexpectedDeathCallback(null)
@@ -7530,9 +7551,13 @@ describe('MessagePersister mid-turn recovery snapshot', () => {
   })
 
   it('does not settle mid-turn on connection_closed when recovery is registered', async () => {
+    const otherId = 'recover-session-2'
+    const otherClient = createMockClient()
+    await messagePersister.subscribeToSession(otherId, otherClient, otherId, AGENT_SLUG)
     const onDeath = vi.fn()
     messagePersister.setUnexpectedDeathCallback(onDeath)
     messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.markSessionActive(otherId, AGENT_SLUG)
 
     mockClient._messageCallback!({
       type: 'connection_closed',
@@ -7542,9 +7567,16 @@ describe('MessagePersister mid-turn recovery snapshot', () => {
     })
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG)
+    expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID)
+    expect(onDeath).toHaveBeenCalledTimes(1)
     expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
-    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionActive(otherId)).toBe(true)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSessionRecovering(otherId)).toBe(false)
+    // Dead transport is detached so recovery's isSubscribed gate resubscribes.
+    expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSubscribed(otherId)).toBe(true)
     messagePersister.setUnexpectedDeathCallback(null)
+    messagePersister.unsubscribeFromSession(otherId)
   })
 })

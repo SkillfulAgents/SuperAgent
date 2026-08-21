@@ -210,10 +210,10 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.sendMessage).toHaveBeenCalledWith('sess-1', 'keep going', TEST_MESSAGE_UUID, {
       shouldQuery: true,
     })
-    expect(deps.syncAgentStatus).not.toHaveBeenCalled()
+    expect(deps.syncAgentStatus).toHaveBeenCalledTimes(1)
   })
 
-  it('does not resume when the agent is stopping', async () => {
+  it('settles mid-turn sessions when the agent is already stopping', async () => {
     const deps = createDeps({ isStopping: () => true })
     deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
 
@@ -221,8 +221,22 @@ describe('recoverFromUnexpectedDeath', () => {
 
     expect(deps.restartAgent).not.toHaveBeenCalled()
     expect(deps.sendMessage).not.toHaveBeenCalled()
-    expect(deps.settleRecoveringSessions).not.toHaveBeenCalled()
-    expect(deps.syncAgentStatus).not.toHaveBeenCalled()
+    expect(deps.observeUnexpectedDeath).not.toHaveBeenCalled()
+    expect(deps.settleRecoveringSessions).toHaveBeenCalledWith(['sess-1'])
+    expect(deps.syncAgentStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('snapshots only the scoped session ids', async () => {
+    const snapshot = vi.fn(() => ['sess-1'])
+    const deps = createDeps({
+      restrictToSessionIds: ['sess-1'],
+      snapshotMidTurnSessions: snapshot,
+    })
+    deps.observeUnexpectedDeath.mockResolvedValue({ action: 'settle' })
+
+    await recoverFromUnexpectedDeath(deps)
+
+    expect(snapshot).toHaveBeenCalledWith('agent-1', ['sess-1'])
   })
 
   it('does not resume idle sessions', async () => {
@@ -237,6 +251,46 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.restartAgent).not.toHaveBeenCalled()
     expect(deps.sendMessage).not.toHaveBeenCalled()
     expect(deps.observeUnexpectedDeath).not.toHaveBeenCalled()
+  })
+
+  it('consumes a recorded fatal even when the snapshot is empty', async () => {
+    const consumeLastFatal = vi.fn(() => 'oom_sigkill' as const)
+    const deps = createDeps({
+      snapshotMidTurnSessions: () => [],
+      consumeLastFatal,
+    })
+
+    await recoverFromUnexpectedDeath(deps)
+
+    expect(consumeLastFatal).toHaveBeenCalledTimes(1)
+  })
+
+  it('captures a queued re-run that rejects instead of leaving it unhandled', async () => {
+    let releaseRestart!: () => void
+    const restartGate = new Promise<void>((resolve) => {
+      releaseRestart = resolve
+    })
+    let call = 0
+    const deps = createDeps({
+      snapshotMidTurnSessions: () => {
+        call += 1
+        if (call === 1) return ['sess-1']
+        throw new Error('snapshot exploded on re-run')
+      },
+    })
+    deps.restartAgent.mockImplementation(() => restartGate)
+    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
+
+    const first = recoverFromUnexpectedDeath(deps)
+    const second = recoverFromUnexpectedDeath(deps)
+    releaseRestart()
+    await Promise.all([first, second])
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ tags: { area: 'container', op: 'runtime.recover.rerun' } }),
+    )
   })
 
   it('single-flights concurrent deaths and re-runs once for the joined signal', async () => {
@@ -273,6 +327,50 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.sendMessage).toHaveBeenCalledTimes(1)
     // The joined death signal triggered exactly one follow-up snapshot.
     expect(snapshots).toEqual([1, 2])
+  })
+
+  it('widens a queued session-scoped death to agent-wide when a later signal is unscoped', async () => {
+    let releaseObserve!: () => void
+    const observeGate = new Promise<void>((resolve) => {
+      releaseObserve = resolve
+    })
+    const snapshotArgs: Array<string[] | undefined> = []
+    const deps = createDeps({
+      restrictToSessionIds: ['sess-1'],
+      snapshotMidTurnSessions: (_slug, restrict) => {
+        snapshotArgs.push(restrict)
+        return ['sess-1']
+      },
+    })
+    deps.observeUnexpectedDeath.mockImplementation(async () => {
+      await observeGate
+      return { action: 'ignore' }
+    })
+
+    const first = recoverFromUnexpectedDeath(deps)
+    const second = recoverFromUnexpectedDeath({ ...deps, restrictToSessionIds: undefined })
+    releaseObserve()
+    await Promise.all([first, second])
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(snapshotArgs).toEqual([['sess-1'], undefined])
+  })
+
+  it('settles remaining recovering sessions when ignore delivery throws', async () => {
+    const deps = createDeps()
+    deps.markRecovered.mockImplementation(() => {
+      throw new Error('markRecovered failed')
+    })
+    deps.observeUnexpectedDeath.mockResolvedValue({ action: 'ignore' })
+
+    await recoverFromUnexpectedDeath(deps)
+
+    expect(deps.settleRecoveringSessions).toHaveBeenCalledWith(['sess-1'])
+    expect(deps.syncAgentStatus).toHaveBeenCalledTimes(1)
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ tags: { area: 'container', op: 'runtime.recover.ignore' } }),
+    )
   })
 
   it('settles as session_error when resume send fails', async () => {

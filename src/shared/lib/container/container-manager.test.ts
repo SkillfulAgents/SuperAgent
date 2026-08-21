@@ -1389,9 +1389,15 @@ describe('containerManager.stopContainer force stop recovery', () => {
     expect(containerManager.getCachedInfo('other-agent-2')).toEqual({ status: 'stopped', port: null })
 
     // Sessions should be marked inactive for all agents
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('stuck-agent')
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('other-agent-1')
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('other-agent-2')
+    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('stuck-agent', {
+      settleRecovering: true,
+    })
+    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('other-agent-1', {
+      settleRecovering: true,
+    })
+    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('other-agent-2', {
+      settleRecovering: true,
+    })
   })
 
   it('broadcasts agent_status_changed for all affected agents', async () => {
@@ -1503,6 +1509,8 @@ describe('containerManager.stopContainer force stop recovery', () => {
 
     // Should still be marked as stopped despite the error
     expect(containerManager.getCachedInfo('error-agent')).toEqual({ status: 'stopped', port: null })
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('error-agent')
+    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('error-agent', {
+      settleRecovering: true,
+    })
   })
 })
