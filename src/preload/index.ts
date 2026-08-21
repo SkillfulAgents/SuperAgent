@@ -2,7 +2,8 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 // Type-only (erased at build — the preload bundle has no @shared alias).
 import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extensions'
 import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
-import type { CloudDashboardSession } from '../shared/lib/cloud-dashboard-session-schema'
+
+type CloudDashboardSession = { useCloudOrigin: boolean; origin: string | null }
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object

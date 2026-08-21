@@ -252,6 +252,18 @@ describe('grant verification', () => {
     expect(typeof body.access_token).toBe('string')
   })
 
+  it('does not set a session cookie for a document or iframe fetch', async () => {
+    const cases: Record<string, string>[] = [
+      { 'sec-fetch-dest': 'iframe' },
+      { 'sec-fetch-mode': 'navigate' },
+    ]
+    for (const headers of cases) {
+      const res = await exchangeRequest(await signGrant(), { headers })
+      expect(res.status).toBe(200)
+      expect(res.headers.get('set-cookie')).toBeNull()
+    }
+  })
+
   it('rejects a garbage bearer token on protected routes', async () => {
     const res = await app.request('/api/protected', {
       headers: { authorization: 'Bearer not-a-real-token' },

@@ -7,8 +7,13 @@ import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
 import { targetIsRemote } from '@renderer/lib/api-target'
 import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
-import { CloudDashboardSessionSchema } from '@shared/lib/cloud-dashboard-session-schema'
 import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
+import { z } from 'zod'
+
+const CloudDashboardSessionSchema = z.object({
+  useCloudOrigin: z.boolean(),
+  origin: z.string().nullable(),
+})
 import { AddToDockDialog } from './add-to-dock-dialog'
 import { PendingAgentReviews } from './pending-agent-reviews'
 import { useRenderTracker } from '@renderer/lib/perf'

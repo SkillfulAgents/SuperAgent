@@ -1,25 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const cookies = vi.hoisted(() => ({
+  get: vi.fn(),
+  set: vi.fn(),
+  remove: vi.fn(),
+}))
+
 const {
-  hasCloudDashboardCookie,
-  plantCloudDashboardCookie,
-  clearCloudDashboardCookie,
   mintDeploymentSessionForDashboard,
   readCloudWorkspaceRecord,
   setCloudWorkspaceRecordClearedListener,
 } = vi.hoisted(() => ({
-  hasCloudDashboardCookie: vi.fn(),
-  plantCloudDashboardCookie: vi.fn(),
-  clearCloudDashboardCookie: vi.fn(),
   mintDeploymentSessionForDashboard: vi.fn(),
   readCloudWorkspaceRecord: vi.fn(),
   setCloudWorkspaceRecordClearedListener: vi.fn(),
 }))
 
-vi.mock('./cloud-dashboard-cookie', () => ({
-  hasCloudDashboardCookie,
-  plantCloudDashboardCookie,
-  clearCloudDashboardCookie,
+vi.mock('electron', () => ({
+  session: { defaultSession: { cookies } },
 }))
 
 vi.mock('@shared/lib/services/cloud-workspace-service', () => ({
@@ -32,33 +30,108 @@ vi.mock('@shared/lib/platform-auth/cloud-workspace-record', () => ({
 }))
 
 import {
+  clearCloudDashboardCookie,
   ensureCloudDashboardSession,
+  hasCloudDashboardCookie,
+  parseSessionSetCookie,
+  plantCloudDashboardCookie,
   registerCloudDashboardCookieCleanup,
+  sessionCookieNameForOrigin,
 } from './cloud-dashboard-session'
 
 const ORIGIN = 'https://ws.example.com'
-const COOKIE = '__Secure-better-auth.session_token=x; Max-Age=60; Path=/; HttpOnly; Secure; SameSite=None'
+const COOKIE_NAME = '__Secure-better-auth.session_token'
+const LINE =
+  `${COOKIE_NAME}=abc.sig; Max-Age=3600; Path=/; HttpOnly; Secure; SameSite=None`
+
+function jarHasCookie(): void {
+  cookies.get.mockResolvedValue([{ name: COOKIE_NAME, value: 'x' }])
+}
+
+function jarEmpty(): void {
+  cookies.get.mockResolvedValue([])
+}
 
 beforeEach(() => {
-  hasCloudDashboardCookie.mockReset()
-  plantCloudDashboardCookie.mockReset()
-  clearCloudDashboardCookie.mockReset()
+  cookies.get.mockReset()
+  cookies.set.mockReset()
+  cookies.remove.mockReset()
+  cookies.get.mockResolvedValue([])
+  cookies.set.mockResolvedValue(undefined)
+  cookies.remove.mockResolvedValue(undefined)
   mintDeploymentSessionForDashboard.mockReset()
   readCloudWorkspaceRecord.mockReset()
   setCloudWorkspaceRecordClearedListener.mockReset()
-  clearCloudDashboardCookie.mockResolvedValue(undefined)
+})
+
+describe('parseSessionSetCookie', () => {
+  it('keeps the signed value and requires the embed attributes', () => {
+    const parsed = parseSessionSetCookie(LINE)
+    expect(parsed).toMatchObject({
+      name: COOKIE_NAME,
+      value: 'abc.sig',
+      httpOnly: true,
+      secure: true,
+      sameSiteNone: true,
+      path: '/',
+      maxAgeSec: 3600,
+    })
+  })
+
+  it('rejects a missing Secure or SameSite=None', () => {
+    expect(parseSessionSetCookie('better-auth.session_token=x; Path=/; HttpOnly; SameSite=Lax')).toMatchObject({
+      sameSiteNone: false,
+    })
+  })
+})
+
+describe('plantCloudDashboardCookie', () => {
+  it('translates Max-Age and omits domain', async () => {
+    const planted = await plantCloudDashboardCookie(ORIGIN, [LINE])
+    expect(planted).toBe(true)
+    expect(cookies.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: `${ORIGIN}/`,
+        name: COOKIE_NAME,
+        value: 'abc.sig',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'no_restriction',
+      }),
+    )
+    const details = cookies.set.mock.calls[0][0] as { expirationDate: number; domain?: string }
+    expect(details.domain).toBeUndefined()
+    expect(details.expirationDate).toBeGreaterThan(Date.now() / 1000)
+  })
+
+  it('does not plant a Lax cookie', async () => {
+    const planted = await plantCloudDashboardCookie(ORIGIN, [
+      `${COOKIE_NAME}=x; Max-Age=60; Path=/; HttpOnly; Secure; SameSite=Lax`,
+    ])
+    expect(planted).toBe(false)
+    expect(cookies.set).not.toHaveBeenCalled()
+  })
+
+  it('reports presence and clears by name', async () => {
+    jarHasCookie()
+    expect(sessionCookieNameForOrigin(ORIGIN)).toBe(COOKIE_NAME)
+    await expect(hasCloudDashboardCookie(ORIGIN)).resolves.toBe(true)
+    await clearCloudDashboardCookie(ORIGIN)
+    expect(cookies.remove).toHaveBeenCalledWith(`${ORIGIN}/`, COOKIE_NAME)
+  })
 })
 
 describe('ensureCloudDashboardSession', () => {
   it('stays on the door when the window is driving Local', async () => {
     readCloudWorkspaceRecord.mockReturnValue({ deploymentUrl: ORIGIN })
-    hasCloudDashboardCookie.mockResolvedValue(true)
+    jarHasCookie()
     await expect(ensureCloudDashboardSession('local')).resolves.toEqual({
       useCloudOrigin: false,
       origin: null,
     })
     expect(mintDeploymentSessionForDashboard).not.toHaveBeenCalled()
-    expect(hasCloudDashboardCookie).not.toHaveBeenCalled()
+    expect(cookies.get).not.toHaveBeenCalled()
   })
 
   it('stays on the door when no workspace record exists', async () => {
@@ -72,7 +145,7 @@ describe('ensureCloudDashboardSession', () => {
 
   it('uses the cloud origin when the jar already has a cookie', async () => {
     readCloudWorkspaceRecord.mockReturnValue({ deploymentUrl: `${ORIGIN}/` })
-    hasCloudDashboardCookie.mockResolvedValue(true)
+    jarHasCookie()
     await expect(ensureCloudDashboardSession('cloud')).resolves.toEqual({
       useCloudOrigin: true,
       origin: ORIGIN,
@@ -82,34 +155,35 @@ describe('ensureCloudDashboardSession', () => {
 
   it('plants after a forced connect and then uses the cloud origin', async () => {
     readCloudWorkspaceRecord.mockReturnValue({ deploymentUrl: ORIGIN })
-    hasCloudDashboardCookie.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    cookies.get
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ name: COOKIE_NAME, value: 'x' }])
     mintDeploymentSessionForDashboard.mockResolvedValue({
       deploymentUrl: ORIGIN,
-      setCookies: [COOKIE],
+      setCookies: [LINE],
     })
-    plantCloudDashboardCookie.mockResolvedValue(true)
 
     await expect(ensureCloudDashboardSession('cloud')).resolves.toEqual({
       useCloudOrigin: true,
       origin: ORIGIN,
     })
-    expect(plantCloudDashboardCookie).toHaveBeenCalledWith(ORIGIN, expect.any(Array))
+    expect(cookies.set).toHaveBeenCalled()
   })
 
   it('falls back to the door when mint returns nothing', async () => {
     readCloudWorkspaceRecord.mockReturnValue({ deploymentUrl: ORIGIN })
-    hasCloudDashboardCookie.mockResolvedValue(false)
+    jarEmpty()
     mintDeploymentSessionForDashboard.mockResolvedValue(null)
     await expect(ensureCloudDashboardSession('cloud')).resolves.toEqual({
       useCloudOrigin: false,
       origin: ORIGIN,
     })
-    expect(plantCloudDashboardCookie).not.toHaveBeenCalled()
+    expect(cookies.set).not.toHaveBeenCalled()
   })
 
   it('falls back to the door when plant does not leave a cookie', async () => {
     readCloudWorkspaceRecord.mockReturnValue({ deploymentUrl: ORIGIN })
-    hasCloudDashboardCookie.mockResolvedValue(false)
+    jarEmpty()
     mintDeploymentSessionForDashboard.mockResolvedValue({
       deploymentUrl: ORIGIN,
       setCookies: [],
@@ -122,34 +196,35 @@ describe('ensureCloudDashboardSession', () => {
 
   it('does not plant when the workspace is cleared during mint', async () => {
     readCloudWorkspaceRecord.mockReturnValue({ deploymentUrl: ORIGIN })
-    hasCloudDashboardCookie.mockResolvedValue(false)
+    jarEmpty()
     mintDeploymentSessionForDashboard.mockImplementation(async () => {
       readCloudWorkspaceRecord.mockReturnValue(null)
-      return { deploymentUrl: ORIGIN, setCookies: [COOKIE] }
+      return { deploymentUrl: ORIGIN, setCookies: [LINE] }
     })
     await expect(ensureCloudDashboardSession('cloud')).resolves.toEqual({
       useCloudOrigin: false,
       origin: ORIGIN,
     })
-    expect(plantCloudDashboardCookie).not.toHaveBeenCalled()
+    expect(cookies.set).not.toHaveBeenCalled()
   })
 
   it('clears a plant that finished after the workspace disappeared', async () => {
     readCloudWorkspaceRecord.mockReturnValue({ deploymentUrl: ORIGIN })
-    hasCloudDashboardCookie.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    cookies.get
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ name: COOKIE_NAME, value: 'x' }])
     mintDeploymentSessionForDashboard.mockResolvedValue({
       deploymentUrl: ORIGIN,
-      setCookies: [COOKIE],
+      setCookies: [LINE],
     })
-    plantCloudDashboardCookie.mockImplementation(async () => {
+    cookies.set.mockImplementation(async () => {
       readCloudWorkspaceRecord.mockReturnValue(null)
-      return true
     })
     await expect(ensureCloudDashboardSession('cloud')).resolves.toEqual({
       useCloudOrigin: false,
       origin: null,
     })
-    expect(clearCloudDashboardCookie).toHaveBeenCalledWith(ORIGIN)
+    expect(cookies.remove).toHaveBeenCalledWith(`${ORIGIN}/`, COOKIE_NAME)
   })
 
   it('does not restore a cookie after disconnect wins the race', async () => {
@@ -160,7 +235,7 @@ describe('ensureCloudDashboardSession', () => {
     registerCloudDashboardCookieCleanup()
 
     readCloudWorkspaceRecord.mockReturnValue({ deploymentUrl: ORIGIN })
-    hasCloudDashboardCookie.mockResolvedValue(false)
+    jarEmpty()
     let finishMint!: (value: { deploymentUrl: string; setCookies: string[] }) => void
     mintDeploymentSessionForDashboard.mockReturnValue(
       new Promise((resolve) => {
@@ -174,15 +249,15 @@ describe('ensureCloudDashboardSession', () => {
     })
     readCloudWorkspaceRecord.mockReturnValue(null)
     onCleared?.(`${ORIGIN}/`)
-    finishMint({ deploymentUrl: ORIGIN, setCookies: [COOKIE] })
+    finishMint({ deploymentUrl: ORIGIN, setCookies: [LINE] })
 
     await expect(pending).resolves.toEqual({
       useCloudOrigin: false,
       origin: ORIGIN,
     })
-    expect(plantCloudDashboardCookie).not.toHaveBeenCalled()
+    expect(cookies.set).not.toHaveBeenCalled()
     await vi.waitFor(() => {
-      expect(clearCloudDashboardCookie).toHaveBeenCalledWith(ORIGIN)
+      expect(cookies.remove).toHaveBeenCalledWith(`${ORIGIN}/`, COOKIE_NAME)
     })
   })
 
@@ -194,7 +269,7 @@ describe('ensureCloudDashboardSession', () => {
     registerCloudDashboardCookieCleanup()
 
     readCloudWorkspaceRecord.mockReturnValue({ deploymentUrl: ORIGIN })
-    hasCloudDashboardCookie.mockResolvedValue(false)
+    jarEmpty()
     let finishMint!: (value: { deploymentUrl: string; setCookies: string[] }) => void
     mintDeploymentSessionForDashboard.mockReturnValue(
       new Promise((resolve) => {
@@ -211,8 +286,8 @@ describe('ensureCloudDashboardSession', () => {
 
     onCleared?.(`${ORIGIN}/`)
     readCloudWorkspaceRecord.mockReturnValue({ deploymentUrl: ORIGIN })
-    hasCloudDashboardCookie.mockResolvedValue(true)
-    finishMint({ deploymentUrl: ORIGIN, setCookies: [COOKIE] })
+    jarHasCookie()
+    finishMint({ deploymentUrl: ORIGIN, setCookies: [LINE] })
 
     await expect(first).resolves.toMatchObject({ useCloudOrigin: false })
     await expect(second).resolves.toEqual({
@@ -229,9 +304,9 @@ describe('ensureCloudDashboardSession', () => {
     registerCloudDashboardCookieCleanup()
 
     readCloudWorkspaceRecord.mockReturnValue({ deploymentUrl: ORIGIN })
-    let finishLookup!: (value: boolean) => void
-    hasCloudDashboardCookie
-      .mockResolvedValueOnce(false)
+    let finishLookup!: (value: unknown) => void
+    cookies.get
+      .mockResolvedValueOnce([])
       .mockImplementationOnce(
         () => new Promise((resolve) => {
           finishLookup = resolve
@@ -239,22 +314,21 @@ describe('ensureCloudDashboardSession', () => {
       )
     mintDeploymentSessionForDashboard.mockResolvedValue({
       deploymentUrl: ORIGIN,
-      setCookies: [COOKIE],
+      setCookies: [LINE],
     })
-    plantCloudDashboardCookie.mockResolvedValue(true)
 
     const pending = ensureCloudDashboardSession('cloud')
     await vi.waitFor(() => {
-      expect(plantCloudDashboardCookie).toHaveBeenCalled()
+      expect(cookies.set).toHaveBeenCalled()
     })
     readCloudWorkspaceRecord.mockReturnValue(null)
     onCleared?.(`${ORIGIN}/`)
-    finishLookup(true)
+    finishLookup([{ name: COOKIE_NAME, value: 'x' }])
 
     await expect(pending).resolves.toEqual({
       useCloudOrigin: false,
       origin: null,
     })
-    expect(clearCloudDashboardCookie).toHaveBeenCalledWith(ORIGIN)
+    expect(cookies.remove).toHaveBeenCalledWith(`${ORIGIN}/`, COOKIE_NAME)
   })
 })

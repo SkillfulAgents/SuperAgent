@@ -36,6 +36,18 @@ function singleParam(params: URLSearchParams, name: string): string | null {
   return values[0]
 }
 
+// Browser POSTs (Origin present, or a document/iframe navigation) stay JSON-only.
+function isDesktopCookieCaller(headers: { get(name: string): string | null }): boolean {
+  if (headers.get('origin')) return false
+  const dest = (headers.get('sec-fetch-dest') ?? '').toLowerCase()
+  const mode = (headers.get('sec-fetch-mode') ?? '').toLowerCase()
+  if (dest === 'document' || dest === 'iframe' || dest === 'embed' || dest === 'frame') {
+    return false
+  }
+  if (mode === 'navigate') return false
+  return true
+}
+
 /**
  * RFC 7523 JWT bearer grant token endpoint (downstream Authorization Server).
  * POST /api/auth/token/exchange — accepts a platform-issued JWT authorization
@@ -86,7 +98,6 @@ tokenExchange.post('/exchange', limitBody, async (c) => {
   }
 
   const { exchangeDeploymentGrant, issueDesktopSessionCookieLine, TokenExchangeError } = await import('@shared/lib/auth/token-exchange')
-  const { isDesktopCookieCaller } = await import('./token-exchange-cookie')
   try {
     const result = await exchangeDeploymentGrant(assertion, {
       userAgent: c.req.header('user-agent'),
