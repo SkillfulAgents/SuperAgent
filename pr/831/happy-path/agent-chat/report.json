@@ -1,0 +1,25 @@
+{
+  "storyId": "agent-chat",
+  "passed": true,
+  "reason": "Agent messaging test: verified agent accepts and responds to chat messages with correct content",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing sidebar with agents and main dashboard",
+    "Clicked agent \"QA-20260821-225427-o3yw\" in the sidebar — Agent detail page opened with agent name displayed at top",
+    "Verified agent status shows \"idle\" — Status indicator at top right of page confirmed status is \"idle\" (acceptable)",
+    "Clicked message input box and typed \"Hello! What is 2+2?\" — Message was successfully entered in the textbox",
+    "Clicked send button to submit message — Message was sent, new session \"Basic Math Question Session\" was created, and agent status changed to \"working\"",
+    "Waited for agent response — Response arrived within seconds (well under 3-minute limit)",
+    "Verified response contains \"4\" and took screenshot — Agent's response message clearly displays \"4\" which is the correct answer to 2+2, confirming the agent processed the message correctly and returned an accurate result"
+  ],
+  "bugs": [],
+  "durationMs": 78847,
+  "sessionId": "329e4643-0a61-4184-8404-456a7b1320a3",
+  "cost": {
+    "inputTokens": 454,
+    "outputTokens": 11539,
+    "cacheCreationTokens": 131869,
+    "cacheReadTokens": 1374755,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.360461
+  }
+}
