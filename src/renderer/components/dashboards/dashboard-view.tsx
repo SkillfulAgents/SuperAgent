@@ -6,6 +6,7 @@ import { useKeepAlive } from '@renderer/hooks/use-keep-alive'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
 import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { apiFetch } from '@renderer/lib/api'
 import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
 import { AddToDockDialog } from './add-to-dock-dialog'
 import { PendingAgentReviews } from './pending-agent-reviews'
@@ -40,6 +41,8 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const [frameLoadedEarly, setFrameLoadedEarly] = useState(false)
   const frameErrorRetriesRef = useRef(0)
   const frameRetryTimerRef = useRef<number | null>(null)
+  // Monotonic token so a probe finishing after a navigation/remount is ignored.
+  const frameProbeSeqRef = useRef(0)
   const [restartError, setRestartError] = useState<string | null>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const waitStartedAtRef = useRef<number | null>(null)
@@ -104,7 +107,8 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   // DASHBOARD_BASE_PATH. Keep their browser-visible URL on that same stable
   // id even when the surrounding app route uses a decorative display slug.
   const dashboardAgentSlug = agent?.slug ?? agentSlug
-  const iframeSrc = `${baseUrl}${buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)}`
+  const dashboardPath = buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)
+  const iframeSrc = `${baseUrl}${dashboardPath}`
 
   const handleRefresh = useCallback(() => {
     if (iframeRef.current) {
@@ -259,6 +263,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   // Navigating to a different dashboard resets the retry machinery.
   useEffect(() => {
     frameErrorRetriesRef.current = 0
+    frameProbeSeqRef.current++
     setFrameLoadedEarly(false)
     setFrameAttempt(0)
   }, [iframeSrc])
@@ -278,8 +283,8 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   }, [])
 
   const scheduleFrameRetry = useCallback(() => {
-    // Network-level load failure. Bounded backoff — a frame left in this
-    // state was previously blank forever with no recovery.
+    // Failed document load. Bounded backoff — a frame left in this state was
+    // previously blank forever with no recovery.
     if (frameErrorRetriesRef.current >= 3) {
       setFrameLoading(false)
       return
@@ -292,15 +297,28 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     }, delay)
   }, [])
 
-  // React only wires the iframe 'load' event (an onError prop is never
-  // attached for iframes), so the error listener goes on the element itself.
-  // Re-attached per remount: frameAttempt keys the iframe.
-  useEffect(() => {
-    const frame = iframeRef.current
-    if (!frame) return
-    frame.addEventListener('error', scheduleFrameRetry)
-    return () => frame.removeEventListener('error', scheduleFrameRetry)
-  }, [scheduleFrameRetry, frameAttempt, showFrame])
+  // Browsers fire 'load' even for a failed iframe navigation (they render an
+  // error document), and iframes get no 'error' event for it — the load event
+  // alone cannot confirm the dashboard actually answered. Probe the same URL
+  // right after each load while the dashboard reports running: a healthy
+  // response means the loaded document was real; a failure schedules a retry.
+  const verifyFrameDocument = useCallback(async () => {
+    const seq = ++frameProbeSeqRef.current
+    let ok = false
+    try {
+      const res = await apiFetch(dashboardPath, { method: 'HEAD', cache: 'no-store' })
+      ok = res.ok
+    } catch {
+      ok = false
+    }
+    if (seq !== frameProbeSeqRef.current) return
+    if (ok) {
+      setFrameLoading(false)
+      frameErrorRetriesRef.current = 0
+    } else {
+      scheduleFrameRetry()
+    }
+  }, [dashboardPath, scheduleFrameRetry])
 
   if (!showFrame) {
     return (
@@ -344,10 +362,13 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
           allow="microphone; camera"
           onLoad={() => {
-            setFrameLoading(false)
             setRefreshing(false)
-            frameErrorRetriesRef.current = 0
-            setFrameLoadedEarly(!dashboardRunning)
+            if (!dashboardRunning) {
+              setFrameLoading(false)
+              setFrameLoadedEarly(true)
+              return
+            }
+            void verifyFrameDocument()
           }}
         />
         {!dashboardRunning && (

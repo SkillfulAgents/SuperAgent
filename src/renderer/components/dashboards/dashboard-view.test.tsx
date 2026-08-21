@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   },
   refetchAgent: vi.fn(),
   openDashboardExternal: vi.fn(),
+  apiFetch: vi.fn(),
 }))
 
 vi.mock('@renderer/hooks/use-agents', () => ({
@@ -84,6 +85,10 @@ vi.mock('@renderer/lib/dashboard-utils', () => ({
   openDashboardExternal: vi.fn(),
 }))
 
+vi.mock('@renderer/lib/api', () => ({
+  apiFetch: (...args: unknown[]) => mocks.apiFetch(...args),
+}))
+
 vi.mock('@renderer/lib/perf', () => ({
   useRenderTracker: vi.fn(),
 }))
@@ -118,6 +123,7 @@ describe('DashboardView restart', () => {
         status: mocks.refetchedAgentStatus,
       },
     }))
+    mocks.apiFetch.mockResolvedValue({ ok: true })
   })
 
   afterEach(() => {
@@ -221,7 +227,7 @@ describe('DashboardView restart', () => {
     expect(waiting()).toBeNull()
   })
 
-  it('shows the toolbar spinner until the first iframe document loads', () => {
+  it('shows the toolbar spinner until the first iframe document loads', async () => {
     mocks.dashboardStatus = 'running'
     renderDashboard()
     const frame = document.querySelector('iframe')!
@@ -229,6 +235,8 @@ describe('DashboardView restart', () => {
     expect(screen.getByRole('button', { name: 'Loading dashboard' })).toBeDisabled()
 
     fireEvent.load(frame)
+    // The load is only trusted once the async probe confirms it
+    await act(async () => {})
 
     expect(screen.getByRole('button', { name: 'Refresh dashboard' })).not.toBeDisabled()
   })
@@ -249,12 +257,14 @@ describe('DashboardView restart', () => {
     renderDashboard()
     const frame = document.querySelector('iframe')!
     fireEvent.load(frame)
+    await act(async () => {})
 
     await userEvent.click(screen.getByRole('button', { name: 'Refresh dashboard' }))
 
     expect(screen.getByRole('button', { name: 'Refreshing dashboard' })).toBeDisabled()
 
     fireEvent.load(frame)
+    await act(async () => {})
 
     expect(screen.getByRole('button', { name: 'Refresh dashboard' })).not.toBeDisabled()
   })
@@ -281,6 +291,7 @@ describe('DashboardView optimistic mount and retry', () => {
     mocks.dashboardDescription = ''
     mocks.dashboardStartupPhase = 'starting-server'
     mocks.dashboardFirstRun = undefined
+    mocks.apiFetch.mockResolvedValue({ ok: true })
   })
 
   it('mounts the iframe behind the status overlay while the server is starting', () => {
@@ -332,26 +343,46 @@ describe('DashboardView optimistic mount and retry', () => {
     expect(document.querySelector('iframe')).toBe(frame)
   })
 
-  it('retries a network-failed load with backoff, bounded', () => {
+  it('accepts a document once the probe confirms the dashboard answered', async () => {
+    mocks.dashboardStatus = 'running'
+    renderDashboard()
+    const frame = document.querySelector('iframe')!
+
+    fireEvent.load(frame)
+    await act(async () => {})
+
+    // Browsers fire 'load' even for failed navigations, so acceptance goes
+    // through a HEAD probe of the same URL.
+    expect(mocks.apiFetch).toHaveBeenCalledWith(
+      '/api/agents/agent/artifacts/dashboard/',
+      { method: 'HEAD', cache: 'no-store' },
+    )
+    expect(document.querySelector('iframe')).toBe(frame)
+  })
+
+  it('does not probe a document that loaded before the dashboard was running', async () => {
+    renderDashboard()
+    const frame = document.querySelector('iframe')!
+
+    fireEvent.load(frame)
+    await act(async () => {})
+
+    expect(mocks.apiFetch).not.toHaveBeenCalled()
+  })
+
+  it('retries with backoff when the loaded document fails the probe, bounded', async () => {
     vi.useFakeTimers()
     try {
       mocks.dashboardStatus = 'running'
+      mocks.apiFetch.mockRejectedValue(new Error('fetch failed'))
       renderDashboard()
-      const first = document.querySelector('iframe')!
-      fireEvent.error(first)
+      let frame = document.querySelector('iframe')!
 
-      // Not yet — retry is delayed
-      expect(document.querySelector('iframe')).toBe(first)
-      act(() => {
-        vi.advanceTimersByTime(1_000)
-      })
-      const second = document.querySelector('iframe')!
-      expect(second).not.toBe(first)
-
-      // Exhaust the budget: 3 retries total, the 4th error is terminal
-      let frame = second
-      for (const delay of [2_000, 4_000]) {
-        fireEvent.error(frame)
+      // 3 retries with growing delays
+      for (const delay of [1_000, 2_000, 4_000]) {
+        fireEvent.load(frame)
+        await act(async () => {}) // probe rejects → retry scheduled
+        expect(document.querySelector('iframe')).toBe(frame)
         act(() => {
           vi.advanceTimersByTime(delay)
         })
@@ -359,7 +390,10 @@ describe('DashboardView optimistic mount and retry', () => {
         expect(next).not.toBe(frame)
         frame = next
       }
-      fireEvent.error(frame)
+
+      // Budget exhausted: the 4th failed probe is terminal
+      fireEvent.load(frame)
+      await act(async () => {})
       act(() => {
         vi.advanceTimersByTime(60_000)
       })
