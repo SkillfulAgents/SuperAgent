@@ -168,9 +168,12 @@ Other properties worth not regressing:
   `cloud-proxy.integration.test.ts` is for.
 - **Only `/api` paths are forwarded**; anything else 404s, as does a bad key
   (a prober learns nothing either way).
-- **Documents served through the proxy don't inherit its prefix.** A dashboard
-  iframe is loaded from the keyed URL, but the HTML comes back unchanged, and a
-  root-relative `/api/...` inside it resolves against the *loopback* origin. The
+- **A dashboard's own urls get the prefix back; nothing else does.** A dashboard
+  iframe is loaded from the keyed URL, and `cloud-proxy.ts` substitutes the
+  prefix onto occurrences of that dashboard's own mount in html, javascript and
+  css bodies — without it a root-absolute entry module resolves against the
+  *loopback* origin, 404s on the local API, and the dashboard renders blank. Any
+  other `/api/...` inside the document is left alone. The
   LLM and speech shims injected into dashboards therefore derive their prefix
   from `location` at runtime (`api/polyfill-api-prefix.ts`) instead of
   hardcoding it — otherwise a cloud dashboard's LLM calls would silently run on

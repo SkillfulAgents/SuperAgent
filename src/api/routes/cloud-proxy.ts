@@ -191,6 +191,49 @@ function buildClientHeaders(upstream: { headers: Headers }): Headers {
   return headers
 }
 
+/** A dashboard mount inside the deployment: `/api/agents/<agent>/artifacts/<slug>/`. */
+const DASHBOARD_MOUNT_PATH = /^\/api\/agents\/[^/]+\/artifacts\/[^/]+\//
+
+/** Bodies whose text can name the dashboard's own mount. */
+const REWRITABLE_DASHBOARD_TYPES =
+  /^(?:text\/html|text\/javascript|application\/javascript|text\/css)\b/i
+
+/**
+ * Put this proxy's prefix back onto the urls a dashboard writes about itself.
+ *
+ * The deployment is never told the prefix exists (`cloud-proxy-key.ts`), so a
+ * dashboard writes its mount unprefixed into its markup and into every module
+ * specifier. Root-absolute urls ignore `<base>`, so those requests reach the
+ * *local* API, which has no such agent, and the dashboard renders blank.
+ *
+ * Substitution is sound because the string replaced is the request's own mount:
+ * an occurrence of it in a body served from that mount is by construction a url
+ * pointing back at the same dashboard. JSON is deliberately excluded — a mount
+ * inside a data payload is not necessarily a url.
+ *
+ * Contained by intent: the prefix is an authentication mechanism occupying the
+ * application's url namespace, and that collision is the thing worth removing.
+ */
+async function withDashboardPrefix(
+  response: Response,
+  mount: string,
+  prefix: string,
+): Promise<Response> {
+  const contentType = response.headers.get('content-type') ?? ''
+  if (!REWRITABLE_DASHBOARD_TYPES.test(contentType)) return response
+  // A 304 still carries the asset's content-type but no body, and a null-body
+  // status cannot be given one — rebuilding it would throw. Dropping the etag
+  // below makes revalidation the common case, so this is a normal path.
+  if (response.body === null) return response
+
+  const body = (await response.text()).split(mount).join(prefix + mount)
+  const headers = new Headers(response.headers)
+  // The bytes are no longer the ones upstream validated or measured.
+  headers.delete('etag')
+  headers.set('cache-control', 'no-cache')
+  return new Response(body, { status: response.status, statusText: response.statusText, headers })
+}
+
 /**
  * Request headers that make this GET a different question from the one main
  * asked on the app's behalf. A conditional or ranged request expects a 304 or a
@@ -276,7 +319,9 @@ cloudProxy.all('/*', async (c) => {
     if (prefetched) return fromPrefetch(prefetched)
   }
 
-  return forwardRequest(c.req.raw, target, pathAndQuery)
+  const response = await forwardRequest(c.req.raw, target, pathAndQuery)
+  const mount = upstreamPath.match(DASHBOARD_MOUNT_PATH)?.[0]
+  return mount ? withDashboardPrefix(response, mount, `${CLOUD_PROXY_PREFIX}/${key}`) : response
 })
 
 async function forwardRequest(

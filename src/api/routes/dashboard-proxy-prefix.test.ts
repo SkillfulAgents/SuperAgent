@@ -138,6 +138,22 @@ describe('dashboard served through the cloud proxy prefix', () => {
     }
   })
 
+  it('passes a revalidation 304 straight through', async () => {
+    // A rewritten response drops its etag and asks the browser to revalidate,
+    // so a conditional request on a dashboard asset is the expected next call
+    // rather than an edge case. 304 carries no body and cannot be given one,
+    // so it has to bypass the rewrite instead of being rebuilt from its text.
+    mockFetch.mockResolvedValue(
+      new Response(null, { status: 304, headers: { 'content-type': 'text/javascript' } }),
+    )
+
+    const res = await app.request(`${ORIGIN}${proxiedPath(`${MOUNT}main.tsx`)}`, {
+      headers: { 'if-modified-since': 'Wed, 20 Aug 2026 00:00:00 GMT' },
+    })
+
+    expect(res.status).toBe(304)
+  })
+
   it('keeps a relative asset url inside the proxy prefix', async () => {
     // Relative urls are the usual advice for a proxied app, and they do not
     // help here: the injected `<base>` names the mount without the prefix, so
