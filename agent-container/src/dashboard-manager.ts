@@ -65,6 +65,65 @@ export async function truncateOversizedLog(
   }
 }
 
+// Start scripts the react-vite template has shipped with (current and legacy).
+// Both reduce to "ensure dist is built, then run serve.js", so the boot path
+// may substitute `bun run serve.js` directly when the build output is fresh
+// (see canSkipTemplateBuild) — that also skips the wrapper-script spawn chain.
+// Matched by exact equality — any customized start script (extra steps,
+// different server) always runs as written.
+export const TEMPLATE_BUILD_AND_SERVE_STARTS: ReadonlySet<string> = new Set([
+  'bun run build-if-needed.js && bun run serve.js',
+  'bun run build && bun run serve.js',
+])
+
+// Safety bound for the freshness walk; a dashboard tree bigger than this
+// rebuilds rather than risk an incomplete scan.
+const FRESHNESS_WALK_MAX_ENTRIES = 2000
+
+// Build inputs/outputs the freshness walk must not treat as sources.
+const FRESHNESS_WALK_EXCLUDES = new Set([
+  'node_modules',
+  'dist',
+  'dashboard.log',
+  SCREENSHOT_FILENAME,
+  'bun.lock',
+  'bun.lockb',
+])
+
+/**
+ * Newest mtime (ms) of any file under `dir`, skipping `excludes` at every
+ * level. Returns null when the walk exceeds `maxEntries` (caller must treat
+ * that as "unknown → stale") or the directory is unreadable.
+ */
+export function newestMtimeMs(
+  dir: string,
+  excludes: ReadonlySet<string> = FRESHNESS_WALK_EXCLUDES,
+  maxEntries: number = FRESHNESS_WALK_MAX_ENTRIES,
+): number | null {
+  let newest = 0
+  let seen = 0
+  const stack = [dir]
+  try {
+    while (stack.length > 0) {
+      const current = stack.pop()!
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        if (excludes.has(entry.name)) continue
+        if (++seen > maxEntries) return null
+        const full = path.join(current, entry.name)
+        if (entry.isDirectory()) {
+          stack.push(full)
+        } else if (entry.isFile()) {
+          const mtime = fs.statSync(full).mtimeMs
+          if (mtime > newest) newest = mtime
+        }
+      }
+    }
+  } catch {
+    return null
+  }
+  return newest
+}
+
 export function validateSlug(slug: string): void {
   if (!SLUG_REGEX.test(slug)) {
     throw new Error(`Invalid dashboard slug: "${slug}". Must be lowercase alphanumeric with hyphens, not starting/ending with hyphen.`)
@@ -301,7 +360,15 @@ class DashboardManager {
       // Start the dashboard server
       info.startupPhase = 'starting-server'
       const dashboardBasePath = getDashboardBasePath(slug)
-      const proc = spawn('bun', ['run', 'start'], {
+      // Boot/crash-restart path: sources only change through agent-initiated
+      // starts (which pass forceInstall and always run the full start script),
+      // so a fresh dist/ can serve directly and skip the template's
+      // unconditional Vite rebuild.
+      const skipBuild = !forceInstall && this.canSkipTemplateBuild(dashboardDir)
+      if (skipBuild) {
+        info.logStream?.write('[DashboardManager] dist up-to-date, skipping build (bun run serve.js)\n')
+      }
+      const proc = spawn('bun', skipBuild ? ['run', 'serve.js'] : ['run', 'start'], {
         cwd: dashboardDir,
         env: {
           ...process.env,
@@ -410,6 +477,29 @@ class DashboardManager {
     // Forced (agent-initiated) or no/stale lockfile: plain install, which
     // resolves and updates the lockfile as needed.
     return this.runBunInstall(dir, logStream)
+  }
+
+  /**
+   * True when this dashboard uses the stock template start script
+   * (`build && serve`) verbatim AND its build output is at least as new as
+   * every source file — in which case `bun run serve.js` is equivalent to
+   * `bun run start` minus the rebuild. Any doubt (custom start script, missing
+   * dist, unreadable tree, oversized tree) returns false and the full start
+   * script runs.
+   */
+  private canSkipTemplateBuild(dir: string): boolean {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8'))
+      if (!TEMPLATE_BUILD_AND_SERVE_STARTS.has(pkg?.scripts?.start)) return false
+      if (!fs.existsSync(path.join(dir, 'serve.js'))) return false
+      const distStamp = newestMtimeMs(path.join(dir, 'dist'), new Set())
+      if (distStamp === null || distStamp === 0) return false
+      const sourceStamp = newestMtimeMs(dir)
+      if (sourceStamp === null) return false
+      return sourceStamp <= distStamp
+    } catch {
+      return false
+    }
   }
 
   private hasLockfile(dir: string): boolean {

@@ -706,6 +706,91 @@ describe('subscribeToStream failure handling', () => {
 })
 
 // ============================================================================
+// fetch() port caching — one runtime inspect per container lifetime, not per
+// request (every proxied dashboard asset used to pay a CLI spawn)
+// ============================================================================
+
+class RunningTestClient extends BaseContainerClient {
+  infoCalls = 0
+  protected getRunnerCommand(): string {
+    return 'docker'
+  }
+  async getInfoFromRuntime(): Promise<ContainerInfo> {
+    this.infoCalls++
+    return { status: 'running', port: 4123 }
+  }
+  // The real implementation lazily persists a per-agent token file on disk
+  getHostAuthHeaders(): Record<string, string> {
+    return {}
+  }
+}
+
+describe('BaseContainerClient.fetch port caching', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('resolves the port from the runtime once and reuses it across fetches', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi.fn(async () => new Response('ok'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    await client.fetch('/artifacts')
+    await client.fetch('/health')
+
+    expect(client.infoCalls).toBe(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'http://127.0.0.1:4123/artifacts', expect.anything())
+  })
+
+  it('clears the cached port on a connection error and re-resolves on the next fetch', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi
+      .fn(async () => new Response('ok'))
+      .mockResolvedValueOnce(new Response('ok'))
+      .mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:4123'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    await expect(client.fetch('/artifacts')).rejects.toThrow('ECONNREFUSED')
+    await client.fetch('/artifacts')
+
+    // First fetch primes the cache, the refused fetch clears it, the third
+    // re-resolves — two inspects total, never one per request.
+    expect(client.infoCalls).toBe(2)
+  })
+
+  it('session-scoped calls clear a stale cached port on connection failure', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi
+      .fn(async () => new Response('{}'))
+      .mockResolvedValueOnce(new Response('ok'))
+      .mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:4123'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    // Container was recreated on another port: the very next session call
+    // fails once, clears the cache, and the call after re-resolves the port.
+    await expect(client.getSession('sess-1')).rejects.toThrow('ECONNREFUSED')
+    await client.getSession('sess-1')
+
+    expect(client.infoCalls).toBe(2)
+  })
+
+  it('does not clear the cached port on HTTP-level failures', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi.fn(async () => new Response('nope', { status: 500 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    await client.fetch('/artifacts')
+
+    expect(client.infoCalls).toBe(1)
+  })
+})
+
+// ============================================================================
 // run-error classification (port races, inaccessible mounts)
 // ============================================================================
 

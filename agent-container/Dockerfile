@@ -224,6 +224,11 @@ ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage,--disable-blink-fea
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
 ENV DISABLE_AUTOUPDATER=1
+# Keep bun's package cache on the persistent workspace mount. The default
+# ($HOME/.bun/install/cache) lives in the container's writable layer, which is
+# discarded on every restart (each start is `rm -f` + a fresh `run`), so any
+# dashboard dependency install after a wake re-downloaded every package.
+ENV BUN_INSTALL_CACHE_DIR=/workspace/.bun-cache
 # ENABLE_TOOL_SEARCH is deliberately NOT set here. The host passes it at
 # `docker run` only for providers whose endpoint expands deferred tools; for
 # the rest it must stay unset so the CLI applies its own guard (it disables

@@ -26,6 +26,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   useRenderTracker('DashboardView')
   const [dockDialogOpen, setDockDialogOpen] = useState(false)
   const [pollFast, setPollFast] = useState(false)
+  const [pollWatching, setPollWatching] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const [restarting, setRestarting] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -36,7 +37,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const autoStartedRef = useRef<string | null>(null)
   const wasDocumentHiddenRef = useRef(document.visibilityState === 'hidden')
   const { data: agent, refetch: refetchAgent } = useAgent(agentSlug)
-  const { data: artifacts } = useArtifacts(agentSlug, { pollFast })
+  const { data: artifacts } = useArtifacts(agentSlug, { pollFast, watching: pollWatching })
   const startAgent = useStartAgent()
   const stopAgent = useStopAgent()
   const { canUseAgent } = useUser()
@@ -81,9 +82,13 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   })
 
   const nextPollFast = 'pollFast' in viewState && viewState.pollFast
+  // Any state carrying pollFast is a mounted-and-unresolved view; it keeps a
+  // 1s polling floor even after pollFast turns off at the slow bound.
+  const nextPollWatching = 'pollFast' in viewState
   useEffect(() => {
     setPollFast((prev) => (prev === nextPollFast ? prev : nextPollFast))
-  }, [nextPollFast])
+    setPollWatching((prev) => (prev === nextPollWatching ? prev : nextPollWatching))
+  }, [nextPollFast, nextPollWatching])
 
   const baseUrl = getApiBaseUrl()
   // Dashboard processes receive the canonical agent id in

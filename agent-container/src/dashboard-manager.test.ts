@@ -380,6 +380,105 @@ describe('DashboardManager log stream lifecycle', () => {
     )
   })
 
+  describe('build skip semantics', () => {
+    const TEMPLATE_START = 'bun run build && bun run serve.js'
+
+    /** Record every spawn; auto-exit `bun install` procs. */
+    function recordSpawns() {
+      const spawns: Array<{ command: string; args: string[] }> = []
+      spawnHolder.impl = (command, args) => {
+        const proc = new FakeChildProcess()
+        procs.push(proc)
+        spawns.push({ command, args })
+        if (args[0] === 'install') setImmediate(() => proc.exit(0))
+        return proc
+      }
+      return spawns
+    }
+
+    /** Template-shaped dashboard: template start script, serve.js, built dist. */
+    async function scaffoldTemplateDashboard(opts?: {
+      start?: string
+      dist?: boolean
+      distFresh?: boolean
+    }): Promise<string> {
+      const slug = await scaffoldDashboard({ scripts: { start: opts?.start ?? TEMPLATE_START } })
+      const dir = path.join(testDir, slug)
+      await fs.promises.writeFile(path.join(dir, 'serve.js'), '// server')
+      await fs.promises.mkdir(path.join(dir, 'src'), { recursive: true })
+      await fs.promises.writeFile(path.join(dir, 'src', 'App.jsx'), '// app')
+      if (opts?.dist !== false) {
+        await fs.promises.mkdir(path.join(dir, 'dist'), { recursive: true })
+        await fs.promises.writeFile(path.join(dir, 'dist', 'index.html'), '<html></html>')
+        const stamp = new Date(Date.now() + (opts?.distFresh === false ? -600_000 : 120_000))
+        await fs.promises.utimes(path.join(dir, 'dist', 'index.html'), stamp, stamp)
+      }
+      return slug
+    }
+
+    it('boot start serves directly when the template dist is fresh', async () => {
+      const slug = await scaffoldTemplateDashboard()
+      const spawns = recordSpawns()
+
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'serve.js']])
+      expect(info.status).toBe('running')
+    })
+
+    it('boot start serves directly for the build-if-needed template variant too', async () => {
+      const slug = await scaffoldTemplateDashboard({
+        start: 'bun run build-if-needed.js && bun run serve.js',
+      })
+      const spawns = recordSpawns()
+
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'serve.js']])
+    })
+
+    it('boot start rebuilds when a source file is newer than dist', async () => {
+      const slug = await scaffoldTemplateDashboard({ distFresh: false })
+      const spawns = recordSpawns()
+
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'start']])
+    })
+
+    it('boot start rebuilds when dist is missing', async () => {
+      const slug = await scaffoldTemplateDashboard({ dist: false })
+      const spawns = recordSpawns()
+
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'start']])
+    })
+
+    it('agent-initiated start never skips the build, even with a fresh dist', async () => {
+      const slug = await scaffoldTemplateDashboard()
+      const spawns = recordSpawns()
+
+      await manager.startDashboard(slug)
+
+      expect(spawns.map((s) => s.args)).toEqual([
+        ['install', '--network-concurrency=8'],
+        ['run', 'start'],
+      ])
+    })
+
+    it('a customized start script always runs as written', async () => {
+      const slug = await scaffoldTemplateDashboard({
+        start: 'bun run build && bun run migrate.js && bun run serve.js',
+      })
+      const spawns = recordSpawns()
+
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'start']])
+    })
+  })
+
   describe('install semantics', () => {
     /** Record every spawn; auto-exit `bun install` procs with queued codes. */
     function recordSpawns(installExitCodes: number[]) {
