@@ -103,26 +103,6 @@ export async function clearCloudDashboardCookie(origin: string): Promise<void> {
   await session.defaultSession.cookies.remove(url, name)
 }
 
-// Plant and clear share one queue so a leftover plant cannot restore a
-// disconnected account. The epoch bumps the instant the record is cleared,
-// before the queued clear runs, so an in-flight mint can still see the switch.
-let jarOp: Promise<void> = Promise.resolve()
-let jarEpoch = 0
-
-async function withCookieJar<T>(fn: () => Promise<T>): Promise<T> {
-  let release!: () => void
-  const previous = jarOp
-  jarOp = new Promise<void>((resolve) => {
-    release = resolve
-  })
-  await previous
-  try {
-    return await fn()
-  } finally {
-    release()
-  }
-}
-
 function recordMatches(origin: string): boolean {
   const record = readCloudWorkspaceRecord()
   return Boolean(record?.deploymentUrl && normalizeOrigin(record.deploymentUrl) === origin)
@@ -133,55 +113,37 @@ export async function ensureCloudDashboardSession(
 ): Promise<CloudDashboardSession> {
   if (target !== 'cloud') return { useCloudOrigin: false, origin: null }
 
-  // Stamp before waiting in line. A waiter that snapshots after a disconnect
-  // would inherit the new generation and could accept the previous account's
-  // cookie when the next record reuses the same origin.
-  const started = jarEpoch
-  return withCookieJar(async () => {
-    if (started !== jarEpoch) return { useCloudOrigin: false, origin: null }
+  const record = readCloudWorkspaceRecord()
+  const origin = record?.deploymentUrl ? normalizeOrigin(record.deploymentUrl) : null
+  if (!origin) return { useCloudOrigin: false, origin: null }
 
-    const record = readCloudWorkspaceRecord()
-    const origin = record?.deploymentUrl ? normalizeOrigin(record.deploymentUrl) : null
-    if (!origin) return { useCloudOrigin: false, origin: null }
+  if (await hasCloudDashboardCookie(origin)) {
+    return { useCloudOrigin: true, origin }
+  }
 
-    if (await hasCloudDashboardCookie(origin)) {
-      if (started !== jarEpoch || !recordMatches(origin)) {
-        return { useCloudOrigin: false, origin: null }
-      }
-      return { useCloudOrigin: true, origin }
-    }
+  const minted = await mintDeploymentSessionForDashboard()
+  if (!minted) return { useCloudOrigin: false, origin }
 
-    const minted = await mintDeploymentSessionForDashboard()
-    if (!minted || started !== jarEpoch) {
-      return { useCloudOrigin: false, origin }
-    }
+  const plantedOrigin = normalizeOrigin(minted.deploymentUrl)
+  if (!recordMatches(plantedOrigin)) {
+    return { useCloudOrigin: false, origin }
+  }
 
-    const plantedOrigin = normalizeOrigin(minted.deploymentUrl)
-    if (!recordMatches(plantedOrigin)) {
-      return { useCloudOrigin: false, origin }
-    }
+  await plantCloudDashboardCookie(plantedOrigin, minted.setCookies)
+  if (!recordMatches(plantedOrigin)) {
+    await clearCloudDashboardCookie(plantedOrigin)
+    return { useCloudOrigin: false, origin: null }
+  }
 
-    await plantCloudDashboardCookie(plantedOrigin, minted.setCookies)
-    if (started !== jarEpoch || !recordMatches(plantedOrigin)) {
-      await clearCloudDashboardCookie(plantedOrigin)
-      return { useCloudOrigin: false, origin: null }
-    }
-
-    const planted = await hasCloudDashboardCookie(plantedOrigin)
-    if (started !== jarEpoch || !recordMatches(plantedOrigin)) {
-      await clearCloudDashboardCookie(plantedOrigin)
-      return { useCloudOrigin: false, origin: null }
-    }
-    return {
-      useCloudOrigin: planted,
-      origin: planted ? plantedOrigin : origin,
-    }
-  })
+  const planted = await hasCloudDashboardCookie(plantedOrigin)
+  return {
+    useCloudOrigin: planted,
+    origin: planted ? plantedOrigin : origin,
+  }
 }
 
 export function registerCloudDashboardCookieCleanup(): void {
   setCloudWorkspaceRecordClearedListener((deploymentUrl) => {
-    jarEpoch += 1
-    void withCookieJar(() => clearCloudDashboardCookie(normalizeOrigin(deploymentUrl)))
+    void clearCloudDashboardCookie(normalizeOrigin(deploymentUrl))
   })
 }
