@@ -126,7 +126,6 @@ vi.mock('@shared/lib/config/settings', () => ({
       hostBrowserProvider: mockSettingsState.hostBrowserProvider,
     },
   }),
-  isAutoResumeOnUnexpectedDeathEnabled: () => true,
   updateSettings: vi.fn(),
   // the runner auto-switch now persists via mutateSettings; apply the
   // mutator to a fresh snapshot and return it (matching the real return shape).

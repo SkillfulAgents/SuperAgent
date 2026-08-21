@@ -106,7 +106,6 @@ vi.mock('drizzle-orm', () => ({
 const mockGetSettings = vi.fn()
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => mockGetSettings(),
-  isAutoResumeOnUnexpectedDeathEnabled: () => true,
   updateSettings: vi.fn(),
 }))
 

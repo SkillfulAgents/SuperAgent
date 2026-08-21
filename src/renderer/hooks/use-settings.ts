@@ -39,7 +39,7 @@ export function isWarmStartOnTypeEnabled(
   return settings?.app?.warmStartOnType !== false
 }
 
-/** Default-on preference; treat missing as enabled. */
+/** Default-on MicroVM preference; treat missing as enabled. */
 export function isAutoResumeOnUnexpectedDeathEnabled(
   settings?: Pick<GlobalSettingsResponse, 'app'> | null,
 ): boolean {

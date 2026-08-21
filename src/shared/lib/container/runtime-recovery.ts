@@ -27,7 +27,6 @@ export type RuntimeRecoveryDeps = {
     agentSlug: string,
   ) => Promise<void>
   syncAgentStatus?: () => Promise<void>
-  autoResumeEnabled?: () => boolean
 }
 
 const OBSERVE_TIMEOUT_MS = 30_000
@@ -107,11 +106,6 @@ async function recoverFromUnexpectedDeathInner(deps: RuntimeRecoveryDeps): Promi
   }
 
   if (plan.action === 'settle') {
-    await settleAndSync(deps, sessionIds)
-    return
-  }
-
-  if (deps.autoResumeEnabled?.() === false) {
     await settleAndSync(deps, sessionIds)
     return
   }

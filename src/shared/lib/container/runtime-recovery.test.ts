@@ -342,29 +342,6 @@ describe('recoverFromUnexpectedDeath', () => {
     )
   })
 
-  it('settles a recover plan when auto-resume is disabled', async () => {
-    const deps = createDeps({ autoResumeEnabled: () => false })
-    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
-
-    await recoverFromUnexpectedDeath(deps)
-
-    expect(deps.settleRecoveringSessions).toHaveBeenCalledWith(['sess-1'])
-    expect(deps.syncAgentStatus).toHaveBeenCalledTimes(1)
-    expect(deps.restartAgent).not.toHaveBeenCalled()
-    expect(deps.sendMessage).not.toHaveBeenCalled()
-  })
-
-  it('still ignores a live-session blip when auto-resume is disabled', async () => {
-    const deps = createDeps({ autoResumeEnabled: () => false })
-    deps.observeUnexpectedDeath.mockResolvedValue({ action: 'ignore' })
-
-    await recoverFromUnexpectedDeath(deps)
-
-    expect(deps.markRecovered).toHaveBeenCalledWith(['sess-1'])
-    expect(deps.settleRecoveringSessions).not.toHaveBeenCalled()
-    expect(deps.sendMessage).not.toHaveBeenCalled()
-  })
-
   it('syncs agent status when the plan is settle', async () => {
     const deps = createDeps()
     deps.observeUnexpectedDeath.mockResolvedValue({ action: 'settle' })

@@ -8,7 +8,7 @@ import { agentConnectedAccounts, connectedAccounts, agentRemoteMcps, remoteMcpSe
 import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
-import { getSettings, isAutoResumeOnUnexpectedDeathEnabled, mutateSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
@@ -126,7 +126,6 @@ class ContainerManager {
       isSubscribed: (id) => messagePersister.isSubscribed(id),
       subscribeToSession: (sessionId, client, containerSessionId, agentSlug) =>
         messagePersister.subscribeToSession(sessionId, client, containerSessionId, agentSlug),
-      autoResumeEnabled: () => isAutoResumeOnUnexpectedDeathEnabled(getSettings()),
       syncAgentStatus: async () => {
         try {
           await this.syncAgentStatus(agentId)

@@ -108,7 +108,7 @@ export interface AppPreferences {
   autoSleepTimeoutMinutes?: number
   /** Pre-start the agent container when the user begins typing a first message. */
   warmStartOnType?: boolean
-  /** Resume mid-turn sessions after unexpected runtime death. Default on. */
+  /** MicroVM-only. Resume mid-turn sessions after unexpected VM death. Default on. */
   autoResumeOnUnexpectedDeath?: boolean
   autoDeleteInactiveDays?: number
   setupCompleted?: boolean
@@ -139,7 +139,7 @@ export interface AppPreferences {
   browserbaseProxyCity?: string
 }
 
-/** Default-on: resume mid-turn sessions after unexpected runtime death. */
+/** Default-on MicroVM preference; other runtimes ignore this setting. */
 export function isAutoResumeOnUnexpectedDeathEnabled(
   settings?: { app?: Pick<AppPreferences, 'autoResumeOnUnexpectedDeath'> } | null,
 ): boolean {
