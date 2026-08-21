@@ -199,6 +199,11 @@ interface StreamingState {
   // this changes every id we hold is unretirable and must be dropped.
   processInstanceId: string | null
   pendingDeliverFiles: Map<string, { filePath: string; description?: string }> // deliver_file tool calls awaiting their tool_result, keyed by tool_use ID
+  // First-delivery-wins for automated blocking tools (schedule/trigger/webhook).
+  // Those tools have no registry entry to dedupe on; stream stop and
+  // complete-assistant can both carry the same tool_use, and mutating handlers
+  // must not run twice.
+  dispatchedAutomatedToolUseIds: Set<string>
   // True when the runtime publishes session_state_changed events — then IT is
   // the idle authority: a 'result' alone does not end the session (queued
   // messages or background work may keep the runtime non-idle, and it knows —
@@ -465,6 +470,7 @@ class MessagePersister {
     const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
     const priorBackgroundTasks = prior?.activeBackgroundTasks ?? new Map()
     const priorSettledInputRequests = prior?.settledInputRequests ?? new Map()
+    const priorDispatchedAutomatedToolUseIds = prior?.dispatchedAutomatedToolUseIds ?? new Set()
 
     // Detach only the transport if already subscribed. NOT unsubscribeFromSession:
     // that is a full teardown — it drops the session's registry entries, which
@@ -511,6 +517,9 @@ class MessagePersister {
       // decides whether both are still valid.
       processInstanceId: prior?.processInstanceId ?? null,
       pendingDeliverFiles: new Map(),
+      // Survive transport reattach so a stream-stop that already ran a mutating
+      // automated handler is not re-run when complete-assistant arrives after.
+      dispatchedAutomatedToolUseIds: priorDispatchedAutomatedToolUseIds,
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
       lastResultSubtype: null,
       lastResultCleanSuccess: false,
@@ -1150,6 +1159,7 @@ class MessagePersister {
         bgTasksSnapshot: null,
         processInstanceId: null,
         pendingDeliverFiles: new Map(),
+        dispatchedAutomatedToolUseIds: new Set(),
         stateEventsAuthority: false,
         lastResultSubtype: null,
       lastResultCleanSuccess: false,
@@ -1324,6 +1334,53 @@ class MessagePersister {
     if (isBlockingUserInputToolName(toolName)) {
       this.syncSessionAwaiting(sessionId)
     }
+  }
+
+  // Automated blocking tools (schedule/trigger/webhook) resolve host-side with
+  // no registry card. Stream stop and complete-assistant can both carry the
+  // same tool_use — first delivery wins so mutating handlers run once.
+  private dispatchAutomatedBlockingTool(
+    sessionId: string,
+    toolName: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string,
+  ): void {
+    const state = this.streamingStates.get(sessionId)
+    if (!state) return
+    if (state.dispatchedAutomatedToolUseIds.has(toolUseId)) return
+
+    // hasOwn, not a truthiness check: every tool name on every road reaches
+    // here, and a plain object would resolve 'toString' or 'constructor' off
+    // the prototype chain.
+    const handlers = MessagePersister.AUTOMATED_TOOL_HANDLERS
+    if (!Object.hasOwn(handlers, toolName)) return
+
+    handlers[toolName](this, sessionId, toolUseId, toolInput, agentSlug)
+    state.dispatchedAutomatedToolUseIds.add(toolUseId)
+  }
+
+  // Automated blocking tool name → its handler. The container keys the same 13
+  // names, unprefixed, in AUTOMATED_INPUT_TYPES to pick the 10-minute automated
+  // TTL over the 24-hour human one: a tool added here but not there parks for a
+  // day instead of failing fast.
+  private static readonly AUTOMATED_TOOL_HANDLERS: Record<
+    string,
+    (p: MessagePersister, sessionId: string, toolUseId: string, input: string, agentSlug?: string) => void
+  > = {
+    'mcp__user-input__schedule_task': (p, ...a) => p.handleScheduleTaskTool(...a),
+    'mcp__user-input__schedule_resume': (p, ...a) => p.handleScheduleResumeTool(...a),
+    'mcp__user-input__list_scheduled_tasks': (p, ...a) => p.handleListScheduledTasksTool(...a),
+    'mcp__user-input__cancel_scheduled_task': (p, ...a) => p.handleCancelScheduledTaskTool(...a),
+    'mcp__user-input__pause_scheduled_task': (p, ...a) => p.handlePauseResumeScheduledTaskTool('pause', ...a),
+    'mcp__user-input__resume_scheduled_task': (p, ...a) => p.handlePauseResumeScheduledTaskTool('resume', ...a),
+    'mcp__user-input__get_available_triggers': (p, ...a) => p.handleGetAvailableTriggersTool(...a),
+    'mcp__user-input__setup_trigger': (p, ...a) => p.handleSetupTriggerTool(...a),
+    'mcp__user-input__list_triggers': (p, ...a) => p.handleListTriggersTool(...a),
+    'mcp__user-input__cancel_trigger': (p, ...a) => p.handleCancelTriggerTool(...a),
+    'mcp__user-input__create_webhook_endpoint': (p, ...a) => p.handleCreateWebhookEndpointTool(...a),
+    'mcp__user-input__update_webhook_endpoint': (p, ...a) => p.handleUpdateWebhookEndpointTool(...a),
+    'mcp__user-input__inspect_webhook_events': (p, ...a) => p.handleInspectWebhookEventsTool(...a),
   }
 
   // Blocking user-input tool name → the request kind its handler registers.
@@ -2551,6 +2608,13 @@ class MessagePersister {
               state.agentSlug,
               parentToolId,
             )
+            this.dispatchAutomatedBlockingTool(
+              sessionId,
+              block.name,
+              block.id,
+              input,
+              state.agentSlug,
+            )
             if (block.name === 'mcp__user-input__request_script_run') {
               this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug, parentToolId)
             }
@@ -2922,6 +2986,13 @@ class MessagePersister {
             state.agentSlug,
             parentToolId,
           )
+          this.dispatchAutomatedBlockingTool(
+            sessionId,
+            sub.currentToolUse.name,
+            sub.currentToolUse.id,
+            sub.currentToolInput,
+            state.agentSlug,
+          )
 
           if (sub.currentToolUse.name === 'mcp__user-input__request_script_run') {
             this.handleScriptRunRequestTool(
@@ -3094,105 +3165,13 @@ class MessagePersister {
             state.currentToolInput,
             state.agentSlug,
           )
-
-          // Check if this is a schedule task tool
-          if (state.currentToolUse.name === 'mcp__user-input__schedule_task') {
-            this.handleScheduleTaskTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Schedule resume (session wake) tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__schedule_resume') {
-            this.handleScheduleResumeTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // List scheduled tasks tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__list_scheduled_tasks') {
-            this.handleListScheduledTasksTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Cancel scheduled task tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__cancel_scheduled_task') {
-            this.handleCancelScheduledTaskTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Pause scheduled task tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__pause_scheduled_task') {
-            this.handlePauseResumeScheduledTaskTool(
-              'pause',
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Resume scheduled task tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__resume_scheduled_task') {
-            this.handlePauseResumeScheduledTaskTool(
-              'resume',
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Webhook trigger tools
-          if (state.currentToolUse.name === 'mcp__user-input__get_available_triggers') {
-            this.handleGetAvailableTriggersTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__setup_trigger') {
-            this.handleSetupTriggerTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__list_triggers') {
-            this.handleListTriggersTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__cancel_trigger') {
-            this.handleCancelTriggerTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__create_webhook_endpoint') {
-            this.handleCreateWebhookEndpointTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__update_webhook_endpoint') {
-            this.handleUpdateWebhookEndpointTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__inspect_webhook_events') {
-            this.handleInspectWebhookEventsTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
+          this.dispatchAutomatedBlockingTool(
+            sessionId,
+            state.currentToolUse.name,
+            state.currentToolUse.id,
+            state.currentToolInput,
+            state.agentSlug,
+          )
 
           if (state.currentToolUse.name === 'mcp__user-input__request_script_run') {
             this.handleScriptRunRequestTool(
