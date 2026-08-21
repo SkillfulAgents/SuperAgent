@@ -1,11 +1,10 @@
-import type { RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
+import type { RuntimeDeathProbe, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
 export const MICROVM_DEATH_REASONS = ['max_lifetime', 'guest_oom', 'runtime_lost', 'not_dead'] as const
 
 export type MicrovmDeathReason = (typeof MICROVM_DEATH_REASONS)[number]
 
 export type MicrovmFatalResult = RuntimeFatalKind
-export type MicrovmProbeResult = 'ok' | 'fail' | null
 
 // Verified in SUP-571: GetMicrovm stateReason when AWS hits the 8h cap.
 export const MICROVM_MAX_LIFETIME_REASON = 'MicroVM exceeded maximum lifetime.'
@@ -25,7 +24,7 @@ export type ClassifyMicrovmDeathInput = {
   state?: string | null
   stateReason?: string | null
   lastFatalResult?: MicrovmFatalResult
-  probeResult?: MicrovmProbeResult
+  probe?: RuntimeDeathProbe | null
   notFound?: boolean
 }
 
@@ -37,7 +36,9 @@ export function classifyMicrovmDeath(input: ClassifyMicrovmDeathInput): MicrovmD
   if (isMaxLifetimeReason(input.stateReason)) return 'max_lifetime'
 
   const running = input.state === 'RUNNING'
-  if (running && input.lastFatalResult === 'oom_sigkill' && input.probeResult === 'fail') {
+  const probeStatus = input.probe?.status
+  const sessionDead = probeStatus === 'idle' || probeStatus === 'unreachable'
+  if (running && input.lastFatalResult === 'oom_sigkill' && sessionDead) {
     return 'guest_oom'
   }
 
@@ -47,16 +48,22 @@ export function classifyMicrovmDeath(input: ClassifyMicrovmDeathInput): MicrovmD
 
 export function planFromClassification(
   reason: MicrovmDeathReason,
-  opts?: { probeResult?: MicrovmProbeResult; state?: string | null },
+  opts?: { probe?: RuntimeDeathProbe | null; state?: string | null },
 ): UnexpectedDeathPlan {
   if (reason !== 'not_dead') {
+    // guest_oom with the container HTTP surface still up: the VM survived and
+    // can accept a resume in place. If HTTP is down too, replace the VM —
+    // resuming against a dead endpoint would only fail into settle.
+    const keepGeneration = reason === 'guest_oom' && opts?.probe?.status === 'idle'
     return {
       action: 'recover',
       reason,
       resumePrompt: MICROVM_RECOVERY_PROMPTS[reason],
-      replaceGeneration: reason !== 'guest_oom',
+      replaceGeneration: !keepGeneration,
     }
   }
-  if (opts?.state === 'RUNNING' && opts.probeResult === 'ok') return { action: 'ignore' }
+  if (opts?.state === 'RUNNING' && opts?.probe?.status === 'live') {
+    return { action: 'ignore', liveSessionIds: opts.probe.liveSessionIds }
+  }
   return { action: 'settle' }
 }

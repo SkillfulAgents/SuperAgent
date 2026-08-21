@@ -36,7 +36,6 @@ import {
   planFromClassification,
   type MicrovmDeathReason,
   type MicrovmFatalResult,
-  type MicrovmProbeResult,
 } from './microvm-death-classifier'
 import type { ObserveUnexpectedDeathInput, UnexpectedDeathPlan } from './runtime-death'
 
@@ -834,16 +833,15 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   static readonly supportsCustomAgentImage = false
 
   private replaceInFlight: Promise<void> | null = null
-  private lastFatalResult: MicrovmFatalResult = null
 
   constructor(config: ContainerConfig) {
     super(config)
   }
 
   onFatalResult(kind: MicrovmFatalResult): 'settle' | 'defer_for_recovery' {
-    if (kind !== 'oom_sigkill') return 'settle'
-    this.lastFatalResult = kind
-    return 'defer_for_recovery'
+    // The persister records the fatal and runtime-recovery hands it back via
+    // ObserveUnexpectedDeathInput; keeping a second copy here would go stale.
+    return kind === 'oom_sigkill' ? 'defer_for_recovery' : 'settle'
   }
 
   getRuntimeGenerationId(): string | null {
@@ -851,17 +849,16 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   }
 
   async observeUnexpectedDeath(input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan> {
-    const lastFatalResult = input?.lastFatalResult ?? this.lastFatalResult
-    this.lastFatalResult = null
+    const lastFatalResult = input?.lastFatalResult ?? null
     const sessionIds = input?.sessionIds ?? []
     const installed = agentStates.get(this.config.agentId)
-    const probeResult = await this.probeUnexpectedDeath(sessionIds, installed?.proxyPort)
+    const probe = await this.probeRuntimeDeath(sessionIds, installed?.proxyPort)
 
     if (!installed) {
       return honorMicrovmAutoResume(
         planFromClassification(
-          classifyMicrovmDeath({ notFound: true, lastFatalResult, probeResult }),
-          { probeResult },
+          classifyMicrovmDeath({ notFound: true, lastFatalResult, probe }),
+          { probe },
         ),
       )
     }
@@ -875,17 +872,17 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
             state: mvm.state,
             stateReason: mvm.stateReason,
             lastFatalResult,
-            probeResult,
+            probe,
           }),
-          { state: mvm.state, probeResult },
+          { state: mvm.state, probe },
         ),
       )
     } catch (error) {
       if (isNotFound(error)) {
         return honorMicrovmAutoResume(
           planFromClassification(
-            classifyMicrovmDeath({ notFound: true, lastFatalResult, probeResult }),
-            { probeResult },
+            classifyMicrovmDeath({ notFound: true, lastFatalResult, probe }),
+            { probe },
           ),
         )
       }
@@ -896,26 +893,11 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       // Control plane unreachable (throttle/outage): fall back to the live
       // probe. Reachable + still running is safe to leave alone; anything
       // unconfirmable fails closed to settle.
-      return probeResult === 'ok' ? { action: 'ignore' } : { action: 'settle' }
-    }
-  }
-
-  // Health fail, or HTTP up but no mid-turn process still running.
-  private async probeUnexpectedDeath(
-    sessionIds: string[],
-    knownPort?: number,
-  ): Promise<MicrovmProbeResult> {
-    if (!(await this.isHealthy(knownPort))) return 'fail'
-    if (sessionIds.length === 0) return 'ok'
-    for (const sessionId of sessionIds) {
-      try {
-        const session = await this.getSession(sessionId)
-        if (session?.isRunning) return 'ok'
-      } catch {
-        // Session probe failed; keep checking siblings / treat as fail below.
+      if (probe.status === 'live') {
+        return { action: 'ignore', liveSessionIds: probe.liveSessionIds }
       }
+      return { action: 'settle' }
     }
-    return 'fail'
   }
 
   protected getRunnerCommand(): string {
@@ -1144,7 +1126,18 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
         stateReason = mvm.stateReason
         classification = classifyMicrovmDeath({ state, stateReason })
       } catch (error) {
-        if (isNotFound(error)) classification = classifyMicrovmDeath({ notFound: true })
+        if (isNotFound(error)) {
+          classification = classifyMicrovmDeath({ notFound: true })
+        } else {
+          // Classification is telemetry-only here; the replace proceeds regardless.
+          console.warn(
+            `[LambdaMicroVmRuntimeClient] GetMicrovm failed while classifying replaced generation agent=${this.config.agentId} microvm=${observedId}: ${String(error)}`,
+          )
+          captureException(error, {
+            tags: { area: 'container', op: 'microvm.replaceClassify' },
+            extra: { agentId: this.config.agentId, microvmId: observedId },
+          })
+        }
       }
     }
 

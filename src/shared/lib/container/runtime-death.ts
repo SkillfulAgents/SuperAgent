@@ -28,6 +28,16 @@ export type ObserveUnexpectedDeathInput = {
   sessionIds?: string[]
 }
 
+// Result of probing the runtime HTTP surface after a suspected death.
+// 'live' = HTTP up and a probed session is still running (or none to probe);
+// 'idle' = HTTP up, no probed session running; 'unreachable' = health failed.
+export type RuntimeDeathProbe = {
+  status: 'live' | 'idle' | 'unreachable'
+  // Only present when sessions were probed. Omitted (no sessions to probe)
+  // maps onto the plan's "omitted = all live" convention.
+  liveSessionIds?: string[]
+}
+
 // Contract with agent-container's fatal error wording (locked by runtime-death.test.ts).
 // If the container ever emits a structured fatal kind, switch to that instead.
 export function inferOomSigkillFatal(content: { fatal?: unknown; error?: unknown }): boolean {

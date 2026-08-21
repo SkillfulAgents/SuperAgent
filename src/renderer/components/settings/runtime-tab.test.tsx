@@ -90,7 +90,7 @@ describe('RuntimeTab', () => {
     mockSettings.data.container.agentImage = 'ghcr.io/skillfulagents/superagent-agent-container-base:latest'
     mockSettings.data.container.runtimeSettings = {}
     mockSettings.data.hostTotalMemoryBytes = 64 * 1024 ** 3
-    mockSettings.data.app = { autoSleepTimeoutMinutes: 30 }
+    mockSettings.data.app = { autoSleepTimeoutMinutes: 30, autoResumeOnUnexpectedDeath: undefined }
     mockSettings.data.customEnvVars = {}
     mockSettings.data.runnerAvailability = [
       {

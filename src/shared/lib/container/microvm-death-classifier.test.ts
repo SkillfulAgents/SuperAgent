@@ -31,31 +31,41 @@ describe('classifyMicrovmDeath', () => {
     ).toBe('runtime_lost')
   })
 
-  it('classifies SIGKILL + RUNNING + failed probe as guest_oom', () => {
+  it('classifies SIGKILL + RUNNING + idle probe as guest_oom', () => {
     expect(
       classifyMicrovmDeath({
         state: 'RUNNING',
         lastFatalResult: 'oom_sigkill',
-        probeResult: 'fail',
+        probe: { status: 'idle', liveSessionIds: [] },
       }),
     ).toBe('guest_oom')
   })
 
-  it('does not classify guest_oom from a WS drop while the probe succeeds', () => {
+  it('classifies SIGKILL + RUNNING + unreachable probe as guest_oom', () => {
     expect(
       classifyMicrovmDeath({
         state: 'RUNNING',
         lastFatalResult: 'oom_sigkill',
-        probeResult: 'ok',
+        probe: { status: 'unreachable' },
+      }),
+    ).toBe('guest_oom')
+  })
+
+  it('does not classify guest_oom from a WS drop while the probe sees a live session', () => {
+    expect(
+      classifyMicrovmDeath({
+        state: 'RUNNING',
+        lastFatalResult: 'oom_sigkill',
+        probe: { status: 'live', liveSessionIds: ['sess-1'] },
       }),
     ).toBe('not_dead')
   })
 
-  it('does not classify guest_oom from probe fail without a SIGKILL result', () => {
+  it('does not classify guest_oom from a dead probe without a SIGKILL result', () => {
     expect(
       classifyMicrovmDeath({
         state: 'RUNNING',
-        probeResult: 'fail',
+        probe: { status: 'idle', liveSessionIds: [] },
       }),
     ).toBe('not_dead')
   })
@@ -72,7 +82,7 @@ describe('classifyMicrovmDeath', () => {
   })
 
   it('classifies a live VM as not_dead', () => {
-    expect(classifyMicrovmDeath({ state: 'RUNNING', probeResult: 'ok' })).toBe('not_dead')
+    expect(classifyMicrovmDeath({ state: 'RUNNING', probe: { status: 'live' } })).toBe('not_dead')
     expect(classifyMicrovmDeath({ state: 'SUSPENDED' })).toBe('not_dead')
     expect(classifyMicrovmDeath({})).toBe('not_dead')
   })
@@ -95,8 +105,8 @@ describe('planFromClassification', () => {
     })
   })
 
-  it('recovers guest_oom without replace', () => {
-    expect(planFromClassification('guest_oom')).toEqual({
+  it('recovers guest_oom without replace only while the container HTTP surface is up', () => {
+    expect(planFromClassification('guest_oom', { probe: { status: 'idle', liveSessionIds: [] } })).toEqual({
       action: 'recover',
       reason: 'guest_oom',
       resumePrompt: MICROVM_RECOVERY_PROMPTS.guest_oom,
@@ -104,13 +114,31 @@ describe('planFromClassification', () => {
     })
   })
 
-  it('ignores a live RUNNING probe and settles other not_dead cases', () => {
-    expect(planFromClassification('not_dead', { state: 'RUNNING', probeResult: 'ok' })).toEqual({
-      action: 'ignore',
+  it('recovers guest_oom with replace when the container HTTP surface is unreachable', () => {
+    expect(planFromClassification('guest_oom', { probe: { status: 'unreachable' } })).toEqual({
+      action: 'recover',
+      reason: 'guest_oom',
+      resumePrompt: MICROVM_RECOVERY_PROMPTS.guest_oom,
+      replaceGeneration: true,
     })
-    expect(planFromClassification('not_dead', { state: 'RUNNING', probeResult: 'fail' })).toEqual({
-      action: 'settle',
-    })
+  })
+
+  it('ignores a live RUNNING probe with its live-session list and settles other not_dead cases', () => {
+    expect(
+      planFromClassification('not_dead', {
+        state: 'RUNNING',
+        probe: { status: 'live', liveSessionIds: ['sess-1'] },
+      }),
+    ).toEqual({ action: 'ignore', liveSessionIds: ['sess-1'] })
+    expect(
+      planFromClassification('not_dead', { state: 'RUNNING', probe: { status: 'live' } }),
+    ).toEqual({ action: 'ignore', liveSessionIds: undefined })
+    expect(
+      planFromClassification('not_dead', {
+        state: 'RUNNING',
+        probe: { status: 'idle', liveSessionIds: [] },
+      }),
+    ).toEqual({ action: 'settle' })
     expect(planFromClassification('not_dead', { state: 'SUSPENDED' })).toEqual({ action: 'settle' })
   })
 })

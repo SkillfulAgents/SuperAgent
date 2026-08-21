@@ -1514,16 +1514,29 @@ describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
     })
   }
 
-  function sessionFetch(isRunning: boolean) {
+  function sessionFetchBy(running: Record<string, boolean>) {
     vi.mocked(fetch).mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
       const url = String(input)
-      if (url.includes('/sessions/')) {
+      const match = url.match(/\/sessions\/([^/?]+)/)
+      if (match) {
         return {
           ok: true,
           status: 200,
-          json: async () => ({ id: 'sess-1', isRunning }),
+          json: async () => ({ id: match[1], isRunning: running[match[1]] ?? false }),
         } as unknown as Response
       }
+      return { ok: true } as Response
+    })
+  }
+
+  function sessionFetch(isRunning: boolean) {
+    sessionFetchBy({ 'sess-1': isRunning })
+  }
+
+  function healthDown() {
+    vi.mocked(fetch).mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input)
+      if (url.includes('/health')) return { ok: false, status: 502 } as Response
       return { ok: true } as Response
     })
   }
@@ -1556,7 +1569,7 @@ describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
     })
   })
 
-  it('recovers guest_oom without replace when SIGKILL + RUNNING + probe fail', async () => {
+  it('recovers guest_oom without replace when SIGKILL + RUNNING + sessions idle over live HTTP', async () => {
     const client = newClient()
     await client.start()
     responses.getState = 'RUNNING'
@@ -1576,6 +1589,26 @@ describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
     })
   })
 
+  it('recovers guest_oom with replace when the container HTTP surface is unreachable', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    delete responses.getStateReason
+    healthDown()
+
+    await expect(
+      client.observeUnexpectedDeath({
+        lastFatalResult: 'oom_sigkill',
+        sessionIds: ['sess-1'],
+      }),
+    ).resolves.toEqual({
+      action: 'recover',
+      reason: 'guest_oom',
+      resumePrompt: expect.stringContaining('ran out of memory'),
+      replaceGeneration: true,
+    })
+  })
+
   it('still ignores a WS blip when the MicroVM auto-resume toggle is off', async () => {
     autoResumeOnUnexpectedDeath.mockReturnValue(false)
     const client = newClient()
@@ -1585,6 +1618,7 @@ describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
 
     await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
       action: 'ignore',
+      liveSessionIds: ['sess-1'],
     })
   })
 
@@ -1596,6 +1630,21 @@ describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
 
     await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
       action: 'ignore',
+      liveSessionIds: ['sess-1'],
+    })
+  })
+
+  it('reports only the still-running sessions so dead siblings settle', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    sessionFetchBy({ 'sess-1': true, 'sess-2': false })
+
+    await expect(
+      client.observeUnexpectedDeath({ sessionIds: ['sess-1', 'sess-2'] }),
+    ).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['sess-1'],
     })
   })
 
@@ -1615,6 +1664,7 @@ describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
 
     await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
       action: 'ignore',
+      liveSessionIds: ['sess-1'],
     })
   })
 
