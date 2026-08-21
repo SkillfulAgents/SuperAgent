@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { getDataDir } from './data-dir'
-import { isRunningInKubernetes } from '@shared/lib/container/runtime-env'
+import { isMicrovmRuntimeEnvPresent, isRunningInKubernetes } from '@shared/lib/container/runtime-env'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
 import {
   writeFileAtomicSync,
@@ -405,10 +405,11 @@ export type ModelPickerSettingsResponse = Pick<
 >
 
 /**
- * Default container runner: Lima on macOS (bundled, no install needed),
- * WSL2 on Windows (bundled, no install needed), Docker elsewhere.
+ * Default container runner: MicroVM when that backend is configured,
+ * Kubernetes in-cluster, Lima on macOS, WSL2 on Windows, Docker elsewhere.
  */
 function getDefaultContainerRunner(): string {
+  if (isMicrovmRuntimeEnvPresent()) return 'lambda-microvm'
   if (isRunningInKubernetes()) return 'kubernetes'
   const p = os.platform()
   if (p === 'darwin') return 'lima'
@@ -520,6 +521,11 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
       },
       // Ensure runtimeSettings exists (may be missing in old settings files)
       runtimeSettings: loaded.container?.runtimeSettings ?? {},
+      ...(isMicrovmRuntimeEnvPresent() &&
+      (loaded.container?.containerRunner === 'docker' ||
+        loaded.container?.containerRunner === 'kubernetes')
+        ? { containerRunner: 'lambda-microvm' as const }
+        : {}),
     },
     app: {
       ...DEFAULT_SETTINGS.app,
