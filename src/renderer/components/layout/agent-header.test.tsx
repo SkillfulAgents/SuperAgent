@@ -67,6 +67,10 @@ vi.mock('@renderer/hooks/use-runtime-status', () => ({
   }),
 }))
 
+vi.mock('@renderer/hooks/use-brain-curator', () => ({
+  useBrainCurator: () => ({ data: { enabled: false, agentSlug: null } }),
+}))
+
 vi.mock('@renderer/components/ui/app-link', () => ({
   AppLink: ({
     children,
