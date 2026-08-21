@@ -255,6 +255,9 @@ function createMockClient(): ContainerClient & {
     }),
     on: vi.fn(),
     off: vi.fn(),
+    onFatalResult: vi.fn(() => 'settle'),
+    observeUnexpectedDeath: vi.fn(async () => ({ action: 'settle' })),
+    getRuntimeGenerationId: vi.fn(() => null),
   }
 
   return client as any
@@ -7413,5 +7416,96 @@ describe('MessagePersister connection lost mid-turn', () => {
     await dropConnection()
 
     expect(sseEvents.filter((e) => e.type === 'session_error')).toHaveLength(0)
+  })
+})
+
+describe('MessagePersister mid-turn recovery snapshot', () => {
+  const SESSION_ID = 'recover-session'
+  const AGENT_SLUG = 'recover-agent'
+  let mockClient: ReturnType<typeof createMockClient>
+
+  beforeEach(async () => {
+    mockClient = createMockClient()
+    await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+  })
+
+  afterEach(() => {
+    messagePersister.unsubscribeFromSession(SESSION_ID)
+    vi.clearAllMocks()
+  })
+
+  it('snapshots active sessions and skips session_error while they are recovering', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG)).toEqual([SESSION_ID])
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+    messagePersister.markAllSessionsInactiveForAgent(AGENT_SLUG)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+  })
+
+  it('does not snapshot idle or interrupted sessions', async () => {
+    expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG)).toEqual([])
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    await messagePersister.markSessionInterrupted(SESSION_ID)
+    expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG)).toEqual([])
+  })
+
+  it('coalesces user text while recovering', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    expect(messagePersister.coalesceIfRecovering(SESSION_ID, 'first')).toBe(true)
+    expect(messagePersister.coalesceIfRecovering(SESSION_ID, 'second')).toBe(true)
+    expect(messagePersister.takeCoalescedUserMessage(SESSION_ID)).toBe('first\n\nsecond')
+    expect(messagePersister.coalesceIfRecovering('other', 'nope')).toBe(false)
+  })
+
+  it('settles recovering sessions as connection_lost and writes automation status', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    messagePersister.settleRecoveringSessions([SESSION_ID])
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+    expect(finalizeAutomationStatus).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, 'failed')
+  })
+
+  it('defers a fatal SIGKILL result to unexpected-death recovery', async () => {
+    const onDeath = vi.fn()
+    messagePersister.setUnexpectedDeathCallback(onDeath)
+    mockClient.onFatalResult = vi.fn(() => 'defer_for_recovery' as const)
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+    mockClient._sendMessage({
+      type: 'result',
+      subtype: 'error',
+      fatal: true,
+      error: 'The agent process was killed due to running out of memory.',
+    })
+
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+    expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG)
+    expect(messagePersister.consumeLastFatal(AGENT_SLUG)).toBe('oom_sigkill')
+    messagePersister.setUnexpectedDeathCallback(() => {})
+  })
+
+  it('does not settle mid-turn on connection_closed when recovery is registered', async () => {
+    const onDeath = vi.fn()
+    messagePersister.setUnexpectedDeathCallback(onDeath)
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+    mockClient._messageCallback!({
+      type: 'connection_closed',
+      content: { type: 'connection_closed' },
+      timestamp: new Date(),
+      sessionId: SESSION_ID,
+    })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+    messagePersister.setUnexpectedDeathCallback(() => {})
   })
 })

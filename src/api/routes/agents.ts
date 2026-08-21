@@ -2298,6 +2298,28 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // decided from the host-side promotedToInteractive marker.
     await messagePersister.promoteAutomatedSession(sessionId, agentSlug)
 
+    if (messagePersister.coalesceIfRecovering(sessionId, content.trim())) {
+      const messageUuid = randomUUID()
+      if (isAuthMode()) {
+        const userId = getCurrentUserId(c)
+        await db.insert(messageAuthor).values({
+          id: messageUuid,
+          sessionId,
+          agentSlug,
+          userId,
+        })
+        const user = c.get('user' as never) as { id: string; name: string }
+        messagePersister.broadcastSessionEvent(sessionId, {
+          type: 'user_message',
+          content: content.trim(),
+          sender: { id: user.id, name: user.name },
+          uuid: messageUuid,
+          queued: true,
+        })
+      }
+      return c.json({ success: true, uuid: messageUuid, queued: true }, 201)
+    }
+
     const client = containerManager.getClient(agentSlug)
     // Use cached status to avoid spawning docker process
     let info = containerManager.getCachedInfo(agentSlug)

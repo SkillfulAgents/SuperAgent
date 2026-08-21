@@ -172,6 +172,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     subscribeToSession: vi.fn(),
     unsubscribeFromSession: vi.fn(),
     promoteAutomatedSession: vi.fn(),
+    coalesceIfRecovering: vi.fn(() => false),
     markSessionActive: vi.fn(),
     markSessionInterrupted: vi.fn(),
     cancelAwaitingInput: vi.fn(),
@@ -5694,6 +5695,18 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
       type: 'user_message',
       queued: true,
     }))
+  })
+
+  it('coalesces a user message during recovery and does not send to the container', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(messagePersister.coalesceIfRecovering).mockReturnValueOnce(true)
+
+    const res = await postJson(app, URL, { content: 'keep going' })
+    expect(res.status).toBe(201)
+    const body = await res.json()
+    expect(body.queued).toBe(true)
+    expect(messagePersister.coalesceIfRecovering).toHaveBeenCalledWith('sess-1', 'keep going')
+    expect(mockSendMessage).not.toHaveBeenCalled()
   })
 
   it('does not broadcast user_message in non-auth mode', async () => {

@@ -20,6 +20,7 @@ import type {
   StopResult,
   StreamMessage,
 } from './types'
+import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
@@ -372,6 +373,33 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    */
   async probeHostPortFromRunner(_host: string, _port: number): Promise<HostPortProbeResult> {
     return 'unknown'
+  }
+
+  onFatalResult(_kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery' {
+    return 'settle'
+  }
+
+  async observeUnexpectedDeath(input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan> {
+    try {
+      if (!(await this.isHealthy())) return { action: 'settle' }
+      const sessionIds = input?.sessionIds ?? []
+      if (sessionIds.length === 0) return { action: 'ignore' }
+      for (const sessionId of sessionIds) {
+        try {
+          const session = await this.getSession(sessionId)
+          if (session?.isRunning) return { action: 'ignore' }
+        } catch {
+          // Session probe failed; try siblings or settle.
+        }
+      }
+      return { action: 'settle' }
+    } catch {
+      return { action: 'settle' }
+    }
+  }
+
+  getRuntimeGenerationId(): string | null {
+    return null
   }
 
   /**

@@ -24,6 +24,7 @@ import {
   buildConnectedAccountsProjection,
   buildRemoteMcpProjection,
 } from './connection-runtime-projections'
+import { recoverFromUnexpectedDeath } from './runtime-recovery'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -92,21 +93,8 @@ class ContainerManager {
         onConnectionError: () => {
           if (this.stoppingAgents.has(agentId)) return
           if (this.startingAgents.has(agentId)) return
-
-          // When a connection error is detected, sync status with Docker
-          // This handles cases where the container crashed or was stopped externally
-          console.log(`[ContainerManager] Connection error for ${agentId}, syncing status...`)
-          this.syncAgentStatus(agentId).catch((err) => {
-            console.error(`[ContainerManager] Failed to sync status after connection error:`, err)
-            // If sync fails, mark as stopped as a fallback and broadcast
-            this.markAsStopped(agentId)
-            messagePersister.markAllSessionsInactiveForAgent(agentId)
-            messagePersister.broadcastGlobal({
-              type: 'agent_status_changed',
-              agentSlug: agentId,
-              status: 'stopped',
-            })
-          })
+          messagePersister.snapshotMidTurnSessions(agentId)
+          this.handleUnexpectedDeath(agentId)
         },
         // MicroVM dead-generation replace (and similar) must restart through the
         // manager so starts share startingAgents and rebuild env from the DB.
@@ -118,6 +106,41 @@ class ContainerManager {
     }
 
     return client
+  }
+
+  private handleUnexpectedDeath(agentId: string): void {
+    void recoverFromUnexpectedDeath({
+      agentId,
+      isStopping: () => this.stoppingAgents.has(agentId),
+      getClient: () => this.getClient(agentId),
+      restartAgent: () => this.restartAgent(agentId),
+      ensureRunning: () => this.ensureRunning(agentId),
+      snapshotMidTurnSessions: (slug) => messagePersister.snapshotMidTurnSessions(slug),
+      consumeLastFatal: (slug) => messagePersister.consumeLastFatal(slug),
+      settleRecoveringSessions: (ids) => messagePersister.settleRecoveringSessions(ids),
+      releaseRecovery: (ids) => messagePersister.releaseRecovery(ids),
+      takeCoalescedUserMessage: (id) => messagePersister.takeCoalescedUserMessage(id),
+      isSessionRecovering: (id) => messagePersister.isSessionRecovering(id),
+      isSubscribed: (id) => messagePersister.isSubscribed(id),
+      subscribeToSession: (sessionId, client, containerSessionId, agentSlug) =>
+        messagePersister.subscribeToSession(sessionId, client, containerSessionId, agentSlug),
+      onIdleDeath: async () => {
+        try {
+          await this.syncAgentStatus(agentId)
+        } catch (err) {
+          console.error(`[ContainerManager] Failed to sync status after connection error:`, err)
+          this.markAsStopped(agentId)
+          messagePersister.markAllSessionsInactiveForAgent(agentId)
+          messagePersister.broadcastGlobal({
+            type: 'agent_status_changed',
+            agentSlug: agentId,
+            status: 'stopped',
+          })
+        }
+      },
+    }).catch((err) => {
+      console.error(`[ContainerManager] Unexpected-death recovery failed for ${agentId}:`, err)
+    })
   }
 
   // Single-flight restart used by runtime clients that tear down a dead generation.
@@ -378,6 +401,9 @@ class ContainerManager {
       this.stopContainer(agentSlug).catch((err) => {
         console.error(`[ContainerManager] Failed to stop container for ${agentSlug}:`, err)
       })
+    })
+    messagePersister.setUnexpectedDeathCallback((agentSlug) => {
+      this.handleUnexpectedDeath(agentSlug)
     })
 
     // Create clients for all agents (this registers them for sync)

@@ -1,4 +1,5 @@
 import type { RuntimeOptions } from './runtime-options'
+import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
 export interface SendMessageOptions extends RuntimeOptions {
   /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
@@ -56,6 +57,7 @@ export interface ContainerSession {
   lastActivity: string
   workingDirectory: string
   slashCommands?: SlashCommandInfo[]
+  isRunning?: boolean
 }
 
 export interface StreamMessage {
@@ -224,6 +226,12 @@ export interface ContainerClient {
   // false = too late (already picked up) or session not live — never throws for that.
   cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>
   interruptSession(sessionId: string): Promise<boolean>
+
+  // Unexpected mid-turn death: default settles (today's session_error).
+  // A runtime that can resume overrides observeUnexpectedDeath.
+  onFatalResult(kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery'
+  observeUnexpectedDeath(input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan>
+  getRuntimeGenerationId(): string | null
 
   // Streaming - returns unsubscribe function and a ready promise
   subscribeToStream(

@@ -15,6 +15,7 @@ import type {
   StopOptions,
   StreamMessage,
 } from './types'
+import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 import { resolveContainerModel } from './resolve-model'
 import { getAgentWorkspaceDir, getSessionJsonlPath } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
@@ -2594,6 +2595,18 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async isHealthy(_knownPort?: number): Promise<boolean> {
     return this.running
+  }
+
+  onFatalResult(_kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery' {
+    return 'settle'
+  }
+
+  async observeUnexpectedDeath(_input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan> {
+    return { action: 'settle' }
+  }
+
+  getRuntimeGenerationId(): string | null {
+    return null
   }
 
   // Session management

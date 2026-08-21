@@ -924,3 +924,26 @@ describe('BaseContainerClient.isHealthy', () => {
     await expect(client.isHealthy(0)).resolves.toBe(false)
   })
 })
+
+describe('BaseContainerClient.observeUnexpectedDeath', () => {
+  const client = new TestContainerClient({ agentId: 'test-agent' })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('ignores a healthy container with a still-running session', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(true)
+    vi.spyOn(client, 'getSession').mockResolvedValue({ isRunning: true } as never)
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
+      action: 'ignore',
+    })
+  })
+
+  it('settles when the container is unhealthy', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(false)
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+})

@@ -35,6 +35,9 @@ vi.mock('./client-factory', () => ({
     getHostApiBaseUrl: () => 'http://127.0.0.1:3000',
     buildVolumeFlag: (...args: unknown[]) => mockBuildVolumeFlag(...args as [string, string]),
     createSession: vi.fn(),
+    onFatalResult: () => 'settle',
+    observeUnexpectedDeath: async () => ({ action: 'settle' as const }),
+    getRuntimeGenerationId: () => null,
   }),
   getContainerClientClass: () => ({ requiresLocalImage: true }),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
@@ -97,7 +100,16 @@ vi.mock('./message-persister', () => ({
   messagePersister: {
     broadcastGlobal: vi.fn(),
     setStopContainerCallback: vi.fn(),
+    setUnexpectedDeathCallback: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),
+    snapshotMidTurnSessions: vi.fn(() => []),
+    consumeLastFatal: vi.fn(() => null),
+    settleRecoveringSessions: vi.fn(),
+    releaseRecovery: vi.fn(),
+    takeCoalescedUserMessage: vi.fn(),
+    isSessionRecovering: vi.fn(() => false),
+    isSubscribed: vi.fn(() => false),
+    subscribeToSession: vi.fn(),
   },
 }))
 
