@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.5.9-rc.3",
+  "version": "0.5.9",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
   "license": "MIT",
@@ -54,7 +54,7 @@
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.32.0",
-    "@anthropic-ai/sdk": "^0.115.0",
+    "@anthropic-ai/sdk": "^0.120.0",
     "@aws-sdk/client-lambda-microvms": "^3.1075.0",
     "@hono/node-server": "^1.13.7",
     "@hono/zod-validator": "^0.8.0",
