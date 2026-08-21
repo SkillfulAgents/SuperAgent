@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { useDraft } from '@renderer/context/drafts-context'
 
@@ -10,6 +10,12 @@ interface UseBrowserInputActionsArgs {
   sessionId: string
   /** Called with the toolUseId once a request resolves (completed or declined) so the surface can remove it. */
   onResolved: (toolUseId: string) => void
+  /**
+   * Current handoff id for this surface. The tray keeps one hook instance for the
+   * whole session, so a failed request's error would otherwise stay on screen
+   * above the next, unrelated handoff.
+   */
+  activeToolUseId?: string | null
 }
 
 /**
@@ -23,11 +29,22 @@ interface UseBrowserInputActionsArgs {
  * steer. If that send fails the reason is appended to the session composer draft
  * so it is never lost.
  */
-export function useBrowserInputActions({ agentSlug, sessionId, onResolved }: UseBrowserInputActionsArgs) {
+export function useBrowserInputActions({
+  agentSlug,
+  sessionId,
+  onResolved,
+  activeToolUseId = null,
+}: UseBrowserInputActionsArgs) {
   const [status, setStatus] = useState<BrowserInputStatus>('pending')
   const [submittingAction, setSubmittingAction] = useState<SubmittingAction | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sessionDraft, setSessionDraft] = useDraft<string>(`session:${sessionId}`)
+
+  // Both submit paths already clear submittingAction, so only the error needs
+  // dropping when the surface moves to a different request.
+  useEffect(() => {
+    setError(null)
+  }, [activeToolUseId])
 
   const submit = async (
     body: { toolUseId: string } & Record<string, unknown>,
@@ -54,6 +71,9 @@ export function useBrowserInputActions({ agentSlug, sessionId, onResolved }: Use
       }
 
       setStatus(successStatus)
+      // Clear before onResolved. The tray keeps this hook mounted across handoffs;
+      // leaving 'completing' set disables Done on the next request forever.
+      setSubmittingAction(null)
       onResolved(body.toolUseId)
       return true
     } catch (err: unknown) {

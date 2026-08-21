@@ -38,7 +38,36 @@ describe('useBrowserInputActions', () => {
     expect(mockApiFetch.mock.calls[0][0]).toBe(COMPLETE_URL)
     expect(JSON.parse(mockApiFetch.mock.calls[0][1].body)).toEqual({ toolUseId: 'tu-1' })
     expect(result.current.status).toBe('completed')
+    expect(result.current.submittingAction).toBeNull()
     expect(onResolved).toHaveBeenCalledWith('tu-1')
+  })
+
+  // The tray keeps one hook instance for the session, so a failed request's error
+  // must not stay on screen above the next, unrelated handoff.
+  it('clears a failed request error when the surface moves to the next handoff', async () => {
+    mockApiFetch.mockResolvedValue({ ok: false, json: async () => ({ error: 'boom' }) })
+    const onResolved = vi.fn()
+    const { result, rerender } = renderHook(
+      ({ activeToolUseId }: { activeToolUseId: string | null }) =>
+        useBrowserInputActions({
+          agentSlug: 'a',
+          sessionId: 's',
+          onResolved,
+          activeToolUseId,
+        }),
+      {
+        wrapper: ({ children }) => <DraftsProvider>{children}</DraftsProvider>,
+        initialProps: { activeToolUseId: 'tu-1' },
+      }
+    )
+
+    await act(async () => {
+      await result.current.complete('tu-1')
+    })
+    expect(result.current.error).toBe('boom')
+
+    rerender({ activeToolUseId: 'tu-2' })
+    expect(result.current.error).toBeNull()
   })
 
   it('decline with no reason posts only the decline, no /messages', async () => {

@@ -41,6 +41,10 @@ export function useBrowserStream({
   const [agentActiveTargetId, setAgentActiveTargetId] = useState<string | null>(null)
   const [viewingTargetId, setViewingTargetId] = useState<string | null>(null)
   const [autoFollow, setAutoFollow] = useState(true)
+  const [desktopWidth, setDesktopWidth] = useState(false)
+  // Click-time truth. Two clicks in one frame share a render closure, so
+  // deriving the next mode from state would send the same value twice.
+  const desktopWidthRef = useRef(false)
   const autoFollowRef = useRef(autoFollow)
   autoFollowRef.current = autoFollow
 
@@ -173,6 +177,14 @@ export function useBrowserStream({
           return
         }
 
+        // The container reports the mode it applied, so the toggle reflects the
+        // page rather than this hook's mount-time default.
+        if (data.type === 'viewport_mode') {
+          desktopWidthRef.current = data.desktopWidth === true
+          setDesktopWidth(desktopWidthRef.current)
+          return
+        }
+
         if (data.type === 'page_loading') {
           setPageLoading(prev => prev === data.loading ? prev : data.loading)
         } else if (data.type === 'frame' && data.data) {
@@ -294,11 +306,13 @@ export function useBrowserStream({
     [canvasRef]
   )
 
+  /** Returns false when the socket was not open, so callers can avoid acting on
+   *  a message that was never actually sent. */
   const sendMessage = useCallback(
     (message: Record<string, unknown>) => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify(message))
-      }
+      if (wsRef.current?.readyState !== WebSocket.OPEN) return false
+      wsRef.current.send(JSON.stringify(message))
+      return true
     },
     []
   )
@@ -468,6 +482,17 @@ export function useBrowserStream({
     }
   }, [autoFollow, agentActiveTargetId, sendMessage])
 
+  // Flip locally as well as asking the container: the next click derives from
+  // this value, so letting only the report move it means one dropped report
+  // latches the toggle. Commit nothing if the socket was not open, or the icon
+  // would show a mode we never asked for. The report stays authoritative.
+  const toggleDesktopWidth = useCallback(() => {
+    const next = !desktopWidthRef.current
+    if (!sendMessage({ type: 'set_desktop_width', enabled: next })) return
+    desktopWidthRef.current = next
+    setDesktopWidth(next)
+  }, [sendMessage])
+
   const closeBrowser = useCallback(async () => {
     setIsClosing(true)
     try {
@@ -510,6 +535,7 @@ export function useBrowserStream({
     tabs,
     viewingTargetId,
     autoFollow,
+    desktopWidth,
     needsAttention,
     showOverlay,
     pendingBrowserInputRequests,
@@ -527,6 +553,7 @@ export function useBrowserStream({
     handleTabClick,
     handleCloseTab,
     toggleAutoFollow,
+    toggleDesktopWidth,
     // Close handlers
     closeBrowser,
     handleCloseClick,
