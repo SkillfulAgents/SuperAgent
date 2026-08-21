@@ -28,6 +28,15 @@ test.describe('Subagent Browser Input Status', () => {
 
     agent = await createAgent(request, uniqueName(testInfo, 'Subagent Browser Agent'))
     await gotoAgentHome(page, agent)
+
+    // Establish the session route and its event stream before issuing a
+    // short-lived request. Otherwise the create-session navigation can miss
+    // request events while the chat is still mounting.
+    await sessionPage.sendMessage(`slow response establish subagent session ${uniqueSuffix(testInfo)}`)
+    await sessionPage.waitForResponse(15000)
+    await page.reload()
+    await expect(sessionPage.getMessageList()).toBeVisible({ timeout: 15000 })
+    await agentPage.waitForStatus('idle', 15000)
   })
 
   test('browser input requested by a subagent shows the card and flips status to awaiting_input', async ({ page }, testInfo) => {

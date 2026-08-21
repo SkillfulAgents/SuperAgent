@@ -4,6 +4,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
 import type { SkillsetIndex } from '@shared/lib/types/skillset'
 
+export type SkillsetMutationInput = {
+  url: string
+  token?: string
+}
+
 export function useSkillsets() {
   return useQuery<ApiSkillsetConfig[]>({
     queryKey: ['skillsets'],
@@ -19,14 +24,14 @@ export function useValidateSkillset() {
   return useMutation<
     { valid: boolean; error?: string; index?: SkillsetIndex },
     Error,
-    string
+    SkillsetMutationInput
   >({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (url: string) => {
+    mutationFn: async (input: SkillsetMutationInput) => {
       const res = await apiFetch('/api/skillsets/validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify(input),
       })
       return res.json()
     },
@@ -36,17 +41,40 @@ export function useValidateSkillset() {
 export function useAddSkillset() {
   const queryClient = useQueryClient()
 
-  return useMutation<ApiSkillsetConfig, Error, string>({
+  return useMutation<ApiSkillsetConfig, Error, SkillsetMutationInput>({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (url: string) => {
+    mutationFn: async (input: SkillsetMutationInput) => {
       const res = await apiFetch('/api/skillsets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify(input),
       })
       if (!res.ok) {
         const data = await res.json()
         throw new Error(data.error || 'Failed to add skillset')
+      }
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['skillsets'] })
+    },
+  })
+}
+
+export function useUpdateSkillsetCredential() {
+  const queryClient = useQueryClient()
+
+  return useMutation<ApiSkillsetConfig, Error, { id: string; token: string | null }>({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ id, token }) => {
+      const res = await apiFetch(`/api/skillsets/${encodeURIComponent(id)}/credential`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to update repository token')
       }
       return res.json()
     },
@@ -100,5 +128,4 @@ export function useRefreshSkillset() {
     },
   })
 }
-
 

@@ -64,6 +64,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-sonnet-4-20250514',
+    agentEffort: 'low',
   }),
   getSettings: () => ({}),
 }))
@@ -181,8 +182,7 @@ describe('chat integration model and effort resolution', () => {
   it('uses the global default when neither integration nor agent set one', async () => {
     const args = await startSession()
     expect(args.model).toBe('claude-sonnet-4-20250514')
-    // Effort/speed must be omitted entirely, not sent as undefined.
-    expect('effort' in args).toBe(false)
+    expect(args.effort).toBe('low')
     expect('speed' in args).toBe(false)
   })
 

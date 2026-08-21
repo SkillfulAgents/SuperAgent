@@ -1288,6 +1288,7 @@ describe('oauth', () => {
       // The custom app scheme won registration, so the callback route keeps the
       // main-process-parsed HTML rather than the external-browser hand-off.
       expect(result.redirectWasScheme).toBe(true)
+      expect(result.desktopProtocol).toBe('superagent')
     })
 
     it('reports a non-scheme (loopback) redirect so the callback hands back via the external browser', async () => {
@@ -1328,7 +1329,7 @@ describe('oauth', () => {
       const initiated = await initiateNewServerOAuth(
         'https://mcp.example.com/mcp',
         'Loopback Electron',
-        ['superagent://mcp-oauth-callback', 'http://localhost:47891/api/remote-mcps/oauth-callback'],
+        ['superagent-dev://mcp-oauth-callback', 'http://localhost:47891/api/remote-mcps/oauth-callback'],
         true,
         'user-1'
       )
@@ -1347,6 +1348,9 @@ describe('oauth', () => {
       expect(result.success).toBe(true)
       expect(result.electron).toBe(true)
       expect(result.redirectWasScheme).toBe(false)
+      // The scheme candidate's protocol survives on the flow even though the
+      // loopback won registration — the hand-off page needs it (SUP-560).
+      expect(result.desktopProtocol).toBe('superagent-dev')
     })
 
     it('stores issuer metadata and accepts a matching iss when advertised as supported', async () => {

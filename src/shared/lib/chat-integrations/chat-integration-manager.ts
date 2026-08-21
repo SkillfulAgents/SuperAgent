@@ -42,7 +42,8 @@ import {
 } from '@shared/lib/services/chat-integration-session-service'
 import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
 import { isHostOrSubdomain, tryParseUrl } from '@shared/lib/utils/url-safety'
-import type { EffortLevel, SpeedLevel, ContainerClient } from '@shared/lib/container/types'
+import type { ContainerClient } from '@shared/lib/container/types'
+import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -456,11 +457,13 @@ class ChatIntegrationManager {
       const agent = await getAgent(integration.agentSlug)
       if (!agent) return
 
+      const cardName = integration.name?.trim() || agent.frontmatter.name
+
       const card = buildAgentContactCard({
         // UID stays the minted id: renaming the agent must not mint a second
         // contact on the phone. Only the link carries the prettier display slug.
         slug: integration.agentSlug,
-        name: agent.frontmatter.name,
+        name: cardName,
         description: agent.frontmatter.description,
         appUrl: resolveAgentWebUrl(displaySlug(agent.frontmatter.name, integration.agentSlug)),
       })
@@ -474,7 +477,7 @@ class ChatIntegrationManager {
       await connector.sendFile(
         '',
         card,
-        `${sanitizeUploadFilename(agent.frontmatter.name)}.vcf`,
+        `${sanitizeUploadFilename(cardName)}.vcf`,
         `Save me as a contact so I'm not just a number. Text me anytime.`,
       )
     } catch (err) {
@@ -1177,17 +1180,20 @@ class ChatIntegrationManager {
     // Model/effort/speed preference order: integration override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(integration.agentSlug)
-    const effort = integration.effort ?? agentPrefs.defaultEffort
-    const speed = integration.speed ?? agentPrefs.defaultSpeed
+    const resolved = resolveRuntimeInherit(
+      { model: integration.model, effort: integration.effort, speed: integration.speed },
+      agentPrefs,
+      models,
+    )
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: messageText,
-      model: integration.model || agentPrefs.defaultModel || models.agentModel,
+      model: resolved.model,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
-      ...(effort ? { effort: effort as EffortLevel } : {}),
-      ...(speed ? { speed: speed as SpeedLevel } : {}),
+      effort: resolved.effort,
+      ...(resolved.speed ? { speed: resolved.speed } : {}),
       ...(systemPrompt ? { systemPrompt } : {}),
     })
 

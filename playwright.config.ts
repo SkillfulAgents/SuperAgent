@@ -21,6 +21,8 @@ const webTestIgnore = [
   '**/getting-started-wizard.spec.ts',
   // Mutates the global provider API key — quarantined to the wizard config.
   '**/provider-api-key.spec.ts',
+  // Needs a production build (service worker) — runs under playwright.pwa.config.ts.
+  '**/pwa-precache.spec.ts',
 ]
 
 if (process.env.E2E_INCLUDE_A11Y !== 'true') {

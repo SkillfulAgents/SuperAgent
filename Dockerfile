@@ -75,6 +75,9 @@ ENV AUTH_MODE=${AUTH_MODE}
 EXPOSE 47891
 
 ENV NODE_ENV=production
+ENV NODE_COMPILE_CACHE=/app/.compile-cache
+COPY scripts/warmup-compile-cache.sh /app/scripts/warmup-compile-cache.sh
+RUN chmod +x /app/scripts/warmup-compile-cache.sh && /app/scripts/warmup-compile-cache.sh
 
 # umask 000: all files/dirs are world-readable/writable so agent containers
 # (running as non-root "claude" user) can access bind-mounted workspaces.

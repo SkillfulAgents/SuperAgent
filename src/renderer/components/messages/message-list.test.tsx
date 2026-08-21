@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, act } from '@testing-library/react'
+import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { MessageList } from './message-list'
 import { useDraft } from '@renderer/context/drafts-context'
@@ -9,10 +9,21 @@ import { createUserMessage, createAssistantMessage, createToolCall, createCompac
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 
 // Mock useMessages
-const mockMessagesData: { data: ApiMessageOrBoundary[] | undefined; isLoading: boolean; error: Error | null } = {
+const mockFetchOlder = vi.fn()
+const mockMessagesData: {
+  data: ApiMessageOrBoundary[] | undefined
+  isLoading: boolean
+  error: Error | null
+  fetchOlder: typeof mockFetchOlder
+  hasOlder: boolean
+  isFetchingOlder: boolean
+} = {
   data: undefined,
   isLoading: false,
   error: null,
+  fetchOlder: mockFetchOlder,
+  hasOlder: false,
+  isFetchingOlder: false,
 }
 
 const mockDeleteMessage = vi.fn()
@@ -53,7 +64,7 @@ const mockStreamState = {
   typingUser: null as { id: string; name?: string } | null,
   peerUserMessages: [] as Array<{ uuid: string; receivedAt: number; content: string; sender: { id: string; name?: string; email?: string }; queued?: boolean }>,
   discardedCommandUuids: [] as string[],
-  thinkingBlocks: [] as Array<{ id: number; text: string; startedAt: number; endedAt: number | null }>,
+  thinkingBlocks: [] as Array<{ id: number; persistedId?: string; text: string; startedAt: number; endedAt: number | null }>,
 }
 
 const mockClearCompacting = vi.fn()
@@ -123,6 +134,12 @@ vi.mock('./subagent-block', () => ({
   SubAgentBlock: ({ toolCall }: any) => <div data-testid="subagent-block">{toolCall.name}</div>,
 }))
 
+vi.mock('./informational-item', () => ({
+  InformationalItem: ({ item }: any) => (
+    <div data-testid="informational-item">{item.content}</div>
+  ),
+}))
+
 vi.mock('./message-context-menu', () => ({
   MessageContextMenu: ({ children }: any) => <>{children}</>,
 }))
@@ -137,8 +154,12 @@ vi.mock('@renderer/components/ui/tooltip', () => ({
 describe('MessageList', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockFetchOlder.mockReset()
     mockMessagesData.data = undefined
     mockMessagesData.isLoading = false
+    mockMessagesData.error = null
+    mockMessagesData.hasOlder = false
+    mockMessagesData.isFetchingOlder = false
     mockIsOnline = true
     mockCurrentUser = null
     mockCancelResult = { cancelled: true }
@@ -182,14 +203,144 @@ describe('MessageList', () => {
     expect(screen.getByText('Hello!')).toBeInTheDocument()
   })
 
+  describe('session time flags', () => {
+    it('renders a flag immediately before the first actual user message', () => {
+      mockMessagesData.data = [
+        createUserMessage({
+          content: { text: '[SYSTEM] Hidden setup message' },
+          createdAt: new Date(2026, 7, 17, 8, 59, 0),
+        }),
+        createUserMessage({
+          content: { text: 'First actual prompt' },
+          createdAt: new Date(2026, 7, 17, 9, 0, 0),
+        }),
+        createAssistantMessage({
+          content: { text: 'First response' },
+          createdAt: new Date(2026, 7, 17, 9, 1, 0),
+        }),
+      ]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.queryByText('[SYSTEM] Hidden setup message')).not.toBeInTheDocument()
+      const flag = screen.getByTestId('session-time-flag')
+      const firstUserMessage = screen.getByText('First actual prompt')
+      expect(
+        flag.compareDocumentPosition(firstUserMessage) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).not.toBe(0)
+    })
+
+    it('renders another flag when the user replies more than 15 minutes after the latest assistant response', () => {
+      mockMessagesData.data = [
+        createUserMessage({
+          content: { text: 'Initial prompt' },
+          createdAt: new Date(2026, 7, 17, 9, 0, 0),
+        }),
+        createAssistantMessage({
+          content: { text: 'Interim response' },
+          createdAt: new Date(2026, 7, 17, 9, 1, 0),
+        }),
+        createAssistantMessage({
+          content: { text: 'Latest response' },
+          createdAt: new Date(2026, 7, 17, 9, 10, 0),
+        }),
+        {
+          id: 'notice-between-response-and-reply',
+          type: 'informational',
+          content: 'Background notice',
+          createdAt: new Date(2026, 7, 17, 9, 11, 0),
+        },
+        createUserMessage({
+          content: { text: 'Delayed follow-up' },
+          createdAt: new Date(2026, 7, 17, 9, 25, 1),
+        }),
+      ]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      const flags = screen.getAllByTestId('session-time-flag')
+      expect(flags).toHaveLength(2)
+      expect(
+        flags[1].compareDocumentPosition(screen.getByText('Delayed follow-up')) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).not.toBe(0)
+    })
+
+    it('does not render another flag at exactly 15 minutes from the latest assistant response', () => {
+      mockMessagesData.data = [
+        createUserMessage({
+          content: { text: 'Initial prompt' },
+          createdAt: new Date(2026, 7, 17, 9, 0, 0),
+        }),
+        createAssistantMessage({
+          content: { text: 'Older response' },
+          createdAt: new Date(2026, 7, 17, 9, 1, 0),
+        }),
+        createAssistantMessage({
+          content: { text: 'Latest response' },
+          createdAt: new Date(2026, 7, 17, 9, 15, 0),
+        }),
+        createUserMessage({
+          content: { text: 'Exactly-on-the-boundary follow-up' },
+          createdAt: new Date(2026, 7, 17, 9, 30, 0),
+        }),
+      ]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByTestId('session-time-flag')).toHaveLength(1)
+    })
+
+    it('does not treat the first loaded user message as the session start when older messages exist', () => {
+      mockMessagesData.data = [
+        createUserMessage({
+          content: { text: 'First message in the loaded page' },
+          createdAt: new Date(2026, 7, 17, 9, 0, 0),
+        }),
+        createAssistantMessage({
+          content: { text: 'Loaded response' },
+          createdAt: new Date(2026, 7, 17, 9, 1, 0),
+        }),
+      ]
+      mockMessagesData.hasOlder = true
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.queryByTestId('session-time-flag')).not.toBeInTheDocument()
+    })
+
+    it('shows the first-user flag immediately for an optimistic message', () => {
+      mockMessagesData.data = []
+
+      renderWithProviders(
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{
+            localId: 'pending-first-user',
+            text: 'Optimistic first prompt',
+            sentAt: new Date(2026, 7, 17, 9, 0, 0).getTime(),
+          }]}
+        />
+      )
+
+      const flag = screen.getByTestId('session-time-flag')
+      const pendingMessage = screen.getByText('Optimistic first prompt')
+      expect(
+        flag.compareDocumentPosition(pendingMessage) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).not.toBe(0)
+    })
+  })
+
   it('reserves clearance for an overlaid session footer', () => {
     mockMessagesData.data = []
     renderWithProviders(
       <MessageList sessionId="s-1" agentSlug="agent-1" bottomInset={180} />
     )
 
-    const content = screen.getByTestId('turn-anchor-spacer').parentElement
-    expect(content).toHaveStyle({ paddingBottom: '196px' })
+    // A real element rather than padding: the follow library measures the
+    // content box, so footer growth must be part of it.
+    expect(screen.getByTestId('live-edge-clearance')).toHaveStyle({ height: '196px' })
   })
 
   it('renders compact boundaries', () => {
@@ -245,7 +396,8 @@ describe('MessageList', () => {
     renderWithProviders(
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
-    expect(screen.getByText('Streaming response...')).toBeInTheDocument()
+    // Streamed prose is split into per-word reveal spans, so match on textContent.
+    expect(screen.getByTestId('message-assistant')).toHaveTextContent('Streaming response...')
   })
 
   it('hides streaming message when persisted', () => {
@@ -316,7 +468,7 @@ describe('MessageList', () => {
 
   // Pending-request derivation/rendering is covered by use-pending-requests.test.tsx.
 
-  it('shows turn elapsed times for completed turns', () => {
+  it('does not show a disclosure row for completed turns with only text', () => {
     const userMsg = createUserMessage({
       content: { text: 'Hello' },
       createdAt: new Date('2025-01-01T00:00:00Z'),
@@ -340,10 +492,248 @@ describe('MessageList', () => {
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
 
-    // First turn: 60s
-    expect(screen.getByText('Worked for 60s')).toBeInTheDocument()
-    // Second turn not shown (session is active=false so it should be shown)
+    expect(screen.queryByTestId('turn-summary')).not.toBeInTheDocument()
+    expect(screen.getByText('Response')).toBeInTheDocument()
+    expect(screen.getByText('Second response')).toBeInTheDocument()
+  })
+
+  it('collapses completed turn work and keeps the final text visible', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Build it' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'I am inspecting the project.' },
+        createdAt: new Date('2025-01-01T00:00:10Z'),
+        toolCalls: [createToolCall({ name: 'Bash' })],
+        usage: {
+          inputTokens: 60,
+          outputTokens: 20,
+          cacheCreationInputTokens: 50,
+          cacheReadInputTokens: 0,
+        },
+      }),
+      createAssistantMessage({
+        content: { text: 'Implemented the change.' },
+        createdAt: new Date('2025-01-01T00:00:30Z'),
+        toolCalls: [createToolCall({ name: 'Read' })],
+        usage: {
+          inputTokens: 200,
+          outputTokens: 30,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+        },
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('Implemented the change.')).toBeInTheDocument()
+    expect(screen.queryByText('I am inspecting the project.')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Bash')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Read')).not.toBeInTheDocument()
     expect(screen.getByText('Worked for 30s')).toBeInTheDocument()
+    expect(screen.getByText('2 tool calls')).toBeInTheDocument()
+    // Uses the same raw-field sum as the session usage popup. In the first
+    // response inputTokens already covers the cache subset, but billed usage
+    // still reports both fields: 60 + 20 + 50 + 200 + 30 = 360.
+    expect(screen.getByText('360 tokens')).toBeInTheDocument()
+
+    const summary = screen.getByTestId('turn-summary')
+    expect(summary).toHaveAccessibleName('Expand completed turn work')
+    fireEvent.click(summary)
+
+    expect(screen.getByText('I am inspecting the project.')).toBeInTheDocument()
+    expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
+    expect(screen.getByTestId('tool-call-Read')).toBeInTheDocument()
+    expect(screen.getByTestId('turn-summary')).toHaveAttribute('aria-expanded', 'true')
+    expect(summary).toHaveAccessibleName('Collapse completed turn work')
+    expect(screen.getByTestId('turn-work-detail')).toHaveClass(
+      'animate-in',
+      'fade-in-0',
+      'slide-in-from-top-2',
+    )
+    expect(screen.getByTestId('tool-call-Read').closest('.animate-in')).toHaveClass(
+      'fade-in-0',
+      'slide-in-from-top-2',
+    )
+  })
+
+  it('splits completed work around queued steering messages', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Start the slow work' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Working through the task.' },
+        createdAt: new Date('2025-01-01T00:00:05Z'),
+        toolCalls: [createToolCall({ name: 'Bash' })],
+      }),
+      createAssistantMessage({
+        content: { text: 'Finished the slow work.' },
+        createdAt: new Date('2025-01-01T00:00:10Z'),
+      }),
+      createUserMessage({
+        content: { text: 'late instruction' },
+        queued: true,
+        createdAt: new Date('2025-01-01T00:00:11Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Adapting the work.' },
+        createdAt: new Date('2025-01-01T00:00:15Z'),
+        toolCalls: [createToolCall({ name: 'Read' })],
+      }),
+      createAssistantMessage({
+        content: { text: 'Adjusting based on: late instruction' },
+        createdAt: new Date('2025-01-01T00:00:20Z'),
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('Finished the slow work.')).toBeInTheDocument()
+    expect(screen.getByText('Adjusting based on: late instruction')).toBeInTheDocument()
+    expect(screen.queryByText('Working through the task.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Adapting the work.')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Bash')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Read')).not.toBeInTheDocument()
+
+    const summaries = screen.getAllByTestId('turn-summary')
+    expect(summaries).toHaveLength(2)
+    expect(summaries[0]).toHaveTextContent('Worked for 10s')
+    expect(summaries[1]).toHaveTextContent('Worked for 9s')
+
+    const transcript = screen.getByTestId('message-list').textContent ?? ''
+    expect(transcript.indexOf('Start the slow work')).toBeLessThan(
+      transcript.indexOf('Worked for 10s'),
+    )
+    expect(transcript.indexOf('Worked for 10s')).toBeLessThan(
+      transcript.indexOf('late instruction'),
+    )
+    expect(transcript.indexOf('late instruction')).toBeLessThan(
+      transcript.indexOf('Worked for 9s'),
+    )
+    expect(transcript.indexOf('Worked for 9s')).toBeLessThan(
+      transcript.indexOf('Adjusting based on: late instruction'),
+    )
+  })
+
+  it('keeps structural notices visible inside a collapsed turn', () => {
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Do the work' } }),
+      createAssistantMessage({
+        content: { text: 'Hidden intermediate work.' },
+        toolCalls: [createToolCall({ name: 'Bash' })],
+      }),
+      {
+        id: 'notice-1',
+        type: 'informational',
+        content: 'A mid-turn agent notice.',
+        createdAt: new Date('2025-01-01T00:00:02Z'),
+      },
+      createAssistantMessage({ content: { text: 'Final answer.' } }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('A mid-turn agent notice.')).toBeInTheDocument()
+    expect(screen.getByText('Final answer.')).toBeInTheDocument()
+    expect(screen.queryByText('Hidden intermediate work.')).not.toBeInTheDocument()
+  })
+
+  it('keeps a cancelled terminal tool call visible without an empty disclosure row', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Sign me in' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'This step needs you.' },
+        createdAt: new Date('2025-01-01T00:00:30Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__request_browser_input',
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('This step needs you.')).toBeInTheDocument()
+    expect(
+      screen.getByTestId('tool-call-mcp__user-input__request_browser_input'),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId('turn-summary')).not.toBeInTheDocument()
+  })
+
+  it('keeps only terminal user-input calls visible when parallel calls complete out of order', () => {
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Finish the workflow' } }),
+      createAssistantMessage({
+        content: { text: 'Doing the hidden setup.' },
+        toolCalls: [createToolCall({ name: 'Bash' })],
+      }),
+      createAssistantMessage({
+        content: { text: 'This step needs you.' },
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__request_browser_input',
+            result: undefined,
+          }),
+          createToolCall({ name: 'Read' }),
+        ],
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('This step needs you.')).toBeInTheDocument()
+    expect(
+      screen.getByTestId('tool-call-mcp__user-input__request_browser_input'),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Read')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Bash')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('turn-summary'))
+    expect(screen.getByTestId('tool-call-Read')).toBeInTheDocument()
+    expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
+    expect(screen.getByTestId('tool-call-Read').closest('.animate-in')).toHaveClass(
+      'fade-in-0',
+      'slide-in-from-top-2',
+    )
+    expect(
+      screen
+        .getByTestId('tool-call-mcp__user-input__request_browser_input')
+        .closest('.animate-in'),
+    ).toBeNull()
+  })
+
+  it('leaves the current streaming turn fully expanded', () => {
+    mockStreamState.isActive = true
+    mockStreamState.isStreaming = true
+    mockStreamState.streamingMessage = 'Writing the final response...'
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Build it' } }),
+      createAssistantMessage({
+        content: { text: 'Inspecting first.' },
+        toolCalls: [createToolCall({ name: 'Bash' })],
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('Inspecting first.')).toBeInTheDocument()
+    expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
+    // The live streaming message is the last assistant item; its prose is split
+    // into per-word reveal spans, so match on textContent.
+    const assistantMessages = screen.getAllByTestId('message-assistant')
+    expect(assistantMessages[assistantMessages.length - 1]).toHaveTextContent(
+      'Writing the final response...'
+    )
+    expect(screen.queryByTestId('turn-summary')).not.toBeInTheDocument()
   })
 
   it('detects running tool calls only for trailing assistant messages when active', () => {
@@ -529,6 +919,7 @@ describe('MessageList', () => {
     try {
       mockMessagesData.data = []
       mockStreamState.isActive = true
+      mockStreamState.isCompacting = true
 
       const CompactRaceHarness = () => {
         const [pending, setPending] = useState([
@@ -558,10 +949,12 @@ describe('MessageList', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Type next message' }))
       expect(screen.getByTestId('draft-probe')).toHaveTextContent('the next message')
 
-      // Manual compaction persists a boundary, not a user message carrying the
-      // POST uuid. The compact command must still be considered delivered.
-      mockMessagesData.data = [createCompactBoundary({ createdAt: new Date() })]
+      // The completion event can reach the renderer before the refetched compact
+      // boundary. The accepted command has no persisted user-message counterpart,
+      // so the generic idle rescue must not mistake it for lost user text while
+      // the boundary is still absent.
       mockStreamState.isActive = false
+      mockStreamState.isCompacting = false
       rerender(<CompactRaceHarness />)
 
       await act(async () => {
@@ -570,6 +963,7 @@ describe('MessageList', () => {
 
       expect(screen.getByTestId('draft-probe')).toHaveTextContent('the next message')
       expect(screen.getByTestId('draft-probe')).not.toHaveTextContent('/compact')
+      expect(screen.queryByText('/compact')).not.toBeInTheDocument()
     } finally {
       vi.useRealTimers()
     }
@@ -628,7 +1022,10 @@ describe('MessageList', () => {
       createUserMessage({ content: { text: 'Start' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
       createAssistantMessage({ content: { text: 'Searching' }, createdAt: new Date('2025-01-01T00:00:09Z') }),
       createUserMessage({ content: { text: 'Steer' }, createdAt: new Date('2025-01-01T00:00:10Z'), queued: true }),
-      createAssistantMessage({ content: { text: 'Continuing' }, createdAt: new Date('2025-01-01T00:00:20Z') }),
+      createAssistantMessage({
+        content: { text: 'Continuing' },
+        createdAt: new Date('2025-01-01T00:00:20Z'),
+      }),
     ]
 
     renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
@@ -636,20 +1033,25 @@ describe('MessageList', () => {
     expect(screen.queryByText(/Worked for/)).not.toBeInTheDocument()
   })
 
-  it('attributes the whole turn duration across steering segments once idle', () => {
+  it('attributes elapsed time to the steered work phase once idle', () => {
     mockStreamState.isActive = false
     mockMessagesData.data = [
       createUserMessage({ content: { text: 'Start' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
       createAssistantMessage({ content: { text: 'Searching' }, createdAt: new Date('2025-01-01T00:00:09Z') }),
       createUserMessage({ content: { text: 'Steer' }, createdAt: new Date('2025-01-01T00:00:10Z'), queued: true }),
-      createAssistantMessage({ content: { text: 'Continuing' }, createdAt: new Date('2025-01-01T00:00:20Z') }),
+      createAssistantMessage({
+        content: { text: 'Continuing' },
+        createdAt: new Date('2025-01-01T00:00:20Z'),
+        thinking: [{ text: 'Hidden reasoning' }],
+      }),
     ]
 
     renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
 
-    // One elapsed entry, from the turn-starting message to the final assistant message
-    expect(screen.getByText('Worked for 20s')).toBeInTheDocument()
-    expect(screen.queryByText('Worked for 9s')).not.toBeInTheDocument()
+    // The queued message starts a visual work phase without becoming a new
+    // agent turn. Its elapsed time starts at the steering message.
+    expect(screen.getByText('Worked for 10s')).toBeInTheDocument()
+    expect(screen.queryByText('Worked for 20s')).not.toBeInTheDocument()
   })
 
   it('keeps tools running when a persisted queued message follows them', () => {
@@ -1075,7 +1477,8 @@ describe('MessageList', () => {
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
 
-    expect(screen.getByText('New streaming content')).toBeInTheDocument()
+    // Streamed prose is split into per-word reveal spans, so match on textContent.
+    expect(screen.getByTestId('message-assistant')).toHaveTextContent('New streaming content')
   })
 
   // ---- Turn elapsed time not shown during active session's last turn ----
@@ -1111,6 +1514,11 @@ describe('MessageList', () => {
       createAssistantMessage({
         content: { text: 'Response' },
         createdAt: new Date('2025-01-01T00:01:00Z'),
+        thinking: [{ text: 'Hidden reasoning' }],
+        toolCalls: [
+          createToolCall({ name: 'Bash' }),
+          createToolCall({ name: 'Read' }),
+        ],
       }),
     ]
 
@@ -1139,7 +1547,9 @@ describe('MessageList', () => {
       createAssistantMessage({
         content: { text: 'Done' },
         createdAt: new Date('2025-01-01T00:01:00Z'),
+        thinking: [{ text: 'Hidden reasoning' }],
         toolCalls: [
+          createToolCall({ name: 'Read' }),
           createToolCall({
             name: 'mcp__user-input__deliver_file',
             input: { filePath: '/workspace/result.csv' },
@@ -1185,7 +1595,9 @@ describe('MessageList', () => {
       createAssistantMessage({
         content: { text: 'Done' },
         createdAt: new Date('2025-01-01T00:01:00Z'),
+        thinking: [{ text: 'Hidden reasoning' }],
         toolCalls: [
+          createToolCall({ name: 'Read' }),
           createToolCall({
             name: 'mcp__user-input__deliver_file',
             input: { filePath: '/workspace/output.csv' },
@@ -1253,6 +1665,11 @@ describe('MessageList', () => {
       createAssistantMessage({
         content: { text: 'First response' },
         createdAt: new Date('2025-01-01T00:01:00Z'),
+        thinking: [{ text: 'Hidden reasoning' }],
+        toolCalls: [
+          createToolCall({ name: 'Bash' }),
+          createToolCall({ name: 'Read' }),
+        ],
       }),
       createUserMessage({
         content: { text: 'Follow up' },
@@ -1282,6 +1699,7 @@ describe('MessageList', () => {
       createAssistantMessage({
         content: { text: 'Partial response' },
         createdAt: new Date('2025-01-01T00:01:00Z'),
+        toolCalls: [createToolCall({ name: 'Read' })],
       }),
       // No user message after — streaming is same turn
     ]
@@ -1293,10 +1711,16 @@ describe('MessageList', () => {
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
 
-    // Elapsed is deferred (after streaming), not inline
+    // A divergent live buffer may be stale. Keep the latest persisted response
+    // visible, while its ordinary tool work stays in the disclosure.
     expect(screen.getByText('Worked for 60s')).toBeInTheDocument()
     const allText = container.textContent || ''
-    expect(allText.indexOf('Still going...')).toBeLessThan(allText.indexOf('Worked for 60s'))
+    expect(allText.indexOf('Worked for 60s')).toBeLessThan(
+      allText.indexOf('Partial response'),
+    )
+    expect(allText.indexOf('Partial response')).toBeLessThan(allText.indexOf('Still going...'))
+    expect(screen.getByText('Partial response')).toBeInTheDocument()
+    expect(screen.queryByTestId('tool-call-Read')).not.toBeInTheDocument()
   })
 
   // ---- Shows loading spinner only when no pending message ----
@@ -1855,14 +2279,95 @@ describe('MessageList', () => {
       expect(screen.queryByText(/earlier messages? hidden/)).not.toBeInTheDocument()
     })
 
-    it('keeps the top of the window stable when a message arrives while scrolled up', () => {
+    it('fetches the next API page when scrolled to the top of a fully-rendered page', () => {
+      mockMessagesData.data = manyMessages(50)
+      mockMessagesData.hasOlder = true
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      mockScrollGeometry(el, { scrollHeight: 10000, clientHeight: 500, scrollTop: 50 })
+      fireEvent.scroll(el)
+      expect(mockFetchOlder).toHaveBeenCalledOnce()
+    })
+
+    it('retries fetchOlder after a failed older page instead of wedging scroll-up', () => {
+      mockFetchOlder.mockResolvedValue(false)
+      mockMessagesData.data = manyMessages(50)
+      mockMessagesData.hasOlder = true
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      mockScrollGeometry(el, { scrollHeight: 10000, clientHeight: 500, scrollTop: 50 })
+      fireEvent.scroll(el)
+      expect(mockFetchOlder).toHaveBeenCalledOnce()
+      fireEvent.scroll(el)
+      expect(mockFetchOlder).toHaveBeenCalledTimes(2)
+    })
+
+    // Geometry derives from the mounted row count, so the restore effect only
+    // sees scrollHeight growth at the commit where the prepended rows mount.
+    // Fixed-geometry mocks cannot catch a guard consumed one commit too early.
+    it('compensates scrollTop when an older page prepends above the viewport', () => {
+      const base = Array.from({ length: 300 }, (_, i) =>
+        createUserMessage({ content: { text: `row${i}` } })
+      )
+      mockMessagesData.data = base
+      mockMessagesData.hasOlder = true
+      let onBeforePrepend: (() => void) | undefined
+      mockFetchOlder.mockImplementation((cb?: () => void) => {
+        onBeforePrepend = cb
+        return Promise.resolve(true)
+      })
+
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      let top = 50
+      Object.defineProperty(el, 'scrollHeight', {
+        configurable: true,
+        get: () => (el.textContent?.match(/(?:row|old)\d+/g)?.length ?? 0) * 10,
+      })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 500 })
+      Object.defineProperty(el, 'scrollTop', {
+        configurable: true,
+        get: () => top,
+        set: (v: number) => { top = v },
+      })
+
+      fireEvent.scroll(el)
+      expect(mockFetchOlder).toHaveBeenCalledOnce()
+      expect(onBeforePrepend).toBeDefined()
+
+      const older = Array.from({ length: 200 }, (_, i) =>
+        createUserMessage({ content: { text: `old${i}` } })
+      )
+      act(() => {
+        // Mirrors the real fetchOlder: capture happens right before the prepend.
+        onBeforePrepend!()
+        mockMessagesData.data = [...older, ...base]
+        rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      })
+
+      // 200 rows (2000px at 10px/row) mounted above the viewport; the content
+      // the user was reading stays put: 50 + (5000 - 3000) = 2050.
+      expect(screen.getByText('old0')).toBeInTheDocument()
+      expect(el.scrollTop).toBe(2050)
+    })
+
+    it('keeps the top of the window stable when a message arrives while scrolled up', async () => {
       const base = manyMessages(305) // window = m5..m304
       mockMessagesData.data = base
       const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       const el = screen.getByTestId('message-list')
-      // Scrolled up, but not near the top (so we don't trigger a load-more expand).
-      mockScrollGeometry(el, { scrollHeight: 10000, clientHeight: 500, scrollTop: 5000 })
+      // The follow library derives "the reader left the bottom" from scroll
+      // direction, so an escape needs a baseline event followed by an upward
+      // one; its classification is deferred a tick (to out-wait resize
+      // coincidence), hence the flush. Target lands mid-thread, not near the
+      // top, so no load-more expand triggers.
+      mockScrollGeometry(el, { scrollHeight: 10000, clientHeight: 500, scrollTop: 9500 })
       fireEvent.scroll(el)
+      el.scrollTop = 5000
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      })
       expect(screen.getByText('m5')).toBeInTheDocument()
 
       // A new message is persisted while the user reads history.
@@ -1896,11 +2401,55 @@ describe('MessageList', () => {
   describe('new-turn scroll anchoring', () => {
     const pending = { localId: 'pending-turn', text: 'What changed?', sentAt: Date.now() }
 
+    // Live-edge following runs inside use-stick-to-bottom, driven by a
+    // ResizeObserver on the content wrapper. jsdom's stub never fires, so
+    // tests that assert the follow handoff install this controllable fake
+    // and fire content resizes explicitly.
+    class FakeResizeObserver {
+      static instances: FakeResizeObserver[] = []
+      observed: Element[] = []
+      constructor(public cb: ResizeObserverCallback) {
+        FakeResizeObserver.instances.push(this)
+      }
+      observe(el: Element) {
+        this.observed.push(el)
+      }
+      unobserve() {}
+      disconnect() {}
+    }
+    let realResizeObserver: typeof ResizeObserver | undefined
+    const installFakeResizeObserver = () => {
+      realResizeObserver = globalThis.ResizeObserver
+      FakeResizeObserver.instances = []
+      globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver
+    }
+    afterEach(() => {
+      if (realResizeObserver) {
+        globalThis.ResizeObserver = realResizeObserver
+        realResizeObserver = undefined
+      }
+    })
+    // Fires only the observers watching `contentEl` (the library's), not the
+    // component's own layout-sync observers on other elements.
+    const fireContentResize = (contentEl: Element, height: number) => {
+      for (const observer of FakeResizeObserver.instances) {
+        if (observer.observed.includes(contentEl)) {
+          observer.cb(
+            [{ contentRect: { height } } as ResizeObserverEntry],
+            observer as unknown as ResizeObserver,
+          )
+        }
+      }
+    }
+
     function mockTurnGeometry(el: HTMLElement, { reducedMotion = true } = {}) {
       let naturalScrollHeight = 1300
       let scrollTop = 700
+      let clientHeight = 600
       const anchorDocumentTop = 1200
-      const spacer = screen.getByTestId('turn-anchor-spacer')
+      const spacerHeight = () => Number.parseFloat(
+        (el.querySelector('[data-testid="turn-anchor-spacer"]') as HTMLElement | null)?.style.height || '0',
+      ) || 0
 
       vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
         matches: reducedMotion && query === '(prefers-reduced-motion: reduce)',
@@ -1915,12 +2464,18 @@ describe('MessageList', () => {
 
       Object.defineProperty(el, 'scrollHeight', {
         configurable: true,
-        get: () => naturalScrollHeight + (Number.parseFloat(spacer.style.height) || 0),
+        get: () => naturalScrollHeight + spacerHeight(),
       })
-      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 600 })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => clientHeight })
       Object.defineProperty(el, 'scrollTop', {
         configurable: true,
-        get: () => scrollTop,
+        // Browsers clamp scrollTop when removing the turn spacer lowers the
+        // scrollable maximum. Model that here so retiring the reserve has the
+        // same observable effect as it does in the real transcript.
+        get: () => Math.min(
+          scrollTop,
+          Math.max(0, naturalScrollHeight + spacerHeight() - clientHeight),
+        ),
         set: (value: number) => { scrollTop = value },
       })
 
@@ -1944,9 +2499,10 @@ describe('MessageList', () => {
       })
 
       return {
-        get scrollTop() { return scrollTop },
+        get scrollTop() { return el.scrollTop },
         setScrollTop(value: number) { scrollTop = value },
         setNaturalScrollHeight(value: number) { naturalScrollHeight = value },
+        setClientHeight(value: number) { clientHeight = value },
       }
     }
 
@@ -1965,65 +2521,267 @@ describe('MessageList', () => {
       )
 
       const anchor = screen.getByText('What changed?').closest('[data-turn-anchor-id]') as HTMLElement
-      expect(anchor.getBoundingClientRect().top).toBe(100)
-      expect(geometry.scrollTop).toBe(1100)
+      // The follow library keeps a 1px allowance at the live edge (its target
+      // is scrollHeight - 1 - clientHeight), so the reading line settles at
+      // TURN_ANCHOR_TOP + 1.
+      expect(anchor.getBoundingClientRect().top).toBe(101)
+      expect(geometry.scrollTop).toBe(1099)
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
     })
 
-    it('animates the new turn to its reading line with eased progress', () => {
+    it('re-engages following and returns to the reading line when a send follows an escape', async () => {
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
       const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       const el = screen.getByTestId('message-list')
-      const geometry = mockTurnGeometry(el, { reducedMotion: false })
-      const frames: FrameRequestCallback[] = []
-      vi.spyOn(performance, 'now').mockReturnValue(0)
-      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
-        frames.push(callback)
-        return frames.length
+      const geometry = mockTurnGeometry(el)
+
+      // Escape by scrolling up (baseline event, then an upward one; the
+      // library's classification is deferred a tick).
+      fireEvent.scroll(el)
+      geometry.setScrollTop(300)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5))
       })
-      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+
+      // Sending a message overrides the escape: the reader is brought to the
+      // new turn's reading line and following re-engages.
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(1099)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+    })
+
+    it('does not read the send-time collapse clamp as an escape', async () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
 
       rerender(
         <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
       )
 
-      expect(geometry.scrollTop).toBe(700)
-      expect(frames).toHaveLength(1)
-
-      act(() => frames.shift()!(110))
-      expect(geometry.scrollTop).toBeGreaterThan(700)
-      expect(geometry.scrollTop).toBeLessThan(1100)
-
-      act(() => frames.shift()!(220))
-      expect(geometry.scrollTop).toBe(1100)
+      // The finished turn collapsing above the ghost (same commit as the
+      // send) shrinks content, and the browser clamps scrollTop — a
+      // browser-originated upward scroll event with no user gesture behind
+      // it. It must not latch an escape and surface the pill over the blank
+      // reading-line reserve.
+      geometry.setScrollTop(900)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
     })
 
-    it('spends the reserved room before following streamed content at the live edge', () => {
+    it('does not read the idle-time turn collapse clamp as an escape', async () => {
+      installFakeResizeObserver()
+      // An active turn with collapsible work, reader at the live edge.
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Long question' } }),
+        createAssistantMessage({
+          content: { text: 'Final answer' },
+          toolCalls: [createToolCall({ name: 'Bash' })],
+        }),
+      ]
+      mockStreamState.isActive = true
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // baseline at the live edge
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      // The turn completes: the work collapses into a summary row — a large
+      // one-commit shrink whose browser clamp fires an upward scroll event
+      // with no user gesture behind it.
+      mockStreamState.isActive = false
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByTestId('turn-summary')).toBeInTheDocument()
+      geometry.setNaturalScrollHeight(900)
+      geometry.setScrollTop(300)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+
+      // The final answer then renders below the summary and grows the
+      // content. Following must still be engaged: the reader is carried to
+      // the full response, with no stranded escape affordance.
+      geometry.setNaturalScrollHeight(1600)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1600)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(999))
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+    })
+
+    it('restores the reading line when a transient shrink clamps the held reserve', async () => {
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
       const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-      const geometry = mockTurnGeometry(screen.getByTestId('message-list'))
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(1099)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+      fireEvent.scroll(el) // baseline at the reading line
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      // A working indicator swapping forms (streamed block replaced by its
+      // shorter persisted copy) shrinks natural content while the reserve
+      // holds. The browser clamps scrollTop against the momentarily smaller
+      // scroll range and leaves it there — the spacer re-inflating afterwards
+      // restores the range but not the position. Model the sticky clamp.
+      geometry.setNaturalScrollHeight(1240)
+      geometry.setScrollTop(1040)
+      fireEvent.scroll(el)
+      mockStreamState.streamingMessage = 'A different working indicator'
+      mockStreamState.isStreaming = true
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+
+      // The reserve re-inflates AND the viewport returns to the reading line
+      // in the same pass — the held turn must not visibly sag.
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '460px' })
+      expect(geometry.scrollTop).toBe(1099)
+      // The clamp's scroll echo must not have latched an escape either.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+      expect(geometry.scrollTop).toBe(1099)
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+    })
+
+    it('honors a keyboard escape whose scroll classification the collapse shield swallowed', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Long question' } }),
+        createAssistantMessage({
+          content: { text: 'Final answer' },
+          toolCalls: [createToolCall({ name: 'Bash' })],
+        }),
+      ]
+      mockStreamState.isActive = true
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // baseline at the live edge
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      // The turn completes and collapses — the transition shield arms, and the
+      // browser clamp's echo is rightly discarded…
+      mockStreamState.isActive = false
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      geometry.setNaturalScrollHeight(900)
+      geometry.setScrollTop(300)
+      fireEvent.scroll(el)
+
+      // …but inside the same window the reader pages up. The shield swallows
+      // that scroll's classification too (only wheel escapes bypass it), so
+      // the deferred verification must recognize the upward gesture and mark
+      // the escape itself.
+      fireEvent.keyDown(el, { key: 'PageUp' })
+      geometry.setScrollTop(100)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+
+      // Following stays disengaged: later growth must not pull the reader
+      // back down to the live edge.
+      geometry.setNaturalScrollHeight(1600)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1600)
+      })
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+      expect(geometry.scrollTop).toBe(100)
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+    })
+
+    it('does not let the reserve restore preempt the send glide before its first frame', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      // Real motion: the send scrolls via the animated glide, which the
+      // library only registers in its first animation frame.
+      const geometry = mockTurnGeometry(el, { reducedMotion: false })
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+      expect(geometry.scrollTop).toBe(700) // pre-glide position; the glide travels from here
+
+      // The POST response assigns the uuid before the glide's first frame —
+      // a commit in the gap where state.animation is still unset. The reserve
+      // restore must not fire here and snap the viewport to the reading line.
+      rerender(
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{ ...pending, uuid: 'server-uuid-1' }]}
+        />,
+      )
+      expect(geometry.scrollTop).toBe(700)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+    })
+
+    it('spends the reserved room before following streamed content at the live edge', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
 
       rerender(
         <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
       )
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
 
+      // While the reserve holds, growth is absorbed by the spacer: the reader
+      // does not move (net-zero resize from the follow library's perspective).
       geometry.setNaturalScrollHeight(1550)
       mockStreamState.streamingMessage = 'The response is growing'
       mockStreamState.isStreaming = true
       rerender(
         <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
       )
-      expect(geometry.scrollTop).toBe(1100)
+      expect(geometry.scrollTop).toBe(1099)
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '150px' })
 
+      // The reserve is exhausted: the anchor retires…
       geometry.setNaturalScrollHeight(1800)
       mockStreamState.streamingMessage = 'The response has reached the live edge and keeps growing'
       rerender(
         <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
       )
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
-      expect(geometry.scrollTop).toBe(1200)
+
+      // …and real content growth hands off to live-edge following, driven by
+      // the library's ResizeObserver on the content wrapper.
+      await act(async () => {
+        fireContentResize(contentWrapper, 1800)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(1199))
     })
 
     it('discards reserved room before the reader can leave the live edge', () => {
@@ -2037,13 +2795,15 @@ describe('MessageList', () => {
       )
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
 
+      // The hold sits at 1099 (the library's 1px live-edge allowance), so an
+      // upward move to 1020 consumes 79px of the reserve.
       fireEvent.wheel(el, { deltaY: -80 })
       geometry.setScrollTop(1020)
       fireEvent.scroll(el)
-      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '320px' })
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '321px' })
       expect(geometry.scrollTop).toBe(1020)
 
-      geometry.setScrollTop(700)
+      geometry.setScrollTop(699)
       fireEvent.scroll(el)
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
 
@@ -2059,46 +2819,174 @@ describe('MessageList', () => {
       expect(geometry.scrollTop).toBe(releasedScrollTop)
     })
 
-    it('follows within 80px of the bottom and resumes when the reader returns', () => {
+    it('retires a stale turn anchor when the reader manually reaches the true bottom', () => {
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
       const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       const el = screen.getByTestId('message-list')
       const geometry = mockTurnGeometry(el)
 
-      // A wheel gesture that remains within the 80px live-edge threshold must
-      // not opt the session out of following.
-      fireEvent.wheel(el, { deltaY: -50 })
-      geometry.setScrollTop(650)
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+
+      // A nested subagent card can grow before its ResizeObserver callback (or
+      // the next stream-state render) synchronizes the turn reserve. That makes
+      // a new, lower true bottom reachable while the old anchor is still live.
+      geometry.setNaturalScrollHeight(1400)
+      fireEvent.wheel(el, { deltaY: 200 })
+      geometry.setScrollTop(1200)
       fireEvent.scroll(el)
+
+      // Reaching that true bottom is an explicit request to follow the live
+      // edge. The obsolete reading-line reserve must be retired immediately.
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
+      expect(geometry.scrollTop).toBe(800)
+
+      // The next subagent update must stay bottom-pinned instead of restoring
+      // the old anchored scrollTop (the visible snap-up from the recording).
+      mockStreamState.activeSubagents = [{
+        agentId: 'sub-1',
+        parentToolId: 'tool-1',
+        subagentType: 'Explore',
+        description: 'Explore workspace structure',
+      }]
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(800)
+    })
+
+    it('retires a stale turn anchor when a scrollbar drag reaches the true bottom', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+
+      geometry.setNaturalScrollHeight(1400)
+      // Dragging the scrollbar thumb produces pointerdown + scroll only — no
+      // wheel, touch, or key events — yet it is just as much an explicit trip
+      // to the live edge and must retire the reserve the same way.
+      fireEvent.pointerDown(el)
+      geometry.setScrollTop(1200)
+      fireEvent.scroll(el)
+
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
+      expect(geometry.scrollTop).toBe(800)
+
+      mockStreamState.activeSubagents = [{
+        agentId: 'sub-1',
+        parentToolId: 'tool-1',
+        subagentType: 'Explore',
+        description: 'Explore workspace structure',
+      }]
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(800)
+    })
+
+    it('pauses following when the reader escapes upward and resumes on return to the live edge', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      // Long enough for the library's deferred scroll classification AND its
+      // resize-difference window (one rAF + a tick) to close — a scroll event
+      // arriving inside that window is discarded as resize-caused.
+      const flushClassification = () =>
+        act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 40))
+        })
+
+      // At the live edge, content growth is followed.
+      fireEvent.scroll(el)
+      await flushClassification()
       geometry.setNaturalScrollHeight(1400)
       mockStreamState.streamingMessage = 'First streamed update'
       mockStreamState.isStreaming = true
       rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-      expect(geometry.scrollTop).toBe(800)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1400)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(799))
 
-      // Moving farther away pauses following.
-      fireEvent.wheel(el, { deltaY: -200 })
+      // An upward scroll escapes: subsequent growth no longer moves the reader.
       geometry.setScrollTop(600)
       fireEvent.scroll(el)
+      await flushClassification()
       geometry.setNaturalScrollHeight(1500)
       mockStreamState.streamingMessage = 'Second streamed update'
       rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
       expect(geometry.scrollTop).toBe(600)
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
 
-      // Returning within 80px restores following for subsequent content.
-      fireEvent.wheel(el, { deltaY: 250 })
-      geometry.setScrollTop(850)
+      // Scrolling back down near the live edge re-engages following. (The
+      // resize-difference window from the growth above must close first.)
+      await flushClassification()
+      geometry.setScrollTop(830)
       fireEvent.scroll(el)
+      await flushClassification()
       geometry.setNaturalScrollHeight(1600)
       mockStreamState.streamingMessage = 'Third streamed update'
       rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-      expect(geometry.scrollTop).toBe(1000)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1600)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(999))
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+    })
+
+    it('keeps the live edge pinned when the viewport shrinks, but not while escaped', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      // The component's own observer watches the viewport (`el`); the follow
+      // library's watches only the content wrapper and never sees this.
+      const fireViewportResize = () => fireContentResize(el, 0)
+
+      // At the live edge, a vertical shrink keeps the newest content at the
+      // bottom (content leaves from the top, not the bottom): the pin writes
+      // scrollTop to the new target, 1300 - 1 - 450.
+      geometry.setClientHeight(450)
+      fireViewportResize()
+      expect(geometry.scrollTop).toBe(849)
+
+      // Let the resize's classification shield drain (one frame + a tick)
+      // before gesturing, mirroring a real pause between resize and scroll.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      // Escaped readers keep their place instead: browsers anchor the top
+      // edge on resize, and the pin must not yank them to the bottom.
+      fireEvent.scroll(el)
+      geometry.setScrollTop(500)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+      geometry.setClientHeight(300)
+      fireViewportResize()
+      expect(geometry.scrollTop).toBe(500)
     })
   })
 
   describe('thinking block dedup (live vs persisted)', () => {
-    const liveBlock = (text: string, endedAt: number | null = null) =>
-      ({ id: 1, text, startedAt: Date.now() - 5000, endedAt })
+    const liveBlock = (text: string, endedAt: number | null = null, persistedId?: string) =>
+      ({ id: 1, persistedId, text, startedAt: Date.now() - 5000, endedAt })
 
     it('renders a live thinking card while the turn streams', () => {
       mockMessagesData.data = [createUserMessage({ content: { text: 'Question' } })]
@@ -2126,6 +3014,63 @@ describe('MessageList', () => {
       expect(screen.getByTestId('thinking-block-toggle')).toHaveTextContent('Thought')
     })
 
+    it('hands off by stable id while active even when streamed text diverges from the transcript', () => {
+      // Regression: a long-running turn can miss SSE reasoning deltas while a
+      // background agent keeps isActive=true. Text-prefix matching then leaves
+      // the completed live card stranded at the transcript tail indefinitely.
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({
+          content: { text: 'Persisted checkpoint' },
+          thinking: [{ id: 'msg-1:0', text: 'the full persisted reasoning' }],
+        }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = [
+        liveBlock('a suffix received after reconnect', Date.now(), 'msg-1:0'),
+      ]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
+      expect(screen.queryByText('a suffix received after reconnect')).not.toBeInTheDocument()
+      expect(screen.getByTestId('thinking-block-toggle')).toHaveTextContent('Thought')
+    })
+
+    it('hands off an empty live block by stable id while the session remains active', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({
+          content: { text: 'Persisted checkpoint' },
+          thinking: [{ id: 'msg-1:0', text: 'reasoning persisted despite omitted live deltas' }],
+        }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = [liveBlock('', Date.now(), 'msg-1:0')]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
+    })
+
+    it('does not suppress a different id merely because its text matches', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({
+          content: { text: '' },
+          thinking: [{ id: 'msg-old:0', text: 'reused stock reasoning' }],
+        }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = [
+        liveBlock('reused stock reasoning', null, 'msg-new:0'),
+      ]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(2)
+    })
+
     it('does not suppress the live card when only an older turn has matching thinking', () => {
       // Regression: models reuse stock openers ("Let me..."). A live block whose
       // early streamed prefix matches a PREVIOUS turn's persisted thinking must
@@ -2139,7 +3084,10 @@ describe('MessageList', () => {
       mockStreamState.thinkingBlocks = [liveBlock('Let me check')]
 
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-      // Old turn's persisted card + the new turn's live card
+      // The old completed turn is collapsed, while the new turn's live card
+      // remains visible and must not be falsely de-duplicated.
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
+      fireEvent.click(screen.getByTestId('turn-summary'))
       expect(screen.getAllByTestId('thinking-block')).toHaveLength(2)
     })
 
@@ -2154,6 +3102,8 @@ describe('MessageList', () => {
       mockStreamState.thinkingBlocks = [liveBlock('divergent streamed fragment', Date.now())]
 
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
+      fireEvent.click(screen.getByTestId('turn-summary'))
       expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
       expect(screen.queryByText('divergent streamed fragment')).not.toBeInTheDocument()
     })
@@ -2176,7 +3126,10 @@ describe('MessageList', () => {
       ]
 
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-      // Only the two persisted cards — the live copies must not double-render.
+      // Completed work is collapsed by default. Expansion reveals only the two
+      // persisted cards — the live copies must not double-render.
+      expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
+      fireEvent.click(screen.getByTestId('turn-summary'))
       expect(screen.getAllByTestId('thinking-block')).toHaveLength(2)
     })
 
@@ -2208,6 +3161,18 @@ describe('MessageList', () => {
       unmount()
 
       mockStreamState.isActive = false
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
+    })
+
+    it('drops a completed empty-text block while the wider turn remains active', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({ content: { text: 'Starting a tool next' } }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = [liveBlock('', Date.now())]
+
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
     })

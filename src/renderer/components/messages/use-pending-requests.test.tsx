@@ -934,6 +934,62 @@ describe('usePendingRequests', () => {
     expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['pending-user-requests'] })
   })
 
+  it('emits an account_reauth_required descriptor with the proxy request id', () => {
+    mockUnified.data = [
+      unified(
+        'account_reauth_required',
+        'reauth-1',
+        {
+          accountId: 'acct-r',
+          toolkit: 'gmail',
+          accountStatus: 'expired',
+          proxyRequestId: 'proxy-request-1',
+        },
+        { agentScoped: true },
+      ),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(result.current.count).toBe(1)
+    expect(ofKind(result.current.items, 'account_reauth_required')).toEqual([
+      expect.objectContaining({
+        proxyRequestId: 'proxy-request-1',
+        accountId: 'acct-r',
+        toolkit: 'gmail',
+        accountStatus: 'expired',
+      }),
+    ])
+  })
+
+  it('emits an mcp_reauth_required descriptor with reconnect metadata', () => {
+    mockUnified.data = [
+      unified(
+        'mcp_reauth_required',
+        'mcp-reauth-1',
+        {
+          mcpId: 'mcp-cal',
+          mcpName: 'Cal.com',
+          authType: 'oauth',
+          proxyRequestId: 'mcp-proxy-request-1',
+        },
+        { agentScoped: true },
+      ),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(result.current.count).toBe(1)
+    expect(ofKind(result.current.items, 'mcp_reauth_required')).toEqual([
+      expect.objectContaining({
+        proxyRequestId: 'mcp-proxy-request-1',
+        mcpId: 'mcp-cal',
+        mcpName: 'Cal.com',
+        authType: 'oauth',
+      }),
+    ])
+  })
+
   // ---- onComplete wiring: every kind drops its card synchronously ----
 
   it.each([

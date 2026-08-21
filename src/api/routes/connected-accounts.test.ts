@@ -126,6 +126,7 @@ const mockFindAgentsAssignedConnectedAccount = vi.fn()
   .mockResolvedValue(['agent-a'])
 const mockSyncAgentsAssignedConnectedAccount = vi.fn().mockResolvedValue(true)
 const mockSyncConnectedAccountAgents = vi.fn().mockResolvedValue(true)
+const mockCompleteReauthAccount = vi.fn()
 
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   countActiveTriggersPerAccount: (...args: unknown[]) => mockCountActiveTriggersPerAccount(...args),
@@ -139,6 +140,12 @@ vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
     mockSyncAgentsAssignedConnectedAccount(...args),
   syncConnectedAccountAgents: (...args: unknown[]) =>
     mockSyncConnectedAccountAgents(...args),
+}))
+
+vi.mock('@shared/lib/proxy/account-reauth-manager', () => ({
+  accountReauthManager: {
+    completeAccount: (...args: unknown[]) => mockCompleteReauthAccount(...args),
+  },
 }))
 
 import connectedAccountsRouter from './connected-accounts'
@@ -234,6 +241,7 @@ describe('connected-accounts reconnect flow', () => {
       expect(mockSyncAgentsAssignedConnectedAccount).toHaveBeenCalledWith(
         'existing-acc',
       )
+      expect(mockCompleteReauthAccount).toHaveBeenCalledWith('existing-acc')
     })
 
     it('deletes old remote connection after reconnect', async () => {
@@ -298,6 +306,25 @@ describe('connected-accounts reconnect flow', () => {
       expect(mockSyncAgentsAssignedConnectedAccount).toHaveBeenCalledWith(
         expect.any(String),
       )
+      expect(mockCompleteReauthAccount).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('GET /callback with reconnectAccountId', () => {
+    it('resumes parked proxy requests after the web OAuth callback activates the account', async () => {
+      mockGetConnection.mockResolvedValue({ id: 'new-web-conn', status: 'ACTIVE' })
+      mockGetAccountDisplayName.mockResolvedValue('My GitHub')
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn' }])
+
+      const res = await app.request(
+        'http://localhost/api/connected-accounts/callback' +
+        '?connectedAccountId=new-web-conn&status=success&toolkit=github' +
+        '&reconnectAccountId=existing-acc',
+      )
+
+      expect(res.status).toBe(200)
+      expect(await res.text()).toContain('Connected Successfully!')
+      expect(mockCompleteReauthAccount).toHaveBeenCalledWith('existing-acc')
     })
   })
 

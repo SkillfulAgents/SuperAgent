@@ -45,6 +45,15 @@ export async function getAccessibleAgentSlugs(userId: string): Promise<string[]>
   return rows.map((r) => r.agentSlug)
 }
 
+/** Get the users who can receive notifications for an agent in auth mode. */
+export async function getAgentAccessUserIds(agentSlug: string): Promise<string[]> {
+  const rows = await db
+    .select({ userId: agentAcl.userId })
+    .from(agentAcl)
+    .where(eq(agentAcl.agentSlug, agentSlug))
+  return rows.map((row) => row.userId)
+}
+
 // ============================================================================
 // Create Operations
 // ============================================================================

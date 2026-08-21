@@ -66,6 +66,7 @@ import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -76,9 +77,11 @@ import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-pro
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
-import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
+import { getAgentSessionsDir, getSessionJsonlPath } from '@shared/lib/utils/file-storage'
+import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { SubagentCapture } from './subagent-capture'
+import * as fs from 'fs'
 import * as path from 'path'
 import { randomUUID } from 'crypto'
 // Per-subagent streaming state (supports multiple concurrent background agents)
@@ -98,7 +101,7 @@ interface SubagentStreamingState {
  */
 type StreamRequestKind = Exclude<
   UserInputRequestKind,
-  'computer_use' | 'proxy_review' | 'x_agent_review'
+  'computer_use' | 'proxy_review' | 'x_agent_review' | 'account_reauth_required' | 'mcp_reauth_required'
 >
 
 // Tracks streaming state for SSE broadcasts
@@ -110,11 +113,20 @@ interface StreamingState {
   currentToolUse: { id: string; name: string } | null
   currentToolInput: string // Accumulated partial JSON input for current tool
   currentThinking?: boolean // True while an extended-thinking content block is streaming
+  currentAssistantMessageId?: string | null // SDK message id for stable live↔persisted block identity
+  currentThinkingBlockIndex?: number | null // Content index within currentAssistantMessageId
   isActive: boolean // True from user message until result received
   isInterrupted: boolean // True after user interrupts, prevents race conditions
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
   agentSlug?: string // The agent slug for this session
   notAutomationSession?: boolean // Cached "not a cron/webhook session" verdict; skips the automation-status metadata write on later results
+  // Unpromoted cron/webhook session: release its container stream when the
+  // session settles. Resolved from session metadata at subscribe time so the
+  // settle-time teardown in finalizeIdle stays synchronous (race-free).
+  releaseStreamOnSettle?: boolean
+  // Set synchronously on promote so an in-flight subscribe-time metadata read
+  // cannot flip releaseStreamOnSettle back to true.
+  promotedToInteractive?: boolean
   // True when the most recent result was a clean success (not error-shaped,
   // not an interrupt, not a resume-exit). Consumed by finalizeIdle: a success
   // result alone is NOT terminal — queued messages or background work can keep
@@ -150,6 +162,22 @@ interface StreamingState {
   // card. Entries are consumed on match; the rest die with this state.
   cancelledCapabilityReviews: Set<string>
   lastApiErrorCode: string | null // SDK error code from last assistant message (e.g., 'authentication_failed', 'rate_limit')
+  // Text from the newest top-level assistant message group. Complete assistant
+  // frames sharing a message id are merged the same way transformMessages
+  // merges the persisted transcript. A newer id replaces the candidate even
+  // when it has no text, so a tool/thinking-only final response cannot reuse
+  // an earlier working note as the completion-notification body.
+  lastAssistantMessageId: string | null
+  assistantMessageIds: Set<string>
+  assistantEntryUuids: Set<string>
+  lastAssistantText: string
+  // A user message accepted while active may become a continuation turn after
+  // the current result. Delay the response reset until that next turn actually
+  // produces an assistant/result frame: if the queued message was steered into
+  // the current response and idle follows immediately, that response is still
+  // the correct final answer.
+  queuedTurnCount: number
+  resetAssistantBeforeNextTurnOutput: boolean
   // Backgrounded Bash commands + dynamic workflows still running, keyed by the SDK task_id.
   // For workflows we also carry the launching tool's id, the meta.name, and — once the
   // Workflow tool result arrives — the real on-disk runId (`wf_…`), which is DISTINCT from
@@ -253,6 +281,16 @@ export function redactStreamedToolInput(toolName: string | undefined, partialInp
   return partialInput.replace(/("secret"\s*:\s*")(?:\\.|[^"\\])*/g, '$1***')
 }
 
+// Thrown by waitForIdle when the session is still active past timeoutMs.
+// Callers use this to tell "target is still working" (recoverable — poll later)
+// apart from genuine failures like "session never became active".
+export class WaitForIdleTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`waitForIdle timeout after ${timeoutMs}ms`)
+    this.name = 'WaitForIdleTimeoutError'
+  }
+}
+
 // TODO this file is too big, this class is HUGE. Needs breaking up
 class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
@@ -340,7 +378,12 @@ class MessagePersister {
     }
 
     const sessionId = request.scope.sessionId
+    // Agent-scoped reviews and re-auth requests have no session id and no safe
+    // actionable OS-notification flow; their in-app cards are the prompt.
     if (!sessionId) return
+    // Defensive type boundary if a future caller violates the agent-scoped
+    // re-auth invariant; these kinds are not accepted notification categories.
+    if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
     const waitingFor =
       request.kind === 'capability_review'
         ? (request.payload as { capability?: unknown }).capability === 'workflows'
@@ -451,6 +494,17 @@ class MessagePersister {
       settledInputRequests: priorSettledInputRequests,
       cancelledCapabilityReviews: new Set(),
       lastApiErrorCode: null,
+      lastAssistantMessageId:
+        priorIsActive ? (prior?.lastAssistantMessageId ?? null) : null,
+      assistantMessageIds:
+        priorIsActive ? new Set(prior?.assistantMessageIds ?? []) : new Set(),
+      assistantEntryUuids:
+        priorIsActive ? new Set(prior?.assistantEntryUuids ?? []) : new Set(),
+      lastAssistantText:
+        priorIsActive ? (prior?.lastAssistantText ?? '') : '',
+      queuedTurnCount: priorIsActive ? (prior?.queuedTurnCount ?? 0) : 0,
+      resetAssistantBeforeNextTurnOutput:
+        priorIsActive ? (prior?.resetAssistantBeforeNextTurnOutput ?? false) : false,
       activeBackgroundTasks: priorBackgroundTasks,
       bgTasksSnapshot: prior?.bgTasksSnapshot ?? null,
       // Carried with the snapshot it describes — the incoming handshake is what
@@ -461,7 +515,13 @@ class MessagePersister {
       lastResultSubtype: null,
       lastResultCleanSuccess: false,
       isRetrying: false,
+      // Carried over so a transport reattach mid-run doesn't lose the verdict
+      // before the refresh below lands.
+      releaseStreamOnSettle: prior?.releaseStreamOnSettle ?? false,
+      promotedToInteractive: prior?.promotedToInteractive ?? false,
     })
+
+    this.resolveReleaseStreamOnSettle(sessionId, agentSlug)
 
     // Store container client for reconnection checks
     this.containerClients.set(sessionId, client)
@@ -482,6 +542,35 @@ class MessagePersister {
 
     // Wait for the WebSocket connection to be established
     await ready
+  }
+
+  // Resolve whether this subscription belongs to an unpromoted cron/webhook
+  // session. Non-blocking: automation runs last long enough that the verdict
+  // lands well before finalizeIdle consumes it, and an unresolved read just
+  // means the stream is kept (the pre-fix behavior). Scheduler and trigger
+  // paths register metadata before subscribing, so the read can't miss them.
+  private resolveReleaseStreamOnSettle(sessionId: string, agentSlug?: string): void {
+    if (!agentSlug) return
+    const stateRef = this.streamingStates.get(sessionId)
+    void getSessionMetadata(agentSlug, sessionId)
+      .then((meta) => {
+        // A resubscribe replaced the state and kicked off its own resolution.
+        const current = this.streamingStates.get(sessionId)
+        if (!current || current !== stateRef) return
+        // Promote wins: its marker is set synchronously, this read may be stale.
+        if (current.promotedToInteractive) return
+        current.releaseStreamOnSettle = Boolean(
+          (meta?.isScheduledExecution || meta?.isWebhookExecution) &&
+            !meta?.promotedToInteractive
+        )
+      })
+      .catch((error) => {
+        console.warn('[MessagePersister] Failed to resolve automation stream policy:', error)
+        captureException(error, {
+          tags: { area: 'container', op: 'resolveReleaseStreamOnSettle' },
+          extra: { sessionId, agentSlug },
+        })
+      })
   }
 
   // Unsubscribe from a session
@@ -526,6 +615,20 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: false,
     })
+    this.maybeReleaseSettledAutomationStream(sessionId, state)
+  }
+
+  // Tear down a settled automation stream. Sync: an async gap races the wake path's isSubscribed check.
+  // Gated on stateEventsAuthority so a legacy idle can't drop a queued turn's stream.
+  private maybeReleaseSettledAutomationStream(sessionId: string, state: StreamingState): void {
+    if (
+      state.releaseStreamOnSettle &&
+      state.stateEventsAuthority &&
+      this.subscriptions.has(sessionId)
+    ) {
+      console.log(`[MessagePersister] Releasing settled automation stream for session ${sessionId}`)
+      this.unsubscribeFromSession(sessionId)
+    }
   }
 
   // Revert an optimistic markSessionActive when a host-initiated send fails
@@ -610,7 +713,7 @@ class MessagePersister {
         }
         if (Date.now() - startedAt > timeoutMs) {
           cleanup()
-          reject(new Error(`waitForIdle timeout after ${timeoutMs}ms`))
+          reject(new WaitForIdleTimeoutError(timeoutMs))
           return
         }
         timer = setTimeout(tick, 250)
@@ -991,6 +1094,30 @@ class MessagePersister {
     this.broadcastToSSE(sessionId, { type: 'session_updated' })
   }
 
+  private resetSessionCompleteResponse(state: StreamingState): void {
+    state.lastAssistantMessageId = null
+    state.lastAssistantText = ''
+  }
+
+  /**
+   * Start a non-blocking snapshot of the transcript's observed byte boundary
+   * when the terminal frame arrives. The CLI owns transcript writes in another
+   * process, so this is not a cross-process barrier; it simply gives the later
+   * context lookup a same-file bound without blocking the WebSocket handler.
+   */
+  private async getSessionTranscriptEndOffset(
+    agentSlug: string,
+    sessionId: string,
+  ): Promise<number | null> {
+    try {
+      return (await fs.promises.stat(
+        getSessionJsonlPath(agentSlug, sessionId),
+      )).size
+    } catch {
+      return null
+    }
+  }
+
   // Mark session as active (when user sends a message)
   markSessionActive(sessionId: string, agentSlug?: string): void {
     let state = this.streamingStates.get(sessionId)
@@ -1013,6 +1140,12 @@ class MessagePersister {
         settledInputRequests: new Map(),
         cancelledCapabilityReviews: new Set(),
         lastApiErrorCode: null,
+        lastAssistantMessageId: null,
+        assistantMessageIds: new Set(),
+        assistantEntryUuids: new Set(),
+        lastAssistantText: '',
+        queuedTurnCount: 0,
+        resetAssistantBeforeNextTurnOutput: false,
         activeBackgroundTasks: new Map(),
         bgTasksSnapshot: null,
         processInstanceId: null,
@@ -1029,6 +1162,7 @@ class MessagePersister {
         this.capture.recordNote(sessionId, 'state_created', { agentSlug }).catch(() => {})
       }
     }
+    const wasActive = state.isActive
     state.isActive = true
     state.isInterrupted = false // Reset interrupted flag on new message
     state.isAwaitingInput = false // Reset awaiting input on new message
@@ -1038,12 +1172,25 @@ class MessagePersister {
     // event) must not wedge the next turn's label. State is reused across turns.
     state.isCompacting = false
     state.currentThinking = false
+    state.currentAssistantMessageId = null
+    state.currentThinkingBlockIndex = null
     state.lastApiErrorCode = null // Clear previous API error on new message
     // Clear the previous turn's result subtype so a late idle from an
     // already-finished (or interrupted) run can't fire a stale "success"
     // completion notification against the turn this message is starting.
     state.lastResultSubtype = null
     state.lastResultCleanSuccess = false
+    // Re-marking an already-active session is how queued/steering messages are
+    // accepted mid-turn. Preserve the current candidate in that case; the next
+    // assistant message group will replace it. A genuinely new turn must never
+    // inherit the prior turn's answer.
+    if (!wasActive) {
+      this.resetSessionCompleteResponse(state)
+      state.queuedTurnCount = 0
+      state.resetAssistantBeforeNextTurnOutput = false
+    } else {
+      state.queuedTurnCount += 1
+    }
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
@@ -1236,6 +1383,14 @@ class MessagePersister {
       promotedToInteractive: true,
     })
 
+    // Promoted sessions behave interactive from here on — keep their stream
+    // alive across settles like any other interactive session.
+    const state = this.streamingStates.get(sessionId)
+    if (state) {
+      state.promotedToInteractive = true
+      state.releaseStreamOnSettle = false
+    }
+
     console.log(`[MessagePersister] Promoted automated session ${sessionId} to interactive (agent: ${agentSlug})`)
 
     // Re-broadcast so the sidebar refetches sessions now that the metadata is updated
@@ -1408,6 +1563,20 @@ class MessagePersister {
       return
     }
 
+    // Complete top-level frames correspond to durable parent-transcript writes.
+    // Keep the warm per-agent summary current without restatting every sibling.
+    // Replayed catch-up frames are excluded: SDK frames carry no timestamp on
+    // the wire, so the host stamps arrival time, and a late-join replay to an
+    // idle session would masquerade as fresh activity — the directory-mtime and
+    // TTL reconciliation already repair anything a missed turn-end left behind.
+    if (
+      state.agentSlug &&
+      !content.replayed &&
+      (content.type === 'assistant' || content.type === 'user' || content.type === 'result')
+    ) {
+      recordSessionActivity(state.agentSlug, sessionId, message.timestamp)
+    }
+
     // Container late-join catch-up: the runtime replays the last turn's
     // terminal frames (informational/result/idle, marked `replayed: true`)
     // when a WebSocket attaches after the turn already ended — e.g. a
@@ -1421,6 +1590,40 @@ class MessagePersister {
 
     switch (content.type) {
       case 'assistant': {
+        if (state.resetAssistantBeforeNextTurnOutput) {
+          this.resetSessionCompleteResponse(state)
+          state.resetAssistantBeforeNextTurnOutput = false
+        }
+        // Preserve exactly the text portion the transcript UI can render. The
+        // SDK persists one complete frame per content block, so several frames
+        // can share an assistant message id (thinking, text, tool use). Merge
+        // their text here and let a newer id replace the candidate entirely.
+        const assistantMessageId =
+          typeof content.message?.id === 'string' && content.message.id
+            ? content.message.id
+            : null
+        const assistantEntryUuid =
+          typeof content.uuid === 'string' && content.uuid ? content.uuid : null
+        const assistantText = this.extractAssistantText(content)
+        // Resumed CLI processes can replay already-persisted frames. The
+        // renderer deduplicates those by transcript UUID before merging, so
+        // ignore a duplicate even if it arrives after a newer message group.
+        if (!assistantEntryUuid || !state.assistantEntryUuids.has(assistantEntryUuid)) {
+          if (assistantMessageId && assistantMessageId === state.lastAssistantMessageId) {
+            state.lastAssistantText += assistantText
+          } else if (assistantMessageId && state.assistantMessageIds.has(assistantMessageId)) {
+            // A later frame can belong to an older assistant group (typically a
+            // delayed tool block). transformMessages merges it into that older
+            // bubble without changing which assistant item is last, so neither
+            // should the notification candidate.
+          } else {
+            state.lastAssistantMessageId = assistantMessageId
+            state.lastAssistantText = assistantText
+          }
+          if (assistantMessageId) state.assistantMessageIds.add(assistantMessageId)
+          if (assistantEntryUuid) state.assistantEntryUuids.add(assistantEntryUuid)
+        }
+
         // Complete assistant message - JSONL is the source of truth
         // Track SDK error code from assistant message (e.g., 'authentication_failed', 'rate_limit')
         if (content.error) {
@@ -1826,16 +2029,32 @@ class MessagePersister {
                 // Completion notification at the real end of the work. Skip
                 // resume-exits: the session is pausing for a resume, not done.
                 if (state.lastResultSubtype === 'success' && state.agentSlug) {
-                  notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+                  notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
+                    responseText: state.lastAssistantText,
+                    responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
+                      state.agentSlug,
+                      sessionId,
+                    ),
+                  }).catch((err) => {
                     console.error('[MessagePersister] Failed to trigger session complete notification:', err)
                   })
                 }
               }
+            } else if (!state.isActive && state.lastResultSubtype !== null) {
+              // Error path already cleared isActive, so finalizeIdle never ran.
+              this.maybeReleaseSettledAutomationStream(sessionId, state)
             }
           } else if (content.state === 'running' && !state.isActive) {
             // The runtime started a turn we didn't initiate via POST (e.g. a
             // queued message picked up after an out-of-order idle) — self-heal.
             state.isActive = true
+            this.resetSessionCompleteResponse(state)
+            state.queuedTurnCount = 0
+            state.resetAssistantBeforeNextTurnOutput = false
+            // Preserve the prior result guard. Some runtimes emit a stray
+            // running → idle pair without another result; clearing the guard
+            // here would leave isActive stuck until disconnect. The response
+            // reset above keeps any duplicate completion notification generic.
             this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
             this.broadcastGlobal({
               type: 'session_active',
@@ -1906,6 +2125,20 @@ class MessagePersister {
         // (terminal_reason: api_error etc.) that a subtype check alone misses.
         const classification = classifyResult(content)
         const isError = classification.isError
+        // Resume and graceful-interrupt results are pauses inside the current
+        // turn. They must not consume the queued-turn boundary or reset its
+        // response candidate one result early.
+        const completesTurn = !classification.isInterrupt && content.subtype !== 'resume'
+        if (completesTurn) {
+          if (state.resetAssistantBeforeNextTurnOutput) {
+            this.resetSessionCompleteResponse(state)
+            state.resetAssistantBeforeNextTurnOutput = false
+          }
+          if (state.queuedTurnCount > 0) {
+            state.queuedTurnCount -= 1
+            state.resetAssistantBeforeNextTurnOutput = true
+          }
+        }
         state.isStreaming = false
         // On error the turn ends here, so settle isActive too BEFORE the single
         // emit. Collapsing every terminal flag change into ONE emit (reflecting
@@ -2050,7 +2283,13 @@ class MessagePersister {
         // `notifyWhenUnfocused` toggle. Skip for 'resume' exits — the
         // session is pausing for a resume, not truly finished.
         if (content.subtype !== 'resume' && state.agentSlug) {
-          notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+          notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
+            responseText: state.lastAssistantText,
+            responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
+              state.agentSlug,
+              sessionId,
+            ),
+          }).catch((err) => {
             console.error('[MessagePersister] Failed to trigger session complete notification:', err)
           })
         }
@@ -2739,7 +2978,7 @@ class MessagePersister {
   // Handle stream events for SSE broadcasting (not for persistence)
   private handleStreamEvent(
     sessionId: string,
-    event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string; thinking?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
+    event: { type: string; index?: number; message?: { id?: string }; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string; thinking?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
     state: StreamingState
   ): void {
     switch (event.type) {
@@ -2748,6 +2987,8 @@ class MessagePersister {
         state.isStreaming = false // text hasn't started; set true at the first text token below
         state.currentToolUse = null
         state.currentThinking = false
+        state.currentAssistantMessageId = event.message?.id ?? null
+        state.currentThinkingBlockIndex = null
         state.isRetrying = false // the response is flowing now, so any retry resolved
         // 'streaming' is deferred to the first text token (set above) so a message that
         // opens with a tool call stays 'working' instead of flipping streaming→working.
@@ -2773,7 +3014,14 @@ class MessagePersister {
           // Reasoning text follows via thinking_delta (the agent requests
           // `display: 'summarized'`; without it newer models omit the text).
           state.currentThinking = true
-          this.broadcastToSSE(sessionId, { type: 'thinking_start' })
+          state.currentThinkingBlockIndex = Number.isInteger(event.index) ? event.index! : null
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_start',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
         }
         break
 
@@ -2788,9 +3036,16 @@ class MessagePersister {
           // message_start so a tool-first message never flips streaming→working).
           state.isStreaming = true
         } else if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
+          // A reconnect can miss content_block_start while retaining message_start;
+          // recover the index from the delta itself when available.
+          if (Number.isInteger(event.index)) state.currentThinkingBlockIndex = event.index!
           // Stream summarized reasoning text so the UI can accumulate it for "View thinking"
           this.broadcastToSSE(sessionId, {
             type: 'thinking_delta',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
             text: event.delta.thinking,
           })
         } else if (event.delta?.type === 'input_json_delta') {
@@ -2813,7 +3068,14 @@ class MessagePersister {
         // Thinking block finished streaming — flip back to "Working"
         if (state.currentThinking) {
           state.currentThinking = false
-          this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_stop',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
+          state.currentThinkingBlockIndex = null
         }
         // Tool use block finished streaming
         if (state.currentToolUse) {
@@ -3027,8 +3289,16 @@ class MessagePersister {
         // Defensive: ensure thinking state is cleared if a stop was missed
         if (state.currentThinking) {
           state.currentThinking = false
-          this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_stop',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
         }
+        state.currentAssistantMessageId = null
+        state.currentThinkingBlockIndex = null
         break
     }
   }

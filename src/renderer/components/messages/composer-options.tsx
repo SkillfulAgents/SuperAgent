@@ -11,8 +11,7 @@ import type { LlmProviderId } from '@shared/lib/config/settings'
  * same per-message runtime knobs (effort, model) and the same seeding rules,
  * so we centralize:
  *   - reading the active provider's model catalog from settings
- *   - one-time seeding from `initialEffort` / `initialModel` (so late-loading
- *     session data doesn't clobber later user edits)
+ *   - adopting authoritative session state without clobbering unsent user edits
  *   - falling back to the user's "Default Model" setting when no initial
  *     model is supplied
  *   - rendering the two selector buttons as one toolbar block
@@ -31,6 +30,8 @@ export interface ComposerOptionsState {
   setModel: (m: string) => void
   /** The active provider's flat catalog of concrete model ids. */
   catalog: ModelDefinition[]
+  /** Effective catalog/provider fallback used while a model selection is unresolved. */
+  defaultModel: string | undefined
   /** Active host web-provider id (settings-derived), so the model picker's web-tools availability
    *  warning knows a configured vendor makes those tools work on any model. Undefined = native. */
   webProvider?: string
@@ -43,6 +44,17 @@ export interface ComposerOptionsState {
    * a session that carries none in its metadata (e.g. trigger-created).
    */
   toRuntimeOptions(): { effort?: EffortLevel; speed?: SpeedLevel; model?: string }
+}
+
+/** Submit lifecycle used by composer hosts; presentation-only consumers only need the state above. */
+export interface ComposerOptionsController extends ComposerOptionsState {
+  /**
+   * Acknowledge runtime options the server accepted for a fresh turn. Until
+   * this is called, a user-picked runtime option is an unsent local edit and
+   * must not be overwritten by a session-detail refetch. Afterwards, newer
+   * initial values are authoritative (another window may have spoken).
+   */
+  markSubmitted(options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string }): void
 }
 
 /**
@@ -62,11 +74,11 @@ export function findCatalogModel(
 }
 
 export interface UseComposerOptionsArgs {
-  /** Effort last used on this session, seeds the selector once if provided. */
+  /** Effort last used on this session, seeds the selector if provided. */
   initialEffort?: EffortLevel
-  /** Speed last used on this session, seeds the selector once if provided. */
+  /** Speed last used on this session, seeds the selector if provided. */
   initialSpeed?: SpeedLevel
-  /** Model last used on this session, seeds the selector once if provided. */
+  /** Authoritative model last used on this session. */
   initialModel?: string
   /** The agent's own default model, if set. Slots between a session's initial model and the app-wide default. */
   agentDefaultModel?: string
@@ -97,7 +109,7 @@ export interface UseComposerOptionsArgs {
   followDefaults?: boolean
 }
 
-export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsState {
+export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsController {
   const {
     initialEffort,
     initialSpeed,
@@ -117,31 +129,41 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   // ---- Effort ----
   const [effort, setEffortState] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
   const effortSeededRef = useRef(initialEffort !== undefined)
+  const lastInitialEffortRef = useRef(initialEffort)
+  const effortDirtyRef = useRef(false)
   useEffect(() => {
-    if (!effortSeededRef.current && initialEffort !== undefined) {
+    if (lastInitialEffortRef.current === initialEffort) return
+    lastInitialEffortRef.current = initialEffort
+    if (!effortDirtyRef.current && initialEffort !== undefined) {
       setEffortState(initialEffort)
       effortSeededRef.current = true
     }
   }, [initialEffort])
-  // Wrap the setter so an explicit user pick locks out the late-arriving
-  // initial-seed effect — otherwise a slow `useSession` resolution can clobber
-  // the user's choice if they pick before session data lands.
+  // Wrap the setter so an explicit user pick locks out authoritative refreshes
+  // until it is submitted — otherwise a slow `useSession` resolution can
+  // clobber the user's choice if they pick before session data lands.
   const setEffort = useCallback((e: EffortLevel) => {
     effortSeededRef.current = true
+    effortDirtyRef.current = true
     setEffortState(e)
   }, [])
 
   // ---- Speed ---- (same seeding/locking shape as effort)
   const [speed, setSpeedState] = useState<SpeedLevel>(initialSpeed ?? DEFAULT_SPEED)
   const speedSeededRef = useRef(initialSpeed !== undefined)
+  const lastInitialSpeedRef = useRef(initialSpeed)
+  const speedDirtyRef = useRef(false)
   useEffect(() => {
-    if (!speedSeededRef.current && initialSpeed !== undefined) {
+    if (lastInitialSpeedRef.current === initialSpeed) return
+    lastInitialSpeedRef.current = initialSpeed
+    if (!speedDirtyRef.current && initialSpeed !== undefined) {
       setSpeedState(initialSpeed)
       speedSeededRef.current = true
     }
   }, [initialSpeed])
   const setSpeed = useCallback((sp: SpeedLevel) => {
     speedSeededRef.current = true
+    speedDirtyRef.current = true
     setSpeedState(sp)
   }, [])
 
@@ -153,15 +175,13 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   )
   const catalog = useMemo(() => providerInfo?.catalog ?? [], [providerInfo])
   // Fallback hierarchy: the agent's own default → user's "Default Model" →
-  // provider's agent default → the catalog's latest Sonnet → first catalog
-  // entry. The first non-empty wins. Aliases and concrete ids are both valid
-  // wire values, so any of these is a usable selection string.
+  // provider's catalog default → first catalog entry. The first non-empty
+  // wins. Aliases and concrete ids are both valid selection strings.
   const fallbackModel = useMemo(
     () =>
       agentDefaultModel ??
       settings?.models?.agentModel ??
       providerInfo?.defaultModels?.agent ??
-      catalog.find((m) => m.family === 'sonnet' && m.isLatest)?.id ??
       catalog[0]?.id,
     [agentDefaultModel, settings, providerInfo, catalog],
   )
@@ -169,17 +189,44 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   // ---- Model ----
   const [model, setModelState] = useState<string | undefined>(initialModel ?? fallbackModel)
   const modelSeededRef = useRef(initialModel !== undefined)
-  // Seed once when session data loads after mount.
+  // `initialModel` is authoritative session state, but the first render may
+  // contain a stale React Query cache entry while a background refetch is in
+  // flight. Track every distinct value rather than treating the first one as
+  // final. The only thing allowed to beat a newer session value is an explicit
+  // user pick that has not been accepted by the server yet.
+  const lastInitialModelRef = useRef(initialModel)
+  const modelDirtyRef = useRef(false)
   useEffect(() => {
-    if (!modelSeededRef.current && initialModel !== undefined) {
+    if (lastInitialModelRef.current === initialModel) return
+    lastInitialModelRef.current = initialModel
+    if (!modelDirtyRef.current && initialModel !== undefined) {
       setModelState(initialModel)
       modelSeededRef.current = true
     }
   }, [initialModel])
   const setModel = useCallback((m: string) => {
     modelSeededRef.current = true
+    modelDirtyRef.current = true
     setModelState(m)
   }, [])
+
+  const markSubmitted = useCallback(
+    (options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string }) => {
+      // Do not clear a newer selection if a request somehow completed after
+      // the picker changed again. MessageInput disables the picker in flight,
+      // but the equality check keeps this helper correct for other callers.
+      if (options.effort !== undefined && options.effort === effort) {
+        effortDirtyRef.current = false
+      }
+      if (options.speed !== undefined && options.speed === speed) {
+        speedDirtyRef.current = false
+      }
+      if (options.model !== undefined && options.model === model) {
+        modelDirtyRef.current = false
+      }
+    },
+    [effort, speed, model],
+  )
 
   // ---- Default adoption ----
   // An untouched knob follows the effective default (agent default → user
@@ -258,10 +305,12 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       model,
       setModel,
       catalog,
+      defaultModel: fallbackModel,
       webProvider: settings?.webProvider,
       toRuntimeOptions,
+      markSubmitted,
     }),
-    [effort, setEffort, speed, setSpeed, model, setModel, catalog, settings, toRuntimeOptions],
+    [effort, setEffort, speed, setSpeed, model, setModel, catalog, fallbackModel, settings, toRuntimeOptions, markSubmitted],
   )
 }
 

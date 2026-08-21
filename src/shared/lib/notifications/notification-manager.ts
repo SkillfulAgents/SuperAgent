@@ -2,15 +2,20 @@
  * Notification Manager
  *
  * Coordinates notification triggering:
- * 1. Checks if session is currently being viewed (skip if so)
- * 2. Checks notification settings (skip if disabled)
- * 3. Creates DB notification
- * 4. Broadcasts OS notification event via SSE
+ * 1. Checks notification settings (skip if disabled; auth mode defers to the
+ *    per-user gates in each delivery path)
+ * 2. Creates DB notification
+ * 3. Builds the canonical NotificationEvent and hands it to every registered
+ *    delivery channel (SSE client broadcast, Web Push, …). Viewed-session
+ *    suppression is a per-channel concern: the renderer applies it for the
+ *    client broadcast; Web Push currently has no presence signal and always
+ *    delivers (deliberate v1 scope).
  */
 
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   createNotification,
+  getAgentAccessUserIds,
   type NotificationType,
 } from '@shared/lib/services/notification-service'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
@@ -18,8 +23,30 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgent } from '@shared/lib/services/agent-service'
 import { getSessionMetadata } from '@shared/lib/services/session-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { captureException } from '@shared/lib/error-reporting'
+import { getNotificationChannels } from './channels'
+import { isNotificationTypeEnabled } from './notification-preferences'
+import type { NotificationEvent } from './notification-event'
+import { buildSessionCompleteBody } from './session-complete-summary'
+
+interface SessionCompleteNotificationOptions {
+  /** Final top-level assistant text, already selected by MessagePersister. */
+  responseText?: string | null
+  /** In-flight same-file byte-boundary snapshot for this completed turn. */
+  responseTranscriptEndOffset?: Promise<number | null>
+}
+
+type NotificationBody = string | {
+  fallback: string
+  resolve: () => Promise<string>
+}
 
 class NotificationManager {
+  // Long responses may require a model call. Keep completion notifications for
+  // one session in lifecycle order even when a later short response is ready
+  // first; unrelated sessions remain fully parallel.
+  private readonly sessionCompleteChains = new Map<string, Promise<void>>()
+
   /**
    * Get the display name for an agent (name if available, otherwise slug)
    */
@@ -43,24 +70,37 @@ class NotificationManager {
       return true
     }
 
-    const settings = getUserSettings('local')
-    const notificationSettings = settings.notifications
+    return isNotificationTypeEnabled(getUserSettings('local').notifications, type)
+  }
 
-    // Check global toggle first
-    if (!notificationSettings.enabled) {
-      return false
-    }
+  /**
+   * Auth mode creates one shared inbox row, but enrichment is only useful when
+   * at least one ACL recipient has this notification type enabled. Delivery
+   * channels still enforce each user's preference independently.
+   */
+  private async shouldResolveDeferredBody(
+    type: NotificationType,
+    agentSlug: string,
+  ): Promise<boolean> {
+    if (!isAuthMode()) return true
 
-    // Check per-type toggle
-    switch (type) {
-      case 'session_complete':
-        return notificationSettings.sessionComplete !== false
-      case 'session_waiting':
-        return notificationSettings.sessionWaiting !== false
-      case 'session_scheduled':
-        return notificationSettings.sessionScheduled !== false
-      default:
-        return true
+    try {
+      const userIds = await getAgentAccessUserIds(agentSlug)
+      return userIds.some((userId) =>
+        isNotificationTypeEnabled(
+          getUserSettings(userId).notifications,
+          type,
+        ),
+      )
+    } catch (error) {
+      // Preference lookup failure must not suppress a potentially wanted
+      // summary. Fail open, but make the unexpected token-spend path visible.
+      captureException(error, {
+        level: 'warning',
+        tags: { area: 'notifications', op: 'deferred-body-preferences' },
+        extra: { agentSlug, type },
+      })
+      return true
     }
   }
 
@@ -75,7 +115,7 @@ class NotificationManager {
     sessionId: string
     agentSlug: string
     title: string
-    body: string
+    body: NotificationBody
     actions?: Array<{ text: string }>
     actionContext?: Record<string, unknown>
     extra?: Omit<Record<string, unknown>, 'type' | 'notificationType' | 'notificationId' | 'sessionId' | 'agentSlug' | 'title' | 'body' | 'actions' | 'actionContext'>
@@ -100,13 +140,22 @@ class NotificationManager {
       return
     }
 
+    // Completion bodies can require one summarizer call. Resolve them only
+    // after preferences pass so a disabled notification never spends model
+    // tokens. Other notification types keep their immediate string bodies.
+    const resolvedBody = typeof body === 'string'
+      ? body
+      : (await this.shouldResolveDeferredBody(type, agentSlug))
+          ? await body.resolve()
+          : body.fallback
+
     // Always create DB notification (for badge/dropdown history)
     const notificationId = await createNotification({
       type,
       sessionId,
       agentSlug,
       title,
-      body,
+      body: resolvedBody,
     })
 
     // Stamp the actionContext with notificationId so the renderer dispatcher
@@ -117,20 +166,26 @@ class NotificationManager {
       ? { ...actionContext, notificationId }
       : undefined
 
-    // Broadcast OS notification event to all connected clients
-    // Frontend will decide whether to show based on tab visibility and selected session
-    messagePersister.broadcastGlobal({
-      type: 'os_notification',
+    const event: NotificationEvent = {
       notificationId,
-      notificationType: type,
+      type,
       sessionId,
       agentSlug,
       title,
-      body,
+      body: resolvedBody,
+      navigatePath: `/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}`,
       ...(actions ? { actions } : {}),
       ...(stampedActionContext ? { actionContext: stampedActionContext } : {}),
-      ...extra,
-    })
+      ...(extra ? { extra } : {}),
+    }
+
+    // Fire-and-forget per channel: delivery to one backend (a slow push POST,
+    // a dead endpoint) must never block the trigger path or another channel.
+    for (const channel of getNotificationChannels()) {
+      void channel.deliver(event).catch((error) => {
+        console.error(`[NotificationManager] ${channel.id} delivery failed:`, error)
+      })
+    }
   }
 
   /**
@@ -143,19 +198,66 @@ class NotificationManager {
   async triggerSessionComplete(
     sessionId: string,
     agentSlug: string,
-    agentName?: string
+    options: SessionCompleteNotificationOptions = {},
+  ): Promise<void> {
+    const key = `${agentSlug}\0${sessionId}`
+    const previous = this.sessionCompleteChains.get(key) ?? Promise.resolve()
+    const current = previous
+      .catch(() => undefined)
+      .then(() => this.triggerSessionCompleteNow(sessionId, agentSlug, options))
+    this.sessionCompleteChains.set(key, current)
+
+    try {
+      await current
+    } finally {
+      if (this.sessionCompleteChains.get(key) === current) {
+        this.sessionCompleteChains.delete(key)
+      }
+    }
+  }
+
+  private async triggerSessionCompleteNow(
+    sessionId: string,
+    agentSlug: string,
+    options: SessionCompleteNotificationOptions,
   ): Promise<void> {
     const meta = await getSessionMetadata(agentSlug, sessionId)
     if (isHiddenAutomatedSession(meta)) {
       return
     }
-    const displayName = agentName || await this.getAgentDisplayName(agentSlug)
+    const displayName = await this.getAgentDisplayName(agentSlug)
+    const fallbackBody = `${displayName} has finished running`
     await this.triggerNotification({
       type: 'session_complete',
       sessionId,
       agentSlug,
-      title: 'Session Complete',
-      body: `${displayName} has finished running`,
+      // The old body carried the only agent identity. Keep that context after
+      // replacing it with the response preview, especially on APNs / desktop.
+      title: `${displayName} finished`,
+      body: {
+        fallback: fallbackBody,
+        resolve: async () => {
+          try {
+            return await buildSessionCompleteBody({
+              sessionId,
+              agentSlug,
+              responseText: options.responseText,
+              responseTranscriptEndOffset:
+                await options.responseTranscriptEndOffset,
+              fallbackBody,
+            })
+          } catch (error) {
+            // Body enrichment must never turn a successful session into a lost
+            // notification. The helper is defensive too; this is the last guard.
+            console.error('[NotificationManager] Failed to build completion body:', error)
+            captureException(error, {
+              tags: { area: 'notifications', op: 'session-complete-body' },
+              extra: { agentSlug, sessionId },
+            })
+            return fallbackBody
+          }
+        },
+      },
     })
   }
 

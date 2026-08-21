@@ -95,9 +95,9 @@ export function AgentMenu({
 }
 
 export function ModelEffortMenu({ state, maxHeight }: { state: ComposerOptionsState; maxHeight: number }) {
-  const { effort, setEffort, speed, setSpeed, model, setModel, catalog, webProvider } = state
+  const { effort, setEffort, speed, setSpeed, model, setModel, catalog, defaultModel, webProvider } = state
   const selected =
-    findCatalogModel(model, catalog) ?? catalog.find((m) => m.family === 'sonnet' && m.isLatest) ?? catalog[0]
+    findCatalogModel(model, catalog) ?? findCatalogModel(defaultModel, catalog) ?? catalog[0]
   const efforts = EFFORT_LEVELS.filter((l) => (selected ? selected.supportedEfforts.includes(l) : true))
   // Without the clamp this menu kept (and dispatched) an unsupported effort
   // after a model switch, while the slider silently rendered at Low.

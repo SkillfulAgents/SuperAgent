@@ -104,10 +104,10 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     return this.isAvailable()
   }
 
-  async start(options?: StartOptions): Promise<void> {
+  async start(options?: StartOptions): Promise<ContainerInfo> {
     const info = await this.getInfoFromRuntime()
     if (info.status === 'running') {
-      return
+      return info
     }
 
     const kube = getKubeConfig()
@@ -127,6 +127,8 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
       await this.teardownResources(kube.namespace)
       throw new Error(`Platform k8s agent pod ${this.podName()} failed to become healthy${logsSnippet}`)
     }
+
+    return { status: 'running', port: CONTAINER_INTERNAL_PORT }
   }
 
   async stop(_options?: StopOptions): Promise<StopResult> {

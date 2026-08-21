@@ -21,6 +21,17 @@ export function appendToSessionDraft(
   store.set(draftKey, parts.filter(Boolean).join('\n\n') || undefined)
 }
 
+/** Seed a newly installed agent's home composer from its template prompt. */
+export function seedAgentTemplatePrompt(
+  store: Pick<DraftsStore, 'set'>,
+  agentSlug: string,
+  content: string | undefined,
+): boolean {
+  if (!content) return false
+  store.set(`agent:${agentSlug}`, content)
+  return true
+}
+
 const DraftsContext = createContext<DraftsStore | null>(null)
 
 export function DraftsProvider({ children }: { children: ReactNode }) {

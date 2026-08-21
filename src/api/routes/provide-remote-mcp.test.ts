@@ -169,6 +169,7 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
   publishAgentToSkillset: vi.fn(),
   refreshAgentTemplates: vi.fn(),
   hasOnboardingSkill: vi.fn(),
+  getAgentTemplatePrompt: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@shared/lib/utils/retry', () => ({
@@ -525,6 +526,7 @@ describe('Agent Settings remote MCP live sync', () => {
         id: 'mcp-1',
         name: 'Calendar',
         proxyUrl: 'http://10.20.107.8:3000/api/mcp-proxy/test-agent/mcp-1',
+        status: 'active',
         tools: [{ name: 'list_events' }],
       },
     ])

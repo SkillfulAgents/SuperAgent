@@ -7,6 +7,7 @@ import type { BaseAccountProvider } from '@shared/lib/account-providers'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { attribution, runWithRequestUser } from '@shared/lib/platform-attribution'
+import { syncAgentsAssignedConnectedAccount } from '@shared/lib/container/connection-runtime-sync'
 
 type LocalStatus = 'active' | 'revoked' | 'expired'
 
@@ -148,6 +149,7 @@ class AccountSyncService {
     let updated = 0
     let added = 0
     let restored = 0
+    const statusChangedAccountIds = new Set<string>()
 
     for (const local of localAccounts) {
       const remote = remoteById.get(local.providerConnectionId)
@@ -158,6 +160,7 @@ class AccountSyncService {
             .set({ status: 'revoked', updatedAt: new Date() })
             .where(eq(connectedAccounts.id, local.id))
           updated++
+          statusChangedAccountIds.add(local.id)
         }
         continue
       }
@@ -170,13 +173,23 @@ class AccountSyncService {
           .set({ status: mappedStatus, updatedAt: new Date() })
           .where(eq(connectedAccounts.id, local.id))
         updated++
+        statusChangedAccountIds.add(local.id)
       } else if (mappedStatus === 'active' && local.status !== 'active') {
         await db.update(connectedAccounts)
           .set({ status: 'active', updatedAt: new Date() })
           .where(eq(connectedAccounts.id, local.id))
         restored++
+        statusChangedAccountIds.add(local.id)
       }
     }
+
+    // Keep already-running assigned agents aligned with provider-side status
+    // changes. Stopped agents rebuild this projection when they next start.
+    await Promise.all([...statusChangedAccountIds].map(async (accountId) => {
+      if (!await syncAgentsAssignedConnectedAccount(accountId)) {
+        console.warn(`[AccountSync] Failed to refresh assigned agents for account ${accountId}`)
+      }
+    }))
 
     for (const remote of remoteConnections) {
       if (remote.status !== 'ACTIVE') continue

@@ -41,6 +41,8 @@ const KIND_TO_CARD_TYPE: Record<UserInputRequestKind, UserRequestEvent['type'] |
   computer_use: 'computer_use_request',
   proxy_review: null,
   x_agent_review: null,
+  account_reauth_required: null,
+  mcp_reauth_required: null,
 }
 
 /**

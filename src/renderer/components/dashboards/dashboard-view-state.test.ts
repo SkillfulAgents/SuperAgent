@@ -13,7 +13,6 @@ function input(overrides: Partial<DashboardViewStateInput> = {}): DashboardViewS
     canStart: true,
     startFailed: false,
     waitElapsedMs: 0,
-    iframeLoaded: false,
     ...overrides,
   }
 }
@@ -60,22 +59,10 @@ describe('resolveDashboardViewState', () => {
     })
   })
 
-  it('keeps waiting (no fast poll) until the iframe has painted after status is running', () => {
-    const beforePaint = resolveDashboardViewState(
-      input({ dashboard: { status: 'running' }, iframeLoaded: false }),
-    )
-    const afterPaint = resolveDashboardViewState(
-      input({ dashboard: { status: 'running' }, iframeLoaded: true }),
-    )
-
-    expect(beforePaint).toEqual({
-      kind: 'waiting',
-      message: 'Waiting for dashboard…',
-      showSpinner: true,
-      slow: false,
-      pollFast: false,
-    })
-    expect(afterPaint).toEqual({ kind: 'ready' })
+  it('is ready as soon as dashboard status is running', () => {
+    expect(
+      resolveDashboardViewState(input({ dashboard: { status: 'running' } })),
+    ).toEqual({ kind: 'ready' })
   })
 
   it('treats starting the same as queued: one wait label', () => {
@@ -85,6 +72,56 @@ describe('resolveDashboardViewState', () => {
       showSpinner: true,
       slow: false,
       pollFast: true,
+    })
+  })
+
+  it('explains the one-time dependency install on first run', () => {
+    expect(resolveDashboardViewState(input({
+      dashboard: {
+        status: 'starting',
+        startupPhase: 'installing-dependencies',
+        firstRun: true,
+      },
+    }))).toEqual({
+      kind: 'installing',
+      message: 'Preparing dashboard for first use…',
+      detail: 'Installing dependencies. This only happens once.',
+      showSpinner: true,
+      slow: false,
+      pollFast: true,
+    })
+  })
+
+  it('uses a dependency update label outside first run', () => {
+    expect(resolveDashboardViewState(input({
+      dashboard: {
+        status: 'starting',
+        startupPhase: 'installing-dependencies',
+        firstRun: false,
+      },
+    }))).toEqual({
+      kind: 'installing',
+      message: 'Installing dashboard dependencies…',
+      showSpinner: true,
+      slow: false,
+      pollFast: true,
+    })
+  })
+
+  it('offers recovery when dependency installation exceeds the wait bound', () => {
+    expect(resolveDashboardViewState(input({
+      dashboard: {
+        status: 'starting',
+        startupPhase: 'installing-dependencies',
+        firstRun: true,
+      },
+      waitElapsedMs: DASHBOARD_WAIT_BOUND_MS,
+    }))).toEqual({
+      kind: 'installing',
+      message: 'Dependency installation is taking longer than expected.',
+      showSpinner: false,
+      slow: true,
+      pollFast: false,
     })
   })
 
@@ -105,11 +142,6 @@ describe('resolveDashboardViewState', () => {
       condition: 'the dashboard is queued',
       overrides: { dashboard: { status: 'stopped' as const } },
       pollFastBeforeBound: true,
-    },
-    {
-      condition: 'the iframe has not loaded',
-      overrides: { dashboard: { status: 'running' as const }, iframeLoaded: false },
-      pollFastBeforeBound: false,
     },
   ])('acknowledges every slow wait after 120s when $condition', ({
     overrides,
@@ -137,6 +169,20 @@ describe('resolveDashboardViewState', () => {
   })
 
   describe('agent not running', () => {
+    it('shows first-run preparation while the agent itself starts', () => {
+      expect(resolveDashboardViewState(input({
+        agentRunning: false,
+        dashboard: { status: 'stopped', firstRun: true },
+      }))).toEqual({
+        kind: 'installing',
+        message: 'Preparing dashboard for first use…',
+        detail: 'Installing dependencies. This only happens once.',
+        showSpinner: true,
+        slow: false,
+        pollFast: true,
+      })
+    })
+
     it('shows starting with a spinner when auto-start can proceed', () => {
       expect(
         resolveDashboardViewState(input({ agentRunning: false, dashboard: undefined })),

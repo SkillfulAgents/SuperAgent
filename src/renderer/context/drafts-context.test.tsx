@@ -5,6 +5,7 @@ import { createElement, type ReactNode } from 'react'
 import {
   appendToSessionDraft,
   DraftsProvider,
+  seedAgentTemplatePrompt,
   useDraft,
   useDraftsStore,
 } from './drafts-context'
@@ -125,5 +126,27 @@ describe('appendToSessionDraft', () => {
     ))
 
     expect(result.current.draft[0]).toBe('Rescued message\n\nCurrent draft')
+  })
+})
+
+describe('seedAgentTemplatePrompt', () => {
+  it('stores the template prompt under the new agent home draft key', () => {
+    const { result } = renderHook(() => ({
+      draft: useDraft<string>('agent:new-agent'),
+      store: useDraftsStore(),
+    }), { wrapper })
+
+    act(() => {
+      expect(seedAgentTemplatePrompt(result.current.store, 'new-agent', 'Start with this task')).toBe(true)
+    })
+
+    expect(result.current.draft[0]).toBe('Start with this task')
+  })
+
+  it('does not seed or suppress onboarding when the prompt is absent', () => {
+    const { result } = renderHook(() => useDraftsStore(), { wrapper })
+
+    expect(seedAgentTemplatePrompt(result.current, 'new-agent', undefined)).toBe(false)
+    expect(result.current.get('agent:new-agent')).toBeUndefined()
   })
 })

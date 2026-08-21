@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
+import { runInNewContext } from 'node:vm'
+import { Readable, Writable } from 'node:stream'
+import { createHash } from 'node:crypto'
 
 // ============================================================================
 // Mocks — must be declared before import
@@ -14,7 +17,19 @@ const mockFsMkdir = vi.fn()
 const mockFsReaddir = vi.fn()
 const mockFsCp = vi.fn()
 const mockFsExistsSync = vi.fn()
+const mockFsOpen = vi.fn()
 const mockCreateReadStream = vi.fn()
+
+// In-memory sink for the streaming upload write path; tests can inspect the
+// bytes written via mockCreateWriteStream.mock.results[n].value.chunks.
+class MemoryWriteStream extends Writable {
+  chunks: Buffer[] = []
+  override _write(chunk: Buffer, _enc: BufferEncoding, cb: (err?: Error | null) => void) {
+    this.chunks.push(Buffer.from(chunk))
+    cb()
+  }
+}
+const mockCreateWriteStream = vi.fn((..._args: unknown[]) => new MemoryWriteStream())
 const mockFsRealpath = vi.fn(async (value: unknown) => value)
 const mockFsRename = vi.fn()
 const mockFsUnlink = vi.fn()
@@ -34,9 +49,11 @@ vi.mock('fs', () => ({
       rename: (...args: unknown[]) => mockFsRename(...args),
       unlink: (...args: unknown[]) => mockFsUnlink(...args),
       rm: (...args: unknown[]) => mockFsRm(...args),
+      open: (...args: unknown[]) => mockFsOpen(...args),
     },
     existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
     createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
+    createWriteStream: (...args: unknown[]) => mockCreateWriteStream(...args),
   },
   promises: {
     stat: (...args: unknown[]) => mockFsStat(...args),
@@ -50,15 +67,11 @@ vi.mock('fs', () => ({
     rename: (...args: unknown[]) => mockFsRename(...args),
     unlink: (...args: unknown[]) => mockFsUnlink(...args),
     rm: (...args: unknown[]) => mockFsRm(...args),
+    open: (...args: unknown[]) => mockFsOpen(...args),
   },
   existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
   createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
-}))
-
-vi.mock('stream', () => ({
-  Readable: {
-    toWeb: () => new ReadableStream(),
-  },
+  createWriteStream: (...args: unknown[]) => mockCreateWriteStream(...args),
 }))
 
 // child_process — the run-script route executes approved scripts via
@@ -87,6 +100,9 @@ vi.mock('../credentials/credential-broker', () => ({
 
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
 const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+// Device identity of the calling session; tests set .value to simulate a
+// paired mobile device (null = browser/desktop/web).
+const mockRequestDevice = { value: null as string | null }
 const mockGlobalAdmin = vi.hoisted(() => ({ allowed: true }))
 let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
 // Display-slug -> canonical-id resolution applied by the ResolveAgent mock. Defaults
@@ -94,6 +110,7 @@ let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
 // routes where the URL display slug differs from the resolved id.
 let mockResolveSlug: (slug: string) => string = (slug) => slug
 vi.mock('../middleware/auth', () => ({
+  getRequestDeviceId: () => mockRequestDevice.value,
   Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
@@ -280,12 +297,19 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: (...args: unknown[]) => mockAgentExists(...args),
 }))
 
+vi.mock('@shared/lib/services/session-media', () => ({
+  decodeMediaRef: vi.fn(),
+  openMediaBlob: vi.fn(),
+}))
+
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: vi.fn(),
   listSessionsByIds: vi.fn(),
   updateSessionName: vi.fn(),
   registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(),
+  getSessionMessagesPage: vi.fn(),
+  getSessionMessagesDelta: vi.fn(),
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true),
@@ -394,6 +418,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
 vi.mock('@shared/lib/services/agent-template-service', () => ({
   exportAgentTemplate: vi.fn(),
   exportAgentFull: vi.fn(),
+  isHostExportBusy: vi.fn(() => false),
   importAgentFromTemplate: vi.fn(),
   MAX_COMPRESSED_SIZE: 500 * 1024 * 1024,
   installAgentFromSkillset: vi.fn(),
@@ -407,6 +432,7 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
   publishAgentToSkillset: vi.fn(),
   refreshAgentTemplates: vi.fn(),
   hasOnboardingSkill: vi.fn(),
+  getAgentTemplatePrompt: vi.fn(),
 }))
 
 vi.mock('@shared/lib/utils/retry', () => ({
@@ -468,7 +494,8 @@ const mockGetAgentWorkspaceDir = vi.fn((_slug?: string) => '/mock/workspace')
 const mockGetSessionJsonlPath = vi.fn(
   (agentSlug: string, sessionId: string) => `/mock/sessions/${agentSlug}/${sessionId}.jsonl`,
 )
-vi.mock('@shared/lib/utils/file-storage', () => ({
+vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/utils/file-storage')>()),
   // ResolveAgent() resolves the :id param via resolveAgentId. Delegate to the
   // existing agentExists mock so the legacy 404-on-missing behavior is preserved:
   // returns the slug verbatim when it "exists", else null.
@@ -480,6 +507,9 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
   readJsonlFile: vi.fn(),
   getAgentWorkspaceDir: (slug: string) => mockGetAgentWorkspaceDir(slug),
+  // The skills-files route checks the skill dir via directoryExists; delegate
+  // to the same mock the tests already use for fs.existsSync.
+  directoryExists: async (p: string) => mockFsExistsSync(p),
   getAgentPreferencesPath: vi.fn((slug: string) => `/mock/workspace/${slug}/agent-preferences.json`),
   getTempUploadsDir: vi.fn(() => '/mock/tmp/uploads'),
   ensureDirectory: vi.fn(),
@@ -529,18 +559,23 @@ vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStream
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
+import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
 import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
+  exportAgentFull,
+  exportAgentTemplate,
+  isHostExportBusy,
   importAgentFromTemplate,
   hasOnboardingSkill,
+  getAgentTemplatePrompt,
 } from '@shared/lib/services/agent-template-service'
 import {
   deleteSkill,
   exportSkill,
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
-import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
+import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -550,8 +585,8 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
-import { logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
-import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
+import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
+import { readJsonFileStrict, readJsonlFile, writeJsonFileAtomic, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
@@ -601,6 +636,104 @@ async function postFormData(app: Hono, url: string, body: FormData): Promise<Res
     body,
   })
 }
+
+// ============================================================================
+// Standalone dashboard wrapper
+// ============================================================================
+
+describe('GET /:id/artifacts/:artifactSlug/view', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+  })
+
+  it('reuses the initial running status instead of entering the poll loop', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
+    const html = await res.text()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { slug: 'sales', name: 'Sales', status: 'running' },
+      ]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'running' }), { status: 200 }))
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+    const loadingRemove = vi.fn()
+    const appendChild = vi.fn()
+    const iframe: Record<string, string> = {}
+    const statusElement = { textContent: '', classList: { add: vi.fn() } }
+    const loadingElement = { remove: loadingRemove }
+    const document = {
+      title: '',
+      getElementById: (id: string) => id === 'status' ? statusElement : loadingElement,
+      createElement: () => iframe,
+      body: { appendChild },
+    }
+
+    expect(script).toBeDefined()
+    runInNewContext(script!, {
+      document,
+      fetch: fetchMock,
+      setTimeout,
+    })
+
+    await vi.waitFor(() => {
+      expect(appendChild).toHaveBeenCalledWith(iframe)
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/agents/test-agent/artifacts')
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/agents/test-agent')
+    expect(loadingRemove).toHaveBeenCalledOnce()
+    expect(iframe.src).toBe('/api/agents/test-agent/artifacts/sales/')
+    expect(iframe.sandbox).toContain('allow-downloads')
+  })
+
+  it('shows the first-run dependency phase while the standalone view waits', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
+    const html = await res.text()
+    const installing = {
+      slug: 'sales',
+      name: 'Sales',
+      status: 'starting',
+      startupPhase: 'installing-dependencies',
+      firstRun: true,
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([installing]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'running' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([installing]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { slug: 'sales', name: 'Sales', status: 'running' },
+      ]), { status: 200 }))
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+    const appendChild = vi.fn()
+    const iframe: Record<string, string> = {}
+    const statusElement = { textContent: '', classList: { add: vi.fn() } }
+    const loadingElement = { remove: vi.fn() }
+    const document = {
+      title: '',
+      getElementById: (id: string) => id === 'status' ? statusElement : loadingElement,
+      createElement: () => iframe,
+      body: { appendChild },
+    }
+
+    expect(script).toBeDefined()
+    runInNewContext(script!, {
+      document,
+      fetch: fetchMock,
+      setTimeout: (callback: () => void) => {
+        callback()
+        return 0
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(appendChild).toHaveBeenCalledWith(iframe)
+    })
+
+    expect(statusElement.textContent).toBe('Preparing dashboard for first use…')
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+})
 
 // ============================================================================
 // Shared-agent connection projections
@@ -918,6 +1051,110 @@ describe('session usage — GET /:id/sessions/:sessionId/usage', () => {
   })
 })
 
+describe('session raw log — GET /:id/sessions/:sessionId/raw-log', () => {
+  let app: ReturnType<typeof createApp>
+  let realFs: typeof import('fs')
+  let realPath: typeof import('path')
+  let tmpDir: string
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    app = createApp()
+    realFs = await vi.importActual<typeof import('fs')>('fs')
+    realPath = await vi.importActual<typeof import('path')>('path')
+    const realOs = await vi.importActual<typeof import('os')>('os')
+    tmpDir = await realFs.promises.mkdtemp(realPath.join(realOs.tmpdir(), 'raw-log-route-'))
+
+    // Back the route with the real filesystem so the body assertions compare
+    // genuine bytes: point the transcript path at a temp file and delegate the
+    // fs helpers (both the readFileOrNull and open/createReadStream paths) to
+    // the real implementations.
+    mockGetSessionJsonlPath.mockImplementation(
+      (_agentSlug: string, sessionId: string) => realPath.join(tmpDir, `${sessionId}.jsonl`),
+    )
+    mockFsOpen.mockImplementation((...args: unknown[]) =>
+      (realFs.promises.open as (...a: unknown[]) => Promise<unknown>)(...args),
+    )
+    mockFsReadFile.mockImplementation((...args: unknown[]) =>
+      (realFs.promises.readFile as (...a: unknown[]) => Promise<unknown>)(...args),
+    )
+    vi.mocked(readFileOrNull).mockImplementation(async (filePath: string) => {
+      try {
+        return await realFs.promises.readFile(filePath, 'utf-8')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      }
+    })
+  })
+
+  afterEach(async () => {
+    await realFs.promises.rm(tmpDir, { recursive: true, force: true })
+    // These implementations must not leak into other suites (vi.clearAllMocks
+    // clears calls, not implementations).
+    mockGetSessionJsonlPath.mockImplementation(
+      (agentSlug: string, sessionId: string) => `/mock/sessions/${agentSlug}/${sessionId}.jsonl`,
+    )
+    mockFsOpen.mockReset()
+    mockFsReadFile.mockReset()
+    vi.mocked(readFileOrNull).mockReset()
+  })
+
+  async function writeTranscript(sessionId: string, content: string | Buffer) {
+    await realFs.promises.writeFile(realPath.join(tmpDir, `${sessionId}.jsonl`), content)
+  }
+
+  it('returns the transcript byte-identical to the file with the plain-text content type', async () => {
+    const content =
+      '{"type":"user","message":{"content":"héllo — ünïcode"}}\n' +
+      '{"type":"assistant","message":{"content":"line two"}}\n'
+    await writeTranscript('session-1', content)
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/session-1/raw-log')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/plain; charset=UTF-8')
+    const body = Buffer.from(await res.arrayBuffer())
+    const fileBytes = await realFs.promises.readFile(realPath.join(tmpDir, 'session-1.jsonl'))
+    expect(body.equals(fileBytes)).toBe(true)
+    expect(res.headers.get('content-length')).toBe(String(fileBytes.length))
+  })
+
+  it('returns 404 when the transcript file does not exist', async () => {
+    const res = await getReq(app, '/api/agents/test-agent/sessions/missing/raw-log')
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Session log not found' })
+  })
+
+  it('returns an empty 200 body for an empty transcript file', async () => {
+    await writeTranscript('empty-session', '')
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/empty-session/raw-log')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/plain; charset=UTF-8')
+    expect(Buffer.from(await res.arrayBuffer()).length).toBe(0)
+    expect(res.headers.get('content-length')).toBe('0')
+  })
+
+  it('returns a multi-megabyte transcript byte-identical to the file', async () => {
+    const line = `{"type":"assistant","message":{"content":"${'x'.repeat(1024)}"}}\n`
+    const content = line.repeat(5 * 1024) // ~5.3 MB
+    await writeTranscript('big-session', content)
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/big-session/raw-log')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/plain; charset=UTF-8')
+    const body = Buffer.from(await res.arrayBuffer())
+    const fileBytes = await realFs.promises.readFile(realPath.join(tmpDir, 'big-session.jsonl'))
+    expect(body.length).toBe(fileBytes.length)
+    expect(body.equals(fileBytes)).toBe(true)
+    expect(res.headers.get('content-length')).toBe(String(fileBytes.length))
+  })
+})
+
 describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
   let app: ReturnType<typeof createApp>
 
@@ -944,6 +1181,77 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     expect(res.status).toBe(200)
     expect(sessionIsKnown).toHaveBeenCalledWith('authorized-agent', 'new-session')
     expect(mockStreamSSE).toHaveBeenCalledOnce()
+  })
+})
+
+// ============================================================================
+// Agent startup — POST /:id/start
+// ============================================================================
+
+describe('agent startup — POST /:id/start', () => {
+  const runningAgent = {
+    slug: 'test-agent',
+    displaySlug: 'test-agent',
+    name: 'Test Agent',
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    status: 'running' as const,
+    containerPort: 3456,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    vi.mocked(getAgentWithStatus).mockResolvedValue(runningAgent)
+  })
+
+  afterEach(() => {
+    // Restore the file-level default so a pending/rejected mock from these
+    // tests doesn't leak into later describe blocks.
+    vi.mocked(containerManager.ensureRunning).mockReset()
+  })
+
+  it('does not resolve until the container has become healthy', async () => {
+    let resolveStart!: (value: unknown) => void
+    vi.mocked(containerManager.ensureRunning).mockReturnValue(new Promise((resolve) => {
+      resolveStart = resolve
+    }) as never)
+
+    let settled = false
+    const responsePromise = Promise.resolve(createApp()
+      .request('http://localhost/api/agents/test-agent/start', { method: 'POST' }))
+      .then((response) => {
+        settled = true
+        return response
+      })
+
+    await vi.waitFor(() => expect(containerManager.ensureRunning).toHaveBeenCalledWith('test-agent'))
+    expect(settled).toBe(false)
+    // The identity read must wait for health so the response reflects the
+    // post-start status.
+    expect(getAgentWithStatus).not.toHaveBeenCalled()
+
+    resolveStart({})
+    const response = await responsePromise
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      slug: 'test-agent',
+      status: 'running',
+      containerPort: 3456,
+    })
+    expect(getAgentWithStatus).toHaveBeenCalledWith('test-agent', { includeSummary: false })
+  })
+
+  it('returns the startup error when container health never succeeds', async () => {
+    vi.mocked(containerManager.ensureRunning).mockRejectedValue(new Error('Container failed to become healthy'))
+
+    const response = await createApp().request(
+      'http://localhost/api/agents/test-agent/start',
+      { method: 'POST' },
+    )
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({ error: 'Container failed to become healthy' })
   })
 })
 
@@ -985,6 +1293,7 @@ describe('POST /api/agents/import-template', () => {
       name: 'Imported Agent',
     } as any)
     vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(getAgentTemplatePrompt).mockResolvedValue(undefined)
   })
 
   function buildImportForm(mode?: 'template' | 'full') {
@@ -1007,6 +1316,19 @@ describe('POST /api/agents/import-template', () => {
     expect(res.status).toBe(201)
     expect(importAgentFromTemplate).toHaveBeenCalledWith(expect.any(Buffer), undefined, 'template')
   })
+
+  it('returns the optional template prompt for the post-install composer handoff', async () => {
+    vi.mocked(getAgentTemplatePrompt).mockResolvedValue('Summarize the latest customer interviews')
+
+    const res = await postFormData(app, '/api/agents/import-template', buildImportForm('template'))
+
+    expect(res.status).toBe(201)
+    await expect(res.json()).resolves.toEqual(expect.objectContaining({
+      slug: 'imported-agent',
+      templatePrompt: 'Summarize the latest customer interviews',
+    }))
+    expect(getAgentTemplatePrompt).toHaveBeenCalledWith('imported-agent')
+  })
 })
 
 // ============================================================================
@@ -1024,6 +1346,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
       name: 'Imported Agent',
     } as any)
     vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(getAgentTemplatePrompt).mockResolvedValue(undefined)
   })
 
   function buildChunkForm(opts: {
@@ -2911,8 +3234,84 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
       expect.stringContaining('myfolder/sub'),
       { recursive: true }
     )
-    // Verify writeFile was called
-    expect(mockFsWriteFile).toHaveBeenCalled()
+    // Verify the file was streamed to the destination path
+    expect(mockCreateWriteStream).toHaveBeenCalledWith(
+      expect.stringContaining('myfolder/sub/test.txt'),
+    )
+  })
+
+  it('writes the uploaded bytes to disk unchanged (hash-identical)', async () => {
+    const content = Buffer.from(
+      Array.from({ length: 256 * 1024 }, (_, i) => i % 251),
+    )
+    const formData = new FormData()
+    formData.append('file', new File([content], 'data.bin', { type: 'application/octet-stream' }))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.size).toBe(content.byteLength)
+
+    const sink = mockCreateWriteStream.mock.results[0]!.value as InstanceType<typeof MemoryWriteStream>
+    const written = Buffer.concat(sink.chunks)
+    expect(written.byteLength).toBe(content.byteLength)
+    expect(createHash('sha256').update(written).digest('hex')).toBe(
+      createHash('sha256').update(content).digest('hex'),
+    )
+  })
+
+  it('uploads an empty file', async () => {
+    const formData = new FormData()
+    formData.append('file', new File([], 'empty.txt', { type: 'text/plain' }))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.success).toBe(true)
+    expect(body.size).toBe(0)
+    const sink = mockCreateWriteStream.mock.results[0]!.value as InstanceType<typeof MemoryWriteStream>
+    expect(Buffer.concat(sink.chunks).byteLength).toBe(0)
+  })
+
+  it('rejects a request whose Content-Length exceeds the per-request cap without reading the body', async () => {
+    const res = await app.request('http://localhost/api/agents/test-agent/upload-file', {
+      method: 'POST',
+      body: 'tiny',
+      headers: { 'content-length': String(65 * 1024 * 1024) },
+    })
+    expect(res.status).toBe(413)
+    const body = await res.json()
+    expect(body.error).toContain('use chunked upload')
+    expect(mockCreateWriteStream).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects an over-cap body without Content-Length (counted mid-stream) and leaves no partial file', async () => {
+    const formData = new FormData()
+    formData.append('file', new File([Buffer.alloc(65 * 1024 * 1024)], 'big.bin'))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(413)
+    const body = await res.json()
+    expect(body.error).toContain('use chunked upload')
+    expect(mockCreateWriteStream).not.toHaveBeenCalled()
+    expect(mockFsUnlink).not.toHaveBeenCalled()
+  })
+
+  it('removes the partial file when the disk write fails mid-stream', async () => {
+    mockCreateWriteStream.mockImplementationOnce(() => {
+      const failing = new MemoryWriteStream()
+      failing._write = (_chunk, _enc, cb) => cb(new Error('disk full'))
+      return failing
+    })
+    mockFsUnlink.mockResolvedValue(undefined)
+
+    const formData = new FormData()
+    formData.append('file', new File(['payload'], 'doomed.txt', { type: 'text/plain' }))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(500)
+    expect(mockFsUnlink).toHaveBeenCalledWith(expect.stringContaining('uploads'))
   })
 
   it('uploads file without relativePath uses timestamped name', async () => {
@@ -2970,6 +3369,7 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     try {
       const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
       expect(res.status).toBe(413)
+      expect(mockCreateWriteStream).not.toHaveBeenCalled()
       expect(mockFsWriteFile).not.toHaveBeenCalled()
     } finally {
       sizeSpy.mockRestore()
@@ -3108,6 +3508,22 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(mockDbInsertValues).not.toHaveBeenCalled()
   })
 
+  it('stamps the alert claim with the sender device, and clears it on deviceless sends', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+
+    // A paired mobile device speaks: it claims the session's visible alerts.
+    mockRequestDevice.value = 'device-family-9'
+    expect((await postJson(app, URL, { content: 'from phone' })).status).toBe(201)
+    expect(updateSessionMetadata).toHaveBeenCalledWith(
+      'test-agent', 'sess-1', { alertDeviceId: 'device-family-9' })
+
+    // A deviceless surface (web) speaks: the claim is explicitly cleared.
+    mockRequestDevice.value = null
+    expect((await postJson(app, URL, { content: 'from web' })).status).toBe(201)
+    expect(updateSessionMetadata).toHaveBeenLastCalledWith(
+      'test-agent', 'sess-1', { alertDeviceId: null })
+  })
+
   it('generates UUID, inserts messageAuthor, passes it to sendMessage, and returns it in auth mode', async () => {
     mockIsAuthMode.mockReturnValue(true)
 
@@ -3162,6 +3578,52 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const res = await postJson(app, URL, { content: 'hello', model: 'claude-haiku-4-5' })
     expect(res.status).toBe(201)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { model: 'claude-haiku-4-5' })
+    expect(updateSessionMetadata).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      model: 'claude-haiku-4-5',
+    })
+    expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('sess-1')
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+      type: 'session_updated',
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+    })
+  })
+
+  it('does not broadcast when the accepted selection matches the stored metadata', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    // Seeded composers re-send their whole selection on every fresh turn; a
+    // value the metadata already records must not fan out list/detail
+    // refetches to every open window.
+    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({ model: 'claude-haiku-4-5' } as never)
+
+    const res = await postJson(app, URL, { content: 'hello again', model: 'claude-haiku-4-5' })
+    expect(res.status).toBe(201)
+    expect(updateSessionMetadata).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      model: 'claude-haiku-4-5',
+    })
+    expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  it('broadcasts when any one option differs from the stored metadata', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({
+      model: 'claude-haiku-4-5',
+      effort: 'medium',
+    } as never)
+
+    const res = await postJson(app, URL, {
+      content: 'hello',
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+    })
+    expect(res.status).toBe(201)
+    expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('sess-1')
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+      type: 'session_updated',
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+    })
   })
 
   it('forwards both effort and model when both are present', async () => {
@@ -3223,6 +3685,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const body = await res.json()
     expect(body.queued).toBe(true)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {})
+    expect(updateSessionMetadata).not.toHaveBeenCalled()
+    expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
   })
 })
 
@@ -3324,6 +3788,452 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
 
     // No DB query since there are no user messages to look up
     expect(mockDbSelectFrom).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /:id/sessions/:sessionId/messages pagination', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+  })
+
+  afterEach(() => {
+    delete process.env.MESSAGES_PAGE_LIMIT
+    delete process.env.MESSAGES_PAGE_OLDER_LIMIT
+  })
+
+  it('returns a JSON array when no pagination query is set', async () => {
+    vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+    mockTransformMessages.mockReturnValue([
+      { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(Array.isArray(body)).toBe(true)
+    expect(body).toHaveLength(1)
+    expect(body[0].id).toBe('m1')
+    expect(body).not.toHaveProperty('nextCursor')
+    expect(getSessionMessagesWithCompact).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('does not page when MESSAGES_PAGE_LIMIT is set but the client sent no limit', async () => {
+    process.env.MESSAGES_PAGE_LIMIT = '100'
+    vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+    mockTransformMessages.mockReturnValue([
+      { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(Array.isArray(body)).toBe(true)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('returns a cursor envelope when limit is set', async () => {
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [
+        { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+      ],
+      nextCursor: 'm1',
+    })
+
+    const res = await getReq(app, `${URL}?limit=2`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.messages).toHaveLength(1)
+    expect(body.messages[0].id).toBe('m1')
+    expect(body.nextCursor).toBe('m1')
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', { limit: 2, cursor: undefined, signal: expect.any(AbortSignal) })
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('forwards cursor to the page reader', async () => {
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+    })
+
+    const res = await getReq(app, `${URL}?limit=2&cursor=m1`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      limit: 2,
+      cursor: 'm1',
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  it('rejects an invalid limit', async () => {
+    const res = await getReq(app, `${URL}?limit=0`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('forwards the media mode to the page reader', async () => {
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+
+    const res = await getReq(app, `${URL}?limit=2&media=ref`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ media: 'ref' })
+    )
+  })
+
+  it('forwards the media mode to the delta reader', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages: [], anchor: null })
+
+    const res = await getReq(app, `${URL}?after=m1&media=ref`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesDelta).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ media: 'ref' })
+    )
+  })
+
+  it('rejects an unknown media mode rather than silently serving inline', async () => {
+    const res = await getReq(app, `${URL}?limit=2&media=inline`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('honors media on its own, without any pagination parameter', async () => {
+    // Otherwise asking for refs quietly returns the full inline transcript.
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+
+    const res = await getReq(app, `${URL}?media=ref`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ media: 'ref' })
+    )
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('validates a media value even when it arrives alone', async () => {
+    const res = await getReq(app, `${URL}?media=bogus`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('caps first-page limit to MESSAGES_PAGE_LIMIT', async () => {
+    process.env.MESSAGES_PAGE_LIMIT = '100'
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+    })
+
+    const res = await getReq(app, `${URL}?limit=300`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      limit: 100,
+      cursor: undefined,
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  it('caps older-page limit to MESSAGES_PAGE_OLDER_LIMIT', async () => {
+    process.env.MESSAGES_PAGE_OLDER_LIMIT = '80'
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+    })
+
+    const res = await getReq(app, `${URL}?limit=200&cursor=m1`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      limit: 80,
+      cursor: 'm1',
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  // The renderer aborts superseded refetches (SSE burst throttling); the route
+  // must honor that server-side. Without it every abandoned request still runs
+  // the full read/parse/serialize pipeline — orphaned jobs accumulate at the
+  // event rate and OOM memory-limited deployments over slow volumes.
+  it('propagates the request abort into the page reader and answers 499', async () => {
+    vi.mocked(getSessionMessagesPage).mockImplementation(async (_agent, _session, opts) => {
+      // Behave like the real reader: the tail loop throws when the signal fires.
+      opts.signal?.throwIfAborted()
+      return { messages: [], nextCursor: null }
+    })
+
+    const controller = new AbortController()
+    controller.abort()
+    const res = await app.request(`http://localhost${URL}?limit=2`, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+    expect(res.status).toBe(499)
+  })
+
+  it('skips annotation and serialization when the client aborts after the read', async () => {
+    const controller = new AbortController()
+    vi.mocked(getSessionMessagesPage).mockImplementation(async () => {
+      // Abort lands while the read is completing — too late for the reader's
+      // own checks, so the route's post-read check must catch it.
+      controller.abort()
+      return {
+        messages: [
+          { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+        ],
+        nextCursor: null,
+      }
+    })
+
+    const res = await app.request(`http://localhost${URL}?limit=2`, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+    expect(res.status).toBe(499)
+    expect(res.body).toBeNull()
+  })
+})
+
+describe('GET /:id/sessions/:sessionId/messages forward delta (?after=)', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+  })
+
+  it('answers a delta envelope and forwards after + abort signal to the reader', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({
+      messages: [
+        { id: 'm5', type: 'user', content: { text: 'anchor' }, toolCalls: [], createdAt: new Date() },
+        { id: 'm6', type: 'assistant', content: { text: 'new' }, toolCalls: [], createdAt: new Date() },
+      ],
+      anchor: 'm5',
+    })
+
+    const res = await getReq(app, `${URL}?after=m5&limit=300`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.messages.map((m: { id: string }) => m.id)).toEqual(['m5', 'm6'])
+    expect(body.anchor).toBe('m5')
+    expect(body).not.toHaveProperty('resync')
+    expect(body).not.toHaveProperty('nextCursor')
+    expect(getSessionMessagesDelta).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      after: 'm5',
+      signal: expect.any(AbortSignal),
+    })
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('passes resync through so the client falls back to a full fetch', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({
+      messages: [],
+      anchor: null,
+      resync: true,
+    })
+
+    const res = await getReq(app, `${URL}?after=vanished`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toEqual({ messages: [], anchor: null, resync: true })
+  })
+
+  it('rejects a request mixing after with cursor', async () => {
+    const res = await getReq(app, `${URL}?after=m5&cursor=m1`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesDelta).not.toHaveBeenCalled()
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('propagates the request abort into the delta reader and answers 499', async () => {
+    vi.mocked(getSessionMessagesDelta).mockImplementation(async (_agent, _session, opts) => {
+      opts.signal?.throwIfAborted()
+      return { messages: [], anchor: null }
+    })
+
+    const controller = new AbortController()
+    controller.abort()
+    const res = await app.request(`http://localhost${URL}?after=m5`, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+    expect(res.status).toBe(499)
+  })
+
+  it('stamps settled input-request outcomes onto open tool calls in the delta window', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({
+      messages: [
+        {
+          id: 'm5',
+          type: 'assistant',
+          content: { text: '' },
+          toolCalls: [{ id: 'tool-1', name: 'AskUserQuestion', input: {}, result: undefined }],
+          createdAt: new Date(),
+        },
+      ],
+      anchor: 'm4',
+    })
+    vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
+      new Map([['tool-1', 'answered']])
+    )
+
+    const res = await getReq(app, `${URL}?after=m4`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.messages[0].toolCalls[0].result).toBe('User provided input')
+  })
+})
+
+// The read itself (offsets, validity, decoding) is covered against real files
+// in session-media.test.ts; `fs` is mocked wholesale here, so these cover what
+// the route owns: status codes, headers, and passing the stream through.
+describe('GET /:id/sessions/:sessionId/media/:ref', () => {
+  let app: ReturnType<typeof createApp>
+  const image = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(4096, 0x7f),
+  ])
+  const REF = 'encoded-ref'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+    vi.mocked(decodeMediaRef).mockReturnValue({ v: 1, u: 'u-1', o: 10, s: 100, l: 200, h: 'fp' })
+    vi.mocked(openMediaBlob).mockResolvedValue({
+      stream: Readable.from([image]),
+      mimeType: 'image/png',
+      bytes: image.length,
+    })
+  })
+
+  it('streams the addressed image with its sniffed type', async () => {
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('image/png')
+    expect(res.headers.get('Content-Length')).toBe(String(image.length))
+    expect(res.headers.get('Cache-Control')).toContain('immutable')
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff')
+    expect(Buffer.from(await res.arrayBuffer()).equals(image)).toBe(true)
+  })
+
+  it('answers 410 once the transcript no longer holds the referenced bytes', async () => {
+    vi.mocked(openMediaBlob).mockResolvedValue(undefined)
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(410)
+  })
+
+  it('answers 500, not 410, when the read fails for operational reasons', async () => {
+    // A disk error says nothing about whether the media still exists; 410
+    // would strand the client on a placeholder it never retries.
+    vi.mocked(openMediaBlob).mockRejectedValue(
+      Object.assign(new Error('I/O error'), { code: 'EIO' })
+    )
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(500)
+  })
+
+  it('rejects a ref it could not have minted', async () => {
+    vi.mocked(decodeMediaRef).mockReturnValue(undefined)
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1/media/not-a-ref')
+    expect(res.status).toBe(400)
+    expect(openMediaBlob).not.toHaveBeenCalled()
+  })
+
+  it('does not preflight existence, so storage failures are not read as gone', async () => {
+    // fileExists() answers false for any stat failure, so a preflight here
+    // would 404 on EIO/EACCES before the read could report anything.
+    vi.mocked(sessionExists).mockResolvedValue(false)
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(200)
+    expect(sessionExists).not.toHaveBeenCalled()
+  })
+
+  it('404s for a session the agent does not own', async () => {
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(false)
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(404)
+    expect(openMediaBlob).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /:id/sessions/:sessionId/subagent/:agentId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/subagent/sub-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(readJsonlFile).mockResolvedValue([])
+  })
+
+  it('returns the transformed transcript as a parseable JSON array', async () => {
+    vi.mocked(readJsonlFile).mockResolvedValue([
+      { type: 'user', message: { role: 'user', content: 'hi' } },
+      { type: 'assistant', message: { role: 'assistant', content: [] } },
+    ])
+    const transformed = [
+      { id: 'msg-1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'msg-2', type: 'assistant', content: { text: 'hello "quoted"\n' }, toolCalls: [], createdAt: '2026-01-01T00:00:01.000Z' },
+    ]
+    mockTransformMessages.mockReturnValue(transformed)
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('application/json')
+    expect(await res.json()).toEqual(transformed)
+  })
+
+  it('returns [] when the subagent transcript is empty or missing', async () => {
+    mockTransformMessages.mockReturnValue([])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('[]')
+  })
+
+  it('serializes undefined transformed elements as null, matching JSON.stringify', async () => {
+    mockTransformMessages.mockReturnValue([undefined, { id: 'msg-1', type: 'user' }])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('[null,{"id":"msg-1","type":"user"}]')
+  })
+
+  it('returns a large transcript parse-identically', async () => {
+    const transformed = Array.from({ length: 2000 }, (_, i) => ({
+      id: `msg-${i}`,
+      type: 'assistant',
+      content: { text: 'z'.repeat(400) },
+      toolCalls: [],
+    }))
+    mockTransformMessages.mockReturnValue(transformed)
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(transformed)
+  })
+
+  it('returns 500 when reading the transcript fails', async () => {
+    vi.mocked(readJsonlFile).mockRejectedValue(new Error('disk error'))
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Failed to fetch subagent messages' })
   })
 })
 
@@ -3657,13 +4567,16 @@ describe('browser credential broker routes', () => {
     expect(messagePersister.completeInputRequest).toHaveBeenCalledTimes(1)
   })
 
-  it('releases the request claim when autofill fails before settlement', async () => {
+  it('returns a no-store manual copy fallback when no password field can be reached', async () => {
     mockContainerFetch
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ error: 'No visible password field was found' }), { status: 409 }),
+        new Response(JSON.stringify({
+          error: 'No visible password field was found',
+          reason: 'no_password_field',
+        }), { status: 409 }),
       )
     mockCredentialRetrieve.mockResolvedValueOnce({
       credential: { username: 'person@example.com', password: 'host-only-secret' },
@@ -3677,9 +4590,44 @@ describe('browser credential broker routes', () => {
     )
 
     expect(res.status).toBe(409)
+    expect(res.headers.get('cache-control')).toBe('no-store')
+    expect(await res.json()).toEqual({
+      error: 'No visible password field was found',
+      reason: 'no_password_field',
+      manualCredential: {
+        username: 'person@example.com',
+        password: 'host-only-secret',
+      },
+    })
     const reclaimed = userInputRequestManager.claimRequest('tool-credential')
     expect(reclaimed?.id).toBe('tool-credential')
     userInputRequestManager.releaseClaim('tool-credential')
+  })
+
+  it('does not disclose credentials when the page origin changes', async () => {
+    mockContainerFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          error: 'The browser page changed before autofill',
+          reason: 'origin_changed',
+        }), { status: 409 }),
+      )
+    mockCredentialRetrieve.mockResolvedValueOnce({
+      credential: { username: 'person@example.com', password: 'host-only-secret' },
+      expectedOrigin: 'https://example.com',
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/autofill-browser-credential',
+      { toolUseId: 'tool-credential', credentialId: 'opaque-id' },
+    )
+
+    expect(res.status).toBe(409)
+    expect(JSON.stringify(await res.json())).not.toContain('host-only-secret')
   })
 
   it('rejects a malformed autofill response from the container', async () => {
@@ -4694,6 +5642,28 @@ describe('GET /api/agents (enriched summary)', () => {
     // Summary fields should be present even in auth mode
     expect(body[0]).toHaveProperty('hasActiveSessions')
     expect(body[0]).toHaveProperty('dashboards')
+    expect(getAgentWithStatus).toHaveBeenCalledWith('agent-1', { includeSummary: false })
+  })
+
+  it('loads a single agent without a redundant service summary pass', async () => {
+    const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
+    vi.mocked(getAgentWithStatus).mockResolvedValue(baseAgent)
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-1'],
+      sessionCount: 1,
+      lastActivityAt: new Date('2026-01-01T12:00:00Z'),
+    })
+
+    const res = await getReq(app, '/api/agents/agent-1')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      slug: 'agent-1',
+      sessionCount: 1,
+      lastActivityAt: '2026-01-01T12:00:00.000Z',
+    })
+    expect(getAgentWithStatus).toHaveBeenCalledWith('agent-1', { includeSummary: false })
+    expect(getSessionSummary).toHaveBeenCalledTimes(1)
   })
 
   it('sorts the auth-mode list newest-first', async () => {
@@ -5193,6 +6163,194 @@ describe('POST /api/agents/:id/keep-alive', () => {
 // ============================================================================
 // Skill ZIP Export / Import Tests
 // ============================================================================
+
+describe('POST /api/agents/:id/export-full', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    app = createApp()
+  })
+
+  it('streams the zip without Content-Length', async () => {
+    const fakeZip = Buffer.from('PK\x03\x04full-export')
+    vi.mocked(exportAgentFull).mockResolvedValue(Readable.from(fakeZip))
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('application/octet-stream')
+    expect(res.headers.get('Content-Disposition')).toContain('Nutrition%20Agent-full.agent')
+    expect(res.headers.get('Content-Length')).toBeNull()
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(fakeZip)
+    expect(exportAgentFull).toHaveBeenCalledWith('pvb86kldy6', expect.any(AbortSignal))
+  })
+
+  it('returns 500 when export throws before the stream starts', async () => {
+    vi.mocked(exportAgentFull).mockRejectedValue(new Error('Agent workspace not found'))
+
+    const res = await app.request('http://localhost/api/agents/missing/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Agent workspace not found' })
+  })
+
+  it('returns 409 when another export is already in progress', async () => {
+    const err = new Error('An export is already in progress')
+    err.name = 'ExportInProgressError'
+    vi.mocked(exportAgentFull).mockRejectedValue(err)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'An export is already in progress' })
+  })
+
+  it('never starts the export (and its lock) when getAgent fails', async () => {
+    vi.mocked(getAgent).mockRejectedValue(new Error('agent metadata unreadable'))
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(exportAgentFull).not.toHaveBeenCalled()
+  })
+
+  it('destroys the zip stream when packaging the download throws', async () => {
+    const zipStream = Readable.from(Buffer.from('PK\x03\x04full-export'))
+    const destroy = vi.spyOn(zipStream, 'destroy')
+    vi.mocked(exportAgentFull).mockResolvedValue(zipStream)
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+    vi.mocked(logAuditEvent).mockImplementationOnce(() => {
+      throw new Error('audit failed')
+    })
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(destroy).toHaveBeenCalled()
+
+    const nextZip = Readable.from(Buffer.from('PK\x03\x04next'))
+    vi.mocked(exportAgentFull).mockResolvedValue(nextZip)
+    const next = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+    expect(next.status).toBe(200)
+    expect(Buffer.from(await next.arrayBuffer())).toEqual(Buffer.from('PK\x03\x04next'))
+  })
+})
+
+describe('POST /api/agents/:id/export-template', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    app = createApp()
+  })
+
+  it('streams the template zip', async () => {
+    const fakeZip = Buffer.from('PK\x03\x04template')
+    vi.mocked(exportAgentTemplate).mockResolvedValue(Readable.from(fakeZip))
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Disposition')).toContain('Nutrition%20Agent-template.agent')
+    expect(res.headers.get('Content-Length')).toBeNull()
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(fakeZip)
+    expect(exportAgentTemplate).toHaveBeenCalledWith('pvb86kldy6', expect.any(AbortSignal))
+  })
+
+  it('returns 409 when another export is already in progress', async () => {
+    const err = new Error('An export is already in progress')
+    err.name = 'ExportInProgressError'
+    vi.mocked(exportAgentTemplate).mockRejectedValue(err)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'An export is already in progress' })
+  })
+
+  it('never starts the export (and its lock) when getAgent fails', async () => {
+    vi.mocked(getAgent).mockRejectedValue(new Error('agent metadata unreadable'))
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(exportAgentTemplate).not.toHaveBeenCalled()
+  })
+
+  it('destroys the zip stream when packaging the download throws', async () => {
+    const zipStream = Readable.from(Buffer.from('PK\x03\x04template'))
+    const destroy = vi.spyOn(zipStream, 'destroy')
+    vi.mocked(exportAgentTemplate).mockResolvedValue(zipStream)
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+    vi.mocked(logAuditEvent).mockImplementationOnce(() => {
+      throw new Error('audit failed')
+    })
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(destroy).toHaveBeenCalled()
+
+    const nextZip = Readable.from(Buffer.from('PK\x03\x04next'))
+    vi.mocked(exportAgentTemplate).mockResolvedValue(nextZip)
+    const next = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+    expect(next.status).toBe(200)
+  })
+})
+
+describe('GET /api/agents/export-status', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(isHostExportBusy).mockReturnValue(false)
+    app = createApp()
+  })
+
+  it('returns inProgress false when the host is idle', async () => {
+    const res = await app.request('http://localhost/api/agents/export-status')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ inProgress: false })
+    expect(getAgent).not.toHaveBeenCalled()
+  })
+
+  it('returns inProgress true while an export is running', async () => {
+    vi.mocked(isHostExportBusy).mockReturnValue(true)
+
+    const res = await app.request('http://localhost/api/agents/export-status')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ inProgress: true })
+  })
+})
 
 describe('POST /api/agents/:id/skills/:dir/export', () => {
   let app: ReturnType<typeof createApp>
@@ -5731,6 +6889,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
       agentModel: 'global-agent-model',
       browserModel: 'browser-model',
       dashboardBuilderModel: 'dashboard-model',
+      agentEffort: 'medium',
     })
   })
 
@@ -5738,6 +6897,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     vi.mocked(readJsonFileStrict).mockResolvedValue({
       defaultModel: 'haiku',
       defaultEffort: 'high',
+      defaultSpeed: 'fast',
     } as never)
 
     const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
@@ -5747,6 +6907,15 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('haiku')
     expect(args.effort).toBe('high')
+    expect(args.speed).toBe('fast')
+    expect(args.prewarmDefaults.model).toBe('haiku')
+    expect(args.prewarmDefaults.effort).toBe('high')
+    expect(registerSession).toHaveBeenCalledWith('test-agent', 'session-123', 'New Session', {
+      model: 'haiku',
+      effort: 'high',
+      speed: 'fast',
+    })
+    expect(await res.json()).toMatchObject({ model: 'haiku', effort: 'high', speed: 'fast' })
   })
 
   it('reserves ownership before publishing global lifecycle state', async () => {
@@ -5776,16 +6945,32 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('claude-opus-4')
     expect(args.effort).toBe('low')
+    expect(args.prewarmDefaults.model).toBe('haiku')
+    expect(args.prewarmDefaults.effort).toBe('high')
+    expect(registerSession).toHaveBeenCalledWith(
+      'test-agent',
+      'session-123',
+      'New Session',
+      expect.objectContaining({ model: 'claude-opus-4', effort: 'low' }),
+    )
   })
 
-  it('uses the global default model when the agent has no preferences', async () => {
+  it('uses the global default model and effort when the agent has no preferences', async () => {
     const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
 
     expect(res.status).toBe(201)
     expect(mockCreateSession).toHaveBeenCalledTimes(1)
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('global-agent-model')
-    expect(args.effort).toBeUndefined()
+    expect(args.effort).toBe('medium')
+    expect(args.prewarmDefaults.model).toBe('global-agent-model')
+    expect(args.prewarmDefaults.effort).toBe('medium')
+    expect(registerSession).toHaveBeenCalledWith(
+      'test-agent',
+      'session-123',
+      'New Session',
+      expect.objectContaining({ model: 'global-agent-model', effort: 'medium' }),
+    )
   })
 })
 

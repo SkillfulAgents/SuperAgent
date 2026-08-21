@@ -28,6 +28,10 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
+const mockRecordSessionActivity = vi.fn()
+vi.mock('@shared/lib/services/session-summary-cache', () => ({
+  recordSessionActivity: (...args: unknown[]) => mockRecordSessionActivity(...args),
+}))
 const mockAppendInformationalEntry = vi.fn((..._args: unknown[]) => Promise.resolve())
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: (...args: unknown[]) => mockAppendInformationalEntry(...args),
@@ -68,6 +72,7 @@ vi.mock('fs', () => ({
 }))
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
+  getSessionJsonlPath: vi.fn(() => '/mock/sessions/test-session-1.jsonl'),
 }))
 
 // Mock computer-use modules
@@ -169,7 +174,8 @@ vi.mock('./container-manager', () => ({
 }))
 
 // Import after mocks are set up
-import { messagePersister, redactStreamedToolInput } from './message-persister'
+import { messagePersister, redactStreamedToolInput, WaitForIdleTimeoutError } from './message-persister'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 
@@ -291,6 +297,433 @@ describe('MessagePersister', () => {
     sseCleanup()
     messagePersister.unsubscribeFromSession(SESSION_ID)
     vi.clearAllMocks()
+  })
+
+  describe('session summary activity', () => {
+    it('records complete top-level transcript frames with their source timestamp', () => {
+      const timestamp = new Date('2026-08-07T18:00:00.000Z')
+
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'assistant', message: { role: 'assistant', content: 'done' } },
+        timestamp,
+        sessionId: SESSION_ID,
+      })
+
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, timestamp)
+    })
+
+    it('ignores replayed catch-up frames whose host timestamp is arrival time', () => {
+      // On the wire, SDK result frames carry no timestamp field, so the host
+      // stamps Date.now() at arrival — a reconnect replay recorded here would
+      // fabricate recency for a session that did nothing.
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'result', subtype: 'success', replayed: true },
+        timestamp: new Date('2026-08-07T17:00:00.000Z'),
+        sessionId: SESSION_ID,
+      })
+
+      expect(mockRecordSessionActivity).not.toHaveBeenCalled()
+    })
+
+    it('does not attribute a sidechain transcript frame to the parent session', () => {
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'assistant', parent_tool_use_id: 'tool-1' },
+        timestamp: new Date('2026-08-07T19:00:00.000Z'),
+        sessionId: SESSION_ID,
+      })
+
+      expect(mockRecordSessionActivity).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('completion notification response selection', () => {
+    it('passes only the newest merged textual assistant response at authoritative idle', async () => {
+      mockStat.mockResolvedValueOnce({ size: 12_345 })
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-entry',
+        message: {
+          id: 'msg-working',
+          content: [{ type: 'text', text: 'I am still working.' }],
+        },
+      })
+      // A new late frame for that older message ID also merges into its
+      // original UI bubble; arrival order must not make it the final answer.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-late-tool-entry',
+        message: {
+          id: 'msg-working',
+          content: [
+            { type: 'tool_use', id: 'tool-late', name: 'Read', input: {} },
+          ],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-thinking-entry',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'thinking', thinking: 'Hidden reasoning' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-text-entry-1',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'Final ' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-tool-entry',
+        message: {
+          id: 'msg-final',
+          content: [
+            { type: 'tool_use', id: 'tool-1', name: 'Read', input: {} },
+          ],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-text-entry-2',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'answer.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-late-after-final',
+        message: {
+          id: 'msg-working',
+          content: [
+            { type: 'tool_use', id: 'tool-latest', name: 'Read', input: {} },
+          ],
+        },
+      })
+      // Replaying an older group after the final group must not roll the
+      // candidate backward either; transcript UUID dedupe is turn-wide.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-entry',
+        replayed: true,
+        message: {
+          id: 'msg-working',
+          content: [{ type: 'text', text: 'I am still working.' }],
+        },
+      })
+      // A reattached CLI can replay a persisted frame verbatim. The UI
+      // deduplicates by UUID, so the notification source must do the same.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-text-entry-2',
+        replayed: true,
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'answer.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      const call = vi.mocked(notificationManager.triggerSessionComplete).mock.calls.at(-1)
+      expect(call?.slice(0, 2)).toEqual([SESSION_ID, AGENT_SLUG])
+      expect(call?.[2]?.responseText).toBe('Final answer.')
+      await expect(call?.[2]?.responseTranscriptEndOffset).resolves.toBe(12_345)
+    })
+
+    it('dispatches completion without waiting for the transcript stat', async () => {
+      let resolveStat: ((value: { size: number }) => void) | undefined
+      mockStat.mockImplementationOnce(
+        () => new Promise<{ size: number }>((resolve) => {
+          resolveStat = resolve
+        }),
+      )
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-entry',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'Finished.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      const offset = vi.mocked(notificationManager.triggerSessionComplete)
+        .mock.calls[0][2]?.responseTranscriptEndOffset
+      resolveStat?.({ size: 99 })
+      await expect(offset).resolves.toBe(99)
+    })
+
+    it('does not reuse working text when the newest assistant item is tool-only', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-entry',
+        message: {
+          id: 'msg-working',
+          content: [{ type: 'text', text: 'Earlier working note.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'tool-only-entry',
+        message: {
+          id: 'msg-tool-only',
+          content: [
+            { type: 'tool_use', id: 'tool-2', name: 'Read', input: {} },
+          ],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        {
+          responseText: '',
+          responseTranscriptEndOffset: expect.any(Promise),
+        },
+      )
+    })
+
+    it('does not reuse the prior answer when a queued turn produces no assistant item', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'turn-a-answer',
+        message: {
+          id: 'msg-turn-a',
+          content: [{ type: 'text', text: 'Answer for the first request.' }],
+        },
+      })
+
+      // The second request is queued before turn A's result. It then ends with
+      // no assistant frame (for example, a prompt hook blocks it).
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      // A delayed frame for turn A must still merge into turn A in the UI; it
+      // cannot resurrect A as turn B's notification response.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'turn-a-late-frame',
+        message: {
+          id: 'msg-turn-a',
+          content: [{ type: 'text', text: 'Stale turn-A text.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        { responseText: '', responseTranscriptEndOffset: expect.any(Promise) },
+      )
+    })
+
+    it.each([
+      {
+        label: 'resume',
+        result: {
+          type: 'result',
+          subtype: 'resume',
+          is_error: false,
+          num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+      {
+        label: 'graceful interrupt',
+        result: {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          terminal_reason: 'aborted_tools',
+          num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+    ])('does not consume the queued-turn guard on $label results', ({ result }) => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      mockClient._sendMessage(result)
+
+      const state = (messagePersister as any).streamingStates.get(SESSION_ID)
+      expect(state.queuedTurnCount).toBe(1)
+      expect(state.resetAssistantBeforeNextTurnOutput).toBe(false)
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(state.queuedTurnCount).toBe(0)
+      expect(state.resetAssistantBeforeNextTurnOutput).toBe(true)
+    })
+
+    it('settles a self-healed running event followed by idle without a new result', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'completed-answer',
+        message: {
+          id: 'msg-completed',
+          content: [{ type: 'text', text: 'Completed.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+      vi.mocked(notificationManager.triggerSessionComplete).mockClear()
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'running',
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        { responseText: '', responseTranscriptEndOffset: expect.any(Promise) },
+      )
+    })
+
+    it('does not notify for a modern success-subtype error result', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        terminal_reason: 'api_error',
+        errors: ['provider failed'],
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+    })
+
+    it('does not notify when a legacy turn exits for resume', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'resume-answer',
+        message: {
+          id: 'msg-resume',
+          content: [{ type: 'text', text: 'Pausing for resume.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'resume',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+    })
   })
 
   // ============================================================================
@@ -508,18 +941,21 @@ describe('MessagePersister', () => {
       // With display:'summarized', thinking_delta carries text; signature_delta does not.
       sseEvents.length = 0
 
-      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
       mockClient._sendMessage({
         type: 'stream_event',
-        event: { type: 'content_block_start', content_block: { type: 'thinking' } },
+        event: { type: 'message_start', message: { id: 'msg-thinking-1' } },
       })
       mockClient._sendMessage({
         type: 'stream_event',
-        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Let me ' } },
+        event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
       })
       mockClient._sendMessage({
         type: 'stream_event',
-        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'consider.' } },
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Let me ' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'consider.' } },
       })
       mockClient._sendMessage({
         type: 'stream_event',
@@ -531,8 +967,11 @@ describe('MessagePersister', () => {
       const deltas = sseEvents.filter(e => e.type === 'thinking_delta')
       const stops = sseEvents.filter(e => e.type === 'thinking_stop')
       expect(starts).toHaveLength(1)
+      expect(starts[0].thinkingId).toBe('msg-thinking-1:0')
       expect(deltas.map(d => d.text)).toEqual(['Let me ', 'consider.'])
+      expect(deltas.map(d => d.thinkingId)).toEqual(['msg-thinking-1:0', 'msg-thinking-1:0'])
       expect(stops).toHaveLength(1)
+      expect(stops[0].thinkingId).toBe('msg-thinking-1:0')
     })
 
     it('does not emit thinking_stop for a tool_use content_block_stop', () => {
@@ -3875,6 +4314,152 @@ describe('MessagePersister', () => {
     })
   })
 
+  describe('automation stream release on settle (SUP-572)', () => {
+    // A leaked stream per cron/webhook run holds a runtime-container WebSocket
+    // open forever (keepalives defeat idle cuts); runtimes that cap concurrent
+    // connections per container then block new sessions. The persister must
+    // release the stream once an unpromoted automation session truly settles.
+
+    afterEach(() => {
+      // mockResolvedValue survives clearAllMocks — restore the suite default.
+      vi.mocked(getSessionMetadata).mockImplementation(() => Promise.resolve(null))
+    })
+
+    // Re-subscribe AFTER pointing the metadata mock at the desired session
+    // shape, then let the async subscribe-time resolution land.
+    async function resubscribeWithMetadata(meta: Record<string, unknown> | null) {
+      vi.mocked(getSessionMetadata).mockResolvedValue(meta as never)
+      await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    function settleSession() {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      // State-events authority: the runtime's own idle proves the queue drained.
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+    }
+
+    it('releases the stream when a scheduled session settles', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      settleSession()
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+      const lastSubscription = vi.mocked(mockClient.subscribeToStream).mock.results.at(-1)!
+        .value as { unsubscribe: ReturnType<typeof vi.fn> }
+      expect(lastSubscription.unsubscribe).toHaveBeenCalled()
+    })
+
+    it('releases the stream when a scheduled session settles with an error', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+      mockClient._sendMessage({
+        type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    })
+
+    it('releases the stream when a webhook session settles', async () => {
+      await resubscribeWithMetadata({ isWebhookExecution: true, webhookTriggerId: 'trigger-1' })
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    })
+
+    it('keeps the stream for an interactive session', async () => {
+      await resubscribeWithMetadata(null)
+
+      settleSession()
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('keeps the stream for a promoted automation session', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, promotedToInteractive: true })
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('keeps the stream when a scheduled session is promoted mid-run', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      await messagePersister.promoteAutomatedSession(SESSION_ID, AGENT_SLUG)
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('does not let a stale subscribe-time metadata read undo a promotion', async () => {
+      const unpromoted = { isScheduledExecution: true, scheduledTaskId: 'task-1' }
+      let resolveSubscribeMeta: ((value: typeof unpromoted) => void) | undefined
+      let metaCalls = 0
+      vi.mocked(getSessionMetadata).mockImplementation(() => {
+        metaCalls += 1
+        if (metaCalls === 1) {
+          return new Promise((resolve) => { resolveSubscribeMeta = resolve })
+        }
+        return Promise.resolve(unpromoted as never)
+      })
+
+      await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+      await messagePersister.promoteAutomatedSession(SESSION_ID, AGENT_SLUG)
+      resolveSubscribeMeta!(unpromoted)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('does not release on a legacy result-driven idle (no state-events authority)', async () => {
+      // Without the runtime's own idle event there is no proof the container's
+      // message queue is drained — a queued message could still start a turn
+      // on this stream, so the release must not fire.
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('a released session re-subscribes cleanly for a later wake', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+      settleSession()
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+
+      // The wake path checks isSubscribed and re-subscribes on demand.
+      await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+
+      // And the resumed run releases again at its own settle.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      settleSession()
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    })
+  })
+
   // ============================================================================
   // Script run request detection
   // ============================================================================
@@ -5754,9 +6339,15 @@ describe('MessagePersister', () => {
       // Once the session is active, observeMs no longer applies — timeoutMs is
       // the stop-gap. Verifies the timeout branch (not the never-active branch).
       messagePersister.markSessionActive(WAIT_SESSION, AGENT_SLUG)
-      await expect(
-        messagePersister.waitForIdle(WAIT_SESSION, { timeoutMs: 200 }),
-      ).rejects.toThrow(/timeout after 200ms/)
+      const err: unknown = await messagePersister
+        .waitForIdle(WAIT_SESSION, { timeoutMs: 200 })
+        .then(() => null, (e: unknown) => e)
+      expect(err).toBeInstanceOf(WaitForIdleTimeoutError)
+      // The x-agent routes distinguish timeout from other failures by error
+      // NAME (their tests mock this module wholesale, so instanceof is out).
+      // If this name changes, sync invoke stops promoting to async on timeout.
+      expect((err as Error).name).toBe('WaitForIdleTimeoutError')
+      expect((err as Error).message).toMatch(/timeout after 200ms/)
     })
 
     it('resolves once an active session goes idle (and preserves isActive across subscribe)', async () => {

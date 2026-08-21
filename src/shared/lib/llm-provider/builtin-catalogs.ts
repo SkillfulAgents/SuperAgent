@@ -1,4 +1,5 @@
 import type { EffortLevel, SpeedLevel } from '../container/types'
+import type { ProviderDefaultModelOption } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
 import { GPT_TOOL_USE_PROMPT_HINTS, GROK_BROWSER_TOOL_PROMPT_HINTS } from './model-prompt-hints'
 import { pricingFor } from './model-pricing-lookup'
@@ -34,7 +35,7 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
  * Vendor mapping, verified 2026-07-14:
  *   - OpenAI GPT-5.x: `service_tier` flex (0.5x price, slower) / priority
  *     (2x, 2.5x on gpt-5.5) → slow/normal/fast.
- *   - xAI grok-4.5: `service_tier` priority only (2x when granted) → normal/fast.
+ *   - xAI grok: `service_tier` priority only (2x when granted) → normal/fast.
  *   - Anthropic: fast mode (research preview) on Opus 4.8 only → normal/fast.
  *   - Z.AI GLM: no request-level tier → normal only.
  *   - Fireworks (kimi-k3): fast is a separate `-fast` router resource, not a
@@ -75,7 +76,59 @@ const GPT_LONG_CONTEXT_CLIFF = {
   outputMultiplier: 1.5,
 } as const
 
+// xAI doubles every rate once prompt input reaches 200K tokens.
+const GROK_LONG_CONTEXT_CLIFF = {
+  thresholdTokens: 200_000,
+  inputMultiplier: 2,
+  outputMultiplier: 2,
+} as const
+
 const ICON = 'anthropic'
+
+/** Default-model shortlist for providers whose onboarding catalog is Claude-only. */
+export const CLAUDE_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[] = [
+  {
+    model: 'opus',
+    label: 'Opus',
+    tag: 'Most capable',
+    description: 'Best for complex, multi-step tasks.',
+    subdescription: 'Slower, and uses 5x more credits than Sonnet.',
+  },
+  {
+    model: 'sonnet',
+    label: 'Sonnet',
+    tag: 'Fast & efficient',
+    description: 'Best for everyday tasks and most agent work.',
+    subdescription: 'Far lower credit cost than Opus.',
+  },
+]
+
+/** Platform-specific default-model shortlist. The provider default is Grok. */
+export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[] = [
+  {
+    model: 'opus',
+    label: 'Opus',
+    tag: 'Deep reasoning',
+    description: 'Best for complex, multi-step tasks.',
+    subdescription: 'A premium choice for the hardest agent work.',
+  },
+  {
+    model: 'gpt',
+    label: 'GPT',
+    resolveLabelFromCatalog: true,
+    tag: 'OpenAI flagship',
+    description: 'Strong all-around reasoning and tool use.',
+    subdescription: 'A versatile choice for demanding agent work.',
+  },
+  {
+    model: 'grok',
+    label: 'Grok',
+    resolveLabelFromCatalog: true,
+    tag: 'Recommended',
+    description: 'Fast, capable, and efficient for everyday agent work.',
+    subdescription: 'The default model for Gamut Platform.',
+  },
+]
 
 /** Anthropic / OpenRouter / Platform — bare Claude ids. */
 export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
@@ -276,8 +329,8 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     pricing: { inputPerMtok: 1.2, outputPerMtok: 4.2 },
   },
   {
-    id: 'x-ai/grok-4.5',
-    label: 'Grok 4.5',
+    id: 'x-ai/grok-4.6',
+    label: 'Grok 4.6',
     blurb: 'xAI Grok, routed via OpenRouter',
     family: 'grok',
     isLatest: true,
@@ -285,10 +338,24 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     icon: 'xai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
+    pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+    contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
+    promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
+  },
+  {
+    id: 'x-ai/grok-4.5',
+    label: 'Grok 4.5',
+    blurb: 'xAI Grok, routed via OpenRouter',
+    family: 'grok',
+    icon: 'xai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-07-10.
     pricing: { inputPerMtok: 2, outputPerMtok: 6 },
     // OpenRouter-reported context length for x-ai/grok-4.5, fetched 2026-07-10.
     contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
   // Kimi, newest first. The K2 line stays listed because it is an order of
@@ -345,11 +412,73 @@ export const OPENROUTER_CATALOG: ModelDefinition[] = [
 
 /**
  * Non-Claude models the Platform proxy can serve. Unlike OpenRouter these use
- * BARE ids (`gpt-5.5`, `grok-4.5`): the proxy's routing/pricing all key off bare
+ * BARE ids (`gpt-5.5`, `grok-4.6`): the proxy's routing/pricing all key off bare
  * ids, so a vendor-prefixed slug would miss every match.
  */
 // Responses hosts web_search but not web_fetch — fetch needs a Settings → Web vendor (Exa).
 const PLATFORM_RESPONSES_WEB = { supportsWebSearch: true, supportsWebFetch: false } as const
+
+/**
+ * Meta's muse-spark family, served via the platform proxy's `meta` upstream.
+ *
+ * Shared traits, all measured against api.meta.ai (2026-08-10) rather than
+ * taken from a spec sheet:
+ *   - no speed tiers, so `supportedSpeeds` is omitted entirely;
+ *   - the proxy strips Anthropic server tools (Meta hosts none), so neither
+ *     search nor fetch runs — web search needs a Settings → Web vendor;
+ *   - image input is accepted;
+ *   - a 1,000,020-token prompt was accepted and 2.1M rejected, so the window
+ *     is somewhere in between. We pin the verified floor rather than guess the
+ *     ceiling: under-stating only makes the app compact earlier than it must.
+ *
+ * The `meta` icon key follows the one-brand-icon-per-vendor convention the
+ * catalog test enforces; the mark lives at `public/model-icons/meta.svg`.
+ */
+const MUSE_SPARK_SHARED = {
+  family: 'muse',
+  icon: 'meta',
+  supportedEfforts: NON_CLAUDE_EFFORTS,
+  supportsWebSearch: false,
+  supportsWebFetch: false,
+  supportsImageInput: true,
+  contextWindow: 1_000_000,
+} as const
+
+/** Standard-tier rates, identical across muse-spark 1.1 and 1.2. */
+const MUSE_SPARK_STANDARD_PRICING = { inputPerMtok: 1.25, outputPerMtok: 4.25 } as const
+
+const MUSE_SPARK_MODELS: ModelDefinition[] = [
+  {
+    ...MUSE_SPARK_SHARED,
+    id: 'muse-spark-1.1',
+    label: 'Muse Spark 1.1',
+    blurb: 'Meta, served via Platform',
+    pricing: MUSE_SPARK_STANDARD_PRICING,
+  },
+  {
+    // Bare id matches the platform proxy's muse-spark-* → meta route.
+    ...MUSE_SPARK_SHARED,
+    id: 'muse-spark-1.2',
+    label: 'Muse Spark 1.2',
+    blurb: 'Meta flagship, served via Platform',
+    isLatest: true,
+    isDefault: true,
+    pricing: MUSE_SPARK_STANDARD_PRICING,
+  },
+  {
+    // Meta's discounted tier, ~12x cheaper in exchange for data use: Meta uses
+    // Contributor prompts and outputs to improve its products, and has not
+    // clarified whether that is training-only. Anything touching customer
+    // data, PII, or secrets belongs on the standard tier above — which is what
+    // `dataUsedForProductImprovement` puts in front of the user at pick time.
+    ...MUSE_SPARK_SHARED,
+    id: 'muse-spark-1.2-contributor',
+    label: 'Muse Spark 1.2c',
+    blurb: 'Meta contributor tier, served via Platform',
+    pricing: { inputPerMtok: 0.1, outputPerMtok: 0.2 },
+    dataUsedForProductImprovement: true,
+  },
+]
 
 const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   {
@@ -432,8 +561,8 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   },
   {
     // Bare id matches the platform proxy's grok-* → xai-responses route.
-    id: 'grok-4.5',
-    label: 'Grok 4.5',
+    id: 'grok-4.6',
+    label: 'Grok 4.6',
     blurb: 'xAI Grok, served via Platform',
     family: 'grok',
     isLatest: true,
@@ -445,6 +574,21 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
     contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
+    promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
+  },
+  {
+    id: 'grok-4.5',
+    label: 'Grok 4.5',
+    blurb: 'xAI Grok, served via Platform',
+    family: 'grok',
+    icon: 'xai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedSpeeds: PRIORITY_ONLY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
+    contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
   {
@@ -474,6 +618,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     contextWindow: 1_048_576,
     supportsImageInput: true,
   },
+  ...MUSE_SPARK_MODELS,
 ]
 
 /** Platform — bare Claude models plus the GPT/Grok models the proxy serves. */

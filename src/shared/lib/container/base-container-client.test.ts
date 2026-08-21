@@ -10,8 +10,9 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ enableToolSearch: enableToolSearch() }),
 }))
 const getContainerEnvVars = vi.fn(() => ({ ANTHROPIC_API_KEY: 'provider-key' }))
+const toolSearchEnv = vi.fn((): 'true' | undefined => 'true')
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars }),
+  getActiveLlmProvider: () => ({ getContainerEnvVars, toolSearchEnv: toolSearchEnv() }),
 }))
 
 /** Minimal concrete subclass to exercise protected run-error classification. */
@@ -32,7 +33,10 @@ class TestContainerClient extends BaseContainerClient {
 }
 
 describe('buildAgentEnv', () => {
-  afterEach(() => enableToolSearch.mockReturnValue(true))
+  afterEach(() => {
+    enableToolSearch.mockReturnValue(true)
+    toolSearchEnv.mockReturnValue('true')
+  })
 
   it('merges provider env, constants, config.envVars and per-start extra (later wins)', () => {
     const client = new TestContainerClient({
@@ -49,6 +53,21 @@ describe('buildAgentEnv', () => {
 
   it('sets ENABLE_TOOL_SEARCH=false only when the setting is explicitly false', () => {
     enableToolSearch.mockReturnValue(false)
+    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    expect(env.ENABLE_TOOL_SEARCH).toBe('false')
+  })
+
+  it('leaves ENABLE_TOOL_SEARCH unset when the provider does not declare one', () => {
+    toolSearchEnv.mockReturnValue(undefined)
+    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    expect('ENABLE_TOOL_SEARCH' in env).toBe(false)
+  })
+
+  // The setting is a master switch, not a way to force tool search onto an
+  // endpoint that rejects deferred tools.
+  it('keeps ENABLE_TOOL_SEARCH=false over the provider value when the setting is off', () => {
+    enableToolSearch.mockReturnValue(false)
+    toolSearchEnv.mockReturnValue(undefined)
     const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })

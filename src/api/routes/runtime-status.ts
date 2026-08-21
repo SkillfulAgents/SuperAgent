@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { getServicesInitError } from '@shared/lib/startup'
 
 const runtimeStatus = new Hono()
 
@@ -13,6 +14,7 @@ runtimeStatus.get('/', (c) => {
     runtimeReadiness: containerManager.getReadiness(),
     hasRunningAgents: containerManager.hasRunningAgents(),
     apiKeyConfigured: getActiveLlmProvider().getApiKeyStatus().isConfigured,
+    servicesInitError: getServicesInitError(),
   })
 })
 

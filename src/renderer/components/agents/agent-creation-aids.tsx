@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { AudioLines, Upload, ArrowDownToLine, FileArchive, Loader2, Shapes } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
@@ -13,18 +14,15 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { VoiceAgent } from '@renderer/components/ui/voice-agent'
-import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
 import { apiFetch } from '@renderer/lib/api'
 import { useImportAgentTemplate, useDiscoverableAgents, type ImportProgress } from '@renderer/hooks/use-agent-templates'
 import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
+import { captureRendererException } from '@renderer/lib/error-reporting'
 import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
-import type { ApiAgent } from '@shared/lib/types/api'
+import type { ApiAgentTemplateInstallResult } from '@shared/lib/types/api'
 
-export interface ImportResult {
-  agent: ApiAgent
-  hasOnboarding?: boolean
-}
+export type ImportResult = ApiAgentTemplateInstallResult
 
 export interface AgentCreationAidsProps {
   /** Called after the voice agent interview completes with its tool-call args. */
@@ -33,6 +31,14 @@ export interface AgentCreationAidsProps {
   onImportComplete: (result: ImportResult) => void | Promise<void>
   /** Optional className forwarded to the cards wrapper. */
   className?: string
+  /** Fires when the user opens browse / voice / import (forfeits signup template handoff). */
+  onAidOpened?: () => void
+  /**
+   * Awaited before leaving for the marketplace. The wizard hosts this form in
+   * a full-screen overlay that sits ABOVE the router, so it has to finish
+   * itself first or the user navigates to a page they can't see.
+   */
+  onNavigateAway?: () => void | Promise<void>
 }
 
 /**
@@ -41,17 +47,41 @@ export interface AgentCreationAidsProps {
  * home state. Callers decide what to do with the voice result / imported
  * agent — this component is pure UI + dialog plumbing.
  */
-export function AgentCreationAids({ onVoiceResult, onImportComplete, className }: AgentCreationAidsProps) {
+export function AgentCreationAids({
+  onVoiceResult,
+  onImportComplete,
+  className,
+  onAidOpened,
+  onNavigateAway,
+}: AgentCreationAidsProps) {
+  const navigate = useNavigate()
   const hasVoiceConfigured = useIsVoiceAgentConfigured()
   const { data: discoverableAgents } = useDiscoverableAgents()
   const hasMarketplace = !!(discoverableAgents && discoverableAgents.length > 0)
-  const [showTemplatesDialog, setShowTemplatesDialog] = useState(false)
+
+  const browseTemplates = useCallback(async () => {
+    onAidOpened?.()
+    // The hook can reject — the wizard's is a settings PUT, and that mutation
+    // carries `skipGlobalErrorToast`, so a failure is otherwise silent. Leave
+    // for the marketplace either way: a click that does nothing at all is the
+    // worse outcome, and the host staying open is its own visible signal.
+    try {
+      await onNavigateAway?.()
+    } catch (error) {
+      console.error('[create-agent] navigate-away hook failed:', error)
+      captureRendererException(error, {
+        tags: { area: 'create-agent', op: 'browse-templates' },
+      })
+    }
+    void navigate({ to: '/explore' })
+  }, [onAidOpened, onNavigateAway, navigate])
 
   // --- Voice agent flow ---
   const [showVoiceAgent, setShowVoiceAgent] = useState(false)
   const [voiceAgentConfig, setVoiceAgentConfig] = useState<VoiceAgentConfig | null>(null)
 
   const startVoiceAgent = useCallback(async () => {
+    onAidOpened?.()
     try {
       const res = await apiFetch('/api/stt/voice-agent-prompt?name=create-agent')
       if (!res.ok) throw new Error('Failed to load voice agent prompt')
@@ -80,7 +110,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
         description: error instanceof Error ? error.message : 'Please try again.',
       })
     }
-  }, [])
+  }, [onAidOpened])
 
   const handleVoiceAgentResult = useCallback(
     (_name: string, argsJson: string) => {
@@ -132,8 +162,8 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
   }, [resetImport])
 
   const finishImport = useCallback(
-    async (agent: ApiAgent, hasOnboarding?: boolean) => {
-      await onImportComplete({ agent, hasOnboarding })
+    async (agent: ApiAgentTemplateInstallResult) => {
+      await onImportComplete(agent)
     },
     [onImportComplete],
   )
@@ -154,7 +184,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
 
         setShowImportDialog(false)
         resetImport()
-        await finishImport(result, result.hasOnboarding)
+        await finishImport(result)
       } catch (error) {
         setUploadProgress(null)
         console.error('Failed to import template:', error)
@@ -177,7 +207,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
             title="Browse Templates"
             icon={<Shapes className="h-4 w-4" />}
             ariaDescription="Opens the agent template marketplace"
-            onClick={() => setShowTemplatesDialog(true)}
+            onClick={() => void browseTemplates()}
           />
         )}
 
@@ -194,11 +224,12 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
           title="Import an Agent"
           icon={<ArrowDownToLine className="h-4 w-4" />}
           ariaDescription="Import an agent from a .agent or .zip template file"
-          onClick={() => setShowImportDialog(true)}
+          onClick={() => {
+            onAidOpened?.()
+            setShowImportDialog(true)
+          }}
         />
       </div>
-
-      <AgentTemplateBrowseDialog open={showTemplatesDialog} onOpenChange={setShowTemplatesDialog} />
 
       <Dialog open={showVoiceAgent} onOpenChange={(open) => { if (!open) closeVoiceAgent() }}>
         <DialogContent className="max-w-2xl p-0 overflow-hidden h-[420px] [grid-template-rows:minmax(0,1fr)] gap-0">
@@ -361,4 +392,3 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
     </div>
   )
 }
-

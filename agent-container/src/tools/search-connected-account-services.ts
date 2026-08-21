@@ -15,7 +15,7 @@ interface ServiceInfo {
   description: string
 }
 
-const SERVICES: ServiceInfo[] = [
+export const SERVICES: ServiceInfo[] = [
   // Google Workspace
   { slug: 'gmail', displayName: 'Gmail', category: 'Google Workspace', description: 'Google email service' },
   { slug: 'googlecalendar', displayName: 'Google Calendar', category: 'Google Workspace', description: 'Google calendar and scheduling' },

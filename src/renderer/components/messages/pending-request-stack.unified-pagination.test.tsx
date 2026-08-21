@@ -216,6 +216,25 @@ describe('Unified pagination (stack ↔ per-card sub-pages)', () => {
   })
 
   describe('Multiple cards with sub-pages', () => {
+    it('renders every queued-card peek with an opaque background', () => {
+      render(
+        <PendingRequestStack>
+          {[
+            <SinglePageTestCard key="a" id="A" />,
+            <SinglePageTestCard key="b" id="B" />,
+          ]}
+        </PendingRequestStack>
+      )
+
+      const peeks = screen.getAllByTestId('request-stack-peek')
+      expect(peeks.length).toBeGreaterThan(0)
+      for (const peek of peeks) {
+        expect(peek).toHaveClass('bg-card')
+        expect(peek).not.toHaveClass('bg-muted/20')
+        expect(peek.style.opacity).toBe('')
+      }
+    })
+
     it('totalCount is the sum of all cards\' sub-counts', () => {
       render(
         <PendingRequestStack>

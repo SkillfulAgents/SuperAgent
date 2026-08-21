@@ -230,6 +230,92 @@ export class ThinkingResponseScenario implements MockScenario {
 }
 
 /**
+ * Reproduces a live/persisted thinking mismatch while the session is still
+ * active. The stream intentionally begins mid-thought, but the JSONL contains
+ * the full block under the same stable message/index identity. The delayed
+ * result leaves enough time for E2E to assert the live card was handed off by
+ * identity rather than stranded at the transcript tail.
+ */
+export class ActiveDivergentThinkingScenario implements MockScenario {
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const messageId = `msg-active-divergent-${sessionId}`
+    const persistedThinking = 'The full persisted reasoning begins before the fragment delivered after reconnect.'
+    const responseText = 'Persisted divergent-thinking checkpoint.'
+
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: { type: 'message_start', message: { id: messageId } },
+        },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
+        },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'thinking_delta', thinking: 'fragment delivered after reconnect' },
+          },
+        },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+      })
+
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: {
+          id: messageId,
+          content: [
+            { type: 'thinking', thinking: persistedThinking, signature: 'mock-signature' },
+            { type: 'text', text: responseText },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          message: {
+            id: messageId,
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: persistedThinking, signature: 'mock-signature' },
+              { type: 'text', text: responseText },
+            ],
+          },
+        },
+      })
+    }, 20)
+
+    // Keep the session active well after the persisted message is visible.
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, 10_000)
+  }
+}
+
+/**
  * Multi-pass extended-thinking scenario — streams several thinking blocks in
  * one turn, persisting each block's assistant JSONL entry as it completes
  * (the real CLI writes one transcript entry per assistant message mid-turn).
@@ -877,6 +963,8 @@ export class DeadSubagentInputScenario implements MockScenario {
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     const parentToolId = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
     const subToolId = `subtool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const subagentDeathDelayMs = 5_000
+    const mainTurnCompletionDelayMs = subagentDeathDelayMs + 2_500
 
     client.writeJsonlEntry(sessionId, {
       type: 'user',
@@ -915,9 +1003,8 @@ export class DeadSubagentInputScenario implements MockScenario {
       })
     }, 60)
 
-    // The subagent dies ~2.5s later: its terminal sidechain 'result' frame
-    // arrives while the browser_input has no tool_result. Long enough for a
-    // spec to assert the card + awaiting window first.
+    // Keep the parked phase observable under a loaded, multi-worker browser
+    // run before the terminal sidechain 'result' invalidates the request.
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
         type: 'result',
@@ -927,7 +1014,7 @@ export class DeadSubagentInputScenario implements MockScenario {
           subtype: 'success',
         },
       })
-    }, 2500)
+    }, subagentDeathDelayMs)
 
     // The main turn continues briefly, then settles on its own — the parked
     // ask must NOT be what ends it.
@@ -943,7 +1030,7 @@ export class DeadSubagentInputScenario implements MockScenario {
         type: 'result',
         content: { type: 'result', subtype: 'success' },
       })
-    }, 5000)
+    }, mainTurnCompletionDelayMs)
   }
 }
 
@@ -1488,6 +1575,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'so I will stream a few sentences of summarized reasoning before replying.',
       'Done thinking — here is the answer.'
     )],
+    // Persist while active with deliberately divergent live text — regression
+    // for completed thinking cards stranding at the transcript tail.
+    ['think with missing deltas', new ActiveDivergentThinkingScenario()],
     // Register the "list files" scenario for tool use tests
     ['list files', new ToolUseScenario(
       'Bash',
@@ -1503,6 +1593,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['slow response', new DelayedTextResponseScenario(
       'This is a delayed mock response.',
       3000
+    )],
+    // A viewport-overflowing streamed reply (~1200 words over ~6s) so
+    // transcript follow/scroll behavior can be observed while it grows
+    ['stream a long story', new SimpleTextResponseScenario(
+      'Here begins a long story that overflows the viewport so live-edge following can be observed while it streams. ' +
+      'The quick brown fox jumps over the lazy dog while the transcript keeps growing line after line without pause. '.repeat(70),
     )],
     // Register user input request scenarios for E2E testing
     ['ask secret', new UserInputRequestScenario([
@@ -2139,7 +2235,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Lifecycle management
 
-  async start(options?: StartOptions): Promise<void> {
+  async start(options?: StartOptions): Promise<ContainerInfo> {
     this.running = true
     // Surface the container env that carries the proxy credentials so E2E
     // specs can call the API/MCP proxies the way a real container would
@@ -2154,6 +2250,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       })
     }
     console.log(`[MockContainerClient] Started mock container for agent ${this.config.agentId}`)
+    return this.getInfoFromRuntime()
   }
 
   async stop(_options?: StopOptions): Promise<{ forceStopUsed: boolean; stopped: boolean }> {

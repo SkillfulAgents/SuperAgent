@@ -7,6 +7,7 @@
 
 import { writeFileSync, mkdirSync } from 'fs'
 import path from 'path'
+import { optimizeServiceIcon } from './lib/optimize-service-icon'
 
 const COMPOSIO_LOGOS_API = 'https://logos.composio.dev/api'
 const OUTPUT_DIR = path.resolve(__dirname, '../src/renderer/public/service-icons')
@@ -67,7 +68,7 @@ const SLUG_TO_API_NAME: Record<string, string> = {
 }
 
 function normalizeSvg(svg: string): string {
-  return svg
+  const sanitized = svg
     // Remove fixed width/height only from the root <svg> element (not child elements like <rect>)
     .replace(/(<svg\b[^>]*?)\s+width="[^"]*"/i, '$1')
     .replace(/(<svg\b[^>]*?)\s+height="[^"]*"/i, '$1')
@@ -76,6 +77,10 @@ function normalizeSvg(svg: string): string {
     .replace(/\bon\w+\s*=\s*"[^"]*"/gi, '')
     .replace(/\bon\w+\s*=\s*'[^']*'/gi, '')
     .trim()
+
+  // Three decimal places are comfortably below a device pixel for these small
+  // UI icons while removing verbose editor-export coordinates.
+  return optimizeServiceIcon(sanitized)
 }
 
 async function fetchSvg(apiName: string): Promise<string | null> {

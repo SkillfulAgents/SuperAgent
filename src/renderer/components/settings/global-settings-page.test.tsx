@@ -73,6 +73,7 @@ vi.mock('./settings-page', () => ({
     <div>
       {groups
         .flatMap((g) => g.sections)
+        .filter((s) => s.id === 'users' || s.id === 'auth')
         .map((s) => (
           <div key={s.id} data-testid={`section-${s.id}`}>
             {s.render()}
@@ -90,7 +91,7 @@ describe('GlobalSettingsPage platform-controlled Users/Auth', () => {
     platformAuthMock.mockReturnValue({ data: undefined })
   })
 
-  it('hides local auth sections and routes invite to Platform Team when platformControlled', () => {
+  it('hides local auth sections and routes invite to Platform Team when platformControlled', async () => {
     platformAuthMock.mockReturnValue({
       data: {
         platformControlled: true,
@@ -100,15 +101,16 @@ describe('GlobalSettingsPage platform-controlled Users/Auth', () => {
       },
     })
     render(<GlobalSettingsPage onClose={() => {}} onOpenWizard={() => {}} />)
-    expect(screen.getByTestId('auth-tab')).toHaveAttribute('data-hide-local', '1')
-    expect(screen.getByTestId('users-tab')).toHaveAttribute('data-platform-controlled', '1')
-    expect(screen.getByTestId('users-tab')).toHaveAttribute(
+    expect(await screen.findByTestId('auth-tab')).toHaveAttribute('data-hide-local', '1')
+    const usersTab = await screen.findByTestId('users-tab')
+    expect(usersTab).toHaveAttribute('data-platform-controlled', '1')
+    expect(usersTab).toHaveAttribute(
       'data-invite-href',
       'https://platform.example/dashboard/organizations/org_abc?tab=team',
     )
   })
 
-  it('falls back to /dashboard when orgId is null but platformControlled', () => {
+  it('falls back to /dashboard when orgId is null but platformControlled', async () => {
     platformAuthMock.mockReturnValue({
       data: {
         platformControlled: true,
@@ -118,15 +120,16 @@ describe('GlobalSettingsPage platform-controlled Users/Auth', () => {
       },
     })
     render(<GlobalSettingsPage onClose={() => {}} onOpenWizard={() => {}} />)
-    expect(screen.getByTestId('auth-tab')).toHaveAttribute('data-hide-local', '1')
-    expect(screen.getByTestId('users-tab')).toHaveAttribute('data-platform-controlled', '1')
-    expect(screen.getByTestId('users-tab')).toHaveAttribute(
+    expect(await screen.findByTestId('auth-tab')).toHaveAttribute('data-hide-local', '1')
+    const usersTab = await screen.findByTestId('users-tab')
+    expect(usersTab).toHaveAttribute('data-platform-controlled', '1')
+    expect(usersTab).toHaveAttribute(
       'data-invite-href',
       'https://platform.example/dashboard',
     )
   })
 
-  it('keeps platformControlled when base URL is missing', () => {
+  it('keeps platformControlled when base URL is missing', async () => {
     platformAuthMock.mockReturnValue({
       data: {
         platformControlled: true,
@@ -136,12 +139,13 @@ describe('GlobalSettingsPage platform-controlled Users/Auth', () => {
       },
     })
     render(<GlobalSettingsPage onClose={() => {}} onOpenWizard={() => {}} />)
-    expect(screen.getByTestId('auth-tab')).toHaveAttribute('data-hide-local', '1')
-    expect(screen.getByTestId('users-tab')).toHaveAttribute('data-platform-controlled', '1')
-    expect(screen.getByTestId('users-tab')).toHaveAttribute('data-invite-href', '')
+    expect(await screen.findByTestId('auth-tab')).toHaveAttribute('data-hide-local', '1')
+    const usersTab = await screen.findByTestId('users-tab')
+    expect(usersTab).toHaveAttribute('data-platform-controlled', '1')
+    expect(usersTab).toHaveAttribute('data-invite-href', '')
   })
 
-  it('keeps local invite when not platformControlled', () => {
+  it('keeps local invite when not platformControlled', async () => {
     platformAuthMock.mockReturnValue({
       data: {
         platformControlled: false,
@@ -151,8 +155,9 @@ describe('GlobalSettingsPage platform-controlled Users/Auth', () => {
       },
     })
     render(<GlobalSettingsPage onClose={() => {}} onOpenWizard={() => {}} />)
-    expect(screen.getByTestId('auth-tab')).toHaveAttribute('data-hide-local', '0')
-    expect(screen.getByTestId('users-tab')).toHaveAttribute('data-platform-controlled', '0')
-    expect(screen.getByTestId('users-tab')).toHaveAttribute('data-invite-href', '')
+    expect(await screen.findByTestId('auth-tab')).toHaveAttribute('data-hide-local', '0')
+    const usersTab = await screen.findByTestId('users-tab')
+    expect(usersTab).toHaveAttribute('data-platform-controlled', '0')
+    expect(usersTab).toHaveAttribute('data-invite-href', '')
   })
 })

@@ -8,6 +8,7 @@ export interface UsageByAgent {
 export interface UsageByModel {
   model: string
   cost: number
+  totalTokens: number
 }
 
 export interface DailyUsageEntry {

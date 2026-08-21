@@ -23,6 +23,7 @@ interface HarnessProps {
   initialEffort?: EffortLevel
   initialSpeed?: SpeedLevel
   initialModel?: string
+  defaultModel?: string
   catalog?: ModelDefinition[]
   onState?: (state: ComposerOptionsState) => void
   disabled?: boolean
@@ -35,6 +36,7 @@ function Harness({
   initialEffort = 'high',
   initialSpeed = 'normal',
   initialModel,
+  defaultModel,
   catalog = CATALOG,
   onState,
   disabled,
@@ -51,6 +53,7 @@ function Harness({
     model,
     setModel,
     catalog,
+    defaultModel,
     toRuntimeOptions: () => ({ effort, speed, ...(model ? { model } : {}) }),
   }
   onState?.(state)
@@ -60,12 +63,15 @@ function Harness({
 describe('ComposerOptionsPopover', () => {
   it('renders the combined "Model · Effort" label, resolving a bare alias to its latest', () => {
     render(<Harness initialModel="opus" initialEffort="high" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.8 · High')
+    const trigger = screen.getByTestId('composer-options-trigger')
+    expect(trigger).toHaveTextContent('Opus 4.8 · High')
+    expect(trigger).toHaveClass('max-[420px]:w-[34px]')
+    expect(trigger.querySelector('span')).toHaveClass('max-[420px]:hidden')
   })
 
-  it('falls back to Sonnet on the trigger when no model is set', () => {
-    render(<Harness initialModel={undefined} initialEffort="medium" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · Medium')
+  it('uses the provider catalog default on the trigger when no model is set', () => {
+    render(<Harness initialModel={undefined} defaultModel="opus" initialEffort="medium" />)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.8 · Medium')
   })
 
   it('displays the exact pinned version (does not collapse to the family latest)', () => {
@@ -107,6 +113,7 @@ describe('ComposerOptionsPopover', () => {
           model: 'claude-sonnet-4-6',
           setModel,
           catalog: CATALOG,
+          defaultModel: 'opus',
           toRuntimeOptions: () => ({ effort: 'high', model: 'claude-sonnet-4-6' }),
         }}
       />
@@ -131,6 +138,7 @@ describe('ComposerOptionsPopover', () => {
           model: 'claude-opus-4-8',
           setModel: vi.fn(),
           catalog: CATALOG,
+          defaultModel: 'opus',
           toRuntimeOptions: () => ({ effort: 'high', model: 'claude-opus-4-8' }),
         }}
       />

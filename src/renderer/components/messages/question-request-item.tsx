@@ -159,13 +159,14 @@ export function QuestionRequestItem({
     return (selection as string) || ''
   }
 
-  const postAnswer = async (body: Record<string, unknown>) => {
+  const postAnswer = async (body: Record<string, unknown>, signal: AbortSignal) => {
     const response = await apiFetch(
       `/api/agents/${agentSlug}/sessions/${sessionId}/answer-question`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ toolUseId, ...body }),
+        signal,
       }
     )
     if (!response.ok) {
@@ -182,7 +183,7 @@ export function QuestionRequestItem({
       answers[q.question] = getAnswerForQuestion(i, q)
     })
 
-    submit(() => postAnswer({ answers }), 'answered')
+    submit((signal) => postAnswer({ answers }, signal), 'answered')
   }
 
   // Cmd/Ctrl-Enter inside the "Other" textarea advances to the next question,
@@ -202,7 +203,7 @@ export function QuestionRequestItem({
 
   const handleDecline = (reason?: string) => {
     submit(
-      () => postAnswer({ decline: true, declineReason: reason || 'User declined to answer' }),
+      (signal) => postAnswer({ decline: true, declineReason: reason || 'User declined to answer' }, signal),
       'declined',
     )
   }

@@ -10,6 +10,8 @@ import { ComputerUseRequestItem } from './computer-use-request-item'
 import { CapabilityReviewRequestItem } from './capability-review-request-item'
 import { ProxyReviewRequestItem } from './proxy-review-request-item'
 import { XAgentReviewRequestItem } from './x-agent-review-request-item'
+import { AccountReauthRequestItem } from './account-reauth-request-item'
+import { McpReauthRequestItem } from './mcp-reauth-request-item'
 import type { PendingRequestDescriptor } from './use-pending-requests'
 
 export interface RenderContext {
@@ -171,6 +173,34 @@ export function renderPendingRequest(
           sessionId={ctx.sessionId}
           agentSlug={ctx.agentSlug}
           xAgent={d.xAgent}
+          readOnly={ctx.readOnly}
+          onComplete={d.onComplete}
+        />
+      )
+    case 'account_reauth_required':
+      return (
+        <AccountReauthRequestItem
+          key={d.key}
+          proxyRequestId={d.proxyRequestId}
+          accountId={d.accountId}
+          toolkit={d.toolkit}
+          accountStatus={d.accountStatus}
+          sessionId={ctx.sessionId}
+          agentSlug={ctx.agentSlug}
+          readOnly={ctx.readOnly}
+          onComplete={d.onComplete}
+        />
+      )
+    case 'mcp_reauth_required':
+      return (
+        <McpReauthRequestItem
+          key={d.key}
+          proxyRequestId={d.proxyRequestId}
+          mcpId={d.mcpId}
+          mcpName={d.mcpName}
+          authType={d.authType}
+          sessionId={ctx.sessionId}
+          agentSlug={ctx.agentSlug}
           readOnly={ctx.readOnly}
           onComplete={d.onComplete}
         />

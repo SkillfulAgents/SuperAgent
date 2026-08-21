@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { MiniWaveform } from '@renderer/components/ui/mini-waveform'
 import { Loader2, MicOff, Pause, Phone, PhoneOff, Play, RotateCcw } from 'lucide-react'
+import { useIsDark } from '@renderer/hooks/use-theme'
 import { useVoiceAgent, type VoiceAgentTranscriptEntry } from '@renderer/hooks/use-voice-agent'
 import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
@@ -336,22 +337,6 @@ function SpeakingIndicator({
       </div>
     </div>
   )
-}
-
-/** Tracks whether the `dark` class is applied to <html>. */
-function useIsDark() {
-  const [isDark, setIsDark] = useState(() =>
-    typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
-  )
-  useEffect(() => {
-    const el = document.documentElement
-    const observer = new MutationObserver(() => {
-      setIsDark(el.classList.contains('dark'))
-    })
-    observer.observe(el, { attributes: true, attributeFilter: ['class'] })
-    return () => observer.disconnect()
-  }, [])
-  return isDark
 }
 
 /** Row of small static dots — used for the Ready state */

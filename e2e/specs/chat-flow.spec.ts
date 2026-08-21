@@ -76,7 +76,8 @@ test.describe('Chat Flow', () => {
     // Wait for response (MockContainerClient auto-responds with tool use)
     await sessionPage.waitForResponse(15000)
 
-    // Verify tool call is visible
+    // Completed turns hide their work until the summary is expanded.
+    await sessionPage.expandLatestCompletedTurn(15000)
     await sessionPage.expectToolCall('Bash', 15000)
   })
 

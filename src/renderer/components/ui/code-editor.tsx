@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
+
+import { useIsDark } from '@renderer/hooks/use-theme'
 
 interface CodeEditorProps {
   value: string
@@ -10,20 +11,7 @@ interface CodeEditorProps {
 }
 
 export function CodeEditor({ value, onChange, language, readOnly, className }: CodeEditorProps) {
-  const [isDark, setIsDark] = useState(
-    document.documentElement.classList.contains('dark')
-  )
-
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      setIsDark(document.documentElement.classList.contains('dark'))
-    })
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['class'],
-    })
-    return () => observer.disconnect()
-  }, [])
+  const isDark = useIsDark()
 
   const handleMount: OnMount = (editor) => {
     editor.updateOptions({

@@ -246,6 +246,20 @@
       "when": 1785783356768,
       "tag": "0034_mobile_device_credentials",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "6",
+      "when": 1786055590568,
+      "tag": "0035_push_subscriptions",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1786728485469,
+      "tag": "0036_special_victor_mancha",
+      "breakpoints": true
     }
   ]
 }

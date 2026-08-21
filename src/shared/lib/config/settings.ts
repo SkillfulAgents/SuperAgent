@@ -12,7 +12,7 @@ import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
-import type { SkillsetConfig } from '@shared/lib/types/skillset'
+import type { SkillsetConfig, SkillsetCredential } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
 import type { EffortLevel } from '@shared/lib/container/types'
@@ -20,6 +20,7 @@ import {
   modelCatalogSettingsSchema,
   type ModelCatalogSettings,
 } from '../llm-provider/model-catalog-schema'
+import { getCatalogDefaultModels } from '../llm-provider/model-catalog-defaults'
 import {
   capabilityPolicySchema,
   DEFAULT_AGENT_CAPABILITIES,
@@ -241,6 +242,20 @@ export interface CloudWorkspaceSettings {
   tokenFingerprint: string | null
 }
 
+/**
+ * Server-side push delivery via the APNs relay (native iOS companion app).
+ * The relay holds the APNs credentials; this deployment only POSTs push
+ * batches to it (see ApnsRelayChannel).
+ */
+export interface PushSettings {
+  /** Relay base URL. Defaults to DEFAULT_APNS_RELAY_URL; empty string disables. */
+  apnsRelayUrl?: string
+  /** Master kill switch for APNs delivery, default true. */
+  apnsEnabled?: boolean
+}
+
+export const DEFAULT_APNS_RELAY_URL = 'https://apn-relay.gamutagents.com'
+
 export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
@@ -254,6 +269,8 @@ export interface AppSettings {
   agentLimits?: AgentLimitsSettings
   customEnvVars?: Record<string, string>
   skillsets?: SkillsetConfig[]
+  /** Secrets keyed by opaque id; skillset providerData stores only the id. */
+  skillsetCredentials?: Record<string, SkillsetCredential>
   auth?: AuthSettings
   voice?: VoiceSettings
   computerUse?: ComputerUseSettings
@@ -273,7 +290,13 @@ export interface AppSettings {
    * — the inbox reads live from the platform.
    */
   platformNotifications?: PlatformNotificationsSettings
-  /** Anthropic SDK tool search — defaults on; passed as `ENABLE_TOOL_SEARCH` to the container. */
+  /** APNs relay push delivery for the native iOS companion app. */
+  push?: PushSettings
+  /**
+   * Master switch for CLI tool search. Only ever switches it OFF: whether it
+   * may be on is the active provider's call, because the endpoint has to
+   * expand deferred tools (see BaseLlmProvider.toolSearchEnv).
+   */
   enableToolSearch?: boolean
   /** Launch policies for subagents (Task/Agent) and workflows (Workflow tool). */
   agentCapabilities?: AgentCapabilitySettings
@@ -416,13 +439,9 @@ const DEFAULT_SETTINGS: AppSettings = {
     },
   },
   models: {
-    // Bare family aliases so fresh installs track each family's latest version.
-    // The host resolver maps these to a concrete id per active provider.
-    summarizerModel: 'haiku',
-    agentModel: 'opus',
-    browserModel: 'sonnet',
-    // Dashboard-builder subagent — a capable tier by default (overridable).
-    dashboardBuilderModel: 'opus',
+    // The default provider is Anthropic. Source its bare aliases from the same
+    // catalog metadata used by provider switching and runtime fallbacks.
+    ...getCatalogDefaultModels('anthropic'),
     agentEffort: 'medium',
   },
   enableToolSearch: true,
@@ -522,7 +541,15 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     webAllowedSites: loaded.webAllowedSites,
     webBlockedSites: loaded.webBlockedSites,
     models: (() => {
-      const merged = { ...DEFAULT_SETTINGS.models!, ...loaded.models }
+      const catalogDefaults = getCatalogDefaultModels(
+        loaded.llmProvider ?? 'anthropic',
+        modelCatalog,
+      )
+      const merged = {
+        ...catalogDefaults,
+        agentEffort: DEFAULT_SETTINGS.models!.agentEffort,
+        ...loaded.models,
+      }
       // One-time normalization of legacy concrete defaults → bare aliases.
       return {
         ...merged,
@@ -542,6 +569,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     skillsets: loaded.skillsets !== undefined
       ? loaded.skillsets
       : structuredClone(DEFAULT_SETTINGS.skillsets),
+    skillsetCredentials: loaded.skillsetCredentials,
     auth: {
       ...DEFAULT_AUTH_SETTINGS,
       ...loaded.auth,
@@ -553,6 +581,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     shareErrorReports: loaded.shareErrorReports,
     platformAuth: loaded.platformAuth,
     cloudWorkspace: loaded.cloudWorkspace,
+    push: loaded.push,
     // Narrowed on read: an unrecognized value (hand-edited file, a future
     // version's target) must resolve to local rather than to something that
     // routes work off this machine.
@@ -865,11 +894,15 @@ export function getEffectiveBrowserbaseProjectId(): string | undefined {
  */
 export function getEffectiveModels(): ModelSettings {
   const settings = getSettings()
+  const catalogDefaults = getCatalogDefaultModels(
+    settings.llmProvider ?? 'anthropic',
+    settings.modelCatalog,
+  )
   return {
-    summarizerModel: settings.models?.summarizerModel || DEFAULT_SETTINGS.models!.summarizerModel,
-    agentModel: settings.models?.agentModel || DEFAULT_SETTINGS.models!.agentModel,
-    browserModel: settings.models?.browserModel || DEFAULT_SETTINGS.models!.browserModel,
-    dashboardBuilderModel: settings.models?.dashboardBuilderModel || DEFAULT_SETTINGS.models!.dashboardBuilderModel,
+    summarizerModel: settings.models?.summarizerModel || catalogDefaults.summarizerModel,
+    agentModel: settings.models?.agentModel || catalogDefaults.agentModel,
+    browserModel: settings.models?.browserModel || catalogDefaults.browserModel,
+    dashboardBuilderModel: settings.models?.dashboardBuilderModel || catalogDefaults.dashboardBuilderModel,
     agentEffort: settings.models?.agentEffort || DEFAULT_SETTINGS.models!.agentEffort,
   }
 }
@@ -898,6 +931,18 @@ export function getCustomEnvVars(): Record<string, string> {
 export function getVoiceSettings(): VoiceSettings {
   const settings = getSettings()
   return settings.voice ?? {}
+}
+
+/**
+ * Resolved APNs relay config: `url` is null when delivery is disabled (kill
+ * switch off, or relay URL explicitly set to the empty string).
+ */
+export function getApnsRelayConfig(): { url: string | null; enabled: boolean } {
+  const settings = getSettings()
+  const enabled = settings.push?.apnsEnabled !== false
+  const rawUrl = settings.push?.apnsRelayUrl ?? DEFAULT_APNS_RELAY_URL
+  const url = enabled && rawUrl !== '' ? rawUrl.replace(/\/+$/, '') : null
+  return { url, enabled }
 }
 
 /** Resolved launch policies for subagents/workflows (defaults applied). */

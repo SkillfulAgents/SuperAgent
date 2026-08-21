@@ -1,6 +1,6 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { Play, RefreshCw, SquareMousePointer, ExternalLink, Dock, Loader2 } from 'lucide-react'
+import { Play, RefreshCw, Loader2 } from 'lucide-react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useKeepAlive } from '@renderer/hooks/use-keep-alive'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
@@ -10,6 +10,7 @@ import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
 import { AddToDockDialog } from './add-to-dock-dialog'
 import { PendingAgentReviews } from './pending-agent-reviews'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { useRegisterDashboardHeader } from '@renderer/context/dashboard-header-context'
 import {
   DASHBOARD_WAIT_BOUND_MS,
   resolveDashboardViewState,
@@ -24,10 +25,11 @@ interface DashboardViewProps {
 export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) {
   useRenderTracker('DashboardView')
   const [dockDialogOpen, setDockDialogOpen] = useState(false)
-  const [iframeLoaded, setIframeLoaded] = useState(false)
   const [pollFast, setPollFast] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const [restarting, setRestarting] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [frameLoading, setFrameLoading] = useState(true)
   const [restartError, setRestartError] = useState<string | null>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const waitStartedAtRef = useRef<number | null>(null)
@@ -48,7 +50,6 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const trackingWait = isAgentRunning && (
     !artifactsLoaded
     || (dashboard != null && (dashboard.status === 'starting' || dashboard.status === 'stopped'))
-    || (dashboard?.status === 'running' && !iframeLoaded)
   )
 
   const waitElapsedMs = waitStartedAtRef.current === null
@@ -76,10 +77,9 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     canStart,
     startFailed: startAgent.isError,
     waitElapsedMs,
-    iframeLoaded,
   })
 
-  const nextPollFast = viewState.kind === 'waiting' && viewState.pollFast
+  const nextPollFast = 'pollFast' in viewState && viewState.pollFast
   useEffect(() => {
     setPollFast((prev) => (prev === nextPollFast ? prev : nextPollFast))
   }, [nextPollFast])
@@ -91,13 +91,10 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const dashboardAgentSlug = agent?.slug ?? agentSlug
   const iframeSrc = `${baseUrl}${buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)}`
 
-  useEffect(() => {
-    setIframeLoaded(false)
-  }, [iframeSrc])
-
   const handleRefresh = useCallback(() => {
-    setIframeLoaded(false)
     if (iframeRef.current) {
+      setRefreshing(true)
+      setFrameLoading(true)
       iframeRef.current.src = iframeSrc
     }
   }, [iframeSrc])
@@ -105,6 +102,10 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const handlePopOut = useCallback(() => {
     openDashboardExternal(dashboardAgentSlug, dashboardSlug, dashboard?.name)
   }, [dashboardAgentSlug, dashboardSlug, dashboard?.name])
+
+  const handleAddToDock = useCallback(() => {
+    setDockDialogOpen(true)
+  }, [])
 
   const handleStartAgent = useCallback(() => {
     startAgent.mutate(agentSlug)
@@ -115,7 +116,6 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     autoStartedRef.current = agentSlug
     setRestarting(true)
     setRestartError(null)
-    setIframeLoaded(false)
     waitStartedAtRef.current = Date.now()
     try {
       if (isAgentRunning) {
@@ -139,14 +139,36 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   }, [agent, agentSlug, isAgentRunning, isAgentStarting, canStart, startAgent])
 
   const showFrame = isAgentRunning && dashboard?.status === 'running'
-  const showOverlay = viewState.kind !== 'ready'
   const actionPending = restarting || stopAgent.isPending || startAgent.isPending
 
-  // The iframe unmounts whenever the frame is hidden, so its load state must not
-  // outlive it and mark the next mount ready before that document loads.
+  const dashboardHeader = useMemo(() => ({
+    agentSlug,
+    dashboardSlug,
+    dashboardName: dashboard?.name || dashboardSlug,
+    actions: showFrame
+      ? {
+          onOpenExternal: handlePopOut,
+          onRefresh: handleRefresh,
+          ...(isElectron() && getPlatform() === 'darwin' ? { onAddToDock: handleAddToDock } : {}),
+          refreshState: refreshing ? 'refreshing' as const : frameLoading ? 'loading' as const : 'idle' as const,
+        }
+      : null,
+  }), [
+    agentSlug,
+    dashboardSlug,
+    dashboard?.name,
+    showFrame,
+    handlePopOut,
+    handleRefresh,
+    handleAddToDock,
+    refreshing,
+    frameLoading,
+  ])
+  useRegisterDashboardHeader(dashboardHeader)
+
   useEffect(() => {
-    if (!showFrame) setIframeLoaded(false)
-  }, [showFrame])
+    if (showFrame) setFrameLoading(true)
+  }, [iframeSrc, showFrame])
 
   if (!showFrame) {
     return (
@@ -172,29 +194,6 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <div className="shrink-0 flex items-center gap-2 pl-4 pr-2 py-2 border-b bg-muted/30">
-        <SquareMousePointer className="h-4 w-4 text-muted-foreground shrink-0" />
-        <span className="text-sm font-medium">{dashboard?.name || dashboardSlug}</span>
-        {dashboard?.description && (
-          <span className="text-xs text-muted-foreground truncate">
-            — {dashboard.description}
-          </span>
-        )}
-        <div className="ml-auto flex items-center gap-1">
-          {/* TODO: Add Windows support — create .lnk shortcut and pin to taskbar */}
-          {isElectron() && getPlatform() === 'darwin' && (
-            <Button variant="ghost" size="sm" onClick={() => setDockDialogOpen(true)} title="Add to Dock">
-              <Dock className="h-3 w-3" />
-            </Button>
-          )}
-          <Button variant="ghost" size="sm" onClick={handlePopOut} title="Open in new window">
-            <ExternalLink className="h-3 w-3" />
-          </Button>
-          <Button variant="ghost" size="sm" onClick={handleRefresh} title="Refresh">
-            <RefreshCw className="h-3 w-3" />
-          </Button>
-        </div>
-      </div>
       <PendingAgentReviews agentSlug={agentSlug} onReviewResolved={handleRefresh} />
       <AddToDockDialog
         open={dockDialogOpen}
@@ -204,20 +203,6 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
         dashboardName={dashboard?.name || dashboardSlug}
       />
       <div className="flex-1 min-h-0 relative">
-        {showOverlay && (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-background text-muted-foreground p-8">
-            <DashboardStatusBody
-              viewState={viewState}
-              startErrorMessage={startAgent.error?.message}
-              restartErrorMessage={restartError ?? undefined}
-              onRetry={handleStartAgent}
-              onRestart={handleRestartAgent}
-              retryPending={startAgent.isPending}
-              restartPending={actionPending}
-              canStart={canStart}
-            />
-          </div>
-        )}
         <iframe
           ref={iframeRef}
           src={iframeSrc}
@@ -225,7 +210,10 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           title={dashboard?.name || dashboardSlug}
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
           allow="microphone; camera"
-          onLoad={() => setIframeLoaded(true)}
+          onLoad={() => {
+            setFrameLoading(false)
+            setRefreshing(false)
+          }}
         />
       </div>
     </div>
@@ -256,7 +244,7 @@ function DashboardStatusBody({
   const showSpinner = 'showSpinner' in viewState && viewState.showSpinner
   const showRetry = viewState.kind === 'agent-start-failed' && canStart
   const showRestart =
-    (viewState.kind === 'crashed' || (viewState.kind === 'waiting' && viewState.slow))
+    (viewState.kind === 'crashed' || ('slow' in viewState && viewState.slow))
     && canStart
 
   return (
@@ -265,6 +253,9 @@ function DashboardStatusBody({
         {showSpinner && <Loader2 className="h-4 w-4 animate-spin" />}
         <p className="text-base">{viewState.message}</p>
       </div>
+      {'detail' in viewState && viewState.detail && (
+        <p className="text-sm text-muted-foreground">{viewState.detail}</p>
+      )}
       {showRetry && (
         <Button onClick={onRetry} disabled={retryPending}>
           <Play className="mr-2 h-4 w-4" />

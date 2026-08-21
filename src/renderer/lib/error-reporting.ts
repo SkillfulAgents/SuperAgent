@@ -1,38 +1,61 @@
 /**
  * Error reporting for the renderer process.
  *
- * This file is the ONLY place that imports @sentry/browser. To switch to a
+ * This file is the ONLY place that loads @sentry/browser. To switch to a
  * different provider, replace the internals — callers never see Sentry.
  *
  * All exported functions are safe to call anywhere — they never throw,
  * so error reporting can never turn a soft failure into a crash.
  */
 
-import * as Sentry from '@sentry/browser'
 import { ERROR_REPORTING_INGEST_URL } from '@shared/lib/error-reporting/config'
 import type { ErrorReportingUser } from '@shared/lib/error-reporting/types'
 import { isElectron } from './env'
 
 let errorReportingEnabled = true // null/undefined means true — default on for existing users
+let errorReportingUser: ErrorReportingUser | null = null
+let sentry: typeof import('./sentry-browser-provider') | null = null
+let sentryLoad: Promise<typeof import('./sentry-browser-provider') | null> | null = null
+
+function applyUser(provider: typeof import('./sentry-browser-provider')): void {
+  try {
+    provider.setUser(errorReportingUser
+      ? { id: errorReportingUser.id, email: errorReportingUser.email }
+      : null)
+  } catch { /* never crash */ }
+}
+
+function loadSentry(): Promise<typeof import('./sentry-browser-provider') | null> {
+  if (import.meta.env.DEV) return Promise.resolve(null)
+  if (sentryLoad) return sentryLoad
+
+  sentryLoad = import('./sentry-browser-provider')
+    .then((provider) => {
+      provider.init({
+        dsn: ERROR_REPORTING_INGEST_URL,
+        environment: isElectron() ? 'electron-renderer' : 'web',
+        release: __APP_VERSION__,
+        tracesSampleRate: 0,
+        beforeSend(event) {
+          if (!errorReportingEnabled) return null
+          return event
+        },
+      })
+      sentry = provider
+      applyUser(provider)
+      return provider
+    })
+    .catch((err) => {
+      console.warn('[ErrorReporting] Failed to initialize renderer:', err)
+      return null
+    })
+  return sentryLoad
+}
 
 export function initRendererErrorReporting(): void {
-  // Skip in dev mode — dev errors are too noisy and pollute Sentry
-  if (import.meta.env.DEV) return
-
-  try {
-    Sentry.init({
-      dsn: ERROR_REPORTING_INGEST_URL,
-      environment: isElectron() ? 'electron-renderer' : 'web',
-      release: __APP_VERSION__,
-      tracesSampleRate: 0,
-      beforeSend(event) {
-        if (!errorReportingEnabled) return null
-        return event
-      },
-    })
-  } catch (err) {
-    console.warn('[ErrorReporting] Failed to initialize renderer:', err)
-  }
+  // Start loading early, but never put the provider on the renderer's static
+  // boot graph or make first render await it.
+  void loadSentry()
 }
 
 export function setRendererErrorReportingEnabled(enabled: boolean): void {
@@ -40,13 +63,8 @@ export function setRendererErrorReportingEnabled(enabled: boolean): void {
 }
 
 export function setRendererErrorReportingUser(user: ErrorReportingUser | null): void {
-  try {
-    if (user) {
-      Sentry.setUser({ id: user.id, email: user.email })
-    } else {
-      Sentry.setUser(null)
-    }
-  } catch { /* never crash */ }
+  errorReportingUser = user
+  if (sentry) applyUser(sentry)
 }
 
 /**
@@ -59,10 +77,16 @@ export function captureRendererException(
   error: unknown,
   context?: { tags?: Record<string, string>; extra?: Record<string, unknown> }
 ): void {
-  try {
-    Sentry.captureException(error, {
-      tags: context?.tags,
-      extra: context?.extra,
-    })
-  } catch { /* never crash */ }
+  void loadSentry().then((provider) => {
+    if (!provider) return
+    try {
+      provider.captureException(error, {
+        tags: context?.tags,
+        extra: context?.extra,
+      })
+    } catch { /* never crash */ }
+  }).catch(() => {
+    // loadSentry already degrades provider failures; this is defense-in-depth
+    // against a future implementation changing that contract.
+  })
 }

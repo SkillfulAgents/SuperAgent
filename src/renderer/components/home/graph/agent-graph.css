@@ -21,6 +21,46 @@
   --xy-controls-box-shadow: 0 1px 3px 0 hsl(0 0% 0% / 0.5);
 }
 
+/* Hover focus: hovering any element (agent card, account, MCP, trigger)
+   pushes everything outside its neighborhood back, so the hovered thing and
+   what it's wired to read as the foreground. The mark is written onto the DOM
+   directly (see applyFocus in agent-graph.tsx) — rebuilding React Flow's node
+   array on hover would drop in-flight connection drags. It's an ATTRIBUTE
+   rather than a class because className on those wrappers is React's, and it
+   rewrites the whole string whenever its own `selected`/`dragging` state
+   flips — taking a hand-added class with it.
+
+   Edges fade harder than nodes: a 1.25px line at the same opacity as a card
+   still draws the eye along its whole length. Two-part selectors so the
+   utility opacities on nodes/chips can't win on specificity. */
+.agent-graph-canvas .react-flow__node[data-graph-dimmed] {
+  opacity: 0.2;
+}
+.agent-graph-canvas .react-flow__edge {
+  transition: opacity 200ms;
+}
+.agent-graph-canvas .react-flow__edge[data-graph-dimmed] {
+  opacity: 0.15;
+}
+.agent-graph-canvas .react-flow__edgelabel-renderer > [data-graph-dimmed] {
+  opacity: 0.15;
+}
+/* The surviving connectors also gain a little weight, so the lit path reads
+   as the subject rather than merely what didn't fade. !important because
+   BaseEdge writes stroke-width inline from edge.style; the transition is on
+   the path itself so edge-hover thickening eases in too. Which is also why
+   the hovered connector is excluded: its own 2.5 comes through that same
+   inline style, and !important would otherwise make hovering a line THIN it.
+   (`graph-focusing` sits on the canvas container, one level above
+   .agent-graph-canvas, so it can't take the same prefix as the rules above —
+   being our own class, it scopes these on its own.) */
+.agent-graph-canvas .react-flow__edge-path {
+  transition: stroke-width 200ms;
+}
+.graph-focusing .react-flow__edge:not([data-graph-dimmed]):not(:hover) .react-flow__edge-path {
+  stroke-width: 1.75 !important;
+}
+
 /* Attention pulse on agent cards: a thin ring hugging the card that travels
    outward and fades — a power field pulsing out and dissipating. Two copies
    at opposite phase (the .delayed ring starts mid-cycle via a NEGATIVE

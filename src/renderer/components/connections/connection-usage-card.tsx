@@ -1,9 +1,7 @@
 import { ArrowRight, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import {
-  ActivityBarChart,
-  summarizeDailyActivity,
-} from '@renderer/components/activity/activity-spark-chart'
+import { ActivityBarChart } from '@renderer/components/activity/activity-bar-chart'
+import { summarizeDailyActivity } from '@renderer/components/activity/activity-spark-chart'
 import { useConnectionActivityStats } from '@renderer/hooks/use-activity-stats'
 import type { UnifiedRow } from '@renderer/components/connections/unified-rows'
 

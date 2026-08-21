@@ -31,6 +31,8 @@ const webTestIgnore = [
   '**/getting-started-wizard.spec.ts',
   // Mutates the global provider API key — quarantined to the wizard config.
   '**/provider-api-key.spec.ts',
+  // Needs a production build (service worker) — runs under playwright.pwa.config.ts.
+  '**/pwa-precache.spec.ts',
   // These specs register a mock MCP server on host loopback
   // (http://127.0.0.1:<port>/mcp) which is unreachable from inside the
   // container, so they structurally cannot pass against a containerized server.

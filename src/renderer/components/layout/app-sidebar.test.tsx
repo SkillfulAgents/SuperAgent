@@ -345,8 +345,15 @@ beforeEach(() => {
 })
 
 describe('AppSidebar — layout & top nav', () => {
-  it('does not name the app in the sidebar', () => {
-    // The wordmark cost a whole row to repeat what the window already says.
+  it('restores the Gamut wordmark when browser chrome leaves the title bar empty', () => {
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByText('Gamut')).toBeInTheDocument()
+  })
+
+  it('does not repeat the Gamut wordmark beside Electron window controls', () => {
+    vi.stubGlobal('__WEB__', false)
+    mockIsElectron.mockReturnValue(true)
+
     renderWithProviders(<AppSidebar />)
     expect(screen.queryByText('Gamut')).not.toBeInTheDocument()
   })

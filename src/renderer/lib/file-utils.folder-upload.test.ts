@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { strFromU8, unzipSync } from 'fflate'
 import {
   getFolderFromDirectoryInput,
   getItemsFromDataTransfer,
@@ -323,6 +324,9 @@ describe('zipFolderFiles', () => {
     expect(blob).toBeInstanceOf(Blob)
     expect(blob.type).toBe('application/zip')
     expect(blob.size).toBeGreaterThan(0)
+    const entries = unzipSync(new Uint8Array(await blob.arrayBuffer()))
+    expect(strFromU8(entries['folder/a.txt'])).toBe('hello')
+    expect(strFromU8(entries['folder/b.txt'])).toBe('world')
   })
 
   it('handles empty file list', async () => {

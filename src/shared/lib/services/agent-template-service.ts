@@ -8,6 +8,7 @@
 import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
+import { Readable } from 'stream'
 import archiver from 'archiver'
 import {
   openZipFromBuffer,
@@ -62,6 +63,10 @@ import { pruneInstalledTemplateIfInvalid } from './skillset-reconcile'
 const MAX_UNCOMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 export const MAX_COMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 const MAX_FILE_COUNT = 2000
+export const MAX_TEMPLATE_PROMPT_SIZE = 16 * 1024 // 16KB
+
+/** Canonical prompt handoff file, plus a lowercase compatibility spelling. */
+const TEMPLATE_PROMPT_FILE_NAMES = ['PROMPT.md', 'prompt.md'] as const
 
 /** Files/dirs excluded from templates (matched by name at any level) */
 const TEMPLATE_EXCLUDE = new Set([
@@ -223,15 +228,15 @@ async function walkTemplateFiles(workspaceDir: string): Promise<string[]> {
   return files
 }
 
-/**
- * Walk the agent workspace for a full export, returning all file paths.
- * Uses explicit walking instead of archive.glob() to avoid hangs on Windows
- * caused by broken symlinks and permission issues with readdir-glob.
- */
-async function walkFullExportFiles(workspaceDir: string): Promise<string[]> {
-  const files: string[] = []
-
+// Visitor walk (not glob — glob hangs on Windows broken symlinks). No path list in RAM.
+async function walkFullExportFiles(
+  workspaceDir: string,
+  onFile: (relativePath: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
   async function walk(dir: string, relativeBase: string): Promise<void> {
+    if (signal?.aborted) return
+
     let entries: fs.Dirent[]
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true })
@@ -240,6 +245,7 @@ async function walkFullExportFiles(workspaceDir: string): Promise<string[]> {
     }
 
     for (const entry of entries) {
+      if (signal?.aborted) return
       if (FULL_EXPORT_EXCLUDE.has(entry.name)) continue
 
       const relativePath = relativeBase ? path.join(relativeBase, entry.name) : entry.name
@@ -250,81 +256,146 @@ async function walkFullExportFiles(workspaceDir: string): Promise<string[]> {
       if (entry.isDirectory()) {
         await walk(path.join(dir, entry.name), relativePath)
       } else if (entry.isFile()) {
-        files.push(relativePath)
+        onFile(relativePath)
       }
     }
   }
 
   await walk(workspaceDir, '')
-  return files
 }
 
 // ============================================================================
 // ZIP Export
 // ============================================================================
 
-/**
- * Export an agent's workspace as a ZIP template buffer.
- */
-export async function exportAgentTemplate(agentSlug: string): Promise<Buffer> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+export class ExportInProgressError extends Error {
+  constructor() {
+    super('An export is already in progress')
+    this.name = 'ExportInProgressError'
+  }
+}
 
-  if (!(await directoryExists(workspaceDir))) {
-    throw new Error('Agent workspace not found')
+// One zip at a time on the host. Two large exports OOM a 1 GB box.
+let hostExportBusy = false
+
+function beginHostExport(): void {
+  if (hostExportBusy) throw new ExportInProgressError()
+  hostExportBusy = true
+}
+
+function endHostExport(): void {
+  hostExportBusy = false
+}
+
+export function resetHostExportLockForTests(): void {
+  hostExportBusy = false
+}
+
+export function isHostExportBusy(): boolean {
+  return hostExportBusy
+}
+
+async function withHostExportLock<T>(fn: () => Promise<T>): Promise<T> {
+  beginHostExport()
+  try {
+    return await fn()
+  } catch (err) {
+    endHostExport()
+    throw err
+  }
+}
+
+// Queue files into an archiver and return it immediately so the HTTP response
+// can start flushing. zlibLevel is per-call: full export uses 1, templates stay at 9.
+function createWorkspaceZipStream(
+  addFiles: (archive: ReturnType<typeof archiver>) => Promise<void>,
+  signal: AbortSignal | undefined,
+  zlibLevel: number,
+): Readable {
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    endHostExport()
   }
 
-  const claudeMdPath = getAgentClaudeMdPath(agentSlug)
-  const claudeMdContent = await readFileOrNull(claudeMdPath)
-  if (!claudeMdContent) {
-    throw new Error('CLAUDE.md not found in agent workspace')
+  const archive = archiver('zip', { zlib: { level: zlibLevel } })
+  archive.once('close', release)
+  // on(), not once(): a workspace that changes under the walk (agent deleted
+  // mid-export) makes archiver emit an ENOENT per queued file, and the first
+  // listener would be the only one. Zero listeners on the second error is an
+  // uncaughtException, which quits the app. release() is idempotent.
+  archive.on('error', release)
+
+  const stopArchive = (err?: Error) => {
+    if (archive.destroyed) return
+    archive.abort()
+    archive.destroy(err)
   }
 
-  const templateFiles = await walkTemplateFiles(workspaceDir)
+  const onAbort = () => {
+    release()
+    stopArchive()
+  }
+  signal?.addEventListener('abort', onAbort, { once: true })
 
-  return new Promise((resolve, reject) => {
-    const archive = archiver('zip', { zlib: { level: 9 } })
-    const chunks: Buffer[] = []
+  void (async () => {
+    try {
+      if (signal?.aborted) {
+        onAbort()
+        return
+      }
+      await addFiles(archive)
+      if (signal?.aborted || archive.destroyed) return
+      await archive.finalize()
+    } catch (err) {
+      stopArchive(err instanceof Error ? err : new Error(String(err)))
+      release()
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+    }
+  })()
 
-    archive.on('data', (chunk: Buffer) => chunks.push(chunk))
-    archive.on('end', () => resolve(Buffer.concat(chunks)))
-    archive.on('error', reject)
+  return archive
+}
 
-    for (const relativePath of templateFiles) {
-      const fullPath = path.join(workspaceDir, relativePath)
-      archive.file(fullPath, { name: relativePath })
+export async function exportAgentTemplate(agentSlug: string, signal?: AbortSignal): Promise<Readable> {
+  return withHostExportLock(async () => {
+    const workspaceDir = getAgentWorkspaceDir(agentSlug)
+
+    if (!(await directoryExists(workspaceDir))) {
+      throw new Error('Agent workspace not found')
     }
 
-    archive.finalize()
+    const claudeMdPath = getAgentClaudeMdPath(agentSlug)
+    const claudeMdContent = await readFileOrNull(claudeMdPath)
+    if (!claudeMdContent) {
+      throw new Error('CLAUDE.md not found in agent workspace')
+    }
+
+    const templateFiles = await walkTemplateFiles(workspaceDir)
+    return createWorkspaceZipStream(async (archive) => {
+      for (const relativePath of templateFiles) {
+        if (signal?.aborted) return
+        archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
+      }
+    }, signal, 9) // shareable .agent — size over host CPU
   })
 }
 
-/**
- * Export a full agent workspace as a ZIP buffer (includes .env, sessions, etc).
- * Used for migrating agents between machines.
- */
-export async function exportAgentFull(agentSlug: string): Promise<Buffer> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): Promise<Readable> {
+  return withHostExportLock(async () => {
+    const workspaceDir = getAgentWorkspaceDir(agentSlug)
 
-  if (!(await directoryExists(workspaceDir))) {
-    throw new Error('Agent workspace not found')
-  }
-
-  const fullFiles = await walkFullExportFiles(workspaceDir)
-
-  return new Promise((resolve, reject) => {
-    const archive = archiver('zip', { zlib: { level: 9 } })
-    const chunks: Buffer[] = []
-
-    archive.on('data', (chunk: Buffer) => chunks.push(chunk))
-    archive.on('end', () => resolve(Buffer.concat(chunks)))
-    archive.on('error', reject)
-
-    for (const relativePath of fullFiles) {
-      const fullPath = path.join(workspaceDir, relativePath)
-      archive.file(fullPath, { name: relativePath })
+    if (!(await directoryExists(workspaceDir))) {
+      throw new Error('Agent workspace not found')
     }
 
-    archive.finalize()
+    return createWorkspaceZipStream(async (archive) => {
+      await walkFullExportFiles(workspaceDir, (relativePath) => {
+        archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
+      }, signal)
+    }, signal, 1) // large workspaces — level 9 pegs 0.5 vCPU hosts
   })
 }
 
@@ -706,6 +777,41 @@ export async function hasOnboardingSkill(agentSlug: string): Promise<boolean> {
 }
 
 /**
+ * Read the optional prompt handoff supplied by an installed template.
+ * Empty, oversized, non-file, and unreadable candidates are treated as absent
+ * so this best-effort probe can never fail an otherwise successful install.
+ */
+export async function getAgentTemplatePrompt(agentSlug: string): Promise<string | undefined> {
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  for (const fileName of TEMPLATE_PROMPT_FILE_NAMES) {
+    let handle: Awaited<ReturnType<typeof fs.promises.open>> | undefined
+    try {
+      handle = await fs.promises.open(path.join(workspaceDir, fileName), 'r')
+      const stats = await handle.stat()
+      if (!stats.isFile() || stats.size === 0 || stats.size > MAX_TEMPLATE_PROMPT_SIZE) continue
+
+      // Allocate only after the size check and keep the read bounded even if
+      // the file grows between stat() and read().
+      const buffer = Buffer.alloc(stats.size)
+      let bytesRead = 0
+      while (bytesRead < buffer.length) {
+        const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead)
+        if (result.bytesRead === 0) break
+        bytesRead += result.bytesRead
+      }
+      const prompt = buffer.subarray(0, bytesRead).toString('utf8').trim()
+      if (prompt) return prompt
+    } catch {
+      // PROMPT.md is an optional handoff. Filesystem errors must not strand an
+      // agent after its workspace and owner ACL have already been created.
+    } finally {
+      await handle?.close().catch(() => undefined)
+    }
+  }
+  return undefined
+}
+
+/**
  * Get the template status of an agent.
  *
  * READ-ONLY: mirrors the skill path — no git ops, no metadata writes, no
@@ -853,6 +959,13 @@ export async function getDiscoverableAgents(
         description: agent.description,
         version: agent.version,
         path: agent.path,
+        // `works_with` is snake_case in index.json; the rest pass through as-is.
+        details: agent.details,
+        category: agent.category,
+        icon: agent.icon,
+        tags: agent.tags,
+        worksWith: agent.works_with,
+        developer: agent.developer,
       })
     }
   }
@@ -1162,7 +1275,7 @@ export async function getAgentPRInfo(
     throw new Error('Agent has no skillset metadata - cannot create PR')
   }
 
-  await getSkillsetProvider(meta.provider).ensurePublishPreconditions()
+  await getSkillsetProvider(meta.provider).ensurePublishPreconditions(toSkillsetRefFromMeta(meta))
 
   const suggestions = await generateAgentPRSuggestions(meta, agentSlug)
 
@@ -1282,7 +1395,7 @@ export async function getAgentPublishInfo(
     throw new Error('CLAUDE.md not found')
   }
 
-  await getSkillsetProvider(skillsetConfig.provider).ensurePublishPreconditions()
+  await getSkillsetProvider(skillsetConfig.provider).ensurePublishPreconditions(toSkillsetRefFromConfig(skillsetConfig))
 
   const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdContent)
   const agentName = frontmatter.name || agentSlug

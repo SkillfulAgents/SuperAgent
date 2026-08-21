@@ -27,7 +27,7 @@ import {
   resolvePlatformMemberForCandidates,
 } from '@shared/lib/services/webhook-trigger-service'
 import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-service'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { registerSession } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
@@ -359,17 +359,20 @@ class TriggerManager {
     // Model/effort/speed preference order: trigger override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(trigger.agentSlug)
-    const effort = trigger.effort ?? agentPrefs.defaultEffort
-    const speed = trigger.speed ?? agentPrefs.defaultSpeed
+    const resolved = resolveRuntimeInherit(
+      { model: trigger.model, effort: trigger.effort, speed: trigger.speed },
+      agentPrefs,
+      models,
+    )
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: prompt,
-      model: trigger.model || agentPrefs.defaultModel || models.agentModel,
+      model: resolved.model,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },
-      ...(effort ? { effort: effort as EffortLevel } : {}),
-      ...(speed ? { speed: speed as SpeedLevel } : {}),
+      effort: resolved.effort,
+      ...(resolved.speed ? { speed: resolved.speed } : {}),
     })
 
     const sessionId = containerSession.id

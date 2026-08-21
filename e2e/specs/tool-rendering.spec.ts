@@ -70,6 +70,7 @@ test.describe('Tool Call Rendering', () => {
     await sessionPage.waitForInputEnabled(20000)
 
     // Verify Bash tool call is rendered
+    await sessionPage.expandLatestCompletedTurn(20000)
     await sessionPage.expectToolCall('Bash', 20000)
     const toolCall = renderedToolCall(sessionPage, 'Bash')
     await expect(toolCall).toBeVisible()
@@ -88,6 +89,7 @@ test.describe('Tool Call Rendering', () => {
     await sessionPage.waitForInputEnabled(20000)
 
     // Verify Read tool call is rendered
+    await sessionPage.expandLatestCompletedTurn(20000)
     await sessionPage.expectToolCall('Read', 20000)
     const toolCall = renderedToolCall(sessionPage, 'Read')
     await expect(toolCall).toBeVisible()
@@ -103,6 +105,7 @@ test.describe('Tool Call Rendering', () => {
     await sessionPage.waitForInputEnabled(20000)
 
     // Verify Write tool call is rendered
+    await sessionPage.expandLatestCompletedTurn(20000)
     await sessionPage.expectToolCall('Write', 20000)
     const toolCall = renderedToolCall(sessionPage, 'Write')
     await expect(toolCall).toBeVisible()
@@ -118,6 +121,7 @@ test.describe('Tool Call Rendering', () => {
     await sessionPage.waitForInputEnabled(20000)
 
     // Verify Grep tool call is rendered
+    await sessionPage.expandLatestCompletedTurn(20000)
     await sessionPage.expectToolCall('Grep', 20000)
     const toolCall = renderedToolCall(sessionPage, 'Grep')
     await expect(toolCall).toBeVisible()
@@ -130,6 +134,7 @@ test.describe('Tool Call Rendering', () => {
     await sessionPage.waitForInputEnabled(20000)
 
     // Verify Glob tool call is rendered
+    await sessionPage.expandLatestCompletedTurn(20000)
     await sessionPage.expectToolCall('Glob', 20000)
   })
 
@@ -140,6 +145,7 @@ test.describe('Tool Call Rendering', () => {
     await sessionPage.waitForInputEnabled(20000)
 
     // Verify WebSearch tool call is rendered
+    await sessionPage.expandLatestCompletedTurn(20000)
     await sessionPage.expectToolCall('WebSearch', 20000)
     const toolCall = renderedToolCall(sessionPage, 'WebSearch')
     await expect(toolCall).toBeVisible()
@@ -153,6 +159,7 @@ test.describe('Tool Call Rendering', () => {
 
     await sessionPage.sendMessage('list files in the current directory')
     await sessionPage.waitForInputEnabled(20000)
+    await sessionPage.expandLatestCompletedTurn(20000)
 
     const toolCall = renderedToolCall(sessionPage, 'Bash')
     await expect(toolCall).toBeVisible({ timeout: 20000 })
