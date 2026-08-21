@@ -83,6 +83,7 @@ The implementation fixes these at their respective layers:
 
 ## Remaining local risks outside these fixes
 
+- Recorded `costUSD` is computed by the separate platform proxy, whose `apps/proxy/src/model-pricing.json` and `computeCost` must be kept in sync with this fallback table. As of 2026-08-21, platform `main` already has Opus 5's corrected $5/$25 base and 2x fast rates, but still prices Sonnet 5 at the cancelled $3/$15 rate; that requires a cross-repository follow-up. Historical Opus 4.6/4.7 fast rows in local transcripts should not be copied blindly into live-serving tiers.
 - Rows without `costUSD` are priced through the currently selected global provider and its current user catalog. Changing providers or catalog overrides can therefore reprice historical bare-model rows.
 - The `since` optimization first filters whole files by mtime. A restored/copied JSONL file with an old mtime but recent row timestamps can be missed. This is file discovery, not calculation.
 - Both implementations currently ignore `inference_geo` and `server_tool_use` charges. These are shared blind spots rather than regressions fixed upstream.

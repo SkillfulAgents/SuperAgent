@@ -8,6 +8,7 @@
  */
 
 import {
+  getPricingRefreshDriftWarnings,
   mergeRefreshedModelPricing,
   type FlatModelPricing,
   type ModelPricingTable,
@@ -58,6 +59,9 @@ async function main() {
     existingPricing = JSON.parse(fs.readFileSync(OUTPUT_PATH, 'utf8')) as ModelPricingTable
   } catch (error) {
     throw new Error(`Failed to read existing pricing table at ${OUTPUT_PATH}`, { cause: error })
+  }
+  for (const warning of getPricingRefreshDriftWarnings(existingPricing, refreshedPricing)) {
+    console.warn(warning)
   }
   const mergedPricing = mergeRefreshedModelPricing(existingPricing, refreshedPricing)
   fs.writeFileSync(

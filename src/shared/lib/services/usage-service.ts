@@ -137,6 +137,8 @@ interface SpeedMultipliers {
 }
 
 interface PricingEntry extends RateCard {
+  // Context tier cards are not independently effective-dated; no current
+  // model combines either context card with historicalRates.
   // OpenAI GPT-5.x 272K cliff: above `thresholdTokens` of prompt input the whole
   // request reprices at these rates. Mirror of the proxy's pricing table.
   longContext?: RateCard & { thresholdTokens: number }
@@ -150,12 +152,6 @@ interface PricingEntry extends RateCard {
   // of whichever rate set (base or longContext) a request lands on; an absent
   // tier bills standard (1x). Mirror of the proxy's pricing table.
   speedMultipliers?: SpeedMultipliers
-}
-
-type CatalogPricing = NonNullable<ModelDefinition['pricing']> & {
-  cacheCreationPerMtok?: number
-  cacheCreation1hPerMtok?: number
-  cacheReadPerMtok?: number
 }
 
 function cacheCreation1hRate(pricing: RateCard): number {
@@ -244,7 +240,7 @@ function rateCardFromCatalogModel(
 ): PricingEntry | null {
   if (!model.pricing) return null
 
-  const catalogPricing = model.pricing as CatalogPricing
+  const catalogPricing = model.pricing
   const preservesStaticSchedule = preserveStaticSchedule && Boolean(staticPricing?.historicalRates)
 
   const input = preservesStaticSchedule ? staticPricing!.input : catalogPricing.inputPerMtok
