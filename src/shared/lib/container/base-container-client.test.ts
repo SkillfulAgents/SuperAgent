@@ -937,6 +937,19 @@ describe('BaseContainerClient.observeUnexpectedDeath', () => {
     vi.spyOn(client, 'getSession').mockResolvedValue({ isRunning: true } as never)
     await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
       action: 'ignore',
+      liveSessionIds: ['s1'],
+    })
+  })
+
+  it('settles dead sessions and ignores siblings that are still running', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(true)
+    vi.spyOn(client, 'getSession').mockImplementation(async (sessionId: string) => {
+      if (sessionId === 'live') return { isRunning: true } as never
+      return { isRunning: false } as never
+    })
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['live', 'dead'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['live'],
     })
   })
 

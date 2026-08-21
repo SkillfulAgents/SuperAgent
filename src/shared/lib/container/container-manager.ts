@@ -121,12 +121,12 @@ class ContainerManager {
       consumeLastFatal: (slug) => messagePersister.consumeLastFatal(slug),
       settleRecoveringSessions: (ids) => messagePersister.settleRecoveringSessions(ids),
       markRecovered: (ids) => messagePersister.markRecovered(ids),
-      takeCoalescedUserMessage: (id) => messagePersister.takeCoalescedUserMessage(id),
+      takeCoalescedUserMessages: (id) => messagePersister.takeCoalescedUserMessages(id),
       isSessionRecovering: (id) => messagePersister.isSessionRecovering(id),
       isSubscribed: (id) => messagePersister.isSubscribed(id),
       subscribeToSession: (sessionId, client, containerSessionId, agentSlug) =>
         messagePersister.subscribeToSession(sessionId, client, containerSessionId, agentSlug),
-      onIdleDeath: async () => {
+      syncAgentStatus: async () => {
         try {
           await this.syncAgentStatus(agentId)
         } catch (err) {

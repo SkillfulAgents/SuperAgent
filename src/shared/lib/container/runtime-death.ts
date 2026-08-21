@@ -1,10 +1,19 @@
 // Fatal kind the agent process reported just before the runtime died, if any.
 export type RuntimeFatalKind = 'oom_sigkill' | null
 
+export type CoalescedUserMessage = {
+  uuid: string
+  text: string
+}
+
 // Reason vocabularies and prompt text are runtime-specific and live with each
 // runtime (e.g. microvm-death-classifier.ts); the generic contract only carries them.
 export type UnexpectedDeathPlan =
-  | { action: 'ignore' }
+  | {
+      action: 'ignore'
+      // Sessions still running. Omitted = all live; explicit [] = none live.
+      liveSessionIds?: string[]
+    }
   | { action: 'settle' }
   | {
       action: 'recover'
@@ -17,12 +26,6 @@ export type UnexpectedDeathPlan =
 export type ObserveUnexpectedDeathInput = {
   lastFatalResult?: RuntimeFatalKind
   sessionIds?: string[]
-}
-
-export function buildRecoveryPrompt(resumePrompt: string, coalescedUserMessage?: string): string {
-  const extra = coalescedUserMessage?.trim()
-  if (!extra) return resumePrompt
-  return `${resumePrompt}\n\nThe user also sent:\n${extra}`
 }
 
 // Contract with agent-container's fatal error wording (locked by runtime-death.test.ts).

@@ -227,8 +227,7 @@ export interface ContainerClient {
   cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>
   interruptSession(sessionId: string): Promise<boolean>
 
-  // Unexpected mid-turn death: default settles (today's session_error).
-  // A runtime that can resume overrides observeUnexpectedDeath.
+  // Default settles (today's session_error). Overrides must be safe on a live runtime (queued re-run).
   onFatalResult(kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery'
   observeUnexpectedDeath(input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan>
   getRuntimeGenerationId(): string | null

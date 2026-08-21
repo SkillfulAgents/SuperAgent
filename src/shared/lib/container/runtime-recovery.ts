@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto'
 import { addErrorBreadcrumb, captureException } from '@shared/lib/error-reporting'
 import type { ContainerClient } from './types'
-import { buildRecoveryPrompt, type RuntimeFatalKind, type UnexpectedDeathPlan } from './runtime-death'
+import type { CoalescedUserMessage, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
 // Session lifecycle here: active --(unexpected death)--> isRecovering --> either
 // markRecovered (resume prompt sent, turn continues) or settleRecoveringSessions
@@ -17,7 +17,7 @@ export type RuntimeRecoveryDeps = {
   consumeLastFatal: (agentId: string) => RuntimeFatalKind
   settleRecoveringSessions: (sessionIds: string[]) => void
   markRecovered: (sessionIds: string[]) => void
-  takeCoalescedUserMessage: (sessionId: string) => string | undefined
+  takeCoalescedUserMessages: (sessionId: string) => CoalescedUserMessage[]
   isSessionRecovering: (sessionId: string) => boolean
   isSubscribed: (sessionId: string) => boolean
   subscribeToSession: (
@@ -26,7 +26,7 @@ export type RuntimeRecoveryDeps = {
     containerSessionId: string,
     agentSlug: string,
   ) => Promise<void>
-  onIdleDeath?: () => Promise<void>
+  syncAgentStatus?: () => Promise<void>
 }
 
 const OBSERVE_TIMEOUT_MS = 30_000
@@ -71,7 +71,7 @@ async function recoverFromUnexpectedDeathInner(deps: RuntimeRecoveryDeps): Promi
 
   const sessionIds = deps.snapshotMidTurnSessions(deps.agentId)
   if (sessionIds.length === 0) {
-    await deps.onIdleDeath?.()
+    await deps.syncAgentStatus?.()
     return
   }
 
@@ -91,7 +91,7 @@ async function recoverFromUnexpectedDeathInner(deps: RuntimeRecoveryDeps): Promi
       tags: { area: 'container', op: 'runtime.observeDeath' },
       extra: { agentId: deps.agentId, sessionIds },
     })
-    deps.settleRecoveringSessions(sessionIds)
+    await settleAndSync(deps, sessionIds)
     return
   }
 
@@ -101,30 +101,12 @@ async function recoverFromUnexpectedDeathInner(deps: RuntimeRecoveryDeps): Promi
   }
 
   if (plan.action === 'ignore') {
-    // Take coalesced messages before markRecovered clears them; the turn is
-    // still running on the container, so deliver them as normal queued sends.
-    const coalesced = new Map<string, string>()
-    for (const sessionId of sessionIds) {
-      const text = deps.takeCoalescedUserMessage(sessionId)
-      if (text) coalesced.set(sessionId, text)
-    }
-    deps.markRecovered(sessionIds)
-    await resubscribeSessions(deps, client, sessionIds)
-    for (const [sessionId, text] of coalesced) {
-      try {
-        await client.sendMessage(sessionId, text, randomUUID(), { shouldQuery: true })
-      } catch (error) {
-        captureException(error, {
-          tags: { area: 'container', op: 'runtime.recovery.deliverCoalesced' },
-          extra: { agentId: deps.agentId, sessionId },
-        })
-      }
-    }
+    await ignoreDeath(deps, client, sessionIds, plan.liveSessionIds)
     return
   }
 
   if (plan.action === 'settle') {
-    deps.settleRecoveringSessions(sessionIds)
+    await settleAndSync(deps, sessionIds)
     return
   }
 
@@ -133,7 +115,7 @@ async function recoverFromUnexpectedDeathInner(deps: RuntimeRecoveryDeps): Promi
       tags: { area: 'container', op: 'runtime.recover.budget' },
       extra: { agentId: deps.agentId, reason: plan.reason, sessionIds },
     })
-    deps.settleRecoveringSessions(sessionIds)
+    await settleAndSync(deps, sessionIds)
     return
   }
 
@@ -162,8 +144,42 @@ async function recoverFromUnexpectedDeathInner(deps: RuntimeRecoveryDeps): Promi
       tags: { area: 'container', op: 'runtime.recover' },
       extra: { agentId: deps.agentId, reason: plan.reason, sessionIds },
     })
-    deps.settleRecoveringSessions(sessionIds.filter((id) => deps.isSessionRecovering(id)))
+    await settleAndSync(
+      deps,
+      sessionIds.filter((id) => deps.isSessionRecovering(id)),
+    )
   }
+}
+
+async function ignoreDeath(
+  deps: RuntimeRecoveryDeps,
+  client: ContainerClient,
+  sessionIds: string[],
+  liveSessionIds: string[] | undefined,
+): Promise<void> {
+  const live = new Set(liveSessionIds ?? sessionIds)
+  const dead = sessionIds.filter((id) => !live.has(id))
+  const keep = sessionIds.filter((id) => live.has(id))
+  if (dead.length > 0) deps.settleRecoveringSessions(dead)
+
+  // Take coalesced messages before markRecovered clears them; the turn is
+  // still running on the container, so deliver them as normal queued sends.
+  const coalesced = new Map<string, CoalescedUserMessage[]>()
+  for (const sessionId of keep) {
+    const messages = deps.takeCoalescedUserMessages(sessionId)
+    if (messages.length > 0) coalesced.set(sessionId, messages)
+  }
+  deps.markRecovered(keep)
+  await resubscribeSessions(deps, client, keep)
+  for (const [sessionId, messages] of coalesced) {
+    await deliverCoalescedMessages(deps, client, sessionId, messages)
+  }
+}
+
+async function settleAndSync(deps: RuntimeRecoveryDeps, sessionIds: string[]): Promise<void> {
+  if (sessionIds.length === 0) return
+  deps.settleRecoveringSessions(sessionIds)
+  await deps.syncAgentStatus?.()
 }
 
 function underRecoveryBudget(agentId: string): boolean {
@@ -215,6 +231,24 @@ async function resubscribeSessions(
   }
 }
 
+async function deliverCoalescedMessages(
+  deps: RuntimeRecoveryDeps,
+  client: ContainerClient,
+  sessionId: string,
+  messages: CoalescedUserMessage[],
+): Promise<void> {
+  for (const message of messages) {
+    try {
+      await client.sendMessage(sessionId, message.text, message.uuid, { shouldQuery: true })
+    } catch (error) {
+      captureException(error, {
+        tags: { area: 'container', op: 'runtime.recovery.deliverCoalesced' },
+        extra: { agentId: deps.agentId, sessionId },
+      })
+    }
+  }
+}
+
 async function resumeSessions(
   deps: RuntimeRecoveryDeps,
   client: ContainerClient,
@@ -233,9 +267,10 @@ async function resumeSessions(
       if (!deps.isSubscribed(sessionId)) {
         await deps.subscribeToSession(sessionId, client, sessionId, deps.agentId)
       }
-      const prompt = buildRecoveryPrompt(plan.resumePrompt, deps.takeCoalescedUserMessage(sessionId))
-      await client.sendMessage(sessionId, prompt, randomUUID(), { shouldQuery: true })
+      await client.sendMessage(sessionId, plan.resumePrompt, randomUUID(), { shouldQuery: true })
+      const coalesced = deps.takeCoalescedUserMessages(sessionId)
       deps.markRecovered([sessionId])
+      await deliverCoalescedMessages(deps, client, sessionId, coalesced)
     } catch (error) {
       captureException(error, {
         tags: { area: 'container', op: 'runtime.resume' },
@@ -244,5 +279,5 @@ async function resumeSessions(
       failed.push(sessionId)
     }
   }
-  if (failed.length > 0) deps.settleRecoveringSessions(failed)
+  if (failed.length > 0) await settleAndSync(deps, failed)
 }

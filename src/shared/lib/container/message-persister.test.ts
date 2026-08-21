@@ -7452,13 +7452,36 @@ describe('MessagePersister mid-turn recovery snapshot', () => {
     expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG)).toEqual([])
   })
 
-  it('coalesces user text while recovering', () => {
+  it('coalesces user text while recovering and keeps each message uuid', () => {
     messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
     messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
-    expect(messagePersister.coalesceIfRecovering(SESSION_ID, 'first')).toBe(true)
-    expect(messagePersister.coalesceIfRecovering(SESSION_ID, 'second')).toBe(true)
-    expect(messagePersister.takeCoalescedUserMessage(SESSION_ID)).toBe('first\n\nsecond')
-    expect(messagePersister.coalesceIfRecovering('other', 'nope')).toBe(false)
+    expect(messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u1', text: 'first' })).toBe(true)
+    expect(messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u2', text: 'second' })).toBe(true)
+    expect(messagePersister.takeCoalescedUserMessages(SESSION_ID)).toEqual([
+      { uuid: 'u1', text: 'first' },
+      { uuid: 'u2', text: 'second' },
+    ])
+    expect(messagePersister.coalesceIfRecovering('other', { uuid: 'u3', text: 'nope' })).toBe(false)
+  })
+
+  it('drops a coalesced user message by uuid', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u1', text: 'first' })
+    messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u2', text: 'second' })
+    expect(messagePersister.dropCoalescedUserMessage(SESSION_ID, 'u1')).toBe(true)
+    expect(messagePersister.takeCoalescedUserMessages(SESSION_ID)).toEqual([{ uuid: 'u2', text: 'second' }])
+  })
+
+  it('does not log coalesced message content when settling', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u1', text: 'secret user text' })
+    messagePersister.settleRecoveringSessions([SESSION_ID])
+    expect(warn).toHaveBeenCalled()
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('secret user text')
+    warn.mockRestore()
   })
 
   it('settles recovering sessions as connection_lost and writes automation status', () => {
@@ -7487,7 +7510,23 @@ describe('MessagePersister mid-turn recovery snapshot', () => {
     expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
     expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG)
     expect(messagePersister.consumeLastFatal(AGENT_SLUG)).toBe('oom_sigkill')
-    messagePersister.setUnexpectedDeathCallback(() => {})
+    messagePersister.setUnexpectedDeathCallback(null)
+  })
+
+  it('does not snapshot a fatal SIGKILL when no recovery callback is registered', async () => {
+    messagePersister.setUnexpectedDeathCallback(null)
+    mockClient.onFatalResult = vi.fn(() => 'defer_for_recovery' as const)
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+    mockClient._sendMessage({
+      type: 'result',
+      subtype: 'error',
+      fatal: true,
+      error: 'The agent process was killed due to running out of memory.',
+    })
+
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
   })
 
   it('does not settle mid-turn on connection_closed when recovery is registered', async () => {
@@ -7506,6 +7545,6 @@ describe('MessagePersister mid-turn recovery snapshot', () => {
     expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG)
     expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
     expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
-    messagePersister.setUnexpectedDeathCallback(() => {})
+    messagePersister.setUnexpectedDeathCallback(null)
   })
 })

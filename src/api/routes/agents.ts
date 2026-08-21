@@ -2264,6 +2264,28 @@ agents.get('/:id/sessions/:sessionId/usage', AgentRead(), async (c) => {
   }
 })
 
+async function persistAndBroadcastUserMessage(
+  c: Context,
+  args: { messageUuid: string; sessionId: string; agentSlug: string; content: string; queued: boolean },
+): Promise<void> {
+  if (!isAuthMode()) return
+  const userId = getCurrentUserId(c)
+  await db.insert(messageAuthor).values({
+    id: args.messageUuid,
+    sessionId: args.sessionId,
+    agentSlug: args.agentSlug,
+    userId,
+  })
+  const user = c.get('user' as never) as { id: string; name: string }
+  messagePersister.broadcastSessionEvent(args.sessionId, {
+    type: 'user_message',
+    content: args.content,
+    sender: { id: user.id, name: user.name },
+    uuid: args.messageUuid,
+    queued: args.queued,
+  })
+}
+
 // POST /api/agents/:id/sessions/:sessionId/messages - Send a message
 agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
   try {
@@ -2298,25 +2320,22 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // decided from the host-side promotedToInteractive marker.
     await messagePersister.promoteAutomatedSession(sessionId, agentSlug)
 
-    if (messagePersister.coalesceIfRecovering(sessionId, content.trim())) {
-      const messageUuid = randomUUID()
-      if (isAuthMode()) {
-        const userId = getCurrentUserId(c)
-        await db.insert(messageAuthor).values({
-          id: messageUuid,
-          sessionId,
-          agentSlug,
-          userId,
-        })
-        const user = c.get('user' as never) as { id: string; name: string }
-        messagePersister.broadcastSessionEvent(sessionId, {
-          type: 'user_message',
-          content: content.trim(),
-          sender: { id: user.id, name: user.name },
-          uuid: messageUuid,
-          queued: true,
-        })
-      }
+    // Server-generated message uuid (never client-supplied — the uuid keys the
+    // messageAuthor attribution row, so a client-chosen value could collide
+    // with another user's message and misattribute it). It is forwarded to the
+    // container, becomes the JSONL entry id, and is returned in the response
+    // so the client can materialize its optimistic copy by exact id match.
+    const messageUuid = randomUUID()
+    const text = content.trim()
+
+    if (messagePersister.coalesceIfRecovering(sessionId, { uuid: messageUuid, text })) {
+      await persistAndBroadcastUserMessage(c, {
+        messageUuid,
+        sessionId,
+        agentSlug,
+        content: text,
+        queued: true,
+      })
       return c.json({ success: true, uuid: messageUuid, queued: true }, 201)
     }
 
@@ -2358,37 +2377,15 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       delete runtimeOptions.model
     }
 
-    // Server-generated message uuid (never client-supplied — the uuid keys the
-    // messageAuthor attribution row, so a client-chosen value could collide
-    // with another user's message and misattribute it). It is forwarded to the
-    // container, becomes the JSONL entry id, and is returned in the response
-    // so the client can materialize its optimistic copy by exact id match.
-    const messageUuid = randomUUID()
+    await persistAndBroadcastUserMessage(c, {
+      messageUuid,
+      sessionId,
+      agentSlug,
+      content: text,
+      queued: wasQueued,
+    })
 
-    // In auth mode, record the sender for message attribution
-    if (isAuthMode()) {
-      const userId = getCurrentUserId(c)
-      await db.insert(messageAuthor).values({
-        id: messageUuid,
-        sessionId,
-        agentSlug,
-        userId,
-      })
-    }
-
-    // Broadcast user message to other SSE viewers (auth mode shared agents)
-    if (isAuthMode()) {
-      const user = c.get('user' as never) as { id: string; name: string }
-      messagePersister.broadcastSessionEvent(sessionId, {
-        type: 'user_message',
-        content: content.trim(),
-        sender: { id: user.id, name: user.name },
-        uuid: messageUuid,
-        queued: wasQueued,
-      })
-    }
-
-    await client.sendMessage(sessionId, content.trim(), messageUuid, runtimeOptions)
+    await client.sendMessage(sessionId, text, messageUuid, runtimeOptions)
     const updates: Parameters<typeof updateSessionMetadata>[2] = {}
     if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
     if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
@@ -2445,6 +2442,14 @@ agents.delete('/:id/sessions/:sessionId/queued-messages/:uuid', AgentUser(), asy
     const uuidParam = z.string().uuid().safeParse(c.req.param('uuid'))
     if (!uuidParam.success) {
       return c.json({ error: 'Invalid message uuid' }, 400)
+    }
+
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
+    if (messagePersister.dropCoalescedUserMessage(sessionId, uuidParam.data)) {
+      return c.json({ cancelled: true })
     }
 
     const client = containerManager.getClient(agentSlug)

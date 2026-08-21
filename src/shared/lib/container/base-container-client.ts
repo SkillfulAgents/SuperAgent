@@ -384,15 +384,17 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       if (!(await this.isHealthy())) return { action: 'settle' }
       const sessionIds = input?.sessionIds ?? []
       if (sessionIds.length === 0) return { action: 'ignore' }
+      const liveSessionIds: string[] = []
       for (const sessionId of sessionIds) {
         try {
           const session = await this.getSession(sessionId)
-          if (session?.isRunning) return { action: 'ignore' }
+          if (session?.isRunning) liveSessionIds.push(sessionId)
         } catch {
-          // Session probe failed; try siblings or settle.
+          // Session probe failed; treat as not live and try siblings.
         }
       }
-      return { action: 'settle' }
+      if (liveSessionIds.length === 0) return { action: 'settle' }
+      return { action: 'ignore', liveSessionIds }
     } catch {
       return { action: 'settle' }
     }

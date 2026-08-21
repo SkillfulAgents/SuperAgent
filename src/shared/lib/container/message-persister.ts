@@ -17,7 +17,7 @@ import {
   type UserInputRequestOutcome,
 } from '@shared/lib/user-input/request-schema'
 import { classifyResult } from './result-classification'
-import { inferOomSigkillFatal, type RuntimeFatalKind } from './runtime-death'
+import { inferOomSigkillFatal, type CoalescedUserMessage, type RuntimeFatalKind } from './runtime-death'
 import { parseBackgroundTasksChanged } from './background-tasks-changed'
 import { parseCommandLifecycle } from './command-lifecycle'
 import { captureException } from '@shared/lib/error-reporting'
@@ -119,7 +119,7 @@ interface StreamingState {
   isActive: boolean // True from user message until result received
   isInterrupted: boolean // True after user interrupts, prevents race conditions
   isRecovering: boolean // Mid-turn death claimed for resume; skip session_error until resume fails
-  coalescedUserMessage?: string // User text sent while recovering; one resume send, not two
+  coalescedUserMessages?: CoalescedUserMessage[] // User texts sent while recovering; delivered with their uuids
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
   agentSlug?: string // The agent slug for this session
   notAutomationSession?: boolean // Cached "not a cron/webhook session" verdict; skips the automation-status metadata write on later results
@@ -489,7 +489,7 @@ class MessagePersister {
       isActive: priorIsActive,
       isInterrupted: false,
       isRecovering: prior?.isRecovering ?? false,
-      coalescedUserMessage: prior?.coalescedUserMessage,
+      coalescedUserMessages: prior?.coalescedUserMessages,
       isCompacting: false,
       agentSlug,
       lastContextWindow: 200_000,
@@ -1021,23 +1021,33 @@ class MessagePersister {
     return this.streamingStates.get(sessionId)?.isRecovering === true
   }
 
-  coalesceIfRecovering(sessionId: string, content: string): boolean {
+  coalesceIfRecovering(sessionId: string, message: CoalescedUserMessage): boolean {
     const state = this.streamingStates.get(sessionId)
     if (!state?.isRecovering) return false
-    const text = content.trim()
+    const text = message.text.trim()
     if (!text) return true
-    state.coalescedUserMessage = state.coalescedUserMessage
-      ? `${state.coalescedUserMessage}\n\n${text}`
-      : text
+    const entry = { uuid: message.uuid, text }
+    state.coalescedUserMessages = state.coalescedUserMessages
+      ? [...state.coalescedUserMessages, entry]
+      : [entry]
     return true
   }
 
-  takeCoalescedUserMessage(sessionId: string): string | undefined {
+  takeCoalescedUserMessages(sessionId: string): CoalescedUserMessage[] {
     const state = this.streamingStates.get(sessionId)
-    if (!state?.coalescedUserMessage) return undefined
-    const text = state.coalescedUserMessage
-    state.coalescedUserMessage = undefined
-    return text
+    const messages = state?.coalescedUserMessages
+    if (!state || !messages?.length) return []
+    state.coalescedUserMessages = undefined
+    return messages
+  }
+
+  dropCoalescedUserMessage(sessionId: string, uuid: string): boolean {
+    const state = this.streamingStates.get(sessionId)
+    if (!state?.coalescedUserMessages) return false
+    const next = state.coalescedUserMessages.filter((message) => message.uuid !== uuid)
+    if (next.length === state.coalescedUserMessages.length) return false
+    state.coalescedUserMessages = next.length > 0 ? next : undefined
+    return true
   }
 
   markRecovered(sessionIds: string[]): void {
@@ -1045,7 +1055,7 @@ class MessagePersister {
       const state = this.streamingStates.get(sessionId)
       if (!state) continue
       state.isRecovering = false
-      state.coalescedUserMessage = undefined
+      state.coalescedUserMessages = undefined
     }
   }
 
@@ -1054,17 +1064,18 @@ class MessagePersister {
       const state = this.streamingStates.get(sessionId)
       if (!state) continue
       state.isRecovering = false
-      if (state.coalescedUserMessage) {
+      const dropped = state.coalescedUserMessages
+      if (dropped?.length) {
+        const messageLength = dropped.reduce((n, message) => n + message.text.length, 0)
         console.warn(
-          `[MessagePersister] Dropping user message coalesced during failed recovery for ${sessionId}:`,
-          state.coalescedUserMessage,
+          `[MessagePersister] Dropping ${dropped.length} user message(s) coalesced during failed recovery for ${sessionId} (length=${messageLength})`,
         )
         captureException(new Error('Coalesced user message dropped on recovery settle'), {
           tags: { area: 'container', op: 'runtime.recovery.dropCoalesced' },
-          extra: { sessionId, messageLength: state.coalescedUserMessage.length },
+          extra: { sessionId, messageCount: dropped.length, messageLength },
         })
       }
-      state.coalescedUserMessage = undefined
+      state.coalescedUserMessages = undefined
       if (state.isActive && !state.isInterrupted) {
         this.markSessionInactive(sessionId, state)
       }
@@ -1118,7 +1129,7 @@ class MessagePersister {
     this.onStopContainerRequested = callback
   }
 
-  setUnexpectedDeathCallback(callback: (agentSlug: string) => void): void {
+  setUnexpectedDeathCallback(callback: ((agentSlug: string) => void) | null): void {
     this.onUnexpectedDeathRequested = callback
   }
 
@@ -1149,7 +1160,7 @@ class MessagePersister {
       // the session — every later turn would end waiting-background, never idle.
       state.bgTasksSnapshot = null
       state.isRecovering = false
-      state.coalescedUserMessage = undefined
+      state.coalescedUserMessages = undefined
       this.stopAllWorkflowTailers(sessionId)
     }
 
@@ -2255,6 +2266,7 @@ class MessagePersister {
           isError &&
           inferOomSigkillFatal(content) &&
           state.agentSlug &&
+          this.onUnexpectedDeathRequested &&
           this.containerClients.get(sessionId)?.onFatalResult('oom_sigkill') === 'defer_for_recovery'
         ) {
           this.recordLastFatal(state.agentSlug, 'oom_sigkill')
