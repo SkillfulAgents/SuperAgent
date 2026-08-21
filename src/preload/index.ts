@@ -3,6 +3,8 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extensions'
 import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
 
+type CloudDashboardSession = { useCloudOrigin: boolean; origin: string | null }
+
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -15,6 +17,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // the per-boot proxy key — a secret that is fetched, never assembled here.
   getApiTarget: (): Promise<ResolvedApiTarget> => {
     return ipcRenderer.invoke('get-api-target')
+  },
+  ensureCloudDashboardSession: (): Promise<CloudDashboardSession> => {
+    return ipcRenderer.invoke('ensure-cloud-dashboard-session')
   },
   // Records the choice for subsequent boots; the caller reloads.
   setPreferredApiTarget: (target: ApiTarget): Promise<void> => {
@@ -472,6 +477,7 @@ declare global {
       getApiUrl: () => Promise<string>
       // Optional: an older main process has no such handler (see env.ts).
       getApiTarget?: () => Promise<ResolvedApiTarget>
+      ensureCloudDashboardSession?: () => Promise<CloudDashboardSession>
       setPreferredApiTarget?: (target: ApiTarget) => Promise<void>
       platform: string
       osVersion: string

@@ -25,9 +25,10 @@ type FakeWindow = {
 // BrowserWindow is mocked as a constructor that records the created window and
 // exposes a webContents stub with spies for setWindowOpenHandler / downloadURL.
 // `vi.hoisted` keeps the shared state in scope for the hoisted `vi.mock` factory.
-const { safeOpenExternal, createdWindows } = vi.hoisted(() => ({
+const { safeOpenExternal, createdWindows, ensureCloudDashboardSession } = vi.hoisted(() => ({
   safeOpenExternal: vi.fn(),
   createdWindows: [] as FakeWindow[],
+  ensureCloudDashboardSession: vi.fn(),
 }))
 
 vi.mock('electron', () => {
@@ -56,6 +57,7 @@ vi.mock('electron', () => {
 vi.mock('./safe-open-external', () => ({
   safeOpenExternal: (...args: unknown[]) => safeOpenExternal(...args),
 }))
+vi.mock('./cloud-dashboard-session', () => ({ ensureCloudDashboardSession }))
 
 import { openDashboardWindow, closeAllDashboardWindows } from './dashboard-window'
 
@@ -65,11 +67,13 @@ beforeEach(() => {
   closeAllDashboardWindows()
   createdWindows.length = 0
   safeOpenExternal.mockClear()
+  ensureCloudDashboardSession.mockReset()
+  ensureCloudDashboardSession.mockResolvedValue({ useCloudOrigin: false, origin: null })
 })
 
 describe('openDashboardWindow popup policy (SUP-219)', () => {
-  it('installs a popup handler on the dashboard window webContents', () => {
-    openDashboardWindow('agent-one', 'sales', 'http://localhost:3838')
+  it('installs a popup handler on the dashboard window webContents', async () => {
+    await openDashboardWindow('agent-one', 'sales', 'http://localhost:3838')
 
     expect(createdWindows).toHaveLength(1)
     const win = createdWindows[0]
@@ -77,8 +81,8 @@ describe('openDashboardWindow popup policy (SUP-219)', () => {
     expect(win.webContents.setWindowOpenHandler).toHaveBeenCalledTimes(1)
   })
 
-  it('denies external popups and routes them through the scheme-validated opener', () => {
-    openDashboardWindow('agent-one', 'sales', 'http://localhost:3838')
+  it('denies external popups and routes them through the scheme-validated opener', async () => {
+    await openDashboardWindow('agent-one', 'sales', 'http://localhost:3838')
     const win = createdWindows[0]
     const handler = win.webContents.setWindowOpenHandler.mock.calls[0][0] as (arg: {
       url: string
@@ -92,8 +96,8 @@ describe('openDashboardWindow popup policy (SUP-219)', () => {
     expect(win.webContents.downloadURL).not.toHaveBeenCalled()
   })
 
-  it('routes /api/agents/.../files/ URLs through downloadURL and denies the popup', () => {
-    openDashboardWindow('agent-one', 'sales', 'http://localhost:3838')
+  it('routes /api/agents/.../files/ URLs through downloadURL and denies the popup', async () => {
+    await openDashboardWindow('agent-one', 'sales', 'http://localhost:3838')
     const win = createdWindows[0]
     const handler = win.webContents.setWindowOpenHandler.mock.calls[0][0] as (arg: {
       url: string

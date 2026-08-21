@@ -414,9 +414,10 @@ try {
 
   await check('C6 no renderer request goes straight to the deployment origin', async () => {
     const escaped = requestLog.filter((url) => url.startsWith(STACK.deploymentUrl))
+    const unexpected = escaped.filter((url) => !/\/api\/agents\/[^/]+\/artifacts\//.test(url))
     expect(
-      escaped.length === 0,
-      `${escaped.length} request(s) bypassed the proxy:\n  ${escaped.slice(0, 5).join('\n  ')}`,
+      unexpected.length === 0,
+      `${unexpected.length} request(s) bypassed the proxy:\n  ${unexpected.slice(0, 5).join('\n  ')}`,
     )
   })
 

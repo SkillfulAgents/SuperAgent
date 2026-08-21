@@ -36,6 +36,18 @@ function singleParam(params: URLSearchParams, name: string): string | null {
   return values[0]
 }
 
+// Browser POSTs (Origin present, or a document/iframe navigation) stay JSON-only.
+function isDesktopCookieCaller(headers: { get(name: string): string | null }): boolean {
+  if (headers.get('origin')) return false
+  const dest = (headers.get('sec-fetch-dest') ?? '').toLowerCase()
+  const mode = (headers.get('sec-fetch-mode') ?? '').toLowerCase()
+  if (dest === 'document' || dest === 'iframe' || dest === 'embed' || dest === 'frame') {
+    return false
+  }
+  if (mode === 'navigate') return false
+  return true
+}
+
 /**
  * RFC 7523 JWT bearer grant token endpoint (downstream Authorization Server).
  * POST /api/auth/token/exchange — accepts a platform-issued JWT authorization
@@ -85,13 +97,17 @@ tokenExchange.post('/exchange', limitBody, async (c) => {
     return oauthError(c, 400, 'invalid_request', 'assertion is too large')
   }
 
-  const { exchangeDeploymentGrant, TokenExchangeError } = await import('@shared/lib/auth/token-exchange')
+  const { exchangeDeploymentGrant, issueDesktopSessionCookieLine, TokenExchangeError } = await import('@shared/lib/auth/token-exchange')
   try {
     const result = await exchangeDeploymentGrant(assertion, {
       userAgent: c.req.header('user-agent'),
       ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || '',
     })
-    return c.json(result, 200, NO_STORE_HEADERS)
+    if (isDesktopCookieCaller(c.req.raw.headers) && result.body.expires_in > 0) {
+      const cookie = await issueDesktopSessionCookieLine(result.sessionToken, result.body.expires_in)
+      c.header('Set-Cookie', cookie)
+    }
+    return c.json(result.body, 200, NO_STORE_HEADERS)
   } catch (error) {
     if (error instanceof TokenExchangeError) {
       // Expected OAuth denials are normal control flow — never reported.

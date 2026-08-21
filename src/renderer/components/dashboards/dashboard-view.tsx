@@ -5,8 +5,15 @@ import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agent
 import { useKeepAlive } from '@renderer/hooks/use-keep-alive'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
+import { targetIsRemote } from '@renderer/lib/api-target'
 import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
+import { z } from 'zod'
+
+const CloudDashboardSessionSchema = z.object({
+  useCloudOrigin: z.boolean(),
+  origin: z.string().nullable(),
+})
 import { AddToDockDialog } from './add-to-dock-dialog'
 import { PendingAgentReviews } from './pending-agent-reviews'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -89,10 +96,40 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   // DASHBOARD_BASE_PATH. Keep their browser-visible URL on that same stable
   // id even when the surrounding app route uses a decorative display slug.
   const dashboardAgentSlug = agent?.slug ?? agentSlug
-  const iframeSrc = `${baseUrl}${buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)}`
+  const doorSrc = `${baseUrl}${buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)}`
+  // Electron cloud windows wait until ensure settles so the first document is
+  // the cloud origin, not the door (which would then navigate and go blank).
+  // Local and web mount the door immediately.
+  const waitForCloudOrigin = isElectron()
+    && Boolean(window.electronAPI?.ensureCloudDashboardSession)
+    && targetIsRemote()
+  const [iframeSrc, setIframeSrc] = useState<string | null>(waitForCloudOrigin ? null : doorSrc)
+
+  useEffect(() => {
+    const ensure = window.electronAPI?.ensureCloudDashboardSession
+    if (!waitForCloudOrigin || !ensure) {
+      setIframeSrc(doorSrc)
+      return
+    }
+    setIframeSrc(null)
+    let cancelled = false
+    void ensure().then((raw) => {
+      if (cancelled) return
+      const session = CloudDashboardSessionSchema.parse(raw)
+      const origin = session.useCloudOrigin && session.origin
+        ? session.origin.replace(/\/+$/, '')
+        : getApiBaseUrl()
+      setIframeSrc(`${origin}${buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)}`)
+    }).catch(() => {
+      if (!cancelled) setIframeSrc(doorSrc)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [doorSrc, dashboardAgentSlug, dashboardSlug, waitForCloudOrigin])
 
   const handleRefresh = useCallback(() => {
-    if (iframeRef.current) {
+    if (iframeRef.current && iframeSrc) {
       setRefreshing(true)
       setFrameLoading(true)
       iframeRef.current.src = iframeSrc
@@ -203,18 +240,20 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
         dashboardName={dashboard?.name || dashboardSlug}
       />
       <div className="flex-1 min-h-0 relative">
-        <iframe
-          ref={iframeRef}
-          src={iframeSrc}
-          className="h-full w-full border-0"
-          title={dashboard?.name || dashboardSlug}
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
-          allow="microphone; camera"
-          onLoad={() => {
-            setFrameLoading(false)
-            setRefreshing(false)
-          }}
-        />
+        {iframeSrc ? (
+          <iframe
+            ref={iframeRef}
+            src={iframeSrc}
+            className="h-full w-full border-0"
+            title={dashboard?.name || dashboardSlug}
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
+            allow="microphone; camera"
+            onLoad={() => {
+              setFrameLoading(false)
+              setRefreshing(false)
+            }}
+          />
+        ) : null}
       </div>
     </div>
   )

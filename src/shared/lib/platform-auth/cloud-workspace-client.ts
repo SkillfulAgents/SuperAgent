@@ -144,7 +144,7 @@ export async function exchangeGrantAtDeployment(
   deploymentUrl: string,
   grant: string,
   policy: DiscoveryHostPolicy,
-): Promise<{ token: string; expiresInSec: number }> {
+): Promise<{ token: string; expiresInSec: number; setCookies: string[] }> {
   const base = deploymentUrl.replace(/\/+$/, '')
   const form = new URLSearchParams({
     grant_type: JWT_BEARER_GRANT_TYPE,
@@ -169,5 +169,11 @@ export async function exchangeGrantAtDeployment(
       cause: parsed.error,
     })
   }
-  return { token: parsed.data.access_token, expiresInSec: parsed.data.expires_in }
+  const getSetCookie = (res.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie
+  const setCookies = typeof getSetCookie === 'function' ? getSetCookie.call(res.headers) : []
+  return {
+    token: parsed.data.access_token,
+    expiresInSec: parsed.data.expires_in,
+    setCookies: Array.isArray(setCookies) ? setCookies.filter((line) => typeof line === 'string') : [],
+  }
 }
