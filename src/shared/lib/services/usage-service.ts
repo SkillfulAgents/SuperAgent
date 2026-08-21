@@ -143,7 +143,7 @@ interface PricingEntry extends RateCard {
   // Anthropic's long-context premium is marginal: each token category gets
   // its own allowance at the base rate before the remainder uses this card.
   marginalLongContext?: RateCard & { thresholdTokens: number }
-  // Introductory / retired rates apply to transcript rows before the cutoff.
+  // Historical / scheduled rates apply to transcript rows before the cutoff.
   // The top-level card is the rate in force after every listed cutoff.
   historicalRates?: Array<RateCard & { before: string }>
   // Served-tier billing multipliers (flex/priority/fast mode). Applied on top

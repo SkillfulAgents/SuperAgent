@@ -1301,8 +1301,7 @@ describe('usage-service', () => {
     })
 
     it('bills a model with no speedMultipliers at 1x even for fast rows', async () => {
-      // This row predates the September 2026 price change, so Sonnet 5 uses
-      // its $2/Mtok input and $10/Mtok output introductory rates.
+      // Sonnet 5's launch pricing is now its permanent standard rate.
       const sonnetBase = (100_000 * 2 + 1_000 * 10) / 1_000_000
       expect(await costOf('claude-sonnet-5', { speed: 'fast' }, 'platform')).toBeCloseTo(
         sonnetBase,

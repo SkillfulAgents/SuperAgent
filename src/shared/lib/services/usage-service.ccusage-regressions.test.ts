@@ -411,18 +411,16 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
 
   it.each([
     {
-      label: 'before the cutoff',
-      timestamp: '2026-08-31T23:59:59.000Z',
-      expectedCost: 18.7,
+      label: 'a launch-period row',
+      timestamp: '2026-08-20T12:00:00.000Z',
     },
     {
-      label: 'at the cutoff',
-      timestamp: '2026-09-01T00:00:00.000Z',
-      expectedCost: 28.05,
+      label: 'a later row',
+      timestamp: '2027-01-01T00:00:00.000Z',
     },
   ])(
-    'uses Sonnet 5 engine and cache rates $label',
-    async ({ timestamp, expectedCost }) => {
+    'uses permanent Sonnet 5 $2/$10 engine and cache rates for $label',
+    async ({ timestamp }) => {
       const entries = [
         assistantEntry({
           id: `msg-sonnet-5-${timestamp}`,
@@ -445,39 +443,108 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
           loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' }),
         ).resolves.toMatchObject({
           totalTokens: 5_000_000,
-          totalCost: expectedCost,
+          // $2 input + $10 output + $2.50 5m write + $4 1h write + $0.20 read.
+          totalCost: 18.7,
         })
       })
     },
   )
 
-  it('selects Sonnet 5 post-cutoff rates when a long-running process spans the cutoff', async () => {
+  it('selects synthetic effective-dated rates by row timestamp when a process spans a cutoff', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
 
+    const frozenPreCutoffCatalogModel = {
+      id: 'synthetic-effective-dated-model',
+      pricing: {
+        inputPerMtok: 2,
+        outputPerMtok: 10,
+        cacheCreationPerMtok: 2.5,
+        cacheCreation1hPerMtok: 4,
+        cacheReadPerMtok: 0.2,
+      },
+    }
+
     try {
-      vi.setSystemTime(new Date('2026-08-31T12:00:00.000Z'))
+      vi.setSystemTime(new Date('2029-12-31T12:00:00.000Z'))
       vi.resetModules()
-      const { loadSessionUsageTotals: loadAcrossCutoff } = await import('./usage-service')
+      vi.doMock('../llm-provider', () => ({
+        getProviderCatalog: () => [frozenPreCutoffCatalogModel],
+        getEffectiveCatalog: () => [frozenPreCutoffCatalogModel],
+      }))
+      vi.doMock('./model-pricing.json', () => ({
+        default: {
+          'synthetic-effective-dated-model': {
+            input: 4,
+            output: 20,
+            cacheCreation: 5,
+            cacheCreation1h: 8,
+            cacheRead: 0.4,
+            historicalRates: [
+              {
+                before: '2030-01-01T00:00:00.000Z',
+                input: 2,
+                output: 10,
+                cacheCreation: 2.5,
+                cacheCreation1h: 4,
+                cacheRead: 0.2,
+              },
+            ],
+          },
+        },
+      }))
 
-      vi.setSystemTime(new Date('2026-09-01T00:00:01.000Z'))
-      const entries = [
-        assistantEntry({
-          id: 'msg-sonnet-5-process-cutoff',
-          model: 'claude-sonnet-5',
-          timestamp: '2026-09-01T00:00:01.000Z',
-          usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
-        }),
-      ]
+      const { loadSessionUsageTotals: loadEffectiveDated } = await import('./usage-service')
+      const usage = {
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        cache_read_input_tokens: 1_000_000,
+        cache_creation: {
+          ephemeral_5m_input_tokens: 1_000_000,
+          ephemeral_1h_input_tokens: 1_000_000,
+        },
+      }
 
-      await withTranscript(entries, async ({ sessionPath }) => {
-        await expect(
-          loadAcrossCutoff({ sessionPath, providerId: 'anthropic' }),
-        ).resolves.toMatchObject({
-          totalTokens: 2_000_000,
-          totalCost: 18,
-        })
-      })
+      await withTranscript(
+        [
+          assistantEntry({
+            id: 'msg-synthetic-before-cutoff',
+            model: 'synthetic-effective-dated-model',
+            timestamp: '2029-12-31T23:59:59.000Z',
+            usage,
+          }),
+        ],
+        async ({ sessionPath }) => {
+          await expect(
+            loadEffectiveDated({ sessionPath, providerId: 'anthropic' }),
+          ).resolves.toMatchObject({
+            totalTokens: 5_000_000,
+            totalCost: 18.7,
+          })
+        },
+      )
+
+      vi.setSystemTime(new Date('2030-01-01T00:00:01.000Z'))
+      await withTranscript(
+        [
+          assistantEntry({
+            id: 'msg-synthetic-after-cutoff',
+            model: 'synthetic-effective-dated-model',
+            timestamp: '2030-01-01T00:00:01.000Z',
+            usage,
+          }),
+        ],
+        async ({ sessionPath }) => {
+          await expect(
+            loadEffectiveDated({ sessionPath, providerId: 'anthropic' }),
+          ).resolves.toMatchObject({
+            totalTokens: 5_000_000,
+            totalCost: 37.4,
+          })
+        },
+      )
     } finally {
+      vi.doUnmock('../llm-provider')
+      vi.doUnmock('./model-pricing.json')
       vi.useRealTimers()
       vi.resetModules()
     }

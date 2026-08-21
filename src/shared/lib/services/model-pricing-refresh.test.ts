@@ -7,7 +7,7 @@ import {
 describe('mergeRefreshedModelPricing', () => {
   it('updates flat Claude rates while preserving curated metadata and non-Claude entries', () => {
     const existing = {
-      'claude-sonnet-5': {
+      'claude-scheduled-model': {
         input: 3,
         output: 15,
         cacheCreation: 3.75,
@@ -15,7 +15,7 @@ describe('mergeRefreshedModelPricing', () => {
         cacheRead: 0.3,
         historicalRates: [
           {
-            before: '2026-09-01T00:00:00Z',
+            before: '2030-01-01T00:00:00Z',
             input: 2,
             output: 10,
             cacheCreation: 2.5,
@@ -48,7 +48,7 @@ describe('mergeRefreshedModelPricing', () => {
         cacheCreation: 1.25,
         cacheRead: 0.1,
       },
-      'claude-sonnet-5': {
+      'claude-scheduled-model': {
         input: 4,
         output: 20,
         cacheCreation: 5,
@@ -56,13 +56,13 @@ describe('mergeRefreshedModelPricing', () => {
       },
     })
 
-    expect(merged['claude-sonnet-5']).toEqual({
+    expect(merged['claude-scheduled-model']).toEqual({
       input: 4,
       output: 20,
       cacheCreation: 5,
       cacheCreation1h: 6,
       cacheRead: 0.4,
-      historicalRates: existing['claude-sonnet-5'].historicalRates,
+      historicalRates: existing['claude-scheduled-model'].historicalRates,
       speedMultipliers: { fast: 2 },
     })
     expect(merged['claude-retired-model']).toEqual(existing['claude-retired-model'])
@@ -76,7 +76,7 @@ describe('mergeRefreshedModelPricing', () => {
     expect(Object.keys(merged)).toEqual([
       'claude-new-model',
       'claude-retired-model',
-      'claude-sonnet-5',
+      'claude-scheduled-model',
       'gpt-5.6-sol',
     ])
   })
