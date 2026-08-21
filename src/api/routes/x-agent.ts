@@ -34,7 +34,6 @@ import {
   getSessionMetadata,
   registerSession,
   reserveSessionOwnership,
-  updateSessionMetadata,
   sessionIsKnown,
 } from '@shared/lib/services/session-service'
 import { containerManager } from '@shared/lib/container/container-manager'
@@ -868,9 +867,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         }
         try {
           if (messageUuid) {
-            await client.sendMessage(existingSessionId, prompt, messageUuid)
+            await client.sendMessage(existingSessionId, prompt, messageUuid, { isAutomated: true })
           } else {
-            await client.sendMessage(existingSessionId, prompt)
+            await client.sendMessage(existingSessionId, prompt, undefined, { isAutomated: true })
           }
         } catch (sendError) {
           if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
@@ -957,6 +956,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         maxBudgetUsd: agentLimits.maxBudgetUsd,
         customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
         maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+        metadata: { isAutomated: true },
       })
       const created = await raceDeadline(createPromise, deliveryCutoff)
       if (created === DEADLINE) {
@@ -993,7 +993,19 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
 
       stage = 'register_session'
       try {
-        await registerSession(targetSlug, newSessionId, `Invoked by ${callerName}`)
+        await registerSession(targetSlug, newSessionId, `Invoked by ${callerName}`, {
+          invokedByAgentSlug: callerSlug,
+          ...(authorRecorded && attributedUserId ? { createdByUserId: attributedUserId } : {}),
+        })
+        // markSessionActive ran before registration so runtime waiters could
+        // not miss a fast result. Publish a metadata-aware update now that the
+        // x-agent provenance exists, allowing the target's trigger/history UI
+        // to appear immediately instead of waiting for its polling interval.
+        messagePersister.broadcastGlobal({
+          type: 'session_updated',
+          sessionId: newSessionId,
+          agentSlug: targetSlug,
+        })
       } catch (registerErr) {
         const message = registerErr instanceof Error ? registerErr.message : String(registerErr)
         console.error('[x-agent] invoke failed', {
@@ -1018,20 +1030,6 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         }
         messagePersister.unsubscribeFromSession(newSessionId)
         return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
-      }
-
-      try {
-        await updateSessionMetadata(targetSlug, newSessionId, {
-          invokedByAgentSlug: callerSlug,
-          ...(authorRecorded && attributedUserId ? { createdByUserId: attributedUserId } : {}),
-        })
-      } catch (metaErr) {
-        console.warn('[x-agent] updateSessionMetadata failed (session usable, provenance not recorded)', {
-          callerSlug,
-          targetSlug,
-          sessionId: newSessionId,
-          error: metaErr instanceof Error ? metaErr.message : String(metaErr),
-        })
       }
 
       stage = 'subscribe'

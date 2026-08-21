@@ -123,7 +123,8 @@ export interface SessionMetadata {
   // Last model used by the user on this session (seeds the composer on reload).
   // Stored as the provider's pinned ID, not the family.
   model?: string
-  // X-Agent: present when this session was created by another agent invoking this one
+  // X-Agent: present when this session was created by another agent invoking this one.
+  // Such sessions are hidden as automated until promoted for human input.
   invokedByAgentSlug?: string
 }
 

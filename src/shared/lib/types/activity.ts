@@ -24,6 +24,11 @@ export interface AgentActivityStats {
   generatedAt: string
   cronByTaskId: Record<string, CronActivityPoint[]>
   webhookByTriggerId: Record<string, DailyActivityPoint[]>
+  inboundXAgent: {
+    total: number
+    lastInvokedAt: string | null
+    activity: DailyActivityPoint[]
+  }
   /** Unified connection row keys: `account-<id>` and `mcp-<id>`. */
   connectionById: Record<string, DailyActivityPoint[]>
 }

@@ -82,6 +82,7 @@ describe('HomeConnections — row navigation', () => {
           generatedAt: '2026-07-09T12:00:00.000Z',
           cronByTaskId: {},
           webhookByTriggerId: {},
+          inboundXAgent: { total: 0, lastInvokedAt: null, activity: [] },
           connectionById: {
             'account-acc-1': [
               { date: '2026-07-08', succeeded: 2, failed: 1 },
@@ -163,6 +164,7 @@ describe('HomeConnections — row navigation', () => {
           generatedAt: '2026-07-19T12:00:00.000Z',
           cronByTaskId: {},
           webhookByTriggerId: {},
+          inboundXAgent: { total: 0, lastInvokedAt: null, activity: [] },
           connectionById: {},
         }))
       }

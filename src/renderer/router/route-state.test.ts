@@ -31,6 +31,7 @@ const cases: AppLocation[] = [
   { selectedAgentSlug: SLUG, view: { kind: 'session', id: 'sess-1' } },
   { selectedAgentSlug: SLUG, view: { kind: 'task', id: 'task-1' } },
   { selectedAgentSlug: SLUG, view: { kind: 'webhook', id: 'wh-1' } },
+  { selectedAgentSlug: SLUG, view: { kind: 'inboundXAgent' } },
   { selectedAgentSlug: SLUG, view: { kind: 'chat', integrationId: 'int-1' } },
   { selectedAgentSlug: SLUG, view: { kind: 'chat', integrationId: 'int-1', sessionId: 'cs-1' } },
   { selectedAgentSlug: SLUG, view: { kind: 'dashboard', slug: 'dash-1' } },

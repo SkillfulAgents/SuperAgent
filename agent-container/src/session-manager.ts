@@ -735,7 +735,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
+    options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
   ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
@@ -757,12 +757,11 @@ export class SessionManager extends EventEmitter {
     const expectsResponse = options?.shouldQuery !== false;
     sessionData.settlement.noteOutboundMessage({ expectsResponse });
 
-    // A real message into an automated session is human-originated (the
-    // scheduler and trigger-manager only ever CREATE sessions; cross-agent
-    // chat appends are shouldQuery:false) — promote it to the interactive
-    // eviction class so the conversation doesn't pay a cold restart after
-    // every turn.
-    if (expectsResponse && sessionData.session.metadata?.isAutomated) {
+    // A real message into an automated session is human-originated unless the
+    // host explicitly marks it as another automated turn (x-agent follow-up).
+    // Human input promotes the session to the interactive eviction class so
+    // the conversation doesn't pay a cold restart after every turn.
+    if (expectsResponse && !options?.isAutomated && sessionData.session.metadata?.isAutomated) {
       console.log(`[Session ${sessionId}] Promoting automated session to interactive (human message)`);
       sessionData.session.metadata = { ...sessionData.session.metadata, isAutomated: false };
       this.persistence.updateMetadata(sessionId, sessionData.session.metadata);

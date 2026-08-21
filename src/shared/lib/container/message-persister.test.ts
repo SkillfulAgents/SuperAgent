@@ -4095,6 +4095,24 @@ describe('MessagePersister', () => {
       })
     })
 
+    it('promotes an x-agent session when user input is requested', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        invokedByAgentSlug: 'caller-agent',
+      })
+
+      simulateToolUse('AskUserQuestion', 'tool-1', {
+        questions: [{ question: 'Pick?', header: 'Q', options: [], multiSelect: false }],
+      })
+
+      await vi.waitFor(() => {
+        expect(updateSessionMetadata).toHaveBeenCalledWith(
+          AGENT_SLUG,
+          SESSION_ID,
+          { promotedToInteractive: true },
+        )
+      })
+    })
+
     it('does not promote a regular (non-automated) session', async () => {
       vi.mocked(getSessionMetadata).mockResolvedValueOnce({
         name: 'Regular session',
@@ -4373,6 +4391,14 @@ describe('MessagePersister', () => {
 
     it('releases the stream when a webhook session settles', async () => {
       await resubscribeWithMetadata({ isWebhookExecution: true, webhookTriggerId: 'trigger-1' })
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    })
+
+    it('releases the stream when an x-agent session settles', async () => {
+      await resubscribeWithMetadata({ invokedByAgentSlug: 'caller-agent' })
 
       settleSession()
 

@@ -272,6 +272,12 @@ describe('triggerSessionComplete — automated-session gating', () => {
     expect(mockCreateNotification).not.toHaveBeenCalled()
   })
 
+  it('skips creation for an x-agent session', async () => {
+    mockGetSessionMetadata.mockResolvedValue({ invokedByAgentSlug: 'caller-agent' })
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+  })
+
   it('creates notification for a promoted scheduled session', async () => {
     mockGetSessionMetadata.mockResolvedValue({
       isScheduledExecution: true,

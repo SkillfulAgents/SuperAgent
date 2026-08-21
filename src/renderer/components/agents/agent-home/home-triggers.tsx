@@ -47,18 +47,24 @@ interface HomeTriggersProps {
   scheduledTasks: ApiScheduledTask[]
   onSelectTask: (taskId: string) => void
   onSelectWebhook: (webhookId: string) => void
+  onSelectInboundXAgent: () => void
   className?: string
 }
 
-type TriggerItem =
+type DeletableTriggerItem =
   | { kind: 'cron'; createdAtMs: number; task: ApiScheduledTask }
   | { kind: 'webhook'; createdAtMs: number; trigger: WebhookTrigger }
+
+type TriggerItem =
+  | DeletableTriggerItem
+  | { kind: 'inbound-x-agent'; createdAtMs: number }
 
 export function HomeTriggers({
   agentSlug,
   scheduledTasks,
   onSelectTask,
   onSelectWebhook,
+  onSelectInboundXAgent,
   className,
 }: HomeTriggersProps) {
   const { data: webhookTriggersData } = useWebhookTriggers(agentSlug, 'active')
@@ -78,16 +84,25 @@ export function HomeTriggers({
       createdAtMs: new Date(trigger.createdAt).getTime(),
       trigger,
     }))
-    return [...cronItems, ...webhookItems].sort((a, b) => b.createdAtMs - a.createdAtMs)
-  }, [scheduledTasks, webhookTriggersData])
+    const inboundItems: TriggerItem[] = activityStats?.inboundXAgent.total
+      ? [{
+          kind: 'inbound-x-agent',
+          createdAtMs: activityStats.inboundXAgent.lastInvokedAt
+            ? new Date(activityStats.inboundXAgent.lastInvokedAt).getTime()
+            : 0,
+        }]
+      : []
+    return [...cronItems, ...webhookItems, ...inboundItems]
+      .sort((a, b) => b.createdAtMs - a.createdAtMs)
+  }, [scheduledTasks, webhookTriggersData, activityStats?.inboundXAgent])
 
-  const deletedItems = useMemo<TriggerItem[]>(() => {
-    const cronItems: TriggerItem[] = (Array.isArray(cancelledTasksData) ? cancelledTasksData : []).map((task) => ({
+  const deletedItems = useMemo<DeletableTriggerItem[]>(() => {
+    const cronItems: DeletableTriggerItem[] = (Array.isArray(cancelledTasksData) ? cancelledTasksData : []).map((task) => ({
       kind: 'cron',
       createdAtMs: new Date(task.createdAt).getTime(),
       task,
     }))
-    const webhookItems: TriggerItem[] = (Array.isArray(cancelledWebhooksData) ? cancelledWebhooksData : []).map((trigger) => ({
+    const webhookItems: DeletableTriggerItem[] = (Array.isArray(cancelledWebhooksData) ? cancelledWebhooksData : []).map((trigger) => ({
       kind: 'webhook',
       createdAtMs: new Date(trigger.createdAt).getTime(),
       trigger,
@@ -111,7 +126,7 @@ export function HomeTriggers({
                 activity={activityStats?.cronByTaskId[item.task.id]}
                 activityPending={activityPending}
               />
-            ) : (
+            ) : item.kind === 'webhook' ? (
               <WebhookRow
                 key={`w-${item.trigger.id}`}
                 trigger={item.trigger}
@@ -119,6 +134,14 @@ export function HomeTriggers({
                 onSelect={() => onSelectWebhook(item.trigger.id)}
                 activity={activityStats?.webhookByTriggerId[item.trigger.id]}
                 activityPending={activityPending}
+              />
+            ) : (
+              <InboundXAgentRow
+                key="inbound-x-agent"
+                total={activityStats!.inboundXAgent.total}
+                lastInvokedAt={activityStats!.inboundXAgent.lastInvokedAt}
+                activity={activityStats!.inboundXAgent.activity}
+                onSelect={onSelectInboundXAgent}
               />
             ),
           )}
@@ -344,6 +367,51 @@ function TriggerRow({
         </AlertDialogContent>
       </AlertDialog>
     </>
+  )
+}
+
+function InboundXAgentRow({
+  total,
+  lastInvokedAt,
+  activity,
+  onSelect,
+}: {
+  total: number
+  lastInvokedAt: string | null
+  activity: DailyActivityPoint[]
+  onSelect: () => void
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onSelect()
+        }
+      }}
+      className="group w-full cursor-pointer px-4 py-3 text-left transition-colors hover:bg-muted/50"
+    >
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium">Called from Other Agents</div>
+          <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+            <span>x-agent · {total} {total === 1 ? 'call' : 'calls'}</span>
+            {lastInvokedAt && (
+              <span className="shrink-0">
+                <span className="text-muted-foreground">last run </span>
+                {formatDistanceToNow(new Date(lastInvokedAt), { addSuffix: true })}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="shrink-0">
+          <ActivitySparkChart label="Calls from other agents" data={activity} />
+        </div>
+      </div>
+    </div>
   )
 }
 

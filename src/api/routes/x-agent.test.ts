@@ -546,16 +546,20 @@ describe('/invoke', () => {
     expect(body).toEqual({ sessionId: 'new-sess-id', status: 'running' })
     expect(mockEnsureRunning).toHaveBeenCalledWith(TARGET_SLUG)
     expect(mockCreateSession).toHaveBeenCalledWith(
-      expect.objectContaining({ initialMessage: 'hello' }),
+      expect.objectContaining({
+        initialMessage: 'hello',
+        metadata: { isAutomated: true },
+      }),
     )
     expect(mockCreateSession.mock.calls[0][0]).not.toHaveProperty('initialMessageUuid')
     expect(mockReserveSessionOwnership).toHaveBeenCalledWith(TARGET_SLUG, 'new-sess-id')
     expect(mockReserveSessionOwnership.mock.invocationCallOrder[0]).toBeLessThan(
       mockMarkSessionActive.mock.invocationCallOrder[0],
     )
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+    expect(mockRegisterSession).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
+      expect.any(String),
       expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
     )
   })
@@ -587,6 +591,7 @@ describe('/invoke', () => {
       TARGET_SLUG,
       'new-sess-id',
       'Invoked by Business Analyst Agent',
+      expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
     )
   })
 
@@ -611,6 +616,7 @@ describe('/invoke', () => {
       TARGET_SLUG,
       'new-sess-id',
       `Invoked by ${CALLER_SLUG}`,
+      expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
     )
   })
 
@@ -661,9 +667,10 @@ describe('/invoke', () => {
         userId: OTHER_USER_ID,
       }),
     ])
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+    expect(mockRegisterSession).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
+      expect.any(String),
       expect.objectContaining({ createdByUserId: OTHER_USER_ID }),
     )
   })
@@ -693,9 +700,10 @@ describe('/invoke', () => {
     expect(targetAuthors).toEqual([
       expect.objectContaining({ userId: OTHER_USER_ID }),
     ])
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+    expect(mockRegisterSession).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
+      expect.any(String),
       expect.objectContaining({ createdByUserId: OTHER_USER_ID }),
     )
   })
@@ -719,9 +727,10 @@ describe('/invoke', () => {
     expect(targetAuthors).toEqual([
       expect.objectContaining({ userId: OWNER_USER_ID }),
     ])
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+    expect(mockRegisterSession).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
+      expect.any(String),
       expect.objectContaining({ createdByUserId: OWNER_USER_ID }),
     )
   })
@@ -749,9 +758,10 @@ describe('/invoke', () => {
       .from(schema.messageAuthor)
       .where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
     expect(targetAuthors).toEqual([])
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+    expect(mockRegisterSession).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
+      expect.any(String),
       { invokedByAgentSlug: CALLER_SLUG },
     )
   })
@@ -781,6 +791,7 @@ describe('/invoke', () => {
       'existing-sess',
       'follow-up',
       expect.any(String),
+      { isAutomated: true },
     )
     const sentMessageUuid = mockSendMessage.mock.calls[0][2]
     const targetAuthors = await testDb
@@ -1363,7 +1374,12 @@ describe('/invoke', () => {
       sessionId: 'existing-sess',
     })
     expect(res.status).toBe(200)
-    expect(mockSendMessage).toHaveBeenCalledWith('existing-sess', 'follow-up')
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      'existing-sess',
+      'follow-up',
+      undefined,
+      { isAutomated: true },
+    )
     expect(mockCreateSession).not.toHaveBeenCalled()
   })
 
@@ -1778,7 +1794,12 @@ describe('display-slug resolution', () => {
     await setPolicy(CALLER_SLUG, 'invoke', TARGET_ID, 'allow')
     const res = await authedFetch('/x-agent/invoke', { slug: DISPLAY_SLUG, prompt: 'hello' })
     expect(res.status).toBe(200)
-    expect(mockRegisterSession).toHaveBeenCalledWith(TARGET_ID, expect.any(String), expect.any(String))
+    expect(mockRegisterSession).toHaveBeenCalledWith(
+      TARGET_ID,
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
+    )
   })
 
   it('/invoke accepts a wrong-prefix slug (the prefix is decorative)', async () => {

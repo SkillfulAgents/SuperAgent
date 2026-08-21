@@ -564,6 +564,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
               onSelectWebhook={(webhookId: string) => {
                 void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agent.slug, webhookId } })
               }}
+              onSelectInboundXAgent={() => {
+                void navigate({ to: '/agents/$slug/called-from-agents', params: { slug: agent.slug } })
+              }}
             />
             <HomeConnections className="intro-step intro-step-5" agentSlug={agent.slug} />
             <HomeSkills className="intro-step intro-step-6" agentSlug={agent.slug} onRunSkill={(skillPath) => {

@@ -48,6 +48,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
   const sessionId = view.kind === 'session' ? view.id : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
   const webhookTriggerId = view.kind === 'webhook' ? view.id : null
+  const inboundXAgentOpen = view.kind === 'inboundXAgent'
   const apiLogsOpen = view.kind === 'apiLogs'
   const secretsOpen = view.kind === 'secrets'
   const xAgentPermissionsOpen = view.kind === 'xAgentPermissions'
@@ -208,6 +209,12 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
           <>
             <BreadcrumbSeparator />
             <span className="text-sm font-light text-foreground">Agent-to-agent Connections</span>
+          </>
+        )}
+        {inboundXAgentOpen && (
+          <>
+            <BreadcrumbSeparator />
+            <span className="text-sm font-light text-foreground">Called from Other Agents</span>
           </>
         )}
         {connectionsOpen && (
