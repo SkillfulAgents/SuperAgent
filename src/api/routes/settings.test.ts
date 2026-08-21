@@ -617,6 +617,26 @@ describe('settings route', () => {
       expect(mockUpdateSettings).not.toHaveBeenCalled()
     })
 
+    it('returns 400 when changing containerRunner while lambda-microvm is configured', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        container: {
+          containerRunner: 'lambda-microvm',
+          agentImage: 'superagent:latest',
+          resourceLimits: { cpu: 2, memory: '4g' },
+        },
+      })
+
+      const res = await putSettings({
+        container: { containerRunner: 'docker' },
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('managed by the deployment')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
     it('accepts an unchanged agentImage for lambda-microvm', async () => {
       mockGetSettings.mockReturnValue({
         ...defaultSettings(),

@@ -176,6 +176,14 @@ describe('RuntimeTab', () => {
 
       expect(screen.queryByText('Agent image is required.')).not.toBeInTheDocument()
     })
+
+    it('shows AWS Lambda MicroVM and does not allow changing the runner', () => {
+      renderWithProviders(<RuntimeTab />)
+
+      const runtimeSelect = screen.getByRole('combobox', { name: 'Container Runtime' })
+      expect(runtimeSelect).toHaveTextContent('AWS Lambda MicroVM')
+      expect(runtimeSelect).toBeDisabled()
+    })
   })
 
   it('adds a custom environment variable through the dialog', async () => {

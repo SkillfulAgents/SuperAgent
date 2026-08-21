@@ -210,6 +210,14 @@ describe('validateSettingsTransition', () => {
     ).toContainEqual(expect.objectContaining({ status: 400 }))
   })
 
+  it('rejects a runner change away from a deployment-managed runtime', () => {
+    const before = currentSettings()
+    before.container.containerRunner = 'lambda-microvm'
+    expect(
+      problemsFor(before, { container: { containerRunner: 'docker' } }),
+    ).toContainEqual(expect.objectContaining({ status: 400 }))
+  })
+
   it('rejects a requested Lima VM size at or above host memory', () => {
     expect(
       problemsFor(

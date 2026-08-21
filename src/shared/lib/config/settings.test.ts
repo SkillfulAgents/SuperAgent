@@ -94,6 +94,10 @@ beforeEach(() => {
   delete process.env.ANTHROPIC_API_KEY
   delete process.env.COMPOSIO_API_KEY
   delete process.env.COMPOSIO_USER_ID
+  delete process.env.MICROVM_AGENT_IMAGE_ARN
+  delete process.env.MICROVM_EXECUTION_ROLE_ARN
+  delete process.env.MICROVM_EGRESS_CONNECTOR_ARN
+  delete process.env.MICROVM_AWS_REGION
 })
 
 afterEach(() => {
@@ -1352,6 +1356,20 @@ describe('getModelCatalogSettings', () => {
 // ============================================================================
 // DEFAULT_SETTINGS export
 // ============================================================================
+
+describe('MicroVM container runner default', () => {
+  it('reads a persisted docker default as lambda-microvm when MicroVM env is set', () => {
+    Object.assign(process.env, {
+      AWS_REGION: 'us-east-2',
+      MICROVM_AGENT_IMAGE_ARN: 'arn:img',
+      MICROVM_EXECUTION_ROLE_ARN: 'arn:role',
+      MICROVM_EGRESS_CONNECTOR_ARN: 'arn:egress',
+    })
+    mockSettingsFile(JSON.stringify({ container: { containerRunner: 'docker' } }))
+
+    expect(loadSettings().container.containerRunner).toBe('lambda-microvm')
+  })
+})
 
 describe('DEFAULT_SETTINGS', () => {
   it('has expected container defaults', () => {

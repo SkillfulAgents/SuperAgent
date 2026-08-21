@@ -308,6 +308,13 @@ export const containerSettingsComponent = {
 
     const imageChanged = after.container.agentImage !== before.container.agentImage
     const effectiveRunner = after.container.containerRunner as ContainerRunner
+    const beforeRunner = before.container.containerRunner as ContainerRunner
+    if (runnerChanged && !context.supportsCustomAgentImage(beforeRunner)) {
+      problems.push({
+        status: 400,
+        message: `Container runtime is managed by the deployment for the ${beforeRunner} runner and cannot be changed here.`,
+      })
+    }
     if (imageChanged && !context.supportsCustomAgentImage(effectiveRunner)) {
       problems.push({
         status: 400,
