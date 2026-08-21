@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
     id?: string
     slug?: string
   },
+  agentStatus: 'running' as 'running' | 'stopped',
 }))
 
 const agent: ApiAgent = {
@@ -34,7 +35,7 @@ vi.mock('@renderer/router/use-route-location', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-agents', () => ({
-  useAgent: () => ({ data: agent }),
+  useAgent: () => ({ data: { ...agent, status: mocks.agentStatus } }),
 }))
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
@@ -118,14 +119,19 @@ const dashboardRegistration: DashboardHeaderRegistration = {
   },
 }
 
-function RegisterDashboardHeader() {
-  useRegisterDashboardHeader(dashboardRegistration)
+function RegisterDashboardHeader({
+  registration = dashboardRegistration,
+}: {
+  registration?: DashboardHeaderRegistration
+}) {
+  useRegisterDashboardHeader(registration)
   return null
 }
 
 describe('AgentHeader breadcrumbs', () => {
   beforeEach(() => {
     mocks.routeView = { kind: 'session', id: 'session-1' }
+    mocks.agentStatus = 'running'
     vi.clearAllMocks()
   })
 
@@ -233,5 +239,33 @@ describe('AgentHeader breadcrumbs', () => {
     expect(separators).toHaveLength(2)
     expect(separators[0].className).toBe(separators[1].className)
     expect(separators[0]).not.toHaveClass('ml-2')
+  })
+
+  it('shows the power-control spinner while the dashboard view wakes the agent', () => {
+    mocks.routeView = { kind: 'dashboard', slug: 'nutrition' }
+    mocks.agentStatus = 'stopped'
+    const mutation = { mutate: vi.fn(), isPending: false }
+
+    render(
+      <DashboardHeaderProvider>
+        <AgentHeader
+          slug="test-agent"
+          isViewOnly={false}
+          startAgent={mutation as never}
+          stopAgent={mutation as never}
+        />
+        <RegisterDashboardHeader
+          registration={{
+            ...dashboardRegistration,
+            actions: null,
+            isAgentStarting: true,
+          }}
+        />
+      </DashboardHeaderProvider>,
+    )
+
+    const startButton = screen.getByRole('button', { name: 'Start Agent' })
+    expect(startButton).toBeDisabled()
+    expect(startButton.querySelector('.animate-spin')).not.toBeNull()
   })
 })

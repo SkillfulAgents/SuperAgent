@@ -34,7 +34,8 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const waitStartedAtRef = useRef<number | null>(null)
   const autoStartedRef = useRef<string | null>(null)
-  const { data: agent } = useAgent(agentSlug)
+  const wasDocumentHiddenRef = useRef(document.visibilityState === 'hidden')
+  const { data: agent, refetch: refetchAgent } = useAgent(agentSlug)
   const { data: artifacts } = useArtifacts(agentSlug, { pollFast })
   const startAgent = useStartAgent()
   const stopAgent = useStopAgent()
@@ -130,13 +131,74 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     }
   }, [isAgentRunning, stopAgent, startAgent, agentSlug])
 
-  useEffect(() => {
-    if (autoStartedRef.current === agentSlug) return
-    if (!agent || isAgentRunning || isAgentStarting || !canStart) return
+  const autoStartAgent = useCallback((currentAgent = agent, force = false) => {
+    // A hidden dashboard must be allowed to auto-sleep. It is explicitly
+    // re-armed by the visibility listener below when the user returns.
+    if (document.visibilityState === 'hidden') return
+
+    // Treat the current foreground visit as handled while the agent is
+    // running. This keeps a deliberate stop from being immediately undone.
+    if (currentAgent?.status === 'running') {
+      autoStartedRef.current = agentSlug
+      return
+    }
+
+    if (!force && autoStartedRef.current === agentSlug) return
+    if (!currentAgent || isAgentStarting || restarting || !canStart) return
     if (startAgent.isError) return
     autoStartedRef.current = agentSlug
     startAgent.mutate(agentSlug)
-  }, [agent, agentSlug, isAgentRunning, isAgentStarting, canStart, startAgent])
+  }, [
+    agent,
+    agentSlug,
+    isAgentStarting,
+    restarting,
+    canStart,
+    startAgent,
+  ])
+  const autoStartAgentRef = useRef(autoStartAgent)
+  const refetchAgentRef = useRef(refetchAgent)
+  autoStartAgentRef.current = autoStartAgent
+  refetchAgentRef.current = refetchAgent
+
+  useEffect(() => {
+    autoStartAgent()
+  }, [autoStartAgent])
+
+  useEffect(() => {
+    let visibilityCheck = 0
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        wasDocumentHiddenRef.current = true
+        visibilityCheck += 1
+        return
+      }
+      if (!wasDocumentHiddenRef.current) return
+      wasDocumentHiddenRef.current = false
+      const currentCheck = ++visibilityCheck
+
+      // Reconcile first: the browser may deliver the stopped status only after
+      // visibilitychange, so the cached agent can still say "running" here.
+      // The old one-shot latch otherwise survives for the component's entire
+      // mounted life, which is why navigation used to be the only recovery.
+      void refetchAgentRef.current()
+        .then(({ data: currentAgent }) => {
+          if (
+            currentCheck !== visibilityCheck
+            || document.visibilityState === 'hidden'
+          ) return
+          autoStartAgentRef.current(currentAgent, true)
+        })
+        .catch(() => {})
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      visibilityCheck += 1
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [agentSlug])
 
   const showFrame = isAgentRunning && dashboard?.status === 'running'
   const actionPending = restarting || stopAgent.isPending || startAgent.isPending
@@ -145,6 +207,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     agentSlug,
     dashboardSlug,
     dashboardName: dashboard?.name || dashboardSlug,
+    isAgentStarting,
     actions: showFrame
       ? {
           onOpenExternal: handlePopOut,
@@ -157,6 +220,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     agentSlug,
     dashboardSlug,
     dashboard?.name,
+    isAgentStarting,
     showFrame,
     handlePopOut,
     handleRefresh,

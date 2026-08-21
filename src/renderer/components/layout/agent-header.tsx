@@ -69,6 +69,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
   const isRuntimeReady = isRuntimePending || readiness?.status === 'READY'
   const isPulling = readiness?.status === 'PULLING_IMAGE'
   const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
+  const isAgentStarting = startAgent.isPending || dashboardHeader?.isAgentStarting === true
 
   return (
     <>
@@ -275,10 +276,10 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
                           variant="ghost"
                           size="icon"
                           onClick={() => startAgent.mutate(slug)}
-                          disabled={startAgent.isPending || !isRuntimeReady}
+                          disabled={isAgentStarting || !isRuntimeReady}
                           aria-label="Start Agent"
                         >
-                          {isPulling || startAgent.isPending ? (
+                          {isPulling || isAgentStarting ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
                             <Power className="h-4 w-4" />
@@ -316,8 +317,8 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
                 hasSessionsAwaitingInput={hasSessionsAwaitingInput}
                 startAgent={startAgent}
                 stopAgent={stopAgent}
-                startDisabled={startAgent.isPending || !isRuntimeReady}
-                isStarting={isPulling || startAgent.isPending}
+                startDisabled={isAgentStarting || !isRuntimeReady}
+                isStarting={isPulling || isAgentStarting}
                 wakeDisabledReason={
                   !apiKeyConfigured
                     ? 'No API key configured. An administrator needs to set up the LLM API key.'
