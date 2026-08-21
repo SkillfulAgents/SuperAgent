@@ -171,6 +171,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     isSubscribed: vi.fn(() => true),
     subscribeToSession: vi.fn(),
     unsubscribeFromSession: vi.fn(),
+    promoteAutomatedSession: vi.fn(),
     markSessionActive: vi.fn(),
     markSessionInterrupted: vi.fn(),
     cancelAwaitingInput: vi.fn(),
@@ -3667,6 +3668,31 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const cancelOrder = vi.mocked(messagePersister.cancelAwaitingInput).mock.invocationCallOrder[0]
     const sendOrder = mockSendMessage.mock.invocationCallOrder[0]
     expect(cancelOrder).toBeLessThan(sendOrder)
+  })
+
+  it('awaits automated-session promotion before forwarding the human message', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    let finishPromotion!: () => void
+    vi.mocked(messagePersister.promoteAutomatedSession).mockImplementationOnce(
+      () => new Promise<void>((resolve) => { finishPromotion = resolve }),
+    )
+
+    const response = postJson(app, URL, { content: 'take it from here' })
+    await vi.waitFor(() => {
+      expect(messagePersister.promoteAutomatedSession).toHaveBeenCalledWith('sess-1', 'test-agent')
+    })
+    expect(mockSendMessage).not.toHaveBeenCalled()
+
+    finishPromotion()
+    const res = await response
+    expect(res.status).toBe(201)
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      'sess-1',
+      'take it from here',
+      expect.any(String),
+      {},
+    )
   })
 
   it('strips model/effort when the session is already active (mid-turn send)', async () => {

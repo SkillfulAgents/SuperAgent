@@ -2260,6 +2260,13 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
+    // A message through this AgentUser route is human-originated. Promote any
+    // hidden automation before delivery so the host and container agree that
+    // a person has joined the session. This must precede sendMessage: a fast
+    // turn can settle immediately, and completion notification visibility is
+    // decided from the host-side promotedToInteractive marker.
+    await messagePersister.promoteAutomatedSession(sessionId, agentSlug)
+
     const client = containerManager.getClient(agentSlug)
     // Use cached status to avoid spawning docker process
     let info = containerManager.getCachedInfo(agentSlug)
