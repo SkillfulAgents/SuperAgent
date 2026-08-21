@@ -4001,6 +4001,109 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(res.status).toBe(499)
     expect(res.body).toBeNull()
   })
+
+  // The paginated branch does not build its response with c.json — it streams
+  // the envelope item by item so a multi-MB page never exists as one string.
+  // That hand-rolled serializer has to produce byte-for-byte what c.json would
+  // have, and these are the cases where a hand-rolled one drifts.
+  describe('streamed envelope parity', () => {
+    it('round-trips a 2000-item page identically to the object it was given', async () => {
+      const messages = Array.from({ length: 2000 }, (_, i) => ({
+        id: `msg-${i}`,
+        type: 'assistant' as const,
+        content: { text: 'z'.repeat(400) },
+        toolCalls: [],
+        createdAt: '2026-01-01T00:00:00.000Z',
+      }))
+      // createdAt stays a string so the round-trip compares like for like: a
+      // Date would serialize to a string and never equal the input object.
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({
+        messages,
+        nextCursor: 'msg-0',
+      } as unknown as Awaited<ReturnType<typeof getSessionMessagesPage>>)
+
+      const res = await getReq(app, `${URL}?limit=500`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toContain('application/json')
+      expect(await res.json()).toEqual({ messages, nextCursor: 'msg-0' })
+    })
+
+    it('serializes a null cursor as null, not as a missing key', async () => {
+      // The client reads `nextCursor === null` as "no older history". A key
+      // that vanished instead would read as undefined and keep paging.
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({
+        messages: [
+          { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+        ],
+        nextCursor: null,
+      })
+
+      const res = await getReq(app, `${URL}?limit=10`)
+      const text = await res.text()
+      expect(text.endsWith('"nextCursor":null}')).toBe(true)
+      const body = JSON.parse(text)
+      expect(body).toHaveProperty('nextCursor')
+      expect(body.nextCursor).toBeNull()
+    })
+
+    it('serializes an empty page as an empty array', async () => {
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+
+      const res = await getReq(app, `${URL}?limit=10`)
+      expect(await res.text()).toBe('{"messages":[],"nextCursor":null}')
+    })
+
+    it('fails the request on a malformed item instead of streaming a corrupt body', async () => {
+      // The envelope is serialized item by item with JSON.stringify, which
+      // returns the VALUE undefined for an undefined item — concatenated into
+      // the body that is the bare word `undefined`, and the whole response
+      // stops being parseable. The subagent route guards this in its
+      // serializer; this branch instead never reaches serialization, because
+      // annotation walks the items first and throws. Either way the client
+      // must not receive a 200 it cannot parse — that is what this pins.
+      mockIsAuthMode.mockReturnValue(false)
+      vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(new Map())
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({
+        messages: [
+          undefined,
+          { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: undefined },
+        ],
+        nextCursor: null,
+      } as unknown as Awaited<ReturnType<typeof getSessionMessagesPage>>)
+
+      const res = await getReq(app, `${URL}?limit=10`)
+      expect(res.status).toBe(500)
+      const text = await res.text()
+      // A clean error envelope, not a half-written page: nothing was streamed
+      // before the throw, so there is no partial `{"messages":[` on the wire.
+      expect(text).not.toContain('undefined')
+      expect(JSON.parse(text)).toEqual({ error: 'Failed to fetch messages' })
+    })
+
+    it('escapes item content that would otherwise break the envelope', async () => {
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({
+        messages: [
+          {
+            id: 'm1',
+            type: 'assistant',
+            content: { text: 'a "quoted" }],"nextCursor":"forged" \\ line\nbreak' },
+            toolCalls: [],
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        nextCursor: 'm1',
+      } as unknown as Awaited<ReturnType<typeof getSessionMessagesPage>>)
+
+      const res = await getReq(app, `${URL}?limit=10`)
+      const body = await res.json()
+      // Item text cannot terminate the array or forge the cursor.
+      expect(body.nextCursor).toBe('m1')
+      expect(body.messages[0].content.text).toBe(
+        'a "quoted" }],"nextCursor":"forged" \\ line\nbreak'
+      )
+    })
+  })
 })
 
 describe('GET /:id/sessions/:sessionId/messages forward delta (?after=)', () => {
@@ -5284,6 +5387,177 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
 
     await getReq(app, URL)
     expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+  })
+
+  // Everything above drives the unpaginated branch, which is no longer the one
+  // the app uses: the renderer always sends a limit, and refetches arrive as
+  // forward deltas. Both of those branches run the same annotate-and-recover
+  // step, so the same guarantees have to hold there — and on the paginated
+  // branch the response is STREAMED, which means annotation has to finish
+  // before the first byte or the stamp never reaches the client.
+  describe('on the paginated and delta branches', () => {
+    const pageOf = (messages: unknown[]) =>
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({
+        messages,
+        nextCursor: null,
+      } as unknown as Awaited<ReturnType<typeof getSessionMessagesPage>>)
+
+    beforeEach(() => {
+      vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+    })
+
+    afterEach(() => {
+      // vi.clearAllMocks clears calls but keeps return values, so whatever
+      // these are left as carries into the describes below. Put the session
+      // back to idle with nothing settled rather than leaking this block's
+      // "active session with a declined request" into unrelated tests.
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+      vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(new Map())
+    })
+
+    it('re-establishes the missed blocking requests of the trailing turn', async () => {
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      pageOf([
+        { id: 'm1', type: 'user', content: { text: 'go' }, toolCalls: [], createdAt: new Date() },
+        {
+          id: 'm2',
+          type: 'assistant',
+          content: { text: '' },
+          createdAt: new Date(),
+          toolCalls: [
+            { id: 'tool-done', name: 'Bash', input: {}, result: 'ok' },
+            { id: 'tool-q', name: 'AskUserQuestion', input: {} },
+            { id: 'tool-sr', name: 'mcp__user-input__request_script_run', input: {} },
+          ],
+        },
+      ])
+
+      const res = await getReq(app, `${URL}?limit=50`)
+      expect(res.status).toBe(200)
+      expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+        'sess-1',
+        'test-agent',
+        [{ toolUseId: 'tool-q', toolName: 'AskUserQuestion' }],
+      )
+    })
+
+    it('a trailing QUEUED user message does not end the turn scan', async () => {
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      pageOf([
+        {
+          id: 'm1',
+          type: 'assistant',
+          content: { text: '' },
+          createdAt: new Date(),
+          toolCalls: [{ id: 'tool-q', name: 'mcp__user-input__request_secret', input: {} }],
+        },
+        { id: 'm2', type: 'user', queued: true, content: { text: 'also…' }, toolCalls: [], createdAt: new Date() },
+      ])
+
+      await getReq(app, `${URL}?limit=50`)
+      expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+        'sess-1',
+        'test-agent',
+        [{ toolUseId: 'tool-q', toolName: 'mcp__user-input__request_secret' }],
+      )
+    })
+
+    it('does not recover when a later user message started a fresh turn', async () => {
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      pageOf([
+        {
+          id: 'm1',
+          type: 'assistant',
+          content: { text: '' },
+          createdAt: new Date(),
+          toolCalls: [{ id: 'tool-q', name: 'AskUserQuestion', input: {} }],
+        },
+        { id: 'm2', type: 'user', content: { text: 'never mind' }, toolCalls: [], createdAt: new Date() },
+      ])
+
+      await getReq(app, `${URL}?limit=50`)
+      expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+    })
+
+    it('does not recover for an inactive session', async () => {
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+      pageOf([
+        {
+          id: 'm1',
+          type: 'assistant',
+          content: { text: '' },
+          createdAt: new Date(),
+          toolCalls: [{ id: 'tool-q', name: 'AskUserQuestion', input: {} }],
+        },
+      ])
+
+      await getReq(app, `${URL}?limit=50`)
+      expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+    })
+
+    it('stamps a settled request into the streamed body before the first byte', async () => {
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
+        new Map([['tool-declined', 'declined']]),
+      )
+      pageOf([
+        {
+          id: 'm1',
+          type: 'assistant',
+          content: { text: '' },
+          createdAt: new Date(),
+          toolCalls: [
+            { id: 'tool-declined', name: 'mcp__user-input__request_secret', input: {} },
+            { id: 'tool-open', name: 'AskUserQuestion', input: {} },
+          ],
+        },
+      ])
+
+      const res = await getReq(app, `${URL}?limit=50`)
+      expect(res.status).toBe(200)
+      // Read out of the streamed envelope, not a c.json object: this is the
+      // assertion that would fail if serialization ever started before
+      // annotation finished mutating the items.
+      const body = (await res.json()) as {
+        messages: Array<{ toolCalls?: Array<{ id: string; result?: string }> }>
+      }
+      const toolCalls = body.messages[0].toolCalls ?? []
+      expect(toolCalls.find((t) => t.id === 'tool-declined')?.result).toBe(
+        'User declined the request',
+      )
+      expect(toolCalls.find((t) => t.id === 'tool-open')?.result).toBeUndefined()
+      expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+        'sess-1',
+        'test-agent',
+        [{ toolUseId: 'tool-open', toolName: 'AskUserQuestion' }],
+      )
+    })
+
+    it('recovers from a forward-delta window too', async () => {
+      // A live session refetches as deltas, so this is the path a missed ask
+      // actually arrives on once the page has loaded.
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      vi.mocked(getSessionMessagesDelta).mockResolvedValue({
+        messages: [
+          {
+            id: 'm2',
+            type: 'assistant',
+            content: { text: '' },
+            createdAt: new Date(),
+            toolCalls: [{ id: 'tool-q', name: 'AskUserQuestion', input: {} }],
+          },
+        ],
+        anchor: 'm1',
+      } as unknown as Awaited<ReturnType<typeof getSessionMessagesDelta>>)
+
+      const res = await getReq(app, `${URL}?after=m1`)
+      expect(res.status).toBe(200)
+      expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+        'sess-1',
+        'test-agent',
+        [{ toolUseId: 'tool-q', toolName: 'AskUserQuestion' }],
+      )
+    })
   })
 })
 
