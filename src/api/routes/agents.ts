@@ -6121,55 +6121,78 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
       return undefined;
     }
 
-    function showDashboard() {
+    // The iframe is mounted (hidden behind the spinner) as soon as the agent
+    // start is underway: the container proxy holds a document request for a
+    // 'starting' dashboard until its server binds, so the fetch overlaps
+    // startup instead of following it. The spinner drops once a load event
+    // arrives after 'running' has been observed; a document that finished
+    // loading earlier (e.g. the hold timed out into an error body) is
+    // refetched exactly once when 'running' arrives.
+    let iframe = null;
+    let confirmedRunning = false;
+    let loadedEarly = false;
+    let revealed = false;
+
+    function reveal() {
+      if (revealed) return;
+      revealed = true;
       loadingEl.remove();
-      const iframe = document.createElement('iframe');
+      iframe.style.visibility = 'visible';
+    }
+
+    function mountFrame() {
+      if (iframe) return;
+      iframe = document.createElement('iframe');
+      iframe.style.visibility = 'hidden';
       iframe.src = dashboardUrl;
       iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads';
       iframe.allow = 'microphone; camera';
+      iframe.onload = () => {
+        if (confirmedRunning) reveal();
+        else loadedEarly = true;
+      };
       document.body.appendChild(iframe);
+    }
+
+    function onRunning(name) {
+      if (confirmedRunning) return;
+      confirmedRunning = true;
+      setTitle(name);
+      mountFrame();
+      if (loadedEarly) {
+        loadedEarly = false;
+        iframe.src = dashboardUrl;
+      }
     }
 
     async function run() {
       try {
-        // 1. Seed both dashboard metadata and live status. This works while the
-        // agent is stopped too, though that fallback reports stopped.
+        statusEl.textContent = 'Starting agent…';
+        // Fire the start immediately — it is idempotent and returns fast for a
+        // running agent — and fetch dashboard metadata/status in parallel.
+        const startPromise = fetch(basePath + '/start', { method: 'POST' });
+        startPromise.catch(() => {});
         const initialDashboard = await fetchDashboard();
 
-        // 2. Check agent status
-        const agentRes = await fetch(basePath);
-        if (!agentRes.ok) { throw new Error('Failed to fetch agent info'); }
-        const agent = await agentRes.json();
-        const agentWasRunning = agent.status === 'running';
-
-        if (!agentWasRunning) {
-          // 3. Start the agent
-          statusEl.textContent = 'Starting agent…';
-          const startRes = await fetch(basePath + '/start', { method: 'POST' });
-          if (!startRes.ok) {
-            const err = await startRes.json().catch(() => ({}));
-            throw new Error(err.error || 'Failed to start agent');
-          }
+        if (initialDashboard === null) { throw new Error('Dashboard not found.'); }
+        if (initialDashboard && initialDashboard.status === 'running') {
+          // Warm path: both processes already up — paint without waiting for
+          // the start round trip.
+          onRunning(initialDashboard.name);
+          return;
         }
 
-        // The initial artifacts request already gave us a fresh status. When
-        // both processes were running, avoid flashing a redundant wait screen
-        // and let the iframe paint immediately.
-        if (agentWasRunning && initialDashboard !== undefined) {
-          if (!initialDashboard) { throw new Error('Dashboard not found.'); }
-          if (initialDashboard.status === 'crashed') { throw new Error('Dashboard crashed.'); }
-          if (initialDashboard.status === 'running') {
-            showDashboard();
-            return;
-          }
+        const startRes = await startPromise;
+        if (!startRes.ok) {
+          const err = await startRes.json().catch(() => ({}));
+          throw new Error(err.error || 'Failed to start agent');
         }
 
-        // 4. Poll until dashboard is running
+        // Optimistic mount: the held document request resolves the moment the
+        // dashboard server binds, while the poll below confirms the outcome.
+        mountFrame();
         statusEl.textContent = 'Waiting for dashboard…';
         await pollDashboard();
-
-        // 5. Show the dashboard
-        showDashboard();
       } catch (err) {
         statusEl.textContent = err.message;
         statusEl.classList.add('error');
@@ -6177,27 +6200,26 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
     }
 
     async function pollDashboard() {
-      for (let i = 0; i < 120; i++) {
+      // Fast cadence while startup is expected to be quick, then back off.
+      for (let i = 0; i < 280; i++) {
         const res = await fetch(basePath + '/artifacts');
         if (res.ok) {
           const artifacts = await res.json();
-          if (!Array.isArray(artifacts)) {
-            await new Promise(r => setTimeout(r, 1000));
-            continue;
-          }
-          const d = artifacts.find(a => a.slug === artifactSlug);
-          if (!d) { throw new Error('Dashboard not found.'); }
-          if (d.status === 'crashed') { throw new Error('Dashboard crashed.'); }
-          if (d.status === 'running') { setTitle(d.name); return; }
-          if (d.status === 'starting' && d.startupPhase === 'installing-dependencies') {
-            statusEl.textContent = d.firstRun
-              ? 'Preparing dashboard for first use…'
-              : 'Installing dashboard dependencies…';
-          } else {
-            statusEl.textContent = 'Starting dashboard…';
+          if (Array.isArray(artifacts)) {
+            const d = artifacts.find(a => a.slug === artifactSlug);
+            if (!d) { throw new Error('Dashboard not found.'); }
+            if (d.status === 'crashed') { throw new Error('Dashboard crashed.'); }
+            if (d.status === 'running') { onRunning(d.name); return; }
+            if (d.status === 'starting' && d.startupPhase === 'installing-dependencies') {
+              statusEl.textContent = d.firstRun
+                ? 'Preparing dashboard for first use…'
+                : 'Installing dashboard dependencies…';
+            } else {
+              statusEl.textContent = 'Starting dashboard…';
+            }
           }
         }
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, i < 100 ? 300 : 1000));
       }
       throw new Error('Dashboard did not start in time');
     }
