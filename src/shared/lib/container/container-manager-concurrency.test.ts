@@ -32,9 +32,11 @@ vi.mock('./client-factory', () => ({
     getInfoFromRuntime: (...args: unknown[]) => mockGetInfoFromRuntime(...args),
     getStats: mockGetStats,
     fetch: vi.fn(),
+    getHostApiBaseUrl: () => 'http://127.0.0.1:3000',
     buildVolumeFlag: (...args: unknown[]) => mockBuildVolumeFlag(...args as [string, string]),
     createSession: vi.fn(),
   }),
+  getContainerClientClass: () => ({ requiresLocalImage: true }),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
   checkImageExists: vi.fn().mockResolvedValue(true),
   pullImage: vi.fn(),
@@ -49,6 +51,10 @@ vi.mock('./client-factory', () => ({
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
   getOrCreateProxyToken: vi.fn().mockResolvedValue('test-token'),
+}))
+
+vi.mock('@shared/lib/container/host-token-store', () => ({
+  getOrCreateHostToken: vi.fn(() => 'test-host-token'),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({

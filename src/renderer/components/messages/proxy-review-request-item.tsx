@@ -186,6 +186,7 @@ export function ProxyReviewRequestItem({
       waitingText="Waiting for approval"
       error={error}
       data-testid={isCompleted ? 'proxy-review-completed' : 'proxy-review-request'}
+      data-review-id={reviewId}
       data-status={isCompleted ? status : undefined}
     >
       {/* Code block showing method/path + toolkit */}
@@ -296,6 +297,7 @@ export function ProxyReviewRequestItem({
                   <div className="mx-3 mt-2 flex min-h-10 gap-2 rounded-md border border-border bg-background pl-3 pr-0 pb-1">
                     <textarea
                       ref={denyReasonInputRef}
+                      data-testid="proxy-review-deny-reason-input"
                       placeholder="Reason for denying..."
                       value={denyReason}
                       rows={1}
@@ -316,6 +318,7 @@ export function ProxyReviewRequestItem({
                     <Button
                       type="button"
                       size="icon"
+                      data-testid="proxy-review-deny-reason-submit"
                       disabled={!denyReason.trim() || status === 'submitting'}
                       onClick={() => {
                         setDenyMenuOpen(false)

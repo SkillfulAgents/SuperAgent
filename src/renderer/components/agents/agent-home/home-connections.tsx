@@ -1,16 +1,25 @@
 import { useMemo } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { Button } from '@renderer/components/ui/button'
 import { ChevronRight, Plus, Settings2 } from 'lucide-react'
-import { useSelection } from '@renderer/context/selection-context'
 import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import { McpStatusPill } from '@renderer/components/connections/mcp-status-pill'
-import { useAgentConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
+import { AccountStatusBadge } from '@renderer/components/connections/account-status-badge'
+import { useAgentConnectedAccounts, type ConnectedAccount } from '@renderer/hooks/use-connected-accounts'
+import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import { useAgentRemoteMcps, type RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
 import { HomeCollapsible } from './home-collapsible'
 import { formatDistanceToNow } from 'date-fns'
 import { safeDate } from '@renderer/components/connections/utils'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { FeaturedServicesStack } from '@renderer/components/connections/featured-services-stack'
+import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
+import { ActivitySparkChart, ActivitySparkChartSkeleton } from '@renderer/components/activity/activity-spark-chart'
+import {
+  isForeignAgentConnectedAccount,
+  isForeignAgentRemoteMcp,
+} from '@shared/lib/agent-connections/public'
+import { buildForeignConnectionRows } from '@renderer/components/connections/unified-rows'
 
 interface HomeConnectionsProps {
   agentSlug: string
@@ -18,14 +27,19 @@ interface HomeConnectionsProps {
 }
 
 interface ConnectionRow {
-  /** Matches the UnifiedRow key format so it can deep-link to the detail view. */
+  /** Owned rows match UnifiedRow keys for deep links; foreign rows are synthetic. */
   id: string
   name: string
   subtitle?: string
   iconSlug?: string
   iconFallback: 'oauth' | 'mcp' | 'blocks'
   type: 'oauth' | 'mcp'
-  date: string | number
+  date?: string | number
+  /** Opaque link owned by another member; never navigable. */
+  foreign?: true
+  accountId?: string
+  accountStatus?: ConnectedAccount['status']
+  toolkit?: string
   mcpStatus?: RemoteMcpServer['status']
   mcpErrorMessage?: string | null
 }
@@ -33,13 +47,23 @@ interface ConnectionRow {
 export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) {
   const { data: accountsData } = useAgentConnectedAccounts(agentSlug)
   const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
-  const { setView } = useSelection()
+  const { data: activityStats, isPending: activityPending } = useAgentActivityStats(agentSlug)
+  const navigate = useNavigate()
+  const {
+    reconnect: oauthReconnect,
+    pendingAccountId,
+    canCancelPendingReconnect,
+    cancelReconnect,
+  } = useOAuthReconnect()
 
   const connections = useMemo<ConnectionRow[]>(() => {
     const rows: ConnectionRow[] = []
 
     const accounts = Array.isArray(accountsData?.accounts) ? accountsData.accounts : []
+    const foreignAccounts = accounts.filter(isForeignAgentConnectedAccount)
     for (const account of accounts) {
+      if (isForeignAgentConnectedAccount(account)) continue
+
       rows.push({
         id: `account-${account.id}`,
         name: account.provider?.displayName ?? account.toolkitSlug,
@@ -48,11 +72,17 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
         iconFallback: 'oauth',
         type: 'oauth',
         date: account.createdAt,
+        accountId: account.id,
+        accountStatus: account.status,
+        toolkit: account.toolkitSlug,
       })
     }
 
     const mcps = Array.isArray(mcpsData?.mcps) ? mcpsData.mcps : []
+    const foreignMcps = mcps.filter(isForeignAgentRemoteMcp)
     for (const mcp of mcps) {
+      if (isForeignAgentRemoteMcp(mcp)) continue
+
       rows.push({
         id: `mcp-${mcp.id}`,
         name: mcp.name,
@@ -66,7 +96,16 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
       })
     }
 
-    rows.sort((a, b) => safeDate(b.date).getTime() - safeDate(a.date).getTime())
+    rows.push(...buildForeignConnectionRows({
+      accounts: foreignAccounts,
+      mcps: foreignMcps,
+    }))
+
+    rows.sort((a, b) => {
+      if (a.date === undefined) return b.date === undefined ? 0 : 1
+      if (b.date === undefined) return -1
+      return safeDate(b.date).getTime() - safeDate(a.date).getTime()
+    })
 
     return rows
   }, [accountsData, mcpsData])
@@ -81,7 +120,25 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
               iconSlug={conn.iconSlug}
               iconFallback={conn.iconFallback}
               name={conn.name}
-              nameBadge={<McpStatusPill status={conn.mcpStatus} errorMessage={conn.mcpErrorMessage} />}
+              nameBadge={
+                <>
+                  <McpStatusPill status={conn.mcpStatus} errorMessage={conn.mcpErrorMessage} />
+                  <AccountStatusBadge
+                    status={conn.accountStatus}
+                    onReconnect={
+                      conn.accountId && conn.toolkit && conn.accountStatus !== 'active'
+                        ? () => { void oauthReconnect(conn.accountId!, conn.toolkit!) }
+                        : undefined
+                    }
+                    onCancelReconnect={
+                      pendingAccountId === conn.accountId && canCancelPendingReconnect
+                        ? cancelReconnect
+                        : undefined
+                    }
+                    loading={pendingAccountId === conn.accountId}
+                  />
+                </>
+              }
               subtitle={
                 <>
                   <span className="shrink-0">{conn.type === 'oauth' ? 'API' : 'MCP'}</span>
@@ -91,21 +148,43 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
                       <span className="truncate">{conn.subtitle}</span>
                     </>
                   )}
-                  <span className="shrink-0">·</span>
-                  <span className="whitespace-nowrap shrink-0">
-                    {formatDistanceToNow(safeDate(conn.date), { addSuffix: true })}
-                  </span>
+                  {conn.date !== undefined && (
+                    <>
+                      <span className="shrink-0">·</span>
+                      <span className="whitespace-nowrap shrink-0">
+                        {formatDistanceToNow(safeDate(conn.date), { addSuffix: true })}
+                      </span>
+                    </>
+                  )}
                 </>
               }
-              onActivate={() => setView({ kind: 'connections', detail: { rowKey: conn.id, source: 'home' } })}
-              ariaLabel={`Open ${conn.name} connection details`}
+              onActivate={conn.foreign ? undefined : () => {
+                void navigate({
+                  to: '/agents/$slug/connections',
+                  params: { slug: agentSlug },
+                  search: { detail: conn.id, source: 'home' },
+                })
+              }}
+              ariaLabel={conn.foreign ? undefined : `Open ${conn.name} connection details`}
               right={
-                <span
-                  aria-hidden="true"
-                  className="flex justify-center overflow-hidden w-0 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:opacity-100"
-                >
-                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                </span>
+                conn.foreign ? (
+                  <span className="text-xs text-muted-foreground">Shared</span>
+                ) : <>
+                  {activityStats?.connectionById[conn.id] !== undefined ? (
+                    <ActivitySparkChart
+                      label={`${conn.name} activity`}
+                      data={activityStats.connectionById[conn.id]}
+                    />
+                  ) : activityPending ? (
+                    <ActivitySparkChartSkeleton />
+                  ) : null}
+                  <span
+                    aria-hidden="true"
+                    className="flex justify-center overflow-hidden w-0 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:opacity-100"
+                  >
+                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </span>
+                </>
               }
             />
           ))}
@@ -125,7 +204,9 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => setView({ kind: 'connections' })}
+            onClick={() => {
+              void navigate({ to: '/agents/$slug/connections', params: { slug: agentSlug } })
+            }}
             data-testid="home-connections-open-page"
           >
             {connections.length > 0 ? <Settings2 /> : <Plus />}

@@ -19,6 +19,7 @@ import { askUserQuestionDef } from './ask-user-question'
 import { requestSecretDef } from './request-secret'
 import { requestConnectedAccountDef } from './request-connected-account'
 import { scheduleTaskDef } from './schedule-task'
+import { scheduleResumeDef } from './schedule-resume'
 import { deliverFileDef } from './deliver-file'
 import { deliverSessionDef } from './deliver-session'
 import { requestFileDef } from './request-file'
@@ -34,9 +35,12 @@ import {
   browserScrollDef,
   browserWaitDef,
   browserPressDef,
+  browserTypeDef,
   browserScreenshotDef,
   browserSelectDef,
   browserHoverDef,
+  browserDownloadDef,
+  browserEvalDef,
   browserRunDef,
 } from './browser-tools'
 import {
@@ -80,6 +84,9 @@ const definitions: Record<string, ToolDefinition> = {
   // Web tools
   WebSearch: webSearchDef,
   WebFetch: webFetchDef,
+  // Vendor-backed web tools (when a host provider is active); reuse the native definitions.
+  'mcp__web__web_search': webSearchDef,
+  'mcp__web__web_fetch': webFetchDef,
 
   // Task management
   TodoWrite: todoWriteDef,
@@ -94,6 +101,7 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__user-input__request_secret': requestSecretDef,
   'mcp__user-input__request_connected_account': requestConnectedAccountDef,
   'mcp__user-input__schedule_task': scheduleTaskDef,
+  'mcp__user-input__schedule_resume': scheduleResumeDef,
   'mcp__user-input__deliver_file': deliverFileDef,
   'mcp__user-input__deliver_session': deliverSessionDef,
   'mcp__user-input__request_file': requestFileDef,
@@ -110,9 +118,12 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__browser__browser_scroll': browserScrollDef,
   'mcp__browser__browser_wait': browserWaitDef,
   'mcp__browser__browser_press': browserPressDef,
+  'mcp__browser__browser_type': browserTypeDef,
   'mcp__browser__browser_screenshot': browserScreenshotDef,
   'mcp__browser__browser_select': browserSelectDef,
   'mcp__browser__browser_hover': browserHoverDef,
+  'mcp__browser__browser_download': browserDownloadDef,
+  'mcp__browser__browser_eval': browserEvalDef,
   'mcp__browser__browser_run': browserRunDef,
 
   // MCP tools - dashboards

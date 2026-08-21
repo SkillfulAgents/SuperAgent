@@ -1,17 +1,26 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import { cloneElement, isValidElement, type ReactElement } from 'react'
+import { act, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppSidebar } from './app-sidebar'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
+
+// AppLink (the sidebar item links) is stubbed globally in test/setup.ts — no
+// file-level mock needed. DialogContext is mocked below to control settings.
 
 vi.stubGlobal('__APP_VERSION__', '0.1.0-test')
 vi.stubGlobal('__RENDER_TRACKING__', false)
 
+const mockIsElectron = vi.hoisted(() => vi.fn(() => false))
+const mockGetPlatform = vi.hoisted(() => vi.fn(() => 'web'))
+const mockOpenDashboardExternal = vi.hoisted(() => vi.fn())
+
 vi.mock('@renderer/lib/env', () => ({
-  isElectron: () => false,
-  getPlatform: () => 'web',
-  openDashboardExternal: vi.fn(),
+  isElectron: mockIsElectron,
+  getPlatform: mockGetPlatform,
+  openDashboardExternal: mockOpenDashboardExternal,
   getApiBaseUrl: () => 'http://localhost:3000',
 }))
 
@@ -23,6 +32,14 @@ const mockUseAgents = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockUseAgents(),
   useDeleteAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  // Resolve the route param to the canonical id the way the real hook does,
+  // using the mocked params + agents so active-state tests behave faithfully.
+  useRouteAgentId: () => {
+    const slug = mockRouteParams.slug
+    if (!slug) return undefined
+    const agents = mockUseAgents()?.data as Array<{ slug: string; displaySlug: string }> | undefined
+    return agents?.find((a) => a.slug === slug || a.displaySlug === slug)?.slug ?? slug
+  },
 }))
 
 const mockCreateUntitledAgent = vi.fn()
@@ -66,11 +83,6 @@ vi.mock('@renderer/hooks/use-webhook-triggers', () => ({
   useWebhookTriggers: () => ({ data: [] }),
 }))
 
-vi.mock('@renderer/hooks/use-chat-integrations', () => ({
-  useChatIntegrations: () => ({ data: [] }),
-  useChatIntegrationSessions: () => ({ data: [] }),
-}))
-
 const mockUnreadCount = vi.fn(() => ({ data: { count: 0 } }))
 vi.mock('@renderer/hooks/use-notifications', () => ({
   useUnreadNotificationCount: () => mockUnreadCount(),
@@ -80,28 +92,37 @@ vi.mock('@renderer/hooks/use-fullscreen', () => ({
   useFullScreen: () => false,
 }))
 
-type MockView =
-  | { kind: 'home' }
-  | { kind: 'session'; id: string }
-  | { kind: 'task'; id: string }
-  | { kind: 'webhook'; id: string }
-  | { kind: 'chat'; integrationId: string; sessionId?: string }
-  | { kind: 'dashboard'; slug: string }
-  | { kind: 'apiLogs' }
-  | { kind: 'connections' }
-  | { kind: 'notifications' }
 
-const mockSelectionContext = {
-  selectedAgentSlug: null as string | null,
-  view: { kind: 'home' } as MockView,
-  setAgent: vi.fn(),
-  setView: vi.fn(),
-  clearSelection: vi.fn(),
+// Sidebar active state is route-derived, so mock the router hooks to let
+// tests drive the URL. `mockRouteParams.slug` marks the active agent;
+// `mockRoutePathname` drives Home/Notifications. useNavigate stays a no-op
+// (matches the global setup mock, which this file-level mock replaces).
+let mockRouteParams: Record<string, string | undefined> = {}
+let mockRoutePathname = '/'
+let mockHistorySubscribers: Array<(opts: { action: { type: string } }) => void> = []
+const mockHistory = {
+  location: { state: { __TSR_index: 0 } },
+  canGoBack: vi.fn(() => false),
+  back: vi.fn(),
+  forward: vi.fn(),
+  subscribe: vi.fn((cb: (opts: { action: { type: string } }) => void) => {
+    mockHistorySubscribers.push(cb)
+    return () => {
+      mockHistorySubscribers = mockHistorySubscribers.filter((subscriber) => subscriber !== cb)
+    }
+  }),
 }
-vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => mockSelectionContext,
-  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}))
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>()
+  return {
+    ...actual,
+    useRouter: () => ({ history: mockHistory }),
+    useNavigate: () => () => {},
+    useParams: () => mockRouteParams,
+    useRouterState: (opts?: { select?: (s: { location: { pathname: string } }) => unknown }) =>
+      opts?.select ? opts.select({ location: { pathname: mockRoutePathname } }) : undefined,
+  }
+})
 
 vi.mock('@renderer/context/search-context', () => ({
   useSearch: () => ({ open: false, openSearch: vi.fn(), closeSearch: vi.fn() }),
@@ -126,9 +147,8 @@ vi.mock('@renderer/context/connectivity-context', () => ({
 }))
 
 const mockDialogContext = {
-  settingsOpen: false,
-  setSettingsOpen: vi.fn(),
-  settingsTab: undefined,
+  openSettings: vi.fn(),
+  closeSettings: vi.fn(),
   openWizard: vi.fn(),
 }
 vi.mock('@renderer/context/onboarding-context', () => ({
@@ -193,22 +213,31 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
   Sidebar: ({ children, ...props }: any) => <aside {...props}>{children}</aside>,
   SidebarContent: ({ children }: any) => <div>{children}</div>,
   SidebarFooter: ({ children, className }: any) => <div data-testid="sidebar-footer" className={className}>{children}</div>,
-  SidebarHeader: ({ children, className }: any) => (
-    <div data-testid="sidebar-header" className={className}>{children}</div>
+  // Forwards `style` as well: the traffic-light reservation is an inline
+  // paddingLeft, so a mock that dropped it would make that assertion vacuous.
+  SidebarHeader: ({ children, className, style }: any) => (
+    <div data-testid="sidebar-header" className={className} style={style}>{children}</div>
   ),
   SidebarGroup: ({ children, className }: any) => <div className={className}>{children}</div>,
   SidebarGroupContent: ({ children }: any) => <div>{children}</div>,
   SidebarGroupLabel: ({ children, className }: any) => <span className={className}>{children}</span>,
   SidebarMenu: ({ children }: any) => <ul>{children}</ul>,
-  SidebarMenuButton: ({ children, onClick, ...props }: any) => (
-    <button onClick={onClick} {...props}>{children}</button>
-  ),
+  // Honor asChild (Slot): merge data-active + our props onto the child element so
+  // the link carries the testid/active state and keeps its own onClick.
+  SidebarMenuButton: ({ children, onClick, isActive, asChild, ...props }: any) =>
+    asChild && isValidElement(children)
+      ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
+      : <button onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>,
   SidebarMenuItem: ({ children, onMouseEnter }: any) => <li onMouseEnter={onMouseEnter}>{children}</li>,
   SidebarMenuSkeleton: () => <div data-testid="skeleton" />,
   SidebarMenuSub: ({ children }: any) => <ul>{children}</ul>,
-  SidebarMenuSubButton: ({ children, ...props }: any) => <div {...props}>{children}</div>,
+  SidebarMenuSubButton: ({ children, isActive, asChild, ...props }: any) =>
+    asChild && isValidElement(children)
+      ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
+      : <div data-active={isActive ? 'true' : 'false'} {...props}>{children}</div>,
   SidebarMenuSubItem: ({ children }: any) => <li>{children}</li>,
   SidebarRail: () => null,
+  useSidebar: () => ({ setOpenMobile: vi.fn() }),
 }))
 
 vi.mock('@renderer/components/ui/collapsible', () => ({
@@ -256,6 +285,7 @@ vi.mock('@dnd-kit/modifiers', () => ({
 function makeAgent(overrides: Record<string, any> = {}) {
   return {
     slug: 'test-agent',
+    displaySlug: 'test-agent',
     name: 'Test Agent',
     status: 'running',
     containerPort: 3000,
@@ -264,8 +294,7 @@ function makeAgent(overrides: Record<string, any> = {}) {
     hasSessionsAwaitingInput: false,
     hasUnreadNotifications: false,
     sessionCount: 1,
-    chatIntegrationCount: 0,
-    dashboardCount: 0,
+    dashboards: [],
     ...overrides,
   }
 }
@@ -285,12 +314,24 @@ function makeSession(overrides: Record<string, any> = {}) {
   }
 }
 
+function setMockHistoryIndex(index: number) {
+  mockHistory.location = { state: { __TSR_index: index } }
+  mockHistory.canGoBack.mockImplementation(() => index > 0)
+}
+
+function notifyHistory(actionType: string) {
+  mockHistorySubscribers.forEach((subscriber) => subscriber({ action: { type: actionType } }))
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
-  Object.assign(mockSelectionContext, {
-    selectedAgentSlug: null,
-    view: { kind: 'home' } as MockView,
-  })
+  vi.stubGlobal('__WEB__', true)
+  mockIsElectron.mockReturnValue(false)
+  mockGetPlatform.mockReturnValue('web')
+  mockRouteParams = {}
+  mockRoutePathname = '/'
+  mockHistorySubscribers = []
+  setMockHistoryIndex(0)
   mockUseAgents.mockReturnValue({
     data: [makeAgent(), makeAgent({ slug: 'other-agent', name: 'Other Agent', status: 'stopped', sessionCount: 0 })],
     isLoading: false,
@@ -304,9 +345,22 @@ beforeEach(() => {
 })
 
 describe('AppSidebar — layout & top nav', () => {
-  it('renders the SuperAgent wordmark', () => {
+  it('restores the Gamut wordmark when browser chrome leaves the title bar empty', () => {
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByText('SuperAgent')).toBeInTheDocument()
+    expect(screen.getByText('Gamut')).toBeInTheDocument()
+  })
+
+  it('does not repeat the Gamut wordmark beside Electron window controls', () => {
+    vi.stubGlobal('__WEB__', false)
+    mockIsElectron.mockReturnValue(true)
+
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByText('Gamut')).not.toBeInTheDocument()
+  })
+
+  it('puts the window-level controls in the title bar row', () => {
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('sidebar-header')).toContainElement(screen.getByTestId('search-button'))
   })
 
   it('renders Home, Notifications, and New Agent in the top nav', () => {
@@ -314,6 +368,24 @@ describe('AppSidebar — layout & top nav', () => {
     expect(screen.getByTestId('home-button')).toBeInTheDocument()
     expect(screen.getByTestId('notifications-button')).toBeInTheDocument()
     expect(screen.getByTestId('new-agent-button')).toBeInTheDocument()
+  })
+
+  it('lights up only Notifications (not Home) on the notifications route', () => {
+    // Active state is route-derived: on /notifications, Home (exact '/') is off.
+    mockRoutePathname = '/notifications'
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('home-button')).toHaveAttribute('data-active', 'false')
+    expect(screen.getByTestId('notifications-button')).toHaveAttribute('data-active', 'true')
+  })
+
+  it('does not light up an agent on the notifications route', () => {
+    // /notifications carries no slug param, so the agent row is route-inactive
+    // even if Selection still references it.
+    mockRoutePathname = '/notifications'
+    mockRouteParams = {}
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('agent-item-test-agent')).toHaveAttribute('data-active', 'false')
+    expect(screen.getByTestId('notifications-button')).toHaveAttribute('data-active', 'true')
   })
 
   it('renders the "Your Agents" group label', () => {
@@ -327,11 +399,9 @@ describe('AppSidebar — layout & top nav', () => {
     expect(screen.getByText('v0.1.0-test')).toBeInTheDocument()
   })
 
-  it('clears selection when Home is clicked', async () => {
-    const user = userEvent.setup()
+  it('Home links to the global home route', () => {
     renderWithProviders(<AppSidebar />)
-    await user.click(screen.getByTestId('home-button'))
-    expect(mockSelectionContext.clearSelection).toHaveBeenCalled()
+    expect(screen.getByTestId('home-button')).toHaveAttribute('data-to', '/')
   })
 
   it('creates an untitled agent when New Agent is clicked', async () => {
@@ -341,12 +411,49 @@ describe('AppSidebar — layout & top nav', () => {
     expect(mockCreateUntitledAgent).toHaveBeenCalled()
   })
 
-  it('does not render a header bar in non-Electron mode (no traffic-light spacer)', () => {
+  it('keeps the title bar row in non-Electron mode, minus the traffic-light spacer', () => {
     renderWithProviders(<AppSidebar />)
-    // Header is always mounted now, but collapses to h-0 / no border when not needed.
+    // The row holds the controls now, so it exists everywhere; only the space
+    // reserved for macOS traffic lights is conditional.
     const header = screen.getByTestId('sidebar-header')
-    expect(header.className).toMatch(/h-0/)
-    expect(header.className).not.toMatch(/h-12\b/)
+    expect(header.className).toMatch(/h-12\b/)
+    expect(header.style.paddingLeft).toBe('')
+  })
+
+  it('does not render history navigation controls in web mode', () => {
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByTestId('history-back-button')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('history-forward-button')).not.toBeInTheDocument()
+  })
+
+  it('renders Electron history controls and syncs their enabled state', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('__WEB__', false)
+    mockIsElectron.mockReturnValue(true)
+    mockGetPlatform.mockReturnValue('darwin')
+
+    renderWithProviders(<AppSidebar />)
+
+    const backButton = screen.getByTestId('history-back-button')
+    const forwardButton = screen.getByTestId('history-forward-button')
+    expect(backButton).toBeDisabled()
+    expect(forwardButton).toBeDisabled()
+
+    setMockHistoryIndex(1)
+    act(() => notifyHistory('PUSH'))
+    expect(backButton).toBeEnabled()
+    expect(forwardButton).toBeDisabled()
+
+    await user.click(backButton)
+    expect(mockHistory.back).toHaveBeenCalledTimes(1)
+
+    setMockHistoryIndex(0)
+    act(() => notifyHistory('BACK'))
+    expect(backButton).toBeDisabled()
+    expect(forwardButton).toBeEnabled()
+
+    await user.click(forwardButton)
+    expect(mockHistory.forward).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -373,12 +480,13 @@ describe('AppSidebar — agent rows', () => {
     expect(screen.getByLabelText('unread notifications')).toBeInTheDocument()
   })
 
-  it('row click selects the agent without expanding', async () => {
+  it('agent row links to the agent route without expanding', async () => {
     const user = userEvent.setup()
     renderWithProviders(<AppSidebar />)
     const row = screen.getByTestId('agent-item-test-agent')
+    expect(row).toHaveAttribute('data-to', '/agents/$slug')
+    expect(row).toHaveAttribute('data-params', JSON.stringify({ slug: 'test-agent' }))
     await user.click(row)
-    expect(mockSelectionContext.setAgent).toHaveBeenCalledWith('test-agent')
     // Row click does NOT toggle expansion → no session sub-items rendered.
     expect(screen.queryByTestId('session-item-session-1')).not.toBeInTheDocument()
   })
@@ -392,27 +500,26 @@ describe('AppSidebar — agent rows', () => {
     const expandBtn = testAgentRow.querySelector('[aria-label="Expand"]') as HTMLButtonElement
     expect(expandBtn).not.toBeNull()
     await user.click(expandBtn)
-    expect(mockSelectionContext.setAgent).not.toHaveBeenCalled()
     expect(screen.getByTestId('session-item-session-1')).toBeInTheDocument()
     expect(testAgentRow.querySelector('[aria-label="Collapse"]')).not.toBeNull()
   })
 
   it('renders session sub-items when an agent is the selected one (auto-expanded)', () => {
-    mockSelectionContext.selectedAgentSlug = 'test-agent'
+    mockRouteParams = { slug: 'test-agent' }
     renderWithProviders(<AppSidebar />)
     expect(screen.getByText('Session 1')).toBeInTheDocument()
   })
 
-  it('selects agent and session on session click', async () => {
-    mockSelectionContext.selectedAgentSlug = 'test-agent'
-    const user = userEvent.setup()
+  it('session sub-item links to the session route', () => {
+    mockRouteParams = { slug: 'test-agent' }
     renderWithProviders(<AppSidebar />)
-    await user.click(screen.getByTestId('session-item-session-1'))
-    expect(mockSelectionContext.setAgent).toHaveBeenCalledWith('test-agent', { kind: 'session', id: 'session-1' })
+    const sessionItem = screen.getByTestId('session-item-session-1')
+    expect(sessionItem).toHaveAttribute('data-to', '/agents/$slug/sessions/$sessionId')
+    expect(sessionItem).toHaveAttribute('data-params', JSON.stringify({ slug: 'test-agent', sessionId: 'session-1' }))
   })
 
   it('shows an unread dot on a session sub-item with hasUnreadNotifications', () => {
-    mockSelectionContext.selectedAgentSlug = 'test-agent'
+    mockRouteParams = { slug: 'test-agent' }
     mockUseSessions.mockImplementation((slug: string | null) => ({
       data: slug === 'test-agent' ? [makeSession({ hasUnreadNotifications: true })] : [],
       isLoading: false,
@@ -422,6 +529,17 @@ describe('AppSidebar — agent rows', () => {
     // session-row dot has its accessible label so screen readers announce it.
     const dots = screen.getAllByLabelText('unread notifications')
     expect(dots.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('agent with no sessions or dashboards does not render an expand chevron', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ sessionCount: 0, dashboards: [] })],
+      isLoading: false,
+      error: null,
+    })
+    renderWithProviders(<AppSidebar />)
+    const agentRow = screen.getByTestId('agent-item-test-agent').closest('li')!
+    expect(agentRow.querySelector('[aria-label="Expand"]')).toBeNull()
   })
 })
 
@@ -440,47 +558,23 @@ describe('AppSidebar — notifications', () => {
     expect(button.querySelector('[aria-label="3 unread"]')).not.toBeNull()
   })
 
-  it('navigates to the notifications page when the button is clicked', async () => {
-    const user = userEvent.setup()
+  it('Notifications links to the notifications route', () => {
     renderWithProviders(<AppSidebar />)
-    await user.click(screen.getByTestId('notifications-button'))
-    expect(mockSelectionContext.setView).toHaveBeenCalledWith({ kind: 'notifications' })
+    expect(screen.getByTestId('notifications-button')).toHaveAttribute('data-to', '/notifications')
   })
 })
 
 // ============================================================================
 // AgentRowIndicator: priority + collapse-vs-expand behavior
 // ----------------------------------------------------------------------------
-// The right-side indicator on the agent row collapses session-derived states
-// (awaiting / working / unread) when the agent is expanded — those states
-// surface on the individual session sub-rows instead. When collapsed, priority
+// The right-side indicator on the agent row aggregates awaiting / working
+// across sessions with the same formula as the top-nav AgentStatus — the two
+// render on the same screen and must agree. Only the unread dot is collapsed
+// away when the agent is expanded (the session sub-rows surface it). Priority
 // is awaiting > working > unread > sleeping/idle. Sleeping/idle (which
 // describe the container itself) always render via <AgentStatus iconOnly>.
 // ============================================================================
 describe('AppSidebar — agent row indicator', () => {
-  it('uses fresh sessions data over stale agent flags when sessions are loaded', () => {
-    mockUseAgents.mockReturnValue({
-      data: [makeAgent({ hasSessionsAwaitingInput: false /* stale */, sessionCount: 1 })],
-      isLoading: false,
-      error: null,
-    })
-    mockUseSessions.mockImplementation((slug: string | null) => ({
-      data: slug === 'test-agent' ? [makeSession({ isAwaitingInput: true /* fresh */ })] : [],
-      isLoading: false,
-    }))
-    mockSelectionContext.selectedAgentSlug = 'test-agent'
-
-    renderWithProviders(<AppSidebar />)
-    // Agent is selected (expanded) so AgentRowIndicator suppresses
-    // session-derived flags on the AGENT row. But the session sub-row should
-    // still surface its awaiting indicator — which our mock shows via the
-    // `<AgentStatus>` `data-awaiting` attribute on session-derived flags.
-    // Since the agent is expanded, the agent-level status should NOT be
-    // marked awaiting (data-awaiting='false').
-    const status = screen.getByTestId('agent-status-running')
-    expect(status).toHaveAttribute('data-awaiting', 'false')
-  })
-
   it('falls back to agent-level flags when sessions data is not yet loaded', () => {
     mockUseAgents.mockReturnValue({
       data: [makeAgent({ hasSessionsAwaitingInput: true })],
@@ -501,13 +595,55 @@ describe('AppSidebar — agent row indicator', () => {
       isLoading: false,
       error: null,
     })
-    mockSelectionContext.selectedAgentSlug = 'test-agent'
+    mockRouteParams = { slug: 'test-agent' }
 
     renderWithProviders(<AppSidebar />)
     // The agent row's unread dot is suppressed because the agent is expanded.
     // Sessions data has no unread, so no session-row dot either. Net: zero
     // accessible "unread notifications" labels.
     expect(screen.queryByLabelText('unread notifications')).not.toBeInTheDocument()
+  })
+
+  // Regression: the selected agent auto-expands, and the expanded agent row
+  // used to zero out its working/awaiting state — while the top-nav
+  // AgentStatus (agent-header) kept aggregating session activity. Same
+  // screen, two answers: header said "working", sidebar row said idle. The
+  // agent row must keep reporting working/awaiting when expanded.
+  it('shows working on the expanded agent row when a session is active (top-nav parity)', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasActiveSessions: true })],
+      isLoading: false,
+      error: null,
+    })
+    mockUseSessions.mockImplementation((slug: string | null) => ({
+      data: slug === 'test-agent' ? [makeSession({ isActive: true })] : [],
+      isLoading: false,
+    }))
+    mockRouteParams = { slug: 'test-agent' }
+
+    renderWithProviders(<AppSidebar />)
+    // The agent is expanded — its session sub-row is visible and working…
+    expect(screen.getByTestId('session-item-session-1')).toBeInTheDocument()
+    // …and the agent row itself still reports working, like the top nav.
+    const status = screen.getByTestId('agent-status-running')
+    expect(status).toHaveAttribute('data-active', 'true')
+  })
+
+  it('shows awaiting on the expanded agent row when a session awaits input (top-nav parity)', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasSessionsAwaitingInput: false /* stale */ })],
+      isLoading: false,
+      error: null,
+    })
+    mockUseSessions.mockImplementation((slug: string | null) => ({
+      data: slug === 'test-agent' ? [makeSession({ isAwaitingInput: true /* fresh */ })] : [],
+      isLoading: false,
+    }))
+    mockRouteParams = { slug: 'test-agent' }
+
+    renderWithProviders(<AppSidebar />)
+    const status = screen.getByTestId('agent-status-running')
+    expect(status).toHaveAttribute('data-awaiting', 'true')
   })
 
   it('prioritizes awaiting > working > unread when collapsed', () => {
@@ -524,5 +660,84 @@ describe('AppSidebar — agent row indicator', () => {
     const status = screen.getByTestId('agent-status-running')
     expect(status).toHaveAttribute('data-awaiting', 'true')
     expect(screen.queryByLabelText('unread notifications')).not.toBeInTheDocument()
+  })
+})
+
+describe('UserMenu action for the current target', () => {
+  // Cloud mode reports isAuthMode=true, which is what makes this menu appear at
+  // all. "Sign out" there would revoke the deployment session the desktop's
+  // grant is bound to — disruptive, and pointless since main still holds the
+  // platform connection and would mint another.
+  beforeEach(() => {
+    mockUserContext.isAuthMode = true
+    mockUserContext.user = { name: 'Ada' } as never
+    _resetApiTargetForTest()
+  })
+
+  afterEach(() => {
+    mockUserContext.isAuthMode = false
+    mockUserContext.user = null
+    vi.unstubAllGlobals()
+    _resetApiTargetForTest()
+  })
+
+  async function openUserMenu() {
+    renderWithProviders(<AppSidebar />)
+    await userEvent.click(screen.getByTestId('user-menu-trigger'))
+  }
+
+  it('offers sign out for a web deployment', async () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+
+    await openUserMenu()
+
+    expect(screen.getByTestId('sign-out-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('switch-to-local-button')).not.toBeInTheDocument()
+  })
+
+  it('offers a return to local for a cloud workspace, never sign out', async () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    setActiveTarget('cloud', null)
+
+    await openUserMenu()
+
+    expect(screen.getByTestId('switch-to-local-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('sign-out-button')).not.toBeInTheDocument()
+  })
+
+  it('does not revoke the deployment session when that action is used', async () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    setActiveTarget('cloud', null)
+
+    await openUserMenu()
+    await userEvent.click(screen.getByTestId('switch-to-local-button'))
+
+    expect(mockUserContext.signOut).not.toHaveBeenCalled()
+  })
+})
+
+describe('TargetSwitcher placement', () => {
+  // It scopes everything below it, so it belongs at the head of the sidebar's
+  // title bar row — not in the footer among the per-window actions.
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    _resetApiTargetForTest()
+  })
+
+  it('sits above the Home item, not below the agent list', () => {
+    renderWithProviders(<AppSidebar />)
+
+    const switcher = screen.queryByTestId('target-switcher')
+    if (!switcher) return // hidden without a cloud workspace, covered elsewhere
+
+    const home = screen.getByTestId('home-button')
+    // DOCUMENT_POSITION_FOLLOWING: home comes after the switcher.
+    expect(switcher.compareDocumentPosition(home) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('leaves no padded gap when there is no cloud workspace to switch to', () => {
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByTestId('target-switcher')).not.toBeInTheDocument()
   })
 })

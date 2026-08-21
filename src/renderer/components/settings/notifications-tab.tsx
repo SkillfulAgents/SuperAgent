@@ -10,6 +10,13 @@ import {
   hasNotificationPermission,
   showOSNotification,
 } from '@renderer/lib/os-notifications'
+import {
+  supportsDeclarativeWebPush,
+  isThisDeviceSubscribed,
+  subscribeThisDevice,
+  unsubscribeThisDevice,
+} from '@renderer/lib/push-notifications'
+import { isIos } from '@renderer/hooks/use-pwa-install'
 
 interface SettingRowProps {
   name: string
@@ -46,6 +53,85 @@ function SettingRow({ name, subtitle, right, htmlFor }: SettingRowProps) {
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
 
+type DevicePushState = 'loading' | 'unsubscribed' | 'subscribed' | 'denied' | 'error'
+
+/**
+ * "Push to this device" card — Web Push opt-in for the current browser/PWA.
+ * Rendered only where declarative Web Push exists (WebKit; on iOS that means
+ * the app is installed to the Home Screen and served over HTTPS), so the
+ * card's presence is itself the capability check.
+ */
+function DevicePushSection() {
+  const [state, setState] = useState<DevicePushState>('loading')
+
+  useEffect(() => {
+    let cancelled = false
+    isThisDeviceSubscribed()
+      .then((subscribed) => {
+        if (!cancelled) {
+          setState(subscribed ? 'subscribed' : 'unsubscribed')
+        }
+      })
+      // getSubscription() can reject when the push service is unreachable —
+      // without this the card is stranded in 'loading' with a dead button.
+      .catch(() => {
+        if (!cancelled) {
+          setState('error')
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const handleToggle = async () => {
+    try {
+      if (state === 'subscribed') {
+        setState('loading')
+        await unsubscribeThisDevice()
+        setState('unsubscribed')
+      } else {
+        // No setState before subscribeThisDevice: the permission prompt must
+        // stay inside the user-gesture call stack (iOS requirement).
+        const result = await subscribeThisDevice()
+        setState(
+          result === 'subscribed' ? 'subscribed' : result === 'permission-denied' ? 'denied' : 'error'
+        )
+      }
+    } catch {
+      setState('error')
+    }
+  }
+
+  const subtitle =
+    state === 'subscribed'
+      ? 'This device gets push notifications when a session finishes or needs input, even while the app is closed.'
+      : state === 'denied'
+        ? 'Notification permission was denied. Re-enable it for this app in system notification settings.'
+        : state === 'error'
+          ? "Couldn't enable push notifications on this device. Try again."
+          : 'Get notified on this device when a session finishes or needs input, even while the app is closed.'
+
+  return (
+    <div className={CARD_CLASS}>
+      <SettingRow
+        name="Push to this device"
+        subtitle={subtitle}
+        right={
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleToggle}
+            disabled={state === 'loading' || state === 'denied'}
+          >
+            {state === 'subscribed' ? 'Disable' : 'Enable'}
+          </Button>
+        }
+      />
+    </div>
+  )
+}
+
 export function NotificationsTab() {
   const { data: userSettings, isLoading } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
@@ -56,6 +142,7 @@ export function NotificationsTab() {
     sessionComplete: boolean
     sessionWaiting: boolean
     sessionScheduled: boolean
+    platformNotification: boolean
     notifyWhenUnfocused: boolean
   } | null>(null)
 
@@ -76,6 +163,7 @@ export function NotificationsTab() {
     sessionComplete: true,
     sessionWaiting: true,
     sessionScheduled: true,
+    platformNotification: true,
     notifyWhenUnfocused: false,
   }
 
@@ -172,9 +260,22 @@ export function NotificationsTab() {
           }
         />
         <SettingRow
+          htmlFor="notify-platform-notification"
+          name="Platform notifications"
+          subtitle="Product announcements and account updates from the platform"
+          right={
+            <Switch
+              id="notify-platform-notification"
+              checked={notificationSettings.platformNotification}
+              onCheckedChange={(checked) => updateNotificationSetting('platformNotification', checked)}
+              disabled={isLoading || !notificationSettings.enabled}
+            />
+          }
+        />
+        <SettingRow
           htmlFor="notify-when-unfocused"
           name="Notify when window isn't focused"
-          subtitle="Send notifications even while the session is open, as long as the SuperAgent window is behind another app. Useful for long-running sessions you've left in the background."
+          subtitle="Send notifications even while the session is open, as long as the Gamut window is behind another app. Useful for long-running sessions you've left in the background."
           right={
             <Switch
               id="notify-when-unfocused"
@@ -185,6 +286,17 @@ export function NotificationsTab() {
           }
         />
       </div>
+
+      {supportsDeclarativeWebPush() && <DevicePushSection />}
+      {!isElectron() && !supportsDeclarativeWebPush() && isIos() && (
+        <Alert>
+          <Info className="h-4 w-4" />
+          <AlertDescription>
+            To get push notifications on this device, add the app to your Home Screen (Share →
+            Add to Home Screen) and open it from there. Requires iOS 18.4+ and an HTTPS address.
+          </AlertDescription>
+        </Alert>
+      )}
 
       <div className={CARD_CLASS}>
         <SettingRow

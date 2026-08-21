@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { listAgents, getAgent } from '@shared/lib/services/agent-service'
 import { getAgentClaudeConfigDir } from '@shared/lib/utils/file-storage'
 import { loadDailyUsageData } from '@shared/lib/services/usage-service'
+import { getSettings } from '@shared/lib/config/settings'
 import { subDays, format, addDays } from 'date-fns'
 import type { DailyUsageEntry, UsageResponse } from '@shared/lib/types/usage'
 import { Authenticated } from '../middleware/auth'
@@ -71,13 +72,14 @@ usage.get('/', async (c) => {
   } else {
     agents = await listAgents()
   }
+  const providerId = getSettings().llmProvider ?? 'anthropic'
 
   // Aggregate: date -> { totalCost, totalTokens, byAgent, byModel }
   const dateMap = new Map<string, {
     totalCost: number
     totalTokens: number
     byAgent: Map<string, { agentSlug: string; agentName: string; cost: number; totalTokens: number }>
-    byModel: Map<string, number>
+    byModel: Map<string, { cost: number; totalTokens: number }>
   }>()
 
   // Process agents in batches to balance throughput and memory usage.
@@ -89,7 +91,7 @@ usage.get('/', async (c) => {
       batch.map(async (agent) => {
         try {
           const claudePath = getAgentClaudeConfigDir(agent.slug)
-          const dailyData = await loadDailyUsageData({ claudePath, since })
+          const dailyData = await loadDailyUsageData({ claudePath, since, providerId })
           return { agent, dailyData }
         } catch {
           return null
@@ -127,8 +129,12 @@ usage.get('/', async (c) => {
 
         for (const mb of day.modelBreakdowns) {
           const normalizedName = normalizeModelName(mb.modelName)
-          const prev = entry.byModel.get(normalizedName) || 0
-          entry.byModel.set(normalizedName, prev + mb.cost)
+          const totalTokens = mb.inputTokens + mb.outputTokens + mb.cacheCreationTokens + mb.cacheReadTokens
+          const prev = entry.byModel.get(normalizedName)
+          entry.byModel.set(normalizedName, {
+            cost: (prev?.cost ?? 0) + mb.cost,
+            totalTokens: (prev?.totalTokens ?? 0) + totalTokens,
+          })
         }
       }
     }
@@ -149,9 +155,10 @@ usage.get('/', async (c) => {
       totalCost: data.totalCost,
       totalTokens: data.totalTokens,
       byAgent: Array.from(data.byAgent.values()),
-      byModel: Array.from(data.byModel.entries()).map(([model, cost]) => ({
+      byModel: Array.from(data.byModel.entries()).map(([model, usage]) => ({
         model,
-        cost,
+        cost: usage.cost,
+        totalTokens: usage.totalTokens,
       })),
     }))
 

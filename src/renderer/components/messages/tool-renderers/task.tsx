@@ -1,5 +1,5 @@
 
-import { Bot } from 'lucide-react'
+import { Workflow } from 'lucide-react'
 import { taskDef, type TaskInput } from '@shared/lib/tool-definitions/task'
 import type { ToolRenderer, StreamingToolRendererProps } from './types'
 
@@ -13,8 +13,8 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 text-sm">
-        <Bot className="h-4 w-4 text-blue-500" />
+      <div className="flex items-center gap-2 text-xs">
+        <Workflow className="h-3 w-3 text-foreground" />
         <span className="text-muted-foreground italic">Launching sub-agent...</span>
       </div>
       {parsed.subagent_type && (
@@ -33,7 +33,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 
 export const taskRenderer: ToolRenderer = {
   displayName: taskDef.displayName,
-  icon: Bot,
+  icon: Workflow,
   getSummary: taskDef.getSummary,
   StreamingView,
 }

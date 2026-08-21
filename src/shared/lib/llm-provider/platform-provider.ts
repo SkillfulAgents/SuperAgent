@@ -1,15 +1,36 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider, type AgentIdentity } from './base-llm-provider'
+import { rewriteLoopbackForContainer } from './container-url'
+import type { ModelDefinition } from './model-catalog-schema'
+import { PLATFORM_CATALOG, PLATFORM_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
+import { PLATFORM_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
 import { attribution } from '@shared/lib/platform-attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import type { ApiKeyStatus } from '../config/settings'
 
+// Display names are user-controlled free text headed for an HTTP header via
+// an env file: collapse control chars (the env-file writer drops \r\n outright,
+// silently corrupting multi-word values otherwise) and cap by code point so a
+// later slice can't split a surrogate pair.
+export function sanitizeAgentName(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  const flattened = name.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/ {2,}/g, ' ').trim()
+  return Array.from(flattened).slice(0, 200).join('')
+}
+
 export class PlatformLlmProvider extends BaseLlmProvider {
   readonly id = 'platform' as const
   readonly name = 'Platform'
+  readonly defaultModelOptions = PLATFORM_DEFAULT_MODEL_OPTIONS
+  readonly catalogDefaultModels = PLATFORM_CATALOG_DEFAULT_MODELS
   // Not used — getApiKeyStatus/getEffectiveApiKey are both overridden to
   // read the platform token instead of a settings-stored API key.
+  // The platform proxy handles deferred tool loading for the non-Anthropic
+  // models it serves: it expands the CLI's `tool_reference` blocks on the
+  // Anthropic-wire upstreams, and the Responses codec rebuilds every tool
+  // (dropping `defer_loading`) for the xAI/OpenAI ones.
+  override readonly toolSearchEnv = 'true' as const
   protected readonly settingsKeyField = 'anthropicApiKey' as const
   protected readonly envVarName = 'PLATFORM_TOKEN'
 
@@ -38,36 +59,31 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     })
   }
 
-  getAvailableModels(): ModelOption[] {
-    return [
-      { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
-      { value: 'claude-sonnet-4-6', label: 'Claude 4.6 Sonnet' },
-      { value: 'claude-opus-4-6', label: 'Claude 4.6 Opus' },
-      { value: 'claude-opus-4-7', label: 'Claude 4.7 Opus' },
-      { value: 'claude-opus-4-8', label: 'Claude 4.8 Opus' },
-      { value: 'claude-fable-5', label: 'Claude Fable 5' },
-    ]
+  getBuiltinCatalog(): ModelDefinition[] {
+    return PLATFORM_CATALOG
   }
 
-  getDefaultModel(purpose: ModelPurpose): string {
-    switch (purpose) {
-      case 'summarizer': return 'claude-haiku-4-5'
-      case 'agent': return 'claude-opus-4-8'
-      case 'browser': return 'claude-sonnet-4-6'
-    }
-  }
-
-  getContainerEnvVars(): Record<string, string | undefined> {
+  getContainerEnvVars(agent?: AgentIdentity): Record<string, string | undefined> {
     const proxyUrl = getPlatformProxyBaseUrl()
-    const containerUrl = proxyUrl.replace('://localhost', '://host.docker.internal')
+    const containerUrl = rewriteLoopbackForContainer(proxyUrl)
 
     const auth = attribution.current()
     const authToken = auth?.bearerToken() ?? this.getEffectiveApiKey()
+
+    // Agent identity rides into the container as plain env vars; the container
+    // folds them into ANTHROPIC_CUSTOM_HEADERS itself (see agent-container/src/
+    // attribution-headers.ts) because the env file transport strips newlines,
+    // which the multi-header ANTHROPIC_CUSTOM_HEADERS format needs.
+    const agentName = agent?.name && sanitizeAgentName(agent.name)
 
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: containerUrl,
       ANTHROPIC_AUTH_TOKEN: authToken,
+      ...(agent && {
+        SUPERAGENT_AGENT_ID: agent.id,
+        ...(agentName && { SUPERAGENT_AGENT_NAME: agentName }),
+      }),
     }
   }
 

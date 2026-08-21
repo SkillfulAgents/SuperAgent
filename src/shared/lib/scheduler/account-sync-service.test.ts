@@ -7,6 +7,7 @@ const mockUpdateWhere = vi.fn()
 const mockInsert = vi.fn()
 const mockValues = vi.fn()
 const mockOnConflictDoNothing = vi.fn()
+const mockSyncAgentsAssignedConnectedAccount = vi.fn().mockResolvedValue(true)
 
 vi.mock('@shared/lib/db', () => ({
   db: {
@@ -51,6 +52,11 @@ vi.mock('@shared/lib/config/settings', () => ({
   getAccountProviderUserId: () => 'test-user',
 }))
 
+vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
+  syncAgentsAssignedConnectedAccount: (...args: unknown[]) =>
+    mockSyncAgentsAssignedConnectedAccount(...args),
+}))
+
 const mockRequiresActingMember = vi.fn(() => false)
 const mockRunWithRequestUser = vi.fn((_userId: string, fn: () => unknown) => fn())
 vi.mock('@shared/lib/platform-attribution', () => ({
@@ -83,6 +89,7 @@ describe('AccountSyncService', () => {
       await accountSyncService.syncAll()
 
       expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'revoked' }))
+      expect(mockSyncAgentsAssignedConnectedAccount).toHaveBeenCalledWith('local-1')
     })
 
     it('marks local account as expired when remote status is EXPIRED', async () => {
@@ -96,6 +103,7 @@ describe('AccountSyncService', () => {
       await accountSyncService.syncAll()
 
       expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'expired' }))
+      expect(mockSyncAgentsAssignedConnectedAccount).toHaveBeenCalledWith('local-1')
     })
 
     it('marks local account as revoked when remote status is FAILED', async () => {
@@ -109,6 +117,7 @@ describe('AccountSyncService', () => {
       await accountSyncService.syncAll()
 
       expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'revoked' }))
+      expect(mockSyncAgentsAssignedConnectedAccount).toHaveBeenCalledWith('local-1')
     })
 
     it('restores local account to active when remote is ACTIVE but local is not', async () => {
@@ -122,6 +131,7 @@ describe('AccountSyncService', () => {
       await accountSyncService.syncAll()
 
       expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'active' }))
+      expect(mockSyncAgentsAssignedConnectedAccount).toHaveBeenCalledWith('local-1')
     })
 
     it('does not update when local and remote status match (both active)', async () => {
@@ -135,6 +145,7 @@ describe('AccountSyncService', () => {
       await accountSyncService.syncAll()
 
       expect(mockUpdate).not.toHaveBeenCalled()
+      expect(mockSyncAgentsAssignedConnectedAccount).not.toHaveBeenCalled()
     })
 
     it('adds remote ACTIVE connections missing from local DB', async () => {

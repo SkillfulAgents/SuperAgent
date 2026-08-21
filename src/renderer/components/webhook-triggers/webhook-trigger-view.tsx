@@ -5,8 +5,9 @@
  * trigger fires, run history, status toggle, and a delete option.
  */
 
-import { useMemo, useState } from 'react'
-import { Trash2, Loader2, AlertTriangle, Settings as SettingsIcon, Pencil } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Trash2, Loader2, AlertTriangle, Settings as SettingsIcon, Pencil, Copy, Check } from 'lucide-react'
+import { extractEndpointUrl } from '@shared/lib/services/webhook-endpoint-schema'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -19,7 +20,8 @@ import {
   useUpdateWebhookTriggerPrompt,
   useUpdateWebhookTriggerRuntimeOptions,
 } from '@renderer/hooks/use-webhook-triggers'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
+import { useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useUser } from '@renderer/context/user-context'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
@@ -54,11 +56,32 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const resumeTrigger = useResumeWebhookTrigger()
   const updatePrompt = useUpdateWebhookTriggerPrompt()
   const updateRuntimeOptions = useUpdateWebhookTriggerRuntimeOptions()
-  const { handleWebhookTriggerDeleted, setView } = useSelection()
-  const { canUseAgent } = useUser()
+  const navigate = useNavigate()
+  const { canUseAgent, canAdminAgent } = useUser()
   const { data: settings } = useSettings()
   const { data: platformAuth } = usePlatformAuthStatus()
   const canCancel = canUseAgent(agentSlug)
+  const canViewOwnerDetails = canAdminAgent(trigger?.agentSlug ?? agentSlug)
+  const { data: agents } = useAgents()
+
+  // Canonicalize: triggers are addressed globally by id, so /agents/<wrong>/webhooks/<id>
+  // would render this trigger under the wrong agent's shell (mismatched chrome,
+  // back-links, and canUseAgent gating). Redirect to the trigger's true agent.
+  //
+  // Compare RESOLVED ids: the route param may be the display slug ({name}-{id})
+  // while trigger.agentSlug is the canonical id, so a raw `!==` would fire on every
+  // correct-agent visit. Wait for the agents list, then redirect to the canonical
+  // id (the same form agent-home uses to open a webhook).
+  useEffect(() => {
+    if (!trigger || !agents) return
+    if (trigger.agentSlug === resolveRouteAgentId(agentSlug, agents)) return
+    void navigate({
+      to: '/agents/$slug/webhooks/$webhookId',
+      params: { slug: trigger.agentSlug, webhookId: triggerId },
+      replace: true,
+    })
+  }, [trigger, agents, agentSlug, triggerId, navigate])
+
   const isActive = trigger?.status === 'active' || trigger?.status === 'paused'
   const isPaused = trigger?.status === 'paused'
   const hasLocalComposioKey = settings?.apiKeyStatus?.composio?.isConfigured ?? false
@@ -82,8 +105,30 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
     )
   }
 
+  const isCustom = trigger?.kind === 'custom'
+  const endpointUrl = useMemo(
+    () => (isCustom && canViewOwnerDetails ? extractEndpointUrl(trigger?.triggerConfig) : null),
+    [isCustom, canViewOwnerDetails, trigger?.triggerConfig],
+  )
+  const [urlCopied, setUrlCopied] = useState(false)
+  const handleCopyUrl = async () => {
+    if (!endpointUrl) return
+    // clipboard.writeText rejects in hosted-web contexts (unfocused document /
+    // denied permission); swallow so it doesn't surface as an unhandled
+    // rejection — the button simply won't flip to the copied state.
+    try {
+      await navigator.clipboard.writeText(endpointUrl)
+      setUrlCopied(true)
+      setTimeout(() => setUrlCopied(false), 2000)
+    } catch {
+      // no-op: copy unavailable in this context
+    }
+  }
+
   const parsedConfigEntries = useMemo<[string, unknown][]>(() => {
-    if (!trigger?.triggerConfig) return []
+    // For custom endpoints the config IS the endpoint mirror (url/endpointId),
+    // which gets its own card — no generic Configuration card to show.
+    if (!canViewOwnerDetails || !trigger?.triggerConfig || isCustom) return []
     try {
       const config = JSON.parse(trigger.triggerConfig) as Record<string, unknown>
       return Object.entries(config).filter(
@@ -92,12 +137,14 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
     } catch {
       return []
     }
-  }, [trigger?.triggerConfig])
+  }, [canViewOwnerDetails, trigger?.triggerConfig, isCustom])
 
   const handleCancel = async () => {
     try {
       await cancelTrigger.mutateAsync({ id: triggerId, agentSlug })
-      handleWebhookTriggerDeleted(triggerId)
+      // Deleting the trigger we're viewing → up-nav to the agent home (the
+      // webhook route no longer resolves).
+      void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
     } catch (err) {
       console.error('Failed to cancel webhook trigger:', err)
     }
@@ -115,6 +162,17 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
     return (
       <div className="flex-1 flex items-center justify-center text-destructive">
         Failed to load webhook trigger
+      </div>
+    )
+  }
+
+  // Mismatched shell → the effect above is redirecting; don't render B's trigger
+  // (or its wrong-slug nested fetches) under A's chrome in the meantime. Resolve
+  // first and only block once the agents list is loaded (see the effect).
+  if (agents && trigger.agentSlug !== resolveRouteAgentId(agentSlug, agents)) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted-foreground">
+        Loading webhook trigger...
       </div>
     )
   }
@@ -190,7 +248,9 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
       <PageTitle
         title={trigger.name || trigger.triggerType}
         back={{
-          onClick: () => setView({ kind: 'home' }),
+          onClick: () => {
+            void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+          },
           testId: 'webhook-trigger-back-button',
         }}
         actions={headerActions}
@@ -271,7 +331,9 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
             <dl className="space-y-4">
               <div>
                 <dt className="text-xs text-muted-foreground">Webhook Trigger</dt>
-                <dd className="text-xs font-normal lowercase">{trigger.triggerType}</dd>
+                <dd className="text-xs font-normal lowercase">
+                  {isCustom ? 'custom webhook endpoint' : trigger.triggerType}
+                </dd>
               </div>
               {(trigger.fireCount > 0 || trigger.lastFiredAt) && (
                 <div className="flex gap-8">
@@ -289,16 +351,38 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
                   )}
                 </div>
               )}
-              <div>
-                <dt className="text-xs text-muted-foreground">Connected Account</dt>
-                <dd className="text-xs font-normal break-all">{trigger.connectedAccountId}</dd>
-              </div>
+              {isCustom ? (
+                endpointUrl && (
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Endpoint URL</dt>
+                    <dd className="flex items-start gap-1.5 text-xs font-normal">
+                      <span className="break-all font-mono">{endpointUrl}</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="Copy endpoint URL"
+                        className="h-5 w-5 shrink-0 text-muted-foreground"
+                        onClick={handleCopyUrl}
+                      >
+                        {urlCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                      </Button>
+                    </dd>
+                  </div>
+                )
+              ) : canViewOwnerDetails && trigger.connectedAccountId ? (
+                <div>
+                  <dt className="text-xs text-muted-foreground">Connected Account</dt>
+                  <dd className="text-xs font-normal break-all">{trigger.connectedAccountId}</dd>
+                </div>
+              ) : null}
             </dl>
           </DetailCard>
 
           <RuntimeOptionsCard
+            agentSlug={agentSlug}
             model={trigger.model ?? null}
             effort={trigger.effort ?? null}
+            speed={trigger.speed ?? null}
             disabled={!canCancel || !isActive}
             onUpdate={(options) => {
               updateRuntimeOptions.mutate({ triggerId, agentSlug, ...options })

@@ -5,7 +5,9 @@ import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { ProviderApiKeyInput } from './provider-api-key-input'
 import { BedrockCredentialsInput } from './bedrock-credentials-input'
+import { GenericCredentialsInput } from './generic-credentials-input'
 import { SettingsModelSelect } from './settings-model-select'
+import { CatalogEditor } from './model-catalog/catalog-editor'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 import type { EffortLevel } from '@shared/lib/container/types'
 
@@ -33,7 +35,8 @@ const PROVIDER_DESCRIPTIONS: Partial<Record<LlmProviderId, string>> = {
   anthropic: 'Direct API access to Claude models.',
   openrouter: 'Multi-model access through a single API key.',
   bedrock: 'AWS-managed Claude inference with IAM or API key credentials.',
-  platform: 'Use credentials provided by your Superagent account.',
+  platform: 'Use credentials provided by your Gamut account.',
+  generic: 'Point at any Anthropic-compatible endpoint — localhost ollama, a self-hosted gateway, or a proxy.',
 }
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
@@ -74,7 +77,6 @@ interface ModelEffortRowProps {
   /** Reasoning effort; only surfaced when `includeEffort` is true. */
   effort?: EffortLevel
   includeEffort?: boolean
-  emit?: 'model' | 'family'
   disabled?: boolean
   onModelChange: (model: string) => void
   onEffortChange?: (effort: EffortLevel) => void
@@ -87,7 +89,6 @@ function ModelEffortRow({
   model,
   effort,
   includeEffort,
-  emit,
   disabled,
   onModelChange,
   onEffortChange,
@@ -102,7 +103,6 @@ function ModelEffortRow({
           onModelChange={onModelChange}
           includeEffort={includeEffort}
           effort={effort}
-          emit={emit}
           onEffortChange={onEffortChange}
           disabled={disabled}
         />
@@ -206,8 +206,12 @@ export function LlmTab() {
         {providerStatus.map((provider) => {
           const isSelected = activeProvider === provider.id
           const platformLocked = provider.id === 'platform' && !isPlatformConnected
-          const modelOptions = provider.availableModels ?? []
+          const modelOptions = provider.catalog ?? []
+          const builtinOptions = provider.builtinCatalog ?? modelOptions
           const keyConfig = SIMPLE_PROVIDER_KEY_CONFIG[provider.id]
+          // Catalog editing is for self-managed providers; the platform provider's
+          // models and pricing come from the connected account, not local overrides.
+          const showCatalogEditor = provider.id !== 'platform'
 
           return (
             <ProviderCard
@@ -232,6 +236,8 @@ export function LlmTab() {
                   disabled={isLoading}
                   showNotConfiguredAlert={false}
                 />
+              ) : provider.id === 'generic' ? (
+                <GenericCredentialsInput key="generic" disabled={isLoading} />
               ) : keyConfig ? (
                 <ProviderApiKeyInput
                   key={provider.id}
@@ -246,35 +252,47 @@ export function LlmTab() {
               ) : null}
 
               {/* Model selection lives inside the selected provider since available models are provider-specific */}
-              <div className="mt-6 -mx-4 -mb-6 border-t border-border/50">
-                {modelOptions.length === 0 ? (
-                  <p className="px-4 py-3 text-[11px] text-muted-foreground">
-                    Configure credentials to load available models.
-                  </p>
-                ) : (
-                  <div className="divide-y divide-border/50">
-                    <ModelEffortRow
-                      name="Default model"
-                      subtitle="Model and effort new sessions start with, before any per-message override"
-                      model={settings?.models?.agentModel}
-                      effort={settings?.models?.agentEffort ?? 'medium'}
-                      includeEffort
-                      emit="family"
-                      disabled={isLoading}
-                      onModelChange={(model) => updateSettings.mutate({ models: { agentModel: model } })}
-                      onEffortChange={(effort) => updateSettings.mutate({ models: { agentEffort: effort } })}
-                    />
-                    <ModelEffortRow
-                      name="Summarizer model"
-                      subtitle="Used for session name generation and API key validation"
-                      model={settings?.models?.summarizerModel}
-                      includeEffort={false}
-                      disabled={isLoading}
-                      onModelChange={(model) => updateSettings.mutate({ models: { summarizerModel: model } })}
-                    />
-                  </div>
-                )}
+              <div className="mt-6 -mx-4 border-t border-border/50">
+                <div className="divide-y divide-border/50">
+                  <ModelEffortRow
+                    name="Default model"
+                    subtitle="Model and effort new sessions start with, before any per-message override"
+                    model={settings?.models?.agentModel}
+                    effort={settings?.models?.agentEffort ?? 'medium'}
+                    includeEffort
+                    disabled={isLoading}
+                    onModelChange={(model) => updateSettings.mutate({ models: { agentModel: model } })}
+                    onEffortChange={(effort) => updateSettings.mutate({ models: { agentEffort: effort } })}
+                  />
+                  <ModelEffortRow
+                    name="Summarizer model"
+                    subtitle="Used for session name generation and API key validation"
+                    model={settings?.models?.summarizerModel}
+                    includeEffort={false}
+                    disabled={isLoading}
+                    onModelChange={(model) => updateSettings.mutate({ models: { summarizerModel: model } })}
+                  />
+                  <ModelEffortRow
+                    name="Dashboard model"
+                    subtitle="Used by the dashboard-builder subagent that creates and edits artifacts"
+                    model={settings?.models?.dashboardBuilderModel}
+                    includeEffort={false}
+                    disabled={isLoading}
+                    onModelChange={(model) => updateSettings.mutate({ models: { dashboardBuilderModel: model } })}
+                  />
+                </div>
               </div>
+              {showCatalogEditor && (
+                <CatalogEditor
+                  providerId={provider.id}
+                  builtinCatalog={builtinOptions}
+                  effectiveCatalog={modelOptions}
+                  modelCatalog={settings?.modelCatalog}
+                  supportsModelSearch={provider.capabilities?.modelSearch}
+                  disabled={isLoading}
+                  onChange={(modelCatalog) => updateSettings.mutate({ modelCatalog })}
+                />
+              )}
             </ProviderCard>
           )
         })}
@@ -295,7 +313,7 @@ export function LlmTab() {
           <SettingRow
             name="Tool search"
             htmlFor="enable-tool-search"
-            subtitle="Load tool definitions on demand to save ~15-20K tokens per turn. Disable only when debugging. Requires Sonnet/Opus 4+; ignored on Haiku."
+            subtitle="Load tool definitions on demand to save ~15-20K tokens per turn. Disable only when debugging. Requires Sonnet/Opus 4+; ignored on Haiku, and on OpenRouter or a custom endpoint, which can't expand deferred tools."
             right={
               <Switch
                 id="enable-tool-search"

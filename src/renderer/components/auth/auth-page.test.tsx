@@ -9,6 +9,9 @@ const { apiFetch } = vi.hoisted(() => ({
 
 vi.mock('@renderer/lib/api', () => ({
   apiFetch,
+  // redirect-stash helpers used by the email/OAuth sign-in handlers.
+  consumeRedirectStash: () => null,
+  peekRedirectStash: () => '/',
 }))
 
 import { AuthPage } from './auth-page'
@@ -90,7 +93,7 @@ describe('AuthPage', () => {
       expect(screen.getByTestId('auth-provider-platform')).toBeInTheDocument()
     })
 
-    expect(screen.getByText('SuperAgent')).toBeInTheDocument()
+    expect(screen.getByText('Gamut')).toBeInTheDocument()
     expect(screen.getByText('Continue with SSO')).toBeInTheDocument()
     expect(screen.getByText('or')).toBeInTheDocument()
 

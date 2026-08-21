@@ -1,6 +1,6 @@
 # Agent Settings
 
-This feature covers all tabs in the agent settings dialog: General, System Prompt, Secrets, Accounts, and MCPs.
+This feature covers all tabs in the agent settings dialog: General, System Prompt, Accounts, and MCPs.
 
 ## Prerequisites
 
@@ -35,18 +35,6 @@ This feature covers all tabs in the agent settings dialog: General, System Promp
 - Update prompt text and save.
 - Re-open tab and verify persisted value.
 
-## Secrets Tab
-
-### Components
-- **Secret key input** - secret name.
-- **Secret value input** - secret value.
-- **Add Secret button** - creates a secret.
-- **Secrets list** - rows with delete icons.
-
-### Interactions
-- Add a secret and verify list entry.
-- Delete a secret and verify entry removal.
-
 ## Accounts Tab
 
 ### Components
@@ -68,4 +56,3 @@ This feature covers all tabs in the agent settings dialog: General, System Promp
 ### Interactions
 - Assign MCP servers to agent.
 - Remove assigned MCP server.
-

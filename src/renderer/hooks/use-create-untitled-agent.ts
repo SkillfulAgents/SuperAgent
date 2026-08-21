@@ -1,14 +1,19 @@
 import { useCallback } from 'react'
+import { flushSync } from 'react-dom'
 import { toast } from 'sonner'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
+import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 
 export const UNTITLED_AGENT_NAME = 'Untitled'
 
 export function useCreateUntitledAgent() {
   const createAgent = useCreateAgent()
-  const { setAgent, setJustCreatedSlug } = useSelection()
+  // Morph tag lives in NavTransientContext; set it BEFORE navigate so
+  // AgentHome's first-mount initializer reads it and plays the intro once.
+  const { setJustCreatedSlug } = useNavTransient()
+  const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
 
   const createUntitledAgent = useCallback(async () => {
@@ -16,8 +21,16 @@ export function useCreateUntitledAgent() {
       const agent = await createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME })
       track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
 
-      setJustCreatedSlug(agent.slug)
-      setAgent(agent.slug)
+      // Morph tag keys on the canonical id (AgentHome compares against agent.slug);
+      // navigate with the pretty display slug so the URL reflects the name.
+      //
+      // Commit the tag SYNCHRONOUSLY before navigating: `navigate` renders the
+      // destination route (mounting AgentHome) within the same tick, and AgentHome
+      // reads `justCreatedSlug` once in a mount-time initializer. Without flushSync
+      // the router's synchronous render runs before React commits this context
+      // update, so AgentHome captures the pre-set `null` and the intro never plays.
+      flushSync(() => setJustCreatedSlug(agent.slug))
+      void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
 
       return agent
     } catch (error) {
@@ -27,7 +40,7 @@ export function useCreateUntitledAgent() {
       })
       return null
     }
-  }, [createAgent, setAgent, setJustCreatedSlug, track])
+  }, [createAgent, setJustCreatedSlug, navigate, track])
 
   return {
     createUntitledAgent,

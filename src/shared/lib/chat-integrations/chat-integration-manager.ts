@@ -10,12 +10,19 @@
  * Follows the TaskScheduler / TriggerManager singleton pattern.
  */
 
-import type { ChatClientConnector, IncomingMessage } from './base-connector'
-import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import { isMultiPartyChatType, type ChatClientConnector, type ChatConnectorClass, type IncomingMessage } from './base-connector'
+import type { SessionActivity } from '@shared/lib/types/agent'
 import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
 import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
-import { formatProviderName, formatSessionTimestamp } from './utils'
+import { formatSessionTimestamp, resolveAppLinkContext } from './utils'
+import { requestCardFromRegistry, reviewCardFromRegistry } from './request-card'
+import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
+import { getAgent } from '@shared/lib/services/agent-service'
+import { displaySlug } from '@shared/lib/utils/file-storage'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
+import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import {
   listStartupChatIntegrations,
   getChatIntegration,
@@ -29,14 +36,24 @@ import {
   archiveChatIntegrationSession,
   touchChatIntegrationSession,
   listChatIntegrationSessions,
+  listActiveChatIntegrationSessions,
   resolveActiveSession,
   getLastDisplayName,
 } from '@shared/lib/services/chat-integration-session-service'
-import type { EffortLevel } from '@shared/lib/container/types'
+import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
+import { isHostOrSubdomain, tryParseUrl } from '@shared/lib/utils/url-safety'
+import type { ContainerClient } from '@shared/lib/container/types'
+import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import {
+  decideInboundAccess,
+  isChatAllowed,
+  getChatAccess,
+  markNoticeSent,
+} from '@shared/lib/services/chat-integration-access-service'
 
 // ── Sentry helpers ─────────────────────────────────────────────────────
 
@@ -69,14 +86,16 @@ function isContainerNotRunning(err: unknown): boolean {
   return err instanceof Error && err.message.includes('Container is not running')
 }
 
-// ── Constants ───────────────────────────────────────────────────────────
+/**
+ * True iff `u` is an HTTPS request to Slack (slack.com or a *.slack.com
+ * subdomain). Only these hosts may receive the Slack bot token on a redirect
+ * hop (SUP-232).
+ */
+function isTrustedSlackDownloadHost(u: URL): boolean {
+  return u.protocol === 'https:' && isHostOrSubdomain(u.hostname, 'slack.com')
+}
 
-const IMESSAGE_SYSTEM_PROMPT = `This is an iMessage-based conversation. Follow these rules:
-- Keep responses concise and conversational — this is a text message, not a document.
-- Use tools, skills, and capabilities as you normally would.
-- Prefer asking questions directly in natural language rather than using the ask questions tool.
-- You can react to the user's last message by starting your response with a reaction tag. Available reactions: [[reaction:heart]], [[reaction:thumbs_up]], [[reaction:thumbs_down]], [[reaction:haha]], [[reaction:emphasize]], [[reaction:question]]. The tag will be stripped from the message and sent as a tapback reaction. If your entire response is just a reaction tag, only the reaction is sent (no text message).
-- The user may send voice notes which are automatically transcribed.`
+// ── Constants ───────────────────────────────────────────────────────────
 
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
 const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
@@ -114,6 +133,22 @@ export interface ManagedConnector {
   }
   currentToolInput: string
   pendingToolMessages: Array<{ messageId: string; text: string }>
+  // Pull-model indicator state. `indicatorShown` makes the clear idempotent so
+  // idle ticks make zero connector calls; `indicatorTickTimer` is the per-session
+  // sampling tick, alive for the SSE subscription (started on subscribe, cleared
+  // on teardown).
+  indicatorShown?: boolean
+  indicatorTickTimer?: ReturnType<typeof setInterval> | null
+  // The session the tick samples; set when the tick is armed (subscribe / wake) so the
+  // sleep guard and the health-check backstop can re-read getSessionActivity(sessionId).
+  sessionId?: string
+  // Pending idle-sleep debounce. Scheduled when the session settles non-busy; when it
+  // fires it re-reads activity and stops the tick only if STILL non-busy (so a stale or
+  // type-mismatched sleep can't strand a working session). Cleared wherever the tick is.
+  sleepTimer?: ReturnType<typeof setTimeout> | null
+  // True once the session_error notice has gone out for the current turn, so a
+  // turn can't emit duplicate notices.
+  turnNotified?: boolean
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────
@@ -128,6 +163,29 @@ class ChatIntegrationManager {
   private globalNotificationUnsubscribe: (() => void) | null = null
   private disconnectedSince: Map<string, number> = new Map()
   private consecutiveFailures: Map<string, number> = new Map()
+  // Integrations with a rebuild in flight. Reconcile passes (5-min tick, resume,
+  // resume follow-ups) can overlap when a connect hangs; this keeps any one
+  // integration from being torn down by one pass while another is mid-connect.
+  private reconcilingIds: Set<string> = new Set()
+  // Per-integration lifecycle generation. Every PUBLIC lifecycle mutation
+  // (add/remove/pause/resume — and config update, which is remove+add) bumps
+  // it; background work (rebuilds, in-flight connects) captures the value up
+  // front and treats any change as CANCELLATION. A rebuild spans two await
+  // gaps (teardown, connect) and a user operation landing in either used to
+  // let the rebuild reconnect from its stale row snapshot — resurrecting a
+  // paused integration or restoring pre-update credentials — and clobber the
+  // status the user's operation just wrote.
+  private generations: Map<string, number> = new Map()
+  // In-flight system-resume pass; concurrent reconnectAll calls coalesce onto it.
+  private resumeReconcile: Promise<void> | null = null
+  // A resume arrived while a pass was in flight: run one more FORCE pass when
+  // the current one finishes (its follow-ups are force:false, and the second
+  // wake's sockets are suspect again — isConnected() can read stale-true).
+  private resumeQueued = false
+  // Follow-up delays after the resume force pass, while anything is still down.
+  private static readonly RESUME_RETRY_DELAYS_MS = [15_000, 30_000, 60_000]
+  // Upper bound on waiting for an old connector to tear down before rebuilding.
+  private static readonly DISCONNECT_TIMEOUT_MS = 5_000
   // Per-(integration,chat) serialized tail promise. Entries self-evict once their
   // chain settles (see scheduleQueueEviction), so the map stays bounded.
   private messageQueues: Map<string, Promise<void>> = new Map()
@@ -143,9 +201,9 @@ class ChatIntegrationManager {
 
     for (const integration of integrations) {
       try {
-        await this.connectIntegration(integration)
+        const connected = await this.connectIntegration(integration)
         // Clear error status on successful reconnect
-        if (integration.status === 'error') {
+        if (connected && integration.status === 'error') {
           try { updateChatIntegrationStatus(integration.id, 'active', null) } catch { /* best-effort */ }
         }
       } catch (err) {
@@ -162,13 +220,11 @@ class ChatIntegrationManager {
       })
     }, HEALTH_CHECK_INTERVAL_MS)
 
-    // Subscribe to global notifications for proxy review requests (tool approvals)
-    this.globalNotificationUnsubscribe = messagePersister.addGlobalNotificationClient((event: unknown) => {
-      this.handleGlobalNotification(event).catch((err) => {
-        console.error('[ChatIntegrationManager] Error handling global notification:', err)
-        reportError(err, 'global-notification')
-      })
-    })
+    this.subscribeGlobalNotifications()
+
+    // Positive start signal: startup.ts only logs start() FAILURES, so without
+    // this a dead manager is indistinguishable from a healthy idle one.
+    console.log(`[ChatIntegrationManager] Started (${integrations.length} startup integration(s))`)
   }
 
   stop(): void {
@@ -181,41 +237,79 @@ class ChatIntegrationManager {
 
     // Clean up all chat session SSE subscriptions
     for (const [, session] of this.chatSessions) {
-      session.sseUnsubscribe?.()
+      this.stopSession(session)
     }
     this.chatSessions.clear()
 
-    // Disconnect all integrations
+    // Disconnect all integrations (fire-and-forget: stop() is shutdown-path sync)
     for (const [, conn] of this.connections) {
-      this.disconnectConnection(conn)
+      void this.disconnectConnection(conn)
     }
     this.connections.clear()
     this.disconnectedSince.clear()
     this.consecutiveFailures.clear()
+    this.reconcilingIds.clear()
+    this.generations.clear()
     this.messageQueues.clear()
     this.isRunning = false
+  }
+
+  // ── Lifecycle generations ───────────────────────────────────────────
+
+  private bumpGeneration(id: string): number {
+    const next = (this.generations.get(id) ?? 0) + 1
+    this.generations.set(id, next)
+    return next
+  }
+
+  private generationOf(id: string): number {
+    return this.generations.get(id) ?? 0
   }
 
   // ── Public API ──────────────────────────────────────────────────────
 
   async reconnectAll(): Promise<void> {
     if (!this.isRunning) return
-    console.log('[ChatIntegrationManager] Reconnecting all integrations (system resume)')
-
-    const entries = [...this.connections.entries()]
-    for (const [id, conn] of entries) {
-      try {
-        const integration = getChatIntegration(id)
-        if (!integration || integration.status === 'paused') continue
-        await this.removeIntegration(id)
-        await this.connectIntegration(integration)
-        this.disconnectedSince.delete(id)
-        this.consecutiveFailures.delete(id)
-      } catch (err) {
-        console.error(`[ChatIntegrationManager] Resume reconnect failed for ${id}:`, err)
-        reportError(err, 'resume-reconnect', { integrationId: id, provider: conn.integration.provider })
-      }
+    // Overlap guard: resume events can fire in quick bursts (short lid cycles);
+    // racing two full teardown/rebuild passes produced concurrent connect/stop
+    // on the same integration. Coalesce onto the in-flight pass — but queue one
+    // more FORCE pass, because the in-flight pass's follow-ups are force:false
+    // and can't be trusted to rebuild sockets the second sleep re-broke.
+    if (this.resumeReconcile) {
+      this.resumeQueued = true
+      return this.resumeReconcile
     }
+
+    console.log('[ChatIntegrationManager] Reconnecting all integrations (system resume)')
+    this.resumeReconcile = (async () => {
+      try {
+        do {
+          this.resumeQueued = false
+          await this.reconcileIntegrations({ force: true })
+          // The force pass races the network coming back up, so failures are
+          // expected; they're no longer orphans, but the next regular tick is up
+          // to 5 minutes out — too long right after opening the lid. Run a few
+          // quick follow-ups while anything is still down.
+          for (const delayMs of ChatIntegrationManager.RESUME_RETRY_DELAYS_MS) {
+            if (this.resumeQueued) break // a fresh wake wants a full force pass instead
+            if (!this.hasDisconnectedIntegrations()) break
+            await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+            if (!this.isRunning) return
+            await this.reconcileIntegrations({ force: false })
+          }
+        } while (this.resumeQueued && this.isRunning)
+      } finally {
+        this.resumeReconcile = null
+        this.resumeQueued = false
+      }
+    })()
+    return this.resumeReconcile
+  }
+
+  private hasDisconnectedIntegrations(): boolean {
+    return listStartupChatIntegrations().some(
+      (i) => !(this.connections.get(i.id)?.connector.isConnected() ?? false),
+    )
   }
 
   async addIntegration(id: string): Promise<void> {
@@ -225,18 +319,35 @@ class ChatIntegrationManager {
   }
 
   async removeIntegration(id: string): Promise<void> {
+    // Public removal (delete, pause, config update): this operation owns the
+    // integration from here on — any in-flight background rebuild or connect
+    // for the same id must cancel itself rather than resurrect it.
+    this.bumpGeneration(id)
+    await this.teardownConnection(id)
+  }
+
+  /** Internal teardown: no generation bump — rebuilds tear down without ceding ownership. */
+  private async teardownConnection(id: string): Promise<void> {
     // Remove all chat sessions for this integration
     for (const [key, session] of this.chatSessions) {
       if (key.startsWith(`${id}:`)) {
-        session.sseUnsubscribe?.()
+        this.stopSession(session)
         this.chatSessions.delete(key)
       }
     }
-    // Remove the connection
+    // Remove the connection. The teardown is awaited (bounded) so a rebuild
+    // can't start while the old socket is still live — gateways that allow one
+    // connection per identity kick whichever side loses the race (the iMessage
+    // code=4000 "replaced by another connection" fights).
     const conn = this.connections.get(id)
     if (conn) {
-      this.disconnectConnection(conn)
       this.connections.delete(id)
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        this.disconnectConnection(conn),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, ChatIntegrationManager.DISCONNECT_TIMEOUT_MS) }),
+      ])
+      clearTimeout(timer)
     }
     this.disconnectedSince.delete(id)
     this.consecutiveFailures.delete(id)
@@ -270,6 +381,7 @@ class ChatIntegrationManager {
   async ensureSession(integrationId: string, chatId: string): Promise<string> {
     const integration = getChatIntegration(integrationId)
     if (!integration) throw new Error(`Chat integration ${integrationId} not found`)
+    if (!isChatAllowed(integrationId, chatId)) throw new Error(`Chat ${chatId} is not allowed for integration ${integrationId}`)
 
     const existing = resolveActiveSession(
       integrationId, chatId, integration.sessionTimeout,
@@ -324,6 +436,56 @@ class ChatIntegrationManager {
     return this.connections.get(integrationId)?.connector
   }
 
+  /**
+   * Introduce the agent as a saveable phone contact, once, at integration creation.
+   *
+   * Never called on connect: `connectIntegration` also fires on every boot, every
+   * reconnect backoff, and every reconcile cycle, so a connect hook would re-send
+   * forever and would need a once-only flag that the creation hook does not.
+   *
+   * Fire-and-forget by design — a missing contact card is cosmetic, a failed setup
+   * is not, so this never throws.
+   */
+  async sendContactCard(integrationId: string): Promise<void> {
+    try {
+      const integration = getChatIntegration(integrationId)
+      if (integration?.provider !== 'imessage') return
+
+      const connector = this.getConnector(integrationId)
+      if (!connector) return
+
+      const agent = await getAgent(integration.agentSlug)
+      if (!agent) return
+
+      const cardName = integration.name?.trim() || agent.frontmatter.name
+
+      const card = buildAgentContactCard({
+        // UID stays the minted id: renaming the agent must not mint a second
+        // contact on the phone. Only the link carries the prettier display slug.
+        slug: integration.agentSlug,
+        name: cardName,
+        description: agent.frontmatter.description,
+        appUrl: resolveAgentWebUrl(displaySlug(agent.frontmatter.name, integration.agentSlug)),
+      })
+
+      // No chatId: the gateway falls back to the chat it already knows, else
+      // creates one from the phone it stored during `/setup`. That fallback is
+      // what lets this send before the user has ever messaged the agent.
+      //
+      // The caption also covers the connector's upload-failure path, which would
+      // otherwise send a bare `[File: ….vcf]`.
+      await connector.sendFile(
+        '',
+        card,
+        `${sanitizeUploadFilename(cardName)}.vcf`,
+        `Save me as a contact so I'm not just a number. Text me anytime.`,
+      )
+    } catch (err) {
+      console.error('[ChatIntegrationManager] Failed to send contact card:', err)
+      reportError(err, 'send-contact-card', { integrationId })
+    }
+  }
+
   isIntegrationConnected(integrationId: string): boolean {
     const conn = this.connections.get(integrationId)
     return conn?.connector.isConnected() ?? false
@@ -335,9 +497,26 @@ class ChatIntegrationManager {
 
   // ── Connection setup ────────────────────────────────────────────────
 
-  private async connectIntegration(integration: ChatIntegration): Promise<void> {
-    if (this.connections.has(integration.id)) {
-      await this.removeIntegration(integration.id)
+  /**
+   * Build, register, and connect a connector for `integration`.
+   *
+   * Returns true when the connection is live AND this call still owns the
+   * integration; false when the connect was CANCELLED — a newer lifecycle
+   * operation (pause/remove/config update/newer connect) took ownership while
+   * we were mid-flight, and its socket (if one opened) has been torn down.
+   * Callers must treat false as "stand down", not as success.
+   *
+   * `expectedGeneration` is passed by rebuilds that captured the generation
+   * earlier; user-driven calls omit it and take ownership here via a bump.
+   */
+  private async connectIntegration(integration: ChatIntegration, expectedGeneration?: number): Promise<boolean> {
+    const id = integration.id
+    const generation = expectedGeneration ?? this.bumpGeneration(id)
+
+    if (this.connections.has(id)) {
+      await this.teardownConnection(id)
+      // A newer lifecycle operation landed while we waited on the teardown.
+      if (this.generationOf(id) !== generation) return false
     }
 
     const connector = await this.createConnector(integration)
@@ -356,8 +535,8 @@ class ChatIntegrationManager {
       this.enqueueMessage(integration.id, msg)
     })
 
-    conn.interactiveUnsubscribe = connector.onInteractiveResponse((toolUseId, response) => {
-      this.handleInteractiveResponse(integration.id, toolUseId, response).catch((err) => {
+    conn.interactiveUnsubscribe = connector.onInteractiveResponse((toolUseId, response, chatId) => {
+      this.handleInteractiveResponse(integration.id, toolUseId, response, chatId).catch((err) => {
         console.error(`[ChatIntegrationManager] Error handling interactive response for ${integration.id}:`, err)
         reportError(err, 'interactive-response', { integrationId: integration.id, provider: integration.provider, toolUseId })
       })
@@ -370,6 +549,10 @@ class ChatIntegrationManager {
       this.emitNotification(integration, 'error', error.message)
     })
 
+    // Intentionally provider-agnostic and NOT access-gated: Telegram excludes typing hints
+    // from allowed_updates today, so this never fires in practice. If a future provider (or
+    // Telegram config change) emits typing hints, add an isChatAllowed check here before
+    // pre-warming to avoid leaking container resources for ungated chats.
     conn.typingHintUnsubscribe = connector.onTypingHint(() => {
       this.preWarmContainer(integration.agentSlug)
     })
@@ -379,18 +562,41 @@ class ChatIntegrationManager {
     try {
       await connector.connect()
     } catch (err) {
-      await this.removeIntegration(integration.id)
+      // Tear down only what we still own: a newer connect may have replaced
+      // our map entry while this one was failing, and removing THAT would
+      // silently kill the healthy winner.
+      if (this.connections.get(id) === conn) {
+        this.connections.delete(id)
+        void this.disconnectConnection(conn)
+      } else {
+        connector.disconnect().catch(() => {})
+      }
       throw err
+    }
+    // A pause/remove/newer-connect that raced the connect owns the teardown
+    // now (generation moved, or the map entry is no longer ours) — and a
+    // stopped manager must not be resurrected past its stop(). Don't wire up
+    // subscriptions for a connection the user just removed; tear down the
+    // freshly opened, now-ownerless socket.
+    if (this.connections.get(id) !== conn || this.generationOf(id) !== generation || !this.isRunning) {
+      if (this.connections.get(id) === conn) this.connections.delete(id)
+      void this.disconnectConnection(conn)
+      return false
     }
     this.disconnectedSince.delete(integration.id)
     breadcrumb('Integration connected', { integrationId: integration.id, provider: integration.provider })
     this.emitNotification(integration, 'connected')
 
-    // Restore SSE subscriptions for existing chat sessions
-    const existingSessions = listChatIntegrationSessions(integration.id)
+    // Restore SSE subscriptions for ACTIVE, allowed chat sessions only. Archived/
+    // cleared/timed-out sessions must not be re-subscribed, or stale agent output
+    // could be forwarded back to the external chat (SUP-233); unapproved chats are
+    // skipped by the access check below.
+    const existingSessions = listActiveChatIntegrationSessions(integration.id)
     for (const session of existingSessions) {
+      if (!isChatAllowed(integration.id, session.externalChatId)) continue
       this.subscribeChatSession(integration.id, session.externalChatId, session.sessionId)
     }
+    return true
   }
 
   private async createConnector(integration: ChatIntegration): Promise<ChatClientConnector> {
@@ -402,30 +608,54 @@ class ChatIntegrationManager {
       throw new Error(`Invalid config for ${integration.provider} integration ${integration.id}`)
     }
 
+    const appLink = resolveAppLinkContext(integration.agentSlug)
+
     switch (integration.provider) {
       case 'telegram': {
         const { TelegramConnector } = await import('./telegram-connector')
-        return new TelegramConnector(config as import('./telegram-connector').TelegramConfig)
+        return new TelegramConnector(config as import('./telegram-connector').TelegramConfig, appLink)
       }
       case 'slack': {
         const { SlackConnector } = await import('./slack-connector')
-        return new SlackConnector(config as import('./slack-connector').SlackConfig)
+        return new SlackConnector(config as import('./slack-connector').SlackConfig, appLink)
       }
       case 'imessage': {
         const { IMessageConnector } = await import('./imessage-connector')
-        return new IMessageConnector(config as import('./imessage-connector').IMessageConfig)
+        return new IMessageConnector(config as import('./imessage-connector').IMessageConfig, appLink)
       }
       default:
         throw new Error(`Unknown chat integration provider: ${integration.provider}`)
     }
   }
 
-  private disconnectConnection(conn: IntegrationConnection): void {
+  /**
+   * Resolve a provider's connector CLASS for static capability lookups (e.g.
+   * generateSystemPrompt, discoveryCapabilities, classifyChatId). Mirrors
+   * createConnector's lazy imports — connector modules stay unloaded until
+   * their provider is actually used. Returns undefined for unknown providers
+   * rather than throwing: static lookups are best-effort decorations, not
+   * connection attempts. Public so API routes can label listings and advertise
+   * capabilities without a live connector.
+   */
+  async getConnectorClass(provider: string): Promise<ChatConnectorClass | undefined> {
+    switch (provider) {
+      case 'telegram':
+        return (await import('./telegram-connector')).TelegramConnector
+      case 'slack':
+        return (await import('./slack-connector')).SlackConnector
+      case 'imessage':
+        return (await import('./imessage-connector')).IMessageConnector
+      default:
+        return undefined
+    }
+  }
+
+  private disconnectConnection(conn: IntegrationConnection): Promise<void> {
     conn.messageUnsubscribe?.()
     conn.interactiveUnsubscribe?.()
     conn.errorUnsubscribe?.()
     conn.typingHintUnsubscribe?.()
-    conn.connector.disconnect().catch((err) => {
+    return conn.connector.disconnect().catch((err) => {
       console.error(`[ChatIntegrationManager] Error disconnecting:`, err)
       reportError(err, 'disconnect', { integrationId: conn.integration.id, provider: conn.integration.provider })
     })
@@ -469,22 +699,39 @@ class ChatIntegrationManager {
     const session = this.getOrCreateChatSession(integrationId, chatId)
     if (!session) return
 
-    // Clean up any previous subscription
+    // Clean up any previous subscription + its indicator tick
     session.sseUnsubscribe?.()
+    stopIndicatorTick(session)
 
     const unsubscribe = messagePersister.addSSEClient(sessionId, (event: unknown) => {
+      // Wake on a BUSY snapshot: an event means something changed, so re-arm the tick if the
+      // session is now busy (and it had slept), painting immediately on a cold arm. A non-busy
+      // event is ignored — it must NOT arm a tick that nothing would sleep, nor cancel a pending
+      // sleep. Synchronous and BEFORE the serialization queue, so a backed-up handler can't
+      // delay the wake. The tick — not this — keeps painting.
+      armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(sessionId))
       // Serialize SSE event processing per chat session to prevent race conditions
       // (e.g. session_idle arriving while stream_delta's sendStreamingUpdate is still in-flight)
-      this.enqueueSSEEvent(integrationId, chatId, event)
+      this.enqueueSSEEvent(integrationId, chatId, event, sessionId)
     })
     session.sseUnsubscribe = unsubscribe
+    // Arm-if-busy from the cold snapshot — the same primitive as the wake. Busy → arm + paint
+    // now (so a cold subscribe mid-turn isn't blank); non-busy → clear any stale indicator and
+    // hold zero timers. Crucially, if the busy-making events fired BEFORE this callback existed
+    // (reconnect mid-turn, or markSessionActive racing ahead of subscribe at session creation),
+    // this snapshot is what arms the tick; we never depend on a future event to start it. The
+    // tick is alive for the subscription, not the turn.
+    session.sessionId = sessionId
+    const coldActivity = messagePersister.getSessionActivity(sessionId)
+    armIndicatorIfBusy(session, sessionId, coldActivity)
+    if (!BUSY_ACTIVITIES.has(coldActivity)) clearIndicator(session)
   }
 
-  private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown): void {
+  private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string): void {
     const queueKey = `sse:${integrationId}:${chatId}`
     const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
     const next = current.then(() =>
-      this.handleSSEEvent(integrationId, chatId, event).catch((err) => {
+      this.handleSSEEvent(integrationId, chatId, event, sessionId).catch((err) => {
         console.error(`[ChatIntegrationManager] Error handling SSE event:`, err)
         reportError(err, 'sse-event', { integrationId, chatId, eventType: (event as any)?.type })
       })
@@ -496,51 +743,131 @@ class ChatIntegrationManager {
   // ── Health monitoring ───────────────────────────────────────────────
 
   private async runHealthChecks(): Promise<void> {
+    // Backstop: re-arm any subscribed session that reads busy but has no tick — an
+    // unforeseen missed wake (e.g. a process restart that re-subscribed mid-turn). Rides
+    // this existing timer, so it adds NO new timer, and leaves idle sessions asleep (zero
+    // per-session timers at rest). Same arm-if-busy primitive as subscribe and the wake;
+    // this only catches a miss those didn't.
+    for (const session of this.chatSessions.values()) {
+      const sessionId = session.sessionId
+      if (!sessionId || session.indicatorTickTimer) continue
+      armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(sessionId))
+    }
+
+    await this.reconcileIntegrations({ force: false })
+  }
+
+  /**
+   * Reconcile live connections against the DB work list.
+   *
+   * The DB (every startup-eligible integration: status active/error) is the
+   * source of truth, NOT the in-memory connections map — an integration whose
+   * reconnect failed has no map entry, and iterating the map is exactly what
+   * used to orphan it forever. Here a missing entry just means "rebuild now",
+   * so every failure is retried on the next pass.
+   *
+   * force=false (health tick): rebuild orphans immediately; give a present-but-
+   * disconnected connector a grace window first, so its own faster reconnect
+   * loop (iMessage backoff, Slack socket restart) wins when the outage is short.
+   * force=true (system resume): rebuild everything — sockets are suspect after
+   * sleep and honest isConnected() may lag a half-open TCP connection by up to
+   * a ping cycle.
+   *
+   * Rebuilds run serially: connects fail fast (connector-level timeouts), and
+   * one integration hammering a dead network shouldn't be parallelized anyway.
+   */
+  private async reconcileIntegrations(opts: { force: boolean }): Promise<void> {
     const now = Date.now()
+    for (const integration of listStartupChatIntegrations()) {
+      // A stop() mid-pass (app shutdown) must not resurrect connections it
+      // just tore down.
+      if (!this.isRunning) return
+      const id = integration.id
+      if (this.reconcilingIds.has(id)) continue
 
-    for (const [id, conn] of this.connections) {
-      const connected = conn.connector.isConnected()
+      const conn = this.connections.get(id)
+      const connected = conn?.connector.isConnected() ?? false
 
-      if (connected) {
+      if (connected && !opts.force) {
         this.disconnectedSince.delete(id)
         this.consecutiveFailures.delete(id)
+        if (integration.status === 'error') {
+          // The connector recovered on its own — clear the stale error badge.
+          try { updateChatIntegrationStatus(id, 'active', null) } catch { /* best-effort */ }
+        }
         continue
       }
 
-      if (!this.disconnectedSince.has(id)) {
-        this.disconnectedSince.set(id, now)
+      if (conn && !connected && !opts.force) {
+        if (!this.disconnectedSince.has(id)) this.disconnectedSince.set(id, now)
+        if (now - this.disconnectedSince.get(id)! < HEALTH_CHECK_ERROR_THRESHOLD_MS) continue
       }
 
-      const disconnectedFor = now - this.disconnectedSince.get(id)!
+      await this.rebuildIntegration(id, opts.force ? 'resume-reconnect' : 'health-check-reconnect')
+    }
+  }
 
-      if (disconnectedFor >= HEALTH_CHECK_ERROR_THRESHOLD_MS) {
-        const integration = getChatIntegration(id)
-        if (!integration || integration.status === 'paused') continue
+  /** Tear down and reconnect one integration, with retry/auto-pause accounting. */
+  private async rebuildIntegration(id: string, operation: string): Promise<void> {
+    this.reconcilingIds.add(id)
+    try {
+      // Capture the lifecycle generation before anything else: any user
+      // operation from here on (pause, delete, config update) bumps it, and
+      // this rebuild must then CANCEL — reconnecting from the row snapshot
+      // below would resurrect a paused integration or restore pre-update
+      // credentials, and writing status would clobber what the user's
+      // operation just wrote.
+      const generation = this.generationOf(id)
 
-        const failures = (this.consecutiveFailures.get(id) ?? 0) + 1
+      // Fresh read: the user may have paused or deleted it since the list snapshot.
+      const integration = getChatIntegration(id)
+      if (!integration || integration.status === 'paused') return
+
+      // The teardown wipes the failure counter (correct for user-initiated
+      // removal); capture it first so retry accounting survives.
+      const prevFailures = this.consecutiveFailures.get(id) ?? 0
+      try {
+        await this.teardownConnection(id)
+        // Re-read after the teardown await — a user operation may have landed
+        // in the gap, and the manager may have been stopped.
+        if (!this.isRunning || this.generationOf(id) !== generation) return
+        const fresh = getChatIntegration(id)
+        if (!fresh || fresh.status === 'paused') return
+
+        const connected = await this.connectIntegration(fresh, generation)
+        if (!connected) return // ownership lost mid-connect — cancelled, not successful
+        this.disconnectedSince.delete(id)
+        this.consecutiveFailures.delete(id)
+        if (fresh.status === 'error') {
+          try { updateChatIntegrationStatus(id, 'active', null) } catch { /* best-effort */ }
+        }
+      } catch (err) {
+        // A cancelled rebuild reports nothing: the failure was (or may have
+        // been) caused by the user's own operation tearing our connect down,
+        // and an 'error' write would flip their fresh 'paused' back to a
+        // startup-eligible status.
+        if (!this.isRunning || this.generationOf(id) !== generation) return
+        const failures = prevFailures + 1
         this.consecutiveFailures.set(id, failures)
+        console.error(`[ChatIntegrationManager] Reconnect failed for ${id} (attempt ${failures}):`, err)
+        reportError(err, operation, { integrationId: id, provider: integration.provider, attempt: failures })
 
         if (failures >= HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES) {
           console.error(`[ChatIntegrationManager] ${id}: ${failures} consecutive reconnect failures — pausing`)
-          reportError(new Error(`Auto-paused after ${failures} failures`), 'health-check-auto-pause', { integrationId: id, provider: conn.integration.provider, failures }, 'warning')
-          try { await this.removeIntegration(id) } catch { /* best-effort */ }
+          reportError(new Error(`Auto-paused after ${failures} failures`), 'health-check-auto-pause', { integrationId: id, provider: integration.provider, failures }, 'warning')
           try { updateChatIntegrationStatus(id, 'paused', `Auto-paused after ${failures} failed reconnection attempts`) } catch { /* best-effort */ }
-          this.emitNotification(conn.integration, 'error', `Auto-paused after ${failures} failed reconnect attempts`)
-          continue
+          this.emitNotification(integration, 'error', `Auto-paused after ${failures} failed reconnect attempts`)
+          this.disconnectedSince.delete(id)
+          this.consecutiveFailures.delete(id)
+          return
         }
 
-        try { updateChatIntegrationStatus(id, 'error', 'Connection lost — attempting reconnect') } catch { /* best-effort */ }
-        this.emitNotification(conn.integration, 'error', 'Connection lost')
-
-        try {
-          await this.removeIntegration(id)
-          await this.connectIntegration(integration)
-        } catch (err) {
-          console.error(`[ChatIntegrationManager] Reconnect failed for ${id} (attempt ${failures}):`, err)
-          reportError(err, 'health-check-reconnect', { integrationId: id, provider: conn.integration.provider, attempt: failures })
-          try { updateChatIntegrationStatus(id, 'error', `Reconnect failed (attempt ${failures}): ${err}`) } catch { /* best-effort */ }
-        }
+        try { updateChatIntegrationStatus(id, 'error', `Reconnect failed (attempt ${failures}): ${err}`) } catch { /* best-effort */ }
+        // Notify once per outage, not once per 5-minute tick.
+        if (failures === 1) this.emitNotification(integration, 'error', 'Connection lost')
       }
+    } finally {
+      this.reconcilingIds.delete(id)
     }
   }
 
@@ -598,6 +925,42 @@ class ChatIntegrationManager {
     const chatId = message.chatId
     if (!chatId) return
 
+    // Access gate — enforce owner approval BEFORE any token spend (and before
+    // /clear or /start), so a non-allowed chat can neither command nor cost.
+    const decision = decideInboundAccess({
+      integrationId,
+      externalChatId: chatId,
+      chatType: message.chatType,
+      userId: message.userId,
+      userName: message.userName,
+      chatName: message.chatName,
+      preview: message.text,
+    })
+    if (decision.action === 'blocked') {
+      if (decision.sendNotice) {
+        const access = getChatAccess(integrationId, chatId)
+        if (access) {
+          try {
+            await conn.connector.sendMessage(chatId, { text: 'This bot needs the owner to approve this conversation before it can respond.' })
+            markNoticeSent(access.id)
+          } catch (err) {
+            reportError(err, 'access-notice', { integrationId, chatId }, 'warning')
+          }
+        }
+      }
+      return
+    }
+
+    // Handle /start — a freshly bootstrapped/allowed chat gets a greeting without
+    // spending on the agent. (Pending chats never reach here — the gate blocked them.)
+    // Telegram-only: /start is the Telegram onboarding convention and part of the
+    // allowlist bootstrap UX. Other providers forward "/start" to the agent as a
+    // normal message (their pre-allowlist behavior).
+    if (integration.provider === 'telegram' && message.text.trim().toLowerCase() === '/start') {
+      await conn.connector.sendMessage(chatId, { text: "You're connected. Send a message to start." }).catch(() => {})
+      return
+    }
+
     // Handle /clear command — reset the session for this chat
     if (message.text.trim().toLowerCase() === '/clear') {
       await this.clearChatSession(integrationId, chatId, conn.connector)
@@ -616,6 +979,9 @@ class ChatIntegrationManager {
       try { updateChatIntegrationStatus(integrationId, 'error', 'Agent no longer exists') } catch { /* best-effort */ }
       return
     }
+
+    // Revoke can land mid-flight (during the awaits above). Re-check before spending.
+    if (!isChatAllowed(integrationId, chatId)) return
 
     // Ensure container is running
     let client: Awaited<ReturnType<typeof containerManager.ensureRunning>>
@@ -641,12 +1007,6 @@ class ChatIntegrationManager {
     if (!chatSession) {
       // New chat — create a new agent session
       try {
-        const { getEffectiveModels } = await import('@shared/lib/config/settings')
-        const { getSecretEnvVars } = await import('@shared/lib/services/secrets-service')
-        const { registerSession, updateSessionMetadata } = await import('@shared/lib/services/session-service')
-
-        const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
-
         const { text: messageText, failedFiles } = await this.buildMessageContent(integration, message)
 
         if (failedFiles.length > 0 && !messageText.trim()) {
@@ -663,47 +1023,10 @@ class ChatIntegrationManager {
           })
         }
 
-        const models = getEffectiveModels()
-        const containerSession = await client.createSession({
-          availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-          initialMessage: messageText,
-          model: integration.model || models.agentModel,
-          browserModel: models.browserModel,
-          ...(integration.effort ? { effort: integration.effort as EffortLevel } : {}),
-          ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
-        })
+        // Revoke can land mid-flight (during the awaits above). Re-check before spending.
+        if (!isChatAllowed(integrationId, chatId)) return
 
-        const sessionId = containerSession.id
-        breadcrumb('New chat session created', { integrationId, sessionId, provider: integration.provider })
-
-        const displayName = this.deriveDisplayName(integration.provider, message)
-
-        const sessionName = buildSessionName(
-          integration.name,
-          integration.provider,
-          displayName,
-          integration.sessionTimeout,
-        )
-
-        await registerSession(integration.agentSlug, sessionId, sessionName)
-
-        await updateSessionMetadata(integration.agentSlug, sessionId, {
-          isChatIntegrationSession: true,
-          chatIntegrationId: integrationId,
-          ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
-        })
-
-        createChatIntegrationSession({
-          integrationId,
-          externalChatId: chatId,
-          sessionId,
-          displayName,
-        })
-
-        await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
-        messagePersister.markSessionActive(sessionId, integration.agentSlug)
-        this.subscribeChatSession(integrationId, chatId, sessionId)
-
+        await this.startNewChatSession(integration, client, chatId, message, messageText)
         return // initialMessage already sent via createSession
       } catch (err) {
         console.error(`[ChatIntegrationManager] Failed to create new session for ${integrationId}:`, err)
@@ -725,6 +1048,8 @@ class ChatIntegrationManager {
 
     const sessionId = chatSession.sessionId
 
+    // Hoisted so the catch can reuse it for self-heal without re-downloading.
+    let messageText = ''
     try {
       if (!messagePersister.isSubscribed(sessionId)) {
         await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
@@ -733,7 +1058,9 @@ class ChatIntegrationManager {
       // Ensure SSE → chat forwarding is active (may have been torn down by reconnect)
       this.subscribeChatSession(integrationId, chatId, sessionId)
 
-      const { text: messageText, failedFiles } = await this.buildMessageContent(integration, message)
+      const built = await this.buildMessageContent(integration, message)
+      messageText = built.text
+      const failedFiles = built.failedFiles
 
       if (failedFiles.length > 0 && !messageText.trim()) {
         const names = failedFiles.join(', ')
@@ -749,6 +1076,28 @@ class ChatIntegrationManager {
         })
       }
 
+      // Revoke can land mid-flight (during the awaits above). Re-check before spending.
+      if (!isChatAllowed(integrationId, chatId)) return
+
+      // A plain-text reply to an open single-question card continues the same turn as the
+      // free-form "Other" answer; anything else cancels the pending request (and strips its
+      // now-abandoned card) so this message starts a fresh turn instead of deadlocking. No-op
+      // when not awaiting. Mirrors the app send-message route.
+      const consumed = await consumeOrCancelAwaitingInput({
+        sessionId,
+        agentSlug: integration.agentSlug,
+        chatId,
+        messageText,
+        // Resolve an open question with the RAW user text (no group sender-name prefix): the
+        // prefixed messageText is only for the fresh-turn forward below.
+        answerText: message.text ?? '',
+        hasFiles: !!(message.files && message.files.length > 0),
+        persister: messagePersister,
+        registry: userInputRequestManager,
+        connector: conn.connector,
+      })
+      if (consumed) return
+
       await client.sendMessage(sessionId, messageText)
       messagePersister.markSessionActive(sessionId, integration.agentSlug)
       const now = Date.now()
@@ -758,6 +1107,34 @@ class ChatIntegrationManager {
         this.lastSessionTouch.set(chatSession.id, now)
       }
     } catch (err) {
+      // Self-heal: the container no longer has this agent session (e.g. it was
+      // evicted and could not be resumed). Without recovery, resolveActiveSession
+      // keeps returning this dead row, so EVERY future message to this chat would
+      // fail. Archive the stale mapping and transparently start a fresh session
+      // with the same message. Transient failures (dead container, network) are
+      // NOT session-gone, so they keep the retry prompt below.
+      if (this.isSessionGoneError(err)) {
+        console.warn(`[ChatIntegrationManager] Agent session ${sessionId} gone in container; rotating chat ${chatId} to a fresh session`)
+        breadcrumb('Chat agent session gone, self-healing', { integrationId, chatId, sessionId })
+        this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
+        try {
+          // messageText is already built unless we failed before it (e.g. the
+          // subscribe threw); rebuild in that rare case so the message isn't lost.
+          if (!messageText) {
+            messageText = (await this.buildMessageContent(integration, message)).text
+          }
+          // Revoke can land mid-flight (during the awaits above). Re-check before spending.
+          if (!isChatAllowed(integrationId, chatId)) return
+          await this.startNewChatSession(integration, client, chatId, message, messageText)
+          return
+        } catch (healErr) {
+          console.error(`[ChatIntegrationManager] Self-heal failed for ${integrationId}/${chatId}:`, healErr)
+          reportError(healErr, 'send-message-selfheal', { integrationId, chatId, provider: integration.provider }, isContainerNotRunning(healErr) ? 'warning' : 'error')
+          await conn.connector.sendMessage(chatId, { text: 'Error: Failed to send your message to the agent. Please try again.' }).catch(() => {})
+          return
+        }
+      }
+
       console.error(`[ChatIntegrationManager] Failed to send message for ${integrationId}/${sessionId}:`, err)
       // Recovered path (user is told to retry); a dead container is expected and
       // self-healing, so downgrade it to a warning to cut Sentry noise.
@@ -766,15 +1143,117 @@ class ChatIntegrationManager {
       return
     }
 
-    // Show typing indicator
-    this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
-      ?.connector.showTypingIndicator(chatId).catch(() => {})
+    // The working indicator arms via the per-session tick (it reads getSessionActivity),
+    // not here — turn start only ARMS, the tick paints within at most one tick.
+    const dispatched = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
+    if (dispatched) {
+      // New user turn: re-allow exactly one terminal notice (the session_error
+      // message). Reset here, once per turn, so a single multi-segment turn can't
+      // emit repeated notices.
+      dispatched.turnNotified = false
+    }
+  }
+
+  /**
+   * Create a fresh agent session for a chat, persist the (integration, chat) →
+   * session mapping, and wire up SSE forwarding. `messageText` is sent as the
+   * session's initial message via createSession. Callers build messageText (and
+   * surface any failed-download warnings) and archive any prior session for this
+   * chat first. Shared by the new-chat path and the send-time self-heal.
+   */
+  private async startNewChatSession(
+    integration: ChatIntegration,
+    client: ContainerClient,
+    chatId: string,
+    message: IncomingMessage,
+    messageText: string,
+  ): Promise<void> {
+    const { getEffectiveModels } = await import('@shared/lib/config/settings')
+    const { getSecretEnvVars } = await import('@shared/lib/services/secrets-service')
+    const { registerSession, updateSessionMetadata } = await import('@shared/lib/services/session-service')
+    const { readAgentPreferences } = await import('@shared/lib/services/agent-preferences-service')
+
+    const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
+    // Provider-specific session context (DM vs channel vs thread, delivery
+    // semantics) — owned by each connector class, not the manager.
+    const systemPrompt = (await this.getConnectorClass(integration.provider))?.generateSystemPrompt?.(message)
+    // Model/effort/speed preference order: integration override > agent default > global default.
+    const models = getEffectiveModels()
+    const agentPrefs = await readAgentPreferences(integration.agentSlug)
+    const resolved = resolveRuntimeInherit(
+      { model: integration.model, effort: integration.effort, speed: integration.speed },
+      agentPrefs,
+      models,
+    )
+
+    const containerSession = await client.createSession({
+      availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+      initialMessage: messageText,
+      model: resolved.model,
+      browserModel: models.browserModel,
+      dashboardBuilderModel: models.dashboardBuilderModel,
+      effort: resolved.effort,
+      ...(resolved.speed ? { speed: resolved.speed } : {}),
+      ...(systemPrompt ? { systemPrompt } : {}),
+    })
+
+    const sessionId = containerSession.id
+    breadcrumb('New chat session created', { integrationId: integration.id, sessionId, provider: integration.provider })
+
+    const displayName = this.deriveDisplayName(integration.provider, message)
+    const sessionName = buildSessionName(
+      integration.name,
+      integration.provider,
+      displayName,
+      integration.sessionTimeout,
+    )
+
+    await registerSession(integration.agentSlug, sessionId, sessionName)
+    await updateSessionMetadata(integration.agentSlug, sessionId, {
+      isChatIntegrationSession: true,
+      chatIntegrationId: integration.id,
+      ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
+    })
+
+    createChatIntegrationSession({
+      integrationId: integration.id,
+      externalChatId: chatId,
+      sessionId,
+      displayName,
+    })
+
+    await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
+    messagePersister.markSessionActive(sessionId, integration.agentSlug)
+    this.subscribeChatSession(integration.id, chatId, sessionId)
+  }
+
+  /**
+   * True when a container call failed because the agent session no longer exists
+   * there (evicted / not resumable) — as opposed to a transient container or
+   * network error. Gates the send-time self-heal so only genuinely-gone sessions
+   * are rotated, while transient errors still surface a retry prompt.
+   */
+  private isSessionGoneError(err: unknown): boolean {
+    if (!(err instanceof Error)) return false
+    // Matches both shapes the container surfaces: the 404 guard's generic
+    // "Session not found" (host client: "Failed to send message: Session not
+    // found") and the resume-failure form "Session <id> not found".
+    return /session(\s+\S+)?\s+not\s+found/i.test(err.message)
+  }
+
+  /** Stop a chat session's live streaming: drop the SSE subscription, the tick, and the indicator. */
+  private stopSession(session: ManagedConnector): void {
+    session.sseUnsubscribe?.()
+    stopIndicatorTick(session)
+    // Force-clear on teardown (unconditional, not the idempotent clearIndicator): the
+    // session is going away, so settle the connector even if indicatorShown drifted.
+    session.connector.stopWorking(session.chatId).catch(() => {})
   }
 
   private teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): void {
     const key = this.getChatSessionKey(integrationId, chatId)
     const managed = this.chatSessions.get(key)
-    managed?.sseUnsubscribe?.()
+    if (managed) this.stopSession(managed)
     this.chatSessions.delete(key)
     if (opts?.archive) {
       this.lastSessionTouch.delete(opts.archive)
@@ -808,9 +1287,49 @@ class ChatIntegrationManager {
       const [integrationId, chatId] = key.split(':')
       const chatSession = getChatIntegrationSession(integrationId, chatId)
       if (chatSession?.id === sessionId) {
-        managed.sseUnsubscribe?.()
+        this.stopSession(managed)
         this.chatSessions.delete(key)
         break
+      }
+    }
+  }
+
+  /**
+   * Send the "you're approved" notice to an external chat.
+   * Best-effort: exceptions are captured but do NOT roll back the approval.
+   */
+  async notifyChatApproved(integrationId: string, externalChatId: string): Promise<void> {
+    const conn = this.connections.get(integrationId)
+    if (!conn) return
+    try {
+      await conn.connector.sendMessage(externalChatId, { text: "You're approved. Send a message to start." })
+    } catch (e) {
+      captureException(e, { tags: { component: COMPONENT, operation: 'approve-notice' }, level: 'warning' })
+    }
+  }
+
+  /**
+   * Tear down the managed chat session for a revoked external chat:
+   * unsubscribes SSE delivery and archives the DB session row.
+   */
+  async tearDownChatSession(integrationId: string, externalChatId: string): Promise<void> {
+    const session = getChatIntegrationSession(integrationId, externalChatId)
+    if (!session) return
+    this.teardownManagedSession(integrationId, externalChatId)
+    archiveChatIntegrationSession(session.id)
+  }
+
+  /**
+   * Reconcile running sessions against current access (called when approval is
+   * enabled). Tears down any active session whose chat is no longer allowed, so
+   * a flip to require-approval immediately gates previously-public conversations.
+   */
+  async reconcileAccess(integrationId: string): Promise<void> {
+    const sessions = listChatIntegrationSessions(integrationId)
+    for (const session of sessions) {
+      if (session.archivedAt) continue
+      if (!isChatAllowed(integrationId, session.externalChatId)) {
+        await this.tearDownChatSession(integrationId, session.externalChatId)
       }
     }
   }
@@ -838,8 +1357,16 @@ class ChatIntegrationManager {
     integration: ChatIntegration,
     message: IncomingMessage,
   ): Promise<{ text: string; failedFiles: string[] }> {
-    // In group/channel contexts, prefix with sender name so the agent can attribute messages.
-    const prefix = message.chatName && message.userName ? `\\[${message.userName}]: ` : ''
+    // Attribution is best-effort metadata, so lookup failure falls back to no prefix.
+    let connectorClass: ChatConnectorClass | undefined
+    try {
+      connectorClass = await this.getConnectorClass(integration.provider)
+    } catch { /* fall through to the no-prefix default */ }
+    const sender = message.userName || message.userId
+    const prefix = sender
+      && isMultiPartyChatType(connectorClass?.classifyChatId?.(message))
+      ? `\\[${sender}]: `
+      : ''
     const text = prefix + (message.text || '')
 
     if (!message.files || message.files.length === 0) {
@@ -934,17 +1461,39 @@ class ChatIntegrationManager {
     return this.downloadWithAuth(info.file.url_private_download, botToken)
   }
 
-  /** Download a URL with Bearer auth, following redirects manually to preserve the header. */
+  /**
+   * Download a URL with Bearer auth, following redirects manually.
+   *
+   * The Slack bot token is attached ONLY when the next hop is an HTTPS request
+   * to a trusted Slack host (SUP-232). Slack download URLs redirect to signed S3
+   * URLs whose auth lives in the query string, so dropping the header on
+   * cross-origin hops does not break legitimate downloads — but it prevents the
+   * xoxb token from leaking to an attacker-controlled redirect target.
+   */
   private async downloadWithAuth(url: string, token: string): Promise<Buffer | null> {
-    const headers = { 'Authorization': `Bearer ${token}` }
+    let target = tryParseUrl(url)
+    if (!target) {
+      console.error('[ChatIntegrationManager] Invalid Slack download URL')
+      return null
+    }
 
-    let response = await fetch(url, { headers, redirect: 'manual' })
-    // Follow redirects with auth preserved
+    const headersFor = (u: URL): Record<string, string> =>
+      isTrustedSlackDownloadHost(u) ? { 'Authorization': `Bearer ${token}` } : {}
+
+    let response = await fetch(target.toString(), { headers: headersFor(target), redirect: 'manual' })
+    // Follow redirects, re-evaluating auth for every hop.
     let redirects = 0
     while (response.status >= 300 && response.status < 400 && redirects < 5) {
       const location = response.headers.get('location')
       if (!location) break
-      response = await fetch(location, { headers })
+      // Resolve relative redirects against the current URL.
+      const next = tryParseUrl(location, target)
+      if (!next) {
+        console.error('[ChatIntegrationManager] Invalid redirect location in Slack download')
+        return null
+      }
+      target = next
+      response = await fetch(target.toString(), { headers: headersFor(target), redirect: 'manual' })
       redirects++
     }
 
@@ -987,10 +1536,17 @@ class ChatIntegrationManager {
     const path = await import('path')
     const fs = await import('fs')
 
-    const uploadName = `${Date.now()}-${filename}`
+    // External attachment names are attacker-controlled — sanitize to a safe
+    // basename so `../` segments cannot escape the uploads directory (SUP-231).
+    const safeName = sanitizeUploadFilename(filename)
+    const uploadName = `${Date.now()}-${safeName}`
     const workspaceDir = getAgentWorkspaceDir(agentSlug)
     const uploadsDir = path.resolve(workspaceDir, 'uploads')
     const fullPath = path.resolve(uploadsDir, uploadName)
+
+    // Defense in depth: never write outside uploads even if sanitization is
+    // weakened in the future. Throws on escape.
+    assertPathWithinDir(uploadsDir, fullPath, 'Resolved upload path escapes the uploads directory')
 
     await fs.promises.mkdir(uploadsDir, { recursive: true })
     await fs.promises.writeFile(fullPath, data)
@@ -1024,36 +1580,43 @@ class ChatIntegrationManager {
 
   // ── Global notification handling (proxy review requests) ─────────
 
+  /**
+   * Reviews are agent-scoped, so they reach no session SSE stream — this
+   * subscription is the ONLY way an Allow/Deny card ever gets to chat.
+   * Idempotent so a harness that drives integrations without start() can arm
+   * it without risking a double-send.
+   */
+  private subscribeGlobalNotifications(): void {
+    if (this.globalNotificationUnsubscribe) return
+    this.globalNotificationUnsubscribe = messagePersister.addGlobalNotificationClient((event: unknown) => {
+      this.handleGlobalNotification(event).catch((err) => {
+        console.error('[ChatIntegrationManager] Error handling global notification:', err)
+        reportError(err, 'global-notification')
+      })
+    })
+  }
+
   private async handleGlobalNotification(event: unknown): Promise<void> {
     const data = event as Record<string, unknown>
-    if (data.type !== 'session_awaiting_input') return
+    // Reviews are agent-scoped, so they never reach a session SSE stream —
+    // the global registry event is the only place chat can see them. Same
+    // wire the session cards come from, filtered to the review kinds.
+    if (data.type !== 'user_request_created') return
+    const request = data.request as PendingUserInputRequest | undefined
+    if (!request) return
 
-    const review = data.review as Record<string, unknown> | undefined
-    if (!review || review.type !== 'proxy_review_request') return
+    // Non-review kinds return null here and are left to the session stream —
+    // they arrive on BOTH wires, so rendering them here too would double-send.
+    const card = reviewCardFromRegistry(request)
+    const agentSlug = request.scope.agentSlug
+    if (!card || !agentSlug) return
 
-    const agentSlug = data.agentSlug as string
-    const sessionId = data.sessionId as string
-    if (!agentSlug) return
-
-    const reviewId = review.reviewId as string
-    const displayText = review.displayText as string || 'Allow this action?'
-    const toolkit = review.toolkit as string || ''
-
-    const text = toolkit
-      ? `🔐 *${formatProviderName(toolkit)} — Permission Request*\n${displayText}`
-      : `🔐 *Permission Request*\n${displayText}`
-
-    const card = {
-      type: 'user_question_request',
-      toolUseId: `review:${reviewId}:${agentSlug}`,
-      questions: [{
-        question: text,
-        options: [
-          { label: '✅ Allow', value: 'allow' },
-          { label: '❌ Deny', value: 'deny' },
-        ],
-      }],
-    } as any
+    // A proxied call carries no session of its own, so the scope has none to
+    // route by; the agent's active session is the same fallback the review
+    // notification uses, and it is what gives the card's link a live session
+    // to open rather than the agent home.
+    const sessionId =
+      request.scope.sessionId ?? messagePersister.getActiveSessionIdsForAgent(agentSlug)[0]
 
     // If we know the sessionId, send only to the chat session that owns it
     if (sessionId) {
@@ -1063,7 +1626,7 @@ class ChatIntegrationManager {
           const key = `${chatSession.integrationId}:${chatSession.externalChatId}`
           const managed = this.chatSessions.get(key)
           if (managed) {
-            await managed.connector.sendUserRequestCard(managed.chatId, card)
+            await managed.connector.sendUserRequestCard(managed.chatId, card, sessionId)
             return
           }
         }
@@ -1090,13 +1653,18 @@ class ChatIntegrationManager {
 
   // ── SSE event handling ────────────────────────────────────────────
 
-  private async handleSSEEvent(integrationId: string, chatId: string, event: unknown): Promise<void> {
+  private async handleSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string): Promise<void> {
     const key = this.getChatSessionKey(integrationId, chatId)
     const session = this.chatSessions.get(key)
     if (!session) return
 
+    // Fail closed: never forward agent output to a chat that is no longer allowed.
+    // Teardown normally unsubscribes on revoke/deny, but this guards the window
+    // where an event is already in flight when access is revoked.
+    if (!isChatAllowed(integrationId, chatId)) return
+
     const showToolCalls = getChatIntegration(integrationId)?.showToolCalls ?? false
-    await processSSEEvent(session, event, showToolCalls)
+    await processSSEEvent(session, event, showToolCalls, sessionId)
   }
 
   // ── Interactive response handling ─────────────────────────────────
@@ -1105,7 +1673,13 @@ class ChatIntegrationManager {
     integrationId: string,
     toolUseId: string,
     response: unknown,
+    chatId?: string,
   ): Promise<void> {
+    if (!isChatAllowed(integrationId, chatId ?? '')) return // revoked/stale keyboard, or missing identity → fail closed
+
+    const integration = getChatIntegration(integrationId)
+    if (!integration) return
+
     // Handle proxy review decisions (tool approval requests)
     if (toolUseId.startsWith('review:')) {
       const parts = toolUseId.split(':')
@@ -1116,7 +1690,11 @@ class ChatIntegrationManager {
 
       try {
         const { reviewManager } = await import('@shared/lib/proxy/review-manager')
-        reviewManager.submitDecision(reviewId, decision as 'allow' | 'deny')
+        // Bound to this integration's agent: the id rides in from a chat
+        // client, and submitDecision returns false for a review that is
+        // settled, of another kind, or another agent's.
+        const settled = reviewManager.submitDecision(reviewId, decision as 'allow' | 'deny', integration.agentSlug)
+        if (!settled) await this.replyAlreadyHandled(integrationId, chatId)
       } catch (err) {
         console.error(`[ChatIntegrationManager] Failed to submit review decision:`, err)
         reportError(err, 'review-decision', { integrationId, reviewId, decision })
@@ -1124,12 +1702,43 @@ class ChatIntegrationManager {
       return
     }
 
-    const integration = getChatIntegration(integrationId)
-    if (!integration) return
+    // The same gate for container inputs. A card whose request was settled
+    // elsewhere — answered in the app, cancelled by the next turn, invalidated
+    // with a dead subagent — keeps live-looking buttons in chat; without this
+    // the press buffers an earlyResult in the container that nothing will ever
+    // consume, and the user walks away believing they answered. Not-open and
+    // not-this-agent's collapse to the same reply on purpose: both mean the
+    // button did nothing, and distinguishing them would confirm to one chat
+    // that another agent holds that id.
+    //
+    // CLAIM it rather than merely reading it: everything below yields (the
+    // dynamic import, ensureRunning, the resolve call), so a plain "is it
+    // open?" read is check-then-act — a second press observes the same open
+    // request and both proceed. claimRequest is a synchronous check-and-mark,
+    // so exactly one presser wins.
+    const open = userInputRequestManager.claimRequest(toolUseId)
+    if (!open || open.scope.agentSlug !== integration.agentSlug) {
+      // Wrong agent: release immediately, we never had the right to hold it.
+      if (open) userInputRequestManager.releaseClaim(toolUseId)
+      await this.replyAlreadyHandled(integrationId, chatId)
+      return
+    }
 
     try {
       const { containerManager } = await import('@shared/lib/container/container-manager')
       const client = await containerManager.ensureRunning(integration.agentSlug)
+
+      // Re-check with NO await between here and the container call. The claim
+      // only excludes another chat press; a decision on another surface settles
+      // the registry directly, and if that landed while ensureRunning was in
+      // flight the container has nothing parked — resolving now would buffer an
+      // earlyResult nothing will ever collect, which is the phantom this gate
+      // exists to prevent. What remains after this is the container round trip
+      // itself, which only the container can arbitrate.
+      if (!userInputRequestManager.getOpenRequest(toolUseId)) {
+        await this.replyAlreadyHandled(integrationId, chatId)
+        return
+      }
 
       const responseObj = response as Record<string, unknown>
       if (responseObj && typeof responseObj === 'object' && 'question' in responseObj && 'answer' in responseObj) {
@@ -1148,6 +1757,11 @@ class ChatIntegrationManager {
           const text = await resolveResponse.text().catch(() => '')
           console.error(`[ChatIntegrationManager] Failed to resolve question ${toolUseId}:`, text)
           reportError(new Error(`Resolve question failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
+        } else {
+          // Settle immediately — parallel tool calls hold the transcript
+          // tool_result until every sibling resolves. The registry entry's
+          // scope supplies the session.
+          messagePersister.completeInputRequest(undefined, toolUseId, 'answered')
         }
         return
       }
@@ -1164,10 +1778,38 @@ class ChatIntegrationManager {
         const text = await resolveResponse.text().catch(() => '')
         console.error(`[ChatIntegrationManager] Failed to resolve input ${toolUseId}:`, text)
         reportError(new Error(`Resolve input failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
+      } else {
+        messagePersister.completeInputRequest(undefined, toolUseId, 'answered')
       }
     } catch (err) {
       console.error(`[ChatIntegrationManager] Failed to handle interactive response:`, err)
       reportError(err, 'interactive-response-resolve', { integrationId, toolUseId })
+    } finally {
+      // Unconditional: on the success path the claim is already gone (resolve
+      // drops it with the entry), so this only matters for the paths that bail
+      // — a container that never came up, a failed resolve, a settle that beat
+      // us. A leaked claim would make the request undecidable forever, which is
+      // worse than the race it guards.
+      userInputRequestManager.releaseClaim(toolUseId)
+    }
+  }
+
+  /**
+   * Tell the chat that the button it just pressed is dead. Best-effort and
+   * deliberately vague about why: silence is the failure mode this replaces —
+   * a user who pressed Allow and got nothing back has no way to know whether
+   * the agent is thinking or the press was swallowed.
+   */
+  private async replyAlreadyHandled(integrationId: string, chatId?: string): Promise<void> {
+    if (!chatId) return
+    const connector = this.connections.get(integrationId)?.connector
+    if (!connector) return
+    try {
+      await connector.sendMessage(chatId, {
+        text: 'That request was already handled — this card is no longer waiting on you.',
+      })
+    } catch (err) {
+      console.error('[ChatIntegrationManager] Failed to send already-handled notice:', err)
     }
   }
 
@@ -1188,6 +1830,179 @@ class ChatIntegrationManager {
   }
 }
 
+// ── Turn finalize ──────────────────────────────────────────────────────────
+
+/**
+ * Commit a turn's streamed text + settle pending tool pills. Indicator-free: the
+ * terminal cases (session_idle / session_error) settle the indicator via their own
+ * clearIndicator call before finalizing, so this only commits text. Idempotent.
+ */
+async function finalizeTurn(managed: ManagedConnector): Promise<void> {
+  try {
+    await finalizeStreaming(managed)
+    await resolvePendingToolMessages(managed)
+  } catch (err) {
+    console.error('[ChatIntegrationManager] Failed to finalize turn:', err)
+    reportError(err, 'finalize-turn', { integrationId: managed.integration.id, chatId: managed.chatId })
+  }
+}
+
+/**
+ * A short, user-facing message for a turn that ended in an error. Curated by the
+ * SDK error code; never echoes the raw internal error (which can leak file paths,
+ * tokens, or stack text into the chat).
+ */
+function friendlyErrorMessage(apiErrorCode: string | null | undefined): string {
+  const code = (apiErrorCode ?? '').toLowerCase()
+  if (code.includes('overload')) return '⚠️ The assistant is overloaded right now. Please try again in a moment.'
+  if (code.includes('rate') || code.includes('429')) return '⚠️ Hit a rate limit. Please wait a few seconds and try again.'
+  if (code.includes('auth') || code.includes('permission')) return '⚠️ The assistant could not authenticate. Please check the integration settings.'
+  if (code.includes('context') || code.includes('too_long') || code.includes('too_large') || code.includes('length')) {
+    return '⚠️ This conversation got too long for the assistant. Try starting a new conversation.'
+  }
+  return '⚠️ The assistant hit an error and stopped. Please try again.'
+}
+
+/**
+ * Activities that show a placeholder ("busy"). 'idle' | 'awaiting' | 'streaming'
+ * show none — the surface is owned by the reply or a request card, or there is
+ * nothing to show.
+ */
+const BUSY_ACTIVITIES: ReadonlySet<SessionActivity> = new Set([
+  'working', 'thinking', 'compacting', 'retrying',
+])
+
+/**
+ * The ONE thing that PAINTS the working indicator: project the agent's activity
+ * onto the connector. Busy activities show a labeled placeholder — re-painted on
+ * EVERY call, because on Telegram that re-render is the keep-alive. Non-busy tears
+ * it down idempotently. Driven by the per-session tick (the only paint) and the
+ * cold-subscribe snapshot. The connector owns how each activity renders (Telegram
+ * labels a draft, Slack reacts); the app draws its own indicator and is untouched.
+ */
+export function reconcileIndicator(managed: ManagedConnector, activity: SessionActivity): void {
+  if (BUSY_ACTIVITIES.has(activity)) {
+    managed.indicatorShown = true
+    managed.connector.startWorking(managed.chatId, activity).catch(() => {})
+  } else {
+    clearIndicator(managed)
+  }
+}
+
+/**
+ * Idempotent clear: only call the connector when the indicator is currently shown,
+ * so repeated clears (idle ticks, several clear events in a row) make ZERO connector
+ * calls. Clearing is always EXPLICIT — stopping the tick never clears a persistent
+ * draft, so the four immediate clears and the non-busy tick all route through here.
+ */
+export function clearIndicator(managed: ManagedConnector): void {
+  if (!managed.indicatorShown) return
+  managed.indicatorShown = false
+  managed.connector.stopWorking(managed.chatId).catch(() => {})
+}
+
+/** Pull cadence for the indicator tick. At/under Telegram's draft expiry so drafts stay alive. */
+export const INDICATOR_TICK_MS = 1000
+
+/**
+ * How long after the session settles non-busy the tick is allowed to stop. The sleep is
+ * a debounce: any event re-arms (cancels) it, so it only fires after a genuine lull. When
+ * it DOES fire it re-reads the live activity and only stops the tick if the session is
+ * still non-busy — the same "re-read reality" rule the tick itself follows — so a stale or
+ * type-mismatched sleep can never strand a working session.
+ */
+export const INDICATOR_SLEEP_MS = 10_000
+
+/**
+ * Ensure the per-session indicator tick is running, alive for the SSE subscription (NOT a
+ * turn). Each tick re-reads the truth (getSessionActivity) and reconciles — the only PAINT,
+ * and the self-healing backstop: a stuck or wrong indicator is corrected within one tick. The
+ * tick also owns its own idle-sleep (arm on sustained non-busy, cancel on busy), so the settle
+ * handlers stay dumb (clear only) and the sleep decision always reads live state.
+ * CREATE-IF-ABSENT: a tick already running is left untouched — restarting it on every event
+ * would keep pushing the interval back and starve it during a fast event burst, so the
+ * Telegram draft would expire mid-turn. Records the sampled session and cancels any pending
+ * sleep (activity means we stay awake). Returns true iff it created a new interval (a cold
+ * arm) — the caller uses that to paint once immediately so a cold wake isn't blank for a tick.
+ */
+export function startIndicatorTick(managed: ManagedConnector, sessionId: string): boolean {
+  managed.sessionId = sessionId
+  cancelIndicatorSleep(managed)
+  if (managed.indicatorTickTimer) return false
+  managed.indicatorTickTimer = setInterval(() => {
+    const activity = messagePersister.getSessionActivity(sessionId)
+    reconcileIndicator(managed, activity)
+    // The tick owns its own sleep: a busy read keeps it awake (cancel any pending stop), the
+    // first of a sustained non-busy run starts the debounce. scheduleIndicatorSleep is arm-once,
+    // so calling it every non-busy tick never pushes the deadline back.
+    if (BUSY_ACTIVITIES.has(activity)) cancelIndicatorSleep(managed)
+    else scheduleIndicatorSleep(managed)
+  }, INDICATOR_TICK_MS)
+  return true
+}
+
+/**
+ * Arm the tick for a BUSY snapshot, painting once immediately on a cold arm. No-op when the
+ * snapshot is non-busy — a per-session timer is created exactly when a busy state is observed,
+ * never on a stray non-busy event (which would leave a tick running with nothing to sleep it).
+ * The ONE arm primitive behind all three arm sites — subscribe, the per-event wake, and the
+ * health-check backstop — so they share one rule: the tick is armed iff busy, and idle holds
+ * zero per-session timers. Every busy transition emits a per-session broadcast, so a busy
+ * snapshot is always observed in time.
+ */
+export function armIndicatorIfBusy(managed: ManagedConnector, sessionId: string, activity: SessionActivity): void {
+  if (!BUSY_ACTIVITIES.has(activity)) return
+  if (startIndicatorTick(managed, sessionId)) reconcileIndicator(managed, activity)
+}
+
+/**
+ * Stop the per-session tick AND any pending sleep (resource cleanup at unsubscribe /
+ * teardown). Clearing both here is what stops an orphaned sleep — scheduled before a
+ * re-subscribe — from firing later and killing a freshly re-armed tick.
+ */
+export function stopIndicatorTick(managed: ManagedConnector): void {
+  cancelIndicatorSleep(managed)
+  if (managed.indicatorTickTimer) {
+    clearInterval(managed.indicatorTickTimer)
+    managed.indicatorTickTimer = null
+  }
+}
+
+/** Cancel a pending idle-sleep, if any. */
+export function cancelIndicatorSleep(managed: ManagedConnector): void {
+  if (managed.sleepTimer) {
+    clearTimeout(managed.sleepTimer)
+    managed.sleepTimer = null
+  }
+}
+
+/**
+ * Start the debounce that stops the tick after INDICATOR_SLEEP_MS of confirmed non-busy.
+ * ARM-ONCE: a no-op if a countdown is already pending, so the TICK can call this every
+ * non-busy second without ever pushing the deadline back — it fires ~10s after the FIRST
+ * non-busy tick. A busy tick cancels it (cancelIndicatorSleep), restarting the window. No-op
+ * when no tick is running (nothing to sleep). When the timer fires it RE-READS the live
+ * activity and stops the tick only if the session is STILL non-busy — so an auto-approved
+ * script run (card shown but stays 'working'), or a fresh turn started during the debounce,
+ * keeps its tick.
+ */
+export function scheduleIndicatorSleep(managed: ManagedConnector): void {
+  if (!managed.indicatorTickTimer) return
+  if (managed.sleepTimer) return
+  const sessionId = managed.sessionId
+  if (!sessionId) return
+  managed.sleepTimer = setTimeout(() => {
+    managed.sleepTimer = null
+    if (!BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(sessionId))) {
+      // Clear before stopping: stopIndicatorTick only drops timers, so stopping a tick that
+      // is somehow still showing a draft would strand it. Clearing first makes the guard
+      // self-defending regardless of how the caller left indicatorShown.
+      clearIndicator(managed)
+      stopIndicatorTick(managed)
+    }
+  }, INDICATOR_SLEEP_MS)
+}
+
 // ── SSE event processing (exported for testing) ────────────────────────
 
 /**
@@ -1198,6 +2013,7 @@ export async function processSSEEvent(
   managed: ManagedConnector,
   event: unknown,
   showToolCalls = false,
+  sessionId?: string,
 ): Promise<void> {
   const data = event as Record<string, unknown>
   const eventType = data.type as string
@@ -1206,6 +2022,9 @@ export async function processSSEEvent(
     case 'stream_delta': {
       const text = data.text as string
       if (!text) break
+      // First reply token → 'streaming' (non-busy): the streamed text owns the
+      // reply surface, so settle the indicator now. Idempotent; the tick backstops.
+      clearIndicator(managed)
       managed.streamingState.accumulatedText += text
 
       const now = Date.now()
@@ -1232,14 +2051,6 @@ export async function processSSEEvent(
         await resolvePendingToolMessages(managed)
       } catch (err) {
         console.error('[ChatIntegrationManager] Failed to finalize on stream_start:', err)
-      }
-      managed.connector.showTypingIndicator(managed.chatId).catch(() => {})
-      break
-    }
-
-    case 'messages_updated': {
-      if (managed.streamingState.accumulatedText) {
-        managed.connector.showTypingIndicator(managed.chatId).catch(() => {})
       }
       break
     }
@@ -1311,30 +2122,64 @@ export async function processSSEEvent(
       break
     }
 
-    case 'user_question_request':
-    case 'secret_request':
-    case 'file_request':
-    case 'connected_account_request':
-    case 'remote_mcp_request':
-    case 'browser_input_request':
-    case 'script_run_request':
-    case 'computer_use_request': {
+    case 'user_request_created': {
+      // The one wire chat renders cards from. The legacy per-type events still
+      // fire alongside this one (they die in Phase 8) and are deliberately NOT
+      // handled here — handling both would double-send every card.
+      const request = (data as { request?: PendingUserInputRequest }).request
+      if (!request) break
+      const card = requestCardFromRegistry(request)
+      // null = chat stays quiet: a review (agent-scoped, rendered off the
+      // global channel) or an auto-approved ask nobody has to decide.
+      if (!card) break
+
+      // The agent is now waiting on the user → 'awaiting' (non-busy). Settle the
+      // indicator the moment the card is shown (the persister flips isAwaitingInput,
+      // so the tick would clear within a tick anyway — this just makes it instant). The
+      // tick then sleeps after the lull and re-checks activity at fire time.
+      clearIndicator(managed)
       try {
-        await managed.connector.sendUserRequestCard(managed.chatId, data as UserRequestEvent)
+        await managed.connector.sendUserRequestCard(managed.chatId, card, sessionId)
       } catch (err) {
-        console.error(`[ChatIntegrationManager] Failed to send user request card (${eventType}):`, err)
-        reportError(err, 'send-user-request-card', { integrationId: managed.integration.id, provider: managed.integration.provider, eventType })
+        console.error(`[ChatIntegrationManager] Failed to send user request card (${request.kind}):`, err)
+        reportError(err, 'send-user-request-card', { integrationId: managed.integration.id, provider: managed.integration.provider, eventType: card.type })
       }
       break
     }
 
+    case 'user_request_resolved': {
+      // Settled — by a decision here, in the app, or by a sweep. Nothing to
+      // render: the gate in handleInteractiveResponse is what stops a press on
+      // the now-dead card, because no connector can dismiss a single card yet
+      // (dismissOpenCards is all-or-nothing, and Slack does not implement it).
+      break
+    }
+
     case 'session_idle': {
-      try {
-        await finalizeStreaming(managed)
-        await resolvePendingToolMessages(managed)
-      } catch (err) {
-        console.error('[ChatIntegrationManager] Failed to finalize on session_idle:', err)
-        reportError(err, 'session-idle-finalize', { integrationId: managed.integration.id, chatId: managed.chatId })
+      // Turn ended → settle the indicator instantly, then finalize the streamed text.
+      // The tick sleeps itself once it reads the now-idle state.
+      clearIndicator(managed)
+      await finalizeTurn(managed)
+      break
+    }
+
+    case 'session_error': {
+      // An errored turn emits session_error (NOT session_idle), and the host
+      // suppresses the later authoritative idle. Settle the indicator instantly so
+      // it never strands, finalize the turn the same way session_idle does, then
+      // surface a curated error so the user isn't left staring at a frozen reply.
+      // The tick sleeps itself once it reads the now-idle/non-busy state.
+      clearIndicator(managed)
+      await finalizeTurn(managed)
+      if (!managed.turnNotified) {
+        managed.turnNotified = true
+        try {
+          await managed.connector.sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null) })
+        } catch (err) {
+          // Delivery failed — release the latch so a later notice isn't suppressed.
+          managed.turnNotified = false
+          console.error('[ChatIntegrationManager] Failed to send error message:', err)
+        }
       }
       break
     }
@@ -1356,25 +2201,37 @@ export async function resolvePendingToolMessages(managed: ManagedConnector): Pro
 export async function finalizeStreaming(managed: ManagedConnector): Promise<void> {
   const finalText = managed.streamingState.accumulatedText
   if (!finalText) return
+  const messageId = managed.streamingState.currentMessageId
 
-  if (managed.streamingState.currentMessageId) {
-    try {
-      await managed.connector.finalizeStreamingMessage(
-        managed.chatId,
-        managed.streamingState.currentMessageId,
-        finalText,
-      )
-    } catch {
-      await managed.connector.sendMessage(managed.chatId, { text: finalText })
-    }
-  } else {
-    await managed.connector.sendMessage(managed.chatId, { text: finalText })
-  }
-
+  // Claim the buffer synchronously, before the first await, so a concurrent
+  // finalize (e.g. session_idle finalizing while a late stream_start also
+  // finalizes) reads an empty buffer and can't double-send the same text. The
+  // reset previously ran only after the await, leaving that window open.
   managed.streamingState = {
     currentMessageId: null,
     accumulatedText: '',
     lastUpdateTime: 0,
+  }
+
+  try {
+    if (messageId) {
+      try {
+        await managed.connector.finalizeStreamingMessage(managed.chatId, messageId, finalText)
+      } catch {
+        await managed.connector.sendMessage(managed.chatId, { text: finalText })
+      }
+    } else {
+      await managed.connector.sendMessage(managed.chatId, { text: finalText })
+    }
+  } catch (err) {
+    // Both delivery attempts failed (chat unreachable) — nothing reached the user.
+    // Restore the claimed buffer so a later terminal path can retry, but only if it
+    // is still empty, so we never overwrite newer streamed text (a later stream_delta
+    // repopulated it). Re-throw so callers log/handle the failure exactly as before.
+    if (!managed.streamingState.accumulatedText) {
+      managed.streamingState = { currentMessageId: messageId, accumulatedText: finalText, lastUpdateTime: 0 }
+    }
+    throw err
   }
 }
 
@@ -1393,8 +2250,10 @@ async function sendDeliveredFile(
   const workspaceDir = getAgentWorkspaceDir(managed.integration.agentSlug)
   const fullPath = path.resolve(workspaceDir, relativePath)
 
-  // Security: ensure path doesn't escape workspace
-  if (!fullPath.startsWith(path.resolve(workspaceDir))) {
+  // Security: ensure path doesn't escape workspace. A bare startsWith() check is
+  // unsafe — a sibling workspace sharing the path prefix (agent vs agent-victim)
+  // would pass — so use prefix-safe isPathWithinDir (path.relative based).
+  if (!isPathWithinDir(workspaceDir, fullPath)) {
     console.error('[ChatIntegrationManager] deliver_file path escapes workspace:', filePath)
     reportError(new Error('Path traversal attempt in deliver_file'), 'deliver-file-security', { filePath, agentSlug: managed.integration.agentSlug }, 'warning')
     return

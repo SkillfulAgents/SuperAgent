@@ -5,16 +5,19 @@
  * Secrets are stored in .env files in the agent workspace.
  */
 
+import * as fs from 'fs'
 import {
   getAgentEnvPath,
   getAgentWorkspaceDir,
   readFileOrNull,
-  writeFile,
+  writeFileAtomic,
+  withCrossProcessFileLock,
   ensureDirectory,
   fileExists,
 } from '@shared/lib/utils/file-storage'
 import { AgentSecret } from '@shared/lib/types/agent'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
+import { keyToEnvVar } from '@shared/lib/utils/secrets'
 
 // ============================================================================
 // .env File Parsing
@@ -64,11 +67,15 @@ export function parseEnvFile(content: string): Map<string, { value: string; comm
       value = rest.trim()
     }
 
-    // Remove surrounding quotes
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
+    // Remove surrounding quotes. Double-quoted values also unescape the
+    // sequences serializeEnvFile writes (\\ , \" , \n) — without this, a value
+    // containing quotes gained an escape level on EVERY read-modify-write
+    // cycle, progressively corrupting it. Single-quoted values stay literal.
+    if (value.startsWith('"') && value.endsWith('"')) {
+      value = value
+        .slice(1, -1)
+        .replace(/\\(["\\n])/g, (_, c: string) => (c === 'n' ? '\n' : c))
+    } else if (value.startsWith("'") && value.endsWith("'")) {
       value = value.slice(1, -1)
     }
 
@@ -99,8 +106,10 @@ export function serializeEnvFile(secrets: AgentSecret[]): string {
       value.includes('#') ||
       value.includes('\n')
     ) {
-      // Escape double quotes and wrap in double quotes
-      value = `"${value.replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`
+      // Escape backslashes first, then quotes and newlines, and wrap in double
+      // quotes — the exact inverse of parseEnvFile's unescape, so values
+      // round-trip byte-for-byte through repeated read-modify-write cycles.
+      value = `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`
     }
 
     // Add inline comment with display name if different from env var
@@ -112,18 +121,6 @@ export function serializeEnvFile(secrets: AgentSecret[]): string {
   }
 
   return lines.join('\n') + '\n'
-}
-
-/**
- * Convert display name to environment variable name
- * "My API Key" -> "MY_API_KEY"
- */
-export function keyToEnvVar(key: string): string {
-  return key
-    .toUpperCase()
-    .trim()
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
 }
 
 // ============================================================================
@@ -193,45 +190,114 @@ export async function setSecret(agentSlug: string, secret: AgentSecret): Promise
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
   await ensureDirectory(workspaceDir)
 
-  // Get existing secrets
-  const secrets = await listSecrets(agentSlug)
+  const envPath = getAgentEnvPath(agentSlug)
+  // The agent .env is written by BOTH this app AND the container's POST /env
+  // handler (reserved runtime vars). Serialize across processes with an on-disk
+  // lock the container honors too, re-read FRESH under the lock, and write
+  // atomically so an interleaved/interrupted write can't drop other
+  // secrets or truncate the file (which doubles as the container runtime env).
+  // mode 0o666 is FORCED: the atomic rename transfers ownership to this
+  // process, so preserving a stray restrictive mode would leave a file the
+  // container (different uid) can no longer read or write.
+  await withCrossProcessFileLock(envPath, async () => {
+    const secrets = await listSecrets(agentSlug)
 
-  // Find and update or add
-  const existingIndex = secrets.findIndex((s) => s.envVar === secret.envVar)
-  if (existingIndex >= 0) {
-    secrets[existingIndex] = secret
-  } else {
-    secrets.push(secret)
+    const existingIndex = secrets.findIndex((s) => s.envVar === secret.envVar)
+    if (existingIndex >= 0) {
+      secrets[existingIndex] = secret
+    } else {
+      secrets.push(secret)
+    }
+
+    await writeFileAtomic(envPath, serializeEnvFile(secrets), { mode: 0o666, forceMode: true })
+  })
+}
+
+export type UpdateSecretResult =
+  | { status: 'updated'; secret: AgentSecret }
+  | { status: 'not_found' }
+  | { status: 'conflict'; envVar: string }
+  | { status: 'invalid_key' }
+  | { status: 'reserved'; envVar: string }
+
+/**
+ * Update (and optionally rename) a secret as one locked read-modify-write.
+ *
+ * Renames must not be implemented as delete-then-set: a failed second write
+ * loses the source, and a stale client can overwrite a concurrently-created
+ * destination. This operation revalidates both names under the file lock.
+ */
+export async function updateSecret(
+  agentSlug: string,
+  currentEnvVar: string,
+  patch: { key?: string; value?: string },
+): Promise<UpdateSecretResult> {
+  const envPath = getAgentEnvPath(agentSlug)
+  // A missing .env means there cannot be a source secret. Check before taking
+  // the lock so a direct service call for an unknown agent does not create an
+  // otherwise-empty agents/<slug>/workspace directory as a side effect.
+  if (!(await fileExists(envPath))) {
+    return { status: 'not_found' }
   }
 
-  // Write back
-  const envPath = getAgentEnvPath(agentSlug)
-  const content = serializeEnvFile(secrets)
-  await writeFile(envPath, content, { mode: 0o666 })
+  return withCrossProcessFileLock(envPath, async () => {
+    const secrets = await listSecrets(agentSlug)
+    const sourceIndex = secrets.findIndex((secret) => secret.envVar === currentEnvVar)
+    if (sourceIndex < 0 || isReservedEnvVar(currentEnvVar)) {
+      return { status: 'not_found' }
+    }
+
+    const existing = secrets[sourceIndex]
+    const key = patch.key?.trim() || existing.key
+    const envVar = keyToEnvVar(key)
+    if (!envVar) return { status: 'invalid_key' }
+    if (isReservedEnvVar(envVar)) return { status: 'reserved', envVar }
+
+    const destinationIndex = secrets.findIndex((secret) => secret.envVar === envVar)
+    if (destinationIndex >= 0 && destinationIndex !== sourceIndex) {
+      return { status: 'conflict', envVar }
+    }
+
+    const updated = {
+      key,
+      envVar,
+      value: patch.value !== undefined ? patch.value : existing.value,
+    }
+    secrets[sourceIndex] = updated
+    await writeFileAtomic(envPath, serializeEnvFile(secrets), { mode: 0o666, forceMode: true })
+    return { status: 'updated', secret: updated }
+  })
 }
 
 /**
  * Delete a secret
  */
 export async function deleteSecret(agentSlug: string, envVar: string): Promise<boolean> {
-  const secrets = await listSecrets(agentSlug)
-  const filtered = secrets.filter((s) => s.envVar !== envVar)
-
-  if (filtered.length === secrets.length) {
-    return false // Secret didn't exist
-  }
-
   const envPath = getAgentEnvPath(agentSlug)
-
-  if (filtered.length === 0) {
-    // No secrets left, could delete file or leave empty
-    await writeFile(envPath, '# Superagent Secrets\n', { mode: 0o666 })
-  } else {
-    const content = serializeEnvFile(filtered)
-    await writeFile(envPath, content, { mode: 0o666 })
+  // Nothing to delete if the .env (or its workspace dir) is absent. Short-circuit
+  // BEFORE taking the cross-process lock — otherwise opening `<env>.lock` inside a
+  // missing workspace dir throws ENOENT, which the route surfaces as a 500 instead
+  // of the correct 404 (the pre-lock behaviour returned false → "Secret not found").
+  if (!(await fileExists(envPath))) {
+    return false
   }
+  return withCrossProcessFileLock(envPath, async () => {
+    const secrets = await listSecrets(agentSlug)
+    const filtered = secrets.filter((s) => s.envVar !== envVar)
 
-  return true
+    if (filtered.length === secrets.length) {
+      return false // Secret didn't exist
+    }
+
+    if (filtered.length === 0) {
+      // No secrets left — leave an empty (but valid) header file.
+      await writeFileAtomic(envPath, '# Superagent Secrets\n', { mode: 0o666, forceMode: true })
+    } else {
+      await writeFileAtomic(envPath, serializeEnvFile(filtered), { mode: 0o666, forceMode: true })
+    }
+
+    return true
+  })
 }
 
 /**
@@ -248,9 +314,40 @@ export async function hasSecrets(agentSlug: string): Promise<boolean> {
 }
 
 /**
- * Get list of env var names (for passing to container session)
+ * Get list of env var names (for passing to container session).
+ *
+ * This runs on EVERY session start, which makes it the host's self-heal point
+ * for a .env poisoned by older builds (0o600 + owner flipped by an atomic
+ * rename): if this process owns the file, chmod it back to the 0o666 contract.
+ * If it can't even read the file (the container owns the poisoned copy),
+ * degrade to [] instead of failing session creation — this consumer only
+ * surfaces NAMES to the agent, and the booting container heals the file it
+ * owns on startup, so the next session recovers fully. Mutating paths
+ * (setSecret/deleteSecret) stay strictly fail-closed.
  */
 export async function getSecretEnvVars(agentSlug: string): Promise<string[]> {
-  const secrets = await listSecrets(agentSlug)
-  return secrets.map((s) => s.envVar)
+  const envPath = getAgentEnvPath(agentSlug)
+  try {
+    const st = await fs.promises.stat(envPath)
+    if ((st.mode & 0o777) !== 0o666) {
+      await fs.promises.chmod(envPath, 0o666)
+      console.warn(`[secrets] Healed ${envPath} permissions back to 0666`)
+    }
+  } catch {
+    // absent, or not ours to fix (chmod is owner-only) — the container heals its own
+  }
+  try {
+    const secrets = await listSecrets(agentSlug)
+    return secrets.map((s) => s.envVar)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code
+    if (code === 'EACCES' || code === 'EPERM') {
+      console.warn(
+        `[secrets] ${envPath} unreadable (${code}) — starting session without secret names; ` +
+          'the agent container heals the file permissions on boot'
+      )
+      return []
+    }
+    throw err
+  }
 }

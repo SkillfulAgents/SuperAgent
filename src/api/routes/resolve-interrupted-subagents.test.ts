@@ -45,8 +45,8 @@ vi.mock('@shared/lib/services/session-service', () => ({
   deleteSession: vi.fn(), removeMessage: vi.fn(), removeToolCall: vi.fn(),
 }))
 vi.mock('@shared/lib/services/secrets-service', () => ({
-  listSecrets: vi.fn(), getSecret: vi.fn(), setSecret: vi.fn(),
-  deleteSecret: vi.fn(), keyToEnvVar: vi.fn(), getSecretEnvVars: vi.fn(),
+  listSecrets: vi.fn(), getSecret: vi.fn(), setSecret: vi.fn(), updateSecret: vi.fn(),
+  deleteSecret: vi.fn(), getSecretEnvVars: vi.fn(),
 }))
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listScheduledTasks: vi.fn(), listPendingScheduledTasks: vi.fn(),
@@ -93,6 +93,9 @@ vi.mock('../middleware/auth', () => ({
   AgentRead: () => vi.fn((_c: unknown, next: () => Promise<void>) => next()),
   AgentUser: () => vi.fn((_c: unknown, next: () => Promise<void>) => next()),
   AgentAdmin: () => vi.fn((_c: unknown, next: () => Promise<void>) => next()),
+  IsAdmin: () => vi.fn((_c: unknown, next: () => Promise<void>) => next()),
+  ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
+  getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
 }))
 
 // Import after mocks

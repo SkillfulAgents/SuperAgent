@@ -177,7 +177,7 @@ describe('usage route', () => {
         { agentSlug: 'agent-1', agentName: 'Agent One', cost: 1.50, totalTokens: 0 },
       ])
       expect(dayEntry.byModel).toEqual([
-        { model: 'claude-sonnet', cost: 1.50 },
+        { model: 'claude-sonnet', cost: 1.50, totalTokens: 0 },
       ])
     })
 
@@ -526,7 +526,7 @@ describe('usage route', () => {
       }
     })
 
-    it('converts byModel map entries to array of {model, cost}', async () => {
+    it('converts byModel map entries to array of model usage totals', async () => {
       const agent = makeAgent('agent-1', 'Agent One')
       mockListAgents.mockResolvedValue([agent])
       mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
@@ -547,9 +547,38 @@ describe('usage route', () => {
       for (const modelUsage of dayEntry.byModel) {
         expect(modelUsage).toHaveProperty('model')
         expect(modelUsage).toHaveProperty('cost')
+        expect(modelUsage).toHaveProperty('totalTokens')
         expect(typeof modelUsage.model).toBe('string')
         expect(typeof modelUsage.cost).toBe('number')
+        expect(typeof modelUsage.totalTokens).toBe('number')
       }
+    })
+
+    it('aggregates token totals by model', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 1.25, [
+          {
+            modelName: 'claude-sonnet',
+            cost: 1.25,
+            inputTokens: 1_000,
+            outputTokens: 250,
+            cacheCreationTokens: 100,
+            cacheReadTokens: 2_000,
+          },
+        ]),
+      ])
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      expect(dayEntry.byModel).toEqual([
+        { model: 'claude-sonnet', cost: 1.25, totalTokens: 3_350 },
+      ])
     })
 
     it('handles rejected agent promises gracefully (skips them)', async () => {

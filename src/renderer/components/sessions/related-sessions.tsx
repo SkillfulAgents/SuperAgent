@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
-import { MessageSquare, ChevronLeft, ChevronRight, MoreVertical, Pencil, ClipboardCopy, Trash2 } from 'lucide-react'
+import { MessageSquare, ChevronLeft, ChevronRight, MoreVertical, MoonStar, Pencil, ClipboardCopy, Trash2 } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { Button } from '@renderer/components/ui/button'
@@ -30,7 +31,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/components/ui/dialog'
-import { useSelection } from '@renderer/context/selection-context'
+import { useRouteLocation } from '@renderer/router/use-route-location'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useDeleteSession, useUpdateSessionName } from '@renderer/hooks/use-sessions'
 import { apiFetch } from '@renderer/lib/api'
@@ -42,6 +44,7 @@ interface SessionItem {
   isActive?: boolean
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  pendingWakeAt?: string
 }
 
 interface RelatedSessionsProps {
@@ -103,7 +106,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
             {title ?? 'Related Sessions'}
           </h3>
           <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v as SortOrder); setPage(0) }}>
-            <SelectTrigger className="h-7 w-[130px] text-xs">
+            <SelectTrigger className="h-7 w-[130px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -161,9 +164,15 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
 }
 
 function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, searchQuery, dateAsTitle = false, formatSubtext }: { session: SessionItem; showIcon: boolean; formatDate: (date: string) => string; agentSlug?: string; searchQuery?: string; dateAsTitle?: boolean; formatSubtext?: (date: string) => string }) {
-  const { setView, selectedAgentSlug, handleSessionDeleted } = useSelection()
-  const selectSession = (id: string) => setView({ kind: 'session', id })
+  const { selectedAgentSlug, view } = useRouteLocation()
+  const navigate = useNavigate()
+  const routeSessionId = view.kind === 'session' ? view.id : null
   const agentSlug = agentSlugProp ?? selectedAgentSlug
+  const selectSession = (id: string) => {
+    if (agentSlug) {
+      void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: id } })
+    }
+  }
   const { canAdminAgent } = useUser()
   const isOwner = agentSlug ? canAdminAgent(agentSlug) : false
   const deleteSession = useDeleteSession()
@@ -179,7 +188,10 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
     try {
       await deleteSession.mutateAsync({ id: session.id, agentSlug })
       setShowDeleteDialog(false)
-      handleSessionDeleted(session.id)
+      // Navigate away only if we're currently viewing the deleted session.
+      if (routeSessionId === session.id) {
+        void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+      }
     } catch (error) {
       console.error('Failed to delete session:', error)
     } finally {
@@ -238,6 +250,15 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
             ) : session.hasUnreadNotifications ? (
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
             ) : null}
+            {session.pendingWakeAt && !session.isActive && !session.isAwaitingInput && (
+              <span
+                className="flex items-center gap-1 shrink-0 text-muted-foreground font-normal"
+                title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt), { addSuffix: true })}`}
+              >
+                <MoonStar className="h-3 w-3" />
+                {formatDistanceToNow(new Date(session.pendingWakeAt), { addSuffix: true })}
+              </span>
+            )}
             {dateAsTitle ? (
               <>
                 <span>{formatDate(session.createdAt)}</span>
@@ -257,7 +278,7 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
             </div>
           )}
         </div>
-        <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity">
           <Popover>
             <PopoverTrigger asChild>
               <Button

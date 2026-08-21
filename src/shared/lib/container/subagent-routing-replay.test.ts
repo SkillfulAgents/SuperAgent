@@ -10,7 +10,9 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   createScheduledTask: vi.fn(),
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
+  getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   updateSessionMetadata: vi.fn(() => Promise.resolve()),
+  finalizeAutomationStatus: vi.fn(() => Promise.resolve('not-automation')),
 }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({
   notificationManager: {
@@ -135,7 +137,6 @@ function createReplayClient(): {
     getSession: vi.fn(() => Promise.resolve(null)),
     deleteSession: vi.fn(),
     sendMessage: vi.fn(),
-    getMessages: vi.fn(),
     interruptSession: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),

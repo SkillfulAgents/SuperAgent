@@ -45,6 +45,10 @@ import {
   verifyPlatformOrgAccessTokenSigned,
 } from './platform-auth-service'
 import { _setOidcJwksResolverForTest } from '@shared/lib/auth/oidc-jwt'
+import {
+  readCloudWorkspaceRecord,
+  writeCloudWorkspaceRecord,
+} from '@shared/lib/platform-auth/cloud-workspace-record'
 
 const TEST_ISSUER = 'https://auth.test.example'
 const TEST_KID = 'platform-oidc-main'
@@ -133,6 +137,13 @@ describe('platform-auth-service', () => {
     delete process.env.AUTH_MODE
 
     expect(getPlatformAccessToken('local')).toBeNull()
+  })
+
+  it('leaves the disconnected status contract unchanged', () => {
+    const status = getPlatformAuthStatus('local')
+
+    expect(status.connected).toBe(false)
+    expect(status).not.toHaveProperty('orgIconUrl')
   })
 
   it('returns env-managed status with verified orgId after init', async () => {
@@ -512,7 +523,7 @@ describe('platform-auth-service', () => {
   // Env-managed (org-JWT) account enrichment via /v1/account introspection
   // ---------------------------------------------------------------------------
 
-  it('enriches env-managed status with email/orgName/role from /v1/account', async () => {
+  it('enriches env-managed status with the safe workspace icon from /v1/account', async () => {
     process.env.AUTH_MODE = 'true'
     process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
     process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
@@ -524,6 +535,7 @@ describe('platform-auth-service', () => {
           memberId: 'sub_member_1',
           orgId: 'org_env',
           orgName: 'Acme Inc',
+          orgIconUrl: 'https://cdn.example.com/workspaces/acme.png?token=do-not-forward#avatar',
           role: 'owner',
           userId: 'user_1',
           email: 'owner@example.com',
@@ -539,10 +551,74 @@ describe('platform-auth-service', () => {
       source: 'env',
       email: 'owner@example.com',
       orgName: 'Acme Inc',
+      orgIconUrl: 'https://cdn.example.com/workspaces/acme.png',
       role: 'owner',
     })
     // env-managed connections have no "last changed" anchor; updatedAt stays null.
     expect(status.updatedAt).toBeNull()
+  })
+
+  it('returns a null workspace icon when /v1/account has no icon field', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_env',
+          orgName: 'Acme Inc',
+          role: 'owner',
+          userId: 'user_1',
+          email: 'owner@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const status = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(status).toMatchObject({
+      connected: true,
+      source: 'env',
+      orgName: 'Acme Inc',
+      orgIconUrl: null,
+    })
+  })
+
+  it.each([
+    '/private/workspace/icon.png',
+    'file:///private/workspace/icon.png',
+    'data:image/png;base64,c2VjcmV0',
+    'https://user:secret@cdn.example.com/icon.png',
+    'https://localhost/icon.png',
+    'https://127.0.0.1/icon.png',
+  ])('does not forward an unsafe workspace icon value: %s', async (orgIconUrl) => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_env',
+          orgName: 'Acme Inc',
+          orgIconUrl,
+          role: 'owner',
+          userId: 'user_1',
+          email: 'owner@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const status = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(status.orgIconUrl).toBeNull()
   })
 
   it('falls back to the base env-managed status when introspection fails', async () => {
@@ -624,6 +700,7 @@ describe('platform-auth-service', () => {
 
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(status).toMatchObject({ source: 'settings', orgName: 'Stored Org', email: 'stored@example.com' })
+    expect(status).not.toHaveProperty('orgIconUrl')
   })
 
   // Helpers for the org-switch / lifecycle tests below.
@@ -801,5 +878,63 @@ describe('platform-auth-service', () => {
       getAgentsDir(), 'agent-c', 'workspace', '.claude', 'skills', 'stale-skill',
     )
     expect(fs.existsSync(skillDir)).toBe(false)
+  })
+
+  describe('cloud-workspace token invalidation on identity change', () => {
+    function seedCloudToken() {
+      writeCloudWorkspaceRecord({
+        deploymentUrl: 'https://ws.example.com',
+        orgId: 'org_x',
+        token: 'deploy_session_token',
+        tokenPreview: 'deploy...oken',
+        expiresAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
+        updatedAt: new Date().toISOString(),
+        userId: 'user_a',
+        memberId: 'sub_a',
+        tokenFingerprint: 'fingerprint_a',
+      })
+    }
+
+    it('clears the deployment token when the acting user/member changes (same org)', async () => {
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_a_0000000000000000',
+        orgId: 'org_x',
+        userId: 'user_a',
+        memberId: 'sub_a',
+      })
+      seedCloudToken()
+      expect(readCloudWorkspaceRecord()).not.toBeNull()
+
+      // Reconnect as a DIFFERENT member of the SAME org.
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_b_1111111111111111',
+        orgId: 'org_x',
+        userId: 'user_b',
+        memberId: 'sub_b',
+      })
+      expect(readCloudWorkspaceRecord()).toBeNull()
+    })
+
+    it('keeps the deployment token on a same-identity metadata refresh', async () => {
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_a_0000000000000000',
+        orgId: 'org_x',
+        userId: 'user_a',
+        memberId: 'sub_a',
+        role: 'owner',
+      })
+      seedCloudToken()
+
+      // Same principal, only role/email changed (the refreshStoredPlatformAccount path).
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_a_0000000000000000',
+        orgId: 'org_x',
+        userId: 'user_a',
+        memberId: 'sub_a',
+        role: 'admin',
+        email: 'user_a@example.com',
+      })
+      expect(readCloudWorkspaceRecord()).not.toBeNull()
+    })
   })
 })

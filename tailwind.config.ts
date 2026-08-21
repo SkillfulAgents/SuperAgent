@@ -1,4 +1,5 @@
 import type { Config } from 'tailwindcss'
+import plugin from 'tailwindcss/plugin'
 
 const config: Config = {
   darkMode: ['class'],
@@ -8,6 +9,19 @@ const config: Config = {
   ],
   theme: {
 	extend: {
+		// Resolve full-height utilities to the dynamic viewport so the layout
+		// shrinks to account for iOS Safari's dynamic toolbar (otherwise the
+		// bottom composer/footer renders behind it). `100dvh` === `100vh` on
+		// desktop/Electron, so this is a no-op everywhere except mobile browsers.
+		height: {
+			screen: '100dvh',
+		},
+		minHeight: {
+			screen: '100dvh',
+		},
+		maxHeight: {
+			screen: '100dvh',
+		},
 		colors: {
 			border: 'hsl(var(--border))',
 			input: 'hsl(var(--input))',
@@ -83,6 +97,51 @@ const config: Config = {
 			'8xl': ['88px', { lineHeight: '5.875rem' }],
 			'9xl': ['120px', { lineHeight: '7.75rem' }],
 		},
+		// Inter is never rendered heavier than Medium (500) anywhere in the app,
+		// but @tailwindcss/typography's defaults reach 600-900 (h1 800, h2 700,
+		// h3/h4 600, strong 600 and up to 900 inside a heading, code/th/dt 600).
+		// Cap them here - one lever for every `prose` block (session markdown,
+		// thinking blocks, file previews, tool result cards) instead of a
+		// `prose-*:font-medium` per call site. These merge in AFTER the plugin's
+		// own rules at the same specificity, so a call site that wants something
+		// lighter (e.g. `prose-code:font-normal`) still overrides them.
+		typography: {
+			DEFAULT: {
+				css: {
+					strong: { fontWeight: '500' },
+					dt: { fontWeight: '500' },
+					code: { fontWeight: '500' },
+					'thead th': { fontWeight: '500' },
+					h1: { fontWeight: '500' },
+					h2: { fontWeight: '500' },
+					h3: { fontWeight: '500' },
+					h4: { fontWeight: '500' },
+					'h1 strong': { fontWeight: '500' },
+					'h2 strong': { fontWeight: '500' },
+					'h3 strong': { fontWeight: '500' },
+					'h4 strong': { fontWeight: '500' },
+					// A plain 2px rule. The plugin's 0.25rem (4px) bar reads as a slab
+					// next to 14px text, and stacks badly on nested quotes.
+					blockquote: { borderInlineStartWidth: '2px' },
+				},
+			},
+			// Heading scale for `prose-sm`, the size every markdown surface uses. The
+			// plugin's own sm scale is built for article layouts - a 30px h1 against
+			// 14px body - which is far too top-heavy inside a message bubble. Pulled
+			// down to 24/18/16/14 so a reply with headings reads as one block of text
+			// rather than as a document. These MUST live under `sm`, not DEFAULT:
+			// `.prose-sm` rules are emitted after `.prose` at equal specificity, so a
+			// font-size set on DEFAULT would be silently overridden by the modifier.
+			// (The weight cap above stays on DEFAULT - `sm` sets no font-weight.)
+			sm: {
+				css: {
+					h1: { fontSize: '1.7143em', marginTop: '0', marginBottom: '0.5em', lineHeight: '1.3333' },
+					h2: { fontSize: '1.2857em', marginTop: '1.3333em', marginBottom: '0.5556em', lineHeight: '1.4444' },
+					h3: { fontSize: '1.1429em', marginTop: '1.25em', marginBottom: '0.5em', lineHeight: '1.5' },
+					h4: { fontSize: '1em', marginTop: '1.2857em', marginBottom: '0.4286em', lineHeight: '1.4286' },
+				},
+			},
+		},
 		keyframes: {
 			'cobalt-glow': {
 				'0%, 100%': {
@@ -110,7 +169,25 @@ const config: Config = {
 		}
 	}
   },
-  plugins: [require("tailwindcss-animate"), require("@tailwindcss/typography")],
+  plugins: [
+    require("tailwindcss-animate"),
+    require("@tailwindcss/typography"),
+    plugin(({ addVariant }) => {
+      // `touch:` — touch devices with no hover-capable pointer (phones/tablets).
+      // Lets us reveal hover-only affordances and enlarge hit areas on touch
+      // WITHOUT affecting desktop, which reports `hover: hover` / `pointer: fine`
+      // and so never matches this query. (Tailwind v4 ships `pointer-coarse:`
+      // built-in; we're on 3.4, so register our own. The `touch` alias reads as
+      // intent at the call sites; the query is the standard no-hover/coarse pair.)
+      addVariant('touch', '@media (hover: none) and (pointer: coarse)')
+      // `has-touch:` — SOME pointer is coarse, including hybrids (touchscreen
+      // laptops) whose PRIMARY pointer is a fine hover-capable mouse and so
+      // never match `touch:`. For affordances that must account for fingers
+      // existing at all — e.g. hover-revealed controls that would otherwise be
+      // invisible-but-tappable ghosts under a finger.
+      addVariant('has-touch', '@media (any-pointer: coarse)')
+    }),
+  ],
 }
 
 export default config

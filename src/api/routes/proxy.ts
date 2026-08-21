@@ -5,6 +5,7 @@ import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
+import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -16,7 +17,7 @@ import {
 } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
 
-async function logAuditEntry(entry: {
+interface ProxyAuditEntry {
   agentSlug: string
   accountId: string
   toolkit: string
@@ -27,13 +28,16 @@ async function logAuditEntry(entry: {
   errorMessage?: string
   policyDecision?: string
   matchedScopes?: string
-}): Promise<void> {
+}
+
+async function writeProxyAuditEntry(entry: ProxyAuditEntry & { durationMs?: number }): Promise<void> {
   try {
     await db.insert(proxyAuditLog).values({
       id: crypto.randomUUID(),
       ...entry,
       statusCode: entry.statusCode ?? null,
       errorMessage: entry.errorMessage ?? null,
+      durationMs: entry.durationMs ?? null,
       policyDecision: entry.policyDecision ?? null,
       matchedScopes: entry.matchedScopes ?? null,
       createdAt: new Date(),
@@ -47,9 +51,15 @@ async function logAuditEntry(entry: {
 const proxy = new Hono()
 
 proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
+  const startTime = Date.now()
   const agentSlug = c.req.param('agentSlug')
   const accountId = c.req.param('accountId')
   const rest = c.req.param('rest') || ''
+
+  // Stamp elapsed time (request entry → now) onto every audit entry. Every exit
+  // path logs through this, so the API Logs Duration column is always populated.
+  const logAuditEntry = (entry: ProxyAuditEntry) =>
+    writeProxyAuditEntry({ ...entry, durationMs: Date.now() - startTime })
 
   // Parse target host and path from rest: <host>/<path...>
   const firstSlash = rest.indexOf('/')
@@ -106,22 +116,26 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   }
 
   // 2. Look up connected account and verify it belongs to this agent
-  const results = await db
-    .select({ account: connectedAccounts })
-    .from(agentConnectedAccounts)
-    .innerJoin(
-      connectedAccounts,
-      eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id)
-    )
-    .where(
-      and(
-        eq(agentConnectedAccounts.agentSlug, agentSlug),
-        eq(connectedAccounts.id, accountId)
+  const loadMappedAccount = async () => {
+    const [result] = await db
+      .select({ account: connectedAccounts })
+      .from(agentConnectedAccounts)
+      .innerJoin(
+        connectedAccounts,
+        eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id)
       )
-    )
-    .limit(1)
+      .where(
+        and(
+          eq(agentConnectedAccounts.agentSlug, agentSlug),
+          eq(connectedAccounts.id, accountId)
+        )
+      )
+      .limit(1)
+    return result?.account ?? null
+  }
 
-  if (results.length === 0) {
+  let account = await loadMappedAccount()
+  if (!account) {
     await logAuditEntry({
       agentSlug,
       accountId,
@@ -134,23 +148,49 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     return c.json({ error: 'Account not found or not mapped to this agent' }, 404)
   }
 
-  const account = results[0].account
+  type ReauthResult =
+    | { ok: true }
+    | { ok: false; reason: 'timeout' | 'missing' | 'inactive' }
 
-  // 2b. Reject requests for accounts with non-active local status
-  if (account.status !== 'active') {
-    await logAuditEntry({
-      agentSlug,
-      accountId,
-      toolkit: account.toolkitSlug,
-      targetHost,
-      targetPath,
-      method: c.req.method,
-      errorMessage: `Account status is ${account.status}`,
-    })
-    return c.json({
-      error: `Connected account is ${account.status}. Re-authenticate to restore access.`,
-      accountStatus: account.status,
-    }, 403)
+  const holdForReauth = async (status: 'expired' | 'revoked'): Promise<ReauthResult> => {
+    try {
+      await accountReauthManager.requestReauth({
+        agentSlug,
+        accountId,
+        toolkit: account!.toolkitSlug,
+        accountStatus: status,
+      }, c.req.raw.signal)
+    } catch {
+      return { ok: false, reason: 'timeout' }
+    }
+
+    const refreshed = await loadMappedAccount()
+    if (!refreshed) return { ok: false, reason: 'missing' }
+    if (refreshed.status !== 'active') return { ok: false, reason: 'inactive' }
+    account = refreshed
+    return { ok: true }
+  }
+
+  const reauthFailureResponse = async (
+    result: Exclude<ReauthResult, { ok: true }>,
+    status: 'expired' | 'revoked',
+    auditError: (message: string, statusCode: number) => Promise<void>,
+  ) => {
+    if (result.reason === 'timeout') {
+      await auditError(`Account re-authentication timed out (${status})`, 408)
+      return c.json({
+        error: 'account_reauth_timeout',
+        message: 'The request timed out while waiting for the account to be reconnected.',
+        accountStatus: status,
+      }, 408)
+    }
+
+    const message = result.reason === 'missing'
+      ? 'Connected account disappeared while re-authenticating.'
+      : 'Connected account did not become active after re-authentication.'
+    await auditError(message, result.reason === 'missing' ? 404 : 502)
+    return c.json({ error: 'account_reauth_failed', message, accountStatus: status },
+      result.reason === 'missing' ? 404 : 502)
   }
 
   // 3. Validate target host against toolkit allowlist
@@ -268,33 +308,53 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       ...extras,
     })
 
+  // Park only after the request has passed both the host allowlist and API
+  // policy gate. Re-authentication cannot turn a forbidden request into an
+  // allowed one, so prompting before these checks only interrupts the user
+  // for work that will be rejected immediately afterward.
+  if (account.status !== 'active') {
+    const status = account.status
+    const result = await holdForReauth(status)
+    if (!result.ok) {
+      return reauthFailureResponse(result, status, (errorMessage, statusCode) =>
+        audit({ statusCode, errorMessage }))
+    }
+  }
+
   // 4. Build target URL
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const queryString = new URL(c.req.url).search
   const targetUrl = `https://${targetHost}/${targetPath}${queryString}`
 
   // 5. Verify remote connection status before forwarding
-  const provider = getAccountProviderByName(account.providerName)
+  let provider = getAccountProviderByName(account.providerName)
 
+  let remoteConnection: Awaited<ReturnType<typeof provider.getConnection>> | null = null
   try {
-    const remoteConnection = await provider.getConnection(
+    remoteConnection = await provider.getConnection(
       account.providerConnectionId,
       account.toolkitSlug,
     )
-    if (remoteConnection.status !== 'ACTIVE') {
-      const newStatus = remoteConnection.status === 'EXPIRED' ? 'expired' as const : 'revoked' as const
-      db.update(connectedAccounts)
-        .set({ status: newStatus, updatedAt: new Date() })
-        .where(eq(connectedAccounts.id, accountId))
-        .catch((err) => console.error('[proxy] Failed to update account status:', err))
-      await audit({ errorMessage: `Remote connection status: ${remoteConnection.status}` })
-      return c.json({
-        error: `Connected account is ${newStatus}. Re-authenticate to restore access.`,
-        accountStatus: newStatus,
-      }, 403)
-    }
   } catch (statusCheckErr) {
     console.warn('[proxy] Remote status check failed, proceeding with request:', statusCheckErr)
+  }
+
+  if (remoteConnection && remoteConnection.status !== 'ACTIVE') {
+    const newStatus = remoteConnection.status === 'EXPIRED' ? 'expired' as const : 'revoked' as const
+    try {
+      await db.update(connectedAccounts)
+        .set({ status: newStatus, updatedAt: new Date() })
+        .where(eq(connectedAccounts.id, accountId))
+    } catch (statusUpdateErr) {
+      console.warn('[proxy] Failed to persist non-active account status:', statusUpdateErr)
+    }
+
+    const reauthResult = await holdForReauth(newStatus)
+    if (!reauthResult.ok) {
+      return reauthFailureResponse(reauthResult, newStatus, (errorMessage, statusCode) =>
+        audit({ statusCode, errorMessage }))
+    }
+    provider = getAccountProviderByName(account.providerName)
   }
 
   // 6. Forward via account provider (handles token retrieval/proxy internally)
@@ -302,9 +362,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     ? null
     : await c.req.arrayBuffer()
 
-  let response: Response
-  try {
-    response = await runWithAttribution(
+  const forwardRequest = () => runWithAttribution(
       attribution.fromResourceCreator(account.userId),
       () => provider.makeApiCall({
         providerConnectionId: account.providerConnectionId,
@@ -315,22 +373,45 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         body: requestBody,
       }),
     )
+
+  let response: Response
+  try {
+    response = await forwardRequest()
   } catch (error) {
     const isTokenError = String(error).includes('token') || String(error).includes('Token')
     const errorLabel = isTokenError ? 'Failed to fetch access token' : 'Proxy request failed'
 
     if (isTokenError) {
-      db.update(connectedAccounts)
-        .set({ status: 'expired', updatedAt: new Date() })
-        .where(eq(connectedAccounts.id, accountId))
-        .catch((err) => console.error('[proxy] Failed to update account status:', err))
-    }
+      try {
+        await db.update(connectedAccounts)
+          .set({ status: 'expired', updatedAt: new Date() })
+          .where(eq(connectedAccounts.id, accountId))
+      } catch (statusUpdateErr) {
+        console.warn('[proxy] Failed to persist expired account status:', statusUpdateErr)
+      }
 
-    await audit({ errorMessage: `${errorLabel}: ${error}` })
-    return c.json(
-      { error: errorLabel, details: String(error), ...(isTokenError ? { accountStatus: 'expired' } : {}) },
-      502
-    )
+      const reauthResult = await holdForReauth('expired')
+      if (!reauthResult.ok) {
+        return reauthFailureResponse(reauthResult, 'expired', (errorMessage, statusCode) =>
+          audit({ statusCode, errorMessage }))
+      }
+      provider = getAccountProviderByName(account.providerName)
+      try {
+        response = await forwardRequest()
+      } catch (retryError) {
+        await audit({ errorMessage: `${errorLabel} after re-authentication: ${retryError}` })
+        return c.json(
+          { error: errorLabel, details: String(retryError), accountStatus: 'expired' },
+          502,
+        )
+      }
+    } else {
+      await audit({ errorMessage: `${errorLabel}: ${error}` })
+      return c.json(
+        { error: errorLabel, details: String(error) },
+        502
+      )
+    }
   }
 
   audit({

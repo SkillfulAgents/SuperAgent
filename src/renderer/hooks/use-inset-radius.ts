@@ -42,9 +42,11 @@ export function useInsetRadius(): void {
   useEffect(() => {
     if (!isElectron() || getPlatform() !== 'win32') return
     window.electronAPI?.getWindowMaximizedState().then(setIsMaximized)
-    window.electronAPI?.onWindowMaximizedChange(setIsMaximized)
+    // Capture the per-listener unsubscribe — WindowControls also subscribes to
+    // window-maximized-change, so a channel-wide reset here would kill its listener.
+    const unsubscribe = window.electronAPI?.onWindowMaximizedChange(setIsMaximized)
     return () => {
-      window.electronAPI?.removeWindowMaximizedChange()
+      unsubscribe?.()
     }
   }, [])
 

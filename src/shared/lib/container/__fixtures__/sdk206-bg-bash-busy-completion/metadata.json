@@ -1,0 +1,34 @@
+{
+  "sessionId": "93baa5dd-9a51-4268-bc44-278522faf1a8",
+  "agentSlug": "capture",
+  "description": "Real capture (2026-07-09, SDK 0.3.206). A run_in_background Bash task (sleep 10) completes while the session is BUSY on a second foreground turn (sleep 15) — the busy-path terminal signal (task_updated{status:completed}) arrives mid-turn, no premature idle for the bg task at completion time. Includes background_tasks_changed snapshots. Guards busy-path clear + no dangling session_waiting_background at final idle.",
+  "sdkVersion": "0.3.206",
+  "cliVersion": "2.1.206",
+  "capturedAt": "2026-07-09",
+  "startActive": true,
+  "subagents": [],
+  "backgroundTasks": [
+    {
+      "taskId": "bmcl57saf",
+      "taskType": "local_bash",
+      "startedT": 217115,
+      "prematureIdleT": 218656,
+      "realCompletionT": 227129
+    },
+    {
+      "taskId": "bvpzp47rw",
+      "taskType": "local_bash",
+      "startedT": 225059,
+      "prematureIdleT": null,
+      "realCompletionT": 237041
+    }
+  ],
+  "newFrameCounts": {
+    "background_tasks_changed": 2,
+    "result.terminal_reason:completed": 2,
+    "command_lifecycle:completed": 2,
+    "command_lifecycle:queued": 1,
+    "command_lifecycle:started": 1
+  },
+  "totalEntries": 72
+}

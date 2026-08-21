@@ -18,7 +18,9 @@ export const TOOLKIT_ALLOWED_HOSTS: Record<string, string[]> = {
   microsoft_teams: ['graph.microsoft.com'],
 
   // Communication
-  slack: ['slack.com'],
+  // slack.com hosts the Web API (slack.com/api/...); files.slack.com serves
+  // private file downloads (url_private / url_private_download).
+  slack: ['slack.com', 'files.slack.com'],
   discord: ['discord.com'],
 
   // Developer Tools
@@ -83,14 +85,24 @@ export const TOOLKIT_ALLOWED_HOSTS: Record<string, string[]> = {
   gong: ['api.gong.io'],
 }
 
-export function isHostAllowed(toolkit: string, host: string): boolean {
-  const allowed = TOOLKIT_ALLOWED_HOSTS[toolkit]
-  if (!allowed) return false
-  return allowed.some((pattern) => {
+/**
+ * Generic host-vs-patterns matcher. A pattern is either an exact host or a
+ * `*.suffix` wildcard that matches any real subdomain (but not the bare domain
+ * or a suffix-spoof). Shared by the toolkit allowlist and the web allowed-sites
+ * filter so the two cannot drift.
+ */
+export function matchesHostPatterns(host: string, patterns: string[]): boolean {
+  return patterns.some((pattern) => {
     if (pattern.startsWith('*.')) {
       const suffix = pattern.slice(1) // e.g. '.atlassian.net'
       return host.endsWith(suffix) && host.length > suffix.length
     }
     return pattern === host
   })
+}
+
+export function isHostAllowed(toolkit: string, host: string): boolean {
+  const allowed = TOOLKIT_ALLOWED_HOSTS[toolkit]
+  if (!allowed) return false
+  return matchesHostPatterns(host, allowed)
 }

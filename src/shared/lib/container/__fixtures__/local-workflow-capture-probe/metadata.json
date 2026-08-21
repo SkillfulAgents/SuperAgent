@@ -1,0 +1,12 @@
+{
+  "description": "Real on-disk capture of a `local_workflow` run (the `capture-probe` workflow), preserved verbatim from a research session. Layout mirrors the agent workspace: <sessionId>/subagents/workflows/<runId>/{journal.jsonl,agent-<id>.jsonl,agent-<id>.meta.json} and <sessionId>/workflows/scripts/<name>-<runId>.js. Used to test the disk-reading workflow tree builder + routes (NOT a persister stream replay).",
+  "sessionId": "d63a9cbc-2f5e-44dd-8017-231ac99bef35",
+  "runId": "wf_818f758a-c17",
+  "workflowName": "capture-probe",
+  "phases": ["Scan", "Summarize"],
+  "expectedAgents": [
+    { "agentId": "ae6ffae379942dd19", "label": "word-alpha", "phase": "Scan", "status": "done", "result": "alpha" },
+    { "agentId": "a682ec6403fb0c730", "label": "word-beta", "phase": "Scan", "status": "done", "result": "beta" },
+    { "agentId": "a7720e731ec4c42db", "label": "concat", "phase": "Summarize", "status": "done", "result": "alpha-beta" }
+  ]
+}

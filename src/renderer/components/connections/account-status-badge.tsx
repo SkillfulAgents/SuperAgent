@@ -22,10 +22,11 @@ const STATUS_COPY: Record<UnhealthyStatus, { label: string; headline: string; cl
 interface AccountStatusBadgeProps {
   status?: 'active' | 'expired' | 'revoked' | null
   onReconnect?: () => void
+  onCancelReconnect?: () => void
   loading?: boolean
 }
 
-export function AccountStatusBadge({ status, onReconnect, loading }: AccountStatusBadgeProps) {
+export function AccountStatusBadge({ status, onReconnect, onCancelReconnect, loading }: AccountStatusBadgeProps) {
   if (!status || status === 'active') return null
   const { label, headline, className, hoverClassName } = STATUS_COPY[status]
 
@@ -39,6 +40,18 @@ export function AccountStatusBadge({ status, onReconnect, loading }: AccountStat
       >
         <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden="true" />
         Reconnecting…
+        {onCancelReconnect && (
+          <button
+            type="button"
+            className="ml-1 underline underline-offset-2 hover:text-foreground"
+            onClick={(e) => {
+              e.stopPropagation()
+              onCancelReconnect()
+            }}
+          >
+            Cancel
+          </button>
+        )}
       </span>
     )
   }

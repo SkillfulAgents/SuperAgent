@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
 // ============================================================================
@@ -11,6 +11,9 @@ vi.mock('../middleware/auth', () => ({
   AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),
   AgentUser: () => async (_c: unknown, next: () => Promise<void>) => next(),
   AgentAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  IsAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
+  getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
 }))
 
 // Container manager
@@ -33,6 +36,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     broadcastGlobal: vi.fn(),
     persistMessage: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),
+    completeInputRequest: vi.fn(),
   },
 }))
 
@@ -123,8 +127,8 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   listSecrets: vi.fn(),
   getSecret: vi.fn(),
   setSecret: vi.fn(),
+  updateSecret: vi.fn(),
   deleteSecret: vi.fn(),
-  keyToEnvVar: vi.fn(),
   getSecretEnvVars: vi.fn(),
 }))
 
@@ -172,6 +176,7 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
   publishAgentToSkillset: vi.fn(),
   refreshAgentTemplates: vi.fn(),
   hasOnboardingSkill: vi.fn(),
+  getAgentTemplatePrompt: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@shared/lib/utils/retry', () => ({
@@ -205,6 +210,7 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 
 function createApp() {
   const app = new Hono()
@@ -219,6 +225,33 @@ describe('provide-connected-account handler', () => {
     vi.clearAllMocks()
     app = createApp()
     mockInsertValues.mockResolvedValue(undefined)
+    // The route's already-settled gate only acts on requests the registry
+    // holds open — park every toolUseId this file decides on.
+    userInputRequestManager.reset()
+    for (const id of [
+      'tu-1',
+      'tu-active-only',
+      'tu-decline-1',
+      'tu-decline-2',
+      'tu-dup',
+      'tu-env-fail',
+      'tu-happy',
+      'tu-resolve-fail',
+    ]) {
+      userInputRequestManager.register({
+        id,
+        kind: 'connected_account',
+        scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+        blocking: true,
+        autoApproved: false,
+        payload: {},
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any)
+    }
+  })
+
+  afterEach(() => {
+    userInputRequestManager.reset()
   })
 
   const ENDPOINT = '/api/agents/test-agent/sessions/sess-1/provide-connected-account'
@@ -381,7 +414,9 @@ describe('provide-connected-account handler', () => {
     const envBody = JSON.parse(envOpts.body)
     expect(envBody.key).toBe('CONNECTED_ACCOUNTS')
     const metadata = JSON.parse(envBody.value)
-    expect(metadata.gmail).toEqual([{ name: 'user@gmail.com', id: 'acc-1' }])
+    expect(metadata.gmail).toEqual([
+      { name: 'user@gmail.com', id: 'acc-1', status: 'active' },
+    ])
 
     // Verify resolve call
     const [resolvePath] = mockContainerFetch.mock.calls[1]
@@ -492,7 +527,7 @@ describe('provide-connected-account handler', () => {
     expect(body.error).toContain('notify agent')
   })
 
-  it('metadata only includes status === active accounts', async () => {
+  it('metadata keeps active and expired assigned accounts with their statuses', async () => {
     mockSelectFrom.mockReturnValueOnce({ where: mockSelectWhere })
     mockSelectWhere.mockResolvedValueOnce([
       { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'active@gmail.com', status: 'active' },
@@ -524,11 +559,13 @@ describe('provide-connected-account handler', () => {
 
     expect(res.status).toBe(200)
 
-    // Verify metadata sent to container only includes active accounts
+    // Verify metadata sent to the container keeps reconnectable assignments.
     const [, envOpts] = mockContainerFetch.mock.calls[0]
     const envBody = JSON.parse(envOpts.body)
     const metadata = JSON.parse(envBody.value)
-    expect(metadata.gmail).toHaveLength(1)
-    expect(metadata.gmail[0].name).toBe('active@gmail.com')
+    expect(metadata.gmail).toEqual([
+      { name: 'active@gmail.com', id: 'acc-1', status: 'active' },
+      { name: 'expired@gmail.com', id: 'acc-2', status: 'expired' },
+    ])
   })
 })

@@ -51,5 +51,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry-backed build cache (shared with release.yml). The GHA cache
+          # caps at 10GB per repo and this image's layers exceed that across two
+          # arches, so gha-cache eviction silently broke layer reuse — every
+          # release re-published all layers with fresh digests, forcing clients
+          # to re-pull ~3GB instead of just the changed top layers.
+          # NOTE: ref must be lowercase; github.repository_owner is not.
+          cache-from: type=registry,ref=ghcr.io/skillfulagents/superagent-agent-container-base:buildcache
+          cache-to: type=registry,ref=ghcr.io/skillfulagents/superagent-agent-container-base:buildcache,mode=max,image-manifest=true,oci-mediatypes=true

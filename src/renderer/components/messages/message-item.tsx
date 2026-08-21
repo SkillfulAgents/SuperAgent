@@ -1,15 +1,20 @@
 import { cn } from '@shared/lib/utils/cn'
-import { useState, useCallback, memo, type ReactNode } from 'react'
+import { useState, useCallback, useRef, useLayoutEffect, memo, type ReactNode } from 'react'
 import { Check, Copy, Link2 } from 'lucide-react'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
 import { ToolCallItem } from './tool-call-item'
+import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
+import { WorkflowBlock } from './workflow-block'
+import { WorkflowResultCard } from './workflow-result-card'
+import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
 import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attached-files'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
+import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
@@ -17,6 +22,7 @@ import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -40,7 +46,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
         onClick={handleCopy}
         className={cn(
           'absolute top-2 right-2 p-1 rounded',
-          'opacity-0 group-hover:opacity-100 transition-opacity',
+          'opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity',
           'hover:bg-black/[0.1] dark:hover:bg-white/[0.15]',
           'text-muted-foreground'
         )}
@@ -63,6 +69,76 @@ function extractText(node: ReactNode): string {
 
 const REMARK_PLUGINS = [remarkGfm]
 
+// Side breathing room kept between an expanded table and the chat edges.
+const TABLE_BREAKOUT_GUTTER = 16
+
+// A wide (many-column) table shouldn't be crammed into the narrow readable text
+// column. Like Notion, we let a table that's wider than the column break out and
+// centre itself across the available chat width, scrolling horizontally only
+// once it still exceeds that. Narrow tables are left untouched in the normal
+// text flow. The breakout is measured rather than pure-CSS because the table is
+// nested several constrained, off-centre ancestors deep, so there is no static
+// containing block to anchor a symmetric breakout to. Only assistant messages
+// opt in (via `data-allow-table-breakout`); elsewhere the table just scrolls
+// inside its own column.
+function ExpandingTable({ children }: { children: ReactNode }) {
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const scrollerRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    const wrapper = wrapperRef.current
+    const scroller = scrollerRef.current
+    if (!wrapper || !scroller) return
+
+    const contentArea = wrapper.closest('[data-message-content-area]') as HTMLElement | null
+    const canBreakOut = !!wrapper.closest('[data-allow-table-breakout]')
+
+    const measure = () => {
+      // Always start from the natural in-flow geometry before deciding.
+      wrapper.style.width = ''
+      wrapper.style.marginLeft = ''
+
+      if (!contentArea || !canBreakOut) return
+
+      const columnWidth = wrapper.clientWidth
+      const naturalWidth = scroller.scrollWidth
+      // Only break out when the table genuinely wants more than the column.
+      if (naturalWidth <= columnWidth + 1) return
+
+      const available = contentArea.clientWidth - TABLE_BREAKOUT_GUTTER * 2
+      if (available <= columnWidth) return // window too narrow to gain anything
+
+      const target = Math.min(naturalWidth, available)
+      const areaLeft = contentArea.getBoundingClientRect().left + TABLE_BREAKOUT_GUTTER
+      const currentLeft = wrapper.getBoundingClientRect().left
+      const desiredLeft = areaLeft + (available - target) / 2
+
+      wrapper.style.width = `${target}px`
+      wrapper.style.marginLeft = `${desiredLeft - currentLeft}px`
+    }
+
+    measure()
+
+    if (!contentArea || typeof ResizeObserver === 'undefined') return
+    // Re-centre when the chat area resizes. Content changes (e.g. a table still
+    // streaming) re-run this effect via the `children` dependency, so we don't
+    // observe the table itself — that would risk a resize-observer feedback loop.
+    const observer = new ResizeObserver(() => measure())
+    observer.observe(contentArea)
+    return () => observer.disconnect()
+  }, [children])
+
+  return (
+    <div ref={wrapperRef} className="my-3" data-testid="markdown-table">
+      <div ref={scrollerRef} className="code-scrollbar overflow-x-auto">
+        <table className="w-max min-w-full border-collapse text-sm">
+          {children}
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // Hoisted to a stable module-level reference. The memoized <MarkdownBlock> below
 // must NOT be handed a fresh `components`/`remarkPlugins` object each render, or
 // its memo would never bail and every settled streaming block would re-parse.
@@ -82,28 +158,24 @@ const MARKDOWN_COMPONENTS: Components = {
       <code className={cn(className, 'text-foreground')}>{children}</code>
     )
   },
-  // Style tables with borders and horizontal scroll
-  table: ({ children }) => (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse text-sm">
-        {children}
-      </table>
-    </div>
-  ),
+  // Wide tables expand beyond the readable column and scroll; see ExpandingTable.
+  table: ({ children }) => <ExpandingTable>{children}</ExpandingTable>,
+  // Cap individual cell width so prose-heavy cells wrap instead of stretching the
+  // table to one giant line, while many short columns still drive the breakout.
   th: ({ children }) => (
     <th className={cn(
-      'border-b-2 px-3 py-1.5 text-left font-semibold',
+      'border-b-2 px-3 py-1.5 text-left font-medium align-top',
       'border-border'
     )}>
-      {children}
+      <div className="max-w-[32rem]">{children}</div>
     </th>
   ),
   td: ({ children }) => (
     <td className={cn(
-      'border-b px-3 py-1.5',
+      'border-b px-3 py-1.5 align-top',
       'border-border'
     )}>
-      {children}
+      <div className="max-w-[32rem]">{children}</div>
     </td>
   ),
   // Ensure links open in new tab
@@ -135,6 +207,42 @@ export const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: strin
   )
 })
 
+// Only the still-growing Markdown tail uses the word wrapper. Settled blocks
+// switch back to MarkdownBlock, keeping the filter-animation surface small even
+// during long responses.
+const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text }: { text: string }) {
+  const previousTextRef = useRef('')
+  const batchStartsRef = useRef<number[]>([0])
+  const previousText = previousTextRef.current
+
+  if (text !== previousText) {
+    if (previousText && text.startsWith(previousText)) {
+      batchStartsRef.current = [...batchStartsRef.current, previousText.length]
+    } else {
+      batchStartsRef.current = [0]
+    }
+    previousTextRef.current = text
+  }
+
+  // The plugin keeps each batch's delays stable across subsequent renders, so
+  // existing words do not restart while newly appended words get their own
+  // compact stagger sequence.
+  const rehypePlugins: ReactMarkdownOptions['rehypePlugins'] = [[rehypeStreamingWordReveal, {
+    batchStarts: batchStartsRef.current,
+  }]]
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={rehypePlugins}
+      components={MARKDOWN_COMPONENTS}
+      urlTransform={markdownUrlTransform}
+    >
+      {text}
+    </ReactMarkdown>
+  )
+})
+
 interface MessageItemProps {
   message: ApiMessage
   isStreaming?: boolean
@@ -145,19 +253,67 @@ interface MessageItemProps {
   completedSubagents?: Set<string> | null
   onRemoveMessage?: (messageId: string) => void
   onRemoveToolCall?: (toolCallId: string) => void
+  /** Read-only mirror (chat-integration replay): no edit actions; lift the
+   *  connector's inline sender prefix into the sender label. */
+  readOnly?: boolean
+  /** Optional reveal animation for work restored on turn expansion. */
+  workDetailClassName?: string
+  /** Tool calls that were hidden while the containing work phase was collapsed. */
+  revealedToolCallIds?: ReadonlySet<string>
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall }: MessageItemProps) {
+function resolveSubagentRun(
+  toolCall: ApiToolCall,
+  activeSubagents: SubagentInfo[] | undefined,
+  completedSubagents: Set<string> | null | undefined,
+): { activeSubagent: SubagentInfo | null; isCompleted: boolean } {
+  const directRun = activeSubagents?.find((sub) => sub.parentToolId === toolCall.id)
+  const agentId = toolCall.subagent?.agentId
+  const resumedRun = agentId
+    ? activeSubagents?.find((sub) =>
+      sub.agentId === agentId &&
+      sub.parentToolId !== toolCall.id &&
+      (!sub.parentToolId || !completedSubagents?.has(sub.parentToolId))
+    )
+    : undefined
+  const activeSubagent = resumedRun ?? directRun ?? null
+  const selectedToolId = activeSubagent?.parentToolId ?? toolCall.id
+  return {
+    activeSubagent,
+    isCompleted: completedSubagents?.has(selectedToolId) ?? false,
+  }
+}
+
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly, workDetailClassName, revealedToolCallIds }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
 
   const rawText = message.content.text
-  const { cleanText: textAfterFiles, attachedFiles } = isUser && rawText ? parseAttachedFiles(rawText) : { cleanText: rawText, attachedFiles: [] }
+  // Read-only chat mirror: the connector prefixes incoming messages with an
+  // escaped "\[sender]: " so the agent can attribute them. Lift that into the
+  // sender label instead of showing it inline. Live sessions never carry it.
+  const { sender: senderFromPrefix, cleanText: baseText } = readOnly && isUser && rawText
+    ? parseSenderPrefix(rawText)
+    : { sender: null, cleanText: rawText }
+  const { cleanText: textAfterFiles, attachedFiles } = isUser && baseText ? parseAttachedFiles(baseText) : { cleanText: baseText, attachedFiles: [] }
   const { cleanText, mountedFolders } = isUser && textAfterFiles ? parseMountedFolders(textAfterFiles) : { cleanText: textAfterFiles, mountedFolders: [] }
-  const text = cleanText
+  // Strip SDK-injected `<task-notification>` blocks that land in assistant text on
+  // the busy path; surface any `workflow-complete` result as a structured card.
+  const { cleanText: textAfterNotifs, workflowResults } = isAssistant && cleanText
+    ? parseTaskNotifications(cleanText)
+    : { cleanText, workflowResults: [] }
+  const text = textAfterNotifs
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
+  // Persisted extended-thinking blocks. Defensive shape check — this field
+  // crosses the wire, and empty strings are real data in older transcripts.
+  const thinking = isAssistant && Array.isArray(message.thinking)
+    ? message.thinking.filter(
+        (t): t is { text: string; durationMs?: number } =>
+          typeof t?.text === 'string' && t.text.trim().length > 0
+      )
+    : []
 
   const isSlashCommand = isUser && hasText && text.startsWith('/')
 
@@ -171,10 +327,10 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const billingUrl = usePlatformBillingUrl(rawText ?? '')
   const showBillingCard = isAssistant && !!message.apiError && !!billingUrl
 
-  // Don't render assistant messages that have no text and no tool calls
-  // (and aren't streaming). These are transient empty entries from partially-
-  // persisted JSONL that will be filled in on the next refetch.
-  if (isAssistant && !hasText && toolCalls.length === 0 && !isStreaming) {
+  // Don't render assistant messages that have no text, no tool calls, and no
+  // thinking (and aren't streaming). These are transient empty entries from
+  // partially-persisted JSONL that will be filled in on the next refetch.
+  if (isAssistant && !hasText && toolCalls.length === 0 && thinking.length === 0 && !isStreaming) {
     return null
   }
 
@@ -189,7 +345,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
     <div
       className={cn(
         'flex gap-3',
-        isUser && 'flex-row-reverse'
+        isUser && 'flex-row-reverse !my-6'
       )}
       data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
     >
@@ -200,9 +356,22 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           isUser && 'items-end'
         )}
       >
-        {/* Sender name for shared agent sessions */}
-        {isUser && message.sender?.name && (
-          <span className="text-xs text-muted-foreground">{message.sender.name}</span>
+        {/* Sender name: shared agent sessions, or lifted from a read-only mirror prefix. */}
+        {isUser && (message.sender?.name ?? senderFromPrefix) && (
+          <span className="text-xs text-muted-foreground">{message.sender?.name ?? senderFromPrefix}</span>
+        )}
+
+        {/* Persisted thinking — collapsed cards above the message text, one per
+            episode. Same card the live stream uses, minus timing (the transcript
+            doesn't carry it). */}
+        {thinking.length > 0 && (
+          <div className={cn('w-full space-y-2', workDetailClassName)}>
+            {thinking.map((t, i) => (
+              <MessageErrorBoundary key={i} kind="thinking block" raw={t} itemId={`${message.id}-thinking-${i}`}>
+                <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} />
+              </MessageErrorBoundary>
+            ))}
+          </div>
         )}
 
         {/* Message bubble - only show if there's text content */}
@@ -210,20 +379,24 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined}>
             <div
               dir="auto"
+              // Assistant bubbles opt into table breakout and must not clip it.
+              data-allow-table-breakout={isAssistant ? '' : undefined}
               className={cn(
-                'rounded-lg max-w-full overflow-hidden text-foreground',
+                'rounded-lg max-w-full text-foreground',
+                !isAssistant && 'overflow-hidden',
                 isUser && 'bg-zinc-100 dark:bg-zinc-800/70 px-4 py-2',
                 isAssistant && 'py-1'
               )}
             >
               {/* Slash command display */}
               {isSlashCommand && hasText && (
-                <div className="flex items-baseline gap-1.5">
-                  <span className="font-mono font-semibold text-sm">
+                <div className="text-sm">
+                  <span className="font-mono font-medium">
                     {text.split(' ')[0]}
                   </span>
                   {text.includes(' ') && (
-                    <span className="text-sm opacity-80">
+                    <span className="opacity-80">
+                      {' '}
                       {text.slice(text.indexOf(' ') + 1)}
                     </span>
                   )}
@@ -243,14 +416,20 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               {/* Text content */}
               {hasText && !isSlashCommand && !showBillingCard && !isProviderErrorMessage && (
                 <div dir="auto" className={cn(
-                  'prose prose-sm max-w-none min-w-0 break-words font-medium dark:prose-invert'
+                  'prose prose-sm max-w-none min-w-0 break-words font-normal dark:prose-invert',
+                  'prose-strong:font-medium'
                 )}>
                   {streamingSplit ? (
                     <>
                       {streamingSplit.settled.map((block, i) => (
                         <MarkdownBlock key={i} text={block} />
                       ))}
-                      {streamingSplit.tail && <MarkdownBlock text={streamingSplit.tail} />}
+                      {streamingSplit.tail && (
+                        <StreamingMarkdownBlock
+                          key={`tail-${streamingSplit.settled.length}`}
+                          text={streamingSplit.tail}
+                        />
+                      )}
                     </>
                   ) : (
                     <MarkdownBlock text={text} />
@@ -295,29 +474,53 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           </div>
         )}
 
+        {/* Workflow result cards parsed from inline task-notification blocks */}
+        {isAssistant && workflowResults.length > 0 && (
+          <div className="w-full space-y-2">
+            {workflowResults.map((wf, idx) => (
+              <WorkflowResultCard key={wf.runId ?? idx} notification={wf} />
+            ))}
+          </div>
+        )}
+
         {/* Tool calls - shown below assistant message */}
         {isAssistant && toolCalls.length > 0 && (
           <div className="w-full space-y-2">
-            {toolCalls.map((toolCall) => (
-              <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
-                <div>
-                  <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
-                    {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
-                      <SubAgentBlock
-                        toolCall={toolCall}
-                        sessionId={sessionId}
-                        agentSlug={agentSlug!}
-                        isSessionActive={isSessionActive}
-                        activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
-                        isCompleted={completedSubagents?.has(toolCall.id) ?? false}
-                      />
-                    ) : (
-                      <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
-                    )}
-                  </MessageErrorBoundary>
-                </div>
-              </MessageContextMenu>
-            ))}
+            {toolCalls.map((toolCall) => {
+              const subagentRun = resolveSubagentRun(toolCall, activeSubagents, completedSubagents)
+              return (
+                <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
+                  <div
+                    className={
+                      revealedToolCallIds?.has(toolCall.id)
+                        ? workDetailClassName
+                        : undefined
+                    }
+                  >
+                    <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
+                      {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
+                        <SubAgentBlock
+                          toolCall={toolCall}
+                          sessionId={sessionId}
+                          agentSlug={agentSlug!}
+                          isSessionActive={isSessionActive}
+                          activeSubagent={subagentRun.activeSubagent}
+                          isCompleted={subagentRun.isCompleted}
+                        />
+                      ) : toolCall.name === 'Workflow' ? (
+                        <WorkflowBlock
+                          toolCall={toolCall}
+                          activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
+                          isCompleted={completedSubagents?.has(toolCall.id) ?? false}
+                        />
+                      ) : (
+                        <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={isSessionActive} />
+                      )}
+                    </MessageErrorBoundary>
+                  </div>
+                </MessageContextMenu>
+              )
+            })}
           </div>
         )}
       </div>

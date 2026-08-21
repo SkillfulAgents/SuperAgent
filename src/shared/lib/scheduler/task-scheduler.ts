@@ -7,6 +7,7 @@
 
 import { containerManager } from '@shared/lib/container/container-manager'
 import { getEffectiveModels } from '@shared/lib/config/settings'
+import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -17,16 +18,24 @@ import {
   updateNextExecution,
 } from '@shared/lib/services/scheduled-task-service'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
-import type { EffortLevel } from '@shared/lib/container/types'
+import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import {
+  getSessionForScheduledExecution,
   registerSession,
-  updateSessionMetadata,
 } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
+import { deliverSessionWake } from './wake-delivery'
 
+/**
+ * How long an overdue session wake keeps retrying (via the normal poll loop)
+ * before being marked failed. Unlike regular one-shot tasks, a wake may be
+ * days in the making — a transient failure at fire time (runtime restarting,
+ * machine waking from sleep) must not permanently kill it.
+ */
+const WAKE_RETRY_WINDOW_MS = 6 * 60 * 60 * 1000
 
 class TaskScheduler {
   private intervalId: NodeJS.Timeout | null = null
@@ -131,7 +140,14 @@ class TaskScheduler {
           })
           // For recurring tasks, schedule next execution even on failure
           // For one-time tasks, mark as failed
-          if (task.isRecurring) {
+          if (!task.isRecurring && task.resumeSessionId &&
+              Date.now() - task.nextExecutionAt.getTime() < WAKE_RETRY_WINDOW_MS) {
+            // Session wakes stay pending on transient failure so the poll loop
+            // retries them; they only fail once overdue past the retry window.
+            console.log(
+              `[TaskScheduler] Wake ${task.id} failed transiently; leaving pending for retry`
+            )
+          } else if (task.isRecurring) {
             try {
               const nextTime = getNextCronTime(task.scheduleExpression, task.timezone || undefined)
               await updateNextExecution(task.id, nextTime, '')
@@ -168,6 +184,25 @@ class TaskScheduler {
       `[TaskScheduler] Executing task ${task.id} for agent ${task.agentSlug}`
     )
 
+    if (task.resumeSessionId) {
+      await this.executeSessionWake(task, task.resumeSessionId)
+      return
+    }
+
+    const existingSession = await getSessionForScheduledExecution(
+      task.agentSlug,
+      task.id,
+      task.nextExecutionAt,
+    )
+
+    if (existingSession) {
+      console.log(
+        `[TaskScheduler] Task ${task.id} already has session ${existingSession.id}; reconciling task status`
+      )
+      await this.recordTaskExecution(task, existingSession.id)
+      return
+    }
+
     // Verify agent still exists
     if (!(await agentExists(task.agentSlug))) {
       console.error(
@@ -183,29 +218,36 @@ class TaskScheduler {
     // Get available env vars for the agent
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
 
-    // Create a new session with the scheduled prompt
+    // Create a new session with the scheduled prompt.
+    // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
+    const agentPrefs = await readAgentPreferences(task.agentSlug)
+    const resolved = resolveRuntimeInherit(
+      { model: task.model, effort: task.effort, speed: task.speed },
+      agentPrefs,
+      models,
+    )
     const containerSession = await client.createSession({
       availableEnvVars:
         availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
-      model: task.model || models.agentModel,
+      model: resolved.model,
       browserModel: models.browserModel,
+      dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },
-      ...(task.effort ? { effort: task.effort as EffortLevel } : {}),
+      effort: resolved.effort,
+      ...(resolved.speed ? { speed: resolved.speed } : {}),
     })
 
     const sessionId = containerSession.id
     const sessionName = task.name || 'Scheduled Task'
 
-    // Register the session
-    await registerSession(task.agentSlug, sessionId, sessionName)
-
-    // Update session metadata to mark it as created from a scheduled task
-    await updateSessionMetadata(task.agentSlug, sessionId, {
+    await registerSession(task.agentSlug, sessionId, sessionName, {
       isScheduledExecution: true,
       scheduledTaskId: task.id,
       scheduledTaskName: task.name || undefined,
+      scheduledExecutionAt: task.nextExecutionAt.toISOString(),
+      automationStatus: 'running',
     })
 
     // Subscribe to the session for SSE updates
@@ -231,7 +273,54 @@ class TaskScheduler {
       console.error('[TaskScheduler] Failed to trigger scheduled notification:', err)
     })
 
-    // Update task status
+    await this.recordTaskExecution(task, sessionId)
+  }
+
+  /**
+   * Fire a session wake: resume the existing target session with a system
+   * message instead of creating a new session. Delivery (claim, guards, send,
+   * record) lives in deliverSessionWake, shared with the manual "Wake now"
+   * route so the two paths can never double-deliver. Transient delivery
+   * errors propagate to the caller's retry handling.
+   */
+  private async executeSessionWake(task: ScheduledTask, sessionId: string): Promise<void> {
+    const result = await deliverSessionWake(task, 'scheduled')
+
+    switch (result.outcome) {
+      case 'delivered':
+        console.log(`[TaskScheduler] Wake ${task.id} resumed session ${sessionId}`)
+        break
+      case 'reconciled':
+        console.log(
+          `[TaskScheduler] Wake ${task.id} already delivered to session ${sessionId}; reconciled task status`
+        )
+        break
+      case 'in-flight':
+        // Another delivery (e.g. a "Wake now" click) holds the claim — its
+        // completion records the execution; nothing to do here.
+        console.log(`[TaskScheduler] Wake ${task.id} delivery already in flight; skipping`)
+        break
+      case 'not-pending':
+        // Fresh read shows the task already reached a terminal state (a manual
+        // wake won the race) — the due-task batch was just stale.
+        console.log(`[TaskScheduler] Wake ${task.id} is ${result.status}; skipping`)
+        break
+      case 'session-missing':
+        console.error(
+          `[TaskScheduler] Wake ${task.id} target session ${sessionId} no longer exists`
+        )
+        await markTaskFailed(task.id, 'Session no longer exists')
+        break
+      case 'agent-missing':
+        console.error(
+          `[TaskScheduler] Agent ${task.agentSlug} no longer exists, marking wake as failed`
+        )
+        await markTaskFailed(task.id, 'Agent no longer exists')
+        break
+    }
+  }
+
+  private async recordTaskExecution(task: ScheduledTask, sessionId: string): Promise<void> {
     if (task.isRecurring) {
       // Update next execution time for recurring tasks
       const nextTime = getNextCronTime(task.scheduleExpression, task.timezone || undefined)

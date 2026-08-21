@@ -53,6 +53,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
 vi.mock('@shared/lib/platform-attribution', () => ({
   runWithRequestUser: (_id: string, fn: () => unknown) => fn(),
+  runWithOptionalUser: (_id: string | null | undefined, fn: () => unknown) => fn(),
 }))
 vi.mock('@shared/lib/db', () => ({ db: {} }))
 vi.mock('@shared/lib/db/schema', () => ({

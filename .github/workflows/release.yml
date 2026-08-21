@@ -12,15 +12,25 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  # Extract version from tag
+  # Extract version + update channel from tag
   prepare:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
     steps:
-      - name: Extract version from tag
+      - name: Extract version + channel from tag
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          # Channel = the prerelease identifier (rc/beta/alpha) so electron-builder
+          # writes rc-*.yml for prereleases and latest-*.yml for stable. Matches the
+          # app's runtime autoUpdater.channel derivation in auto-updater.ts.
+          if [[ "$GITHUB_REF_NAME" =~ -([a-zA-Z]+) ]]; then
+            echo "channel=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          else
+            echo "channel=latest" >> $GITHUB_OUTPUT
+          fi
 
   # Build and push agent container with version tag
   build-agent-container:
@@ -62,8 +72,12 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry-backed build cache shared with build-container.yml so
+          # release tags reuse main's layers and keep identical digests —
+          # clients then pull only the changed top layers between versions.
+          # NOTE: ref must be lowercase; github.repository_owner is not.
+          cache-from: type=registry,ref=ghcr.io/skillfulagents/superagent-agent-container-base:buildcache
+          cache-to: type=registry,ref=ghcr.io/skillfulagents/superagent-agent-container-base:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
 
   # Build and push app containers with version tags (regular + auth)
   build-app-container:
@@ -120,6 +134,24 @@ jobs:
           cache-from: type=gha,scope=app-${{ matrix.auth_mode }}
           cache-to: type=gha,mode=max,scope=app-${{ matrix.auth_mode }}
 
+  # Kick gamut-infra's release-ingest: crane copy the -auth image to ECR,
+  # build the MicroVM agent image, register the release_registry row. Needs
+  # both container images published first.
+  dispatch-release-ingest:
+    runs-on: ubuntu-latest
+    needs: [prepare, build-agent-container, build-app-container]
+    steps:
+      - name: Dispatch superagent-release to gamut-infra
+        env:
+          # Fine-grained PAT (or GitHub App token) with contents:write on
+          # SkillfulAgents/gamut-infra — repository_dispatch requires it.
+          GH_TOKEN: ${{ secrets.GAMUT_INFRA_DISPATCH_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          gh api repos/SkillfulAgents/gamut-infra/dispatches \
+            -f event_type=superagent-release \
+            -f "client_payload[version]=$VERSION"
+
   # Build macOS Electron app (signed + notarized)
   build-mac:
     runs-on: macos-26
@@ -131,8 +163,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: npm ci
@@ -144,6 +181,19 @@ jobs:
           echo "$APPLE_API_KEY_BASE64" | base64 --decode > /tmp/AuthKey.p8
           echo "APPLE_API_KEY=/tmp/AuthKey.p8" >> $GITHUB_ENV
 
+      # Write the update channel into package.json's build.publish.channel via
+      # Node (value comes from an env var, never a CLI arg) so it can't be mangled
+      # by Windows arg-passing — the `-c.publish.channel=` electron-builder flag
+      # got split into `-c .publish.channel=rc` through npm -> cmd.exe -> the
+      # electron-builder.cmd shim and was read as a config-file path (SUP-283).
+      - name: Set update channel
+        shell: bash
+        env:
+          UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          node -e "const fs=require('fs'),p=require('./package.json');p.build.publish.channel=process.env.UPDATE_CHANNEL;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          echo "build.publish.channel set to $UPDATE_CHANNEL"
+
       - name: Build and sign macOS app
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -154,6 +204,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
+          PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
         run: npm run dist:mac
 
       - name: Upload release artifacts
@@ -179,17 +230,33 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: npm ci
+
+      # See build-mac: set the channel via Node from an env var so Windows
+      # arg-passing can't mangle a `-c.publish.channel=` CLI flag (SUP-283).
+      - name: Set update channel
+        shell: bash
+        env:
+          UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          node -e "const fs=require('fs'),p=require('./package.json');p.build.publish.channel=process.env.UPDATE_CHANNEL;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          echo "build.publish.channel set to $UPDATE_CHANNEL"
 
       - name: Build and sign Windows app
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
+          PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -215,6 +282,10 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     needs: [prepare, build-agent-container, build-app-container, build-mac, build-win]
+    # Mapped from the secret so the R2 upload step can self-gate on its presence
+    # (the `secrets` context isn't available in a step `if:` condition).
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -248,3 +319,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+
+      # Dual-publish bridge (SUP-286): populate the owned R2 feed
+      # (updates.gamutagents.com) AFTER the GitHub release is published, so a
+      # transient R2 hiccup can never block the primary (GitHub) feed during the
+      # bridge. continue-on-error keeps a failed upload from failing the release —
+      # generic-feed builds update from R2; pre-generic clients keep updating from
+      # GitHub until the cutover subtask (SUP-287) retires the GitHub feed. Skipped
+      # if the Cloudflare credentials aren't configured. Uses the same
+      # CLOUDFLARE_API_TOKEN as the gamut-releases Worker deploy — no separate R2
+      # S3 keys to manage.
+      - name: Upload release feed to Cloudflare R2
+        if: ${{ env.CLOUDFLARE_ACCOUNT_ID != '' }}
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          shopt -s nullglob
+          for f in ./release-artifacts/*; do
+            name="$(basename "$f")"
+            # builder-debug.yml is electron-builder's debug dump, not a feed file.
+            [ "$name" = "builder-debug.yml" ] && continue
+            echo "→ R2: $name"
+            npx --yes wrangler@4 r2 object put "gamut-releases/$name" --file "$f" --remote
+          done

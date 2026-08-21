@@ -13,9 +13,24 @@ import type {
 // Hoisted Mocks
 // ============================================================================
 
+const mockCaptureException = vi.hoisted(() => vi.fn())
+
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: mockCaptureException,
+  captureMessage: vi.fn(),
+  addErrorBreadcrumb: vi.fn(),
+  setErrorTag: vi.fn(),
+  setErrorContext: vi.fn(),
+  setErrorReportingUser: vi.fn(),
+  initErrorReporting: vi.fn(),
+  getErrorReporter: vi.fn(() => null),
+  flushErrorReporting: vi.fn(async () => true),
+}))
+
 const { mockExecFile, mockAnthropicCreate, mockGetApiKey, mockGetModels } = vi.hoisted(() => {
   const mockExecFile = vi.fn<
-    (cmd: string, args: string[], opts?: unknown) => { stdout: string; stderr: string }
+    (cmd: string, args: string[], opts?: unknown) =>
+      { stdout: string; stderr: string } | Promise<{ stdout: string; stderr: string }>
   >()
   const mockAnthropicCreate = vi.fn()
   const mockGetApiKey = vi.fn((): string | undefined => undefined)
@@ -37,22 +52,30 @@ vi.mock('child_process', () => {
       stderr?: string,
     ) => void
     const callArgs = args.slice(0, -1) as [string, string[], unknown?]
-    try {
-      const result = mockExecFile(...callArgs)
-      callback(null, result?.stdout ?? '', result?.stderr ?? '')
-    } catch (err) {
-      callback(err as Error)
-    }
+    Promise.resolve()
+      .then(() => mockExecFile(...callArgs))
+      .then((result) => {
+        callback(null, result?.stdout ?? '', result?.stderr ?? '')
+      })
+      .catch((err) => {
+        callback(err as Error)
+      })
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ;(execFileFn as any)[Symbol.for('nodejs.util.promisify.custom')] = async (
     ...args: unknown[]
   ) => {
     const callArgs = args as [string, string[], unknown?]
-    const result = mockExecFile(...callArgs)
+    const result = await mockExecFile(...callArgs)
     return { stdout: result?.stdout ?? '', stderr: result?.stderr ?? '' }
   }
-  return { execFile: execFileFn }
+  return {
+    execFile: execFileFn,
+    // The platform provider probes git availability with execFileSync at
+    // module load to pick git-clone vs archive caching. Succeed so tests
+    // exercise the git path, matching machines with git installed.
+    execFileSync: () => '',
+  }
 })
 
 vi.mock('@anthropic-ai/sdk', () => ({
@@ -69,11 +92,13 @@ vi.mock('@shared/lib/config/settings', () => ({
     apiKeys: mockGetApiKey() ? { anthropicApiKey: mockGetApiKey() } : {},
   })),
   getEffectiveModels: mockGetModels,
+  getModelCatalogSettings: () => ({}),
 }))
 
 // Bypass retry delays in tests
 vi.mock('@shared/lib/utils/retry', () => ({
   withRetry: async (fn: () => Promise<unknown>) => fn(),
+  NonRetryableError: class NonRetryableError extends Error {},
 }))
 
 const mockGetPlatformAuthStatus = vi.fn(
@@ -93,6 +118,7 @@ import {
   parseSkillFrontmatter,
   urlToSkillsetId,
   getAgentSkillsWithStatus,
+  refreshSkillset,
   refreshAgentSkills,
   publishSkillToSkillset,
   getSkillPublishInfo,
@@ -103,6 +129,7 @@ import {
   getSkillsetRepoDir,
   isCacheReady,
   isGitAvailable,
+  deleteSkill,
   exportSkill,
   validateSkillZip,
   importSkillFromZip,
@@ -726,10 +753,11 @@ Instructions here`
       expect(onDiskSkill).toBe(localContent)
     })
 
-    it('gitPull resolves origin/HEAD via set-head and refreshes via fetch+reset FETCH_HEAD', async () => {
+    it('gitPull trusts only its cache path while refreshing via fetch+reset FETCH_HEAD', async () => {
       const skillContent = '# Test Skill\nOriginal content'
       const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
       const config = buildSkillsetConfig()
+      const repoDir = getSkillsetRepoDir(config.id)
       const index = buildIndex({
         skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
       })
@@ -764,6 +792,64 @@ Instructions here`
       // No brittle hardcoded master fallback and no full-history reset by name.
       expect(cmdline).not.toContain('git checkout master')
       expect(cmdline.some((c) => c.startsWith('git reset --hard origin/'))).toBe(false)
+
+      const repoCalls = mockExecFile.mock.calls.filter((call) => {
+        const [command, , options] = call as [string, string[], { cwd?: string }]
+        return command === 'git' && options?.cwd === repoDir
+      })
+      expect(repoCalls.length).toBeGreaterThan(0)
+      for (const call of repoCalls) {
+        const options = call[2] as { env: Record<string, string | undefined> }
+        const safeConfigIndex = Number(options.env.GIT_CONFIG_COUNT) - 1
+        expect(options.env[`GIT_CONFIG_KEY_${safeConfigIndex}`]).toBe('safe.directory')
+        expect(options.env[`GIT_CONFIG_VALUE_${safeConfigIndex}`]).toBe(repoDir)
+      }
+    })
+
+    it('coalesces concurrent refreshes for the same cache directory', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      await createSkillsetCache(config.id, index)
+
+      const ref = {
+        skillsetId: config.id,
+        skillsetUrl: config.url,
+        provider: config.provider,
+        providerData: config.providerData,
+      }
+
+      let setUrlCalls = 0
+      let releaseSetUrl!: () => void
+      let notifySetUrlStarted!: () => void
+      const setUrlStarted = new Promise<void>((resolve) => {
+        notifySetUrlStarted = resolve
+      })
+      const setUrlCanFinish = new Promise<void>((resolve) => {
+        releaseSetUrl = resolve
+      })
+
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-url') {
+          setUrlCalls += 1
+          notifySetUrlStarted()
+          return setUrlCanFinish.then(() => ({ stdout: '', stderr: '' }))
+        }
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      const firstRefresh = refreshSkillset(ref)
+      await setUrlStarted
+      const secondRefresh = refreshSkillset(ref)
+      releaseSetUrl()
+
+      await expect(Promise.all([firstRefresh, secondRefresh])).resolves.toEqual([index, index])
+      expect(setUrlCalls).toBe(1)
+
+      await expect(refreshSkillset(ref)).resolves.toEqual(index)
+      expect(setUrlCalls).toBe(2)
     })
 
     it('gitPull swallows expected drift errors from fetch+reset without throwing', async () => {
@@ -793,7 +879,7 @@ Instructions here`
       expect(updated.originalContentHash).toBe(hashTestSkillPackage({ 'SKILL.md': skillContent }))
     })
 
-    it('gitPull reports unexpected fetch errors to Sentry', async () => {
+    it('gitPull keeps the stale cache quietly when the fetch fails offline', async () => {
       const skillContent = '# Test Skill\nOriginal content'
       const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
       const config = buildSkillsetConfig()
@@ -813,9 +899,287 @@ Instructions here`
         return { stdout: '', stderr: '' }
       })
 
+      // Remote unavailable is environmental — no Sentry report, refresh keeps
+      // serving the stale cache.
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+      expect(mockCaptureException).not.toHaveBeenCalled()
+    })
+
+    it('gitPull reports unexpected fetch errors to Sentry', async () => {
+      const skillContent = '# Test Skill\nOriginal content'
+      const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+      await createSkillDir('test-agent', 'test-skill', skillContent, meta)
+      await createSkillsetCache(config.id, index, { [meta.skillPath]: skillContent })
+
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'fetch') {
+          throw new Error('fatal: index-pack failed')
+        }
+        return { stdout: '', stderr: '' }
+      })
+
       // Unexpected errors are surfaced (captured + rethrown) but refreshAgentSkills
       // catches per-skillset so the overall call still resolves.
       await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+      expect(mockCaptureException).toHaveBeenCalled()
+    })
+  })
+
+  // ============================================================================
+  // Cache Corruption Recovery (nuke-and-reclone)
+  // ============================================================================
+
+  describe('skillset cache corruption recovery', () => {
+    function buildRef(config: SkillsetConfig) {
+      return {
+        skillsetId: config.id,
+        skillsetUrl: config.url,
+        provider: config.provider,
+        providerData: config.providerData,
+      }
+    }
+
+    /** Mock a clone that materializes a healthy repo (with index.json). */
+    function mockCloneMaterializing(index: SkillsetIndex | null, cloneCalls: string[]) {
+      return (cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'clone') {
+          const dest = args[4]
+          cloneCalls.push(dest)
+          fs.mkdirSync(path.join(dest, '.git'), { recursive: true })
+          if (index) {
+            fs.writeFileSync(path.join(dest, 'index.json'), JSON.stringify(index), 'utf-8')
+          }
+          return { stdout: '', stderr: '' }
+        }
+        return null
+      }
+    }
+
+    it('nukes and re-clones a half-cloned cache when origin/HEAD is unresolvable and the remote answers', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      // Half-cloned cache: .git exists but the tree is empty (no index.json).
+      const repoDir = getSkillsetRepoDir(config.id)
+      await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const cloneCalls: string[] = []
+      const clone = mockCloneMaterializing(index, cloneCalls)
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref')
+        }
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-head') {
+          throw new Error('error: Cannot determine remote HEAD')
+        }
+        return clone(cmd, args) ?? { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(buildRef(config))).resolves.toEqual(index)
+      expect(cloneCalls).toEqual([repoDir])
+      // The set-head failure is logged, not silently swallowed.
+      expect(warnSpy.mock.calls.some(
+        (c) => String(c[0]).includes('set-head') && String(c[1]).includes('Cannot determine remote HEAD'),
+      )).toBe(true)
+      warnSpy.mockRestore()
+    })
+
+    it('serves the stale cache without nuking when origin/HEAD is unresolvable offline', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      await createSkillsetCache(config.id, index)
+
+      const gitCalls: string[][] = []
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        gitCalls.push([cmd, ...args])
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref')
+        }
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-head') {
+          throw new Error("fatal: unable to access 'https://github.com/TestOrg/skills/': Could not resolve host: github.com")
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(buildRef(config))).resolves.toEqual(index)
+      expect(gitCalls.some((c) => c[1] === 'clone')).toBe(false)
+      expect(mockCaptureException).not.toHaveBeenCalled()
+    })
+
+    it('does not nuke an incomplete cache while the remote is unavailable, and skips Sentry', async () => {
+      const config = buildSkillsetConfig()
+      const repoDir = getSkillsetRepoDir(config.id)
+      await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+
+      const gitCalls: string[][] = []
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        gitCalls.push([cmd, ...args])
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref')
+        }
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-head') {
+          throw new Error("fatal: unable to access 'https://github.com/TestOrg/skills/': Could not resolve host: github.com")
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(buildRef(config))).rejects.toThrow(/remote is unreachable/)
+      // Cache untouched — recovery is deferred to a refresh with connectivity.
+      expect(fs.existsSync(path.join(repoDir, '.git'))).toBe(true)
+      expect(gitCalls.some((c) => c[1] === 'clone')).toBe(false)
+
+      // Through refreshAgentSkills the failure is per-skillset and not reported.
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+      expect(mockCaptureException).not.toHaveBeenCalled()
+    })
+
+    it('re-clones when a successful pull still leaves the cache without index.json', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      const repoDir = getSkillsetRepoDir(config.id)
+      await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+
+      const cloneCalls: string[] = []
+      const clone = mockCloneMaterializing(index, cloneCalls)
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        return clone(cmd, args) ?? { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(buildRef(config))).resolves.toEqual(index)
+      expect(cloneCalls).toEqual([repoDir])
+    })
+
+    it('throws a distinct error when the re-cloned repo still has no index.json', async () => {
+      const config = buildSkillsetConfig()
+      const repoDir = getSkillsetRepoDir(config.id)
+      await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+
+      const cloneCalls: string[] = []
+      // Clone "succeeds" but the repo genuinely has no index.json (e.g. an
+      // empty platform skillset repo) — that's a remote-content problem, not
+      // a cache problem, and must not loop into further re-clones.
+      const clone = mockCloneMaterializing(null, cloneCalls)
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref')
+        }
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-head') {
+          throw new Error('error: Cannot determine remote HEAD')
+        }
+        return clone(cmd, args) ?? { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(buildRef(config))).rejects.toThrow(/has no index\.json at its root/)
+      expect(cloneCalls).toEqual([repoDir])
+    })
+
+    it('treats a set-head killed by its timeout as remote-unavailable, not corruption', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      await createSkillsetCache(config.id, index)
+
+      const gitCalls: string[][] = []
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        gitCalls.push([cmd, ...args])
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref')
+        }
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-head') {
+          // Node's execFile timeout kill: bare "Command failed" message, the
+          // evidence lives only in killed/signal metadata.
+          throw Object.assign(new Error('Command failed: git remote set-head origin --auto\n'), {
+            killed: true,
+            signal: 'SIGTERM',
+            code: null,
+          })
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      // A hung network op must never delete a healthy cache.
+      await expect(refreshSkillset(buildRef(config))).resolves.toEqual(index)
+      expect(gitCalls.some((c) => c[1] === 'clone')).toBe(false)
+      expect(mockCaptureException).not.toHaveBeenCalled()
+    })
+
+    it('recovers a cache whose origin remote is missing via nuke-and-reclone', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      await createSkillsetCache(config.id, index)
+
+      const cloneCalls: string[] = []
+      const clone = mockCloneMaterializing(index, cloneCalls)
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-url') {
+          throw new Error("error: No such remote 'origin'")
+        }
+        return clone(cmd, args) ?? { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(buildRef(config))).resolves.toEqual(index)
+      expect(cloneCalls).toEqual([getSkillsetRepoDir(config.id)])
+    })
+
+    it('platform: offline git-url resolution skips Sentry and keeps the cache', async () => {
+      mockGetPlatformAuthStatus.mockReturnValue({ connected: true, source: 'settings', orgId: 'org_A' })
+      const config = buildSkillsetConfig({
+        id: 'platform--repo--test',
+        provider: 'platform',
+        providerData: { orgId: 'org_A', repoId: 'platform--repo' },
+      })
+      const index = buildIndex()
+      await createSkillsetCache('platform--repo', index)
+
+      const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      const proxyMod = await import('@shared/lib/platform-auth/config')
+      vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue('https://platform.example')
+
+      // Undici's offline shape: "fetch failed" with the errno only on cause.
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('getaddrinfo ENOTFOUND platform.example'), { code: 'ENOTFOUND' }),
+      })))
+
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+      vi.unstubAllGlobals()
+
+      expect(mockCaptureException).not.toHaveBeenCalled()
+      expect(fs.existsSync(path.join(getSkillsetRepoDir('platform--repo'), '.git'))).toBe(true)
+    })
+
+    it('platform: expired-auth git-url resolution (401) skips Sentry', async () => {
+      mockGetPlatformAuthStatus.mockReturnValue({ connected: true, source: 'settings', orgId: 'org_A' })
+      const config = buildSkillsetConfig({
+        id: 'platform--repo--test',
+        provider: 'platform',
+        providerData: { orgId: 'org_A', repoId: 'platform--repo' },
+      })
+      await createSkillsetCache('platform--repo', buildIndex())
+
+      const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      const proxyMod = await import('@shared/lib/platform-auth/config')
+      vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue('https://platform.example')
+
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: false, status: 401, statusText: 'Unauthorized',
+        json: async () => ({}), text: async () => '',
+      }))
+
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+      vi.unstubAllGlobals()
+
+      expect(mockCaptureException).not.toHaveBeenCalled()
     })
   })
 
@@ -2248,25 +2612,27 @@ metadata:
   }
 
   describe('exportSkill', () => {
-    it('exports a single-file skill', async () => {
+    it('exports a single-file skill wrapped in its directory folder', async () => {
       const agentSlug = 'test-agent'
       const skillDir = makeSkillDir(agentSlug, 'my-skill')
       fs.writeFileSync(path.join(skillDir, 'SKILL.md'), MINIMAL_SKILL_MD)
 
-      const zipBuffer = await exportSkill(agentSlug, 'my-skill')
+      const { zipBuffer, skillName } = await exportSkill(agentSlug, 'my-skill')
       expect(zipBuffer).toBeInstanceOf(Buffer)
+      expect(skillName).toBe('Test Skill')
 
       const reader = await openZipFromBuffer(zipBuffer)
       try {
         const fileNames = reader.entries.map(e => e.fileName)
-        expect(fileNames).toContain('SKILL.md')
+        // Wrapper folder carries the skill's directory name inside the package.
+        expect(fileNames).toContain('my-skill/SKILL.md')
         expect(reader.entries.length).toBe(1)
       } finally {
         reader.close()
       }
     })
 
-    it('exports a multi-file skill', async () => {
+    it('exports a multi-file skill under a single wrapper the importer strips', async () => {
       const agentSlug = 'test-agent'
       const skillDir = makeSkillDir(agentSlug, 'multi-skill')
       fs.writeFileSync(path.join(skillDir, 'SKILL.md'), MINIMAL_SKILL_MD)
@@ -2274,14 +2640,22 @@ metadata:
       fs.mkdirSync(path.join(skillDir, 'lib'))
       fs.writeFileSync(path.join(skillDir, 'lib', 'utils.py'), 'x = 1')
 
-      const zipBuffer = await exportSkill(agentSlug, 'multi-skill')
+      const { zipBuffer } = await exportSkill(agentSlug, 'multi-skill')
       const reader = await openZipFromBuffer(zipBuffer)
       try {
         const fileNames = reader.entries.map(e => e.fileName).sort()
-        expect(fileNames).toEqual(['SKILL.md', 'helper.py', expect.stringContaining('utils.py')])
+        expect(fileNames).toEqual([
+          'multi-skill/SKILL.md',
+          'multi-skill/helper.py',
+          expect.stringContaining('utils.py'),
+        ])
       } finally {
         reader.close()
       }
+      // The wrapper is exactly what validateSkillZip detects and strips.
+      const validation = await validateSkillZip(zipBuffer)
+      expect(validation.valid).toBe(true)
+      expect(validation.stripPrefix).toBe('multi-skill/')
     })
 
     it('excludes .skillset-metadata.json and .skillset-original.md', async () => {
@@ -2291,13 +2665,13 @@ metadata:
       fs.writeFileSync(path.join(skillDir, '.skillset-metadata.json'), '{}')
       fs.writeFileSync(path.join(skillDir, '.skillset-original.md'), '# original')
 
-      const zipBuffer = await exportSkill(agentSlug, 'meta-skill')
+      const { zipBuffer } = await exportSkill(agentSlug, 'meta-skill')
       const reader = await openZipFromBuffer(zipBuffer)
       try {
         const fileNames = reader.entries.map(e => e.fileName)
-        expect(fileNames).toContain('SKILL.md')
-        expect(fileNames).not.toContain('.skillset-metadata.json')
-        expect(fileNames).not.toContain('.skillset-original.md')
+        expect(fileNames).toContain('meta-skill/SKILL.md')
+        expect(fileNames.some(f => f.endsWith('.skillset-metadata.json'))).toBe(false)
+        expect(fileNames.some(f => f.endsWith('.skillset-original.md'))).toBe(false)
       } finally {
         reader.close()
       }
@@ -2320,6 +2694,28 @@ metadata:
     })
   })
 
+  describe('deleteSkill', () => {
+    it('removes a skill directory recursively', async () => {
+      const agentSlug = 'test-agent'
+      const skillDir = makeSkillDir(agentSlug, 'delete-me')
+      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), MINIMAL_SKILL_MD)
+      fs.mkdirSync(path.join(skillDir, 'lib'))
+      fs.writeFileSync(path.join(skillDir, 'lib', 'helper.py'), 'print("hello")')
+
+      await deleteSkill(agentSlug, 'delete-me')
+
+      expect(fs.existsSync(skillDir)).toBe(false)
+    })
+
+    it('throws when skill directory does not exist', async () => {
+      await expect(deleteSkill('test-agent', 'missing-skill')).rejects.toThrow('Skill directory not found')
+    })
+
+    it('rejects path traversal in skillDirName', async () => {
+      await expect(deleteSkill('test-agent', '../etc')).rejects.toThrow('Invalid directory name')
+    })
+  })
+
   describe('validateSkillZip', () => {
     it('accepts a valid zip with SKILL.md and extracts name', async () => {
       const buf = await makeSkillZip({ 'SKILL.md': MINIMAL_SKILL_MD })
@@ -2330,11 +2726,27 @@ metadata:
       expect(result.stripPrefix).toBe('')
     })
 
-    it('returns skillName undefined when frontmatter has no name', async () => {
+    it('returns skillName undefined when frontmatter has no name and there is no wrapper', async () => {
       const buf = await makeSkillZip({ 'SKILL.md': SKILL_MD_NO_NAME })
       const result = await validateSkillZip(buf)
       expect(result.valid).toBe(true)
       expect(result.skillName).toBeUndefined()
+    })
+
+    it('falls back to the wrapper directory name when frontmatter has no name', async () => {
+      const buf = await makeSkillZip({
+        'reporting-tools/SKILL.md': SKILL_MD_NO_NAME,
+        'reporting-tools/helper.py': 'x = 1',
+      })
+      const result = await validateSkillZip(buf)
+      expect(result.valid).toBe(true)
+      expect(result.skillName).toBe('reporting-tools')
+    })
+
+    it('prefers the frontmatter name over the wrapper directory name', async () => {
+      const buf = await makeSkillZip({ 'some-wrapper/SKILL.md': MINIMAL_SKILL_MD })
+      const result = await validateSkillZip(buf)
+      expect(result.skillName).toBe('Test Skill')
     })
 
     it('rejects zip without SKILL.md', async () => {
@@ -2452,6 +2864,32 @@ metadata:
       expect(fs.existsSync(path.join(skillDir, 'helper.py'))).toBe(true)
     })
 
+    it('names a frontmatter-less skill after its wrapper directory', async () => {
+      const agentSlug = 'wrapper-name-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+
+      const buf = await makeSkillZip({
+        'reporting-tools/SKILL.md': SKILL_MD_NO_NAME,
+        'reporting-tools/helper.py': 'x = 1',
+      })
+      const result = await importSkillFromZip(agentSlug, buf)
+
+      // skillName is the prettified display form of the wrapper-derived dir.
+      expect(result.skillName).toBe('Reporting Tools')
+      expect(result.skillDir).toBe('reporting-tools')
+    })
+
+    it('falls back to imported-skill only when neither frontmatter name nor wrapper exist', async () => {
+      const agentSlug = 'no-name-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+
+      const buf = await makeSkillZip({ 'SKILL.md': SKILL_MD_NO_NAME })
+      const result = await importSkillFromZip(agentSlug, buf)
+
+      expect(result.skillName).toBe('Imported Skill')
+      expect(result.skillDir).toBe('imported-skill')
+    })
+
     it('skips .skillset-metadata.json and .skillset-original.md from source', async () => {
       const agentSlug = 'skip-meta-agent'
       fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
@@ -2504,7 +2942,7 @@ metadata:
       fs.writeFileSync(path.join(sourceDir, 'tool.py'), 'def run(): pass')
 
       // Export it
-      const zipBuffer = await exportSkill(agentSlug, 'source-skill')
+      const { zipBuffer } = await exportSkill(agentSlug, 'source-skill')
 
       // Import into a different agent
       const importAgentSlug = 'roundtrip-import'
@@ -2515,6 +2953,27 @@ metadata:
       const importedDir = path.join(testDir, 'agents', importAgentSlug, 'workspace', '.claude', 'skills', result.skillDir)
       expect(fs.readFileSync(path.join(importedDir, 'SKILL.md'), 'utf-8')).toBe(MINIMAL_SKILL_MD)
       expect(fs.readFileSync(path.join(importedDir, 'tool.py'), 'utf-8')).toBe('def run(): pass')
+    })
+
+    it('export then import preserves the name of a skill with no frontmatter', async () => {
+      // Without a frontmatter name, the only carrier of the skill's identity
+      // is the wrapper folder the export bakes into the zip — the download
+      // filename is deliberately never trusted on import.
+      const agentSlug = 'roundtrip-noname-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+      const sourceDir = makeSkillDir(agentSlug, 'quarterly-report')
+      fs.writeFileSync(path.join(sourceDir, 'SKILL.md'), '# No frontmatter here\n\nJust instructions.\n')
+
+      const { zipBuffer, skillName } = await exportSkill(agentSlug, 'quarterly-report')
+      expect(skillName).toBeNull()
+
+      const importAgentSlug = 'roundtrip-noname-import'
+      fs.mkdirSync(path.join(testDir, 'agents', importAgentSlug, 'workspace'), { recursive: true })
+      const result = await importSkillFromZip(importAgentSlug, zipBuffer)
+
+      // Display name derives from the wrapper folder, not 'Imported Skill'.
+      expect(result.skillName).toBe('Quarterly Report')
+      expect(result.skillDir).toBe('quarterly-report')
     })
   })
 })

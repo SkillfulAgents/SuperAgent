@@ -79,6 +79,10 @@ vi.mock('@shared/lib/container/message-persister', () => ({
   },
 }))
 
+vi.mock('@shared/lib/services/scheduled-task-service', () => ({
+  listSessionIdsWithPendingWakes: () => Promise.resolve(new Set<string>()),
+}))
+
 vi.mock('@shared/lib/db', () => ({
   db: { delete: (table: unknown) => mockDbDelete(table) },
 }))

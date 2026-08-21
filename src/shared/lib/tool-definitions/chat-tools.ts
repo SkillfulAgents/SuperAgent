@@ -25,21 +25,18 @@ function truncate(s: string | undefined, max = 80): string | null {
 
 export const listAvailableChatProvidersDef = {
   displayName: 'List Chat Providers',
-  iconName: 'MessageCircle',
   parseInput: (i: unknown) => asObj<ListAvailableChatProvidersInput>(i),
   getSummary: () => 'List supported chat providers',
 } as const
 
 export const listChatIntegrationsDef = {
   displayName: 'List Chat Integrations',
-  iconName: 'MessageSquare',
   parseInput: (i: unknown) => asObj<ListChatIntegrationsInput>(i),
   getSummary: () => 'List configured chat integrations',
 } as const
 
 export const addChatIntegrationDef = {
   displayName: 'Add Chat Integration',
-  iconName: 'Plus',
   parseInput: (i: unknown) => asObj<AddChatIntegrationInput>(i),
   getSummary: (i: unknown) => {
     const { provider, name } = asObj<AddChatIntegrationInput>(i)
@@ -50,7 +47,6 @@ export const addChatIntegrationDef = {
 
 export const sendChatMessageDef = {
   displayName: 'Send Chat Message',
-  iconName: 'Send',
   parseInput: (i: unknown) => asObj<SendChatMessageInput>(i),
   getSummary: (i: unknown) => {
     const { message } = asObj<SendChatMessageInput>(i)

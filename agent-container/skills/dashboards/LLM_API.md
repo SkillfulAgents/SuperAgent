@@ -211,7 +211,7 @@ try {
 } catch (err) {
   // err.message contains the error description
   // Common errors:
-  // - "LLM provider not configured" — no API key set in Superagent settings
+  // - "LLM provider not configured" — no API key set in Gamut settings
   // - "Too many LLM requests" — rate limited (20 req/min)
   // - Upstream API errors (429 rate limit, 400 invalid params, etc.)
   console.error('LLM error:', err.message);

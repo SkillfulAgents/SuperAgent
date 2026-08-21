@@ -20,4 +20,4 @@ function getSummary(input: unknown): string | null {
   return file_path ? getDisplayPath(file_path) : null
 }
 
-export const readDef = { displayName: 'Read', iconName: 'FileText', parseInput, getSummary } as const
+export const readDef = { displayName: 'Read', parseInput, getSummary } as const

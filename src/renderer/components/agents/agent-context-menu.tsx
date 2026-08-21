@@ -18,23 +18,32 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
-import { useSelection } from '@renderer/context/selection-context'
+import { useDeleteAgent, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from './agent-settings-dialog'
 import { apiFetch } from '@renderer/lib/api'
-import { isElectron } from '@renderer/lib/env'
-import { Settings, FolderOpen, Copy, Trash2, LogOut } from 'lucide-react'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { Settings, FolderOpen, Copy, Trash2, LogOut, Move } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 
 interface AgentContextMenuProps {
   agent: ApiAgent
   children: React.ReactNode
+  /** Homepage-only controls that should share the agent's single menu surface. */
+  additionalOptions?: React.ReactNode
+  /** Enables the homepage grid's explicit arrange mode from any agent card. */
+  onArrange?: () => void
+  /** Let an explicit mobile arrange gesture own touch holds. */
+  disableTouchLongPress?: boolean
 }
 
 export function AgentContextMenu({
   agent,
   children,
+  additionalOptions,
+  onArrange,
+  disableTouchLongPress,
 }: AgentContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showLeaveDialog, setShowLeaveDialog] = useState(false)
@@ -44,18 +53,29 @@ export function AgentContextMenu({
   const [isDeleting, setIsDeleting] = useState(false)
   const [isLeaving, setIsLeaving] = useState(false)
   const deleteAgent = useDeleteAgent()
-  const { handleAgentDeleted } = useSelection()
+  const navigate = useNavigate()
+  // undefined when the menu is opened off the agent route (e.g. from the sidebar
+  // list), so the up-nav only fires when we're actually viewing the agent being
+  // deleted/left. Resolves the URL display slug to the canonical id to compare.
+  const routeAgentId = useRouteAgentId()
   const { canAdminAgent, isAuthMode } = useUser()
   const queryClient = useQueryClient()
   const isOwner = canAdminAgent(agent.slug)
+
+  // `open: true` makes the API run the file manager on ITS OWN host. That is
+  // what you want when the API is this computer; against a cloud workspace it
+  // asks the deployment to launch `open`/`explorer`/`xdg-open` somewhere nobody
+  // is looking. Remotely this becomes the copy-the-path action the web build
+  // already uses, which is the part that still works.
+  const canShowDirectory = canUseHostFeatures()
 
   const handleDirectoryAction = useCallback(async () => {
     const res = await apiFetch(`/api/agents/${agent.slug}/open-directory`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ open: isElectron() }),
+      body: JSON.stringify({ open: canShowDirectory }),
     })
-    if (!isElectron() && res.ok) {
+    if (!canShowDirectory && res.ok) {
       const { path } = await res.json()
       try {
         await navigator.clipboard.writeText(path)
@@ -64,14 +84,16 @@ export function AgentContextMenu({
         setShowPathDialog(true)
       }
     }
-  }, [agent.slug])
+  }, [agent.slug, canShowDirectory])
 
   const handleDelete = async () => {
     setIsDeleting(true)
     try {
       await deleteAgent.mutateAsync(agent.slug)
       setShowDeleteDialog(false)
-      handleAgentDeleted(agent.slug)
+      if (routeAgentId === agent.slug) {
+        void navigate({ to: '/' })
+      }
     } catch (error) {
       console.error('Failed to delete agent:', error)
       toast.error(error instanceof Error ? error.message : 'Failed to delete agent')
@@ -90,7 +112,9 @@ export function AgentContextMenu({
         return
       }
       setShowLeaveDialog(false)
-      handleAgentDeleted(agent.slug)
+      if (routeAgentId === agent.slug) {
+        void navigate({ to: '/' })
+      }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     } catch (error) {
@@ -103,10 +127,23 @@ export function AgentContextMenu({
   return (
     <>
       <ContextMenu>
-        <ContextMenuTrigger asChild>
+        <ContextMenuTrigger asChild disableTouchLongPress={disableTouchLongPress}>
           {children}
         </ContextMenuTrigger>
         <ContextMenuContent>
+          {onArrange && (
+            <ContextMenuItem
+              onClick={() => {
+                onArrange()
+              }}
+              data-testid="arrange-agent-cards-item"
+            >
+              <Move className="h-4 w-4 mr-2" />
+              Arrange
+            </ContextMenuItem>
+          )}
+          {additionalOptions}
+          {(onArrange || additionalOptions) && <ContextMenuSeparator />}
           <ContextMenuItem
             onClick={() => setShowSettingsDialog(true)}
             data-testid="agent-settings-item"
@@ -119,7 +156,7 @@ export function AgentContextMenu({
               onClick={handleDirectoryAction}
               data-testid="open-agent-directory-item"
             >
-              {isElectron() ? (
+              {canShowDirectory ? (
                 <>
                   <FolderOpen className="h-4 w-4 mr-2" />
                   Show Agent Directory

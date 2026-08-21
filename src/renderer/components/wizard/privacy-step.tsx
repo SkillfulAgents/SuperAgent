@@ -31,9 +31,9 @@ export function PrivacyStep() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-normal max-w-sm">Help improve Superagent</h2>
+        <h2 className="text-2xl font-normal max-w-sm">Help improve Gamut</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Choose what data you share with us. Error reports and anonymous analytics help us improve Superagent faster for everyone.
+          Choose what data you share with us. Error reports and anonymous analytics help us improve Gamut faster for everyone.
         </p>
       </div>
 
@@ -51,7 +51,7 @@ export function PrivacyStep() {
             />
           </div>
           <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-            Allow Superagent to send error reports when something goes wrong. Change anytime in settings.
+            Allow Gamut to send error reports when something goes wrong. Change anytime in settings.
           </p>
         </label>
 
@@ -68,7 +68,7 @@ export function PrivacyStep() {
             />
           </div>
           <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-            Share anonymous usage data to help us improve Superagent. Change anytime in settings.
+            Share anonymous usage data to help us improve Gamut. Change anytime in settings.
           </p>
         </label>
       </div>

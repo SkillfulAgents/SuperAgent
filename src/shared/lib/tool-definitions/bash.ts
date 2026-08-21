@@ -17,4 +17,4 @@ function getSummary(input: unknown): string | null {
   return null
 }
 
-export const bashDef = { displayName: 'Bash', iconName: 'Terminal', parseInput, getSummary } as const
+export const bashDef = { displayName: 'Bash', parseInput, getSummary } as const

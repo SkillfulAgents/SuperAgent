@@ -1,4 +1,5 @@
 import { X, FolderIcon, Link2 } from 'lucide-react'
+import { cn } from '@shared/lib/utils'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 
 export interface FileAttachment {
@@ -6,6 +7,8 @@ export interface FileAttachment {
   id: string
   file: File
   preview?: string
+  /** Set when submitting this attachment failed; renders the chip in an error state. */
+  error?: string
 }
 
 export interface FolderAttachment {
@@ -15,6 +18,8 @@ export interface FolderAttachment {
   folderPath?: string
   files: { file: File; relativePath: string }[]
   totalSize: number
+  /** Set when submitting this attachment failed; renders the chip in an error state. */
+  error?: string
 }
 
 export interface MountAttachment {
@@ -22,6 +27,8 @@ export interface MountAttachment {
   id: string
   folderName: string
   hostPath: string
+  /** Set when submitting this attachment failed; renders the chip in an error state. */
+  error?: string
 }
 
 export type Attachment = FileAttachment | FolderAttachment | MountAttachment
@@ -37,6 +44,10 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function attachmentName(attachment: Attachment): string {
+  return attachment.type === 'file' ? attachment.file.name : attachment.folderName
+}
+
 export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewProps) {
   if (attachments.length === 0) return null
 
@@ -45,7 +56,14 @@ export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewPr
       {attachments.map((attachment) => (
         <div
           key={attachment.id}
-          className="flex items-center gap-2 rounded-md border bg-muted/50 px-2 py-1.5 text-xs"
+          className={cn(
+            'flex items-center gap-2 rounded-md border bg-muted/50 px-2 py-1.5 text-xs',
+            attachment.error && 'border-destructive/50 bg-destructive/10'
+          )}
+          data-testid="attachment-preview"
+          data-attachment-name={attachmentName(attachment)}
+          data-attachment-type={attachment.type}
+          data-attachment-error={attachment.error || undefined}
         >
           {attachment.type === 'mount' ? (
             <>
@@ -57,7 +75,13 @@ export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewPr
                 <span className="truncate max-w-[160px] font-medium" title={attachment.folderName}>
                   {attachment.folderName}
                 </span>
-                <span className="text-muted-foreground">mounted, read-write</span>
+                {attachment.error ? (
+                  <span className="text-destructive truncate max-w-[160px]" title={attachment.error}>
+                    mount failed
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">mounted, read-write</span>
+                )}
               </div>
             </>
           ) : attachment.type === 'folder' ? (
@@ -67,7 +91,11 @@ export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewPr
                 <span className="truncate max-w-[160px] font-medium" title={attachment.folderName}>
                   {attachment.folderName}
                 </span>
-                {attachment.files.length > 0 && (
+                {attachment.error ? (
+                  <span className="text-destructive truncate max-w-[160px]" title={attachment.error}>
+                    upload failed
+                  </span>
+                ) : attachment.files.length > 0 && (
                   <span className="text-muted-foreground">
                     {attachment.files.length} file{attachment.files.length !== 1 ? 's' : ''} &middot; {formatFileSize(attachment.totalSize)}
                   </span>
@@ -89,9 +117,15 @@ export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewPr
                 <span className="truncate max-w-[160px] font-medium" title={attachment.file.name}>
                   {attachment.file.name}
                 </span>
-                <span className="text-muted-foreground">
-                  {formatFileSize(attachment.file.size)}
-                </span>
+                {attachment.error ? (
+                  <span className="text-destructive truncate max-w-[160px]" title={attachment.error}>
+                    upload failed
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">
+                    {formatFileSize(attachment.file.size)}
+                  </span>
+                )}
               </div>
             </>
           )}
@@ -99,6 +133,8 @@ export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewPr
             type="button"
             onClick={() => onRemove(attachment.id)}
             className="ml-1 rounded-full p-0.5 hover:bg-muted text-muted-foreground hover:text-foreground"
+            data-testid="attachment-remove"
+            data-attachment-name={attachmentName(attachment)}
           >
             <X className="h-3 w-3" />
           </button>

@@ -4,7 +4,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 
 /** What kind of item failed to render — drives the copy and the Sentry tags. */
-type RenderItemKind = 'message' | 'tool call'
+type RenderItemKind = 'message' | 'tool call' | 'thinking block'
 
 interface MessageErrorBoundaryProps {
   children: ReactNode

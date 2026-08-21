@@ -5,11 +5,12 @@
  * that will be executed and options to cancel, run now, or edit schedule.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Trash2, Play, Pencil, Loader2, Settings as SettingsIcon } from 'lucide-react'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { Label } from '@renderer/components/ui/label'
 import { TimezonePicker } from '@renderer/components/ui/timezone-picker'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
@@ -28,12 +29,14 @@ import {
   useParseSchedule,
   useUpdateSchedule,
   useUpdateScheduledTaskPrompt,
+  useUpdateScheduledTaskName,
   useUpdateScheduledTaskRuntimeOptions,
   usePauseScheduledTask,
   useResumeScheduledTask,
 } from '@renderer/hooks/use-scheduled-tasks'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
+import { useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useRenderTracker } from '@renderer/lib/perf'
 import {
   AlertDialog,
@@ -55,6 +58,7 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { SettingsPageContainer, PageTitle } from '@renderer/components/layout/settings-page'
+import { toast } from 'sonner'
 
 interface ScheduledTaskViewProps {
   taskId: string
@@ -71,10 +75,31 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const pauseTask = usePauseScheduledTask()
   const resumeTask = useResumeScheduledTask()
   const updatePrompt = useUpdateScheduledTaskPrompt()
+  const updateName = useUpdateScheduledTaskName()
   const updateRuntimeOptions = useUpdateScheduledTaskRuntimeOptions()
-  const { handleScheduledTaskDeleted, setView } = useSelection()
+  const navigate = useNavigate()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
+  const { data: agents } = useAgents()
+
+  // Canonicalize: tasks are addressed globally by id, so /agents/<wrong>/tasks/<id>
+  // would render this task under the wrong agent's shell (mismatched chrome,
+  // back-links, and canUseAgent gating). Redirect to the task's true agent.
+  //
+  // Compare RESOLVED ids: the route param is the display slug (`{name}-{id}`) while
+  // task.agentSlug is the canonical id, so a raw `!==` would fire on every
+  // correct-agent visit. Wait for the agents list before deciding (an unresolved
+  // slug must not trigger a spurious redirect). Redirect to the canonical id — the
+  // same form agent-home uses to open a task (`params.slug = agent.slug`).
+  useEffect(() => {
+    if (!task || !agents) return
+    if (task.agentSlug === resolveRouteAgentId(agentSlug, agents)) return
+    void navigate({
+      to: '/agents/$slug/tasks/$taskId',
+      params: { slug: task.agentSlug, taskId },
+      replace: true,
+    })
+  }, [task, agents, agentSlug, taskId, navigate])
   const humanizedCron = useHumanizedCron(task?.isRecurring ? task.scheduleExpression : null)
   const isActive = task?.status === 'pending' || task?.status === 'paused'
   const isPaused = task?.status === 'paused'
@@ -114,11 +139,15 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   }
 
   const taskTzLabel = task?.timezone?.replace(/_/g, ' ') || 'UTC'
+  const taskTitle = task?.name || 'Scheduled Task'
+  const canEditTaskName = Boolean(isActive && canCancel)
 
   const handleCancel = async () => {
     try {
       await cancelTask.mutateAsync({ id: taskId, agentSlug })
-      handleScheduledTaskDeleted(taskId)
+      // Deleting the task we're viewing → up-nav to the agent home (the task
+      // route no longer resolves).
+      void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
     } catch (err) {
       console.error('Failed to cancel scheduled task:', err)
     }
@@ -127,10 +156,15 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const handleRunNow = async () => {
     try {
       const result = await runNow.mutateAsync({ taskId, agentSlug })
-      setView({ kind: 'session', id: result.sessionId })
+      // Leave the task route for the new run's session route.
+      void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: result.sessionId } })
     } catch (err) {
       console.error('Failed to run scheduled task:', err)
     }
+  }
+
+  const handleSaveName = async (name: string) => {
+    await updateName.mutateAsync({ taskId, agentSlug, name })
   }
 
   const handleOpenEditSchedule = async () => {
@@ -171,16 +205,25 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
     if (!canSaveSchedule) return
 
     try {
+      let frequencyWarning: string | undefined
       if (parsedExpression) {
-        await updateSchedule.mutateAsync({
+        const result = await updateSchedule.mutateAsync({
           taskId,
           scheduleExpression: parsedExpression,
         })
+        frequencyWarning = result.warning
       }
       if (timezoneChanged) {
         await updateTimezone.mutateAsync({ taskId, timezone: pendingTimezone })
       }
       setEditScheduleOpen(false)
+      // Advisory only — the edit succeeded. Surface the too-frequent-interval
+      // note so it isn't silently dropped when the dialog closes.
+      if (frequencyWarning) {
+        toast.warning('Frequent schedule', {
+          description: <span className="whitespace-pre-line">{frequencyWarning}</span>,
+        })
+      }
     } catch (err) {
       console.error('Failed to update schedule:', err)
     }
@@ -198,6 +241,19 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
     return (
       <div className="flex-1 flex items-center justify-center text-destructive">
         Failed to load scheduled task
+      </div>
+    )
+  }
+
+  // Mismatched shell → the effect above is redirecting; don't render B's task
+  // (or its wrong-slug nested fetches) under A's chrome in the meantime. Resolve
+  // the route slug first (it's the display slug; task.agentSlug is the id) and only
+  // block once the agents list is loaded — otherwise a correct display-slug visit
+  // would render "Loading…" forever (the effect can't redirect away from it).
+  if (agents && task.agentSlug !== resolveRouteAgentId(agentSlug, agents)) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted-foreground">
+        Loading scheduled task...
       </div>
     )
   }
@@ -287,9 +343,33 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   return (
     <SettingsPageContainer fullScreen>
       <PageTitle
-        title={task.name || 'Scheduled Task'}
+        title={
+          <InlineEditableTitle
+            value={taskTitle}
+            canEdit={canEditTaskName}
+            isSaving={updateName.isPending}
+            onSave={handleSaveName}
+            onError={(err) => {
+              console.error('Failed to rename scheduled task:', err)
+              toast.error('Failed to rename cron', {
+                description: err instanceof Error ? err.message : 'Please try again.',
+              })
+            }}
+            displayClassName="text-xl font-medium"
+            inputClassName="h-9 text-xl font-medium"
+            saveButtonClassName="h-8 w-8"
+            readOnlyAs="h2"
+            ariaLabel="Rename cron"
+            saveAriaLabel="Save cron name"
+            displayTestId="scheduled-task-title"
+            inputTestId="scheduled-task-title-input"
+            saveButtonTestId="scheduled-task-title-save"
+          />
+        }
         back={{
-          onClick: () => setView({ kind: 'home' }),
+          onClick: () => {
+            void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+          },
           testId: 'scheduled-task-back-button',
         }}
         actions={headerActions}
@@ -382,8 +462,10 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
           </DetailCard>
 
           <RuntimeOptionsCard
+            agentSlug={agentSlug}
             model={task.model}
             effort={task.effort}
+            speed={task.speed}
             disabled={!canCancel || !isActive}
             onUpdate={(options) => {
               updateRuntimeOptions.mutate({ taskId, agentSlug, ...options })

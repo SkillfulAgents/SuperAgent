@@ -5,10 +5,18 @@
  *
  * Exposed helpers:
  *   - validateHttpUrl(url): shape check (parseable, http/https only)
+ *   - tryParseUrl(input, base?): parse to URL or null (no throw)
  *   - isPrivateHost(hostname): true for loopback/private/link-local IPs
  *     and the `.local` / `localhost` name families
+ *   - isHostOrSubdomain(hostname, domain): exact-or-subdomain host match
  *   - validateSafeCloneUrl(url, { allowedHostPrefixes? }): full SSRF guard
+ *   - validateMcpDiscoveryUrl(url): async SSRF guard for remote-MCP / OAuth
+ *     discovery (string policy + DNS resolve; rejects private resolved IPs)
+ *   - resolveMcpDiscoveryTarget(url): same policy, also returns resolved addresses
+ *     for pin-on-connect (used by mcpSafeFetch)
  */
+
+import { lookup } from 'node:dns/promises'
 
 const PRIVATE_HOSTNAMES = new Set([
   'localhost',
@@ -38,15 +46,27 @@ function isPrivateIPv6(host: string): boolean {
   const h = host.replace(/^\[/, '').replace(/\]$/, '').toLowerCase()
   if (h === '::1' || h === '::') return true
   if (h.startsWith('fc') || h.startsWith('fd')) return true // ULA fc00::/7
-  if (h.startsWith('fe80')) return true // link-local
-  // IPv4-mapped — check embedded IPv4
-  const v4 = h.match(/::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
-  if (v4) return isPrivateIPv4(v4[1])
+  // link-local fe80::/10 → fe80:: through febf::
+  if (/^fe[89ab][0-9a-f](?::|$)/i.test(h)) return true
+  // IPv4-mapped — dotted or hex (URL.hostname canonicalizes to hex)
+  const v4dotted = h.match(/::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+  if (v4dotted) return isPrivateIPv4(v4dotted[1])
+  const v4hex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+  if (v4hex) {
+    const hi = Number.parseInt(v4hex[1], 16)
+    const lo = Number.parseInt(v4hex[2], 16)
+    return isPrivateIPv4(
+      `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`,
+    )
+  }
   return false
 }
 
 export function isLocalhostHost(hostname: string): boolean {
-  const lower = hostname.toLowerCase()
+  // Root label stripped for the same reason as isPrivateHost below. The two must agree on what
+  // counts as loopback: isDeploymentUrlAllowed routes on this one, and a host it calls public
+  // while isPrivateHost calls it private falls through to the plain https check.
+  const lower = hostname.toLowerCase().replace(/\.$/, '')
   if (lower === 'localhost' || lower.endsWith('.localhost')) return true
   if (lower === 'ip6-localhost' || lower === 'ip6-loopback') return true
   if (lower === '0.0.0.0') return true
@@ -59,13 +79,27 @@ export function isLocalhostHost(hostname: string): boolean {
 }
 
 export function isPrivateHost(hostname: string): boolean {
-  const lower = hostname.toLowerCase()
+  // A trailing dot is the root label, so 'localhost.' is the same name to a resolver and
+  // survives URL parsing. Strip it before every check rather than treating it as another host.
+  const lower = hostname.toLowerCase().replace(/\.$/, '')
   if (PRIVATE_HOSTNAMES.has(lower)) return true
   if (lower.endsWith('.localhost')) return true
   if (lower.endsWith('.local')) return true
   if (isPrivateIPv4(lower)) return true
   if (isPrivateIPv6(lower)) return true
   return false
+}
+
+/**
+ * True iff `hostname` is exactly `domain` or a subdomain of it (case-insensitive).
+ * Use it for redirect/host allowlists where a sibling that merely shares the
+ * suffix string must NOT match: `isHostOrSubdomain('files.slack.com', 'slack.com')`
+ * is true, but `'evilslack.com'` and `'slack.com.evil.com'` are false.
+ */
+export function isHostOrSubdomain(hostname: string, domain: string): boolean {
+  const host = hostname.toLowerCase()
+  const d = domain.toLowerCase()
+  return host === d || host.endsWith('.' + d)
 }
 
 export function validateHttpUrl(url: string): URL {
@@ -82,34 +116,115 @@ export function validateHttpUrl(url: string): URL {
 }
 
 /**
- * SSRF host policy for remote-MCP server and OAuth-discovery URLs.
- *
- * Runs validateHttpUrl + isPrivateHost, with a localhost exception that is
- * allowed only inside Electron (`process.type === 'browser'`) or under the
- * E2E mock — users may legitimately run an MCP server on localhost there, but
- * other private/loopback addresses are always rejected.
- *
- * This is the single source of truth shared by the remote-MCP entry guard
- * (validateMcpServerUrl) AND the OAuth metadata discovery path
- * (discoverOAuthMetadata), so the two cannot drift: every server-supplied
- * metadata URL the discovery flow follows is held to the same policy.
- *
- * Returns the parsed URL on success; throws on rejection so callers can fail
- * closed without ever issuing the fetch.
+ * Parse `input` (optionally against `base`, for relative redirect locations)
+ * into a URL, returning `null` instead of throwing on a malformed value. Lets
+ * callers branch on validity without a local try/catch at each call site.
  */
-export function validateMcpDiscoveryUrl(url: string): URL {
+export function tryParseUrl(input: string, base?: string | URL): URL | null {
+  try {
+    return new URL(input, base)
+  } catch {
+    return null
+  }
+}
+
+function allowsLocalhostMcpException(hostname: string): boolean {
+  const isElectron = process.type === 'browser'
+  return Boolean((isElectron || process.env.E2E_MOCK) && isLocalhostHost(hostname))
+}
+
+export interface DiscoveryHostPolicy {
+  /**
+   * Override the default localhost exception. The default (undefined) allows
+   * loopback on Electron/E2E, which suits *user-configured* targets like a local
+   * MCP server. Callers following a **remotely supplied** URL should pass an
+   * explicit value — `false` in shipped builds — so a hostile response can't
+   * steer the request at the loopback interface.
+   */
+  allowLocalhost?: boolean
+}
+
+function localhostAllowed(hostname: string, policy?: DiscoveryHostPolicy): boolean {
+  if (policy?.allowLocalhost === undefined) return allowsLocalhostMcpException(hostname)
+  return policy.allowLocalhost && isLocalhostHost(hostname)
+}
+
+type ResolvedAddress = { address: string; family: 4 | 6 }
+
+/**
+ * Resolve `hostname` to all addresses. Literal IP hostnames skip DNS and
+ * return themselves so the private-host check still runs once.
+ */
+async function resolveHostnameAddresses(hostname: string): Promise<ResolvedAddress[]> {
+  if (isPrivateIPv4(hostname) || isPrivateIPv6(hostname) || /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) {
+    const family: 4 | 6 = hostname.includes(':') ? 6 : 4
+    return [{ address: hostname.replace(/^\[/, '').replace(/\]$/, ''), family }]
+  }
+  const stripped = hostname.replace(/^\[/, '').replace(/\]$/, '')
+  if (stripped.includes(':') || stripped === '::1') {
+    return [{ address: stripped, family: 6 }]
+  }
+
+  const result = await lookup(hostname, { all: true })
+  const list = Array.isArray(result) ? result : [result]
+  return list.map((r) => ({
+    address: r.address,
+    family: (r.family === 6 ? 6 : 4) as 4 | 6,
+  }))
+}
+
+/**
+ * Resolve + apply the remote-MCP SSRF policy. Shared by validateMcpDiscoveryUrl
+ * and mcpSafeFetch so pin and reject cannot drift.
+ */
+export async function resolveMcpDiscoveryTarget(
+  url: string,
+  policy?: DiscoveryHostPolicy,
+): Promise<{
+  parsed: URL
+  addresses: ResolvedAddress[]
+}> {
   const parsed = validateHttpUrl(url)
-  if (isPrivateHost(parsed.hostname)) {
-    // In Electron (or under the E2E mock) allow localhost MCP servers since
-    // users may be running them locally, but still block other private hosts.
-    const isElectron = process.type === 'browser'
-    if ((isElectron || process.env.E2E_MOCK) && isLocalhostHost(parsed.hostname)) {
-      return parsed
-    }
+  const localhostOk = localhostAllowed(parsed.hostname, policy)
+
+  if (isPrivateHost(parsed.hostname) && !localhostOk) {
     throw new Error(
       `URL must not point to a private or loopback address: ${parsed.hostname}`,
     )
   }
+
+  const addresses = await resolveHostnameAddresses(parsed.hostname)
+  if (addresses.length === 0) {
+    throw new Error(`URL host could not be resolved: ${parsed.hostname}`)
+  }
+
+  for (const { address } of addresses) {
+    if (isPrivateHost(address) && !localhostOk) {
+      throw new Error(
+        `URL must not point to a private or loopback address: ${parsed.hostname} (resolved ${address})`,
+      )
+    }
+  }
+
+  return { parsed, addresses }
+}
+
+/**
+ * SSRF host policy for remote-MCP server and OAuth-discovery URLs.
+ *
+ * Runs validateHttpUrl + string isPrivateHost, then resolves DNS and rejects
+ * if any resolved address is private/link-local — closing the DNS-rebind
+ * axis that string-only checks miss. Localhost remains allowed only under
+ * the Electron / E2E_MOCK exception, unless `policy.allowLocalhost` overrides it.
+ *
+ * Returns the parsed URL on success; throws on rejection so callers can fail
+ * closed without ever issuing the fetch.
+ */
+export async function validateMcpDiscoveryUrl(
+  url: string,
+  policy?: DiscoveryHostPolicy,
+): Promise<URL> {
+  const { parsed } = await resolveMcpDiscoveryTarget(url, policy)
   return parsed
 }
 

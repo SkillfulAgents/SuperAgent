@@ -92,7 +92,7 @@ export function Wsl2InstallGuide({ onRefresh, isRefreshing }: Wsl2InstallGuidePr
           </TooltipProvider>
           {' '}into PowerShell. Then press Enter.
         </li>
-        <li>Restart your computer, then reopen Superagent.</li>
+        <li>Restart your computer, then reopen Gamut.</li>
       </ol>
 
       <RequestError message={launchError ?? null} />

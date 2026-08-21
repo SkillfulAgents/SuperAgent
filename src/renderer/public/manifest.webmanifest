@@ -1,0 +1,14 @@
+{
+  "name": "Gamut",
+  "short_name": "Gamut",
+  "description": "Run sophisticated AI code agents powered by Claude Code",
+  "display": "standalone",
+  "start_url": "/",
+  "scope": "/",
+  "background_color": "#1a1a1a",
+  "theme_color": "#1a1a1a",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

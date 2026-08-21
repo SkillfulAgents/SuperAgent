@@ -1,93 +1,20 @@
 
-import { Plug } from 'lucide-react'
+import { Blocks } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
+import { Field, ResultField } from './shared'
 import { requestRemoteMcpDef, type RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request-remote-mcp'
 
 const parseInput = requestRemoteMcpDef.parseInput
 
-function getSummary(input: unknown): string | null {
-  return requestRemoteMcpDef.getSummary(input)
-}
-
-function parseResult(result: unknown): string | null {
-  if (!result) return null
-
-  if (Array.isArray(result) && result[0]?.text) {
-    return result[0].text
-  }
-
-  if (typeof result === 'object' && result !== null && 'text' in result) {
-    return (result as { text: string }).text
-  }
-
-  if (typeof result === 'string') {
-    try {
-      const parsed = JSON.parse(result)
-      if (Array.isArray(parsed) && parsed[0]?.text) {
-        return parsed[0].text
-      }
-    } catch {
-      // Not JSON, use as-is
-    }
-    return result
-  }
-
-  return String(result)
-}
-
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
   const { url, name, reason } = parseInput(input)
-  const displayResult = parseResult(result)
 
   return (
     <div className="space-y-2">
-      {/* Server name */}
-      {name && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Server</div>
-          <div className="bg-background rounded p-2 text-xs font-medium">
-            {name}
-          </div>
-        </div>
-      )}
-
-      {/* URL */}
-      {url && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">URL</div>
-          <div className="bg-background rounded p-2 text-xs font-mono truncate">
-            {url}
-          </div>
-        </div>
-      )}
-
-      {/* Reason */}
-      {reason && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Reason</div>
-          <div className="bg-background rounded p-2 text-xs">
-            {reason}
-          </div>
-        </div>
-      )}
-
-      {/* Result */}
-      {displayResult && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
-            {isError ? 'Error' : 'Result'}
-          </div>
-          <div
-            className={`rounded p-2 text-xs ${
-              isError
-                ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200'
-                : 'bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200'
-            }`}
-          >
-            {displayResult}
-          </div>
-        </div>
-      )}
+      {name && <Field label="Server" className="font-medium">{name}</Field>}
+      {url && <Field label="URL" className="font-mono truncate">{url}</Field>}
+      {reason && <Field label="Reason">{reason}</Field>}
+      {result && <ResultField result={result} isError={isError} />}
     </div>
   )
 }
@@ -102,31 +29,20 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 
   return (
     <div className="space-y-2">
-      <div>
-        <div className="text-xs font-medium text-muted-foreground mb-1">Server</div>
-        <div className="bg-background rounded p-2 text-xs font-medium">
-          {parsed.name || parsed.url || (
-            <span className="text-muted-foreground italic">...</span>
-          )}
-        </div>
-      </div>
+      <Field label="Server" className="font-medium">
+        {parsed.name || parsed.url || <span className="text-muted-foreground italic">...</span>}
+      </Field>
       {parsed.url && parsed.name && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">URL</div>
-          <div className="bg-background rounded p-2 text-xs font-mono truncate">
-            {parsed.url}
-            <span className="animate-pulse">|</span>
-          </div>
-        </div>
+        <Field label="URL" className="font-mono truncate">
+          {parsed.url}
+          <span className="animate-pulse">|</span>
+        </Field>
       )}
       {parsed.reason && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Reason</div>
-          <div className="bg-background rounded p-2 text-xs">
-            {parsed.reason}
-            <span className="animate-pulse">|</span>
-          </div>
-        </div>
+        <Field label="Reason">
+          {parsed.reason}
+          <span className="animate-pulse">|</span>
+        </Field>
       )}
     </div>
   )
@@ -134,8 +50,8 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 
 export const requestRemoteMcpRenderer: ToolRenderer = {
   displayName: 'Request MCP Server',
-  icon: Plug,
-  getSummary,
+  icon: Blocks,
+  getSummary: requestRemoteMcpDef.getSummary,
   ExpandedView,
   StreamingView,
 }

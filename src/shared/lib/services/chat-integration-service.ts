@@ -2,11 +2,12 @@
  * Chat Integration Service — CRUD operations for the chat_integrations table.
  */
 
-import { eq, and, inArray } from 'drizzle-orm'
+import { eq, and, inArray, count } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { chatIntegrations } from '@shared/lib/db/schema'
+import { chatIntegrations, chatIntegrationSessions } from '@shared/lib/db/schema'
 import type { ChatIntegration, NewChatIntegration } from '@shared/lib/db/schema'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { mergeChatIntegrationConfig } from '@shared/lib/chat-integrations/config-schema'
 import { captureException } from '@shared/lib/error-reporting'
 
 export type { ChatIntegration, NewChatIntegration }
@@ -32,6 +33,7 @@ export interface CreateChatIntegrationParams {
   sessionTimeout?: number | null
   model?: string | null
   effort?: string | null
+  speed?: string | null
   createdByUserId?: string
 }
 
@@ -39,9 +41,11 @@ export interface UpdateChatIntegrationParams {
   name?: string
   config?: Record<string, unknown>
   showToolCalls?: boolean
+  requireApproval?: boolean
   sessionTimeout?: number | null
   model?: string | null
   effort?: string | null
+  speed?: string | null
   status?: 'active' | 'paused' | 'error' | 'disconnected'
   errorMessage?: string | null
 }
@@ -67,9 +71,13 @@ export function createChatIntegration(params: CreateChatIntegrationParams): stri
     name: params.name ?? null,
     config: JSON.stringify(params.config),
     showToolCalls: params.showToolCalls ?? false,
+    // Always private at create; making a bot public is owner-only via the
+    // dedicated PATCH /:integrationId/require-approval endpoint.
+    requireApproval: true,
     sessionTimeout: params.sessionTimeout ?? null,
     model: params.model ?? null,
     effort: params.effort ?? null,
+    speed: params.speed ?? null,
     createdByUserId: params.createdByUserId ?? null,
     createdAt: now,
     updatedAt: now,
@@ -188,13 +196,38 @@ function isBetterStartupCandidate(candidate: ChatIntegration, current: ChatInteg
   return candidateTs > currentTs
 }
 
-export function listChatIntegrationsByAgents(agentSlugs: string[]): Map<string, ChatIntegration[]> {
+/**
+ * Count chat sessions per integration across a set of agents — the
+ * "has this connection actually been used" signal for the home graph.
+ */
+export function countSessionsPerIntegration(agentSlugs: string[]): Record<string, number> {
+  if (agentSlugs.length === 0) return {}
+
+  const rows = db
+    .select({ integrationId: chatIntegrationSessions.integrationId, sessions: count() })
+    .from(chatIntegrationSessions)
+    .innerJoin(chatIntegrations, eq(chatIntegrationSessions.integrationId, chatIntegrations.id))
+    .where(inArray(chatIntegrations.agentSlug, agentSlugs))
+    .groupBy(chatIntegrationSessions.integrationId)
+    .all()
+
+  const counts: Record<string, number> = {}
+  for (const row of rows) counts[row.integrationId] = row.sessions
+  return counts
+}
+
+export function listChatIntegrationsByAgents(
+  agentSlugs: string[],
+  // Default stays active-only (the agent-list enrichment tags live chats);
+  // the home graph passes allStatuses so error/paused nodes still render.
+  options?: { allStatuses?: boolean },
+): Map<string, ChatIntegration[]> {
   if (agentSlugs.length === 0) return new Map()
 
   const results = db.select().from(chatIntegrations)
     .where(and(
       inArray(chatIntegrations.agentSlug, agentSlugs),
-      eq(chatIntegrations.status, 'active'),
+      options?.allStatuses ? undefined : eq(chatIntegrations.status, 'active'),
     ))
     .all()
 
@@ -210,17 +243,26 @@ export function listChatIntegrationsByAgents(agentSlugs: string[]): Map<string, 
 // ── Update ──────────────────────────────────────────────────────────────
 
 export function updateChatIntegration(id: string, params: UpdateChatIntegrationParams): boolean {
+  let nextConfig: Record<string, unknown> | undefined
+
   // Guard against a PATCH moving a token to one that's already owned by
   // another integration — would re-create SUP-150's duplicate-poller scenario.
   if (params.config !== undefined) {
     const current = getChatIntegration(id)
-    if (current) {
-      const newToken = extractUniqueKey(current.provider, params.config)
-      if (newToken) {
-        const duplicate = findIntegrationByUniqueKey(current.provider, newToken, id)
-        if (duplicate) {
-          throw new DuplicateBotTokenError(duplicate.id, current.provider)
-        }
+    if (!current) return false
+
+    nextConfig = mergeChatIntegrationConfig(current.provider, current.config, params.config)
+    const currentConfig = safeParseConfig(current)
+    const currentToken = currentConfig
+      ? extractUniqueKey(current.provider, currentConfig)
+      : null
+    const newToken = extractUniqueKey(current.provider, nextConfig)
+    // Settings-only edits preserve the same unique key. Avoid re-checking those
+    // against legacy duplicate rows that predate the create-time guard.
+    if (newToken && newToken !== currentToken) {
+      const duplicate = findIntegrationByUniqueKey(current.provider, newToken, id)
+      if (duplicate) {
+        throw new DuplicateBotTokenError(duplicate.id, current.provider)
       }
     }
   }
@@ -230,11 +272,13 @@ export function updateChatIntegration(id: string, params: UpdateChatIntegrationP
   }
 
   if (params.name !== undefined) updates.name = params.name
-  if (params.config !== undefined) updates.config = JSON.stringify(params.config)
+  if (nextConfig !== undefined) updates.config = JSON.stringify(nextConfig)
   if (params.showToolCalls !== undefined) updates.showToolCalls = params.showToolCalls
+  if (params.requireApproval !== undefined) updates.requireApproval = params.requireApproval
   if (params.sessionTimeout !== undefined) updates.sessionTimeout = params.sessionTimeout
   if (params.model !== undefined) updates.model = params.model
   if (params.effort !== undefined) updates.effort = params.effort
+  if (params.speed !== undefined) updates.speed = params.speed
   if (params.status !== undefined) updates.status = params.status
   if (params.errorMessage !== undefined) updates.errorMessage = params.errorMessage
 

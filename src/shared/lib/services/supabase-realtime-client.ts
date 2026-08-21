@@ -19,6 +19,10 @@ type RealtimeRecord = {
   status?: unknown
 }
 
+// Default preserved from before RealtimeConfig grew a `table` field, so the
+// webhook-events flow (whose poll response omits it) is untouched.
+const DEFAULT_TABLE = 'webhook_events'
+
 export class SupabaseRealtimeClient {
   private ws: WebSocket | null = null
   private heartbeatInterval: NodeJS.Timeout | null = null
@@ -54,6 +58,7 @@ export class SupabaseRealtimeClient {
     if (this.isStopped || !this.config) return
 
     const { url, apikey, jwt } = this.config
+    const table = this.config.table ?? DEFAULT_TABLE
 
     // apikey param = Supabase project anon key (for gateway auth)
     // jwt is sent later in the phx_join payload as access_token (for RLS)
@@ -73,18 +78,24 @@ export class SupabaseRealtimeClient {
         this.ws?.close()
       }, 10000)
 
+      // A socket that errors out fires close without ever opening; the
+      // promise must settle then (not wait out the 10s timeout, which close
+      // cancels) or callers awaiting connect() hang forever.
+      let opened = false
+
       this.ws.onopen = () => {
+        opened = true
         clearTimeout(timeout)
         this.isConnected = true
         this.reconnectAttempts = 0
         console.log('[SupabaseRealtime] Connected')
 
-        // Join the realtime channel for webhook_events with RLS
+        // Join the realtime channel for the configured table with RLS
         console.log(
-          `[SupabaseRealtime] Joining channel realtime:public:webhook_events jwt=${describeRealtimeJwt(jwt)}`,
+          `[SupabaseRealtime] Joining channel realtime:public:${table} jwt=${describeRealtimeJwt(jwt)}`,
         )
         this.sendMessage({
-          topic: `realtime:public:webhook_events`,
+          topic: `realtime:public:${table}`,
           event: 'phx_join',
           payload: {
             config: {
@@ -93,7 +104,7 @@ export class SupabaseRealtimeClient {
                 {
                   event: 'INSERT',
                   schema: 'public',
-                  table: 'webhook_events',
+                  table,
                 },
               ],
             },
@@ -156,6 +167,10 @@ export class SupabaseRealtimeClient {
         }
 
         this.onDisconnect?.()
+
+        if (!opened) {
+          reject(new Error('WebSocket closed before connection established'))
+        }
       }
     })
   }
@@ -226,7 +241,7 @@ export class SupabaseRealtimeClient {
     // Send access_token update if connected
     if (this.isConnected) {
       this.sendMessage({
-        topic: `realtime:public:webhook_events`,
+        topic: `realtime:public:${this.config.table ?? DEFAULT_TABLE}`,
         event: 'access_token',
         payload: { access_token: jwt },
         ref: this.nextRef(),

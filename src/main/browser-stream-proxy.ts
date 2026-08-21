@@ -10,63 +10,13 @@ import type { Duplex } from 'stream'
 import type { ServerType } from '@hono/node-server'
 import { WebSocketServer, WebSocket } from 'ws'
 import { containerManager } from '@shared/lib/container/container-manager'
+import { resolveAgentId } from '@shared/lib/utils/file-storage'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getSettings } from '@shared/lib/config/settings'
-import { isAuthMode } from '@shared/lib/auth/mode'
 import { captureException } from '@shared/lib/error-reporting'
-import { db } from '@shared/lib/db'
-import { agentAcl } from '@shared/lib/db/schema'
-import { and, eq } from 'drizzle-orm'
+import { authenticateAgentWebSocket } from './agent-websocket-auth'
 
 const browserWss = new WebSocketServer({ noServer: true })
-
-const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
-
-import { type AgentRole, ROLE_HIERARCHY } from '@shared/lib/types/agent'
-
-async function authenticateWs(
-  request: IncomingMessage,
-  agentSlug: string,
-  minRole: AgentRole,
-): Promise<boolean> {
-  if (!isAuthMode()) {
-    // Only restrict to localhost in Electron
-    if (process.type === 'browser') {
-      const addr = request.socket?.remoteAddress
-      if (!addr || !LOCALHOST_ADDRS.has(addr)) return false
-    }
-    return true
-  }
-
-  try {
-    // Lazy import to avoid pulling in better-auth ESM at startup
-    const { getAuth } = await import('@shared/lib/auth/index')
-    const auth = getAuth()
-
-    // Convert raw headers to Headers for Better Auth
-    const headers = new Headers()
-    for (const [key, value] of Object.entries(request.headers)) {
-      if (value) headers.set(key, Array.isArray(value) ? value[0] : value)
-    }
-
-    const session = await auth.api.getSession({ headers })
-    if (!session?.user) return false
-
-    // Check agent-level ACL
-    const [row] = await db
-      .select({ role: agentAcl.role })
-      .from(agentAcl)
-      .where(and(eq(agentAcl.userId, session.user.id), eq(agentAcl.agentSlug, agentSlug)))
-      .limit(1)
-
-    if (!row) return false
-    const userRole = row.role as AgentRole
-    return ROLE_HIERARCHY[userRole] >= ROLE_HIERARCHY[minRole]
-  } catch (error) {
-    console.error('[BrowserProxy] Auth check failed:', error)
-    return false
-  }
-}
 
 export function setupBrowserStreamProxy(server: ServerType): void {
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -79,38 +29,49 @@ export function setupBrowserStreamProxy(server: ServerType): void {
       return
     }
 
-    const agentSlug = match[1]
-
-    // Authenticate before upgrading — viewer+ can watch, but input is filtered per-role below
-    authenticateWs(request, agentSlug, 'viewer').then((allowed) => {
-      if (!allowed) {
-        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+    // The URL carries the display slug ({name}-{id}); resolve to the canonical id
+    // before any ACL check or container lookup. This WS upgrade bypasses the Hono
+    // /:id/* ResolveAgent middleware, so it must resolve itself. Stash the resolved
+    // id for the connection handler below.
+    resolveAgentId(match[1]).then((agentSlug) => {
+      if (!agentSlug) {
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
         socket.destroy()
         return
       }
+      ;(request as any)._agentId = agentSlug
 
-      // Check if user has 'user' role (can send input) — stash on the request object
-      authenticateWs(request, agentSlug, 'user').then((canInput) => {
-        ;(request as any)._canInput = canInput
-        browserWss.handleUpgrade(request, socket, head, (ws) => {
-          browserWss.emit('connection', ws, request)
+      // Authenticate before upgrading — viewer+ can watch, but input is filtered per-role below
+      authenticateAgentWebSocket(request, agentSlug, 'viewer').then((allowed) => {
+        if (!allowed) {
+          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+          socket.destroy()
+          return
+        }
+
+        // Check if user has 'user' role (can send input) — stash on the request object
+        authenticateAgentWebSocket(request, agentSlug, 'user').then((canInput) => {
+          ;(request as any)._canInput = canInput
+          browserWss.handleUpgrade(request, socket, head, (ws) => {
+            browserWss.emit('connection', ws, request)
+          })
         })
       })
+    }).catch(() => {
+      socket.destroy()
     })
   })
 
   browserWss.on('connection', async (ws: WebSocket, request: IncomingMessage) => {
-    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- request.url from HTTP server is always valid
-    const url = new URL(request.url || '', `http://${request.headers.host}`)
-    const match = url.pathname.match(/^\/api\/agents\/([^/]+)\/browser\/stream$/)
-    if (!match) { ws.close(1011, 'Invalid path'); return }
-
-    const agentSlug = match[1]
+    // Canonical id resolved during the upgrade handshake above (the URL slug is the
+    // display slug; container lookups are keyed by the canonical id).
+    const agentSlug = (request as any)._agentId as string | undefined
+    if (!agentSlug) { ws.close(1011, 'Invalid path'); return }
     const canInput = (request as any)._canInput === true
 
     try {
         // Ensure client exists (creates if needed) and get cached status
-        containerManager.getClient(agentSlug)
+        const client = containerManager.getClient(agentSlug)
         const info = containerManager.getCachedInfo(agentSlug)
 
         if (info.status !== 'running' || !info.port) {
@@ -118,10 +79,9 @@ export function setupBrowserStreamProxy(server: ServerType): void {
           return
         }
 
-        // Connect to the container's browser stream WebSocket
-        const wsUrl = `ws://localhost:${info.port}/browser/stream`
+        const wsUrl = `${client.getWebSocketBaseUrl(info.port)}/browser/stream`
         console.log(`[BrowserProxy] Connecting upstream to: ${wsUrl}`)
-        const upstream = new WebSocket(wsUrl)
+        const upstream = new WebSocket(wsUrl, { headers: client.getHostAuthHeaders() })
 
         upstream.on('open', () => {
           console.log(`[BrowserProxy] Connected to container stream for agent ${agentSlug}`)

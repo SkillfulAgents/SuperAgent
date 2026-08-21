@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useModelSettings } from '@renderer/hooks/use-settings'
 import { ComposerOptionsPopover } from './composer-options-popover'
-import type { EffortLevel } from '@shared/lib/container/types'
-import type { ComposerModel, ComposerModelFamily } from '@shared/lib/llm-provider'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 /**
@@ -10,131 +10,307 @@ import type { LlmProviderId } from '@shared/lib/config/settings'
  * create a session) and the in-session MessageInput composer. Both need the
  * same per-message runtime knobs (effort, model) and the same seeding rules,
  * so we centralize:
- *   - reading the active provider's composer models from settings
- *   - one-time seeding from `initialEffort` / `initialModel` (so late-loading
- *     session data doesn't clobber later user edits)
+ *   - reading the active provider's model catalog from settings
+ *   - adopting authoritative session state without clobbering unsent user edits
  *   - falling back to the user's "Default Model" setting when no initial
  *     model is supplied
  *   - rendering the two selector buttons as one toolbar block
  */
 
 const DEFAULT_EFFORT: EffortLevel = 'medium'
+const DEFAULT_SPEED: SpeedLevel = 'normal'
 
 export interface ComposerOptionsState {
   effort: EffortLevel
   setEffort: (e: EffortLevel) => void
-  /** Family alias ("fable" | "opus" | "sonnet" | "haiku"), or undefined while settings load. */
+  speed: SpeedLevel
+  setSpeed: (s: SpeedLevel) => void
+  /** Raw selection — a concrete model id or a bare family alias; undefined while settings load. */
   model: string | undefined
   setModel: (m: string) => void
-  /** Family options for the active provider; empty for providers with no family UX. */
-  composerModels: ComposerModel[]
-  /** Pluck the runtime-options bag for an API payload. Drops `model` when undefined. */
-  toRuntimeOptions(): { effort: EffortLevel; model?: string }
+  /** The active provider's flat catalog of concrete model ids. */
+  catalog: ModelDefinition[]
+  /** Effective catalog/provider fallback used while a model selection is unresolved. */
+  defaultModel: string | undefined
+  /** Active host web-provider id (settings-derived), so the model picker's web-tools availability
+   *  warning knows a configured vendor makes those tools work on any model. Undefined = native. */
+  webProvider?: string
+  /**
+   * Pluck the runtime-options bag for an API payload. UNTOUCHED knobs (no
+   * explicit user pick, no session-seeded value) are OMITTED, not serialized:
+   * an adopted default sent as an explicit value would beat the server's own
+   * agent-default > global resolution — wrong whenever the display is racing
+   * a still-loading preferences query — and would override the actual model of
+   * a session that carries none in its metadata (e.g. trigger-created).
+   */
+  toRuntimeOptions(): { effort?: EffortLevel; speed?: SpeedLevel; model?: string }
+}
+
+/** Submit lifecycle used by composer hosts; presentation-only consumers only need the state above. */
+export interface ComposerOptionsController extends ComposerOptionsState {
+  /**
+   * Acknowledge runtime options the server accepted for a fresh turn. Until
+   * this is called, a user-picked runtime option is an unsent local edit and
+   * must not be overwritten by a session-detail refetch. Afterwards, newer
+   * initial values are authoritative (another window may have spoken).
+   */
+  markSubmitted(options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string }): void
+}
+
+/**
+ * Resolve a stored selection to its catalog entry for display: an exact
+ * concrete-id match first, then a bare family alias → that family's latest.
+ * Mirrors the host resolver so the UI highlights the row that will go on the wire.
+ */
+export function findCatalogModel(
+  selection: string | undefined,
+  catalog: ModelDefinition[],
+): ModelDefinition | undefined {
+  if (!selection) return undefined
+  return (
+    catalog.find((m) => m.id === selection) ??
+    catalog.find((m) => m.family === selection && m.isLatest)
+  )
 }
 
 export interface UseComposerOptionsArgs {
-  /** Effort last used on this session, seeds the selector once if provided. */
+  /** Effort last used on this session, seeds the selector if provided. */
   initialEffort?: EffortLevel
-  /** Model last used on this session, seeds the selector once if provided. */
+  /** Speed last used on this session, seeds the selector if provided. */
+  initialSpeed?: SpeedLevel
+  /** Authoritative model last used on this session. */
   initialModel?: string
+  /** The agent's own default model, if set. Slots between a session's initial model and the app-wide default. */
+  agentDefaultModel?: string
+  /** The agent's own default effort, if set. Slots between a session's initial effort and the app-wide default. */
+  agentDefaultEffort?: EffortLevel
+  /** The agent's own default speed, if set. Slots between a session's initial speed and the built-in 'normal'. */
+  agentDefaultSpeed?: SpeedLevel
   /**
-   * Preferred family for the initial model when neither `initialModel` nor a
-   * prior user selection applies. Wins over the user's "Default Model"
-   * setting. Used by AgentHome to start brand-new agents on Opus.
-   * Only consulted while the selector hasn't been seeded yet — once the user
-   * picks a model, their choice takes over.
+   * Identity of the agent the defaults belong to. When it changes (quick-dispatch
+   * switching agents) a locked, untouched selection unlocks and re-adopts the new
+   * agent's effective defaults.
    */
-  preferredFamily?: ComposerModelFamily
+  agentKey?: string
+  /**
+   * Whether the agent-defaults source has answered (its query settled). Until
+   * settings AND this are true, an untouched selection keeps adopting the
+   * effective default as the sources stream in; after both, adoption locks so a
+   * background change (another window editing a default, a focus refetch) can't
+   * swap a selection out from under a mid-compose user. Defaults to true for
+   * callers with no agent-defaults source.
+   */
+  agentDefaultsReady?: boolean
+  /**
+   * Never lock: an untouched selection live-follows the effective default. For
+   * surfaces that edit the default right next to the composer (agent home),
+   * where the two must visibly stay in sync.
+   */
+  followDefaults?: boolean
 }
 
-export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsState {
-  const { initialEffort, initialModel, preferredFamily } = args
+export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsController {
+  const {
+    initialEffort,
+    initialSpeed,
+    initialModel,
+    agentDefaultModel,
+    agentDefaultEffort,
+    agentDefaultSpeed,
+    agentKey,
+    agentDefaultsReady = true,
+    followDefaults = false,
+  } = args
 
-  const { data: settings } = useSettings()
+  // Picker-safe endpoint — readable by non-admin users too, unlike the
+  // admin-gated full settings (which would leave them an empty catalog).
+  const { data: settings } = useModelSettings()
 
   // ---- Effort ----
   const [effort, setEffortState] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
   const effortSeededRef = useRef(initialEffort !== undefined)
+  const lastInitialEffortRef = useRef(initialEffort)
+  const effortDirtyRef = useRef(false)
   useEffect(() => {
-    if (!effortSeededRef.current && initialEffort !== undefined) {
+    if (lastInitialEffortRef.current === initialEffort) return
+    lastInitialEffortRef.current = initialEffort
+    if (!effortDirtyRef.current && initialEffort !== undefined) {
       setEffortState(initialEffort)
       effortSeededRef.current = true
     }
   }, [initialEffort])
-  // For brand-new sessions (no `initialEffort`), adopt the user's configured
-  // default effort once settings load. Doesn't flip the seeded ref, so a
-  // late-arriving session effort can still win, and stops once the user picks.
-  const defaultEffort = settings?.models?.agentEffort
-  useEffect(() => {
-    if (!effortSeededRef.current && initialEffort === undefined && defaultEffort) {
-      setEffortState(defaultEffort)
-    }
-  }, [defaultEffort, initialEffort])
-  // Wrap the setter so an explicit user pick locks out the late-arriving
-  // initial-seed effect — otherwise a slow `useSession` resolution can clobber
-  // the user's choice if they pick before session data lands.
+  // Wrap the setter so an explicit user pick locks out authoritative refreshes
+  // until it is submitted — otherwise a slow `useSession` resolution can
+  // clobber the user's choice if they pick before session data lands.
   const setEffort = useCallback((e: EffortLevel) => {
     effortSeededRef.current = true
+    effortDirtyRef.current = true
     setEffortState(e)
   }, [])
 
-  // ---- Composer models from active provider ----
+  // ---- Speed ---- (same seeding/locking shape as effort)
+  const [speed, setSpeedState] = useState<SpeedLevel>(initialSpeed ?? DEFAULT_SPEED)
+  const speedSeededRef = useRef(initialSpeed !== undefined)
+  const lastInitialSpeedRef = useRef(initialSpeed)
+  const speedDirtyRef = useRef(false)
+  useEffect(() => {
+    if (lastInitialSpeedRef.current === initialSpeed) return
+    lastInitialSpeedRef.current = initialSpeed
+    if (!speedDirtyRef.current && initialSpeed !== undefined) {
+      setSpeedState(initialSpeed)
+      speedSeededRef.current = true
+    }
+  }, [initialSpeed])
+  const setSpeed = useCallback((sp: SpeedLevel) => {
+    speedSeededRef.current = true
+    speedDirtyRef.current = true
+    setSpeedState(sp)
+  }, [])
+
+  // ---- Catalog from active provider ----
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
-  const composerModels = useMemo(
-    () => settings?.llmProviderStatus?.find(p => p.id === activeProvider)?.composerModels ?? [],
-    [settings, activeProvider]
+  const providerInfo = useMemo(
+    () => settings?.llmProviderStatus?.find((p) => p.id === activeProvider),
+    [settings, activeProvider],
   )
-  // Fallback hierarchy: preferred family → user's "Default Model" → provider's
-  // Sonnet → first option. Preferred family wins over the user's "Default
-  // Model" setting (used for the first-session-Opus default in AgentHome).
-  // Family aliases are valid wire values (the container normalizes pinned
-  // IDs to aliases), so `preferredFamily` itself is a usable model string.
-  const fallbackModel = useMemo(() => (
-    preferredFamily
-    ?? settings?.models?.agentModel
-    ?? composerModels.find(m => m.family === 'sonnet')?.modelId
-    ?? composerModels[0]?.modelId
-  ), [preferredFamily, settings, composerModels])
+  const catalog = useMemo(() => providerInfo?.catalog ?? [], [providerInfo])
+  // Fallback hierarchy: the agent's own default → user's "Default Model" →
+  // provider's catalog default → first catalog entry. The first non-empty
+  // wins. Aliases and concrete ids are both valid selection strings.
+  const fallbackModel = useMemo(
+    () =>
+      agentDefaultModel ??
+      settings?.models?.agentModel ??
+      providerInfo?.defaultModels?.agent ??
+      catalog[0]?.id,
+    [agentDefaultModel, settings, providerInfo, catalog],
+  )
 
   // ---- Model ----
   const [model, setModelState] = useState<string | undefined>(initialModel ?? fallbackModel)
   const modelSeededRef = useRef(initialModel !== undefined)
-  // Seed once when session data loads after mount.
+  // `initialModel` is authoritative session state, but the first render may
+  // contain a stale React Query cache entry while a background refetch is in
+  // flight. Track every distinct value rather than treating the first one as
+  // final. The only thing allowed to beat a newer session value is an explicit
+  // user pick that has not been accepted by the server yet.
+  const lastInitialModelRef = useRef(initialModel)
+  const modelDirtyRef = useRef(false)
   useEffect(() => {
-    if (!modelSeededRef.current && initialModel !== undefined) {
+    if (lastInitialModelRef.current === initialModel) return
+    lastInitialModelRef.current = initialModel
+    if (!modelDirtyRef.current && initialModel !== undefined) {
       setModelState(initialModel)
       modelSeededRef.current = true
     }
   }, [initialModel])
-  // Adopt provider default if the selector is still empty by the time settings load.
-  useEffect(() => {
-    if (!modelSeededRef.current && model === undefined && fallbackModel) {
-      setModelState(fallbackModel)
-    }
-  }, [model, fallbackModel])
-  // When preferredFamily arrives late (e.g. after async session list loads in
-  // AgentHome), override the settings-based default — but not if the user has
-  // already made an explicit pick.
-  const prevPreferredRef = useRef(preferredFamily)
-  useEffect(() => {
-    if (preferredFamily && preferredFamily !== prevPreferredRef.current && !modelSeededRef.current) {
-      setModelState(preferredFamily)
-    }
-    prevPreferredRef.current = preferredFamily
-  }, [preferredFamily])
   const setModel = useCallback((m: string) => {
     modelSeededRef.current = true
+    modelDirtyRef.current = true
     setModelState(m)
   }, [])
 
+  const markSubmitted = useCallback(
+    (options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string }) => {
+      // Do not clear a newer selection if a request somehow completed after
+      // the picker changed again. MessageInput disables the picker in flight,
+      // but the equality check keeps this helper correct for other callers.
+      if (options.effort !== undefined && options.effort === effort) {
+        effortDirtyRef.current = false
+      }
+      if (options.speed !== undefined && options.speed === speed) {
+        speedDirtyRef.current = false
+      }
+      if (options.model !== undefined && options.model === model) {
+        modelDirtyRef.current = false
+      }
+    },
+    [effort, speed, model],
+  )
+
+  // ---- Default adoption ----
+  // An untouched knob follows the effective default (agent default → user
+  // setting → built-in) while the sources stream in: settings and agent
+  // preferences resolve at different times, and quick-dispatch switches agents.
+  // Once both sources have answered, adoption LOCKS (unless `followDefaults`),
+  // so a later background change — another window editing a default, a focus
+  // refetch — can't swap a selection out from under a mid-compose user. An
+  // `agentKey` change unlocks and re-adopts for the new agent. Session-seeded
+  // values and explicit user picks always win via the seeded refs.
+  const adoptionLockedRef = useRef(false)
+  const adoptionKeyRef = useRef(agentKey)
+  const fallbackEffort =
+    agentDefaultEffort ?? settings?.models?.agentEffort ?? (settings ? DEFAULT_EFFORT : undefined)
+  const fallbackSpeed = agentDefaultSpeed ?? (settings ? DEFAULT_SPEED : undefined)
+  useEffect(() => {
+    if (adoptionKeyRef.current !== agentKey) {
+      adoptionKeyRef.current = agentKey
+      adoptionLockedRef.current = false
+    }
+    if (adoptionLockedRef.current) return
+    if (!modelSeededRef.current && fallbackModel && model !== fallbackModel) {
+      setModelState(fallbackModel)
+    }
+    if (
+      !effortSeededRef.current &&
+      initialEffort === undefined &&
+      fallbackEffort &&
+      effort !== fallbackEffort
+    ) {
+      setEffortState(fallbackEffort)
+    }
+    if (
+      !speedSeededRef.current &&
+      initialSpeed === undefined &&
+      fallbackSpeed &&
+      speed !== fallbackSpeed
+    ) {
+      setSpeedState(fallbackSpeed)
+    }
+    if (!followDefaults && settings && agentDefaultsReady) {
+      adoptionLockedRef.current = true
+    }
+  }, [
+    agentKey,
+    model,
+    fallbackModel,
+    effort,
+    fallbackEffort,
+    initialEffort,
+    speed,
+    fallbackSpeed,
+    initialSpeed,
+    settings,
+    agentDefaultsReady,
+    followDefaults,
+  ])
+
+  // Seeded refs are read at submit time: only a user pick or a session-seeded
+  // value counts as an explicit choice worth putting on the wire.
   const toRuntimeOptions = useCallback(
-    () => ({ effort, ...(model ? { model } : {}) }),
-    [effort, model]
+    () => ({
+      ...(effortSeededRef.current ? { effort } : {}),
+      ...(speedSeededRef.current ? { speed } : {}),
+      ...(modelSeededRef.current && model ? { model } : {}),
+    }),
+    [effort, speed, model],
   )
 
   return useMemo(
-    () => ({ effort, setEffort, model, setModel, composerModels, toRuntimeOptions }),
-    [effort, setEffort, model, setModel, composerModels, toRuntimeOptions]
+    () => ({
+      effort,
+      setEffort,
+      speed,
+      setSpeed,
+      model,
+      setModel,
+      catalog,
+      defaultModel: fallbackModel,
+      webProvider: settings?.webProvider,
+      toRuntimeOptions,
+      markSubmitted,
+    }),
+    [effort, setEffort, speed, setSpeed, model, setModel, catalog, fallbackModel, settings, toRuntimeOptions, markSubmitted],
   )
 }
 
@@ -143,6 +319,8 @@ interface ComposerOptionsProps {
   disabled?: boolean
   /** Show the Effort section. Disable for model-only pickers (e.g. summarizer). */
   includeEffort?: boolean
+  /** Optional caller-owned content rendered after the picker sections. */
+  footer?: ReactNode
 }
 
 /**
@@ -150,6 +328,13 @@ interface ComposerOptionsProps {
  * both the AgentHome and in-session composers. Stateless — owned by the
  * `useComposerOptions` hook above so the parent can read the values at submit.
  */
-export function ComposerOptions({ state, disabled, includeEffort }: ComposerOptionsProps) {
-  return <ComposerOptionsPopover state={state} disabled={disabled} includeEffort={includeEffort} />
+export function ComposerOptions({ state, disabled, includeEffort, footer }: ComposerOptionsProps) {
+  return (
+    <ComposerOptionsPopover
+      state={state}
+      disabled={disabled}
+      includeEffort={includeEffort}
+      footer={footer}
+    />
+  )
 }

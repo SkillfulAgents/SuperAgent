@@ -3,6 +3,7 @@ import type { MiddlewareHandler } from 'hono'
 
 import { Authenticated } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { isPlatformControlledAuth } from '@shared/lib/auth/auth-settings'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { buildPlatformLoginUrl, getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 import {
@@ -15,7 +16,14 @@ import {
   savePlatformAuth,
   revokePlatformToken,
 } from '@shared/lib/services/platform-auth-service'
+import {
+  dismissDownloadNonceOffer,
+  getDownloadNonceOffer,
+  redeemDownloadNonce,
+  DownloadNonceUnavailableError,
+} from '@shared/lib/services/download-nonce-service'
 import { platformService } from '@shared/lib/services/platform-service'
+import { getCloudWorkspace } from '@shared/lib/services/cloud-workspace-service'
 import { PlatformRequestError } from '@shared/lib/platform-auth/platform-fetch'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { setErrorReportingUser } from '@shared/lib/error-reporting'
@@ -50,6 +58,8 @@ platformAuth.get('/', async (c) => {
   return c.json({
     ...(await getEnrichedPlatformAuthStatus(userId)),
     platformBaseUrl: getPlatformBaseUrl(),
+    // Same predicate as resolveAuthSettings (AUTH_MODE + org JWT, not opaque key).
+    platformControlled: isPlatformControlledAuth(),
   })
 })
 
@@ -81,6 +91,16 @@ platformAuth.get('/billing', async (c) => {
     }
     throw error
   }
+})
+
+// Cloud-workspace discovery for the Account screen (Electron desktop only).
+// `getCloudWorkspace` self-gates off Electron and returns `available: false`,
+// and it runs the discover → ensure-deployment-token cycle so viewing the tab
+// keeps the maintained token fresh. It never throws — any platform failure
+// degrades to `found: false`. The response never carries the deployment token.
+platformAuth.get('/deployments', async (c) => {
+  const status = await getCloudWorkspace()
+  return c.json(status)
 })
 
 platformAuth.post('/initiate', (c) => {
@@ -140,6 +160,42 @@ platformAuth.post('/complete', rejectMutationInAuthMode, async (c) => {
   })
 
   return c.json(status)
+})
+
+// Download-carried enrollment: a nonce recovered from the installer's
+// surroundings (filename / download-URL metadata) lets onboarding offer
+// "Continue as <email>" instead of the browser handoff. No nonce → these
+// endpoints report unavailable and the flow is unchanged.
+platformAuth.get('/download-nonce', async (c) => {
+  return c.json(await getDownloadNonceOffer())
+})
+
+platformAuth.post('/download-nonce/redeem', rejectMutationInAuthMode, async (c) => {
+  const userId = getCurrentUserId(c)
+  let status
+  try {
+    status = await redeemDownloadNonce(userId)
+  } catch (error) {
+    if (error instanceof DownloadNonceUnavailableError) {
+      return c.json({ error: error.message, expired: true }, 410)
+    }
+    if (error instanceof PlatformRequestError) {
+      return c.json({ error: error.message }, error.status as ContentfulStatusCode)
+    }
+    throw error
+  }
+
+  setErrorReportingUser({
+    id: status.tokenPreview || undefined,
+    email: status.email || undefined,
+  })
+
+  return c.json(status)
+})
+
+platformAuth.post('/download-nonce/dismiss', (c) => {
+  dismissDownloadNonceOffer()
+  return c.json({ success: true })
 })
 
 platformAuth.post('/revoke', rejectMutationInAuthMode, async (c) => {

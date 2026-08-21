@@ -73,12 +73,24 @@ let events: Record<string, Listener>
 let powerEvents: Record<string, Listener>
 let appEvents: Record<string, Listener>
 
-/** Boot the module: register IPC handlers + init auto-updater. */
-async function boot() {
+/**
+ * Boot the module: register IPC handlers + init auto-updater.
+ *
+ * Pass `{ init: false }` to register the IPC handlers WITHOUT initialising the
+ * updater — leaving `updaterReady=false`, as in dev / a failed init. Used to
+ * exercise the `!updaterReady` guards on the handlers.
+ */
+async function boot({ init = true }: { init?: boolean } = {}) {
   handlers = {}
   events = {}
   powerEvents = {}
   appEvents = {}
+
+  // checkForUpdates is re-implemented per-test (setupReleases), but downloadUpdate
+  // and quitAndInstall keep whatever a previous test set — clearAllMocks only
+  // clears call records, not implementations. Reset them so impls can't leak.
+  mockAutoUpdater.downloadUpdate.mockReset()
+  mockAutoUpdater.quitAndInstall.mockReset()
 
   vi.mocked(ipcMain.handle).mockImplementation(((ch: string, fn: any) => {
     handlers[ch] = fn
@@ -104,28 +116,43 @@ async function boot() {
   vi.resetModules()
   const mod = await import('./auto-updater')
   mod.registerUpdateHandlers()
-  await mod.initAutoUpdater({
-    isDestroyed: () => true,
-    webContents: { send: vi.fn() },
-  } as any)
+  if (init) {
+    await mod.initAutoUpdater({
+      isDestroyed: () => true,
+      webContents: { send: vi.fn() },
+    } as any)
+  }
 }
 
 /**
- * Simulate electron-updater's GitHub provider behaviour.
+ * Simulate electron-updater's GENERIC provider behaviour.
  *
- * When `allowPrerelease = true` the mock returns the latest RC version (which
- * mirrors the real provider's channel-matching logic for users on an RC).
- * When `allowPrerelease = false` it returns the latest stable version.
+ * The generic provider reads exactly ONE channel file per check, chosen by
+ * `autoUpdater.channel`, and never auto-discovers other channels: `latest`
+ * (or the unset default) → the stable latest-*.yml; a prerelease channel
+ * ('rc'/'beta'/'alpha') → that channel's yml. `allowPrerelease` does NOT make
+ * a `latest` check surface an rc — only selecting the prerelease channel does.
+ * This is the whole reason the prerelease path must explicitly check both
+ * channels; a mock keyed on `allowPrerelease` (the old GitHub-provider shape)
+ * would hide the 0.4.0 → 0.4.1-rc.1 bug.
  */
 function setupReleases(cfg: {
   currentVersion: string
   latestRC: string | null
   latestStable: string | null
+  // The channel baked into app-update.yml for this build. An rc build bakes
+  // `rc`; a stable build bakes `latest`. Set directly (not via the setter, which
+  // would flip allowDowngrade) to model the initial state before any check runs.
+  // When omitted the channel stays unset → resolves to the stable default.
+  bakedChannel?: string
 }) {
   vi.mocked(app.getVersion).mockReturnValue(cfg.currentVersion)
+  if (cfg.bakedChannel !== undefined) _mockChannel = cfg.bakedChannel
 
   mockAutoUpdater.checkForUpdates.mockImplementation(async () => {
-    const ver = mockAutoUpdater.allowPrerelease ? cfg.latestRC : cfg.latestStable
+    const channel = mockAutoUpdater.channel
+    const isPreChannel = !!channel && channel !== 'latest'
+    const ver = isPreChannel ? cfg.latestRC : cfg.latestStable
     if (!ver) throw new Error('No releases found')
 
     events['checking-for-update']?.()
@@ -174,16 +201,32 @@ describe('check-for-updates', () => {
       expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
     })
 
-    it('prereleases on → single check with allowPrerelease=true', async () => {
+    // Regression for 0.4.0 → 0.4.1-rc.1: a stable build with prereleases ON must
+    // reach the rc. The generic provider won't surface an rc from a single
+    // `latest` check, so the code must check the prerelease channel too — even
+    // though the current build is stable (no `-` in its version).
+    it('prereleases on → dual-channel check reaches the rc on the prerelease channel', async () => {
       vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
       setupReleases({ currentVersion: '0.2.5', latestRC: '0.2.12-rc.1', latestStable: '0.2.11' })
 
       await handlers['check-for-updates']()
 
-      // Stable user takes the single-check fast path; electron-updater picks the
-      // absolute latest from the feed when allowPrerelease is true.
+      // rc wins → prerelease check + stable check + prerelease re-run (to point
+      // downloadUpdate at the rc), and the channel ends on the prerelease channel.
       expect(getStatus()).toMatchObject({ state: 'available', version: '0.2.12-rc.1' })
-      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(3)
+      expect(mockAutoUpdater.channel).toBe('rc')
+    })
+
+    it('prereleases on but no newer rc → offers the newer stable', async () => {
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
+      setupReleases({ currentVersion: '0.2.5', latestRC: '0.2.4-rc.1', latestStable: '0.2.11' })
+
+      await handlers['check-for-updates']()
+
+      // stable (0.2.11) > rc (0.2.4-rc.1) → stable wins, no re-run needed.
+      expect(getStatus()).toMatchObject({ state: 'available', version: '0.2.11' })
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(2)
     })
 
     it('already on latest → not-available', async () => {
@@ -270,6 +313,72 @@ describe('check-for-updates', () => {
 
       expect(getStatus()).toMatchObject({ state: 'not-available' })
       // Sanity: our reset should leave allowDowngrade=false at the end.
+      expect(mockAutoUpdater.allowDowngrade).toBe(false)
+    })
+  })
+
+  // ---- Reported real-world scenarios (generic feed, rc vs stable builds) -----
+  //
+  // The exact 0.4.x cases worked through when fixing the generic-feed
+  // regression. They model the build's BAKED channel (rc builds bake `rc`,
+  // stable builds bake `latest`) so the "prereleases off" path is exercised
+  // faithfully — the channel, not allowPrerelease, is the only lever for the
+  // generic provider, and ignoring the baked channel hid the bug where an rc
+  // user with prereleases off kept reading the rc channel.
+  describe('release-channel scenarios', () => {
+    it('rc build + only a newer stable, prereleases ON → offers the stable', async () => {
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
+      setupReleases({ currentVersion: '0.4.0-rc.2', latestRC: '0.4.0-rc.2', latestStable: '0.4.1', bakedChannel: 'rc' })
+
+      await handlers['check-for-updates']()
+
+      expect(getStatus()).toMatchObject({ state: 'available', version: '0.4.1' })
+    })
+
+    it('rc build + only a newer stable, prereleases OFF → offers the stable', async () => {
+      // Regression for the baked-channel bug: an rc build bakes `channel: rc`,
+      // so without forcing `latest` the off path would read rc-*.yml and never
+      // see 0.4.1.
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
+      setupReleases({ currentVersion: '0.4.0-rc.2', latestRC: '0.4.0-rc.2', latestStable: '0.4.1', bakedChannel: 'rc' })
+
+      await handlers['check-for-updates']()
+
+      expect(getStatus()).toMatchObject({ state: 'available', version: '0.4.1' })
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+      expect(mockAutoUpdater.channel).toBe('latest')
+    })
+
+    it('rc build + newer rc AND newer stable, prereleases ON → offers the rc', async () => {
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
+      setupReleases({ currentVersion: '0.4.0-rc.2', latestRC: '0.4.2-rc.1', latestStable: '0.4.1', bakedChannel: 'rc' })
+
+      await handlers['check-for-updates']()
+
+      expect(getStatus()).toMatchObject({ state: 'available', version: '0.4.2-rc.1' })
+      expect(mockAutoUpdater.channel).toBe('rc')
+    })
+
+    it('rc build + newer rc AND newer stable, prereleases OFF → offers the stable, not the rc', async () => {
+      // Regression for the baked-channel bug: must NOT surface 0.4.2-rc.1 just
+      // because the build was published on the `rc` channel.
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
+      setupReleases({ currentVersion: '0.4.0-rc.2', latestRC: '0.4.2-rc.1', latestStable: '0.4.1', bakedChannel: 'rc' })
+
+      await handlers['check-for-updates']()
+
+      expect(getStatus()).toMatchObject({ state: 'available', version: '0.4.1' })
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+      expect(mockAutoUpdater.channel).toBe('latest')
+    })
+
+    it('stable build + only an OLDER rc, prereleases ON → no update (downgrade blocked)', async () => {
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
+      setupReleases({ currentVersion: '0.4.1', latestRC: '0.4.1-rc.1', latestStable: '0.4.1', bakedChannel: 'latest' })
+
+      await handlers['check-for-updates']()
+
+      expect(getStatus()).toMatchObject({ state: 'not-available' })
       expect(mockAutoUpdater.allowDowngrade).toBe(false)
     })
   })
@@ -743,5 +852,151 @@ describe('check timeout (watchdog)', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Download → install lifecycle. Everything after "update available": the
+// progress/downloaded events that drive the UI, the download/install IPC
+// handlers, their error handling, and the `!updaterReady` guards.
+// ---------------------------------------------------------------------------
+
+describe('download and install lifecycle', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    mockAutoUpdater.allowPrerelease = false
+    mockAutoUpdater.allowDowngrade = false
+    _mockChannel = undefined
+    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
+    vi.mocked(app.getVersion).mockReturnValue('0.2.5')
+    await boot()
+  })
+
+  it('download-progress event → downloading status with percent', () => {
+    events['download-progress']?.({ percent: 42 })
+    expect(getStatus()).toMatchObject({ state: 'downloading', progress: 42 })
+  })
+
+  it('update-downloaded event → downloaded status with version', () => {
+    events['update-downloaded']?.({ version: '0.2.11' })
+    expect(getStatus()).toMatchObject({ state: 'downloaded', version: '0.2.11' })
+  })
+
+  it('download-update triggers the download', async () => {
+    await handlers['download-update']()
+    expect(mockAutoUpdater.downloadUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it('download-update failure → error status + reported to Sentry', async () => {
+    mockAutoUpdater.downloadUpdate.mockRejectedValueOnce(new Error('disk full'))
+
+    await handlers['download-update']()
+
+    expect(getStatus()).toMatchObject({ state: 'error', error: 'disk full' })
+    expect(captureException).toHaveBeenCalled()
+  })
+
+  it('install-update quits and installs', async () => {
+    await handlers['install-update']()
+    expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledTimes(1)
+  })
+
+  it('download-update is a no-op before the updater is ready', async () => {
+    await boot({ init: false }) // registers handlers but leaves updaterReady=false
+    await handlers['download-update']()
+    expect(mockAutoUpdater.downloadUpdate).not.toHaveBeenCalled()
+  })
+
+  it('install-update is a no-op before the updater is ready', async () => {
+    await boot({ init: false })
+    await handlers['install-update']()
+    expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// downloadUpdate must fetch the version the check advertised. The dual-channel
+// path re-runs the prerelease check when the prerelease wins precisely so the
+// channel left set on the updater matches the offered version (electron-updater
+// downloads from autoUpdater.channel). These pin down the channel at download
+// time — the actual reason the step-3 re-run exists.
+// ---------------------------------------------------------------------------
+
+describe('download target channel (re-run invariant)', () => {
+  let channelAtDownload: string | undefined
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    mockAutoUpdater.allowPrerelease = false
+    mockAutoUpdater.allowDowngrade = false
+    _mockChannel = undefined
+    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
+    vi.mocked(app.getVersion).mockReturnValue('0.2.5')
+    await boot()
+    channelAtDownload = undefined
+    mockAutoUpdater.downloadUpdate.mockImplementation(async () => {
+      channelAtDownload = mockAutoUpdater.channel
+    })
+  })
+
+  it('after an rc-wins check, download targets the rc channel', async () => {
+    setupReleases({ currentVersion: '0.4.0-rc.2', latestRC: '0.4.2-rc.1', latestStable: '0.4.1', bakedChannel: 'rc' })
+
+    await handlers['check-for-updates']()
+    expect(getStatus()).toMatchObject({ state: 'available', version: '0.4.2-rc.1' })
+
+    await handlers['download-update']()
+    expect(channelAtDownload).toBe('rc')
+  })
+
+  it('after a stable-wins check, download targets the latest channel', async () => {
+    setupReleases({ currentVersion: '0.2.8-rc.1', latestRC: '0.2.9-rc.2', latestStable: '0.2.11', bakedChannel: 'rc' })
+
+    await handlers['check-for-updates']()
+    expect(getStatus()).toMatchObject({ state: 'available', version: '0.2.11' })
+
+    await handlers['download-update']()
+    expect(channelAtDownload).toBe('latest')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The updater is a singleton, so autoUpdater.channel persists between checks.
+// Toggling prereleases off after an on-check left it on the rc channel must
+// force it back to `latest` — the leak the channel-pinning fix guards against.
+// ---------------------------------------------------------------------------
+
+describe('prerelease setting transitions', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    mockAutoUpdater.allowPrerelease = false
+    mockAutoUpdater.allowDowngrade = false
+    _mockChannel = undefined
+    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
+    vi.mocked(app.getVersion).mockReturnValue('0.2.5')
+    await boot()
+  })
+
+  it('turning prereleases OFF after an ON check forces the channel back to latest', async () => {
+    setupReleases({ currentVersion: '0.4.0-rc.2', latestRC: '0.4.2-rc.1', latestStable: '0.4.1', bakedChannel: 'rc' })
+
+    // Prereleases ON: dual-channel check, rc wins, channel ends on 'rc'.
+    vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
+    await handlers['check-for-updates']()
+    expect(getStatus()).toMatchObject({ state: 'available', version: '0.4.2-rc.1' })
+    expect(mockAutoUpdater.channel).toBe('rc')
+
+    // Toggle OFF and re-check: must reset to 'latest' and offer the stable, not
+    // stay stuck on the rc channel left over from the previous check.
+    vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
+    mockAutoUpdater.checkForUpdates.mockClear()
+    await handlers['check-for-updates']()
+
+    expect(mockAutoUpdater.channel).toBe('latest')
+    expect(getStatus()).toMatchObject({ state: 'available', version: '0.4.1' })
+    expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
   })
 })

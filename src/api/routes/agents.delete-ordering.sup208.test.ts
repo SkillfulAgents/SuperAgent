@@ -123,6 +123,9 @@ vi.mock('../middleware/auth', () => ({
   AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  IsAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
+  getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
 }))
 
 vi.mock('@shared/lib/auth/config', () => ({
@@ -164,14 +167,14 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(), getSession: vi.fn(), getSessionMetadata: vi.fn(),
-  sessionExists: vi.fn().mockResolvedValue(true), updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
+  sessionExists: vi.fn().mockResolvedValue(true), sessionBelongsToAgent: vi.fn().mockResolvedValue(true), reserveSessionOwnership: vi.fn().mockResolvedValue(undefined), updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   deleteSession: vi.fn(), removeMessage: vi.fn(), removeToolCall: vi.fn(),
   getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
 }))
 
 vi.mock('@shared/lib/services/secrets-service', () => ({
-  listSecrets: vi.fn(), getSecret: vi.fn(), setSecret: vi.fn(), deleteSecret: vi.fn(),
-  keyToEnvVar: vi.fn(), getSecretEnvVars: vi.fn(),
+  listSecrets: vi.fn(), getSecret: vi.fn(), setSecret: vi.fn(), updateSecret: vi.fn(), deleteSecret: vi.fn(),
+  getSecretEnvVars: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
@@ -217,6 +220,7 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
   getAgentTemplateStatus: vi.fn(), getDiscoverableAgents: vi.fn(), refreshSkillsetCaches: vi.fn(),
   getAgentPRInfo: vi.fn(), createAgentPR: vi.fn(), getAgentPublishInfo: vi.fn(),
   publishAgentToSkillset: vi.fn(), refreshAgentTemplates: vi.fn(), hasOnboardingSkill: vi.fn(),
+  getAgentTemplatePrompt: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@shared/lib/utils/retry', () => ({ withRetry: vi.fn((fn: () => unknown) => fn()) }))
@@ -224,6 +228,7 @@ vi.mock('@shared/lib/utils/retry', () => ({ withRetry: vi.fn((fn: () => unknown)
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
   getConfiguredLlmClient: () => ({ messages: { create: vi.fn() } }),
   extractTextFromLlmResponse: () => null,
+  createSummarizerText: async () => null,
 }))
 
 vi.mock('@shared/lib/utils/message-transform', () => ({

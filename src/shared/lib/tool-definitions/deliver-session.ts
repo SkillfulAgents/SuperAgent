@@ -21,7 +21,6 @@ function getSummary(_input: unknown): string | null {
 
 export const deliverSessionDef = {
   displayName: 'Deliver Session',
-  iconName: 'ArrowRight',
   parseInput,
   getSummary,
 } as const

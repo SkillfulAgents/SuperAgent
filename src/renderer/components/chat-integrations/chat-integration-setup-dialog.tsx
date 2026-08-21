@@ -12,6 +12,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
+import { SessionTimeoutSelect } from './integration-settings-controls'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import {
   Dialog,
@@ -25,7 +26,7 @@ import {
   ChatIntegrationApiError,
 } from '@renderer/hooks/use-chat-integrations'
 import { Loader2, CheckCircle, AlertCircle, Copy, Check, Eye, EyeOff } from 'lucide-react'
-import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { IMESSAGE_PHONE_E164, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 
 function generateSlackManifest(botName: string): string {
   return JSON.stringify({
@@ -70,11 +71,10 @@ function generateSlackManifest(botName: string): string {
   }, null, 2)
 }
 
-const IMESSAGE_SETUP_NUMBER_RAW = '+12053967934'
 const IMESSAGE_SETUP_NUMBER_DISPLAY = '+1 (205) 396-7934'
 
 function PhoneNumberCopyButton() {
-  const smsUrl = `sms:${IMESSAGE_SETUP_NUMBER_RAW}&body=${encodeURIComponent('/setup')}`
+  const smsUrl = `sms:${IMESSAGE_PHONE_E164}&body=${encodeURIComponent('/setup')}`
   return (
     <a
       href={smsUrl}
@@ -194,8 +194,8 @@ function SetupForm({
   const [formData, setFormData] = useState<Record<string, string>>({})
   const [integrationName, setIntegrationName] = useState('')
   const [showToolCalls, setShowToolCalls] = useState(false)
-  const [sessionTimeout, setSessionTimeout] = useState('')
-  const [onlyMentioned, setOnlyMentioned] = useState(false)
+  const [sessionTimeout, setSessionTimeout] = useState<number | null>(null)
+  const [onlyMentioned, setOnlyMentioned] = useState(true)
   const [answerInThread, setAnswerInThread] = useState(false)
   const [newSessionPerThread, setNewSessionPerThread] = useState(false)
   const [testResult, setTestResult] = useState<{ valid: boolean; info?: string } | null>(null)
@@ -250,14 +250,13 @@ function SetupForm({
       if (provider === 'imessage') {
         config.gatewayUrl = 'https://imsgw.com'
       }
-      const parsedTimeout = parseInt(sessionTimeout, 10)
       await createIntegration.mutateAsync({
         agentSlug,
         provider,
         name: integrationName.trim() || undefined,
         config,
         showToolCalls,
-        sessionTimeout: parsedTimeout > 0 ? parsedTimeout : null,
+        sessionTimeout,
       })
       onClose()
     } catch {
@@ -294,7 +293,7 @@ function SetupForm({
                     size="sm"
                     className="h-7 px-2 text-xs"
                     onClick={async () => {
-                      await navigator.clipboard.writeText(generateSlackManifest(integrationName.trim() || 'SuperAgent Bot'))
+                      await navigator.clipboard.writeText(generateSlackManifest(integrationName.trim() || 'Gamut Bot'))
                       setManifestCopied(true)
                       setTimeout(() => setManifestCopied(false), 2000)
                     }}
@@ -312,7 +311,7 @@ function SetupForm({
                 </div>
                 {manifestPreview && (
                   <pre className="mt-2 text-2xs leading-relaxed bg-background border rounded-md p-2 overflow-x-auto max-h-40 select-all">
-                    {generateSlackManifest(integrationName.trim() || 'SuperAgent Bot')}
+                    {generateSlackManifest(integrationName.trim() || 'Gamut Bot')}
                   </pre>
                 )}
               </li>
@@ -410,22 +409,12 @@ function SetupForm({
               />
             </div>
 
-            <div>
-              <Label htmlFor="setup-session-timeout" className="text-xs font-normal">
-                New session after
-                <span className="ml-1 font-normal text-muted-foreground/70">hours, blank = never</span>
-              </Label>
-              <Input
-                id="setup-session-timeout"
-                type="number"
-                min="1"
-                step="1"
-                value={sessionTimeout}
-                onChange={(e) => setSessionTimeout(e.target.value)}
-                placeholder="Never (single session)"
-                className="mt-1 shadow-none bg-background"
-              />
-            </div>
+            <SessionTimeoutSelect
+              id="setup-session-timeout"
+              value={sessionTimeout}
+              onCommit={setSessionTimeout}
+              wrapperClassName=""
+            />
 
             {provider === 'slack' && (
               <>

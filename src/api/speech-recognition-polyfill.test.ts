@@ -2,6 +2,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { getPolyfillJs } from './speech-recognition-polyfill'
+import { MockWebSocket } from '@shared/test/mock-websocket'
 
 // ---------------------------------------------------------------------------
 // Helpers to set up the polyfill in jsdom
@@ -15,42 +16,6 @@ function installPolyfill() {
 
 function getSpeechRecognition(): any {
   return (window as any).SpeechRecognition
-}
-
-// Minimal mock WebSocket that records sent messages and can simulate server events
-class MockWebSocket {
-  static instances: MockWebSocket[] = []
-  url: string
-  protocols: string | string[]
-  readyState = 0 // CONNECTING
-  onopen: ((ev: any) => void) | null = null
-  onclose: ((ev: any) => void) | null = null
-  onmessage: ((ev: any) => void) | null = null
-  onerror: ((ev: any) => void) | null = null
-  sent: any[] = []
-
-  constructor(url: string, protocols?: string | string[]) {
-    this.url = url
-    this.protocols = protocols || []
-    MockWebSocket.instances.push(this)
-    // Auto-open via microtask so it resolves within the same promise chain tick
-    Promise.resolve().then(() => {
-      this.readyState = 1 // OPEN
-      this.onopen?.({})
-    })
-  }
-
-  send(data: any) { this.sent.push(data) }
-  close() { this.readyState = 3 }
-
-  simulateMessage(data: any) {
-    this.onmessage?.({ data: JSON.stringify(data) })
-  }
-
-  simulateClose(code = 1000, reason = '') {
-    this.readyState = 3
-    this.onclose?.({ code, reason })
-  }
 }
 
 // Mock AudioContext and getUserMedia
@@ -92,7 +57,8 @@ function mockAudioCapture() {
 
 describe('SpeechRecognition polyfill', () => {
   beforeEach(() => {
-    MockWebSocket.instances = [];
+    MockWebSocket.instances = []
+    MockWebSocket.autoOpen = true; // the polyfill assumes the socket opens on its own
     (window as any).WebSocket = MockWebSocket as any
     delete (window as any).SpeechRecognition
     delete (window as any).webkitSpeechRecognition
@@ -285,7 +251,7 @@ describe('SpeechRecognition polyfill', () => {
       })
 
       const ws = MockWebSocket.instances[0]
-      const config = JSON.parse(ws.sent[0])
+      const config = JSON.parse(ws.sent[0] as string)
       expect(config.type).toBe('session.update')
       expect(config.session.type).toBe('transcription')
     })

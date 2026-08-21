@@ -6,6 +6,7 @@
  */
 
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
 
 export class MockChatClientConnector extends ChatClientConnector {
@@ -16,11 +17,13 @@ export class MockChatClientConnector extends ChatClientConnector {
   // ── Recorded outputs (for assertions) ─────────────────────────────
 
   sentMessages: { chatId: string; message: OutgoingMessage }[] = []
-  sentCards: { chatId: string; event: UserRequestEvent }[] = []
+  sentCards: { chatId: string; event: UserRequestEvent; sessionId?: string }[] = []
   sentFiles: { chatId: string; filename: string; size: number; caption?: string }[] = []
   streamUpdates: { chatId: string; text: string; existingMessageId?: string }[] = []
   finalizedMessages: { chatId: string; messageId: string; finalText: string }[] = []
   typingIndicators: string[] = []
+  stoppedWorking: string[] = []
+  workingActivities: SessionActivity[] = [] // activity passed to each startWorking call
 
   private nextMessageId = 1
 
@@ -39,9 +42,14 @@ export class MockChatClientConnector extends ChatClientConnector {
     })
   }
 
-  /** Simulate an interactive response (button click / callback query). */
-  simulateInteractiveResponse(toolUseId: string, response: unknown): void {
-    this.emitInteractiveResponse(toolUseId, response)
+  /**
+   * Simulate an interactive response (button click / callback query). `chatId`
+   * is what the manager's access gate and its already-handled reply need — a
+   * press with no chat identity fails closed, which is the real behaviour but
+   * makes for a test that can never reach the logic under it.
+   */
+  simulateInteractiveResponse(toolUseId: string, response: unknown, chatId?: string): void {
+    this.emitInteractiveResponse(toolUseId, response, chatId)
   }
 
   /** Simulate a connection error. */
@@ -111,13 +119,18 @@ export class MockChatClientConnector extends ChatClientConnector {
     this.finalizedMessages.push({ chatId, messageId, finalText })
   }
 
-  async showTypingIndicator(chatId: string): Promise<void> {
+  async startWorking(chatId: string, activity: SessionActivity): Promise<void> {
     this.typingIndicators.push(chatId)
+    this.workingActivities.push(activity)
   }
 
-  async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
+  async stopWorking(chatId: string): Promise<void> {
+    this.stoppedWorking.push(chatId)
+  }
+
+  async sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
     const id = `mock-card-${this.nextMessageId++}`
-    this.sentCards.push({ chatId, event })
+    this.sentCards.push({ chatId, event, sessionId })
     return id
   }
 

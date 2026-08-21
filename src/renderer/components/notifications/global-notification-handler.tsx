@@ -15,11 +15,18 @@ import { useQueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl, isElectron } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
 import { showOSNotification } from '@renderer/lib/os-notifications'
-import { useSelection } from '@renderer/context/selection-context'
+import { useRouteLocation } from '@renderer/router/use-route-location'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
+import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
+import {
+  invalidateAgentArtifacts,
+  markDashboardScreenshotReady,
+  updateAgentRuntimeCache,
+} from '@renderer/lib/agent-cache'
 import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
 import {
   NotificationActionContextSchema,
@@ -27,6 +34,11 @@ import {
   NotificationActionsArraySchema,
   NotificationMetadataSchema,
 } from '@shared/lib/notifications/notification-action-schema'
+import {
+  supportsDeclarativeWebPush,
+  revalidatePushSubscription,
+} from '@renderer/lib/push-notifications'
+import { isNotificationTypeEnabled as isTypeEnabledInPreferences } from '@shared/lib/notifications/notification-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
 
 function isNotificationTypeEnabled(
@@ -34,21 +46,20 @@ function isNotificationTypeEnabled(
   notificationType: string
 ): boolean {
   const n = settings?.notifications
-  if (!n?.enabled) return n === undefined // no settings loaded yet → allow; explicitly disabled → block
-  switch (notificationType) {
-    case 'session_complete': return n.sessionComplete !== false
-    case 'session_waiting': return n.sessionWaiting !== false
-    case 'session_scheduled': return n.sessionScheduled !== false
-    default: return true
-  }
+  if (n === undefined) return true // no settings loaded yet → allow
+  // Type→toggle mapping is shared with the server-side gates
+  // (notification-preferences.ts) so the two can never drift.
+  return isTypeEnabledInPreferences(n, notificationType)
 }
 
 export function GlobalNotificationHandler() {
   useRenderTracker('GlobalNotificationHandler')
   const queryClient = useQueryClient()
-  const { view, setAgent } = useSelection()
+  const { view } = useRouteLocation()
+  const navigate = useNavigate()
   const selectedSessionId = view.kind === 'session' ? view.id : null
   const { data: unreadData } = useUnreadNotificationCount()
+  const { data: platformUnreadData } = usePlatformUnreadCount()
   const { data: userSettings } = useUserSettings()
   const { canAccessAgent } = useUser()
   // Use refs to avoid recreating EventSource when reactive values change
@@ -62,10 +73,10 @@ export function GlobalNotificationHandler() {
   // Sync dock badge count with unread notifications (macOS Electron only)
   useEffect(() => {
     if (isElectron() && window.electronAPI?.setBadgeCount) {
-      const count = unreadData?.count ?? 0
+      const count = (unreadData?.count ?? 0) + (platformUnreadData?.count ?? 0)
       window.electronAPI.setBadgeCount(count)
     }
-  }, [unreadData?.count])
+  }, [unreadData?.count, platformUnreadData?.count])
 
   // Dispatch a single notification interaction event. Shared between live
   // events (onNotificationEvent) and queued events flushed on mount.
@@ -95,6 +106,31 @@ export function GlobalNotificationHandler() {
         })
     }
 
+    // Platform notifications: clicking the OS notification opens the
+    // markdown detail route and write-through-marks the platform row read
+    // (it has no local DB record — the notificationId path above is a no-op).
+    const platformCtx = NotificationActionContextSchema.safeParse(event.context)
+    if (platformCtx.success && platformCtx.data.kind === 'platform_notification') {
+      const platformNotificationId = platformCtx.data.platformNotificationId
+      apiFetch('/api/platform-notifications/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: [platformNotificationId] }),
+      })
+        .then((res) => {
+          if (res.ok) {
+            queryClient.invalidateQueries({ queryKey: ['platform-notifications'] })
+          }
+        })
+        .catch(() => {
+          // Best-effort: the detail view marks read on open anyway.
+        })
+      if (event.type === 'click') {
+        void navigate({ to: '/notifications/$id', params: { id: platformNotificationId } })
+      }
+      return
+    }
+
     // Action button interactions also dispatch a proxy-review decision.
     if (event.type !== 'action' || event.actionIndex === undefined) return
 
@@ -118,12 +154,12 @@ export function GlobalNotificationHandler() {
         if (!res.ok && res.status !== 404) {
           console.error('[notification-action] Failed to submit proxy review decision:', res.status)
         }
-        queryClient.invalidateQueries({ queryKey: ['proxy-reviews', ctx.agentSlug] })
+        queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
       })
       .catch((err) => {
         console.error('[notification-action] Error submitting proxy review decision:', err)
       })
-  }, [queryClient])
+  }, [queryClient, navigate])
 
   // Dispatch OS notification action button events (macOS only) back into the
   // app. For proxy reviews this means submitting Approve/Deny without the user
@@ -143,16 +179,26 @@ export function GlobalNotificationHandler() {
     if (!isElectron() || !window.electronAPI?.flushPendingNotificationEvents) return
     window.electronAPI.flushPendingNotificationEvents().then(({ events, navigations }) => {
       for (const nav of navigations) {
-        setAgent(
-          nav.agentSlug,
-          nav.sessionId ? { kind: 'session', id: nav.sessionId } : { kind: 'home' },
-        )
+        if (nav.sessionId) {
+          void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: nav.agentSlug, sessionId: nav.sessionId } })
+        } else {
+          void navigate({ to: '/agents/$slug', params: { slug: nav.agentSlug } })
+        }
       }
       for (const evt of events) {
         dispatchNotificationEvent(evt)
       }
     })
-  }, [dispatchNotificationEvent, setAgent])
+  }, [dispatchNotificationEvent, navigate])
+
+  // Web Push keep-alive: with no service worker there is no
+  // pushsubscriptionchange event, so re-upsert this device's subscription
+  // once per app launch to repair endpoint rotation or a lost server row.
+  useEffect(() => {
+    if (supportsDeclarativeWebPush()) {
+      void revalidatePushSubscription()
+    }
+  }, [])
 
   useEffect(() => {
     const baseUrl = getApiBaseUrl()
@@ -164,9 +210,19 @@ export function GlobalNotificationHandler() {
         const data = JSON.parse(event.data)
 
         switch (data.type) {
+          case 'platform_notifications_changed': {
+            // A platform notification INSERT arrived over Realtime — refresh
+            // the proxy-live inbox + badge (there is no local copy to update).
+            queryClient.invalidateQueries({ queryKey: ['platform-notifications'] })
+            break
+          }
+
           case 'os_notification': {
             // Refresh notification list (for badge/dropdown)
             queryClient.invalidateQueries({ queryKey: ['notifications'] })
+            if (data.notificationType === 'platform_notification') {
+              queryClient.invalidateQueries({ queryKey: ['platform-notifications'] })
+            }
             // Refresh sessions so unread indicators update in sidebar
             const notifAgentSlug = data.agentSlug as string | undefined
             if (notifAgentSlug) {
@@ -245,7 +301,22 @@ export function GlobalNotificationHandler() {
                 sessionId: notificationSessionId ?? baseContext.sessionId,
                 notificationId: data.notificationId ?? baseContext.notificationId,
               }
-              showOSNotification(title, body, undefined, { actions, context })
+              // Web Notifications have no context round-trip — wire the click
+              // straight to the platform detail route (Electron routes the
+              // click through dispatchNotificationEvent instead).
+              const platformNotificationId =
+                notificationType === 'platform_notification' &&
+                typeof data.platformNotificationId === 'string'
+                  ? data.platformNotificationId
+                  : null
+              const onClick = platformNotificationId
+                ? () =>
+                    void navigate({
+                      to: '/notifications/$id',
+                      params: { id: platformNotificationId },
+                    })
+                : undefined
+              showOSNotification(title, body, onClick, { actions, context })
             } else if (suppressedByActiveView && typeof data.notificationId === 'string') {
               // Popup suppressed because the user is actively viewing this
               // focused session — but the backend still created the DB record.
@@ -291,22 +362,52 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['webhook-trigger-sessions'] })
             queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions'] })
 
-            // Proxy review created or resolved — refetch review list
-            if (eventAgentSlug && data.review) {
-              queryClient.invalidateQueries({ queryKey: ['proxy-reviews', eventAgentSlug] })
+            break
+          }
+
+          case 'user_request_created':
+          case 'user_request_resolved':
+            // Unified pending-request wire. Invalidation, not data: the
+            // refetch reads the server registry snapshot. This is the live
+            // path for agent-scoped reviews (they have no session stream) and
+            // the cross-tab/cross-session sync for everything else; the
+            // store's interval refetch is the safety net for a missed event.
+            queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
+            break
+
+          case 'agent_status_changed': {
+            // Status is already in the event; preserve cached summaries instead
+            // of refetching every agent. Artifact runtime state is agent-scoped.
+            const agentSlug = data.agentSlug as string | undefined
+            const status = data.status === 'running' || data.status === 'stopped'
+              ? data.status
+              : undefined
+            if (agentSlug && status) {
+              updateAgentRuntimeCache(queryClient, agentSlug, status)
+              invalidateAgentArtifacts(queryClient, agentSlug)
             }
             break
           }
 
-          case 'agent_status_changed':
-            // Agent started/stopped - update agent list and artifacts
-            queryClient.invalidateQueries({ queryKey: ['agents'] })
-            queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+          case 'dashboard_screenshot_ready': {
+            const agentSlug = data.agentSlug as string | undefined
+            const dashboardSlug = data.dashboardSlug as string | undefined
+            if (agentSlug && dashboardSlug) {
+              markDashboardScreenshotReady(queryClient, agentSlug, dashboardSlug)
+            }
             break
+          }
 
           case 'container_health_changed':
             // Container health warnings changed - update agent list
             queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+
+          case 'agent_created':
+            // Agent-created child creation lands outside the human create mutation,
+            // so refresh both caches the direct-create path invalidates together.
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
             break
 
           case 'scheduled_task_created':
@@ -318,6 +419,23 @@ export function GlobalNotificationHandler() {
               queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', agentSlug] })
             }
             queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+          }
+
+          case 'session_updated': {
+            // Session-level state changed outside a session stream (e.g. a
+            // pending wake was created/cancelled/fired) — refresh session
+            // lists so sidebar badges and the resume banner stay current.
+            const agentSlug = data.agentSlug as string | undefined
+            const sessionId = data.sessionId as string | undefined
+            if (agentSlug) {
+              queryClient.invalidateQueries({ queryKey: ['sessions', agentSlug] })
+            } else {
+              queryClient.invalidateQueries({ queryKey: ['sessions'] })
+            }
+            if (sessionId) {
+              queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
+            }
             break
           }
 
@@ -352,14 +470,21 @@ export function GlobalNotificationHandler() {
       }
     }
 
+    // Catch up anything missed while the stream was down, including the
+    // window before the first successful connect.
+    es.onopen = () => {
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+    }
+
     es.onerror = () => {
-      // EventSource will auto-reconnect
+      // EventSource will auto-reconnect; onopen above catches up.
     }
 
     return () => {
       es.close()
     }
-  }, [queryClient])
+  }, [queryClient, navigate])
 
   return null
 }

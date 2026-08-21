@@ -16,8 +16,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: npm ci
@@ -38,6 +43,40 @@ jobs:
           json-summary-path: ./coverage/coverage-summary.json
           json-final-path: ./coverage/coverage-final.json
 
+  # Builds both shipped targets and verifies every bare import in the emitted
+  # bundles is reachable from the production dependency closure, and that no
+  # direct production dependency goes unused. The packaging workflows
+  # (build-mac/build-win) run the electron half again via dist:mac/dist:win;
+  # this job is what gates PRs, since none of the packaging workflows run there.
+  runtime-dependency-closure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build server bundle
+        run: npm run build:api
+
+      - name: Build desktop bundles
+        run: npm run build:electron
+
+      - name: Check runtime dependency closure
+        run: npm run check:runtime-deps
+
   container-tests:
     runs-on: ubuntu-latest
     steps:
@@ -47,9 +86,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: agent-container/package-lock.json
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: npm ci
@@ -86,7 +130,7 @@ jobs:
         run: ./agent-container/test-browser-integration.sh superagent-container
 
   e2e-tests:
-    runs-on: ubuntu-latest
+    runs-on: e2e-runner-x64
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -94,8 +138,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: npm ci
@@ -106,8 +155,35 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
-      - name: Run E2E tests
+      - name: Run Wizard E2E suite
+        id: wizard_e2e
+        env:
+          PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/wizard
+          PLAYWRIGHT_OUTPUT_DIR: test-results/wizard
+          PLAYWRIGHT_HTML_REPORT: playwright-report/wizard
+        run: npm run test:e2e:wizard
+
+      - name: Run Playwright E2E suites
+        if: ${{ success() || steps.wizard_e2e.outcome == 'failure' }}
+        env:
+          PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/web
+          PLAYWRIGHT_WORKERS: '6'
+          PLAYWRIGHT_OUTPUT_DIR: test-results/web
+          PLAYWRIGHT_HTML_REPORT: playwright-report/web
         run: npm run test:e2e
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-playwright-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
 
   e2e-auth-tests:
     runs-on: ubuntu-latest
@@ -118,8 +194,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: npm ci
@@ -131,7 +212,81 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run Auth E2E tests
+        env:
+          PORT: '3001'
+          SUPERAGENT_DATA_DIR: .e2e-data/auth
+          PLAYWRIGHT_OUTPUT_DIR: test-results/auth
+          PLAYWRIGHT_HTML_REPORT: playwright-report/auth
         run: npm run test:e2e:auth
+
+      - name: Upload auth Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-auth-playwright-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Drives the real Electron app over CDP against a real auth-mode deployment,
+  # with only the platform's discovery + grant minting stubbed. This is the only
+  # job in which a renderer ever resolves a cloud target, so it is the only one
+  # that can fail on cloud mode being broken — see e2e/live/cloud-electron/.
+  e2e-cloud-workspace:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Electron ABI, not Node's. The deployment is started with
+      # ELECTRON_RUN_AS_NODE so it loads this same build — one node_modules can
+      # only hold one.
+      - name: Rebuild native modules for Electron
+        run: npx electron-rebuild -f
+
+      # Only for the shared libraries Electron needs on a bare runner; this job
+      # drives Electron over CDP and never launches a Playwright browser.
+      - name: Install Electron's system dependencies
+        run: npx playwright install-deps chromium
+
+      # `npm ci` unpacks chrome-sandbox owned by the runner user, and Chromium
+      # aborts on startup rather than run unsandboxed — SIGTRAP before the app
+      # exists, which reaches the harness only as "the API server never bound".
+      # Fixed here rather than with --no-sandbox because this suite exists to
+      # drive the real desktop app, and it should not be the one running it in a
+      # weaker configuration than anybody's actual machine.
+      - name: Let Electron use its sandbox
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+
+      # NOT `build:web` — that is `vite build`, whose outDir is dist/renderer,
+      # the same directory the desktop renderer lives in. The deployment is used
+      # purely as an API here, so only the server bundle is needed.
+      - name: Build the deployment server bundle
+        run: npm run build:api
+
+      - name: Build the desktop app
+        run: npx electron-vite build
+
+      - name: Run the cloud-workspace app suite
+        run: xvfb-run --auto-servernum node e2e/live/cloud-electron/ci.mjs
 
   e2e-a11y-audit:
     runs-on: ubuntu-latest
@@ -142,8 +297,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: npm ci
@@ -156,4 +316,21 @@ jobs:
 
       - name: Run a11y audit
         continue-on-error: true
-        run: E2E_MOCK=true npx playwright test e2e/specs/a11y-audit.spec.ts --project=web-chromium
+        env:
+          PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/a11y
+          PLAYWRIGHT_WORKERS: '1'
+          PLAYWRIGHT_OUTPUT_DIR: test-results/a11y
+          PLAYWRIGHT_HTML_REPORT: playwright-report/a11y
+        run: npm run test:e2e:a11y
+
+      - name: Upload a11y Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-a11y-playwright-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

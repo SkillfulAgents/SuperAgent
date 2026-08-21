@@ -2,8 +2,16 @@ import path from 'path'
 import os from 'os'
 import fs from 'fs'
 import crypto from 'crypto'
-import { getAgentDir } from '@shared/lib/utils/file-storage'
+import {
+  getAgentDir,
+  readJsonFileStrict,
+  writeJsonFileAtomic,
+  withFileLock,
+  directoryExists,
+  CorruptFileError,
+} from '@shared/lib/utils/file-storage'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
+import { captureException } from '@shared/lib/error-reporting'
 import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
 import { agentMountsSchema } from './mount-schema'
 
@@ -11,13 +19,36 @@ function getMountsFilePath(slug: string): string {
   return path.join(getAgentDir(slug), 'mounts.json')
 }
 
-export function getMounts(slug: string): AgentMount[] {
-  const filePath = getMountsFilePath(slug)
+/**
+ * Strict read for the read-modify-write paths (addMount/removeMount): an absent
+ * file is `[]`, but a corrupt/torn `mounts.json` or IO error THROWS so the write
+ * aborts instead of clobbering the file with just the new/remaining mount (the
+ * previous catch-all swallowed bad reads, so the next write dropped every prior
+ * mount). Do NOT use this on read-only display paths — use {@link getMounts}.
+ */
+function readMountsStrict(slug: string): Promise<AgentMount[]> {
+  return readJsonFileStrict(getMountsFilePath(slug), agentMountsSchema, [])
+}
+
+/**
+ * Read the agent's mounts for READ-ONLY consumers (the mounts UI, health checks,
+ * and CONTAINER START). Tolerant: an absent file is `[]`, and a corrupt/unreadable
+ * file degrades to `[]` (logged + captured) rather than throwing — a bad
+ * mounts.json must not brick `getMountsWithHealth` (which runs on every container
+ * start) or 500 the mounts route. This never writes, so degrading to `[]` is safe;
+ * writes go through addMount/removeMount, which use the strict read and abort on
+ * corruption instead of overwriting.
+ */
+export async function getMounts(slug: string): Promise<AgentMount[]> {
   try {
-    const data = fs.readFileSync(filePath, 'utf-8')
-    return agentMountsSchema.parse(JSON.parse(data))
-  } catch {
-    return []
+    return await readMountsStrict(slug)
+  } catch (error) {
+    if (error instanceof CorruptFileError) {
+      console.error(`Corrupt mounts.json for agent ${slug}; treating as no mounts (NOT overwriting)`, error)
+      captureException(error, { tags: { area: 'mounts', op: 'read' }, extra: { agentSlug: slug } })
+      return []
+    }
+    throw error
   }
 }
 
@@ -56,13 +87,15 @@ export const CLOUD_MOUNT_MESSAGE =
   'which can’t be shared into the agent sandbox. Please copy it to a regular local folder ' +
   '(e.g. somewhere under your home directory) and mount that instead.'
 
-function writeMounts(slug: string, mounts: AgentMount[]): void {
+async function writeMounts(slug: string, mounts: AgentMount[]): Promise<void> {
   const filePath = getMountsFilePath(slug)
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  fs.writeFileSync(filePath, JSON.stringify(agentMountsSchema.parse(mounts), null, 2))
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
+  // Atomic temp-file + rename: an interrupted write can never truncate
+  // mounts.json into the half-state the old reader would have swallowed.
+  await writeJsonFileAtomic(filePath, agentMountsSchema.parse(mounts))
 }
 
-export function addMount(slug: string, hostPath: string): AgentMount {
+export async function addMount(slug: string, hostPath: string): Promise<AgentMount> {
   if (!path.isAbsolute(hostPath)) {
     throw new Error('hostPath must be an absolute path')
   }
@@ -73,48 +106,56 @@ export function addMount(slug: string, hostPath: string): AgentMount {
   if (isCloudStoragePath(hostPath)) {
     throw new Error(CLOUD_MOUNT_MESSAGE)
   }
-  const resolved = fs.realpathSync(hostPath)
+  const resolved = await fs.promises.realpath(hostPath)
   if (isCloudStoragePath(resolved)) {
     throw new Error(CLOUD_MOUNT_MESSAGE)
   }
-  if (!fs.statSync(resolved).isDirectory()) {
+  if (!(await fs.promises.stat(resolved)).isDirectory()) {
     throw new Error('hostPath must be a directory')
   }
 
-  const mounts = getMounts(slug)
-  const baseName = path.basename(resolved)
+  // The read-modify-write must not interleave with a concurrent add/remove for
+  // the same agent (the old sync code got this for free by never yielding).
+  return withFileLock(getMountsFilePath(slug), async () => {
+    const mounts = await readMountsStrict(slug)
+    const baseName = path.basename(resolved)
 
-  // Pick container path, append -2, -3, etc. on collision
-  let containerName = baseName
-  let suffix = 2
-  while (mounts.some((m) => m.containerPath === `/mounts/${containerName}`)) {
-    containerName = `${baseName}-${suffix}`
-    suffix++
-  }
+    // Pick container path, append -2, -3, etc. on collision
+    let containerName = baseName
+    let suffix = 2
+    while (mounts.some((m) => m.containerPath === `/mounts/${containerName}`)) {
+      containerName = `${baseName}-${suffix}`
+      suffix++
+    }
 
-  const mount: AgentMount = {
-    id: crypto.randomUUID(),
-    hostPath: resolved,
-    containerPath: `/mounts/${containerName}`,
-    folderName: baseName,
-    addedAt: new Date().toISOString(),
-  }
+    const mount: AgentMount = {
+      id: crypto.randomUUID(),
+      hostPath: resolved,
+      containerPath: `/mounts/${containerName}`,
+      folderName: baseName,
+      addedAt: new Date().toISOString(),
+    }
 
-  mounts.push(mount)
-  writeMounts(slug, mounts)
-  return mount
+    mounts.push(mount)
+    await writeMounts(slug, mounts)
+    return mount
+  })
 }
 
-export function removeMount(slug: string, mountId: string): void {
-  const mounts = getMounts(slug)
-  const filtered = mounts.filter((m) => m.id !== mountId)
-  writeMounts(slug, filtered)
+export function removeMount(slug: string, mountId: string): Promise<void> {
+  return withFileLock(getMountsFilePath(slug), async () => {
+    const mounts = await readMountsStrict(slug)
+    const filtered = mounts.filter((m) => m.id !== mountId)
+    await writeMounts(slug, filtered)
+  })
 }
 
-export function getMountsWithHealth(slug: string): AgentMountWithHealth[] {
-  const mounts = getMounts(slug)
-  return mounts.map((m) => ({
-    ...m,
-    health: fs.existsSync(m.hostPath) ? 'ok' : 'missing',
-  }))
+export async function getMountsWithHealth(slug: string): Promise<AgentMountWithHealth[]> {
+  const mounts = await getMounts(slug)
+  return Promise.all(
+    mounts.map(async (m) => ({
+      ...m,
+      health: (await directoryExists(m.hostPath)) ? ('ok' as const) : ('missing' as const),
+    }))
+  )
 }

@@ -1,8 +1,14 @@
 import * as fs from 'fs'
+import * as path from 'path'
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
-import { dashboardManager } from '../dashboard-manager'
+import {
+  dashboardManager,
+  ARTIFACTS_DIR,
+  getDashboardValidationUrl,
+} from '../dashboard-manager'
 import { resizeScreenshot } from '../image-utils'
+import { lintDashboardDir, formatUrlFindings } from '../dashboard-url-lint'
 
 type ToolContentBlock =
   | { type: 'text'; text: string }
@@ -25,9 +31,14 @@ The dashboard must exist at /workspace/artifacts/<slug>/ with a valid package.js
       const content: ToolContentBlock[] = []
 
       if (info.status === 'running') {
-        text += '\n\nThe dashboard is accessible to the user through the Superagent UI.'
+        const validationUrl = getDashboardValidationUrl(
+          args.slug,
+          info.port,
+          info.upstreamPathMode,
+        )
+        text += '\n\nThe dashboard is accessible to the user through the Gamut UI.'
         text +=
-          '\n\nDo NOT use the browser tool to view this dashboard. The browser runs outside the container and cannot access localhost URLs served inside it. The user can already see it through the Superagent UI — use get_dashboard_logs to debug any issues.'
+          `\n\nFor interactive validation, open ${validationUrl} with browser_open using location="container". This forces the bundled Chromium that can reach the dashboard's private container port.`
 
         // Await screenshot so the agent can sanity-check rendering in the same
         // tool result. Best-effort: if capture fails we still return success.
@@ -47,6 +58,19 @@ The dashboard must exist at /workspace/artifacts/<slug>/ with a valid package.js
           }
         } else {
           text += `\n\n(Screenshot unavailable: ${shot.reason})`
+        }
+
+        // Catch client-side absolute URLs that will 404 once the dashboard is
+        // served under its /api/agents/.../artifacts/<slug>/ subpath. Surfaced
+        // here (the agent's verification touchpoint) with exact file:line so it
+        // self-corrects. Best-effort: a lint failure must never break start.
+        try {
+          const urlFindings = lintDashboardDir(path.join(ARTIFACTS_DIR, args.slug))
+          if (urlFindings.length > 0) {
+            text = `${formatUrlFindings(urlFindings)}\n\n${text}`
+          }
+        } catch {
+          // ignore lint errors
         }
       } else if (info.status === 'crashed' || info.status === 'stopped') {
         // Include recent logs so the agent can debug without a separate tool call

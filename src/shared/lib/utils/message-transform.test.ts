@@ -6,7 +6,7 @@ import {
   parseCommandMessage,
   TransformedMessage,
 } from './message-transform'
-import { JsonlMessageEntry, ContentBlock } from '@shared/lib/types/agent'
+import { JsonlMessageEntry, JsonlSystemEntry, ContentBlock } from '@shared/lib/types/agent'
 
 /** Helper to narrow TransformedItem to TransformedMessage in tests */
 function asMessage(item: unknown): TransformedMessage {
@@ -311,6 +311,40 @@ describe('transformMessages', () => {
       expect(result).toHaveLength(2)
       expect(asMessage(result[0]).content.text).toBe('First')
       expect(asMessage(result[1]).content.text).toBe('Second')
+    })
+
+    it('preserves the highest usage snapshot for a merged provider response', () => {
+      const first = createAssistantMessage(
+        'uuid-1',
+        'msg-shared',
+        [{ type: 'text', text: 'Working' }]
+      )
+      first.message.usage = {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 30,
+      }
+      const final = createAssistantMessage(
+        'uuid-2',
+        'msg-shared',
+        [{ type: 'text', text: ' done' }]
+      )
+      final.message.usage = {
+        input_tokens: 10,
+        output_tokens: 15,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 30,
+      }
+
+      const result = transformMessages([first, final])
+
+      expect(asMessage(result[0]).usage).toEqual({
+        inputTokens: 10,
+        outputTokens: 15,
+        cacheCreationInputTokens: 20,
+        cacheReadInputTokens: 30,
+      })
     })
 
     it('handles three-way merge (text + tool_use + more text)', () => {
@@ -682,19 +716,140 @@ describe('transformMessages', () => {
       expect(asMessage(result[0]).content.text).toBe('Hello')
     })
 
-    it('ignores thinking blocks in content', () => {
+    it('extracts thinking blocks into the thinking field', () => {
       const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-0', 'Question?', '2026-01-24T10:00:00.000Z'),
         createAssistantMessage('uuid-1', 'msg-1', [
           { type: 'thinking', thinking: 'Let me think about this...' } as ContentBlock,
           { type: 'text', text: 'Here is my answer.' },
+        ], '2026-01-24T10:00:05.000Z'),
+      ]
+
+      const result = transformMessages(entries)
+
+      // Thinking is extracted alongside the message text, with a duration
+      // derived from the gap to the previous entry's timestamp
+      const message = asMessage(result[1])
+      expect(message.content.text).toBe('Here is my answer.')
+      expect(message.thinking).toEqual([{ id: 'msg-1:0', text: 'Let me think about this...', durationMs: 5000 }])
+      expect(message.toolCalls).toHaveLength(0)
+    })
+
+    it('assigns persisted thinking the same message-id and content-index identity as the stream', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-stable', [
+          { type: 'text', text: 'Preamble.' },
+          { type: 'thinking', thinking: 'Stable reasoning.' } as ContentBlock,
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
         ]),
       ]
 
       const result = transformMessages(entries)
 
-      // Thinking block should be ignored, only text extracted
-      expect(asMessage(result[0]).content.text).toBe('Here is my answer.')
-      expect(asMessage(result[0]).toolCalls).toHaveLength(0)
+      expect(asMessage(result[0]).thinking).toEqual([
+        { id: 'msg-stable:1', text: 'Stable reasoning.' },
+      ])
+    })
+
+    it('extracts multiple thinking blocks in order, skipping empty ones', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'thinking', thinking: 'First episode.' } as ContentBlock,
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
+          // Old transcripts (pre CLI 2.1.181) persist empty thinking text — skipped
+          { type: 'thinking', thinking: '' } as ContentBlock,
+          { type: 'thinking', thinking: '   ' } as ContentBlock,
+          { type: 'thinking', thinking: 'Second episode.' } as ContentBlock,
+          { type: 'text', text: 'Answer.' },
+        ]),
+      ]
+
+      const result = transformMessages(entries)
+
+      // No preceding entry — durations are underivable and omitted
+      expect(asMessage(result[0]).thinking).toEqual([
+        { id: 'msg-1:0', text: 'First episode.' },
+        { id: 'msg-1:4', text: 'Second episode.' },
+      ])
+      expect(asMessage(result[0]).toolCalls).toHaveLength(1)
+    })
+
+    it('derives per-episode durations across merged entries', () => {
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-0', 'Question?', '2026-01-24T10:00:00.000Z'),
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'thinking', thinking: 'First episode.' } as ContentBlock,
+        ], '2026-01-24T10:00:03.000Z'),
+        createAssistantMessage('uuid-2', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
+        ], '2026-01-24T10:00:04.000Z'),
+        createUserMessage('uuid-3', [
+          { type: 'tool_result', tool_use_id: 'tool-1', content: 'result' },
+        ], '2026-01-24T10:00:05.000Z'),
+        createAssistantMessage('uuid-4', 'msg-2', [
+          { type: 'thinking', thinking: 'Second episode.' } as ContentBlock,
+          { type: 'text', text: 'Answer.' },
+        ], '2026-01-24T10:00:09.000Z'),
+      ]
+
+      const result = transformMessages(entries)
+
+      // Message 1: thinking took user→entry gap; message 2: tool_result→entry gap
+      expect(asMessage(result[1]).thinking).toEqual([{ id: 'msg-1:0', text: 'First episode.', durationMs: 3000 }])
+      expect(asMessage(result[2]).thinking).toEqual([{ id: 'msg-2:0', text: 'Second episode.', durationMs: 4000 }])
+    })
+
+    it('omits durationMs when the previous entry belongs to the same message', () => {
+      // Some provider paths (e.g. OpenRouter reasoning) flush all of a message's
+      // block entries in one burst at completion, with thinking AFTER its sibling
+      // text entry. The ms-scale gap to the sibling is write jitter, not thinking
+      // time — deriving it produced "Thought for 0s" cards.
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-0', 'Question?', '2026-01-24T10:00:00.000Z'),
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'text', text: 'I will search the web.' },
+        ], '2026-01-24T10:00:06.327Z'),
+        createAssistantMessage('uuid-2', 'msg-1', [
+          { type: 'thinking', thinking: 'Reasoning that arrived after the text entry.' } as ContentBlock,
+        ], '2026-01-24T10:00:06.332Z'),
+      ]
+
+      const result = transformMessages(entries)
+
+      // No duration — the 5ms sibling gap must not be reported as thinking time
+      expect(asMessage(result[1]).thinking).toEqual([
+        { id: 'msg-1:1', text: 'Reasoning that arrived after the text entry.' },
+      ])
+    })
+
+    it('omits the thinking field when there are no thinking blocks', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'text', text: 'No thinking here.' },
+        ]),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).thinking).toBeUndefined()
+    })
+
+    it('skips thinking blocks whose value is not a string instead of throwing', () => {
+      // A corrupt or hand-edited transcript entry must not take down the whole
+      // messages read path (the route 500s the entire session on a throw here)
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'thinking', thinking: 123 } as unknown as ContentBlock,
+          { type: 'thinking', thinking: { nested: true } } as unknown as ContentBlock,
+          { type: 'thinking', thinking: 'Valid episode.' } as ContentBlock,
+          { type: 'text', text: 'Answer.' },
+        ]),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).content.text).toBe('Answer.')
+      expect(asMessage(result[0]).thinking).toEqual([{ id: 'msg-1:2', text: 'Valid episode.' }])
     })
 
     it('handles tool result for non-existent tool (orphaned result)', () => {
@@ -780,9 +935,11 @@ describe('transformMessages', () => {
 
       const result = transformMessages(entries)
 
-      // Should produce a message with empty text
+      // Should produce a message with empty text but the thinking preserved
+      // (no preceding entry, so no derivable duration)
       expect(result).toHaveLength(1)
       expect(asMessage(result[0]).content.text).toBe('')
+      expect(asMessage(result[0]).thinking).toEqual([{ id: 'msg-1:0', text: 'Deep thoughts...' }])
       expect(asMessage(result[0]).toolCalls).toHaveLength(0)
     })
 
@@ -1567,5 +1724,193 @@ describe('parseCommandMessage', () => {
       const result = transformMessages([entry])
       expect(asMessage(result[0]).apiError).toBeUndefined()
     })
+  })
+
+  // ============================================================================
+  // Informational banners (host-persisted, e.g. hook-blocked prompts)
+  // ============================================================================
+
+  describe('informational entries', () => {
+    function createInformational(
+      uuid: string,
+      content: string,
+      timestamp: string = '2026-01-24T10:00:00.500Z'
+    ): JsonlSystemEntry {
+      return {
+        type: 'system',
+        subtype: 'informational',
+        uuid,
+        content,
+        level: 'warning',
+        isMeta: false,
+        timestamp,
+      }
+    }
+
+    it('emits a trailing informational item when nothing follows it (blocked prompt)', () => {
+      const entries = [
+        createUserMessage('user-1', 'Hello'),
+        createAssistantMessage('asst-1', 'msg-1', [{ type: 'text', text: 'Hi!' }]),
+        createInformational('info-1', 'UserPromptSubmit operation blocked by hook:\nCircuit breaker'),
+      ]
+      const result = transformMessages(entries)
+      expect(result).toHaveLength(3)
+      const last = result[2] as { type: string; content: string; level?: string; id: string }
+      expect(last.type).toBe('informational')
+      expect(last.content).toContain('blocked by hook')
+      expect(last.level).toBe('warning')
+      expect(last.id).toBe('info-1')
+    })
+
+    it('anchors an informational item before the next message', () => {
+      const entries = [
+        createUserMessage('user-1', 'First'),
+        createInformational('info-1', 'Prompt blocked'),
+        createUserMessage('user-2', 'iman please respond', '2026-01-24T10:00:02.000Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.type)).toEqual(['user', 'informational', 'user'])
+    })
+
+    it('preserves multiple trailing informational items in order', () => {
+      const entries = [
+        createUserMessage('user-1', 'Hello'),
+        createInformational('info-1', 'Blocked once'),
+        createInformational('info-2', 'Blocked twice', '2026-01-24T10:00:01.000Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.id)).toEqual(['user-1', 'info-1', 'info-2'])
+    })
+
+    it('dedupes informational entries sharing a uuid (CLI copy + host copy)', () => {
+      // continue:false hooks: the CLI persists the banner itself AND the host
+      // appends its own copy from the stream — both carry the frame's uuid.
+      const entries = [
+        createUserMessage('user-1', 'hey'),
+        createInformational('info-dup', 'Operation stopped by hook: no hey'),
+        createInformational('info-dup', 'Operation stopped by hook: no hey', '2026-01-24T10:00:01.000Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.filter((r) => r.type === 'informational')).toHaveLength(1)
+    })
+
+    it('hides the synthetic stop-reason user entry that mirrors the banner', () => {
+      // The CLI records the stop text as a user entry right before the banner.
+      const stopText = "Operation stopped by hook: Messages starting with 'hey' are not allowed."
+      const entries = [
+        createUserMessage('user-1', 'hey'),
+        createUserMessage('user-2', stopText, '2026-01-24T10:00:01.000Z'),
+        createInformational('info-1', stopText, '2026-01-24T10:00:01.100Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.id)).toEqual(['user-1', 'info-1'])
+    })
+
+    it('hides the synthetic stop-reason user entry even when it precedes the duplicate banner copy', () => {
+      // Write-order race: the host's appended banner lands BEFORE the CLI's
+      // own copy, so the CLI's synthetic user entry sits next to the copy
+      // that uuid-dedupe drops — it must still be hidden.
+      const stopText = "Operation stopped by hook: Messages starting with 'hey' are not allowed."
+      const entries = [
+        createUserMessage('user-1', 'hey'),
+        createInformational('info-dup', stopText, '2026-01-24T10:00:01.000Z'),
+        createUserMessage('user-2', stopText, '2026-01-24T10:00:01.100Z'),
+        createInformational('info-dup', stopText, '2026-01-24T10:00:01.200Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.id)).toEqual(['user-1', 'info-dup'])
+    })
+
+    it('keeps a preceding user message whose content differs from the banner', () => {
+      const entries = [
+        createUserMessage('user-1', 'hey'),
+        createInformational('info-1', 'Operation stopped by hook: nope'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.id)).toEqual(['user-1', 'info-1'])
+    })
+  })
+})
+
+// ============================================================================
+// Resume history replay: the CLI can re-append prior transcript entries
+// VERBATIM (same uuid, same message.id) when a session is resumed into a
+// fresh CLI process. Duplicated entries must be dropped, not re-merged.
+// ============================================================================
+
+describe('replayed duplicate entries (resume history replay)', () => {
+  it('drops a replayed user entry with an already-seen uuid', () => {
+    const original = createUserMessage('user-1', 'Hello')
+    const replayed = createUserMessage('user-1', 'Hello')
+    const result = transformMessages([original, replayed])
+    expect(result).toHaveLength(1)
+  })
+
+  it('drops replayed assistant per-block entries instead of stacking their blocks', () => {
+    const textEntry = () =>
+      createAssistantMessage('uuid-a1', 'msg-1', [{ type: 'text', text: 'Working on it' }])
+    const toolEntry = () =>
+      createAssistantMessage('uuid-a2', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } },
+      ])
+    // Original per-block stream, then the resume replay of the same entries
+    const result = transformMessages([textEntry(), toolEntry(), textEntry(), toolEntry()])
+    expect(result).toHaveLength(1)
+    const msg = asMessage(result[0])
+    expect(msg.content.text).toBe('Working on it')
+    expect(msg.toolCalls).toHaveLength(1)
+  })
+
+  it('still merges distinct per-block entries sharing a message.id', () => {
+    const result = transformMessages([
+      createAssistantMessage('uuid-a1', 'msg-1', [{ type: 'text', text: 'One' }]),
+      createAssistantMessage('uuid-a2', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
+      ]),
+    ])
+    expect(result).toHaveLength(1)
+    expect(asMessage(result[0]).toolCalls).toHaveLength(1)
+    expect(asMessage(result[0]).content.text).toBe('One')
+  })
+
+  it('drops a replayed memory_recall entry with an already-seen uuid', () => {
+    const recall = (): JsonlSystemEntry => ({
+      uuid: 'recall-1',
+      type: 'system',
+      subtype: 'memory_recall',
+      content: '',
+      isMeta: false,
+      timestamp: '2026-01-24T10:00:00.000Z',
+      memory_paths: ['memory/a.md'],
+    })
+    const result = transformMessages([
+      recall(),
+      createUserMessage('user-1', 'Hello'),
+      // Cold-resume replay of the same [recall, message] pair
+      recall(),
+      createUserMessage('user-1', 'Hello'),
+    ])
+    expect(result.filter((r) => r.type === 'memory_recall')).toHaveLength(1)
+    expect(result).toHaveLength(2)
+  })
+
+  it('drops a replayed compact boundary with an already-seen uuid', () => {
+    const boundary = (): JsonlSystemEntry => ({
+      uuid: 'boundary-1',
+      type: 'system',
+      subtype: 'compact_boundary',
+      content: '',
+      isMeta: false,
+      timestamp: '2026-01-24T10:00:00.000Z',
+      compactMetadata: { trigger: 'auto', preTokens: 1000 },
+    })
+    const result = transformMessages([
+      boundary(),
+      createUserMessage('user-1', 'Hello'),
+      boundary(),
+      createUserMessage('user-1', 'Hello'),
+    ])
+    expect(result.filter((r) => r.type === 'compact_boundary')).toHaveLength(1)
+    expect(result).toHaveLength(2)
   })
 })

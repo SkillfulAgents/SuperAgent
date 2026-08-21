@@ -9,6 +9,10 @@ import { z } from 'zod'
 export const telegramConfigSchema = z.object({
   botToken: z.string().min(1, 'Bot token is required'),
   chatId: z.string().optional(),
+  // Rich Messages (Bot API 10.1). Defaults are applied in the connector.
+  richMessages: z.boolean().optional(),        // global rollback switch (default: rich)
+  draftStreaming: z.boolean().optional(),       // animated DM streaming (default: on)
+  skipEntityDetection: z.boolean().optional(),  // default: false (auto-detection ON)
 })
 
 export const slackConfigSchema = z.object({
@@ -22,6 +26,13 @@ export const slackConfigSchema = z.object({
 })
 
 export const IMESSAGE_GATEWAY_URL = 'https://imsgw.com'
+
+/**
+ * The single Gamut iMessage line every agent is reached on. Shared because setup
+ * texts it and the contact card lists it as the agent's number: if they ever
+ * disagree, the card ships a dead `TEL` while setup keeps working.
+ */
+export const IMESSAGE_PHONE_E164 = '+12053967934'
 
 export const imessageConfigSchema = z.object({
   gatewayUrl: z.string().url('Gateway URL is required').refine(
@@ -48,6 +59,16 @@ export type IMessageConfig = z.infer<typeof imessageConfigSchema>
 export const CHAT_PROVIDERS = ['telegram', 'slack', 'imessage'] as const
 export type ChatProvider = (typeof CHAT_PROVIDERS)[number]
 type ChatConfig = TelegramConfig | SlackConfig | IMessageConfig
+
+const configPatchSchema = z.record(z.string(), z.unknown())
+
+const MASKED_CREDENTIAL = /^(?:(?:\*|•){4,}(?:[A-Za-z0-9_-]{0,4})?|redacted|\[redacted\]|<redacted>)$/i
+
+const CREDENTIAL_FIELDS: Record<ChatProvider, readonly string[]> = {
+  telegram: ['botToken'],
+  slack: ['botToken', 'appToken'],
+  imessage: ['gatewayUrl', 'token'],
+}
 
 /**
  * Validate and parse a config object for the given provider.
@@ -80,4 +101,32 @@ export function parseChatIntegrationConfig(
     console.error(`[ChatIntegration] Invalid config for ${provider}:`, err instanceof Error ? err.message : err)
     return null
   }
+}
+
+/**
+ * Merge an API config patch with the credential-bearing stored config.
+ * Omitted credentials and conventional masked placeholders preserve the
+ * existing value so settings can be edited without ever reading secrets back.
+ */
+export function mergeChatIntegrationConfig(
+  provider: ChatProvider,
+  storedConfigJson: string,
+  patch: unknown,
+): ChatConfig {
+  const parsedPatch = configPatchSchema.parse(patch)
+  const credentialFields = CREDENTIAL_FIELDS[provider]
+  const unmaskedPatch = Object.fromEntries(
+    Object.entries(parsedPatch).filter(([key, value]) =>
+      !credentialFields.includes(key)
+      || typeof value !== 'string'
+      || !MASKED_CREDENTIAL.test(value),
+    ),
+  )
+
+  const stored = parseChatIntegrationConfig(provider, storedConfigJson)
+  // A corrupt or legacy row must remain repairable. When the old value cannot
+  // be trusted, require the patch itself to be a complete valid replacement.
+  if (!stored) return validateChatIntegrationConfig(provider, unmaskedPatch)
+
+  return validateChatIntegrationConfig(provider, { ...stored, ...unmaskedPatch })
 }

@@ -18,4 +18,4 @@ function getSummary(input: unknown): string | null {
   return `Updated ${todos.length} todo item${todos.length !== 1 ? 's' : ''}`
 }
 
-export const todoWriteDef = { displayName: 'Todo List', iconName: 'ListTodo', parseInput, getSummary } as const
+export const todoWriteDef = { displayName: 'Todo List', parseInput, getSummary } as const

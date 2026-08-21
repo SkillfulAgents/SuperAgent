@@ -22,6 +22,7 @@ const mockUpdateNextExecution = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   getDueTasks: (...args: unknown[]) => mockGetDueTasks(...args),
+  getScheduledTask: vi.fn(() => Promise.resolve(null)),
   markTaskExecuted: (...args: unknown[]) => mockMarkTaskExecuted(...args),
   markTaskFailed: (...args: unknown[]) => mockMarkTaskFailed(...args),
   updateNextExecution: (...args: unknown[]) => mockUpdateNextExecution(...args),

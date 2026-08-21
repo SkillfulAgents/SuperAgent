@@ -41,14 +41,12 @@ function truncate(s: string | undefined, max = 80): string | null {
 
 export const listAgentsDef = {
   displayName: 'List Agents',
-  iconName: 'Users',
   parseInput: (i: unknown) => asObj<ListAgentsInput>(i),
   getSummary: () => 'List other agents in this workspace',
 } as const
 
 export const createAgentDef = {
   displayName: 'Create Agent',
-  iconName: 'UserPlus',
   parseInput: (i: unknown) => asObj<CreateAgentInput>(i),
   getSummary: (i: unknown) => {
     const { name } = asObj<CreateAgentInput>(i)
@@ -58,12 +56,11 @@ export const createAgentDef = {
 
 export const invokeAgentDef = {
   displayName: 'Invoke Agent',
-  iconName: 'Send',
   parseInput: (i: unknown) => asObj<InvokeAgentInput>(i),
   getSummary: (i: unknown) => {
     const { slug, session_id, sync, prompt } = asObj<InvokeAgentInput>(i)
     if (!slug) return 'Invoke agent'
-    const action = session_id ? `→ ${slug}/${session_id.slice(0, 8)}…` : `→ ${slug} (new session)`
+    const action = session_id ? `${slug}/${session_id.slice(0, 8)}…` : `${slug} (new session)`
     const preview = truncate(prompt, 50)
     const syncLabel = sync ? ' [sync]' : ''
     return preview ? `${action}${syncLabel}: ${preview}` : `${action}${syncLabel}`
@@ -72,7 +69,6 @@ export const invokeAgentDef = {
 
 export const getAgentSessionsDef = {
   displayName: 'Get Agent Sessions',
-  iconName: 'List',
   parseInput: (i: unknown) => asObj<GetAgentSessionsInput>(i),
   getSummary: (i: unknown) => {
     const { slug } = asObj<GetAgentSessionsInput>(i)
@@ -82,7 +78,6 @@ export const getAgentSessionsDef = {
 
 export const getAgentSessionTranscriptDef = {
   displayName: 'Get Agent Session Transcript',
-  iconName: 'ScrollText',
   parseInput: (i: unknown) => asObj<GetAgentSessionTranscriptInput>(i),
   getSummary: (i: unknown) => {
     const { slug, session_id, sync } = asObj<GetAgentSessionTranscriptInput>(i)

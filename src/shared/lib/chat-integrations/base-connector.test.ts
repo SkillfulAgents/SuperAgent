@@ -84,7 +84,7 @@ describe('ChatClientConnector event system', () => {
       connector.onInteractiveResponse(handler)
       connector.simulateInteractiveResponse('tu-1', { answer: 'yes' })
 
-      expect(handler).toHaveBeenCalledWith('tu-1', { answer: 'yes' })
+      expect(handler).toHaveBeenCalledWith('tu-1', { answer: 'yes' }, undefined)
     })
 
     it('returns unsubscribe function', () => {
@@ -216,11 +216,11 @@ describe('MockChatClientConnector', () => {
     expect(mock.finalizedMessages[0].finalText).toBe('final text')
   })
 
-  it('records typing indicators', async () => {
+  it('records working indicators', async () => {
     const mock = new MockChatClientConnector()
 
-    await mock.showTypingIndicator('chat-1')
-    await mock.showTypingIndicator('chat-2')
+    await mock.startWorking('chat-1', 'working')
+    await mock.startWorking('chat-2', 'working')
 
     expect(mock.typingIndicators).toEqual(['chat-1', 'chat-2'])
   })
@@ -228,7 +228,7 @@ describe('MockChatClientConnector', () => {
   it('records sent cards', async () => {
     const mock = new MockChatClientConnector()
     const event = {
-      type: 'user_question_request' as const,
+      type: 'question_request' as const,
       toolUseId: 'tu-1',
       questions: [{ question: 'Pick one' }],
     }
@@ -236,8 +236,8 @@ describe('MockChatClientConnector', () => {
     await mock.sendUserRequestCard('chat-1', event as any)
 
     expect(mock.sentCards.length).toBe(1)
-    expect(mock.getLastSentCard()?.type).toBe('user_question_request')
-    expect(mock.getCardsOfType('user_question_request').length).toBe(1)
+    expect(mock.getLastSentCard()?.type).toBe('question_request')
+    expect(mock.getCardsOfType('question_request').length).toBe(1)
   })
 
   it('tracks connection state', async () => {
@@ -256,7 +256,7 @@ describe('MockChatClientConnector', () => {
     await mock.sendMessage('chat-1', { text: 'hello' })
     await mock.sendStreamingUpdate('chat-1', 'partial')
     await mock.finalizeStreamingMessage('chat-1', 'msg-1', 'final')
-    await mock.showTypingIndicator('chat-1')
+    await mock.startWorking('chat-1', 'working')
     await mock.sendUserRequestCard('chat-1', { type: 'secret_request', toolUseId: 'tu-1', secretName: 'KEY' } as any)
 
     mock.reset()

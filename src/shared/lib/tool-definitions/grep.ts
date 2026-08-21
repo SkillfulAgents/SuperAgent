@@ -18,4 +18,4 @@ function getSummary(input: unknown): string | null {
   return parts.join(' ')
 }
 
-export const grepDef = { displayName: 'Grep', iconName: 'Search', parseInput, getSummary } as const
+export const grepDef = { displayName: 'Grep', parseInput, getSummary } as const

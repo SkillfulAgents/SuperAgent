@@ -14,4 +14,4 @@ function getSummary(input: unknown): string | null {
   return parseInput(input).pattern ?? null
 }
 
-export const globDef = { displayName: 'Glob', iconName: 'FolderSearch', parseInput, getSummary } as const
+export const globDef = { displayName: 'Glob', parseInput, getSummary } as const

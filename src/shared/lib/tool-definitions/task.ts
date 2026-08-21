@@ -16,4 +16,4 @@ function getSummary(input: unknown): string | null {
   return parts.length > 0 ? parts.join(' ') : null
 }
 
-export const taskDef = { displayName: 'Sub Agent', iconName: 'Bot', parseInput, getSummary } as const
+export const taskDef = { displayName: 'Sub Agent', parseInput, getSummary } as const

@@ -2,6 +2,10 @@ import { Page, expect } from '@playwright/test'
 
 export type AgentActivityStatus = 'sleeping' | 'idle' | 'working' | 'awaiting_input'
 
+type CreateAgentOptions = {
+  waitForSidebarName?: boolean
+}
+
 /**
  * Page object for agent-related operations
  */
@@ -21,7 +25,9 @@ export class AgentPage {
    * click the agent breadcrumb so the caller lands on agent-home (where
    * agent-settings-button lives) rather than the first session view.
    */
-  async createAgent(prompt: string) {
+  async createAgent(prompt: string, options: CreateAgentOptions = {}) {
+    const { waitForSidebarName = true } = options
+
     await this.clickCreateAgent()
 
     // Wait until we've actually landed on the fresh Untitled agent's AgentHome
@@ -40,11 +46,38 @@ export class AgentPage {
     await expect(this.page.locator('[data-testid="agent-settings-button"]')).toBeVisible()
 
     // The agent is created as "Untitled" then renamed async after session
-    // creation. Wait for the rename to land so downstream selectAgent(name)
-    // lookups by visible text match. We accept any non-"Untitled" value — in
-    // E2E the LLM is unconfigured so the server fallback yields the prompt's
-    // first ~5 words, matching what the test passed in.
-    await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).not.toHaveText('Untitled', { timeout: 15000 })
+    // creation. Downstream tests that re-select agents by name need the
+    // sidebar row to be indexed, but session-only tests can avoid coupling to
+    // the sidebar refresh.
+    await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(prompt, { timeout: 15000 })
+    if (waitForSidebarName) {
+      await this.waitForAgentInSidebar(prompt)
+    }
+  }
+
+  private async waitForAgentInSidebar(name: string) {
+    const row = this.getAgentItem(name)
+
+    try {
+      await expect(row).toBeVisible({ timeout: 5000 })
+      return
+    } catch {
+      // The agent detail can observe the async rename before the sidebar list
+      // has refreshed under heavier parallel load. Reloading the current agent
+      // route forces a fresh /api/agents read without changing the selected
+      // agent.
+      await Promise.all([
+        this.page
+          .waitForResponse((response) => response.url().includes('/api/agents') && response.status() === 200, {
+            timeout: 15000,
+          })
+          .catch(() => undefined),
+        this.page.reload(),
+      ])
+      await expect(this.page.locator('[data-testid="new-agent-button"]')).toBeVisible({ timeout: 15000 })
+      await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(name, { timeout: 15000 })
+      await expect(row).toBeVisible({ timeout: 15000 })
+    }
   }
 
   /**
@@ -103,12 +136,7 @@ export class AgentPage {
    * Get the agent item element
    */
   getAgentItem(name: string) {
-    const slug = this.getSlugFromName(name)
-    // Try data-testid first, fall back to button with name text
-    const byTestId = this.page.locator(`[data-testid="agent-item-${slug}"]`)
-    const byText = this.page.locator(`button:has-text("${name}")`, { hasText: name }).first()
-    // Use or() to try both selectors
-    return byTestId.or(byText)
+    return this.page.locator('[data-testid^="agent-item-"]', { hasText: name }).first()
   }
 
   /**

@@ -7,8 +7,11 @@ import { authAccount } from '@shared/lib/db/schema'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 
+import { getRequestUserId } from './request-context'
+
 // Re-export so existing consumers keep importing from here.
 export { decodeOrgIdFromToken }
+export { runWithOptionalUser, runWithRequestUser } from './request-context'
 
 const PLATFORM_PROVIDER_ID = 'platform'
 
@@ -71,21 +74,7 @@ function buildAttribution(memberId: string | null): Attribution | null {
   return new PlatformAttribution(token, memberId, orgScoped)
 }
 
-const userContext = new AsyncLocalStorage<{ userId: string }>()
 const attributionContext = new AsyncLocalStorage<{ auth: Attribution }>()
-
-// Lazy: stores userId; memberId / token are resolved at attribution.current() time.
-export function runWithRequestUser<T>(userId: string, fn: () => Promise<T> | T): Promise<T> | T {
-  return userContext.run({ userId }, fn)
-}
-
-// Same as runWithRequestUser, but a null/undefined userId is a no-op scope.
-export function runWithOptionalUser<T>(
-  userId: string | null | undefined,
-  fn: () => Promise<T> | T,
-): Promise<T> | T {
-  return userId ? userContext.run({ userId }, fn) : fn()
-}
 
 // Eager override: stores a pre-resolved Attribution; takes precedence over
 // the request-user scope. Use when the natural request user isn't who we
@@ -98,7 +87,7 @@ export function runWithAttribution<T>(
 }
 
 function fromCurrentRequest(): Attribution | null {
-  const userId = userContext.getStore()?.userId
+  const userId = getRequestUserId()
   return userId ? buildAttribution(resolveMemberIdForUserId(userId)) : null
 }
 

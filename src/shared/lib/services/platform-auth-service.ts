@@ -1,7 +1,7 @@
 import { errors as joseErrors } from 'jose'
 import { eq, and, desc } from 'drizzle-orm'
 
-import { getSettings, updateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { fetchPlatformJson } from '@shared/lib/platform-auth/platform-fetch'
 import { PlatformAuthSettingsSchema, PlatformAccountInfoSchema } from '@shared/lib/types/skillset-schema'
@@ -11,6 +11,9 @@ import { getAuthProviderIssuer } from '@shared/lib/auth/provider-config'
 import { verifyOidcJwt } from '@shared/lib/auth/oidc-jwt'
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
+import { runWithRequestUser } from '@shared/lib/platform-attribution/request-context'
+import { clearCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
+import { isPrivateHost, tryParseUrl } from '@shared/lib/utils/url-safety'
 
 export type PlatformAuthRecord = PlatformAuthSettings
 
@@ -21,7 +24,7 @@ export type PlatformAuthSource = 'settings' | 'env' | null
 const PLATFORM_ORG_ACCESS_TOKEN_AUDIENCE = 'platform-org-runtime'
 const PLATFORM_ORG_ACCESS_TOKEN_ALG = 'RS256'
 const PLATFORM_ORG_ACCESS_TOKEN_TYP = 'JWT'
-const PLATFORM_AUTH_PROVIDER_ID = 'platform'
+export const PLATFORM_AUTH_PROVIDER_ID = 'platform'
 
 export interface VerifiedPlatformOrgAccessToken {
   orgId: string
@@ -72,6 +75,12 @@ export interface PlatformAuthStatus {
   label: string | null
   orgId: string | null
   orgName: string | null
+  /**
+   * Public HTTPS workspace icon returned for Platform-managed deployments.
+   * Absent for disconnected and settings-backed/self-hosted connections; null
+   * means the connected organization has no safe icon configured.
+   */
+  orgIconUrl?: string | null
   role: string | null
   /** Global platform user identity (Supabase auth UUID) — used for analytics. */
   userId: string | null
@@ -206,9 +215,12 @@ function readRecord(): PlatformAuthRecord | null {
 }
 
 function writeRecord(record: PlatformAuthRecord | null): void {
-  const settings = getSettings()
-  settings.platformAuth = record ?? undefined
-  updateSettings(settings)
+  // Serialized fresh-read + atomic write so a background token refresh can't
+  // lose-update a concurrent settings change or clobber real settings from a
+  // defaulted cache.
+  mutateSettings((settings) => {
+    settings.platformAuth = record ?? undefined
+  })
 }
 
 /**
@@ -234,9 +246,25 @@ async function reconcileAfterAuthChange(): Promise<void> {
  * (platform-service → platform-auth-service → here).
  */
 function notifyPlatformServiceAuthChanged(connected: boolean): void {
+  // The success log is the only positive signal this fire-and-forget path ran;
+  // platform-auth-service.notify.test.ts asserts on it.
   void import('./platform-service')
-    .then((mod) => mod.platformService.onAuthChanged(connected))
+    .then((mod) => {
+      mod.platformService.onAuthChanged(connected)
+      console.log(`[platform-auth] platform-service notified of auth change (connected=${connected})`)
+    })
     .catch((error) => captureException(error, { tags: { area: 'platform-auth', op: 'notify-service' } }))
+  // The desktop notifications subscription follows platform connectivity:
+  // start on connect (self-gates on auth mode), tear down on disconnect.
+  void import('../scheduler/platform-notifications-manager')
+    .then((mod) =>
+      connected
+        ? mod.platformNotificationsManager.start()
+        : mod.platformNotificationsManager.stop(),
+    )
+    .catch((error) =>
+      captureException(error, { tags: { area: 'platform-auth', op: 'notify-notifications' } }),
+    )
 }
 
 function getEnvManagedStatus(): PlatformAuthStatus | null {
@@ -337,7 +365,30 @@ export function getPlatformAuthStatus(userId?: string): PlatformAuthStatus {
 interface EnrichedEnvAccount {
   email: string | null
   orgName: string | null
+  orgIconUrl: string | null
   role: string | null
+}
+
+/**
+ * Defense in depth for an upstream display URL. Platform stores workspace
+ * icons in a public bucket, so URL credentials, private hosts, query strings,
+ * and fragments are neither needed nor safe to forward to native clients.
+ */
+function normalizeOrgIconUrl(value: string | null): string | null {
+  if (!value) return null
+  const url = tryParseUrl(value.trim())
+  if (
+    !url ||
+    url.protocol !== 'https:' ||
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    isPrivateHost(url.hostname)
+  ) {
+    return null
+  }
+  url.search = ''
+  url.hash = ''
+  return url.toString()
 }
 
 // Introspection is memoized per user: the Account screen re-fetches the status
@@ -354,9 +405,6 @@ async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvA
   const token = getPlatformAccessToken()
   if (!token) return null
   try {
-    // Dynamic import breaks the module cycle (platform-attribution imports this
-    // service for the token + stored member id).
-    const { runWithRequestUser } = await import('@shared/lib/platform-attribution')
     const account = await runWithRequestUser(userId, () =>
       fetchPlatformJson({
         path: '/v1/account',
@@ -366,7 +414,12 @@ async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvA
         mapStatusError: (status) => ({ message: 'Account introspection failed', status }),
       }),
     )
-    return { email: account.email, orgName: account.orgName, role: account.role }
+    return {
+      email: account.email,
+      orgName: account.orgName,
+      orgIconUrl: normalizeOrgIconUrl(account.orgIconUrl),
+      role: account.role,
+    }
   } catch (error) {
     captureException(error, { tags: { area: 'platform-auth', op: 'introspect-env-account' } })
     return null
@@ -398,6 +451,7 @@ export async function getEnrichedPlatformAuthStatus(userId?: string): Promise<Pl
     ...base,
     email: account.email,
     orgName: account.orgName,
+    orgIconUrl: account.orgIconUrl,
     role: account.role,
   }
 }
@@ -428,7 +482,14 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
 
   const existing = readRecord()
   const newOrgId = enriched.orgId?.trim() || null
+  const newUserId = enriched.userId?.trim() || null
+  const newMemberId = enriched.memberId?.trim() || null
   const orgChanged = existing?.orgId !== newOrgId
+  // The acting principal changed if the global user or the per-org membership
+  // differs — even within the same org. A same-user metadata refresh (email,
+  // role) leaves both untouched.
+  const identityChanged =
+    existing?.userId !== newUserId || existing?.memberId !== newMemberId
 
   const now = new Date().toISOString()
   const record: PlatformAuthRecord = PlatformAuthSettingsSchema.parse({
@@ -451,6 +512,14 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
     // previous org. Runs *after* writing the new record so the polymorphic
     // reconcile sees the current auth.
     await reconcileAfterAuthChange()
+  }
+
+  if (orgChanged || identityChanged) {
+    // The cloud-workspace deployment token is principal-scoped (a session for a
+    // specific user on the deployment). Drop it whenever the acting org OR the
+    // acting user/member changes, so a different principal never reuses it; the
+    // next refresh re-mints for the new principal.
+    clearCloudWorkspaceRecord()
   }
 
   notifyPlatformServiceAuthChanged(true)
@@ -523,6 +592,9 @@ export async function refreshStoredPlatformAccount(): Promise<boolean> {
 
 async function clearPlatformAuth(): Promise<void> {
   writeRecord(null)
+  // The cloud-workspace deployment token is bound to the platform account;
+  // clear it alongside the platform token on disconnect.
+  clearCloudWorkspaceRecord()
   await reconcileAfterAuthChange()
   notifyPlatformServiceAuthChanged(false)
 }

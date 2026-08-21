@@ -10,4 +10,4 @@ function getSummary(input: unknown): string | null {
   return parseInput(input).query ?? null
 }
 
-export const webSearchDef = { displayName: 'Web Search', iconName: 'Globe', parseInput, getSummary } as const
+export const webSearchDef = { displayName: 'Web Search', parseInput, getSummary } as const

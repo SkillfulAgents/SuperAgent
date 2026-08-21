@@ -1,13 +1,18 @@
 import { useState, useEffect, useCallback, type RefObject } from 'react'
+import type { CellRef } from '@renderer/context/file-preview-context'
+import { useDismissOnOutsideClick } from './use-dismiss-on-outside-click'
 
 export interface TextSelectionInfo {
   text: string
   rect: DOMRect
   x?: number
   y?: number
+  cell?: CellRef
+  /** Playback position in seconds, set for audio/video comments. */
+  timestamp?: number
 }
 
-export function useTextSelection(containerRef: RefObject<HTMLElement | null>) {
+export function useTextSelection(containerRef: RefObject<HTMLElement | null>, enabled = true) {
   const [selection, setSelection] = useState<TextSelectionInfo | null>(null)
 
   const clearSelection = useCallback(() => {
@@ -17,7 +22,7 @@ export function useTextSelection(containerRef: RefObject<HTMLElement | null>) {
 
   useEffect(() => {
     const container = containerRef.current
-    if (!container) return
+    if (!container || !enabled) return
 
     const handleMouseUp = () => {
       requestAnimationFrame(() => {
@@ -48,20 +53,17 @@ export function useTextSelection(containerRef: RefObject<HTMLElement | null>) {
       })
     }
 
-    // Dismiss the overlay on any mousedown, unless the click is inside
-    // the comment overlay itself (marked with data-comment-overlay).
-    const handleDocumentMouseDown = (e: MouseEvent) => {
-      if ((e.target as HTMLElement).closest?.('[data-comment-overlay]')) return
-      setSelection(null)
-    }
-
     container.addEventListener('mouseup', handleMouseUp)
-    document.addEventListener('mousedown', handleDocumentMouseDown)
     return () => {
       container.removeEventListener('mouseup', handleMouseUp)
-      document.removeEventListener('mousedown', handleDocumentMouseDown)
     }
-  }, [containerRef])
+  }, [containerRef, enabled])
+
+  // Dismiss the pending comment affordance on any mousedown, unless the click
+  // is inside the comment overlay itself (marked with data-comment-overlay).
+  useDismissOnOutsideClick(enabled && selection != null, () => setSelection(null), DISMISS_IGNORE)
 
   return { selection, clearSelection }
 }
+
+const DISMISS_IGNORE = ['[data-comment-overlay]']

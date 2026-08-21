@@ -1,5 +1,51 @@
 import '@testing-library/jest-dom/vitest'
-import { vi } from 'vitest'
+import { beforeEach, vi } from 'vitest'
+import { createElement } from 'react'
+import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
+
+// Auth mode is now derived from the resolved API target, and reading it before
+// boot settles that target throws by design (a wrong guess routes cloud traffic
+// to the laptop). Production settles it in `initApiBaseUrl()`; tests get the
+// local target here so everything that renders UserProvider behaves exactly as
+// it did when auth mode was a build-time constant. A test that needs the cloud
+// target resets and re-sets it in its own `beforeEach`, which runs after this.
+beforeEach(() => {
+  _resetApiTargetForTest()
+  setActiveTarget('local', null)
+})
+
+// jsdom has no matchMedia; components read it via useIsMobile() and
+// prefers-reduced-motion. Default to "no match" (desktop, motion allowed) with
+// no-op listeners. Node-env (non-renderer) tests have no window — guard for it.
+if (typeof window !== 'undefined' && !window.matchMedia) {
+  window.matchMedia = (query: string): MediaQueryList => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }) as unknown as MediaQueryList
+}
+
+// jsdom has no ResizeObserver; recharts' ResponsiveContainer (used by the home
+// page usage sparklines) needs it. Stub it as a no-op so chart-rendering
+// components can mount in tests.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+}
+
+// jsdom logs a "Not implemented" error whenever an otherwise unrelated
+// component probes canvas. Focused canvas tests spy on top of this default.
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = () => null
+}
 
 const signIn = {
   email: vi.fn(),
@@ -11,13 +57,14 @@ const signUp = {
 }
 
 // Mock auth-client globally — UserProvider imports it at module level.
-// When __AUTH_MODE__ is false the hooks are never called, but the import still runs.
+// Outside auth mode the hooks are never called, but the import still runs.
 vi.mock('@renderer/lib/auth-client', () => ({
   authClient: {},
   signIn,
   signUp,
   signOut: vi.fn(),
   useSession: () => ({ data: null, isPending: false }),
+  _resetAuthClientForTest: vi.fn(),
 }))
 
 // Mock server analytics globally — it imports `fs` via tenant-id.ts which
@@ -32,4 +79,64 @@ vi.mock('@shared/lib/analytics/server-analytics', () => ({
 vi.mock('@renderer/context/analytics-context', () => ({
   useAnalyticsTracking: () => ({ track: vi.fn(), identify: vi.fn() }),
   AnalyticsProvider: ({ children }: { children: React.ReactNode }) => children,
+}))
+
+// Many components call useNavigate() for router-driven navigation. Renderer
+// unit tests render leaf components WITHOUT a RouterProvider, so stub navigation
+// to a no-op — these tests assert component rendering/behavior, not real route
+// changes (which are covered by router unit tests + E2E). Without this, the real
+// useNavigate returns a rejected promise outside a router, surfacing as a
+// mis-attributed unhandled rejection. File-level vi.mock of the module overrides
+// this where a test needs different behavior.
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>()
+  return { ...actual, useNavigate: () => () => {} }
+})
+
+// `AppLink` (ui/app-link) imports the router singleton — which pulls in
+// history.ts/`__WEB__` and needs a RouterProvider at render. Renderer unit tests
+// have neither, so stub it as a plain anchor that forwards the props tests
+// inspect (onClick, className, data-testid). A file-level vi.mock overrides this
+// where a test needs the real link.
+vi.mock('@renderer/components/ui/app-link', () => ({
+  // Strip the link-specific props so they don't land as DOM attributes; forward
+  // the rest (onClick/className/data-testid) to a plain anchor.
+  AppLink: ({ children, to, params, search, activeClassName: _ac, activeOptions: _ao, noDrag: _nd, ...props }: Record<string, unknown> & { children?: unknown }) =>
+    createElement(
+      'a',
+      {
+        href: '#',
+        // Expose the route target so tests can assert navigation (the real
+        // <a href> isn't built in jsdom; data-* attrs avoid React DOM warnings).
+        'data-to': to,
+        'data-params': params ? JSON.stringify(params) : undefined,
+        'data-search': search ? JSON.stringify(search) : undefined,
+        ...props,
+      },
+      children as never,
+    ),
+}))
+
+// DialogContext drives global settings via the router. Renderer unit
+// tests have no RouterProvider, so stub it — DialogProvider passes children
+// through, useDialogs returns no-ops, and DialogContext is a real (null-
+// default) context so consumers reading it via useContext keep working and
+// tests can wrap a Provider around them. A file-level mock overrides where a
+// test needs to assert on these (e.g. app-sidebar.test).
+vi.mock('@renderer/context/dialog-context', async () => {
+  const { createContext } = await import('react')
+  return {
+    DialogContext: createContext(null),
+    DialogProvider: ({ children }: { children: React.ReactNode }) => children,
+    useDialogs: () => ({ openSettings: vi.fn(), closeSettings: vi.fn(), openWizard: vi.fn() }),
+  }
+})
+
+// Components read navigation state via `useRouteLocation()`. It calls
+// `useRouterState()`, which throws outside a RouterProvider — renderer unit
+// tests have none. Default it to
+// the global home; a file-level vi.mock overrides where a test asserts behavior
+// that depends on the active view/slug.
+vi.mock('@renderer/router/use-route-location', () => ({
+  useRouteLocation: () => ({ selectedAgentSlug: null, view: { kind: 'home' } }),
 }))

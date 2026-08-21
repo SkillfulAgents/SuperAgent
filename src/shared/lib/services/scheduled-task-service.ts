@@ -7,7 +7,7 @@
 
 import { db } from '@shared/lib/db'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
-import { eq, and, lte, inArray } from 'drizzle-orm'
+import { eq, and, lte, inArray, isNotNull } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 import { trackServerEvent } from '../analytics/server-analytics'
 
@@ -29,6 +29,24 @@ export interface CreateScheduledTaskParams {
   timezone?: string
   model?: string
   effort?: string
+  speed?: string
+  // When set, firing this task resumes the referenced session instead of
+  // creating a new one. Prefer createSessionWake(), which also enforces the
+  // one-pending-wake-per-session invariant.
+  resumeSessionId?: string
+}
+
+export interface CreateSessionWakeParams {
+  agentSlug: string
+  // 'at' syntax expression, e.g. "at tomorrow 9am"
+  scheduleExpression: string
+  // Why the session is sleeping / what to check on wake — echoed back verbatim
+  // in the wake message. Stored as the task prompt.
+  note: string
+  sessionId: string
+  name?: string
+  createdByUserId?: string
+  timezone?: string
 }
 
 export interface UpdateNextExecutionParams {
@@ -75,6 +93,8 @@ export async function createScheduledTask(
     timezone: params.timezone || null,
     model: params.model || null,
     effort: params.effort || null,
+    speed: params.speed || null,
+    resumeSessionId: params.resumeSessionId || null,
   }
 
   await db.insert(scheduledTasks).values(newTask)
@@ -89,9 +109,132 @@ export async function createScheduledTask(
   return id
 }
 
+/**
+ * Create a session wake: a one-shot task that resumes an existing session when
+ * it fires. A session can hold at most one pending wake — creating a new one
+ * cancels and replaces any existing pending wake for the same session, and the
+ * replaced task is returned so callers can surface the swap.
+ *
+ * The schedule expression is validated BEFORE any mutation (a bad wakeTime
+ * must never cancel the session's valid wake), and the cancel+insert pair runs
+ * in a transaction so concurrent calls can't interleave into duplicate pending
+ * wakes. A partial unique index on pending wakes backstops both.
+ */
+export async function createSessionWake(
+  params: CreateSessionWakeParams
+): Promise<{ taskId: string; replaced: ScheduledTask | null }> {
+  // Throws on unparseable/past expressions — before existing state is touched.
+  const nextExecutionAt = parseAtSyntax(params.scheduleExpression, params.timezone || undefined)
+
+  const id = crypto.randomUUID()
+  const now = new Date()
+  const newTask: NewScheduledTask = {
+    id,
+    agentSlug: params.agentSlug,
+    scheduleType: 'at',
+    scheduleExpression: params.scheduleExpression,
+    prompt: params.note,
+    name: params.name,
+    status: 'pending',
+    nextExecutionAt,
+    isRecurring: false,
+    executionCount: 0,
+    createdAt: now,
+    createdBySessionId: params.sessionId,
+    createdByUserId: params.createdByUserId,
+    timezone: params.timezone || null,
+    resumeSessionId: params.sessionId,
+  }
+
+  // Synchronous better-sqlite3 transaction: read-existing → cancel → insert is
+  // one atomic unit, so no other caller can observe (or create) an
+  // intermediate state.
+  const replaced = db.transaction((tx) => {
+    const existing = tx
+      .select()
+      .from(scheduledTasks)
+      .where(
+        and(
+          eq(scheduledTasks.agentSlug, params.agentSlug),
+          eq(scheduledTasks.resumeSessionId, params.sessionId),
+          eq(scheduledTasks.status, 'pending')
+        )
+      )
+      .all()
+
+    for (const wake of existing) {
+      tx.update(scheduledTasks)
+        .set({ status: 'cancelled', cancelledAt: now })
+        .where(eq(scheduledTasks.id, wake.id))
+        .run()
+    }
+
+    tx.insert(scheduledTasks).values(newTask).run()
+
+    return existing[0] ?? null
+  })
+
+  trackServerEvent('task_scheduled', {
+    scheduleType: 'at',
+    isRecurring: false,
+    scheduleExpression: params.scheduleExpression,
+    agentSlug: params.agentSlug,
+  })
+
+  return { taskId: id, replaced }
+}
+
 // ============================================================================
 // Read Operations
 // ============================================================================
+
+/**
+ * Get the pending wake for a session, if any. There is at most one — the
+ * one-pending-wake-per-session invariant is enforced by createSessionWake.
+ */
+export async function getPendingWakeForSession(
+  agentSlug: string,
+  sessionId: string
+): Promise<ScheduledTask | null> {
+  const results = await db
+    .select()
+    .from(scheduledTasks)
+    .where(
+      and(
+        eq(scheduledTasks.agentSlug, agentSlug),
+        eq(scheduledTasks.resumeSessionId, sessionId),
+        eq(scheduledTasks.status, 'pending')
+      )
+    )
+
+  return results[0] || null
+}
+
+/**
+ * List all pending session wakes for an agent (tasks that resume an existing
+ * session rather than create a new one).
+ */
+export async function listPendingWakesByAgent(agentSlug: string): Promise<ScheduledTask[]> {
+  return db
+    .select()
+    .from(scheduledTasks)
+    .where(
+      and(
+        eq(scheduledTasks.agentSlug, agentSlug),
+        isNotNull(scheduledTasks.resumeSessionId),
+        eq(scheduledTasks.status, 'pending')
+      )
+    )
+}
+
+/**
+ * Session ids with a pending wake for an agent. Used by cleanup paths (e.g.
+ * auto-delete) that must not destroy a session scheduled to resume.
+ */
+export async function listSessionIdsWithPendingWakes(agentSlug: string): Promise<Set<string>> {
+  const wakes = await listPendingWakesByAgent(agentSlug)
+  return new Set(wakes.map((w) => w.resumeSessionId!))
+}
 
 /**
  * Get a single scheduled task by ID
@@ -209,6 +352,19 @@ export async function cancelScheduledTask(taskId: string): Promise<boolean> {
     )
 
   return (result.changes ?? 0) > 0
+}
+
+/**
+ * Cancel the pending wake targeting a session, if any. Called when the session
+ * is deleted so the scheduler never fires a wake at a session that's gone.
+ */
+export async function cancelPendingWakeForSession(
+  agentSlug: string,
+  sessionId: string
+): Promise<boolean> {
+  const wake = await getPendingWakeForSession(agentSlug, sessionId)
+  if (!wake) return false
+  return cancelScheduledTask(wake.id)
 }
 
 /**
@@ -383,6 +539,25 @@ export async function updateTaskPrompt(
 }
 
 /**
+ * Update a scheduled task's display name.
+ * Allowed for pending or paused tasks.
+ */
+export async function updateTaskName(
+  taskId: string,
+  name: string,
+): Promise<boolean> {
+  const task = await getScheduledTask(taskId)
+  if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
+
+  const result = await db
+    .update(scheduledTasks)
+    .set({ name })
+    .where(eq(scheduledTasks.id, taskId))
+
+  return (result.changes ?? 0) > 0
+}
+
+/**
  * Update a recurring task's schedule expression and recalculate next execution time.
  */
 export async function updateScheduleExpression(
@@ -429,12 +604,12 @@ export async function recordManualExecution(
 }
 
 /**
- * Update a task's runtime options (model and/or effort).
+ * Update a task's runtime options (model, effort, and/or speed).
  * Pass null to clear a field back to the global default.
  */
 export async function updateTaskRuntimeOptions(
   taskId: string,
-  options: { model?: string | null; effort?: string | null },
+  options: { model?: string | null; effort?: string | null; speed?: string | null },
 ): Promise<boolean> {
   const task = await getScheduledTask(taskId)
   if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
@@ -442,6 +617,7 @@ export async function updateTaskRuntimeOptions(
   const updates: Record<string, string | null> = {}
   if ('model' in options) updates.model = options.model ?? null
   if ('effort' in options) updates.effort = options.effort ?? null
+  if ('speed' in options) updates.speed = options.speed ?? null
 
   const result = await db
     .update(scheduledTasks)

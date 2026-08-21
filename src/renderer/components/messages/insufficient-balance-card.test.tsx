@@ -66,7 +66,12 @@ describe('InsufficientBalanceCard', () => {
 
     render(<InsufficientBalanceCard billingUrl="https://platform.example.com/billing" />)
 
-    expect(screen.getByText('Insufficient balance')).toBeInTheDocument()
+    const card = screen.getByTestId('insufficient-balance-card')
+    expect(card).toHaveTextContent('Insufficient balance: Subscribe or top up to continue running agents.')
+    // The error banner's frame and palette — opaque in dark, since the
+    // transcript scrolls behind the overlay footer.
+    expect(card).toHaveClass('rounded-md', 'bg-red-50', 'dark:bg-red-950')
+    expect(card).not.toHaveClass('bg-card')
     const button = screen.getByRole('button', { name: /go to billing/i })
     fireEvent.click(button)
     expect(openExternal).toHaveBeenCalledWith('https://platform.example.com/billing')

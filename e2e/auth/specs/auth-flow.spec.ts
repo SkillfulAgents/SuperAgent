@@ -15,6 +15,9 @@ const user1 = { name: 'Alice Admin', email: 'alice@test.com', password: 'passwor
 const user2 = { name: 'Bob Builder', email: 'bob@test.com', password: 'password123' }
 const user3 = { name: 'Carol Viewer', email: 'carol@test.com', password: 'password123' }
 const agentName = 'Auth Test Agent'
+// Captured once user2 is viewing the agent — used by the cross-tenant deep-link
+// test to prove the loader gates access by URL, not just by sidebar visibility.
+let agentSlug = ''
 
 test.describe('Auth Flow', () => {
   // ── Signup & Auth Gate ──────────────────────────────────────────────
@@ -34,7 +37,8 @@ test.describe('Auth Flow', () => {
     const settingsPage = new SettingsPage(user1Page)
 
     // Sign up User1 (first user becomes admin)
-    await authPage.signUp(user1.name, user1.email, user1.password)
+    await authPage.resetToAuthPage()
+    await authPage.signUpOrSignIn(user1.name, user1.email, user1.password)
 
     // App should load after signup
     await appPage.waitForAppLoaded()
@@ -59,7 +63,8 @@ test.describe('Auth Flow', () => {
     const settingsPage = new SettingsPage(user2Page)
 
     // Sign up User2 (second user is regular user)
-    await authPage.signUp(user2.name, user2.email, user2.password)
+    await authPage.resetToAuthPage()
+    await authPage.signUpOrSignIn(user2.name, user2.email, user2.password)
 
     // App should load
     await appPage.waitForAppLoaded()
@@ -134,6 +139,40 @@ test.describe('Auth Flow', () => {
 
     // Wait for assistant response
     await sessionPage.waitForResponse(15000)
+
+    // Capture the agent slug from the URL (/agents/$slug/sessions/$id) for
+    // the cross-tenant deep-link test below.
+    agentSlug = user2Page.url().match(/\/agents\/([^/?#]+)/)?.[1] ?? ''
+    expect(agentSlug).toBeTruthy()
+  })
+
+  // Regression guard for the SUP-271 view-only bug: the URL carries the pretty
+  // display slug (`{name}-{id}`), which no longer equals the agent's canonical id,
+  // and `agent-shell` derives the header's view-only state from
+  // `canUseAgent(routeSlug)` while the role map is keyed by the id. Without
+  // resolving the route slug → id, an OWNER was wrongly forced view-only (no
+  // start/stop controls). This is the discriminating case the rest of the suite
+  // misses — the home composer keys on the canonical id and the `sendMessage`
+  // helper falls back to it, so neither exercises the route-slug path.
+  test('owner viewing via the display-slug route keeps agent controls', async ({ user2Page }) => {
+    const agentPage = new AgentPage(user2Page)
+
+    // Click the sidebar entry → navigates to the pretty display-slug URL.
+    await agentPage.selectAgent(agentName)
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
+
+    // Sanity-gate: assert the route really carries the display-slug form
+    // (`{name}-{id}`), not a bare id — otherwise this wouldn't exercise the
+    // slug→id resolution the fix added.
+    const routeSlug = new URL(user2Page.url()).pathname.split('/')[2] ?? ''
+    expect(routeSlug).toMatch(/-[a-z0-9]{10}$/)
+    expect(routeSlug).not.toMatch(/^[a-z0-9]{10}$/)
+
+    // The owner must NOT be view-only: header start/stop controls (gated on
+    // `canUseAgent(routeSlug)` in agent-shell) render, and the agent-home
+    // view-only banner stays absent.
+    await expect(user2Page.locator('[data-testid="agent-power-controls"]')).toBeVisible()
+    await expect(user2Page.locator('[data-testid="view-only-banner"]')).not.toBeVisible()
   })
 
   test('user1 does NOT see user2 agent', async ({ user1Page }) => {
@@ -142,11 +181,11 @@ test.describe('Auth Flow', () => {
 
     // Reload to get fresh agent list
     await appPage.reload()
-    await user1Page.waitForTimeout(500)
 
     // User2's agent should NOT be visible to user1
     await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
   })
+
 
   // ── Invite & ACL ───────────────────────────────────────────────────
 
@@ -155,7 +194,8 @@ test.describe('Auth Flow', () => {
     const appPage = new AppPage(user3Page)
     const userBar = new UserBarPage(user3Page)
 
-    await authPage.signUp(user3.name, user3.email, user3.password)
+    await authPage.resetToAuthPage()
+    await authPage.signUpOrSignIn(user3.name, user3.email, user3.password)
     await appPage.waitForAppLoaded()
     await appPage.dismissWizardIfVisible()
     await userBar.expectUserName(user3.name)
@@ -164,6 +204,18 @@ test.describe('Auth Flow', () => {
   test('user3 does NOT see agent before invite', async ({ user3Page }) => {
     const agentPage = new AgentPage(user3Page)
     await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
+  })
+
+  test('user3 deep-linking the agent before invite gets the ambiguous not-found', async ({ user3Page }) => {
+    // ACL is enforced by the agent LOADER, not just sidebar visibility. user3 is
+    // a regular (non-admin) non-member here, so the server returns 403, which
+    // collapses to the SAME ambiguous not-found screen as a 404 (anti-enumeration).
+    // (An ADMIN would hit the server's known isAdmin bypass and load it —
+    // a server-side bug the client deliberately doesn't compensate for.)
+    expect(agentSlug).toBeTruthy()
+    await user3Page.goto(`/agents/${agentSlug}`)
+    await expect(user3Page.locator('[data-testid="agent-not-found"]')).toBeVisible()
+    await expect(user3Page.locator('[data-testid="agent-breadcrumb"]')).not.toBeVisible()
   })
 
   test('user2 invites user3 with user role', async ({ user2Page }) => {
@@ -181,7 +233,6 @@ test.describe('Auth Flow', () => {
 
     // Reload to pick up new roles
     await appPage.reload()
-    await user3Page.waitForTimeout(500)
 
     // Agent should now be visible
     await expect(agentPage.getAgentItem(agentName)).toBeVisible()
@@ -259,8 +310,6 @@ test.describe('Auth Flow', () => {
 
     await accessPage.changeRole(userId, 'viewer')
 
-    // Wait for role change to persist
-    await user2Page.waitForTimeout(500)
     await accessPage.closeSettings()
   })
 
@@ -270,7 +319,6 @@ test.describe('Auth Flow', () => {
 
     // Reload to pick up role change
     await appPage.reload()
-    await user3Page.waitForTimeout(500)
 
     // Agent should still be visible
     await expect(agentPage.getAgentItem(agentName)).toBeVisible()
@@ -327,7 +375,6 @@ test.describe('Auth Flow', () => {
 
     // Reload to pick up access removal
     await appPage.reload()
-    await user3Page.waitForTimeout(500)
 
     // Agent should no longer be visible
     await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
@@ -349,7 +396,6 @@ test.describe('Auth Flow', () => {
 
     // Reload to pick up re-invite
     await appPage.reload()
-    await user3Page.waitForTimeout(500)
 
     // Agent should be visible again
     await expect(agentPage.getAgentItem(agentName)).toBeVisible()
@@ -364,7 +410,6 @@ test.describe('Auth Flow', () => {
 
     // Wait for dialog to close and agent to disappear
     await expect(user3Page.locator('[data-testid="confirm-leave-agent-dialog"]')).not.toBeVisible()
-    await user3Page.waitForTimeout(500)
     await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
   })
 
@@ -380,10 +425,8 @@ test.describe('Auth Flow', () => {
     const user2Row = user1Page.locator(`[data-testid="user-row-${user2.email}"]`)
     await expect(user2Row).toBeVisible()
     await user2Row.locator(`[data-testid="user-role-${user2.email}"]`).click()
-    await user1Page.locator('[role="option"]:has-text("admin")').click()
-
-    // Wait for role change to persist
-    await user1Page.waitForTimeout(500)
+    await user1Page.getByRole('option', { name: 'admin' }).click()
+    await expect(user2Row.locator(`[data-testid="user-role-${user2.email}"]`)).toContainText('admin')
     await settingsPage.close()
   })
 
@@ -394,7 +437,6 @@ test.describe('Auth Flow', () => {
     // Reload to pick up new admin role
     await appPage.reload()
     await appPage.dismissWizardIfVisible()
-    await user2Page.waitForTimeout(500)
 
     // Open settings and verify admin tabs are now visible
     await settingsPage.open()
@@ -427,5 +469,145 @@ test.describe('Auth Flow', () => {
 
     // Verify user name
     await userBar.expectUserName(user2.name)
+  })
+
+  // ── Deep-link Through Login (redirect stash) ───────────
+
+  test('cold deep-link to a protected agent while signed out returns there after login', async ({ user2Page }) => {
+    // A signed-out user who cold-deep-links a protected
+    // agent URL is sent to the auth gate, and after logging in lands back on that
+    // EXACT url — not bounced to home. The redirect target is carried in
+    // sessionStorage('superagent.redirect') by AuthGate's cold-load stash and
+    // restored by the email-login `consumeRedirectStash()` → `router.history.push`.
+    // On a cold deep-link the router never navigates (AuthGate renders <AuthPage>
+    // in place of children), so the address bar STAYS on the deep link.
+    expect(agentSlug).toBeTruthy()
+
+    const authPage = new AuthPage(user2Page)
+    const appPage = new AppPage(user2Page)
+    const userBar = new UserBarPage(user2Page)
+
+    // Start signed out (the previous test left user2 signed in).
+    await userBar.signOut()
+    await authPage.expectVisible()
+
+    // Cold deep-link the protected agent URL while signed out.
+    await user2Page.goto(`/agents/${agentSlug}`)
+
+    // Auth gate blocks the app; the address bar STAYS on the deep link (the router
+    // never mounted, so it was not bounced to `/`).
+    await authPage.expectVisible()
+    await expect(user2Page).toHaveURL(new RegExp(`/agents/${agentSlug}$`))
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).not.toBeVisible()
+
+    // The deep-link target is stashed for post-login restore (the actual redirect
+    // carrier — a sessionStorage entry, not a URL query param).
+    const stashed = await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))
+    expect(stashed).toBe(`/agents/${agentSlug}`)
+
+    // Sign in in-place; the email-login restore pushes the stashed target.
+    await authPage.signIn(user2.email, user2.password)
+
+    // Lands back on the EXACT agent URL (NOT home), with the agent view mounted.
+    await appPage.waitForAppLoaded()
+    await expect(user2Page).toHaveURL(new RegExp(`/agents/${agentSlug}$`))
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
+
+    // Stash consumed (cleared) so it can't leak into a later navigation.
+    const afterLogin = await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))
+    expect(afterLogin).toBeNull()
+  })
+
+  // ── Live 401 (session expiry mid-use) ───────────────────
+
+  test('mid-session 401 signs out in place and re-login restores the exact URL', async ({ user2Page }) => {
+    // The other half of the redirect-stash machinery: the session dies while
+    // the app is OPEN. The next apiFetch 401s, the handler stashes the current
+    // URL FIRST, then auto-signs-out — via the auth client directly, NOT the
+    // user-context signOut, so the stash survives for the in-place re-login.
+    expect(agentSlug).toBeTruthy()
+
+    const authPage = new AuthPage(user2Page)
+    const appPage = new AppPage(user2Page)
+
+    // Entering state: user2 signed in on the agent page (previous test).
+    await user2Page.goto(`/agents/${agentSlug}`)
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible({ timeout: 15000 })
+
+    // Expire the session out from under the open app. The app's background
+    // polling fires the next apiFetch within seconds — don't drive the UI
+    // here: any element clicked can detach mid-action when the gate swaps in.
+    await user2Page.context().clearCookies()
+
+    // Auth gate renders IN PLACE: the address bar stays on the agent URL and
+    // the URL is stashed for restore.
+    await expect(user2Page.locator('[data-testid="auth-page"]')).toBeVisible({ timeout: 20000 })
+    await expect(user2Page).toHaveURL(new RegExp(`/agents/${agentSlug}$`))
+    const stashed = await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))
+    expect(stashed).toBe(`/agents/${agentSlug}`)
+
+    // Re-login restores the EXACT URL and consumes the stash.
+    await authPage.signIn(user2.email, user2.password)
+    await appPage.waitForAppLoaded()
+    await appPage.dismissWizardIfVisible()
+    await expect(user2Page).toHaveURL(new RegExp(`/agents/${agentSlug}$`))
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible({ timeout: 15000 })
+    expect(await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))).toBeNull()
+  })
+
+  test('a 403 response never triggers the auto-signout', async ({ user2Page }) => {
+    // 403 means forbidden, not expired — the 401 handler must leave the
+    // session alone or a permission error would boot the user out.
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible({ timeout: 15000 })
+
+    let saw403 = false
+    await user2Page.route('**/api/agents/**', async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      saw403 = true
+      await route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Forbidden' }),
+      })
+    })
+
+    try {
+      await user2Page.locator('[data-testid="home-message-input"]').fill('this send gets a 403')
+      await user2Page.locator('[data-testid="home-send-button"]').click()
+      await expect.poll(() => saw403, { timeout: 10000 }).toBe(true)
+    } finally {
+      await user2Page.unroute('**/api/agents/**')
+    }
+
+    // Durable proof the session survived: a reload comes back signed in.
+    // (If the 403 had triggered authSignOut, the server session would be
+    // revoked and this reload would land on the auth gate.)
+    await user2Page.reload()
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible({ timeout: 15000 })
+    await expect(user2Page.locator('[data-testid="auth-page"]')).not.toBeVisible()
+    expect(await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))).toBeNull()
+  })
+
+  test('manual sign-out clears a residual stash so it cannot leak into the next login', async ({ user2Page }) => {
+    // A residual stash can exist (the OAuth login path peeks without
+    // clearing). Manual sign-out must drop it so the next user on a shared
+    // tab is not pushed into the previous user's URL.
+    const authPage = new AuthPage(user2Page)
+    const appPage = new AppPage(user2Page)
+    const userBar = new UserBarPage(user2Page)
+
+    await user2Page.evaluate(() =>
+      sessionStorage.setItem('superagent.redirect', '/agents/leaked-path'),
+    )
+
+    await userBar.signOut()
+    await authPage.expectVisible()
+    expect(await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))).toBeNull()
+
+    // Sign back in: nothing to restore, so no push to the leaked path.
+    await authPage.signIn(user2.email, user2.password)
+    await appPage.waitForAppLoaded()
+    await appPage.dismissWizardIfVisible()
+    await expect(user2Page).not.toHaveURL(/leaked-path/)
   })
 })

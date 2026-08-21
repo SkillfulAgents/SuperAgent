@@ -1,10 +1,12 @@
 import type { Context, Next, MiddlewareHandler } from 'hono'
 import { and, eq } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { runWithRequestUser } from '@shared/lib/platform-attribution'
+import { runWithOptionalUser, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { db } from '@shared/lib/db'
 import { agentAcl, connectedAccounts, remoteMcpServers, notifications } from '@shared/lib/db/schema'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { resolveAgentId } from '@shared/lib/utils/file-storage'
 
 // Lazy import to avoid pulling in better-auth ESM at import time
 let _getAuth: (() => ReturnType<typeof import('@shared/lib/auth/index').getAuth>) | null = null
@@ -19,6 +21,45 @@ async function getAuthLazy() {
 // Re-export from shared types so existing consumers (webhook-triggers.ts etc.) keep working
 export { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/agent'
 import { type AgentRole, hasMinRole } from '@shared/lib/types/agent'
+
+const AUTHORIZED_AGENT_ROLE_CONTEXT_KEY = 'authorizedAgentRole'
+const REQUEST_SESSION_CONTEXT_KEY = 'requestSession'
+
+/**
+ * The shape of the Better Auth session row we consume. `deviceId` is a
+ * session additionalField (mobile device family, set by
+ * mintInstalledClientSession) — persisted and returned by getSession but not
+ * part of the base inferred type, hence the widening here (same pattern as
+ * mobile-pairing.ts).
+ */
+interface RequestSessionInfo {
+  id: string
+  userId: string
+  deviceId?: string | null
+}
+
+/**
+ * Mobile device-family id of the calling session, or null (browser/desktop/
+ * local mode). Only meaningful after Authenticated() ran in auth mode.
+ */
+export function getRequestDeviceId(c: Context): string | null {
+  const session = c.get(REQUEST_SESSION_CONTEXT_KEY as never) as RequestSessionInfo | undefined
+  return session?.deviceId ?? null
+}
+
+function setAuthorizedAgentRole(c: Context, role: AgentRole): void {
+  c.set(AUTHORIZED_AGENT_ROLE_CONTEXT_KEY as never, role as never)
+}
+
+/**
+ * Read the role established by AgentRead/AgentUser/AgentAdmin or
+ * EntityAgentRole. Returns null when no role-aware middleware ran so callers
+ * can default to the least-privileged response shape.
+ */
+export function getAuthorizedAgentRole(c: Context): AgentRole | null {
+  const role = c.get(AUTHORIZED_AGENT_ROLE_CONTEXT_KEY as never) as AgentRole | undefined
+  return role ?? null
+}
 
 /**
  * Authenticated — verifies user session and attaches user to context.
@@ -35,6 +76,7 @@ export function Authenticated(): MiddlewareHandler {
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
     c.set('user' as never, session.user as never)
+    c.set(REQUEST_SESSION_CONTEXT_KEY as never, session.session as never)
     return runWithRequestUser(session.user.id, () => next())
   }
 }
@@ -62,6 +104,42 @@ function isAdmin(user: { role?: string }): boolean {
   return user.role === 'admin'
 }
 
+/**
+ * ResolveAgent — resolve the `:id` route param (which may be a decorative
+ * display slug, a bare id, or a legacy compound folder name) to the canonical
+ * agent id, stash it on the context as `agentId`, and 404 if no such agent
+ * exists.
+ *
+ * Runs in BOTH auth and non-auth modes (the URL form is independent of auth)
+ * and MUST run before any AgentRead/AgentUser/AgentAdmin check, since the ACL
+ * tables are keyed on the canonical id. Subsumes the old agent-existence guard.
+ */
+export function ResolveAgent(): MiddlewareHandler {
+  return async (c: Context, next: Next) => {
+    const id = await resolveAgentId(c.req.param('id') ?? '')
+    if (!id) return c.json({ error: 'Agent not found' }, 404)
+    c.set('agentId' as never, id as never)
+    return next()
+  }
+}
+
+/**
+ * Read the canonical agent id resolved by {@link ResolveAgent}. Route handlers
+ * under a `:id` path should use this instead of `c.req.param('id')`, which may
+ * be a decorative display slug. Throws if ResolveAgent() did not run.
+ */
+export function getAgentId(c: Context): string {
+  const id = c.get('agentId' as never) as string | undefined
+  if (!id) throw new Error('agentId not resolved — ResolveAgent() middleware missing?')
+  return id
+}
+
+// Resolved id if ResolveAgent() ran, else the raw param (preserves behavior for
+// any ACL middleware mounted without ResolveAgent in front).
+function resolvedAgentSlug(c: Context): string {
+  return (c.get('agentId' as never) as string | undefined) ?? c.req.param('id')!
+}
+
 
 /**
  * AgentRead — user has any role on the agent (viewer+).
@@ -69,15 +147,22 @@ function isAdmin(user: { role?: string }): boolean {
  */
 export function AgentRead(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
-    const agentSlug = c.req.param('id')!
+    if (isAdmin(user)) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
+    const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
-    if (!hasMinRole(role, 'viewer')) {
+    if (!role || !hasMinRole(role, 'viewer')) {
       return c.json({ error: 'Forbidden' }, 403)
     }
+    setAuthorizedAgentRole(c, role)
     return next()
   }
 }
@@ -88,15 +173,22 @@ export function AgentRead(): MiddlewareHandler {
  */
 export function AgentUser(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
-    const agentSlug = c.req.param('id')!
+    if (isAdmin(user)) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
+    const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
-    if (!hasMinRole(role, 'user')) {
+    if (!role || !hasMinRole(role, 'user')) {
       return c.json({ error: 'Forbidden' }, 403)
     }
+    setAuthorizedAgentRole(c, role)
     return next()
   }
 }
@@ -107,15 +199,22 @@ export function AgentUser(): MiddlewareHandler {
  */
 export function AgentAdmin(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
-    const agentSlug = c.req.param('id')!
+    if (isAdmin(user)) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
+    const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
-    if (!hasMinRole(role, 'owner')) {
+    if (!role || !hasMinRole(role, 'owner')) {
       return c.json({ error: 'Forbidden' }, 403)
     }
+    setAuthorizedAgentRole(c, role)
     return next()
   }
 }
@@ -168,14 +267,18 @@ export function EntityAgentRole<T extends { agentSlug: string }>(opts: {
       }
       c.set(opts.contextKey as never, entity as never)
 
-      if (!isAuthMode()) return next()
+      if (!isAuthMode()) {
+        setAuthorizedAgentRole(c, 'owner')
+        return next()
+      }
 
       const user = getUser(c)
       const role = await getUserAgentRole(user.id, entity.agentSlug)
-      if (!hasMinRole(role, minRole)) {
+      if (!role || !hasMinRole(role, minRole)) {
         return c.json({ error: 'Forbidden' }, 403)
       }
 
+      setAuthorizedAgentRole(c, role)
       return next()
     }
   }
@@ -318,13 +421,9 @@ export function HasNotificationAccess(): MiddlewareHandler {
 // ---------------------------------------------------------------------------
 
 /**
- * IsAgent — validates synthetic bearer token from a container.
- * Works in both auth and non-auth modes (containers always use proxy tokens).
- *
- * Stashes the resolved agent slug on the context as `agentSlug` so route
- * handlers can bind their action to the token's agent instead of trusting an
- * attacker-controlled body/param (see SUP-216). Each agent has exactly one
- * proxy token, so the token uniquely identifies the agent.
+ * Gate for container→host routes. Validates the agent proxy token, stashes `agentSlug` (SUP-216),
+ * and runs under the agent owner's attribution scope so billed proxy calls (`/v1/browserbase`,
+ * `/v1/exa`) carry `token::memberId`. Single-user installs have no ACL row → null scope.
  */
 export function IsAgent(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
@@ -334,7 +433,7 @@ export function IsAgent(): MiddlewareHandler {
       return c.json({ error: 'Unauthorized' }, 401)
     }
     c.set('agentSlug' as never, agentSlug as never)
-    return next()
+    return runWithOptionalUser(getAgentOwnerUserId(agentSlug), () => next())
   }
 }
 

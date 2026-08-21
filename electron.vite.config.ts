@@ -12,6 +12,7 @@ export default defineConfig({
       __APP_VERSION__: JSON.stringify(pkg.version),
       'globalThis.__PLATFORM_BASE_URL__': JSON.stringify(process.env.PLATFORM_BASE_URL || ''),
       'globalThis.__PLATFORM_PROXY_URL__': JSON.stringify(process.env.PLATFORM_PROXY_URL || ''),
+      'globalThis.__PLATFORM_AUTH_ISSUER_URL__': JSON.stringify(process.env.PLATFORM_AUTH_ISSUER_URL || ''),
     },
     build: {
       outDir: 'dist/main',
@@ -30,6 +31,7 @@ export default defineConfig({
       __APP_VERSION__: JSON.stringify(pkg.version),
       'globalThis.__PLATFORM_BASE_URL__': JSON.stringify(process.env.PLATFORM_BASE_URL || ''),
       'globalThis.__PLATFORM_PROXY_URL__': JSON.stringify(process.env.PLATFORM_PROXY_URL || ''),
+      'globalThis.__PLATFORM_AUTH_ISSUER_URL__': JSON.stringify(process.env.PLATFORM_AUTH_ISSUER_URL || ''),
     },
     build: {
       outDir: 'dist/preload',
@@ -37,17 +39,32 @@ export default defineConfig({
   },
   renderer: {
     plugins: [react()],
+    // Relative base so packaged file:// + hash history resolve ./assets/* and the
+    // pinned index.html. Explicit so a future electron-vite default change fails
+    // loudly instead of silently shipping absolute asset URLs.
+    base: './',
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
       __AUTH_MODE__: JSON.stringify(false),
+      __E2E_MOCK__: JSON.stringify(process.env.E2E_MOCK === 'true'),
+      __WEB__: JSON.stringify(false), // all Electron (dev http + prod file://) → hash history
       __AMPLITUDE_API_KEY__: JSON.stringify(process.env.AMPLITUDE_API_KEY || analyticsConfig.defaultAmplitudeKey),
       __RENDER_TRACKING__: JSON.stringify(process.env.RENDER_TRACKING === 'true'),
       'globalThis.__PLATFORM_BASE_URL__': JSON.stringify(process.env.PLATFORM_BASE_URL || ''),
       'globalThis.__PLATFORM_PROXY_URL__': JSON.stringify(process.env.PLATFORM_PROXY_URL || ''),
+      'globalThis.__PLATFORM_AUTH_ISSUER_URL__': JSON.stringify(process.env.PLATFORM_AUTH_ISSUER_URL || ''),
     },
     root: './src/renderer',
     build: {
       outDir: path.resolve(__dirname, 'dist/renderer'),
+      rollupOptions: {
+        // Two entry HTMLs: the main app and the standalone quick-dispatch
+        // launcher window (a separate BrowserWindow / renderer process).
+        input: {
+          index: path.resolve(__dirname, 'src/renderer/index.html'),
+          quickDispatch: path.resolve(__dirname, 'src/renderer/quick-dispatch.html'),
+        },
+      },
     },
     resolve: {
       alias: {

@@ -1,93 +1,76 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RotateCcw } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { useSettings } from '@renderer/hooks/use-settings'
-import { ComposerOptionsPopover } from '@renderer/components/messages/composer-options-popover'
+import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
+import { useInheritedRuntimeSelection } from '@renderer/hooks/use-inherited-runtime-selection'
 import { DetailCard } from './detail-card'
-import type { ComposerOptionsState } from '@renderer/components/messages/composer-options'
-import type { EffortLevel } from '@shared/lib/container/types'
-import type { ComposerModel } from '@shared/lib/llm-provider'
-import type { LlmProviderId } from '@shared/lib/config/settings'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 
 interface RuntimeOptionsCardProps {
+  agentSlug: string
   model: string | null
   effort: string | null
+  speed: string | null
   disabled?: boolean
-  onUpdate: (options: { model?: string | null; effort?: string | null }) => void
+  onUpdate: (options: { model?: string | null; effort?: string | null; speed?: string | null }) => void
 }
 
-export function RuntimeOptionsCard({ model, effort, disabled, onUpdate }: RuntimeOptionsCardProps) {
-  const { data: settings } = useSettings()
-  const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
-  const composerModels = useMemo(
-    () => settings?.llmProviderStatus?.find(p => p.id === activeProvider)?.composerModels ?? [],
-    [settings, activeProvider],
-  )
+export function RuntimeOptionsCard({ agentSlug, model, effort, speed, disabled, onUpdate }: RuntimeOptionsCardProps) {
+  const picked = useRef(false)
+  const { ready, selection, resolveDisplay } = useInheritedRuntimeSelection(agentSlug, { model, effort, speed })
 
-  const fallbackModel = useMemo(() => (
-    settings?.models?.agentModel
-    ?? composerModels.find(m => m.family === 'sonnet')?.modelId
-    ?? composerModels[0]?.modelId
-  ), [settings, composerModels])
-
-  const [localEffort, setLocalEffort] = useState<EffortLevel>((effort as EffortLevel) || 'high')
-  const [localModel, setLocalModel] = useState<string | undefined>(model || fallbackModel)
+  // Local mirror so a pick shows immediately; the parent's save round-trips
+  // through props, and the sync effect below re-adopts the inherit once it
+  // lands (or whenever the stored row changes underneath an untouched card).
+  const [localEffort, setLocalEffort] = useState<EffortLevel | undefined>(selection?.displayEffort)
+  const [localSpeed, setLocalSpeed] = useState<SpeedLevel | undefined>(selection?.displaySpeed)
+  const [localModel, setLocalModel] = useState<string | undefined>(selection?.model)
 
   useEffect(() => {
-    if (fallbackModel && !model) {
-      setLocalModel(fallbackModel)
-    }
-  }, [fallbackModel, model])
+    picked.current = false
+  }, [model, effort, speed])
 
   useEffect(() => {
-    setLocalEffort((effort as EffortLevel) || 'high')
-  }, [effort])
-
-  useEffect(() => {
-    if (model) {
-      setLocalModel(model)
-    }
-  }, [model])
+    if (!selection || picked.current) return
+    setLocalEffort(selection.displayEffort)
+    setLocalSpeed(selection.displaySpeed)
+    setLocalModel(selection.model)
+  }, [selection])
 
   const handleSetEffort = useCallback((e: EffortLevel) => {
+    picked.current = true
     setLocalEffort(e)
     onUpdate({ effort: e })
   }, [onUpdate])
 
+  const handleSetSpeed = useCallback((s: SpeedLevel) => {
+    picked.current = true
+    setLocalSpeed(s)
+    onUpdate({ speed: s })
+  }, [onUpdate])
+
   const handleSetModel = useCallback((m: string) => {
+    picked.current = true
     setLocalModel(m)
     onUpdate({ model: m })
   }, [onUpdate])
 
   const handleReset = useCallback(() => {
-    setLocalEffort('high')
-    setLocalModel(fallbackModel)
-    onUpdate({ model: null, effort: null })
-  }, [onUpdate, fallbackModel])
+    const cleared = resolveDisplay({ model: null, effort: null, speed: null })
+    if (!cleared) return
+    picked.current = false
+    setLocalEffort(cleared.displayEffort)
+    setLocalSpeed(cleared.displaySpeed)
+    setLocalModel(cleared.model)
+    onUpdate({ model: null, effort: null, speed: null })
+  }, [onUpdate, resolveDisplay])
 
-  const toRuntimeOptions = useCallback(
-    () => ({ effort: localEffort, ...(localModel ? { model: localModel } : {}) }),
-    [localEffort, localModel],
-  )
+  const hasCustom = model !== null || effort !== null || speed !== null
+  const canReset = Boolean(hasCustom && !disabled && ready)
 
-  const state: ComposerOptionsState = useMemo(
-    () => ({
-      effort: localEffort,
-      setEffort: handleSetEffort,
-      model: localModel,
-      setModel: handleSetModel,
-      composerModels: composerModels as ComposerModel[],
-      toRuntimeOptions,
-    }),
-    [localEffort, handleSetEffort, localModel, handleSetModel, composerModels, toRuntimeOptions],
-  )
-
-  const hasCustom = model !== null || effort !== null
-
-  return (
-    <DetailCard
-      label="Model & Effort"
-      headerActions={hasCustom && !disabled ? (
+  const headerActions = useMemo(
+    () =>
+      canReset ? (
         <Button
           variant="ghost"
           size="sm"
@@ -97,13 +80,32 @@ export function RuntimeOptionsCard({ model, effort, disabled, onUpdate }: Runtim
           <RotateCcw className="h-3 w-3" />
           Reset
         </Button>
-      ) : undefined}
-    >
+      ) : undefined,
+    [canReset, handleReset],
+  )
+
+  return (
+    <DetailCard label="Model & Effort" headerActions={headerActions}>
       <div className="flex items-center gap-2">
-        <ComposerOptionsPopover state={state} disabled={disabled} />
-        {!hasCustom && (
-          <span className="text-xs text-muted-foreground">Using defaults</span>
+        {selection?.model && selection.effort && localEffort ? (
+          <SettingsModelSelect
+            model={localModel}
+            onModelChange={handleSetModel}
+            includeEffort
+            effort={localEffort}
+            onEffortChange={handleSetEffort}
+            includeSpeed
+            speed={localSpeed ?? 'normal'}
+            onSpeedChange={handleSetSpeed}
+            disabled={disabled}
+            // This trigger is left-aligned in its card, so its LEFT edge is the
+            // stable anchor while picks rewrite the label width.
+            align="start"
+          />
+        ) : (
+          <span className="text-xs text-muted-foreground" data-testid="runtime-inherit-pending">—</span>
         )}
+        {!hasCustom && ready && <span className="text-xs text-muted-foreground">Using defaults</span>}
       </div>
     </DetailCard>
   )

@@ -19,7 +19,7 @@ After the user provides access, the CONNECTED_ACCOUNTS environment variable will
 URL pattern: $PROXY_BASE_URL/<account_id>/<target_host>/<api_path>
 Authorization: Bearer $PROXY_TOKEN
 
-The CONNECTED_ACCOUNTS env var contains JSON mapping toolkit names to arrays of {name, id} objects.
+The CONNECTED_ACCOUNTS env var contains JSON mapping toolkit names to arrays of {name, id, status} objects. Accounts already listed there are assigned; if one is expired or revoked, make the intended proxy call so the host can ask the user to reconnect instead of requesting the account again.
 
 Common toolkits include gmail, slack, github, notion, linear, salesforce, and many more. Use search_connected_account_services to discover all available services and their toolkit slugs.`,
   {
@@ -64,10 +64,10 @@ Common toolkits include gmail, slack, github, notion, linear, salesforce, and ma
     try {
       // This blocks until the user provides or declines access
       // The access tokens are set via /env endpoint before resolving
-      await inputManager.createPending(
+      await inputManager.createPendingWithType<string>(
         toolUseId,
-        `CONNECTED_ACCOUNT_${toolkitLower.toUpperCase()}`,
-        args.reason
+        'connected_account',
+        { toolkit: toolkitLower, reason: args.reason }
       )
 
       // If we get here, the user provided access
@@ -78,10 +78,10 @@ Common toolkits include gmail, slack, github, notion, linear, salesforce, and ma
       let accountInfo = ''
       if (accountsRaw) {
         try {
-          const parsed = JSON.parse(accountsRaw) as Record<string, Array<{ name: string; id: string }>>
+          const parsed = JSON.parse(accountsRaw) as Record<string, Array<{ name: string; id: string; status?: string }>>
           const toolkitAccounts = parsed[toolkitLower]
           if (toolkitAccounts?.length) {
-            accountInfo = `\n\nAvailable ${toolkitLower} accounts:\n${toolkitAccounts.map(a => `- ${a.name} (ID: ${a.id})`).join('\n')}`
+            accountInfo = `\n\nAvailable ${toolkitLower} accounts:\n${toolkitAccounts.map(a => `- ${a.name} (ID: ${a.id}, status: ${a.status ?? 'active'})`).join('\n')}`
           }
         } catch {
           // ignore parse errors

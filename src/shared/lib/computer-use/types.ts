@@ -12,6 +12,14 @@ export type ComputerUsePermissionLevel =
   | 'use_application'
   | 'use_host_shell'
 
+/** User-facing names for the permission levels, shared by the settings tab and
+    the in-chat approval card. Written to be self-explanatory without a legend. */
+export const PERMISSION_LEVEL_LABELS: Record<ComputerUsePermissionLevel, string> = {
+  list_apps_windows: 'List Apps & Windows (read-only)',
+  use_application: 'Use Application',
+  use_host_shell: 'Run Shell Commands & Scripts',
+}
+
 export type PermissionGrantType = 'once' | 'timed' | 'always'
 
 export interface PermissionGrant {
@@ -35,17 +43,6 @@ export interface ComputerUseSettings {
   }>
 }
 
-/** SSE event broadcast when a computer use request needs user approval */
-export interface ComputerUseRequestEvent {
-  type: 'computer_use_request'
-  toolUseId: string
-  method: string
-  params: Record<string, unknown>
-  permissionLevel: ComputerUsePermissionLevel
-  appName?: string
-  agentSlug?: string
-}
-
 /** Read-only AC methods that only need list_apps_windows permission */
 export const READ_ONLY_METHODS = new Set([
   'apps', 'windows', 'status', 'displays', 'permissions',
@@ -57,6 +54,37 @@ export const READ_ONLY_METHODS = new Set([
 export function getRequiredPermissionLevel(method: string): ComputerUsePermissionLevel {
   if (READ_ONLY_METHODS.has(method)) return 'list_apps_windows'
   return 'use_application'
+}
+
+const COMPUTER_USE_METHODS: Record<string, string> = {
+  apps: 'apps',
+  windows: 'windows',
+  snapshot: 'snapshot',
+  find: 'find',
+  screenshot: 'screenshot',
+  read: 'read',
+  status: 'status',
+  displays: 'displays',
+  permissions: 'permissions',
+  click: 'click',
+  type: 'type',
+  fill: 'fill',
+  key: 'key',
+  scroll: 'scroll',
+  select: 'select',
+  hover: 'hover',
+  launch: 'launch',
+  quit: 'quit',
+  grab: 'grab',
+  ungrab: 'ungrab',
+  menu: 'menuClick',
+  dialog: 'dialog',
+  run: 'run',
+}
+
+export function computerUseMethodFromToolName(toolName: string): string {
+  const suffix = toolName.replace('mcp__computer-use__computer_', '')
+  return COMPUTER_USE_METHODS[suffix] ?? suffix
 }
 
 /** Duration of "timed" permission grants in milliseconds (15 minutes) */

@@ -170,7 +170,10 @@ debug.get('/app-info', (c) => {
     }
   } else if (p === 'win32') {
     const execPath = process.execPath
-    if (execPath.includes('Superagent')) {
+    // Production Windows bundle is now "Gamut" (productName). Keep the legacy
+    // "Superagent" match so a half-renamed/portable copy still resolves the real
+    // launch command instead of falling back to the dev placeholder.
+    if (execPath.includes('Gamut') || execPath.includes('Superagent')) {
       terminalCommand = `& "${execPath}"`
     } else {
       terminalCommand = `# Dev mode — run your dev server from the project directory\n# Logs already appear in your terminal`

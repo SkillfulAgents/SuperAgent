@@ -7,7 +7,7 @@ import {
   type VoiceAgentEvent,
   type SttProvider,
 } from '@renderer/lib/voice-agent'
-import { float32ToInt16 } from '@renderer/lib/stt'
+import { acquireMicStream, float32ToInt16 } from '@renderer/lib/stt'
 
 export type VoiceAgentState = 'idle' | 'connecting' | 'active' | 'error'
 export type SpeakingState = 'none' | 'user' | 'agent'
@@ -239,16 +239,10 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
       // 3. Connect
       await adapter.connect(token, config)
 
-      // 4. Set up audio capture
+      // 4. Set up audio capture (AudioContext resamples to the provider rate;
+      // the getUserMedia sampleRate constraint is a no-op — see acquireMicStream)
       const sampleRate = adapter.inputSampleRate
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate,
-          echoCancellation: true,
-          noiseSuppression: true,
-        },
-      })
+      const stream = await acquireMicStream()
       streamRef.current = stream
 
       const audioContext = new AudioContext({ sampleRate })

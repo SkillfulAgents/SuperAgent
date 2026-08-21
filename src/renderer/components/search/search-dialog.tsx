@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueries } from '@tanstack/react-query'
-import { Bot, ChevronRight, MessageSquare, Search } from 'lucide-react'
+import { Bot, ChevronRight, MessageSquare, Search, SquareMousePointer } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@renderer/components/ui/dialog'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { useAgents } from '@renderer/hooks/use-agents'
-import { useSelection } from '@renderer/context/selection-context'
+import { useSearch } from '@renderer/context/search-context'
+import { useIsMobile } from '@renderer/hooks/use-mobile'
+import { useNavigate } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import type { ApiSession } from '@shared/lib/types/api'
 import { cn } from '@shared/lib/utils/cn'
@@ -16,18 +18,20 @@ function formatLastRun(date: Date | string | null | undefined): string | null {
   return `Last run ${formatDistanceToNow(new Date(date), { addSuffix: true })}`
 }
 
-interface SearchDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}
-
-export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
+/**
+ * Rendered inside the router, so it can use the `useNavigate` hook directly.
+ * Open state comes from SearchContext (`open`/`closeSearch`), which lives above
+ * the router.
+ */
+export function SearchDialog() {
+  const { open, closeSearch } = useSearch()
+  const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const [expandedSlugs, setExpandedSlugs] = useState<Set<string>>(new Set())
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const { setAgent } = useSelection()
+  const isMobile = useIsMobile()
   const { data: agents } = useAgents()
 
   const sessionQueries = useQueries({
@@ -52,6 +56,28 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
       requestAnimationFrame(() => inputRef.current?.focus())
     }
   }, [open])
+
+  // On mobile, dismissing the soft keyboard (the keyboard's "down" button, or a
+  // tap outside the field) is a natural "done searching" gesture — close the
+  // overlay. iOS has no keyboard event, but the VisualViewport shrinks while the
+  // keyboard is up and returns to full height once it's dismissed; we close on
+  // that shown→hidden transition. Tapping a result keeps the keyboard up (it
+  // doesn't blur the input), so this won't pre-empt selection.
+  useEffect(() => {
+    const vv = window.visualViewport
+    if (!open || !isMobile || !vv) return
+    let keyboardWasShown = false
+    const onResize = () => {
+      const occluded = window.innerHeight - vv.height
+      if (occluded > 120) {
+        keyboardWasShown = true
+      } else if (keyboardWasShown) {
+        closeSearch()
+      }
+    }
+    vv.addEventListener('resize', onResize)
+    return () => vv.removeEventListener('resize', onResize)
+  }, [open, isMobile, closeSearch])
 
   const sessionsByAgent = useMemo(() => {
     if (!agents) return {}
@@ -107,12 +133,22 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
   }
 
   const handleSelect = (item: FlatItem) => {
+    // Close the dialog BEFORE navigating: the route transition otherwise strands
+    // the Radix overlay open (it intercepts pointer events on the page beneath).
+    closeSearch()
     if (item.kind === 'agent') {
-      setAgent(item.agent.slug)
+      void navigate({ to: '/agents/$slug', params: { slug: item.agent.slug } })
+    } else if (item.kind === 'dashboard') {
+      void navigate({
+        to: '/agents/$slug/dashboards/$dashSlug',
+        params: { slug: item.agent.slug, dashSlug: item.dashboard.slug },
+      })
     } else {
-      setAgent(item.agent.slug, { kind: 'session', id: item.session.id })
+      void navigate({
+        to: '/agents/$slug/sessions/$sessionId',
+        params: { slug: item.agent.slug, sessionId: item.session.id },
+      })
     }
-    onOpenChange(false)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -135,7 +171,7 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
       const item = flatItems[activeIndex]
       if (item?.kind === 'agent' && expandedSlugs.has(item.agent.slug)) {
         toggleExpand(item.agent.slug)
-      } else if (item?.kind === 'session') {
+      } else if (item?.kind === 'dashboard' || item?.kind === 'session') {
         // Collapse the parent agent and move focus to it
         toggleExpand(item.agent.slug)
         const agentIdx = flatItems.findIndex(
@@ -151,14 +187,17 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) closeSearch() }}>
+      {/* Installed-PWA full-bleed: the box is top-anchored (top-4), so a top margin of the
+          safe-area inset drops the whole palette (input + close X) below the Dynamic Island.
+          env() is 0 on desktop / non-standalone mobile Safari; md: resets it (desktop centers). */}
       <DialogContent
-        className="max-w-xl p-0 gap-0 overflow-hidden [&>button]:top-3 [&>button]:right-3"
+        className="search-anim max-w-xl p-0 gap-0 overflow-hidden top-4 translate-y-0 mt-[env(safe-area-inset-top)] md:top-[50%] md:-translate-y-1/2 md:mt-0 [&>button]:top-3 [&>button]:right-3"
         onKeyDown={handleKeyDown}
-        aria-label="Search agents and sessions"
+        aria-label="Search agents, dashboards, and sessions"
       >
-        <DialogTitle className="sr-only">Search agents and sessions</DialogTitle>
-        <DialogDescription className="sr-only">Find agents and sessions by name</DialogDescription>
+        <DialogTitle className="sr-only">Search agents, dashboards, and sessions</DialogTitle>
+        <DialogDescription className="sr-only">Find agents, dashboards, and sessions by name</DialogDescription>
         <div className="flex items-center gap-2 border-b px-3 py-2.5">
           <Search className="h-4 w-4 text-muted-foreground shrink-0" />
           <input
@@ -169,7 +208,7 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
               setQuery(e.target.value)
               setActiveIndex(0)
             }}
-            placeholder="Search agents and sessions..."
+            placeholder="Search agents, dashboards, and sessions..."
             className="flex-1 bg-transparent outline-none text-sm placeholder:text-muted-foreground"
             data-testid="search-input"
           />
@@ -189,12 +228,15 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
               return visibleGroups.map((g) => {
                 const agentIdx = idx++
                 const isExpanded = isSearchMode || expandedSlugs.has(g.agent.slug)
-                const hasSessions = g.sessions.length > 0
+                const hasChildren = g.dashboards.length > 0 || g.sessions.length > 0
                 return (
                   <div key={g.agent.slug} className="py-1">
                     <button
                       type="button"
                       data-index={agentIdx}
+                      data-testid="search-agent-row"
+                      data-agent-name={g.agent.name}
+                      data-agent-slug={g.agent.slug}
                       onClick={() => handleSelect({ kind: 'agent', agent: g.agent })}
                       onMouseEnter={() => setActiveIndex(agentIdx)}
                       className={cn(
@@ -202,8 +244,10 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
                         activeIndex === agentIdx ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
                       )}
                     >
-                      {!isSearchMode && hasSessions && (
+                      {!isSearchMode && hasChildren && (
                         <ChevronRight
+                          data-testid="search-agent-expand"
+                          data-agent-slug={g.agent.slug}
                           className={cn(
                             'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
                             isExpanded && 'rotate-90'
@@ -214,7 +258,7 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
                           }}
                         />
                       )}
-                      {!isSearchMode && !hasSessions && (
+                      {!isSearchMode && !hasChildren && (
                         <span className="w-3.5 shrink-0" />
                       )}
                       <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -227,6 +271,32 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
                         </span>
                       )}
                     </button>
+                    {isExpanded && g.dashboards.map((d) => {
+                      const dashboardIdx = idx++
+                      return (
+                        <button
+                          key={d.slug}
+                          type="button"
+                          data-index={dashboardIdx}
+                          data-testid="search-dashboard-row"
+                          data-agent-name={g.agent.name}
+                          data-agent-slug={g.agent.slug}
+                          data-dashboard-name={d.name}
+                          data-dashboard-slug={d.slug}
+                          onClick={() => handleSelect({ kind: 'dashboard', agent: g.agent, dashboard: d })}
+                          onMouseEnter={() => setActiveIndex(dashboardIdx)}
+                          className={cn(
+                            'w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-left text-sm rounded-sm',
+                            activeIndex === dashboardIdx ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
+                          )}
+                        >
+                          <SquareMousePointer className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className="truncate text-muted-foreground">
+                            <HighlightMatch text={d.name} query={query} />
+                          </span>
+                        </button>
+                      )
+                    })}
                     {isExpanded && g.sessions.map((s) => {
                       const sessionIdx = idx++
                       return (
@@ -234,6 +304,11 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
                           key={s.id}
                           type="button"
                           data-index={sessionIdx}
+                          data-testid="search-session-row"
+                          data-agent-name={g.agent.name}
+                          data-agent-slug={g.agent.slug}
+                          data-session-name={s.name}
+                          data-session-id={s.id}
                           onClick={() => handleSelect({ kind: 'session', agent: g.agent, session: s })}
                           onMouseEnter={() => setActiveIndex(sessionIdx)}
                           className={cn(

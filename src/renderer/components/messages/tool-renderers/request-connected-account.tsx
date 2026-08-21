@@ -1,84 +1,25 @@
 
-import { Link2 } from 'lucide-react'
+import { Blocks } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
+import { Field, ResultField } from './shared'
 import { requestConnectedAccountDef, type RequestConnectedAccountInput } from '@shared/lib/tool-definitions/request-connected-account'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
 
 const parseRequestConnectedAccountInput = requestConnectedAccountDef.parseInput
 
-function parseResult(result: unknown): string | null {
-  if (!result) return null
-
-  // Already-parsed array of content blocks: [{type: "text", text: "..."}]
-  if (Array.isArray(result) && result[0]?.text) {
-    return result[0].text
-  }
-
-  // Already-parsed single content block: {type: "text", text: "..."}
-  if (typeof result === 'object' && result !== null && 'text' in result) {
-    return (result as { text: string }).text
-  }
-
-  if (typeof result === 'string') {
-    // Try to parse JSON array format from MCP response
-    try {
-      const parsed = JSON.parse(result)
-      if (Array.isArray(parsed) && parsed[0]?.text) {
-        return parsed[0].text
-      }
-    } catch {
-      // Not JSON, use as-is
-    }
-    return result
-  }
-
-  return String(result)
-}
-
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
   const { toolkit, reason } = parseRequestConnectedAccountInput(input)
-  const displayResult = parseResult(result)
   const provider = toolkit ? getProvider(toolkit.toLowerCase()) : null
 
   return (
     <div className="space-y-2">
-      {/* Toolkit */}
       {toolkit && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Service</div>
-          <div className="bg-background rounded p-2 text-xs font-medium capitalize">
-            {provider?.displayName || toolkit}
-          </div>
-        </div>
+        <Field label="Service" className="font-medium capitalize">
+          {provider?.displayName || toolkit}
+        </Field>
       )}
-
-      {/* Reason */}
-      {reason && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Reason</div>
-          <div className="bg-background rounded p-2 text-xs">
-            {reason}
-          </div>
-        </div>
-      )}
-
-      {/* Result */}
-      {displayResult && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
-            {isError ? 'Error' : 'Result'}
-          </div>
-          <div
-            className={`rounded p-2 text-xs ${
-              isError
-                ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200'
-                : 'bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200'
-            }`}
-          >
-            {displayResult}
-          </div>
-        </div>
-      )}
+      {reason && <Field label="Reason">{reason}</Field>}
+      {result && <ResultField result={result} isError={isError} />}
     </div>
   )
 }
@@ -95,22 +36,14 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 
   return (
     <div className="space-y-2">
-      <div>
-        <div className="text-xs font-medium text-muted-foreground mb-1">Service</div>
-        <div className="bg-background rounded p-2 text-xs font-medium capitalize">
-          {provider?.displayName || parsed.toolkit || (
-            <span className="text-muted-foreground italic">...</span>
-          )}
-        </div>
-      </div>
+      <Field label="Service" className="font-medium capitalize">
+        {provider?.displayName || parsed.toolkit || <span className="text-muted-foreground italic">...</span>}
+      </Field>
       {parsed.reason && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Reason</div>
-          <div className="bg-background rounded p-2 text-xs">
-            {parsed.reason}
-            <span className="animate-pulse">|</span>
-          </div>
-        </div>
+        <Field label="Reason">
+          {parsed.reason}
+          <span className="animate-pulse">|</span>
+        </Field>
       )}
     </div>
   )
@@ -118,7 +51,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 
 export const requestConnectedAccountRenderer: ToolRenderer = {
   displayName: 'Request Connected Account',
-  icon: Link2,
+  icon: Blocks,
   getSummary: requestConnectedAccountDef.getSummary,
   ExpandedView,
   StreamingView,

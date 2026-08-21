@@ -4,8 +4,11 @@ import { BrowserActivityLog } from './browser-activity-log'
 import { BrowserTabBar } from './browser-tab-bar'
 import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
 import { Button } from '@renderer/components/ui/button'
+import { DeclineButton } from '@renderer/components/messages/decline-button'
 import { apiFetch } from '@renderer/lib/api'
-import { removeBrowserInputRequest, useMessageStream } from '@renderer/hooks/use-message-stream'
+import { linkify } from '@renderer/lib/linkify'
+import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { useBrowserInputActions } from '@renderer/hooks/use-browser-input-actions'
 import { cn } from '@shared/lib/utils/cn'
 import {
   AlertDialog,
@@ -76,42 +79,16 @@ export function BrowserTrayContent({
     if (!browserActive) setIsPaused(false)
   }, [browserActive])
 
-  const [actionStatus, setActionStatus] = useState<'idle' | 'completing' | 'declining'>('idle')
   const latestRequest = stream.pendingBrowserInputRequests.length > 0
     ? stream.pendingBrowserInputRequests[stream.pendingBrowserInputRequests.length - 1]
     : null
 
-  const submitBrowserInput = useCallback(async (body: Record<string, unknown> & { toolUseId: string }, action: 'completing' | 'declining') => {
-    setActionStatus(action)
-    try {
-      await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/complete-browser-input`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        }
-      )
-      removeBrowserInputRequest(sessionId, body.toolUseId)
-    } catch (err) {
-      console.error('Failed to submit browser input:', err)
-    } finally {
-      setActionStatus('idle')
-    }
-  }, [agentSlug, sessionId])
-
-  const handleComplete = useCallback(() => {
-    if (!latestRequest) return
-    submitBrowserInput({ toolUseId: latestRequest.toolUseId }, 'completing')
-  }, [latestRequest, submitBrowserInput])
-
-  const handleDismiss = useCallback(() => {
-    if (!latestRequest) return
-    submitBrowserInput(
-      { toolUseId: latestRequest.toolUseId, decline: true, declineReason: 'User wants to chat with the agent' },
-      'declining'
-    )
-  }, [latestRequest, submitBrowserInput])
+  // Same decline/complete behavior as the in-chat request card, shared via the hook.
+  const { submittingAction, error: actionError, complete, decline } = useBrowserInputActions({
+    agentSlug,
+    sessionId,
+    onResolved: (toolUseId) => stream.dismissBrowserInputRequest(toolUseId),
+  })
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden" data-testid="browser-drawer-panel">
@@ -193,8 +170,14 @@ export function BrowserTrayContent({
         )}
       </div>
 
-      {/* Browser controls pill */}
-      <div className="sticky bottom-2 z-20 flex justify-center pointer-events-none shrink-0 -mt-10">
+      {/* Browser controls pill. translateZ(0) forces this onto its own compositing
+          layer so it paints above the screencast <canvas> (which sets
+          will-change: transform). Without its own layer, Safari/WebKit composites
+          the canvas layer over the z-index'd pill and the controls disappear. */}
+      <div
+        className="sticky bottom-2 z-20 flex justify-center pointer-events-none shrink-0 -mt-10"
+        style={{ transform: 'translateZ(0)' }}
+      >
         <div className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background px-2 py-1 shadow-md pointer-events-auto">
           {(isPaused || (isActive && !stream.needsAttention)) && (
             <button
@@ -227,34 +210,39 @@ export function BrowserTrayContent({
         <div className="shrink-0 px-4 mt-3">
           <div className="rounded-lg border border-border/60 bg-muted/30 p-3 flex items-center gap-2">
             <span className="text-xs font-medium text-foreground flex-1 truncate">
-              {latestRequest.message || 'Your input needed'}
+              {latestRequest.message ? linkify(latestRequest.message) : 'Your input needed'}
             </span>
-            <Button
-              onClick={handleDismiss}
-              loading={actionStatus === 'declining'}
-              disabled={actionStatus !== 'idle'}
+            <DeclineButton
+              onDecline={(reason) => decline(latestRequest.toolUseId, reason)}
+              disabled={submittingAction !== null}
+              label="Decline"
+              showIcon={false}
               size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-            >
-              Dismiss
-            </Button>
+              // Chevron sits inside the grey action bar; clear the bar's bottom edge
+              // (plus a small gap) rather than offsetting from the chevron.
+              popoverSideOffset={18}
+              className="h-7 text-xs border-border text-foreground hover:bg-muted"
+              data-testid="browser-tray-decline-btn"
+            />
             <Button
-              onClick={handleComplete}
-              loading={actionStatus === 'completing'}
-              disabled={actionStatus !== 'idle'}
+              onClick={() => complete(latestRequest.toolUseId)}
+              loading={submittingAction === 'completing'}
+              disabled={submittingAction !== null}
               size="sm"
               className="h-7 text-xs bg-blue-600 text-white hover:bg-blue-700"
             >
               Done
             </Button>
           </div>
+          {actionError && (
+            <p className="mt-1 px-1 text-2xs text-destructive">{actionError}</p>
+          )}
         </div>
       )}
 
       {/* Activity log */}
       <div className="flex items-center gap-1 py-1.5 border-b shrink-0 mx-4 mt-4">
-        <span className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">Activity</span>
+        <span className="text-2xs font-medium uppercase tracking-wider text-muted-foreground">Activity</span>
       </div>
       <BrowserActivityLog sessionId={sessionId} agentSlug={agentSlug} />
 

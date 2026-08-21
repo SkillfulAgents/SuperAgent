@@ -4,7 +4,7 @@
  * Type definitions for file-based agent storage
  */
 
-import type { EffortLevel, SlashCommandInfo } from '../container/types'
+import type { EffortLevel, SlashCommandInfo, SpeedLevel } from '../container/types'
 
 // ============================================================================
 // Agent Roles
@@ -80,26 +80,46 @@ export interface SessionMetadata {
   starred?: boolean
   createdAt?: string // ISO date string - set when session is first created
   createdByUserId?: string
+  // Mobile device family that started the session (session deviceId
+  // additionalField). Absent for browser/desktop/web/cron/webhook starts.
+  // Origin-device routing: the alert target falls back to this when no
+  // alertDeviceId claim exists.
+  createdByDeviceId?: string
+  // "Last speaker claims the alert": re-stamped on every device-authenticated
+  // message send; null when a deviceless surface (web) spoke last; absent =
+  // never re-claimed (fall back to createdByDeviceId).
+  alertDeviceId?: string | null
   // Scheduled task fields - present when session was created from a scheduled task
   isScheduledExecution?: boolean
   scheduledTaskId?: string
   scheduledTaskName?: string
+  scheduledExecutionAt?: string
   // Webhook trigger fields - present when session was created from a webhook trigger
   isWebhookExecution?: boolean
   webhookTriggerId?: string
   webhookTriggerName?: string
+  // Lifecycle outcome for cron/webhook sessions. Set to running at session
+  // creation and finalized from the runtime's terminal result event.
+  automationStatus?: 'running' | 'succeeded' | 'failed'
+  // One webhook session can represent a batch of several claimed deliveries.
+  webhookInvocationCount?: number
   // Chat integration fields - present when session was created from an external chat
   isChatIntegrationSession?: boolean
   chatIntegrationId?: string
   // Set when an automated session is promoted to interactive (e.g. agent asked a user question).
   // The original automation flags above are preserved for provenance.
   promotedToInteractive?: boolean
+  // Last scheduled wake delivered to this session. Duplicate-fire guard: the
+  // scheduler skips re-sending a wake whose task id + execution slot match.
+  lastWake?: { taskId: string; executionAt: string }
   // Context window usage from the last completed turn
   lastUsage?: SessionUsage
   // Available slash commands from the agent SDK
   slashCommands?: SlashCommandInfo[]
   // Last effort level used by the user on this session (seeds the composer on reload)
   effort?: EffortLevel
+  // Last processing speed used by the user on this session (seeds the composer on reload)
+  speed?: SpeedLevel
   // Last model used by the user on this session (seeds the composer on reload).
   // Stored as the provider's pinned ID, not the family.
   model?: string
@@ -144,6 +164,8 @@ export interface JsonlMessageEntry {
     usage?: {
       input_tokens: number
       output_tokens: number
+      cache_creation_input_tokens?: number
+      cache_read_input_tokens?: number
     }
   }
   // Tool result specific fields (present when type is 'user' with tool_result content)
@@ -189,6 +211,9 @@ export interface JsonlSystemEntry {
     preTokens: number
   }
   memory_paths?: string[]
+  // Severity for `informational` entries (host-persisted loop banners, e.g. a
+  // hook blocking a prompt). Mirrors the SDK's informational message `level`.
+  level?: string
 }
 
 /**
@@ -230,6 +255,28 @@ export interface JsonlFileHistoryEntry {
  * Union type for all JSONL entry types
  */
 export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry | JsonlSystemEntry | JsonlAttachmentEntry
+
+// ============================================================================
+// Session activity (working-indicator projection)
+// ============================================================================
+
+/**
+ * What the agent is doing right now, projected from a session's streaming state.
+ * Mirrors the app activity-indicator precedence so chat connectors can surface
+ * the same honest label instead of a single hardcoded "Thinking…".
+ *
+ * 'idle' | 'awaiting' | 'streaming' show NO placeholder — the surface is owned
+ * by the reply (streaming) or a request card (awaiting), or there is nothing to
+ * show (idle). The rest are "busy" states that drive a labeled placeholder.
+ */
+export type SessionActivity =
+  | 'idle'        // not active
+  | 'awaiting'    // waiting on the user (question / secret / file / etc.)
+  | 'streaming'   // assistant TEXT is streaming into the reply — it owns the surface
+  | 'compacting'  // context compaction in progress
+  | 'retrying'    // API retry in progress
+  | 'thinking'    // an extended-thinking block is streaming
+  | 'working'     // active with nothing more specific to show
 
 // ============================================================================
 // Content Block Types (from Anthropic API)

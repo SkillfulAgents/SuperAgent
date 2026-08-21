@@ -125,6 +125,8 @@ export function trackServerEvent(
   properties: Record<string, unknown> = {},
   userId?: string,
 ) {
+  if (process.env.E2E_MOCK === 'true') return
+
   const settings = getSettings()
   const targets = settings.analyticsTargets ?? []
   const effectiveUserId = userId ?? getTenantId()

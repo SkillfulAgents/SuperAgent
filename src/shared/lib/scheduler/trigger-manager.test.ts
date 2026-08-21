@@ -23,6 +23,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-sonnet-4-20250514',
+    agentEffort: 'low',
   }),
 }))
 
@@ -59,13 +60,19 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
     mockResolvePlatformMemberForCandidates(...args),
 }))
 
+const mockRegisterSession = vi.fn().mockResolvedValue(undefined)
 vi.mock('@shared/lib/services/session-service', () => ({
-  registerSession: vi.fn().mockResolvedValue(undefined),
+  registerSession: (...args: unknown[]) => mockRegisterSession(...args),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@shared/lib/services/secrets-service', () => ({
   getSecretEnvVars: vi.fn().mockResolvedValue([]),
+}))
+
+const mockReadAgentPreferences = vi.fn().mockResolvedValue({})
+vi.mock('@shared/lib/services/agent-preferences-service', () => ({
+  readAgentPreferences: (...args: unknown[]) => mockReadAgentPreferences(...args),
 }))
 
 const mockAgentExists = vi.fn().mockResolvedValue(true)
@@ -133,6 +140,7 @@ describe('TriggerManager', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockCreateSession.mockResolvedValue({ id: 'session_123' })
+    mockReadAgentPreferences.mockResolvedValue({})
     mockGetDistinctMemberIds.mockReturnValue(['sub_test_member'])
     mockGetPlatformAccessToken.mockReturnValue('opaque_test_token')
     mockDecodeOrgIdFromToken.mockReturnValue(null)
@@ -191,6 +199,17 @@ describe('TriggerManager', () => {
 
       // Verify trigger was marked as fired
       expect(mockMarkTriggerFired).toHaveBeenCalledWith('trigger_1', 'session_123')
+      expect(mockRegisterSession).toHaveBeenCalledWith(
+        'test-agent',
+        'session_123',
+        'Email Handler',
+        expect.objectContaining({
+          isWebhookExecution: true,
+          webhookTriggerId: 'trigger_1',
+          webhookInvocationCount: 1,
+          automationStatus: 'running',
+        }),
+      )
 
       // Verify events were acknowledged
       expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
@@ -228,6 +247,16 @@ describe('TriggerManager', () => {
       expect(prompt).toContain('Event 1:')
       expect(prompt).toContain('Event 2:')
       expect(prompt).toContain('Event 3:')
+      expect(mockRegisterSession).toHaveBeenCalledWith(
+        'test-agent',
+        'session_123',
+        'Batch Test',
+        expect.objectContaining({
+          webhookTriggerId: 'trigger_1',
+          webhookInvocationCount: 3,
+          automationStatus: 'running',
+        }),
+      )
 
       // All 3 events acknowledged
       expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1', 'whe_2', 'whe_3'], 'sub_test_member')
@@ -277,6 +306,7 @@ describe('TriggerManager', () => {
       expect(mockMarkTriggerFailed).toHaveBeenCalledWith('trigger_1', 'Agent no longer exists')
       expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
       expect(mockCreateSession).not.toHaveBeenCalled()
+      expect(mockRegisterSession).not.toHaveBeenCalled()
 
       triggerManager.stop()
       mockAgentExists.mockResolvedValue(true) // restore for other tests
@@ -322,6 +352,64 @@ describe('TriggerManager', () => {
       expect(mockCreateSession).toHaveBeenCalledTimes(1)
 
       triggerManager.stop()
+    })
+  })
+
+  describe('model, effort, and speed resolution', () => {
+    // Preference order: trigger override > agent default > global default.
+    async function fireTrigger(overrides: Record<string, unknown> = {}) {
+      mockPollAndClaimEvents.mockResolvedValue({
+        events: [
+          { id: 'whe_1', composio_trigger_id: 'ti_abc', trigger_type: 'GMAIL', payload: {}, created_at: '' },
+        ],
+        realtime: null,
+      })
+      mockGetWebhookTriggersByComposioId.mockResolvedValue([{
+        id: 'trigger_1',
+        agentSlug: 'test-agent',
+        composioTriggerId: 'ti_abc',
+        prompt: 'Handle it',
+        status: 'active',
+        fireCount: 0,
+        model: null,
+        effort: null,
+        speed: null,
+        ...overrides,
+      }])
+      await triggerManager.start()
+      triggerManager.stop()
+      expect(mockCreateSession).toHaveBeenCalledTimes(1)
+      return mockCreateSession.mock.calls[0][0]
+    }
+
+    it('uses the global default when neither trigger nor agent set one', async () => {
+      const args = await fireTrigger()
+      expect(args.model).toBe('claude-sonnet-4-20250514')
+      expect(args.effort).toBe('low')
+      expect(args.speed).toBeUndefined()
+    })
+
+    it('falls back to the agent default over the global default', async () => {
+      mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' })
+      const args = await fireTrigger()
+      expect(mockReadAgentPreferences).toHaveBeenCalledWith('test-agent')
+      expect(args.model).toBe('opus')
+      expect(args.effort).toBe('high')
+      expect(args.speed).toBe('slow')
+    })
+
+    it('prefers the trigger override over the agent default', async () => {
+      mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'fast' })
+      const args = await fireTrigger({ model: 'claude-haiku-4-5-20251001', effort: 'low', speed: 'slow' })
+      expect(args.model).toBe('claude-haiku-4-5-20251001')
+      expect(args.effort).toBe('low')
+      expect(args.speed).toBe('slow')
+    })
+
+    it('a stored normal trigger speed beats a non-normal agent default', async () => {
+      mockReadAgentPreferences.mockResolvedValue({ defaultSpeed: 'fast' })
+      const args = await fireTrigger({ speed: 'normal' })
+      expect(args.speed).toBe('normal')
     })
   })
 

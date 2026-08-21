@@ -1,11 +1,28 @@
 import type { RuntimeOptions } from './runtime-options'
 
+export const CONTAINER_RUNNER_IDS = [
+  'docker',
+  'podman',
+  'apple-container',
+  'lima',
+  'wsl2',
+  'kubernetes',
+  'lambda-microvm',
+] as const
+export type ContainerRunner = (typeof CONTAINER_RUNNER_IDS)[number]
+
 export type ContainerStatus = 'stopped' | 'running'
 
 // Effort levels supported by Claude Agent SDK v0.2.111+.
 // 'xhigh' is Opus 4.7 only; 'max' is Opus 4.6/4.7 only.
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export type EffortLevel = typeof EFFORT_LEVELS[number]
+
+// Normalized processing-speed tiers across providers. 'fast' maps to
+// Anthropic fast mode / OpenAI priority; 'slow' maps to OpenAI flex.
+// 'normal' is the universal default and the only tier every model supports.
+export const SPEED_LEVELS = ['slow', 'normal', 'fast'] as const
+export type SpeedLevel = typeof SPEED_LEVELS[number]
 
 // Info returned from Docker
 export interface ContainerInfo {
@@ -18,6 +35,8 @@ export interface ContainerConfig {
   envVars?: Record<string, string>
   /** Called when a connection error is detected (ECONNREFUSED, etc.) */
   onConnectionError?: () => void
+  /** Manager-owned restart: single-flight doStartContainer (fresh env + status cache). */
+  restartAgent?: () => Promise<void>
 }
 
 export interface SlashCommandInfo {
@@ -49,6 +68,7 @@ export interface CreateSessionOptions {
   initialMessageUuid?: string // Optional UUID for message author attribution
   model?: string // Claude model to use for this session
   browserModel?: string // Model for browser subagent
+  dashboardBuilderModel?: string // Model for the dashboard-builder subagent
   maxOutputTokens?: number // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
   maxThinkingTokens?: number // Max tokens for extended thinking
   maxTurns?: number // Max conversation turns
@@ -56,6 +76,22 @@ export interface CreateSessionOptions {
   customEnvVars?: Record<string, string> // User-defined env vars for the agent process
   maxBrowserTabs?: number // Max browser tabs allowed (default 10)
   effort?: EffortLevel // Initial thinking effort level
+  speed?: SpeedLevel // Initial processing speed tier
+  /**
+   * What the NEXT session on this agent will most likely ask for: the agent's
+   * default model/effort/speed with the global fallback applied, ignoring any
+   * per-session pick in `model`/`effort`/`speed` above.
+   *
+   * The container pre-warms a CLI subprocess for this shape. Without it the
+   * container can only guess from the session it just ran, so a single one-off
+   * model pick would leave it warmed for the wrong configuration — the next
+   * default session would discard that process and start cold.
+   */
+  prewarmDefaults?: {
+    model?: string
+    effort?: EffortLevel
+    speed?: SpeedLevel
+  }
 }
 
 export interface StartOptions {
@@ -115,9 +151,17 @@ export interface StopResult {
   stopped: boolean
 }
 
+// Verdict from probing a host-side TCP endpoint from the runner's network side.
+// Only 'unreachable' is a proven block; 'unknown' must never fail a launch.
+export type HostPortProbeResult = 'reachable' | 'unreachable' | 'unknown'
+
 export interface ContainerClient {
   // Lifecycle management
-  start(options?: StartOptions): Promise<void>
+  // Returns the state already proven by the runtime's health gate. All
+  // in-tree clients return it; `void` stays in the contract so an
+  // implementation that can't cheaply report state may omit it, in which
+  // case ContainerManager falls back to getInfoFromRuntime().
+  start(options?: StartOptions): Promise<ContainerInfo | void>
   stop(options?: StopOptions): Promise<StopResult>
   stopSync(): void // Synchronous stop for exit handlers
 
@@ -131,6 +175,13 @@ export interface ContainerClient {
   // it on 0.0.0.0 (SUP-217).
   getHostBridgeIp(): string | null
 
+  // Probe whether a host-side TCP endpoint (e.g. the CDP proxy bound to
+  // getHostBridgeIp()) is actually reachable from the runner's network side,
+  // where container-originated traffic comes from. 'unknown' means the runner
+  // has no vantage point to test from — callers must treat it as "proceed",
+  // never as a failure.
+  probeHostPortFromRunner(host: string, port: number): Promise<HostPortProbeResult>
+
   // Query the container runtime for current state (spawns CLI process)
   // Use containerManager.getCachedInfo() for cached status instead
   getInfoFromRuntime(): Promise<ContainerInfo>
@@ -141,6 +192,14 @@ export interface ContainerClient {
   // Make HTTP request to container (abstracts away host/port details)
   // Throws if container is not running
   fetch(path: string, init?: RequestInit): Promise<Response>
+
+  // Headers proving the caller is the host — required by the container API,
+  // which is also reachable from the agent's own Bash. Callers that dial the
+  // container directly (e.g. WebSocket upgrades) must attach these.
+  getHostAuthHeaders(): Record<string, string>
+
+  getWebSocketBaseUrl(port: number): string
+  getHostApiBaseUrl(): string | Promise<string>
 
   // Health checks
   waitForHealthy(timeoutMs?: number, knownPort?: number): Promise<boolean>
@@ -159,7 +218,6 @@ export interface ContainerClient {
   // Cancel a queued (not yet picked up) message by the uuid it was sent with.
   // false = too late (already picked up) or session not live — never throws for that.
   cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>
-  getMessages(sessionId: string): Promise<any[]>
   interruptSession(sessionId: string): Promise<boolean>
 
   // Streaming - returns unsubscribe function and a ready promise

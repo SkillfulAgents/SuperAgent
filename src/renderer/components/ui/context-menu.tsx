@@ -6,7 +6,136 @@ import { cn } from "@shared/lib/utils"
 
 const ContextMenu = ContextMenuPrimitive.Root
 
-const ContextMenuTrigger = ContextMenuPrimitive.Trigger
+// Radix's Trigger already opens the menu on a ~700ms long-press for touch/pen, so
+// it works out of the box on Android. On iOS, though, the text-selection
+// magnifier and the link-preview popover for wrapped <a> elements pre-empt the
+// long-press. Suppress both on coarse pointers so the built-in gesture wins —
+// every <ContextMenu> call site inherits this. All suppression is `touch:`-gated
+// (`@media (hover: none) and (pointer: coarse)`), so a mouse keeps right-click and
+// normal text selection exactly as before.
+//
+// We also add the native iOS "press-highlight" feedback: on a touch/pen press the
+// target quickly scales down a touch (~0.96 over 140ms), so the user gets instant
+// "something's happening" feedback during the long-press hold — matching how iOS
+// briefly shrinks an element before the context menu lifts in. `data-pressing` is
+// set only for touch/pen and the scale is `touch:`-gated, so a mouse is never
+// scaled. The press clears on lift, cancel, or a >10px move (so a scroll doesn't
+// trigger it).
+const ContextMenuTrigger = React.forwardRef<
+  React.ElementRef<typeof ContextMenuPrimitive.Trigger>,
+  React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.Trigger> & {
+    /** Prevent the touch/pen long-press menu without affecting mouse right-click. */
+    disableTouchLongPress?: boolean
+  }
+>(({ className, style, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onClick, disableTouchLongPress, ...props }, ref) => {
+  const pressStart = React.useRef<{ x: number; y: number } | null>(null)
+  const longPressTimer = React.useRef<number>()
+
+  const setPressing = (el: HTMLElement, on: boolean) => {
+    if (on) el.setAttribute('data-pressing', '')
+    else el.removeAttribute('data-pressing')
+  }
+  const clearLongPress = () => {
+    if (longPressTimer.current) {
+      window.clearTimeout(longPressTimer.current)
+      longPressTimer.current = undefined
+    }
+  }
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLElement>) => {
+    if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+      if (disableTouchLongPress) {
+        pressStart.current = null
+        setPressing(e.currentTarget, false)
+        clearLongPress()
+        // Radix composes this handler before its built-in long-press handler
+        // and respects defaultPrevented, leaving the gesture to the grid.
+        e.preventDefault()
+        onPointerDown?.(e)
+        return
+      }
+      pressStart.current = { x: e.clientX, y: e.clientY }
+      setPressing(e.currentTarget, true)
+      // Open the menu sooner than Radix's built-in ~700ms long-press: after a
+      // shorter hold, dispatch a synthetic `contextmenu` at the press point. Radix
+      // opens from that and clears its own (slower) timer, so the menu follows the
+      // press-feedback without the extra wait. (iOS default Haptic Touch ≈ 500ms.)
+      const el = e.currentTarget
+      const { clientX, clientY } = e
+      clearLongPress()
+      longPressTimer.current = window.setTimeout(() => {
+        el.dispatchEvent(
+          new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX, clientY }),
+        )
+      }, 400)
+    }
+    onPointerDown?.(e)
+  }
+  const handlePointerMove = (e: React.PointerEvent<HTMLElement>) => {
+    if (pressStart.current) {
+      const moved =
+        Math.abs(e.clientX - pressStart.current.x) > 10 ||
+        Math.abs(e.clientY - pressStart.current.y) > 10
+      if (moved) {
+        pressStart.current = null
+        setPressing(e.currentTarget, false)
+        clearLongPress()
+      }
+    }
+    onPointerMove?.(e)
+  }
+  const endPress = (e: React.PointerEvent<HTMLElement>) => {
+    pressStart.current = null
+    setPressing(e.currentTarget, false)
+    clearLongPress()
+  }
+  const handlePointerUp = (e: React.PointerEvent<HTMLElement>) => {
+    endPress(e)
+    onPointerUp?.(e)
+  }
+  const handlePointerCancel = (e: React.PointerEvent<HTMLElement>) => {
+    endPress(e)
+    onPointerCancel?.(e)
+  }
+  // When a long-press opens the menu, the trigger is often an <a> (e.g. a sidebar
+  // session row / agent card). On finger-lift the trailing click would navigate
+  // that link — swallow it while the menu is open. Must be `onClick` (not
+  // capture): AppLink owns onClickCapture, and TanStack's Link skips navigation
+  // when its onClick is defaultPrevented. A normal tap never opens the menu, so it
+  // still navigates; desktop right-click doesn't fire a navigating click either.
+  const handleClick = (e: React.MouseEvent<HTMLElement>) => {
+    if (e.currentTarget.getAttribute('data-state') === 'open') {
+      e.preventDefault()
+    }
+    onClick?.(e)
+  }
+
+  return (
+    <ContextMenuPrimitive.Trigger
+      ref={ref}
+      // Two iOS long-press gestures lift the element; we kill both (inline so it's
+      // guaranteed on the rendered <a> regardless of asChild/Slot merging; all
+      // iOS/WebKit-only properties + a no-op-on-desktop draggable flag):
+      //  - the context-menu/link preview  → -webkit-touch-callout: none
+      //  - the drag-and-drop lift (links are draggable by default) → draggable=
+      //    false + -webkit-user-drag: none
+      style={{ WebkitTouchCallout: 'none', WebkitUserDrag: 'none', ...style } as React.CSSProperties}
+      draggable={false}
+      className={cn(
+        'touch:select-none touch:[-webkit-user-select:none]',
+        'touch:transition-transform touch:duration-150 touch:ease-out touch:data-[pressing]:scale-[0.96]',
+        className,
+      )}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
+      onClick={handleClick}
+      {...props}
+    />
+  )
+})
+ContextMenuTrigger.displayName = ContextMenuPrimitive.Trigger.displayName
 
 const ContextMenuGroup = ContextMenuPrimitive.Group
 
@@ -111,6 +240,38 @@ const ContextMenuCheckboxItem = React.forwardRef<
 ContextMenuCheckboxItem.displayName =
   ContextMenuPrimitive.CheckboxItem.displayName
 
+const ContextMenuSwitchItem = React.forwardRef<
+  React.ElementRef<typeof ContextMenuPrimitive.CheckboxItem>,
+  React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.CheckboxItem>
+>(({ className, children, checked, ...props }, ref) => (
+  <ContextMenuPrimitive.CheckboxItem
+    ref={ref}
+    className={cn(
+      "relative flex cursor-default select-none items-center justify-between gap-3 rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      className
+    )}
+    checked={checked}
+    {...props}
+  >
+    <span>{children}</span>
+    <span
+      aria-hidden="true"
+      className={cn(
+        "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors",
+        checked ? "bg-primary" : "bg-input"
+      )}
+    >
+      <span
+        className={cn(
+          "block h-3 w-3 rounded-full bg-background shadow transition-transform",
+          checked ? "translate-x-3.5" : "translate-x-0.5"
+        )}
+      />
+    </span>
+  </ContextMenuPrimitive.CheckboxItem>
+))
+ContextMenuSwitchItem.displayName = "ContextMenuSwitchItem"
+
 const ContextMenuRadioItem = React.forwardRef<
   React.ElementRef<typeof ContextMenuPrimitive.RadioItem>,
   React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.RadioItem>
@@ -142,7 +303,7 @@ const ContextMenuLabel = React.forwardRef<
   <ContextMenuPrimitive.Label
     ref={ref}
     className={cn(
-      "px-2 py-1.5 text-sm font-semibold text-foreground",
+      "px-2 py-1.5 text-sm font-medium text-foreground",
       inset && "pl-8",
       className
     )}
@@ -185,6 +346,7 @@ export {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuCheckboxItem,
+  ContextMenuSwitchItem,
   ContextMenuRadioItem,
   ContextMenuLabel,
   ContextMenuSeparator,

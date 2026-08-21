@@ -15,7 +15,7 @@
 
 import fs from 'fs'
 import path from 'path'
-import { getSettings, updateSettings } from '@shared/lib/config/settings'
+import { mutateSettings } from '@shared/lib/config/settings'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
   getAgentsDir,
@@ -47,23 +47,25 @@ export interface InstalledTemplateLocation {
  * auth state. Mutates settings.skillsets and persists if anything changed.
  */
 export function reconcileSkillsetConfigsForCurrentAuth(): { removed: number } {
-  const settings = getSettings()
-  const before = settings.skillsets ?? []
-  const kept = before.filter((c) => {
-    try {
-      return getSkillsetProvider(c.provider).isConfigValid(c)
-    } catch (error) {
-      captureException(error, { tags: { area: 'skillset-reconcile', op: 'isConfigValid' } })
-      // Fail-open: if the provider check throws, keep the config so we don't
-      // mass-delete on a transient error.
-      return true
-    }
-  })
-  if (kept.length !== before.length) {
+  // Filter against a FRESH read inside the serialized mutation so a concurrent
+  // add/remove of an unrelated skillset isn't lost.
+  let removed = 0
+  mutateSettings((settings) => {
+    const before = settings.skillsets ?? []
+    const kept = before.filter((c) => {
+      try {
+        return getSkillsetProvider(c.provider).isConfigValid(c)
+      } catch (error) {
+        captureException(error, { tags: { area: 'skillset-reconcile', op: 'isConfigValid' } })
+        // Fail-open: if the provider check throws, keep the config so we don't
+        // mass-delete on a transient error.
+        return true
+      }
+    })
+    removed = before.length - kept.length
     settings.skillsets = kept
-    updateSettings(settings)
-  }
-  return { removed: before.length - kept.length }
+  })
+  return { removed }
 }
 
 function readInstalledSkillMetaRaw(metaPath: string): unknown {

@@ -1,5 +1,49 @@
-import { describe, it, expect } from 'vitest'
-import { isLocalhostHost, isPrivateHost, validateHttpUrl, validateSafeCloneUrl } from './url-safety'
+import { describe, it, expect, afterEach } from 'vitest'
+import {
+  isLocalhostHost,
+  isPrivateHost,
+  isHostOrSubdomain,
+  tryParseUrl,
+  validateHttpUrl,
+  validateMcpDiscoveryUrl,
+  validateSafeCloneUrl,
+} from './url-safety'
+
+describe('validateMcpDiscoveryUrl localhost policy', () => {
+  const originalType = (process as { type?: string }).type
+
+  afterEach(() => {
+    if (originalType === undefined) delete (process as { type?: string }).type
+    else (process as { type?: string }).type = originalType
+  })
+
+  it('allows loopback on the Electron main process by default', async () => {
+    ;(process as { type?: string }).type = 'browser'
+    await expect(validateMcpDiscoveryUrl('http://127.0.0.1:8899')).resolves.toBeInstanceOf(URL)
+  })
+
+  it('rejects loopback when the caller explicitly disallows it, even on Electron', async () => {
+    // The default exception exists for user-configured local targets. A caller
+    // following a remotely supplied URL opts out, and that must win.
+    ;(process as { type?: string }).type = 'browser'
+    await expect(
+      validateMcpDiscoveryUrl('http://127.0.0.1:8899', { allowLocalhost: false }),
+    ).rejects.toThrow(/private or loopback/)
+    await expect(
+      validateMcpDiscoveryUrl('http://localhost:8899', { allowLocalhost: false }),
+    ).rejects.toThrow(/private or loopback/)
+  })
+
+  it('never allows non-loopback private addresses, even with allowLocalhost', async () => {
+    ;(process as { type?: string }).type = 'browser'
+    await expect(
+      validateMcpDiscoveryUrl('http://192.168.1.10', { allowLocalhost: true }),
+    ).rejects.toThrow(/private or loopback/)
+    await expect(
+      validateMcpDiscoveryUrl('http://169.254.169.254', { allowLocalhost: true }),
+    ).rejects.toThrow(/private or loopback/)
+  })
+})
 
 describe('isLocalhostHost', () => {
   it.each([
@@ -12,6 +56,10 @@ describe('isLocalhostHost', () => {
     'ip6-localhost',
     'ip6-loopback',
     '::ffff:127.0.0.1',
+    // Root label. isDeploymentUrlAllowed routes on this, so reading 'localhost.' as a public
+    // name sent it to the plain https branch and let it through in a shipped build.
+    'localhost.',
+    'foo.localhost.',
   ])('flags %s as localhost', (host) => {
     expect(isLocalhostHost(host)).toBe(true)
   })
@@ -26,6 +74,7 @@ describe('isLocalhostHost', () => {
     'box.local',
     'fd00::1',
     'fe80::1',
+    'example.com.', // stripping the root label must not turn a public name into loopback
   ])('does not flag %s as localhost', (host) => {
     expect(isLocalhostHost(host)).toBe(false)
   })
@@ -48,7 +97,10 @@ describe('isPrivateHost', () => {
     '::1',
     'fd00::1',
     'fe80::1',
+    'fea0::1', // fe80::/10 (not just fe80::/16)
     '::ffff:10.0.0.1',
+    'localhost.', // trailing dot is the root label, not a different host
+    'box.local.',
   ])('flags %s as private', (host) => {
     expect(isPrivateHost(host)).toBe(true)
   })
@@ -62,8 +114,46 @@ describe('isPrivateHost', () => {
     '172.15.0.1', // just outside the private range
     '172.32.0.1',
     '192.167.0.1',
+    'example.com.', // stripping the root label must not turn a public name private
   ])('does not flag %s', (host) => {
     expect(isPrivateHost(host)).toBe(false)
+  })
+})
+
+describe('isHostOrSubdomain', () => {
+  it.each([
+    ['slack.com', 'slack.com'],
+    ['files.slack.com', 'slack.com'],
+    ['a.b.slack.com', 'slack.com'],
+    ['SLACK.COM', 'slack.com'],
+  ])('matches %s against %s', (host, domain) => {
+    expect(isHostOrSubdomain(host, domain)).toBe(true)
+  })
+
+  it.each([
+    ['evilslack.com', 'slack.com'],
+    ['slack.com.evil.com', 'slack.com'],
+    ['notslack.com', 'slack.com'],
+    ['slackXcom', 'slack.com'],
+    ['', 'slack.com'],
+  ])('does not match %s against %s', (host, domain) => {
+    expect(isHostOrSubdomain(host, domain)).toBe(false)
+  })
+})
+
+describe('tryParseUrl', () => {
+  it('parses absolute URLs', () => {
+    expect(tryParseUrl('https://example.com/x')?.host).toBe('example.com')
+  })
+
+  it('resolves relative inputs against a base', () => {
+    const base = new URL('https://files.slack.com/a/b')
+    expect(tryParseUrl('/c/d', base)?.toString()).toBe('https://files.slack.com/c/d')
+  })
+
+  it('returns null on malformed input', () => {
+    expect(tryParseUrl('not a url')).toBeNull()
+    expect(tryParseUrl('/relative-without-base')).toBeNull()
   })
 })
 

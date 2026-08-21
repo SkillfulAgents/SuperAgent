@@ -11,4 +11,4 @@ function getSummary(input: unknown): string | null {
   return parseInput(input).secretName || null
 }
 
-export const requestSecretDef = { displayName: 'Request Secret', iconName: 'KeyRound', parseInput, getSummary } as const
+export const requestSecretDef = { displayName: 'Request Secret', parseInput, getSummary } as const

@@ -34,20 +34,17 @@ function getTaskListSummary(_input: unknown): string | null {
 
 export const taskCreateDef = {
   displayName: 'Create Task',
-  iconName: 'ListPlus',
   parseInput: parseTaskCreateInput,
   getSummary: getTaskCreateSummary,
 } as const
 
 export const taskUpdateDef = {
   displayName: 'Update Task',
-  iconName: 'ListChecks',
   parseInput: parseTaskUpdateInput,
   getSummary: getTaskUpdateSummary,
 } as const
 
 export const taskListDef = {
   displayName: 'List Tasks',
-  iconName: 'ListTodo',
   getSummary: getTaskListSummary,
 } as const

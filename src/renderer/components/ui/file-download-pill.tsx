@@ -30,7 +30,12 @@ export function FileDownloadPill({ filePath, agentSlug, onClick }: FileDownloadP
 
   if (folder) {
     return (
-      <span className={className}>
+      <span
+        className={className}
+        data-testid="file-pill"
+        data-file-name={displayName}
+        data-file-path={filePath}
+      >
         <FolderIcon className="h-3.5 w-3.5 shrink-0" />
         {displayName}
       </span>
@@ -51,6 +56,9 @@ export function FileDownloadPill({ filePath, agentSlug, onClick }: FileDownloadP
       onClick={handleClick}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(e as unknown as React.MouseEvent) } }}
       className={className}
+      data-testid="file-pill"
+      data-file-name={displayName}
+      data-file-path={filePath}
     >
       <FileTypeIcon filename={displayName} size={14} />
       {displayName}

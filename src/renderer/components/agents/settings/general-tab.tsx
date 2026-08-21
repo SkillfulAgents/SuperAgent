@@ -16,10 +16,10 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@renderer/components/ui/alert-dialog'
-import { useDeleteAgent } from '@renderer/hooks/use-agents'
+import { useDeleteAgent, useRouteAgentId } from '@renderer/hooks/use-agents'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useSettings } from '@renderer/hooks/use-settings'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import {
   useForceSyncAgentTemplate,
   useAgentTemplateStatus,
@@ -27,6 +27,7 @@ import {
   useUpdateAgentTemplate,
   useExportAgentTemplate,
   useExportAgentFull,
+  useHostExportStatus,
 } from '@renderer/hooks/use-agent-templates'
 import { StatusBadge } from '@renderer/components/agents/status-badge'
 import { AgentTemplatePRDialog } from '@renderer/components/agents/agent-template-pr-dialog'
@@ -51,13 +52,17 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const { data: agentPrefs } = useAgentPreferences(agentSlug)
   const updatePrefs = useUpdateAgentPreferences(agentSlug)
   const { data: settings } = useSettings()
-  const { handleAgentDeleted } = useSelection()
+  const navigate = useNavigate()
+  const routeAgentId = useRouteAgentId()
   const { data: templateStatus } = useAgentTemplateStatus(agentSlug)
   const refreshTemplateStatus = useRefreshAgentTemplateStatus()
   const forceSyncTemplate = useForceSyncAgentTemplate()
   const updateTemplate = useUpdateAgentTemplate()
   const exportTemplate = useExportAgentTemplate()
   const exportFull = useExportAgentFull()
+  const { data: hostExportStatus } = useHostExportStatus()
+  const exportBusy =
+    !!hostExportStatus?.inProgress || exportTemplate.isPending || exportFull.isPending
   const templateSourceLabel = templateStatus?.sourceLabel || null
   const publishMode = useSkillsetPublishMode(templateStatus?.skillsetId)
   const isPR = isPullRequestPublishMode(publishMode)
@@ -68,7 +73,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
     try {
       await deleteAgent.mutateAsync(agentSlug)
       onDialogClose()
-      handleAgentDeleted(agentSlug)
+      if (routeAgentId === agentSlug) void navigate({ to: '/' })
     } catch (error) {
       console.error('Failed to delete agent:', error)
       toast.error(error instanceof Error ? error.message : 'Failed to delete agent')
@@ -164,14 +169,14 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
       {/* Export / Publish */}
       <div className="space-y-2">
         <h3 className="text-sm font-medium">Template</h3>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             size="sm"
             variant="outline"
             onClick={() => exportTemplate.mutate({ agentSlug, agentName: name })}
-            disabled={exportTemplate.isPending}
+            disabled={exportBusy}
           >
-            {exportTemplate.isPending ? (
+            {exportBusy ? (
               <Loader2 className="h-3 w-3 mr-1 animate-spin" />
             ) : (
               <Download className="h-3 w-3 mr-1" />
@@ -183,9 +188,9 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
               <Button
                 size="sm"
                 variant="outline"
-                disabled={exportFull.isPending}
+                disabled={exportBusy}
               >
-                {exportFull.isPending ? (
+                {exportBusy ? (
                   <Loader2 className="h-3 w-3 mr-1 animate-spin" />
                 ) : (
                   <HardDriveDownload className="h-3 w-3 mr-1" />
@@ -205,6 +210,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
               <AlertDialogFooter>
                 <AlertDialogCancel>Cancel</AlertDialogCancel>
                 <AlertDialogAction
+                  disabled={exportBusy}
                   onClick={() => exportFull.mutate({ agentSlug, agentName: name })}
                 >
                   Export

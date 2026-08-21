@@ -1,5 +1,6 @@
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
-import type { SessionUsage } from '@shared/lib/types/agent'
+import { mergeCanonicalSlashCommands } from './slash-commands'
+import type { SessionUsage, SessionActivity } from '@shared/lib/types/agent'
 import type { AskUserQuestionInput } from '@shared/lib/tool-definitions/ask-user-question'
 import type { RequestSecretInput } from '@shared/lib/tool-definitions/request-secret'
 import type { RequestFileInput } from '@shared/lib/tool-definitions/request-file'
@@ -7,19 +8,52 @@ import type { RequestConnectedAccountInput } from '@shared/lib/tool-definitions/
 import type { RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request-remote-mcp'
 import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/request-browser-input'
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
+import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { userInputRequestManager, type UserInputRequestTransition } from '@shared/lib/user-input/request-manager'
+import {
+  isReplayableUserInputRequest,
+  type PendingUserInputRequest,
+  type UserInputRequestKind,
+  type UserInputRequestOutcome,
+} from '@shared/lib/user-input/request-schema'
+import { classifyResult } from './result-classification'
+import { parseBackgroundTasksChanged } from './background-tasks-changed'
+import { parseCommandLifecycle } from './command-lifecycle'
+import { captureException } from '@shared/lib/error-reporting'
 import {
   createScheduledTask,
+  createSessionWake,
   listPendingScheduledTasks,
   getScheduledTask,
   cancelScheduledTask,
   pauseScheduledTask,
   resumeScheduledTask,
+  type ScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
 import {
   createWebhookTrigger,
   listActiveWebhookTriggers,
   cancelWebhookTriggerWithCleanup,
+  getWebhookTrigger,
+  resolvePlatformMemberForCandidates,
+  updateWebhookTriggerName,
 } from '@shared/lib/services/webhook-trigger-service'
+import {
+  createPlatformWebhookEndpoint,
+  updatePlatformWebhookEndpoint,
+  disablePlatformWebhookEndpoint,
+  listPlatformWebhookEvents,
+  testPlatformWebhookFilter,
+} from '@shared/lib/services/webhook-endpoints-client'
+import {
+  createWebhookEndpointInputSchema,
+  updateWebhookEndpointInputSchema,
+  inspectWebhookEventsInputSchema,
+  extractEndpointUrl,
+  CUSTOM_WEBHOOK_TRIGGER_TYPE,
+  type WebhookEndpointEvent,
+} from '@shared/lib/services/webhook-endpoint-schema'
+import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 import {
   getAvailableTriggers,
   enableComposioTrigger,
@@ -30,24 +64,45 @@ import { db } from '@shared/lib/db'
 import { connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
-import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
+import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
+import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
-import { VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
+import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
+import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
-import { getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
-import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
+import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
+import { getAgentSessionsDir, getSessionJsonlPath } from '@shared/lib/utils/file-storage'
+import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
+import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { SubagentCapture } from './subagent-capture'
+import * as fs from 'fs'
 import * as path from 'path'
+import { randomUUID } from 'crypto'
 // Per-subagent streaming state (supports multiple concurrent background agents)
 interface SubagentStreamingState {
   agentId: string | null
   currentText: string
   currentToolUse: { id: string; name: string } | null
   currentToolInput: string
-  isBackground: boolean // True for run_in_background agents — completion comes via sidechain 'result', not tool_result
+  isBackground: boolean // Streamed launch hint, confirmed by an async launch acknowledgement
+  isResumed: boolean // Authoritative task_started/result signal for a SendMessage-resumed run
 }
+
+/**
+ * The kinds whose lifecycle is the turn (`storeForKind` → 'stream'). Computer
+ * use and reviews register through their own paths with their own clearing
+ * rules, so the persister's stream-request helper excludes them by type.
+ */
+type StreamRequestKind = Exclude<
+  UserInputRequestKind,
+  'computer_use' | 'proxy_review' | 'x_agent_review' | 'account_reauth_required' | 'mcp_reauth_required'
+>
 
 // Tracks streaming state for SSE broadcasts
 // In the file-based model, messages are stored in JSONL files by the Claude SDK.
@@ -58,29 +113,91 @@ interface StreamingState {
   currentToolUse: { id: string; name: string } | null
   currentToolInput: string // Accumulated partial JSON input for current tool
   currentThinking?: boolean // True while an extended-thinking content block is streaming
+  currentAssistantMessageId?: string | null // SDK message id for stable live↔persisted block identity
+  currentThinkingBlockIndex?: number | null // Content index within currentAssistantMessageId
   isActive: boolean // True from user message until result received
   isInterrupted: boolean // True after user interrupts, prevents race conditions
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
   agentSlug?: string // The agent slug for this session
+  notAutomationSession?: boolean // Cached "not a cron/webhook session" verdict; skips the automation-status metadata write on later results
+  // Unpromoted cron/webhook session: release its container stream when the
+  // session settles. Resolved from session metadata at subscribe time so the
+  // settle-time teardown in finalizeIdle stays synchronous (race-free).
+  releaseStreamOnSettle?: boolean
+  // Set synchronously on promote so an in-flight subscribe-time metadata read
+  // cannot flip releaseStreamOnSettle back to true.
+  promotedToInteractive?: boolean
+  // True when the most recent result was a clean success (not error-shaped,
+  // not an interrupt, not a resume-exit). Consumed by finalizeIdle: a success
+  // result alone is NOT terminal — queued messages or background work can keep
+  // the session running and a later turn can still fail — so the automation
+  // outcome is persisted as succeeded only when the session truly settles.
+  lastResultCleanSuccess: boolean
   lastContextWindow: number // Last known context window size (default 200k)
   lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
-  completedSubagentIds: Set<string> // agentIds of subagents that have completed (to avoid re-discovery)
+  completedSubagentIds: Set<string> // completed agentIds; a new task_started with the same ID is a resumed run
   // Per-subagent streaming state, keyed by parent tool_use ID (supports concurrent background agents)
   activeSubagents: Map<string, SubagentStreamingState>
   slashCommands: SlashCommandInfo[] // Available slash commands from SDK
-  isAwaitingInput: boolean // True when session is waiting for user input (e.g., secret, file, question)
-  // TODO: computer-use and the other input requests are tracked in two separate maps with
-  // divergent clearing rules (this one is cleared only via explicit route calls; pendingInputRequests
-  // below is cleared on tool_result + turn boundaries — so e.g. interrupt clears one but not the
-  // other). Unify into a single store + single SSE replay loop. Tracked: SUP-213 (sibling of SUP-163).
-  pendingComputerUseRequests: Map<string, { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> // Pending computer use requests awaiting user approval (keyed by toolUseId)
-  // Pending user-input request broadcasts (secret/connected_account/question/file/remote_mcp/
-  // script_run/browser_input), keyed by toolUseId. These are one-shot SSE events, so a client
-  // that connects AFTER they fire would never see them; we store the exact payloads here and the
-  // /stream route replays them on (re)connect. Cleared at turn boundaries (session_active/idle).
-  pendingInputRequests: Map<string, { type: string; toolUseId: string; [k: string]: unknown }>
+  // Cache of the registry's derived awaiting projection (userInputRequestManager.isSessionAwaiting,
+  // gated on isActive), maintained by syncSessionAwaiting for edge-triggered broadcasts. Do not
+  // set imperatively — turn-boundary teardown paths reset it to false alongside isActive; every
+  // other transition must go through syncSessionAwaiting.
+  isAwaitingInput: boolean
+  // Requests settled by a decision route while their transcript tool_result is
+  // still HELD BACK (parallel tool calls release every sibling's result only
+  // when the last one settles). The messages route stamps these outcomes onto
+  // the transcript so history consumers — the client's refresh fallback, the
+  // transcript card, the recovery scan — see a completed call instead of
+  // resurrecting a decided one. Cleared at turn boundaries, when the real
+  // results are in the transcript.
+  settledInputRequests: Map<string, UserInputRequestOutcome>
+  // Tombstones for capability reviews cancelled BEFORE their card was stored:
+  // handleCapabilityReviewTool awaits a container grant lookup before it
+  // broadcasts, so a capability_review_cancelled frame can win that race —
+  // the handler must then drop the card instead of resurrecting it. NOT
+  // cleared at turn boundaries: a hung grant lookup can outlive the turn
+  // (interrupts kill the container the fetch is talking to), and a tool_use
+  // id never recurs, so a straggler can only ever suppress its own stale
+  // card. Entries are consumed on match; the rest die with this state.
+  cancelledCapabilityReviews: Set<string>
   lastApiErrorCode: string | null // SDK error code from last assistant message (e.g., 'authentication_failed', 'rate_limit')
-  activeBackgroundTasks: Map<string, { startedAt: number }> // Background Bash commands still running (keyed by task ID)
+  // Text from the newest top-level assistant message group. Complete assistant
+  // frames sharing a message id are merged the same way transformMessages
+  // merges the persisted transcript. A newer id replaces the candidate even
+  // when it has no text, so a tool/thinking-only final response cannot reuse
+  // an earlier working note as the completion-notification body.
+  lastAssistantMessageId: string | null
+  assistantMessageIds: Set<string>
+  assistantEntryUuids: Set<string>
+  lastAssistantText: string
+  // A user message accepted while active may become a continuation turn after
+  // the current result. Delay the response reset until that next turn actually
+  // produces an assistant/result frame: if the queued message was steered into
+  // the current response and idle follows immediately, that response is still
+  // the correct final answer.
+  queuedTurnCount: number
+  resetAssistantBeforeNextTurnOutput: boolean
+  // Backgrounded Bash commands + dynamic workflows still running, keyed by the SDK task_id.
+  // For workflows we also carry the launching tool's id, the meta.name, and — once the
+  // Workflow tool result arrives — the real on-disk runId (`wf_…`), which is DISTINCT from
+  // the task_id and is the name of the `subagents/workflows/<runId>` dir.
+  activeBackgroundTasks: Map<
+    string,
+    { startedAt: number; isWorkflow?: boolean; isSubagent?: boolean; toolUseId?: string; workflowName?: string; runId?: string }
+  >
+  // Latest system/background_tasks_changed snapshot (SDK >= 0.3.203): the full
+  // authoritative set of live background task ids. null until the first frame
+  // (older runtimes never send one — all gates then fall back to the
+  // incremental map alone). The snapshot LEADS per-task signals on the wire,
+  // so it may briefly announce a task the map hasn't registered yet (metadata
+  // arrives with the following task_started/tool-result) — liveness gates use
+  // the UNION of both.
+  bgTasksSnapshot: Set<string> | null
+  // Identity of the CLI process the background-task bookkeeping above belongs
+  // to, from the container's handshake. Those tasks are process-local, so when
+  // this changes every id we hold is unretirable and must be dropped.
+  processInstanceId: string | null
   pendingDeliverFiles: Map<string, { filePath: string; description?: string }> // deliver_file tool calls awaiting their tool_result, keyed by tool_use ID
   // True when the runtime publishes session_state_changed events — then IT is
   // the idle authority: a 'result' alone does not end the session (queued
@@ -96,23 +213,96 @@ interface StreamingState {
   // Subtype of the most recent result — gates the completion notification when
   // idle arrives via session_state_changed (resume-exits pause, not finish).
   lastResultSubtype: string | null
+  isRetrying: boolean // True while an API retry is in progress, cleared when the next message starts
 }
 
 // Lazy import to break circular dependency: container-manager -> message-persister
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _containerManagerModule: any = null
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _containerManagerImport: Promise<any> | null = null
 async function getContainerManager() {
   if (!_containerManagerModule) {
-    _containerManagerModule = await import('./container-manager')
+    // Cache the in-flight import promise, not just the resolved module: concurrent
+    // callers (e.g. a fire-and-forget tool handler resolving while cancelAwaitingInput
+    // rejects) would otherwise each see a null module and start their own
+    // import('./container-manager'), racing redundant dynamic imports of a module
+    // that sits on the container-manager <-> message-persister circular edge.
+    if (!_containerManagerImport) _containerManagerImport = import('./container-manager')
+    _containerManagerModule = await _containerManagerImport
   }
   return _containerManagerModule.containerManager
+}
+
+// Tool inputs whose streamed JSON may carry an HMAC signing secret in a
+// `secret` field. That secret is a shared credential — anyone holding it can
+// forge signed webhooks — so it must never render in the live transcript / go
+// out over SSE. (The SDK still persists the raw tool_use to the container's
+// JSONL; that is agent-supplied and container-local. This masks the one path
+// the host controls: the UI broadcast.)
+const SECRET_BEARING_TOOL_NAMES = new Set([
+  'create_webhook_endpoint',
+  'update_webhook_endpoint',
+])
+
+// One inspection line per stored delivery. Bodies are already previews
+// (proxy caps at 2KB); cap harder here — this text lands in the agent's
+// context and 50 events × 2KB would crowd out the actual work.
+const INSPECT_BODY_PREVIEW_CHARS = 200
+
+export function formatWebhookEventLine(event: WebhookEndpointEvent): string {
+  const filterNote = event.filter
+    ? ` · filter: ${event.filter.outcome}${event.filter.outcome === 'error' && event.filter.error ? ` (${event.filter.error})` : ''}`
+    : ''
+  const kindNote = event.kind === 'handshake' ? ' · handshake' : ''
+  const verifiedNote = event.kind === 'event' ? (event.verified ? ' · verified' : ' · unverified') : ''
+  const body = typeof event.body === 'string' && event.body
+    ? event.body.slice(0, INSPECT_BODY_PREVIEW_CHARS) +
+      (event.body.length > INSPECT_BODY_PREVIEW_CHARS || event.body_truncated ? '…' : '')
+    : '(empty body)'
+  return `- ${event.id} · ${event.created_at} · ${event.status}${kindNote}${verifiedNote}${filterNote}\n  ${event.method ?? 'POST'} ${event.content_type ?? ''} — ${body}`
+}
+
+/**
+ * Mask the value of a `secret` field in (possibly still-streaming) tool-input
+ * JSON. Idempotent across deltas: the whole accumulated buffer is re-masked
+ * each time, and a value whose closing quote hasn't streamed yet is masked as
+ * far as it has arrived.
+ */
+export function redactStreamedToolInput(toolName: string | undefined, partialInput: string): string {
+  if (!toolName) return partialInput
+  // MCP tools stream under their qualified name (`mcp__<server>__<tool>`);
+  // match on the bare tool name so the allowlist can't silently miss the wire
+  // format.
+  const bareName = toolName.startsWith('mcp__') ? toolName.slice(toolName.lastIndexOf('__') + 2) : toolName
+  if (!SECRET_BEARING_TOOL_NAMES.has(bareName)) return partialInput
+  // Replace the JSON string value after `"secret":"` with `***`, stopping at
+  // the (unescaped) closing quote — which is left intact when present.
+  return partialInput.replace(/("secret"\s*:\s*")(?:\\.|[^"\\])*/g, '$1***')
+}
+
+// Thrown by waitForIdle when the session is still active past timeoutMs.
+// Callers use this to tell "target is still working" (recoverable — poll later)
+// apart from genuine failures like "session never became active".
+export class WaitForIdleTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`waitForIdle timeout after ${timeoutMs}ms`)
+    this.name = 'WaitForIdleTimeoutError'
+  }
 }
 
 // TODO this file is too big, this class is HUGE. Needs breaking up
 class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
+  // "Allow for this session" capability grants, keyed by sessionId. Display
+  // bookkeeping ONLY — enforcement lives in the container (which persists its
+  // copy with the session). Once granted, launches auto-allow container-side
+  // with no pending entry, so we must stop broadcasting review cards for them.
+  private sessionCapabilityGrants: Map<string, Set<'subagents' | 'workflows'>> = new Map()
   private subscriptions: Map<string, () => void> = new Map()
   private sseClients: Map<string, Set<(data: unknown) => void>> = new Map()
+  // Per-run journal tailers driving the live workflow drawer, keyed `${sessionId}::${runId}`
+  private workflowTailers: Map<string, WorkflowJournalTailer> = new Map()
   // Global notification subscribers (e.g., Electron main process)
   private globalNotificationClients: Set<(data: unknown) => void> = new Set()
   // Track container clients per session for reconnection
@@ -126,6 +316,115 @@ class MessagePersister {
   // subscribeToSession() calls for the same session share the underlying
   // promise so we don't double-install listeners or double-tear-down state.
   private subscribingNow: Map<string, Promise<void>> = new Map()
+
+  constructor() {
+    // Unified wire: every registry transition — no matter which of the many
+    // mutation paths drove it — broadcasts ONE typed event, to the global
+    // stream always and to the session stream when session-scoped. Emitting
+    // from the registry's single funnel (instead of per-callsite) is what
+    // makes a silent settle impossible on this wire. It is the only request
+    // wire there is: every consumer — renderer, chat connectors, Electron
+    // main, notifications — reads these events and the snapshot they point at.
+    userInputRequestManager.onTransition((transition) => {
+      this.broadcastRequestTransition(transition)
+      // Notifications ride the same funnel: exactly one 'created' per request
+      // id — no matter how many delivery paths carried the tool_use — means
+      // exactly one OS notification. Per-handler triggering used to double-
+      // notify when the subagent stream and the complete-assistant message
+      // both delivered the same request.
+      if (transition.type === 'created') {
+        this.dispatchRequestNotification(transition.request)
+      }
+    })
+  }
+
+  /**
+   * One notification per registered request, driven by the registry 'created'
+   * transition.
+   */
+  private dispatchRequestNotification(request: PendingUserInputRequest): void {
+    // Recovered synthetics were notified by the original process before it
+    // died; the recovery stub must not notify again. (Its later upgrade to a
+    // real registration re-emits 'created' — that matches the old behavior,
+    // where the re-streamed tool_use re-ran the handler.)
+    if (!isReplayableUserInputRequest(request)) return
+    // Auto-approved requests are already executing; non-blocking ones are
+    // automation-facing. Neither needs the user's attention.
+    if (!request.blocking || request.autoApproved) return
+    const agentSlug = request.scope.agentSlug
+    if (!agentSlug) return
+
+    if (request.kind === 'proxy_review' || request.kind === 'x_agent_review') {
+      // Reviews are agent-scoped — attribute the notification to the first
+      // active session, the same heuristic the awaiting projection applies.
+      // No active session (a dashboard-triggered review) → no notification;
+      // the dashboard panel is the surface for those.
+      const sessionId = request.scope.sessionId ?? this.getActiveSessionIdsForAgent(agentSlug)[0]
+      if (!sessionId) return
+      const payload = request.payload as { displayText?: unknown }
+      notificationManager
+        .triggerSessionApiReviewWaiting(
+          sessionId,
+          agentSlug,
+          request.id,
+          typeof payload.displayText === 'string' ? payload.displayText : 'API request review',
+          undefined,
+          request.kind === 'x_agent_review' ? 'agent_action' : 'api_request',
+        )
+        .catch((err) => {
+          console.error('[MessagePersister] Failed to trigger API review notification:', err)
+        })
+      return
+    }
+
+    const sessionId = request.scope.sessionId
+    // Agent-scoped reviews and re-auth requests have no session id and no safe
+    // actionable OS-notification flow; their in-app cards are the prompt.
+    if (!sessionId) return
+    // Defensive type boundary if a future caller violates the agent-scoped
+    // re-auth invariant; these kinds are not accepted notification categories.
+    if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
+    const waitingFor =
+      request.kind === 'capability_review'
+        ? (request.payload as { capability?: unknown }).capability === 'workflows'
+          ? 'capability_review_workflows'
+          : 'capability_review_subagents'
+        : request.kind
+    notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, waitingFor).catch((err) => {
+      console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+    })
+  }
+
+  private broadcastRequestTransition(transition: UserInputRequestTransition): void {
+    const { request } = transition
+    if (!isReplayableUserInputRequest(request)) return
+    // agentSlug MUST be at the top level: the global-stream ACL filter
+    // (notifications.ts) reads only that field and forwards events without
+    // one to every authenticated user — nesting the slug inside scope would
+    // broadcast request payloads tenant-wide in auth mode.
+    const event =
+      transition.type === 'created'
+        ? { type: 'user_request_created', agentSlug: request.scope.agentSlug, request }
+        : {
+            type: 'user_request_resolved',
+            agentSlug: request.scope.agentSlug,
+            requestId: request.id,
+            kind: request.kind,
+            outcome: transition.outcome,
+            scope: request.scope,
+          }
+    // Fail closed: the schema types scope.agentSlug as optional (and '' is
+    // possible), and the ACL filter forwards slug-less events to EVERY
+    // authenticated user — so a request without a verified slug must never
+    // reach the global stream. Its session stream still gets it: those
+    // subscribers are AgentRead-gated per session.
+    if (request.scope.agentSlug) {
+      this.broadcastGlobal(event)
+    }
+    if (request.scope.sessionId) {
+      this.broadcastToSSE(request.scope.sessionId, event)
+    }
+  }
 
   // Subscribe to a session's messages for SSE streaming.
   // Returns a promise that resolves when the WebSocket connection is ready.
@@ -154,18 +453,27 @@ class MessagePersister {
     containerSessionId: string,
     agentSlug?: string
   ): Promise<void> {
-    // Preserve session-lifecycle flags across (re-)subscribe so callers that
+    // Preserve session-lifecycle state across (re-)subscribe so callers that
     // markSessionActive *before* subscribing (e.g. x-agent sync invoke) and
     // SSE reconnects of in-flight sessions don't lose their "currently busy"
-    // state when the listener reattaches.
+    // state when the listener reattaches. The pending-request stores carry
+    // over too: the awaiting cache is only meaningful while its source of
+    // truth survives — recreating them empty would let the next sync clear a
+    // genuinely parked wait.
     const prior = this.streamingStates.get(sessionId)
     const priorIsActive = prior?.isActive ?? false
     const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
     const priorBackgroundTasks = prior?.activeBackgroundTasks ?? new Map()
+    const priorSettledInputRequests = prior?.settledInputRequests ?? new Map()
 
-    // Unsubscribe if already subscribed (this also clears state, which is why
-    // we captured the flags above)
-    this.unsubscribeFromSession(sessionId)
+    // Detach only the transport if already subscribed. NOT unsubscribeFromSession:
+    // that is a full teardown — it drops the session's registry entries, which
+    // must outlive a transport reattach for the same live session.
+    const existingUnsubscribe = this.subscriptions.get(sessionId)
+    if (existingUnsubscribe) {
+      existingUnsubscribe()
+      this.subscriptions.delete(sessionId)
+    }
 
     // Initialize state
     this.streamingStates.set(sessionId, {
@@ -181,16 +489,39 @@ class MessagePersister {
       lastAssistantUsage: null,
       completedSubagentIds: new Set(),
       activeSubagents: new Map(),
-      slashCommands: [],
+      slashCommands: prior?.slashCommands ?? [],
       isAwaitingInput: priorIsAwaitingInput,
-      pendingComputerUseRequests: new Map(),
-      pendingInputRequests: new Map(),
+      settledInputRequests: priorSettledInputRequests,
+      cancelledCapabilityReviews: new Set(),
       lastApiErrorCode: null,
+      lastAssistantMessageId:
+        priorIsActive ? (prior?.lastAssistantMessageId ?? null) : null,
+      assistantMessageIds:
+        priorIsActive ? new Set(prior?.assistantMessageIds ?? []) : new Set(),
+      assistantEntryUuids:
+        priorIsActive ? new Set(prior?.assistantEntryUuids ?? []) : new Set(),
+      lastAssistantText:
+        priorIsActive ? (prior?.lastAssistantText ?? '') : '',
+      queuedTurnCount: priorIsActive ? (prior?.queuedTurnCount ?? 0) : 0,
+      resetAssistantBeforeNextTurnOutput:
+        priorIsActive ? (prior?.resetAssistantBeforeNextTurnOutput ?? false) : false,
       activeBackgroundTasks: priorBackgroundTasks,
+      bgTasksSnapshot: prior?.bgTasksSnapshot ?? null,
+      // Carried with the snapshot it describes — the incoming handshake is what
+      // decides whether both are still valid.
+      processInstanceId: prior?.processInstanceId ?? null,
       pendingDeliverFiles: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
       lastResultSubtype: null,
+      lastResultCleanSuccess: false,
+      isRetrying: false,
+      // Carried over so a transport reattach mid-run doesn't lose the verdict
+      // before the refresh below lands.
+      releaseStreamOnSettle: prior?.releaseStreamOnSettle ?? false,
+      promotedToInteractive: prior?.promotedToInteractive ?? false,
     })
+
+    this.resolveReleaseStreamOnSettle(sessionId, agentSlug)
 
     // Store container client for reconnection checks
     this.containerClients.set(sessionId, client)
@@ -213,6 +544,35 @@ class MessagePersister {
     await ready
   }
 
+  // Resolve whether this subscription belongs to an unpromoted cron/webhook
+  // session. Non-blocking: automation runs last long enough that the verdict
+  // lands well before finalizeIdle consumes it, and an unresolved read just
+  // means the stream is kept (the pre-fix behavior). Scheduler and trigger
+  // paths register metadata before subscribing, so the read can't miss them.
+  private resolveReleaseStreamOnSettle(sessionId: string, agentSlug?: string): void {
+    if (!agentSlug) return
+    const stateRef = this.streamingStates.get(sessionId)
+    void getSessionMetadata(agentSlug, sessionId)
+      .then((meta) => {
+        // A resubscribe replaced the state and kicked off its own resolution.
+        const current = this.streamingStates.get(sessionId)
+        if (!current || current !== stateRef) return
+        // Promote wins: its marker is set synchronously, this read may be stale.
+        if (current.promotedToInteractive) return
+        current.releaseStreamOnSettle = Boolean(
+          (meta?.isScheduledExecution || meta?.isWebhookExecution) &&
+            !meta?.promotedToInteractive
+        )
+      })
+      .catch((error) => {
+        console.warn('[MessagePersister] Failed to resolve automation stream policy:', error)
+        captureException(error, {
+          tags: { area: 'container', op: 'resolveReleaseStreamOnSettle' },
+          extra: { sessionId, agentSlug },
+        })
+      })
+  }
+
   // Unsubscribe from a session
   unsubscribeFromSession(sessionId: string): void {
     const unsubscribe = this.subscriptions.get(sessionId)
@@ -221,14 +581,33 @@ class MessagePersister {
       this.subscriptions.delete(sessionId)
     }
     this.streamingStates.delete(sessionId)
+    // Shadow registry (Phase 2): every session-scoped entry dies with the state.
+    userInputRequestManager.dropSessionRequests(sessionId, 'invalidated')
     this.containerClients.delete(sessionId)
+    // Safe to drop: the container's persisted grants are authoritative, so a
+    // resubscribed session repopulates this on the next launch with one GET.
+    this.sessionCapabilityGrants.delete(sessionId)
   }
 
   // Single idle finalizer — flips state and broadcasts to session + global
   // listeners. Used by the result handler (legacy result-driven idle), the
   // session_state_changed handler (authoritative idle), and markSessionInactive.
   private finalizeIdle(sessionId: string, state: StreamingState): void {
+    // The session is truly settled: persist the automation outcome for a turn
+    // that ended in a clean success. (Failures were already persisted at their
+    // result — an error ends the turn immediately. Interrupts never set the
+    // flag, and markSessionInterrupted doesn't route through here anyway.)
+    if (state.lastResultCleanSuccess) {
+      state.lastResultCleanSuccess = false
+      this.persistAutomationStatus(sessionId, state, 'succeeded')
+    }
     state.isActive = false
+    // Teardown resets the awaiting cache silently alongside isActive (an
+    // inactive session is never awaiting). isSessionAwaitingInput reports this
+    // bit raw, so leaving it set would strand "needs input" on an idle session
+    // — e.g. the markSessionIdle revert after markSessionActive's sync picked
+    // up an open agent-scoped review.
+    state.isAwaitingInput = false
     this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
     this.broadcastGlobal({
       type: 'session_idle',
@@ -236,6 +615,30 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: false,
     })
+    this.maybeReleaseSettledAutomationStream(sessionId, state)
+  }
+
+  // Tear down a settled automation stream. Sync: an async gap races the wake path's isSubscribed check.
+  // Gated on stateEventsAuthority so a legacy idle can't drop a queued turn's stream.
+  private maybeReleaseSettledAutomationStream(sessionId: string, state: StreamingState): void {
+    if (
+      state.releaseStreamOnSettle &&
+      state.stateEventsAuthority &&
+      this.subscriptions.has(sessionId)
+    ) {
+      console.log(`[MessagePersister] Releasing settled automation stream for session ${sessionId}`)
+      this.unsubscribeFromSession(sessionId)
+    }
+  }
+
+  // Revert an optimistic markSessionActive when a host-initiated send fails
+  // before reaching the container (e.g. a scheduled wake delivery error). The
+  // session never actually started a turn, so flip it back to idle rather than
+  // leaving a phantom "working" state until some later retry succeeds.
+  markSessionIdle(sessionId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (!state?.isActive) return
+    this.finalizeIdle(sessionId, state)
   }
 
   // Check if a session is currently active (processing user request)
@@ -310,7 +713,7 @@ class MessagePersister {
         }
         if (Date.now() - startedAt > timeoutMs) {
           cleanup()
-          reject(new Error(`waitForIdle timeout after ${timeoutMs}ms`))
+          reject(new WaitForIdleTimeoutError(timeoutMs))
           return
         }
         timer = setTimeout(tick, 250)
@@ -325,36 +728,194 @@ class MessagePersister {
     return state?.isAwaitingInput ?? false
   }
 
-  // Get pending computer use requests for a session (for SSE replay on reconnect)
-  getPendingComputerUseRequests(sessionId: string): Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> {
-    const state = this.streamingStates.get(sessionId)
-    if (!state) return []
-    return Array.from(state.pendingComputerUseRequests.values())
+  /**
+   * Project the session's streaming state onto a single activity label, using
+   * the same precedence as the app's activity indicator. Streamed assistant
+   * TEXT (not a thinking or tool block) owns the reply surface, so it yields the
+   * placeholder; a thinking/tool block does not. See {@link SessionActivity}.
+   */
+  private computeActivity(state: StreamingState): SessionActivity {
+    if (!state.isActive) return 'idle'
+    if (state.isAwaitingInput) return 'awaiting'
+    // Mirror the app's busy precedence exactly: compacting > retrying > thinking
+    // > working. Checked BEFORE 'streaming' so a stale isStreaming (e.g. an
+    // api_retry mid-stream) can't make chat yield the placeholder while the app
+    // honestly shows "Compacting…"/"Retrying…" for the same underlying state.
+    if (state.isCompacting) return 'compacting'
+    if (state.isRetrying) return 'retrying'
+    if (state.currentThinking) return 'thinking'
+    // Assistant TEXT streaming (not a tool block) owns the reply surface, so it
+    // yields the placeholder. Thinking is already handled above.
+    if (state.isStreaming && !state.currentToolUse) return 'streaming'
+    return 'working'
   }
 
-  // Get pending user-input request broadcasts for a session (for SSE replay on (re)connect).
-  // Returns the exact event payloads that were broadcast, so the route can re-send them verbatim.
-  getPendingInputRequests(sessionId: string): Array<{ type: string; toolUseId: string; [k: string]: unknown }> {
+  // Public snapshot of the activity — the chat manager's per-session tick samples it
+  // each interval, and the subscribe-time reconcile reads it for a cold start.
+  getSessionActivity(sessionId: string): SessionActivity {
     const state = this.streamingStates.get(sessionId)
-    if (!state) return []
-    return Array.from(state.pendingInputRequests.values())
+    return state ? this.computeActivity(state) : 'idle'
+  }
+
+  // Open computer-use approvals for a session, projected out of the registry.
+  // Drives the turn-cancel sweep (which must reject each one on the container)
+  // and the lifecycle tests' view of what is still parked.
+  getPendingComputerUseRequests(sessionId: string): Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> {
+    return userInputRequestManager
+      .getOpenRequestsForSession(sessionId)
+      // Auto-approved requests are registered only for the decision gate —
+      // nothing may treat a command that is already executing as parked.
+      .filter((r) => r.kind === 'computer_use' && !r.autoApproved)
+      .map((r) => {
+        const payload = r.payload as {
+          method?: string
+          params?: Record<string, unknown>
+          permissionLevel?: string
+          appName?: string
+        }
+        return {
+          toolUseId: r.id,
+          method: payload.method ?? '',
+          params: payload.params ?? {},
+          permissionLevel: payload.permissionLevel ?? '',
+          appName: payload.appName,
+          agentSlug: r.scope.agentSlug,
+        }
+      })
+  }
+
+  // Requests a decision route settled while their transcript tool_result is
+  // still held back by parallel siblings. The messages route stamps these
+  // outcomes onto the transcript.
+  getSettledInputRequests(sessionId: string): Map<string, UserInputRequestOutcome> {
+    return this.streamingStates.get(sessionId)?.settledInputRequests ?? new Map()
+  }
+
+  // Record an "Allow for this session" capability grant (decision route calls
+  // this when the user picks session scope) so later launches in the session
+  // don't produce review cards the container will never wait on.
+  grantSessionCapability(sessionId: string, capability: 'subagents' | 'workflows'): void {
+    const grants = this.sessionCapabilityGrants.get(sessionId) ?? new Set()
+    grants.add(capability)
+    this.sessionCapabilityGrants.set(sessionId, grants)
+  }
+
+  hasSessionCapabilityGrant(sessionId: string, capability: 'subagents' | 'workflows'): boolean {
+    return this.sessionCapabilityGrants.get(sessionId)?.has(capability) ?? false
+  }
+
+  // Drop a decided capability review from the reconnect-replay store and tell live
+  // clients to close the card. Unlike other input requests this can't wait for the
+  // tool_result cleanup at handleToolResult — an approved Task/Workflow runs for
+  // minutes before its result arrives, and until then a refresh would replay (and
+  // other connected clients would keep) a stale approval card.
+  completeCapabilityReview(
+    sessionId: string,
+    toolUseId: string,
+    outcome: UserInputRequestOutcome = 'answered',
+  ): void {
+    const state = this.streamingStates.get(sessionId)
+    if (!state) return
+    userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
+    this.syncSessionAwaiting(sessionId)
+  }
+
+  // Settle a stream-store request the moment its decision succeeds. The
+  // transcript tool_result normally does this cleanup, but parallel tool
+  // calls hold every sibling's result until the LAST one resolves — without
+  // an explicit settle the decided entry stays open: the snapshot keeps
+  // serving it, a reload resurrects the card, and the stale card can act on
+  // a request that was already declined. Mirrors completeCapabilityReview;
+  // the real tool_result arriving later is a no-op. Callers that only know
+  // the toolUseId (chat connectors) pass sessionId undefined — the registry
+  // entry's scope supplies it.
+  completeInputRequest(
+    sessionId: string | undefined,
+    toolUseId: string,
+    outcome: UserInputRequestOutcome,
+  ): void {
+    const scopeSessionId =
+      sessionId ?? userInputRequestManager.getOpenRequest(toolUseId)?.scope.sessionId
+    if (!scopeSessionId) return
+    const state = this.streamingStates.get(scopeSessionId)
+    const settled = userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
+    if (state && settled) {
+      state.settledInputRequests.set(toolUseId, outcome)
+    }
+    if (settled) {
+      // Same broadcast the tool_result path emits — the resolving tab already
+      // removed its card optimistically; every other tab drops it off this
+      // event. Card removal is idempotent, so the later real tool_result
+      // broadcasting again is harmless.
+      this.broadcastToSSE(scopeSessionId, {
+        type: 'tool_result',
+        toolUseId,
+        result: outcome === 'answered' ? 'User provided input' : 'User declined the request',
+        isError: outcome !== 'answered',
+      })
+    }
+    this.syncSessionAwaiting(scopeSessionId)
   }
 
   // Clear a pending computer use request (after approval/rejection)
-  clearPendingComputerUseRequest(sessionId: string, toolUseId: string): void {
-    const state = this.streamingStates.get(sessionId)
-    if (state) {
-      state.pendingComputerUseRequests.delete(toolUseId)
-      // Broadcast so the sidebar updates immediately.
-      // Don't clear isAwaitingInput here — other input types (secrets, questions, etc.)
-      // may still be pending. The flag is cleared when the tool result arrives in the stream.
-      if (state.pendingComputerUseRequests.size === 0) {
-        this.broadcastGlobal({
-          type: 'session_input_provided',
-          sessionId,
-          agentSlug: state.agentSlug,
-        })
-      }
+  clearPendingComputerUseRequest(
+    sessionId: string,
+    toolUseId: string,
+    outcome: UserInputRequestOutcome = 'answered',
+  ): void {
+    userInputRequestManager.resolveIfInStore(toolUseId, 'computer_use', outcome)
+    this.syncSessionAwaiting(sessionId)
+  }
+
+  // When a new message arrives while the session is awaiting user input, cancel the
+  // pending request(s) so the message starts a fresh turn instead of deadlocking behind
+  // the blocked tool.
+  //
+  // We interrupt FIRST — aborting the parked query outright — then cleanup-reject each
+  // pending request. Order matters: rejecting first returns a tool result and RESUMES the
+  // turn, letting the model emit a filler reply ("Go ahead …") that the user's forwarded
+  // message then anchors to (it reads as a reply to the filler, not to the original ask).
+  // Aborting at the parked point means the model never receives a tool result and never
+  // speaks. The abort also unwinds a subagent's parked Task, so every awaiting type —
+  // top-level (question / secret / file / connected_account / remote_mcp) and subagent
+  // (browser_input / script_run / computer_use) — takes this one path. After the abort the
+  // reject is pure cleanup: its reason is never read by the model.
+  //
+  // No-op when the session is not awaiting input. (This guard also makes rapid double-messages
+  // idempotent when sends are serialized — the chat path serializes per chat via messageQueues;
+  // the app send route does not, so two truly concurrent sends there can both pass it.)
+  // Interrupt/reject failures are swallowed: a best-effort cancel must never block the message.
+  async cancelAwaitingInput(sessionId: string, agentSlug: string): Promise<void> {
+    if (!this.isSessionAwaitingInput(sessionId)) return
+
+    // Snapshot the pending ids of both stores before interrupting: the stream
+    // store is cleared by markSessionInterrupted's session_idle, and computer
+    // use survives that boundary deliberately. Recovered synthetics are
+    // INCLUDED — they are exactly the ones whose container-side pending may
+    // still be live (the host missed the original delivery), so skipping them
+    // would leave an abandoned request for a late click to land on.
+    const inputRequestIds = userInputRequestManager.getStoreIdsForSession(sessionId, 'stream')
+    const computerUseIds = this.getPendingComputerUseRequests(sessionId).map((r) => r.toolUseId)
+
+    // Interrupt FIRST: abort the parked query so it can never resume into a filler reply.
+    await this.interruptContainerSession(agentSlug, sessionId).catch(
+      (e) => console.error(`[MessagePersister] cancelAwaitingInput interrupt failed for ${sessionId}:`, e),
+    )
+    await this.markSessionInterrupted(sessionId)
+
+    // Clear the host-side computer_use bookkeeping explicitly — session_idle only clears
+    // the stream store, so a leftover entry would replay a phantom approval card on reconnect.
+    for (const id of computerUseIds) {
+      userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
+    }
+
+    // Cleanup-reject each pending request on the CONTAINER: the query is already aborted, so the
+    // reason is never read by the model — this just clears the container-side pending entry so a
+    // late resolve/tap can't land on an abandoned request.
+    for (const toolUseId of [...inputRequestIds, ...computerUseIds]) {
+      await this.rejectContainerInput(agentSlug, toolUseId, 'Superseded: the user sent a new message.').catch(
+        (e) => console.error(`[MessagePersister] cancelAwaitingInput reject failed for ${toolUseId}:`, e),
+      )
     }
   }
 
@@ -371,12 +932,14 @@ class MessagePersister {
     }
   }
 
-  getActiveBackgroundTasks(sessionId: string): Array<{ taskId: string; startedAt: number }> {
+  getActiveBackgroundTasks(sessionId: string): Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> {
     const state = this.streamingStates.get(sessionId)
     if (!state) return []
     return Array.from(state.activeBackgroundTasks.entries()).map(([taskId, info]) => ({
       taskId,
       startedAt: info.startedAt,
+      isWorkflow: info.isWorkflow,
+      isSubagent: info.isSubagent,
     }))
   }
 
@@ -480,11 +1043,18 @@ class MessagePersister {
       state.isStreaming = false
       state.isActive = false
       state.isAwaitingInput = false
+      state.lastResultCleanSuccess = false
       state.currentText = ''
       state.currentToolUse = null
       state.currentToolInput = ''
       state.activeSubagents.clear()
       state.activeBackgroundTasks.clear()
+      // Stop replaces the CLI process, so its background tasks are gone and no
+      // terminal signal or removal snapshot will ever arrive for them. Dropping
+      // only the incremental map would leave the level set stale for the life of
+      // the session — every later turn would end waiting-background, never idle.
+      state.bgTasksSnapshot = null
+      this.stopAllWorkflowTailers(sessionId)
     }
 
     // Broadcast to session-specific clients
@@ -524,6 +1094,30 @@ class MessagePersister {
     this.broadcastToSSE(sessionId, { type: 'session_updated' })
   }
 
+  private resetSessionCompleteResponse(state: StreamingState): void {
+    state.lastAssistantMessageId = null
+    state.lastAssistantText = ''
+  }
+
+  /**
+   * Start a non-blocking snapshot of the transcript's observed byte boundary
+   * when the terminal frame arrives. The CLI owns transcript writes in another
+   * process, so this is not a cross-process barrier; it simply gives the later
+   * context lookup a same-file bound without blocking the WebSocket handler.
+   */
+  private async getSessionTranscriptEndOffset(
+    agentSlug: string,
+    sessionId: string,
+  ): Promise<number | null> {
+    try {
+      return (await fs.promises.stat(
+        getSessionJsonlPath(agentSlug, sessionId),
+      )).size
+    } catch {
+      return null
+    }
+  }
+
   // Mark session as active (when user sends a message)
   markSessionActive(sessionId: string, agentSlug?: string): void {
     let state = this.streamingStates.get(sessionId)
@@ -543,13 +1137,23 @@ class MessagePersister {
         activeSubagents: new Map(),
         slashCommands: [],
         isAwaitingInput: false,
-        pendingComputerUseRequests: new Map(),
-        pendingInputRequests: new Map(),
+        settledInputRequests: new Map(),
+        cancelledCapabilityReviews: new Set(),
         lastApiErrorCode: null,
+        lastAssistantMessageId: null,
+        assistantMessageIds: new Set(),
+        assistantEntryUuids: new Set(),
+        lastAssistantText: '',
+        queuedTurnCount: 0,
+        resetAssistantBeforeNextTurnOutput: false,
         activeBackgroundTasks: new Map(),
+        bgTasksSnapshot: null,
+        processInstanceId: null,
         pendingDeliverFiles: new Map(),
         stateEventsAuthority: false,
         lastResultSubtype: null,
+      lastResultCleanSuccess: false,
+        isRetrying: false,
       }
       this.streamingStates.set(sessionId, state)
       if (this.capture && agentSlug) {
@@ -558,14 +1162,35 @@ class MessagePersister {
         this.capture.recordNote(sessionId, 'state_created', { agentSlug }).catch(() => {})
       }
     }
+    const wasActive = state.isActive
     state.isActive = true
     state.isInterrupted = false // Reset interrupted flag on new message
     state.isAwaitingInput = false // Reset awaiting input on new message
+    state.isRetrying = false // Reset retry flag on new message
+    // Reset compaction/thinking too, mirroring the app's session_active reset: a
+    // turn that ended mid-compaction/-thinking (error/interrupt before the clearing
+    // event) must not wedge the next turn's label. State is reused across turns.
+    state.isCompacting = false
+    state.currentThinking = false
+    state.currentAssistantMessageId = null
+    state.currentThinkingBlockIndex = null
     state.lastApiErrorCode = null // Clear previous API error on new message
     // Clear the previous turn's result subtype so a late idle from an
     // already-finished (or interrupted) run can't fire a stale "success"
     // completion notification against the turn this message is starting.
     state.lastResultSubtype = null
+    state.lastResultCleanSuccess = false
+    // Re-marking an already-active session is how queued/steering messages are
+    // accepted mid-turn. Preserve the current candidate in that case; the next
+    // assistant message group will replace it. A genuinely new turn must never
+    // inherit the prior turn's answer.
+    if (!wasActive) {
+      this.resetSessionCompleteResponse(state)
+      state.queuedTurnCount = 0
+      state.resetAssistantBeforeNextTurnOutput = false
+    } else {
+      state.queuedTurnCount += 1
+    }
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
@@ -580,13 +1205,30 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: true,
     })
+
+    // The session_active broadcast above wiped the previous turn's parked
+    // requests, so the projection here reflects only waits that genuinely
+    // survive a new message — an agent-scoped proxy/x-agent review. Syncing
+    // makes a session that joins mid-review show awaiting immediately (the
+    // review used to mark only the sessions active at request time).
+    this.syncSessionAwaiting(sessionId)
   }
 
-  // Mark session as awaiting user input and broadcast globally
-  private markSessionAwaitingInput(sessionId: string): void {
+  // Recompute the derived awaiting projection for a session and broadcast on
+  // the edges. `state.isAwaitingInput` is only a cache of the registry's
+  // `isSessionAwaiting` projection — this is the ONE place that flips it in
+  // response to requests opening/settling (turn-boundary teardown paths reset
+  // it directly, alongside isActive, without broadcasting). An inactive
+  // session is never awaiting: its parked requests died with the turn, even
+  // when a stale entry (or an agent-scoped review) is still open.
+  private syncSessionAwaiting(sessionId: string): void {
     const state = this.streamingStates.get(sessionId)
-    if (state && !state.isAwaitingInput) {
-      state.isAwaitingInput = true
+    if (!state) return
+    const derived =
+      state.isActive && userInputRequestManager.isSessionAwaiting(sessionId, state.agentSlug)
+    if (derived === state.isAwaitingInput) return
+    state.isAwaitingInput = derived
+    if (derived) {
       this.broadcastGlobal({
         type: 'session_awaiting_input',
         sessionId,
@@ -597,20 +1239,157 @@ class MessagePersister {
           console.error('[MessagePersister] Failed to promote automated session:', err)
         })
       }
+    } else {
+      this.broadcastGlobal({
+        type: 'session_input_provided',
+        sessionId,
+        agentSlug: state.agentSlug,
+      })
     }
   }
 
+  // Agent-wide recompute: agent-scoped requests (proxy / x-agent reviews) block
+  // every session of the agent, so ReviewManager calls this after each review
+  // opens or settles. Replaces the registerAwaitingBlockerSource predicate and
+  // the mark/clear pair ReviewManager used to drive imperatively.
+  syncAgentSessionsAwaiting(agentSlug: string): void {
+    for (const [sessionId, state] of this.streamingStates) {
+      if (state.agentSlug === agentSlug) this.syncSessionAwaiting(sessionId)
+    }
+  }
+
+  /**
+   * Register a stream-store request. Every per-kind handler ends here — the
+   * registry entry IS the request, and its 'created' transition is what puts
+   * the ask on the wire, in the snapshot, and in front of a notification.
+   *
+   * `register` is first-delivery-wins (and upgrades a recovered synthetic), so
+   * a tool_use that arrives on two delivery paths still yields one request.
+   */
+  private registerStreamRequest(
+    sessionId: string,
+    kind: StreamRequestKind,
+    toolUseId: string,
+    payload: Record<string, unknown>,
+    opts: { agentSlug?: string; parentToolUseId?: string; autoApproved?: boolean } = {},
+  ): void {
+    userInputRequestManager.register({
+      id: toolUseId,
+      kind,
+      scope: { agentSlug: opts.agentSlug, sessionId },
+      blocking: true,
+      autoApproved: opts.autoApproved === true,
+      parentToolUseId: opts.parentToolUseId,
+      payload,
+    })
+  }
+
+  // Surface host-blocking user-input tools (main + sidechain). script_run /
+  // computer-use / capability-review keep their own handlers (conditional await).
+  // First delivery wins: stream stop and complete-assistant can both carry the same tool_use.
+  private dispatchBlockingUserInputTool(
+    sessionId: string,
+    toolName: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string,
+    parentToolUseId?: string,
+  ): void {
+    // A recovered stub does NOT dedupe: transcript recovery can synthesize a
+    // payload-less entry before the real delivery lands, and that delivery must
+    // go through to upgrade the registry entry (register() replaces recovered
+    // synthetics; clients never got a renderable event for the stub).
+    const existing = userInputRequestManager.getOpenRequest(toolUseId)
+    if (existing && isReplayableUserInputRequest(existing)) return
+
+    if (toolName === 'AskUserQuestion') {
+      this.handleAskUserQuestionTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    } else if (toolName === 'mcp__user-input__request_secret') {
+      this.handleSecretRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    } else if (toolName === 'mcp__user-input__request_connected_account') {
+      this.handleConnectedAccountRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    } else if (toolName === 'mcp__user-input__request_file') {
+      this.handleFileRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    } else if (toolName === 'mcp__user-input__request_remote_mcp') {
+      this.handleRemoteMcpRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    } else if (toolName === 'mcp__user-input__request_browser_input') {
+      this.handleBrowserInputRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    }
+
+    // Only tools with 'request_' prefix actually block waiting for user response
+    // (schedule_task, deliver_file, search_* resolve immediately and don't block).
+    // computer-use AND request_script_run sync awaiting in their own handlers.
+    // The handler above already broadcast the request event, which registered
+    // it — the sync just picks the new entry up.
+    if (isBlockingUserInputToolName(toolName)) {
+      this.syncSessionAwaiting(sessionId)
+    }
+  }
+
+  // Blocking user-input tool name → the request kind its handler registers.
+  // Recovery synthesizes registry envelopes of that kind when the original
+  // delivery was missed. Keep in sync with dispatchBlockingUserInputTool.
+  private static readonly REQUEST_KIND_BY_TOOL_NAME: Record<string, StreamRequestKind> = {
+    AskUserQuestion: 'question',
+    'mcp__user-input__request_secret': 'secret',
+    'mcp__user-input__request_connected_account': 'connected_account',
+    'mcp__user-input__request_file': 'file',
+    'mcp__user-input__request_remote_mcp': 'remote_mcp',
+    'mcp__user-input__request_browser_input': 'browser_input',
+  }
+
+  // Recover awaiting-input state from persisted messages when the one-shot
+  // request stream event was missed but the unresolved tool call is visible.
+  // Re-establishes the missed requests in the stream store and the registry
+  // (the derived awaiting projection needs real entries — there is no forced
+  // bit anymore), then recomputes awaiting. Entries are marked `recovered` so
+  // SSE replay skips them: they carry no payload, and connected clients render
+  // the card from the transcript that triggered this recovery in the first
+  // place. Resolution needs no special path — their tool_result (or the next
+  // turn boundary) clears them like any other stream-store entry.
+  recoverSessionAwaitingInput(
+    sessionId: string,
+    agentSlug: string | undefined,
+    unresolved: Array<{ toolUseId: string; toolName: string }>,
+  ): void {
+    const state = this.streamingStates.get(sessionId)
+    if (!state?.isActive) return
+    if (agentSlug && !state.agentSlug) {
+      state.agentSlug = agentSlug
+    }
+    for (const { toolUseId, toolName } of unresolved) {
+      const kind = MessagePersister.REQUEST_KIND_BY_TOOL_NAME[toolName]
+      if (!kind || userInputRequestManager.getOpenRequest(toolUseId)) continue
+      this.registerStreamRequest(
+        sessionId,
+        kind,
+        toolUseId,
+        { recovered: true },
+        { agentSlug: state.agentSlug },
+      )
+    }
+    this.syncSessionAwaiting(sessionId)
+  }
+
   // Promote an automated session (cron/webhook/chat) to a regular session so it
-  // appears in the sidebar and receives completion notifications.
-  private async promoteAutomatedSession(sessionId: string, agentSlug: string): Promise<void> {
+  // appears in the sidebar and receives completion notifications. Public: the
+  // notification manager promotes on session_waiting so blocked automations
+  // surface in session lists instead of accruing unread rows nothing displays.
+  async promoteAutomatedSession(sessionId: string, agentSlug: string): Promise<void> {
     const meta = await getSessionMetadata(agentSlug, sessionId)
-    if (!meta) return
-    if (meta.promotedToInteractive) return
-    if (!meta.isScheduledExecution && !meta.isWebhookExecution && !meta.isChatIntegrationSession) return
+    if (!isHiddenAutomatedSession(meta)) return
 
     await updateSessionMetadata(agentSlug, sessionId, {
       promotedToInteractive: true,
     })
+
+    // Promoted sessions behave interactive from here on — keep their stream
+    // alive across settles like any other interactive session.
+    const state = this.streamingStates.get(sessionId)
+    if (state) {
+      state.promotedToInteractive = true
+      state.releaseStreamOnSettle = false
+    }
 
     console.log(`[MessagePersister] Promoted automated session ${sessionId} to interactive (agent: ${agentSlug})`)
 
@@ -622,37 +1401,97 @@ class MessagePersister {
     })
   }
 
+  private persistAutomationStatus(
+    sessionId: string,
+    state: StreamingState,
+    automationStatus: 'succeeded' | 'failed',
+  ): void {
+    // Guard logic lives in finalizeAutomationStatus (one serialized
+    // read-then-maybe-write). Interactive sessions pay the metadata read only
+    // once: 'not-automation' is cached for the rest of the subscription.
+    if (!state.agentSlug || state.notAutomationSession) return
+    const agentSlug = state.agentSlug
+    void finalizeAutomationStatus(agentSlug, sessionId, automationStatus)
+      .then((result) => {
+        if (result === 'not-automation') state.notAutomationSession = true
+      })
+      .catch((err) => {
+        console.error('[MessagePersister] Failed to persist automation status:', err)
+      })
+  }
+
+  /**
+   * SDK `system`/`informational` banner — the loop's generic text channel
+   * (status lines, hook feedback, slash-command output). The one shape that
+   * MUST surface is a hook block (e.g. a workspace-authored UserPromptSubmit
+   * hook rejecting a prompt): the model never sees the prompt, the CLI writes
+   * nothing to the transcript, and without this the session just goes idle —
+   * an agent that silently ignores input. Persist warning-level banners to the
+   * transcript JSONL (reload-safe), then nudge clients to refetch.
+   */
+  private handleInformational(
+    sessionId: string,
+    state: StreamingState,
+    content: { uuid?: string; content?: string; level?: string; prevent_continuation?: boolean },
+  ): void {
+    const isBlocking = content.prevent_continuation === true
+    const isWarning = content.level === 'warning' || content.level === 'error'
+    // Info-level chatter (non-blocking status lines) stays stream-only.
+    if (!isBlocking && !isWarning) return
+    const text = typeof content.content === 'string' ? content.content : ''
+    if (!text) return
+    if (!state.agentSlug) {
+      console.warn(`[MessagePersister] Dropping informational banner for ${sessionId}: no agent slug`)
+      return
+    }
+    void appendInformationalEntry(state.agentSlug, sessionId, {
+      uuid: content.uuid || randomUUID(),
+      content: text,
+      level: content.level,
+    })
+      .then(() => {
+        // The banner lives in the transcript now — refetch materializes it.
+        this.broadcastToSSE(sessionId, { type: 'messages_updated' })
+      })
+      .catch((err) => {
+        console.error('[MessagePersister] Failed to persist informational banner:', err)
+      })
+  }
+
   // Broadcast an arbitrary event to all SSE clients for a session (public)
   broadcastSessionEvent(sessionId: string, data: unknown): void {
     this.broadcastToSSE(sessionId, data)
   }
 
-  // One-shot user-input request events that a late-joining client must be able to
-  // recover on (re)connect. Keep in sync with the /stream route's replay loop.
-  private static readonly INPUT_REQUEST_TYPES = new Set([
-    'secret_request',
-    'connected_account_request',
-    'user_question_request',
-    'file_request',
-    'remote_mcp_request',
-    'script_run_request',
-    'browser_input_request',
-  ])
-
   // Broadcast to SSE clients
   private broadcastToSSE(sessionId: string, data: unknown): void {
     this.capture?.recordOutput(sessionId, data)
-    // Track/clear pending user-input requests so the /stream route can replay them to
-    // clients that connect after the one-shot broadcast (the e2e late-join flake, and a
-    // real reconnect/refresh while the agent is awaiting input). Turn boundaries clear them.
-    const evt = data as { type?: string; toolUseId?: string } | null
-    if (evt && typeof evt.type === 'string') {
+    // Turn boundaries settle whatever the last turn left parked. That is the
+    // only request bookkeeping on the broadcast path — registration itself
+    // lives in the per-kind handlers.
+    const evt = data as { type?: string } | null
+    if (evt && (evt.type === 'session_active' || evt.type === 'session_idle')) {
       const state = this.streamingStates.get(sessionId)
       if (state) {
-        if (evt.type === 'session_active' || evt.type === 'session_idle') {
-          state.pendingInputRequests.clear()
-        } else if (MessagePersister.INPUT_REQUEST_TYPES.has(evt.type) && typeof evt.toolUseId === 'string') {
-          state.pendingInputRequests.set(evt.toolUseId, evt as { type: string; toolUseId: string })
+        // The turn boundary lands the held-back sibling results in the
+        // transcript — the settled-outcome stamps are no longer needed.
+        state.settledInputRequests.clear()
+        // A new turn supersedes parked asks; an idle boundary cancels them.
+        userInputRequestManager.clearSessionStreamRequests(
+          sessionId,
+          evt.type === 'session_active' ? 'superseded' : 'cancelled',
+        )
+        if (evt.type === 'session_active') {
+          // A new turn also supersedes computer-use approvals left over from
+          // a previous one. Historically these were never cleared at turn
+          // boundaries (only by a decision or cancelAwaitingInput), so
+          // stale entries could survive an idle/interrupt — harmless when
+          // awaiting was an imperative bit, but the derived projection would
+          // read them as a live wait and flag the fresh turn as awaiting.
+          // (Idle keeps them so a still-parked approval survives a reconnect.)
+          for (const id of userInputRequestManager.getStoreIdsForSession(sessionId, 'computer_use')) {
+            userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
+          }
         }
       }
     }
@@ -678,8 +1517,17 @@ class MessagePersister {
     if (!state) return
 
     // Skip processing if session was interrupted (prevents race conditions)
-    // Allow 'result' through as it indicates the container actually stopped
-    if (state.isInterrupted && message.content?.type !== 'result') {
+    // Allow 'result' through as it indicates the container actually stopped.
+    // `process_restarted` is allowed for the same reason: the interrupt path itself
+    // restarts the query, so this is a fact about which runtime we are now
+    // talking to, not turn content. Swallowing it leaves the recorded process
+    // identity a generation behind, and the next reattach then reads a changed
+    // name as a restart and drops background tasks that are actually running.
+    if (
+      state.isInterrupted &&
+      message.content?.type !== 'result' &&
+      message.content?.subtype !== 'process_restarted'
+    ) {
       return
     }
 
@@ -691,14 +1539,22 @@ class MessagePersister {
     // carrying this task's id + status. The busy path (task settles while a foreground
     // tool is in flight) is handled separately via `task_updated` in the system switch
     // below — that path does NOT emit a matching `task_notification`.
-    if (content.type === 'system' && state.activeBackgroundTasks.size > 0) {
+    // Runs whether or not the id is in the incremental map: the snapshot can
+    // carry ids the map never had (a subagent's own nested background agents
+    // notify onto the lead session), and those must retire here or they pin
+    // the union forever. clearBackgroundTask no-ops the broadcast side for
+    // anything untracked.
+    if (content.type === 'system') {
       const taskId = content.task_id as string | undefined
-      if (taskId && content.status && state.activeBackgroundTasks.has(taskId)) {
-        state.activeBackgroundTasks.delete(taskId)
-        this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
-        this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+      if (taskId && content.status) {
+        this.clearBackgroundTask(sessionId, state, taskId)
       }
     }
+
+    // A workflow's REAL runId arrives only in its tool result (the next message after
+    // task_started). Wire it up here: emit workflow_started + start the journal tailer
+    // keyed by the real `wf_…` runId (the on-disk dir name), not the task_id.
+    this.wireWorkflowFromToolResult(sessionId, content, state)
 
     // Filter sidechain (subagent) messages — they should not affect main streaming state
     // SDK emitted format uses parent_tool_use_id (non-null for subagent messages)
@@ -707,8 +1563,67 @@ class MessagePersister {
       return
     }
 
+    // Complete top-level frames correspond to durable parent-transcript writes.
+    // Keep the warm per-agent summary current without restatting every sibling.
+    // Replayed catch-up frames are excluded: SDK frames carry no timestamp on
+    // the wire, so the host stamps arrival time, and a late-join replay to an
+    // idle session would masquerade as fresh activity — the directory-mtime and
+    // TTL reconciliation already repair anything a missed turn-end left behind.
+    if (
+      state.agentSlug &&
+      !content.replayed &&
+      (content.type === 'assistant' || content.type === 'user' || content.type === 'result')
+    ) {
+      recordSessionActivity(state.agentSlug, sessionId, message.timestamp)
+    }
+
+    // Container late-join catch-up: the runtime replays the last turn's
+    // terminal frames (informational/result/idle, marked `replayed: true`)
+    // when a WebSocket attaches after the turn already ended — e.g. a
+    // hook-blocked prompt completing before createSession's subscriber
+    // exists. Only act on them when this session actually missed the turn
+    // (still marked active); a settled session already processed the live
+    // copies, and replaying them would re-fire terminal broadcasts.
+    if (content.replayed && !state.isActive) {
+      return
+    }
+
     switch (content.type) {
       case 'assistant': {
+        if (state.resetAssistantBeforeNextTurnOutput) {
+          this.resetSessionCompleteResponse(state)
+          state.resetAssistantBeforeNextTurnOutput = false
+        }
+        // Preserve exactly the text portion the transcript UI can render. The
+        // SDK persists one complete frame per content block, so several frames
+        // can share an assistant message id (thinking, text, tool use). Merge
+        // their text here and let a newer id replace the candidate entirely.
+        const assistantMessageId =
+          typeof content.message?.id === 'string' && content.message.id
+            ? content.message.id
+            : null
+        const assistantEntryUuid =
+          typeof content.uuid === 'string' && content.uuid ? content.uuid : null
+        const assistantText = this.extractAssistantText(content)
+        // Resumed CLI processes can replay already-persisted frames. The
+        // renderer deduplicates those by transcript UUID before merging, so
+        // ignore a duplicate even if it arrives after a newer message group.
+        if (!assistantEntryUuid || !state.assistantEntryUuids.has(assistantEntryUuid)) {
+          if (assistantMessageId && assistantMessageId === state.lastAssistantMessageId) {
+            state.lastAssistantText += assistantText
+          } else if (assistantMessageId && state.assistantMessageIds.has(assistantMessageId)) {
+            // A later frame can belong to an older assistant group (typically a
+            // delayed tool block). transformMessages merges it into that older
+            // bubble without changing which assistant item is last, so neither
+            // should the notification candidate.
+          } else {
+            state.lastAssistantMessageId = assistantMessageId
+            state.lastAssistantText = assistantText
+          }
+          if (assistantMessageId) state.assistantMessageIds.add(assistantMessageId)
+          if (assistantEntryUuid) state.assistantEntryUuids.add(assistantEntryUuid)
+        }
+
         // Complete assistant message - JSONL is the source of truth
         // Track SDK error code from assistant message (e.g., 'authentication_failed', 'rate_limit')
         if (content.error) {
@@ -753,6 +1668,11 @@ class MessagePersister {
                   const toolUseResult = content.tool_use_result as Record<string, unknown> | undefined
                   if (toolUseResult?.agentId && typeof toolUseResult.agentId === 'string') {
                     sub.agentId = toolUseResult.agentId
+                  } else if (
+                    toolUseResult?.resumedAgentId &&
+                    typeof toolUseResult.resumedAgentId === 'string'
+                  ) {
+                    sub.agentId = toolUseResult.resumedAgentId
                   } else {
                     // Parse agentId from the tool result text (SDK includes "agentId: <hex>")
                     const parts = Array.isArray(block.content) ? block.content : []
@@ -768,21 +1688,40 @@ class MessagePersister {
                   }
                 }
 
-                // A background (run_in_background) Agent returns an immediate
-                // "async_launched" ack as its tool_result; its REAL completion
-                // arrives later as task_updated/task_notification (handled in the
-                // system switch), never a second tool_result or a sidechain
-                // 'result'. Detect the ack authoritatively from tool_use_result
-                // here and mark the subagent background — the streamed
-                // run_in_background input is unreliable (interleaved content
-                // blocks + the complete assistant message can clear currentToolUse
-                // before it's parsed, leaving isBackground=false). Marking it here
-                // both prevents the ack from completing the subagent and lets the
-                // later task event complete it.
-                const tur = content.tool_use_result as { status?: string; isAsync?: boolean } | undefined
+                // Background Agent launches and SendMessage resumes both return
+                // immediate acknowledgments; their REAL completion arrives later
+                // as task_updated/task_notification, never as a second tool_result.
+                // Detect those acknowledgments authoritatively from result metadata
+                // or a resumed task_started. Do not use the streamed isBackground
+                // hint here: partial/interleaved input is unreliable, and an error
+                // result for a requested background launch is terminal.
+                const tur = content.tool_use_result as
+                  | { status?: string; isAsync?: boolean; agentId?: string; resumedAgentId?: string }
+                  | undefined
                 const isAsyncLaunchAck = tur?.status === 'async_launched' || tur?.isAsync === true
-                if (isAsyncLaunchAck) {
-                  sub.isBackground = true
+                const isResumeAck = typeof tur?.resumedAgentId === 'string'
+                const isErrorResult = block.is_error === true
+                if (!isErrorResult && (isAsyncLaunchAck || isResumeAck || sub.isResumed)) {
+                  if (isAsyncLaunchAck) sub.isBackground = true
+                  if (isResumeAck) sub.isResumed = true
+                  // A background subagent outlives its launch turn, and since SDK
+                  // 0.3.197 the runtime settles the turn (result + idle) while the
+                  // subagent is still running — older SDKs held them back, which is
+                  // why local_agent was never tracked here. Register it exactly like
+                  // a backgrounded Bash command so it surfaces in the same
+                  // "N background processes" UI and holds the session in the
+                  // waiting-background state; its terminal task_updated /
+                  // task_notification (task_id === agentId) clears it through the
+                  // existing paths.
+                  const bgAgentId = tur?.resumedAgentId ?? tur?.agentId ?? sub.agentId
+                  if (bgAgentId) {
+                    this.registerBackgroundSubagent(
+                      sessionId,
+                      state,
+                      bgAgentId,
+                      block.tool_use_id,
+                    )
+                  }
                 } else {
                   // Foreground subagent: the tool_result IS the completion.
                   let resultText: string | undefined
@@ -835,16 +1774,10 @@ class MessagePersister {
           this.broadcastToSSE(sessionId, { type: 'messages_updated' })
           break
         }
-        // Clear awaiting input when tool results arrive (user provided input)
-        if (state.isAwaitingInput) {
-          state.isAwaitingInput = false
-          this.broadcastGlobal({
-            type: 'session_input_provided',
-            sessionId,
-            agentSlug: state.agentSlug,
-          })
-        }
-        // Tool results come as 'user' type messages
+        // Tool results come as 'user' type messages. handleToolResults settles
+        // each answered request in the registry and recomputes awaiting from
+        // what actually remains open — answering one of several parallel
+        // requests no longer drops the waiting light while siblings are parked.
         this.handleToolResults(sessionId, content)
         // Broadcast refresh so frontend can detect the persisted user message
         // and clear the optimistic pending copy promptly.
@@ -854,13 +1787,13 @@ class MessagePersister {
       case 'system':
         // System messages (init, etc.)
         if (content.subtype === 'init') {
-          // Capture slash commands from init event as fallback (e.g. resumed sessions)
-          if (state.slashCommands.length === 0 && Array.isArray(content.slash_commands)) {
-            state.slashCommands = content.slash_commands.map((name: string) => ({
-              name,
-              description: '',
-              argumentHint: '',
-            }))
+          // The init strings are the executable names. Reconcile even when we
+          // already have rich/persisted commands so display titles cannot win.
+          if (Array.isArray(content.slash_commands)) {
+            state.slashCommands = mergeCanonicalSlashCommands(
+              content.slash_commands.filter((name: unknown): name is string => typeof name === 'string'),
+              state.slashCommands,
+            )
           }
           this.broadcastToSSE(sessionId, {
             type: 'stream_start',
@@ -888,6 +1821,7 @@ class MessagePersister {
           }
         } else if (content.subtype === 'api_retry') {
           // API retry in progress — broadcast details so the UI can show retry state
+          state.isRetrying = true
           this.broadcastToSSE(sessionId, {
             type: 'api_retry',
             attempt: content.attempt,
@@ -900,10 +1834,19 @@ class MessagePersister {
           // guarantees task_id === subagent session ID === JSONL filename).
           const toolUseId = content.tool_use_id as string | undefined
           const agentId = content.task_id as string | undefined
-          if (toolUseId) {
+          const isResumedSubagent =
+            content.task_type === 'local_agent' &&
+            !!agentId &&
+            state.completedSubagentIds.has(agentId)
+          // A subagent's own inner Bash can surface in the parent stream as an
+          // unparented task_started{task_type:'local_bash'} — it is not a
+          // subagent, and creating an entry for it renders a phantom subagent
+          // card that lingers for the whole background wait.
+          if (toolUseId && content.task_type !== 'local_bash') {
             const existing = state.activeSubagents.get(toolUseId)
             if (existing) {
               if (agentId) existing.agentId = agentId
+              if (isResumedSubagent) existing.isResumed = true
             } else {
               state.activeSubagents.set(toolUseId, {
                 agentId: agentId ?? null,
@@ -911,7 +1854,11 @@ class MessagePersister {
                 currentToolUse: null,
                 currentToolInput: '',
                 isBackground: false,
+                isResumed: isResumedSubagent,
               })
+            }
+            if (isResumedSubagent && agentId) {
+              this.registerBackgroundSubagent(sessionId, state, agentId, toolUseId)
             }
             this.broadcastToSSE(sessionId, {
               type: 'subagent_started',
@@ -921,6 +1868,32 @@ class MessagePersister {
               subagentType: content.subagent_type,
               description: content.description,
             })
+          }
+          // A dynamic workflow (task_type 'local_workflow') is a background task that
+          // outlives its launch turn — register it exactly like a backgrounded Bash
+          // command so it surfaces in the same "N background processes" UI and holds the
+          // session in the waiting-background state. The idle handler already keeps the
+          // session alive whenever activeBackgroundTasks is non-empty (the SDK fires idle
+          // at turn-end while the work runs, then wakes on completion), and the terminal
+          // task_updated/task_notification handlers below clear it by task_id — so no
+          // workflow-specific handling is needed anywhere else.
+          if (content.task_type === 'local_workflow') {
+            const workflowTaskId = content.task_id as string | undefined
+            if (workflowTaskId && !state.activeBackgroundTasks.has(workflowTaskId)) {
+              const startedAt = Date.now()
+              state.activeBackgroundTasks.set(workflowTaskId, {
+                startedAt,
+                isWorkflow: true,
+                toolUseId,
+                workflowName: typeof content.workflow_name === 'string' ? content.workflow_name : undefined,
+              })
+              this.broadcastToSSE(sessionId, { type: 'background_task_started', taskId: workflowTaskId, startedAt, isWorkflow: true })
+              this.broadcastGlobal({ type: 'background_task_started', sessionId, agentSlug: state.agentSlug, taskId: workflowTaskId })
+              // NOTE: we do NOT emit workflow_started or start the journal tailer yet — the
+              // real on-disk runId (`wf_…`, the name of the subagents/workflows/<runId> dir)
+              // is NOT the task_id; it only appears in the Workflow tool RESULT, which the
+              // SDK delivers as the very next message. See wireWorkflowFromToolResult().
+            }
           }
         } else if (content.subtype === 'task_progress') {
           // Subagent progress with usage stats (description intentionally omitted —
@@ -934,6 +1907,10 @@ class MessagePersister {
             usage: content.usage,
             lastToolName: content.last_tool_name,
           })
+          // A dynamic workflow's task_progress carries a full live snapshot of its agent
+          // tree in `workflow_progress[]` (per-agent state incl. failed, tokens, toolCalls,
+          // current tool) plus cumulative `usage`. Forward it for the drawer's live view.
+          this.emitWorkflowProgress(sessionId, content, state)
         } else if (content.subtype === 'task_updated') {
           // Background task state change. When a backgrounded Bash command completes
           // while the agent is still busy (a foreground tool was in flight when it
@@ -947,23 +1924,23 @@ class MessagePersister {
           const taskId = content.task_id as string | undefined
           const status = (content.patch as { status?: string } | undefined)?.status
           const isTerminal = status === 'completed' || status === 'failed' || status === 'killed'
-          if (taskId && isTerminal && state.activeBackgroundTasks.has(taskId)) {
-            state.activeBackgroundTasks.delete(taskId)
-            this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
-            this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+          // Unconditional on map membership, same reason as the task_notification
+          // path above: the id may only exist in the snapshot.
+          if (taskId && isTerminal) {
+            this.clearBackgroundTask(sessionId, state, taskId)
           }
           // A background *subagent* (task_type 'local_agent') settles via a
           // task_updated whose task_id equals the subagent's agentId. The busy
           // path can deliver this without a matching task_notification, so finish
-          // the subagent here too. Scoped to isBackground: foreground subagents
-          // complete via their tool_result (see the 'user' case) and also emit
-          // these task events — acting on them here would fire an early
-          // completion with an unresolved (null) agentId. Idempotent:
+          // the subagent here too. Scoped to background/resumed lifecycle
+          // flags: foreground subagents complete via their tool_result (see the
+          // 'user' case) and also emit these task events — acting on them here
+          // would fire an early completion with an unresolved (null) agentId. Idempotent:
           // broadcastSubagentCompleted removes it, so a trailing task_notification
           // no-ops.
           if (taskId && isTerminal) {
             for (const [parentToolId, sub] of state.activeSubagents) {
-              if (sub.isBackground && sub.agentId === taskId) {
+              if ((sub.isBackground || sub.isResumed) && sub.agentId === taskId) {
                 this.broadcastSubagentCompleted(sessionId, state, parentToolId)
                 break
               }
@@ -976,18 +1953,26 @@ class MessagePersister {
           // Without this, broadcastSubagentCompleted never fires for a background
           // subagent — its tool_result stays the 'async_launched' ack and no
           // sidechain 'result' arrives — so the UI shows it running until the
-          // whole turn ends. Scoped to isBackground for the same reason as the
-          // task_updated branch above (foreground subagents finish via tool_result).
+          // whole turn ends. Scoped to background/resumed lifecycle flags for
+          // the same reason as the task_updated branch above (foreground
+          // subagents finish via tool_result).
           const toolUseId = content.tool_use_id as string | undefined
           const status = content.status as string | undefined
           const sub = toolUseId ? state.activeSubagents.get(toolUseId) : undefined
           if (
-            sub?.isBackground &&
+            (sub?.isBackground || sub?.isResumed) &&
             (status === 'completed' || status === 'failed' || status === 'killed')
           ) {
             const summary = typeof content.summary === 'string' ? content.summary : undefined
             this.broadcastSubagentCompleted(sessionId, state, toolUseId!, summary)
           }
+        } else if (content.subtype === 'process_restarted') {
+          // Container-synthesized, live: the session's CLI process was replaced
+          // while we were attached (MCP-injection restart, crash, an
+          // interrupt-driven respawn). The handshake below covers the restarts
+          // that happen with nobody attached; this one settles the indicator
+          // immediately instead of at the next reconnect.
+          this.handleProcessRestarted(sessionId, state, content.process_instance)
         } else if (content.subtype === 'capabilities') {
           // The container announces its stream contract when the WebSocket
           // connects, before relaying any SDK message. `session_state_events`
@@ -999,6 +1984,11 @@ class MessagePersister {
           if (content.session_state_events === true) {
             state.stateEventsAuthority = true
           }
+          // The handshake also names the CLI process we're now attached to.
+          // This is the path that catches a replacement we never saw: on a cold
+          // resume the container's live announcement fires before the session is
+          // published and before this socket subscribes, so it reaches nobody.
+          this.adoptHandshakeProcessInstance(sessionId, state, content.process_instance)
         } else if (content.subtype === 'session_state_changed') {
           // The runtime's own session state — `idle` is the SDK's authoritative
           // "fully settled" signal: it fires only after heldBackResult flushes
@@ -1017,27 +2007,54 @@ class MessagePersister {
             // turn output — must not finalize, or it fires a spurious
             // session_idle (and a bogus completion notification).
             if (state.isActive && state.lastResultSubtype !== null) {
-              // Any background tasks still tracked here are phantoms — the
-              // runtime distinguishes "done" from "paused waiting for background
-              // work", so a per-task terminal signal was missed. Clear them.
-              for (const taskId of [...state.activeBackgroundTasks.keys()]) {
-                state.activeBackgroundTasks.delete(taskId)
-                this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
-                this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
-              }
-              this.finalizeIdle(sessionId, state)
-              // Completion notification at the real end of the work. Skip
-              // resume-exits: the session is pausing for a resume, not done.
-              if (state.lastResultSubtype === 'success' && state.agentSlug) {
-                notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
-                  console.error('[MessagePersister] Failed to trigger session complete notification:', err)
+              const openBackgroundWork = this.openBackgroundWorkCount(state)
+              if (openBackgroundWork > 0) {
+                // Idle here does NOT mean "settled". activeBackgroundTasks holds
+                // backgrounded Bash commands (task_type=local_bash) and dynamic
+                // workflows (local_workflow); for both the SDK fires `idle` at
+                // TURN-END while the work is still running, then re-fires `running`
+                // + task_notification when it actually finishes. Phantom-clearing
+                // + finalizing here would
+                // drop the indicator and un-gate auto-sleep mid-job — the exact
+                // failure run_in_background is meant to prevent. Keep the session
+                // alive and surface it as waiting-on-background; the per-task
+                // terminal signal (task_notification / task_updated) clears each
+                // task, and the subsequent, truly-settled idle finalizes.
+                this.broadcastToSSE(sessionId, {
+                  type: 'session_waiting_background',
+                  backgroundTaskCount: openBackgroundWork,
                 })
+              } else {
+                this.finalizeIdle(sessionId, state)
+                // Completion notification at the real end of the work. Skip
+                // resume-exits: the session is pausing for a resume, not done.
+                if (state.lastResultSubtype === 'success' && state.agentSlug) {
+                  notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
+                    responseText: state.lastAssistantText,
+                    responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
+                      state.agentSlug,
+                      sessionId,
+                    ),
+                  }).catch((err) => {
+                    console.error('[MessagePersister] Failed to trigger session complete notification:', err)
+                  })
+                }
               }
+            } else if (!state.isActive && state.lastResultSubtype !== null) {
+              // Error path already cleared isActive, so finalizeIdle never ran.
+              this.maybeReleaseSettledAutomationStream(sessionId, state)
             }
           } else if (content.state === 'running' && !state.isActive) {
             // The runtime started a turn we didn't initiate via POST (e.g. a
             // queued message picked up after an out-of-order idle) — self-heal.
             state.isActive = true
+            this.resetSessionCompleteResponse(state)
+            state.queuedTurnCount = 0
+            state.resetAssistantBeforeNextTurnOutput = false
+            // Preserve the prior result guard. Some runtimes emit a stray
+            // running → idle pair without another result; clearing the guard
+            // here would leave isActive stuck until disconnect. The response
+            // reset above keeps any duplicate completion notification generic.
             this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
             this.broadcastGlobal({
               type: 'session_active',
@@ -1045,6 +2062,34 @@ class MessagePersister {
               agentSlug: state.agentSlug,
               isActive: true,
             })
+            // Same trailing sync as markSessionActive: the session_active
+            // broadcast above wiped the previous turn's parked requests, so
+            // this picks up only waits that survive a new turn — an
+            // agent-scoped review that was already parked when the runtime
+            // started this one.
+            this.syncSessionAwaiting(sessionId)
+          }
+        } else if (content.subtype === 'background_tasks_changed') {
+          // Authoritative full snapshot of the session's live background tasks
+          // (SDK >= 0.3.203), emitted on every membership change. A frame that
+          // fails validation is ignored outright — acting on a partial parse
+          // could clear running tasks (see parseBackgroundTasksChanged).
+          const snapshot = parseBackgroundTasksChanged(content)
+          if (snapshot) {
+            state.bgTasksSnapshot = snapshot.taskIds
+            // Self-heal: a tracked task the SDK no longer lists has finished.
+            // Its per-task terminal signal normally follows within a frame and
+            // then no-ops (clearBackgroundTask is idempotent) — but if that
+            // signal is missed, the task would otherwise pin the session in
+            // waiting-background forever.
+            for (const taskId of [...state.activeBackgroundTasks.keys()]) {
+              if (!snapshot.taskIds.has(taskId)) {
+                console.log(
+                  `[MessagePersister] background_tasks_changed: clearing ${taskId} (no longer in SDK snapshot)`
+                )
+                this.clearBackgroundTask(sessionId, state, taskId)
+              }
+            }
           }
         } else if (content.subtype === 'memory_recall') {
           // Memory recall — agent is reading memory files
@@ -1052,31 +2097,133 @@ class MessagePersister {
             type: 'memory_recall',
             memoryPaths: content.memory_paths || [],
           })
+        } else if (content.subtype === 'informational') {
+          this.handleInformational(sessionId, state, content)
         }
         break
 
+      case 'command_lifecycle': {
+        // Per-command state transitions (queued/started/completed/cancelled/
+        // discarded), keyed by the message's own uuid. Forwarded verbatim —
+        // the renderer joins terminal dead states back to its optimistic
+        // ghosts for deterministic composer rescue. Malformed frames are
+        // dropped (nothing downstream can act without a uuid).
+        const lifecycle = parseCommandLifecycle(content)
+        if (lifecycle) {
+          this.broadcastToSSE(sessionId, {
+            type: 'command_lifecycle',
+            commandUuid: lifecycle.commandUuid,
+            state: lifecycle.state,
+          })
+        }
+        break
+      }
+
       case 'result': {
-        // Query completed
+        // Query completed. Classification handles both error shapes — the
+        // legacy error subtypes and the modern success-subtype-with-is_error
+        // (terminal_reason: api_error etc.) that a subtype check alone misses.
+        const classification = classifyResult(content)
+        const isError = classification.isError
+        // Resume and graceful-interrupt results are pauses inside the current
+        // turn. They must not consume the queued-turn boundary or reset its
+        // response candidate one result early.
+        const completesTurn = !classification.isInterrupt && content.subtype !== 'resume'
+        if (completesTurn) {
+          if (state.resetAssistantBeforeNextTurnOutput) {
+            this.resetSessionCompleteResponse(state)
+            state.resetAssistantBeforeNextTurnOutput = false
+          }
+          if (state.queuedTurnCount > 0) {
+            state.queuedTurnCount -= 1
+            state.resetAssistantBeforeNextTurnOutput = true
+          }
+        }
         state.isStreaming = false
-        state.isAwaitingInput = false
+        // On error the turn ends here, so settle isActive too BEFORE the single
+        // emit. Collapsing every terminal flag change into ONE emit (reflecting
+        // the final state) avoids a spurious working(true)→(false) pair — the
+        // intermediate "isActive still true, streaming just cleared" snapshot
+        // would read working=true and race connectors into a stuck indicator.
+        // The awaiting cache follows the same rule: silent-clear ONLY where the
+        // session is actually settling (error/interrupt here, finalizeIdle
+        // below). A clean success can leave the session ACTIVE — the runtime
+        // owns idle under state-event authority, or background work remains —
+        // and an open agent-scoped review still blocks every active session,
+        // so re-derive instead: a blind clear would misreport "working" AND
+        // eat the falling edge (the review's later settle would see
+        // cache == derived and never broadcast session_input_provided).
+        if (isError || classification.isInterrupt) {
+          state.isActive = false
+          state.isAwaitingInput = false
+        } else if (state.stateEventsAuthority || this.openBackgroundWorkCount(state) > 0) {
+          this.syncSessionAwaiting(sessionId)
+        } else {
+          state.isAwaitingInput = false // finalizeIdle below settles the turn
+        }
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
 
+        // A clean success with zero turns means the main loop never ran — the
+        // signature of a settings-file hook blocking the prompt. (duration_api_ms
+        // can still be non-zero: prompt-type hooks spend API time on their
+        // model evaluation.) The informational banner is the user-facing
+        // surface; this is the operator breadcrumb.
+        if (!isError && !classification.isInterrupt && content.num_turns === 0 && content.subtype === 'success') {
+          console.warn(
+            `[MessagePersister] Session ${sessionId}: turn ended with no model turns (num_turns=0) — possible hook-blocked prompt`
+          )
+        }
+
         // Extract and persist context usage from result event
         this.handleResultUsage(sessionId, state, content)
+        // Automation outcome. A failure is terminal the moment its result
+        // arrives — persist it now. A clean success is NOT terminal: queued
+        // messages or background work can keep the session running and a
+        // later turn can still fail, so only record the flag here and let
+        // finalizeIdle persist success once the session truly settles.
+        // Interrupts (user Stop, container-internal restart) and resume-exits
+        // finalize nothing — the turn continues, or the dead-session downgrade
+        // in activity-stats settles a run that never does.
+        state.lastResultCleanSuccess =
+          !isError && !classification.isInterrupt && content.subtype !== 'resume'
+        if (isError) {
+          this.persistAutomationStatus(sessionId, state, 'failed')
+        }
+
+        // A deliberately stopped turn (terminal_reason aborted_tools /
+        // aborted_streaming — a graceful interrupt) arrives error-SHAPED but
+        // is not an error: settle quietly. No session_error (the user clicked
+        // Stop; an error card would be wrong) and no finalizeIdle here — the
+        // Stop route's markSessionInterrupted owns the idle broadcast, and
+        // container-internal restarts (MCP injection, effort change) resume
+        // with a continuation turn moments later. turn_output_complete still
+        // fires so partially-streamed text reconciles against the transcript.
+        if (classification.isInterrupt) {
+          this.broadcastToSSE(sessionId, { type: 'turn_output_complete' })
+          break
+        }
 
         // Check if this is an error result. Errors end the user-visible work
-        // immediately in both lifecycle modes.
-        if (content.subtype === 'error_during_execution' || content.subtype === 'error') {
-          state.isActive = false
-          const errorMessage = content.error || content.message || 'An error occurred during execution'
+        // immediately in both lifecycle modes. (isActive + the working emit were
+        // already settled above, before the session_error broadcasts below.)
+        if (isError) {
+          const errorMessage = classification.errorText || 'An error occurred during execution'
           // Use SDK error code from the preceding assistant message (e.g., 'authentication_failed', 'rate_limit')
           const apiErrorCode = state.lastApiErrorCode || null
-          console.error(`[MessagePersister] Session ${sessionId} error:`, errorMessage, apiErrorCode ? `(${apiErrorCode})` : '')
+          const { terminalReason, apiErrorStatus } = classification
+          console.error(
+            `[MessagePersister] Session ${sessionId} error:`,
+            errorMessage,
+            apiErrorCode ? `(${apiErrorCode})` : '',
+            terminalReason ? `[${terminalReason}]` : ''
+          )
           this.broadcastToSSE(sessionId, {
             type: 'session_error',
             error: errorMessage,
             apiErrorCode,
+            terminalReason,
+            apiErrorStatus,
             isActive: false
           })
           // Also broadcast globally
@@ -1086,6 +2233,8 @@ class MessagePersister {
             agentSlug: state.agentSlug,
             error: errorMessage,
             apiErrorCode,
+            terminalReason,
+            apiErrorStatus,
             isActive: false,
           })
           // If the error is fatal (e.g., OOM), request container stop
@@ -1104,11 +2253,14 @@ class MessagePersister {
         this.broadcastToSSE(sessionId, { type: 'turn_output_complete' })
 
         // UI hint: background tasks outlive the turn output.
-        if (state.activeBackgroundTasks.size > 0) {
-          this.broadcastToSSE(sessionId, {
-            type: 'session_waiting_background',
-            backgroundTaskCount: state.activeBackgroundTasks.size,
-          })
+        {
+          const openBackgroundWork = this.openBackgroundWorkCount(state)
+          if (openBackgroundWork > 0) {
+            this.broadcastToSSE(sessionId, {
+              type: 'session_waiting_background',
+              backgroundTaskCount: openBackgroundWork,
+            })
+          }
         }
 
         // When the runtime publishes session_state_changed events, IT decides
@@ -1121,7 +2273,7 @@ class MessagePersister {
         }
 
         // Legacy containers (no state events): result-driven idle as before.
-        if (state.activeBackgroundTasks.size > 0) {
+        if (this.openBackgroundWorkCount(state) > 0) {
           break
         }
         this.finalizeIdle(sessionId, state)
@@ -1131,7 +2283,13 @@ class MessagePersister {
         // `notifyWhenUnfocused` toggle. Skip for 'resume' exits — the
         // session is pausing for a resume, not truly finished.
         if (content.subtype !== 'resume' && state.agentSlug) {
-          notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+          notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
+            responseText: state.lastAssistantText,
+            responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
+              state.agentSlug,
+              sessionId,
+            ),
+          }).catch((err) => {
             console.error('[MessagePersister] Failed to trigger session complete notification:', err)
           })
         }
@@ -1144,6 +2302,23 @@ class MessagePersister {
           type: 'browser_active',
           active: content.active,
         })
+        break
+
+      case 'capability_review_cancelled':
+        // The container's gate hook stopped waiting for this review (the CLI
+        // abandoned the parked hook — its timeout elapsed or the turn was
+        // aborted). No decision can land anymore: close the approval card
+        // everywhere instead of leaving it dangling until reconnect cleanup.
+        if (typeof content.toolUseId === 'string') {
+          if (userInputRequestManager.getOpenRequest(content.toolUseId)) {
+            this.completeCapabilityReview(sessionId, content.toolUseId, 'cancelled')
+          } else {
+            // No card yet — handleCapabilityReviewTool is still awaiting its
+            // container grant lookup. Tombstone the id so the handler drops
+            // the card instead of broadcasting it after this cancellation.
+            state.cancelledCapabilityReviews.add(content.toolUseId)
+          }
+        }
         break
 
       case 'connection_closed':
@@ -1220,6 +2395,12 @@ class MessagePersister {
 
   // Mark a session as inactive and broadcast the update
   private markSessionInactive(sessionId: string, state: StreamingState): void {
+    // A session that was mid-turn (user message sent, no result yet) and not
+    // deliberately interrupted didn't finish — its runtime vanished (container
+    // crash, guest OOM kill of the agent process, VM death). Surface that as an
+    // error instead of settling silently: session_idle would render as the turn
+    // just ending with no explanation (and wipes any error client-side).
+    const diedMidTurn = state.isActive && !state.isInterrupted
     state.isStreaming = false
     state.isAwaitingInput = false
     state.currentText = ''
@@ -1227,6 +2408,43 @@ class MessagePersister {
     state.currentToolInput = ''
     state.activeSubagents.clear()
     state.activeBackgroundTasks.clear()
+    // The runtime is gone; its background tasks went with it (same reasoning as
+    // markSessionInterrupted).
+    state.bgTasksSnapshot = null
+    this.stopAllWorkflowTailers(sessionId)
+    if (diedMidTurn) {
+      // Mirror the result-error path: settle isActive BEFORE broadcasting so
+      // the terminal transition is a single non-busy emit (an intermediate
+      // "isActive still true, streaming just cleared" snapshot would read
+      // working=true and race connectors into a stuck indicator), and emit
+      // session_error INSTEAD of session_idle — connectors finalize on either.
+      state.isActive = false
+      const errorMessage =
+        'The agent stopped unexpectedly because the connection to its runtime was lost. ' +
+        'The container may have crashed or run out of memory.'
+      console.error(`[MessagePersister] Session ${sessionId} died mid-turn (connection lost)`)
+      this.broadcastToSSE(sessionId, {
+        type: 'session_error',
+        error: errorMessage,
+        apiErrorCode: null,
+        terminalReason: 'connection_lost',
+        isActive: false,
+      })
+      this.broadcastGlobal({
+        type: 'session_error',
+        sessionId,
+        agentSlug: state.agentSlug,
+        error: errorMessage,
+        apiErrorCode: null,
+        terminalReason: 'connection_lost',
+        isActive: false,
+      })
+      return
+    }
+    // finalizeIdle clears isActive and emits the single settling working(false).
+    // Don't emit here first: clearing streaming while isActive is still true
+    // would read working=true and emit a spurious working(true)→(false) pair
+    // that races connectors into a stuck indicator.
     this.finalizeIdle(sessionId, state)
   }
 
@@ -1238,7 +2456,14 @@ class MessagePersister {
     let sub = state.activeSubagents.get(parentToolId)
     if (!sub) {
       // Sidechain message arrived before the tool_use was tracked (rare but possible)
-      sub = { agentId: null, currentText: '', currentToolUse: null, currentToolInput: '', isBackground: false }
+      sub = {
+        agentId: null,
+        currentText: '',
+        currentToolUse: null,
+        currentToolInput: '',
+        isBackground: false,
+        isResumed: false,
+      }
       state.activeSubagents.set(parentToolId, sub)
     }
 
@@ -1274,6 +2499,15 @@ class MessagePersister {
     // Complete messages have been persisted to the subagent JSONL by the SDK,
     // so the frontend can refetch them via the API endpoint.
     if (content.type === 'user' || content.type === 'assistant') {
+      // A subagent's tool_result arrives here, NOT via the main-path 'user'
+      // handler — so a resolved input request (user clicked Complete on a
+      // subagent's browser_input card) must run the same bookkeeping: drop
+      // the replayable card and clear the awaiting status while the subagent
+      // resumes. Without this the UI stays "needs input" behind a stale card
+      // until the whole turn ends.
+      if (content.type === 'user') {
+        this.resolveSidechainInputRequests(sessionId, state, content)
+      }
       if (content.type === 'assistant') {
         const messageContent = content.message?.content
         if (Array.isArray(messageContent)) {
@@ -1307,29 +2541,27 @@ class MessagePersister {
           sub.currentText = newText
 
           for (const block of messageContent) {
-            if (block.type === 'tool_use' && block.name === 'mcp__user-input__request_browser_input') {
-              this.handleBrowserInputRequestTool(
-                sessionId,
-                block.id,
-                JSON.stringify(block.input || {}),
-                state.agentSlug
-              )
+            if (block.type !== 'tool_use') continue
+            const input = JSON.stringify(block.input || {})
+            this.dispatchBlockingUserInputTool(
+              sessionId,
+              block.name,
+              block.id,
+              input,
+              state.agentSlug,
+              parentToolId,
+            )
+            if (block.name === 'mcp__user-input__request_script_run') {
+              this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug, parentToolId)
             }
-            if (block.type === 'tool_use' && block.name === 'mcp__user-input__request_script_run') {
-              this.handleScriptRunRequestTool(
-                sessionId,
-                block.id,
-                JSON.stringify(block.input || {}),
-                state.agentSlug
-              )
-            }
-            if (block.type === 'tool_use' && block.name.startsWith('mcp__computer-use__')) {
+            if (block.name.startsWith('mcp__computer-use__')) {
               this.handleComputerUseRequestTool(
                 sessionId,
                 block.id,
                 block.name,
-                JSON.stringify(block.input || {}),
-                state.agentSlug
+                input,
+                state.agentSlug,
+                parentToolId,
               )
             }
           }
@@ -1340,6 +2572,226 @@ class MessagePersister {
         parentToolId,
         agentId: sub.agentId,
       })
+    }
+  }
+
+  private registerBackgroundSubagent(
+    sessionId: string,
+    state: StreamingState,
+    agentId: string,
+    toolUseId: string,
+  ): void {
+    if (state.activeBackgroundTasks.has(agentId)) return
+
+    const startedAt = Date.now()
+    state.activeBackgroundTasks.set(agentId, {
+      startedAt,
+      isSubagent: true,
+      toolUseId,
+    })
+    // isSubagent lets the renderer skip these in the generic
+    // "N background processes" row — the named subagent row
+    // already represents this work in the activity tray.
+    this.broadcastToSSE(sessionId, {
+      type: 'background_task_started',
+      taskId: agentId,
+      startedAt,
+      isSubagent: true,
+    })
+    this.broadcastGlobal({
+      type: 'background_task_started',
+      sessionId,
+      agentSlug: state.agentSlug,
+      taskId: agentId,
+    })
+  }
+
+  // Clear a finished background task (backgrounded Bash OR a dynamic workflow),
+  // emitting the shared `background_task_completed` plus, for workflows, the
+  // `workflow_completed` event and stopping the journal tailer. Returns whether a
+  // task was actually present. Centralized so every terminal path — the idle/wake
+  // `task_notification` and the busy `task_updated` — behaves identically.
+  // How many background tasks keep the session from settling. The union of
+  // the incremental map and the latest SDK snapshot: the snapshot LEADS the
+  // per-task signals on the wire, so around a membership change each side may
+  // briefly know a task the other doesn't. Counting the union means a missed
+  // registration can't cause a premature idle and a missed terminal signal
+  // can't pin the session forever (the snapshot self-heal below clears it).
+  // Both directions must drain, or the union stops being a safety net and
+  // becomes a permanent pin: the SDK re-emits the level only on a membership
+  // CHANGE and emits nothing at all for a fresh process, so an id that enters
+  // bgTasksSnapshot and never leaves it can never be retired by the SDK.
+  private openBackgroundWorkCount(state: StreamingState): number {
+    if (!state.bgTasksSnapshot) return state.activeBackgroundTasks.size
+    const union = new Set(state.activeBackgroundTasks.keys())
+    for (const id of state.bgTasksSnapshot) union.add(id)
+    return union.size
+  }
+
+  // The live `process_restarted` frame: the container is telling us outright
+  // that the CLI was replaced, so reset regardless of whether we had recorded
+  // the outgoing process's identity.
+  private handleProcessRestarted(sessionId: string, state: StreamingState, instance: unknown): void {
+    this.dropProcessLocalBackgroundState(sessionId, state)
+    if (typeof instance === 'string' && instance !== '') state.processInstanceId = instance
+  }
+
+  // The handshake's process identity. A first sighting is NOT a restart — it's
+  // just the first time we've been told — so reset only when the name actually
+  // changes. That distinction is the point of keying on identity: a plain
+  // transport reattach re-announces the SAME process with the same tasks still
+  // running, and resetting there would drop a live indicator and un-gate
+  // auto-sleep mid-job. A container too old to send the field is a no-op.
+  private adoptHandshakeProcessInstance(sessionId: string, state: StreamingState, instance: unknown): void {
+    if (typeof instance !== 'string' || instance === '') return
+    if (state.processInstanceId === instance) return
+    const isReplacement = state.processInstanceId !== null
+    state.processInstanceId = instance
+    if (isReplacement) this.dropProcessLocalBackgroundState(sessionId, state)
+  }
+
+  // Background tasks die with their CLI process, and a fresh process emits NO
+  // initial background_tasks_changed — so once the process is gone, nothing will
+  // ever retire the ids we hold and they would pin the session "working" for the
+  // rest of its life. Mirrors SessionSettlementTracker.resetBackgroundTasks.
+  private dropProcessLocalBackgroundState(sessionId: string, state: StreamingState): void {
+    for (const taskId of [...state.activeBackgroundTasks.keys()]) {
+      this.clearBackgroundTask(sessionId, state, taskId)
+    }
+    state.bgTasksSnapshot = null
+  }
+
+  private clearBackgroundTask(sessionId: string, state: StreamingState, taskId: string): boolean {
+    // Retire the id from the level set too. A terminal per-task signal normally
+    // trails the snapshot that already dropped the task and this is a no-op; if
+    // that removal frame never arrives, the freshest information has to win or
+    // the union pins the session. Mirrors SessionSettlementTracker.removeTask.
+    state.bgTasksSnapshot?.delete(taskId)
+    const info = state.activeBackgroundTasks.get(taskId)
+    if (!info) return false
+    state.activeBackgroundTasks.delete(taskId)
+    this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
+    this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+    // Use the real on-disk runId (learned from the tool result), NOT the task_id.
+    if (info.isWorkflow && info.runId) {
+      this.broadcastToSSE(sessionId, { type: 'workflow_completed', runId: info.runId })
+      this.stopWorkflowTailer(sessionId, info.runId)
+    }
+    return true
+  }
+
+  // The Workflow tool returns its result (`WorkflowOutput`) as a `user` message carrying a
+  // structured `tool_use_result` with the real `wf_…` runId + transcriptDir. That runId is
+  // the on-disk `subagents/workflows/<runId>` dir name and is DISTINCT from the task_id, so
+  // it's the only correct key for the tree route + journal tailer. We match it back to the
+  // workflow background task by the launching tool_use_id and fire workflow_started here.
+  private wireWorkflowFromToolResult(sessionId: string, content: any, state: StreamingState): void {
+    const tur = content?.tool_use_result as { taskType?: string; runId?: string } | undefined
+    let runId = tur?.taskType === 'local_workflow' && typeof tur.runId === 'string' ? tur.runId : undefined
+    // tool_use_id is on the tool_result block inside the user message.
+    const blocks = content?.message?.content
+    const toolUseId = Array.isArray(blocks)
+      ? (blocks.find((b: { type?: string }) => b?.type === 'tool_result') as { tool_use_id?: string } | undefined)
+          ?.tool_use_id
+      : undefined
+    if (!toolUseId) return
+    // Fallback: parse the runId out of the result text if the structured field is absent.
+    if (!runId) {
+      const block = (blocks as Array<{ tool_use_id?: string; content?: unknown }>).find(
+        (b) => b?.tool_use_id === toolUseId
+      )
+      const text = typeof block?.content === 'string' ? block.content : ''
+      const m = text.match(/Run ID:\s*(wf_[A-Za-z0-9_-]+)/) || text.match(/workflows\/(wf_[A-Za-z0-9_-]+)/)
+      if (m) runId = m[1]
+    }
+    if (!runId) return
+    for (const [, info] of state.activeBackgroundTasks) {
+      if (info.isWorkflow && info.toolUseId === toolUseId && !info.runId) {
+        info.runId = runId
+        this.broadcastToSSE(sessionId, {
+          type: 'workflow_started',
+          toolUseId,
+          runId,
+          name: info.workflowName,
+          startedAt: info.startedAt,
+        })
+        this.startWorkflowTailer(sessionId, state.agentSlug, runId)
+        break
+      }
+    }
+  }
+
+  // Forward the rich live snapshot in a workflow's task_progress.workflow_progress[] to
+  // the drawer: per-agent state (incl. failed/killed) + tokens + toolCalls + current tool,
+  // plus the workflow's cumulative usage. Resolves runId via the launching tool_use_id.
+  private emitWorkflowProgress(sessionId: string, content: any, state: StreamingState): void {
+    const wp = content?.workflow_progress
+    const toolUseId = content?.tool_use_id as string | undefined
+    if (!Array.isArray(wp) || !toolUseId) return
+    let runId: string | undefined
+    for (const [, info] of state.activeBackgroundTasks) {
+      if (info.isWorkflow && info.toolUseId === toolUseId) {
+        runId = info.runId
+        break
+      }
+    }
+    if (!runId) return // the tool result hasn't landed yet — next tick will carry it
+    const agents = wp
+      .filter((e: { type?: string }) => e?.type === 'workflow_agent')
+      .map((e: Record<string, unknown>) => ({
+        agentId: e.agentId as string,
+        label: typeof e.label === 'string' ? e.label : undefined,
+        phase: typeof e.phaseTitle === 'string' ? e.phaseTitle : null,
+        state: typeof e.state === 'string' ? e.state : 'progress',
+        tokens: typeof e.tokens === 'number' ? e.tokens : 0,
+        toolCalls: typeof e.toolCalls === 'number' ? e.toolCalls : 0,
+        lastTool:
+          (typeof e.lastToolSummary === 'string' && e.lastToolSummary) ||
+          (typeof e.lastToolName === 'string' && e.lastToolName) ||
+          null,
+      }))
+      .filter((a: { agentId?: string }) => typeof a.agentId === 'string')
+    const u = content.usage as { total_tokens?: number; tool_uses?: number; duration_ms?: number } | undefined
+    this.broadcastToSSE(sessionId, {
+      type: 'workflow_progress',
+      runId,
+      agents,
+      usage: u
+        ? { totalTokens: u.total_tokens ?? 0, toolUses: u.tool_uses ?? 0, durationMs: u.duration_ms ?? 0 }
+        : undefined,
+    })
+  }
+
+  private startWorkflowTailer(sessionId: string, agentSlug: string | undefined, runId: string): void {
+    if (!agentSlug) return // can't resolve the workspace dir without a slug
+    const key = `${sessionId}::${runId}`
+    if (this.workflowTailers.has(key)) return
+    const tailer = new WorkflowJournalTailer({
+      sessionsDir: getAgentSessionsDir(agentSlug),
+      sessionId,
+      runId,
+      emit: (update) => this.broadcastToSSE(sessionId, update),
+    })
+    this.workflowTailers.set(key, tailer)
+    tailer.start()
+  }
+
+  private stopWorkflowTailer(sessionId: string, runId: string): void {
+    const key = `${sessionId}::${runId}`
+    const tailer = this.workflowTailers.get(key)
+    if (tailer) {
+      tailer.stop()
+      this.workflowTailers.delete(key)
+    }
+  }
+
+  private stopAllWorkflowTailers(sessionId: string): void {
+    const prefix = `${sessionId}::`
+    for (const [key, tailer] of this.workflowTailers) {
+      if (key.startsWith(prefix)) {
+        tailer.stop()
+        this.workflowTailers.delete(key)
+      }
     }
   }
 
@@ -1362,6 +2814,36 @@ class MessagePersister {
       state.completedSubagentIds.add(sub.agentId)
     }
     state.activeSubagents.delete(parentToolId)
+    this.invalidateSubagentRequests(sessionId, state, parentToolId)
+  }
+
+  // A terminated subagent can leave a parked request nothing will ever answer
+  // (it died before its tool_result). Settle its registry entries, drop the
+  // replay mirrors, reject the container-side pendings so a late click can't
+  // land, and recompute awaiting. A subagent that resolved its requests
+  // normally has no entries left under its parent — this is then a no-op.
+  private invalidateSubagentRequests(
+    sessionId: string,
+    state: StreamingState,
+    parentToolId: string,
+  ): void {
+    const orphaned = userInputRequestManager.resolveRequestsByParent(parentToolId, 'invalidated')
+    if (orphaned.length === 0) return
+    for (const request of orphaned) {
+      if (state.agentSlug) {
+        this.rejectContainerInput(
+          state.agentSlug,
+          request.id,
+          'The subagent that asked for this input was terminated.',
+        ).catch((e) =>
+          console.error(
+            `[MessagePersister] dead-subagent reject failed for ${request.id}:`,
+            e,
+          ),
+        )
+      }
+    }
+    this.syncSessionAwaiting(sessionId)
   }
 
   // Handle subagent stream events — mirrors handleStreamEvent but with subagent_ prefixed SSE events
@@ -1422,34 +2904,50 @@ class MessagePersister {
             agentId: sub.agentId,
             toolId: sub.currentToolUse?.id,
             toolName: sub.currentToolUse?.name,
-            partialInput: sub.currentToolInput,
+            partialInput: redactStreamedToolInput(
+              sub.currentToolUse?.name,
+              sub.currentToolInput,
+            ),
           })
         }
         break
 
       case 'content_block_stop':
         if (sub.currentToolUse) {
-          // Safety net: detect browser input if stream events arrive for subagents
-          if (sub.currentToolUse.name === 'mcp__user-input__request_browser_input') {
-            this.handleBrowserInputRequestTool(
-              sessionId,
-              sub.currentToolUse.id,
-              sub.currentToolInput,
-              state.agentSlug
-            )
-          }
+          this.dispatchBlockingUserInputTool(
+            sessionId,
+            sub.currentToolUse.name,
+            sub.currentToolUse.id,
+            sub.currentToolInput,
+            state.agentSlug,
+            parentToolId,
+          )
 
           if (sub.currentToolUse.name === 'mcp__user-input__request_script_run') {
             this.handleScriptRunRequestTool(
               sessionId,
               sub.currentToolUse.id,
               sub.currentToolInput,
-              state.agentSlug
+              state.agentSlug,
+              parentToolId
             )
           }
 
           if (sub.currentToolUse.name.startsWith('mcp__computer-use__')) {
             this.handleComputerUseRequestTool(
+              sessionId,
+              sub.currentToolUse.id,
+              sub.currentToolUse.name,
+              sub.currentToolInput,
+              state.agentSlug,
+              parentToolId,
+            )
+          }
+
+          // A nested launch from inside a subagent pauses in canUseTool too —
+          // it needs the same approval card as a top-level one.
+          if (['Task', 'Agent', 'Workflow'].includes(sub.currentToolUse.name)) {
+            void this.handleCapabilityReviewTool(
               sessionId,
               sub.currentToolUse.id,
               sub.currentToolUse.name,
@@ -1480,15 +2978,20 @@ class MessagePersister {
   // Handle stream events for SSE broadcasting (not for persistence)
   private handleStreamEvent(
     sessionId: string,
-    event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string; thinking?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
+    event: { type: string; index?: number; message?: { id?: string }; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string; thinking?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
     state: StreamingState
   ): void {
     switch (event.type) {
       case 'message_start':
         state.currentText = ''
-        state.isStreaming = true
+        state.isStreaming = false // text hasn't started; set true at the first text token below
         state.currentToolUse = null
         state.currentThinking = false
+        state.currentAssistantMessageId = event.message?.id ?? null
+        state.currentThinkingBlockIndex = null
+        state.isRetrying = false // the response is flowing now, so any retry resolved
+        // 'streaming' is deferred to the first text token (set above) so a message that
+        // opens with a tool call stays 'working' instead of flipping streaming→working.
         this.broadcastToSSE(sessionId, { type: 'stream_start' })
         break
 
@@ -1511,7 +3014,14 @@ class MessagePersister {
           // Reasoning text follows via thinking_delta (the agent requests
           // `display: 'summarized'`; without it newer models omit the text).
           state.currentThinking = true
-          this.broadcastToSSE(sessionId, { type: 'thinking_start' })
+          state.currentThinkingBlockIndex = Number.isInteger(event.index) ? event.index! : null
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_start',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
         }
         break
 
@@ -1522,10 +3032,20 @@ class MessagePersister {
             type: 'stream_delta',
             text: event.delta.text,
           })
+          // The streamed reply now owns the surface → 'streaming' (deferred from
+          // message_start so a tool-first message never flips streaming→working).
+          state.isStreaming = true
         } else if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
+          // A reconnect can miss content_block_start while retaining message_start;
+          // recover the index from the delta itself when available.
+          if (Number.isInteger(event.index)) state.currentThinkingBlockIndex = event.index!
           // Stream summarized reasoning text so the UI can accumulate it for "View thinking"
           this.broadcastToSSE(sessionId, {
             type: 'thinking_delta',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
             text: event.delta.thinking,
           })
         } else if (event.delta?.type === 'input_json_delta') {
@@ -1536,7 +3056,10 @@ class MessagePersister {
             type: 'tool_use_streaming',
             toolId: state.currentToolUse?.id,
             toolName: state.currentToolUse?.name,
-            partialInput: state.currentToolInput,
+            partialInput: redactStreamedToolInput(
+              state.currentToolUse?.name,
+              state.currentToolInput,
+            ),
           })
         }
         break
@@ -1545,7 +3068,14 @@ class MessagePersister {
         // Thinking block finished streaming — flip back to "Working"
         if (state.currentThinking) {
           state.currentThinking = false
-          this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_stop',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
+          state.currentThinkingBlockIndex = null
         }
         // Tool use block finished streaming
         if (state.currentToolUse) {
@@ -1557,29 +3087,27 @@ class MessagePersister {
             trackServerEvent(`agent_${action}`, { agentSlug: state.agentSlug })
           }
 
-          // Check if this is a secret request tool
-          if (state.currentToolUse.name === 'mcp__user-input__request_secret') {
-            this.handleSecretRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Check if this is a connected account request tool
-          if (state.currentToolUse.name === 'mcp__user-input__request_connected_account') {
-            this.handleConnectedAccountRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
+          this.dispatchBlockingUserInputTool(
+            sessionId,
+            state.currentToolUse.name,
+            state.currentToolUse.id,
+            state.currentToolInput,
+            state.agentSlug,
+          )
 
           // Check if this is a schedule task tool
           if (state.currentToolUse.name === 'mcp__user-input__schedule_task') {
             this.handleScheduleTaskTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
+          // Schedule resume (session wake) tool - blocking
+          if (state.currentToolUse.name === 'mcp__user-input__schedule_resume') {
+            this.handleScheduleResumeTool(
               sessionId,
               state.currentToolUse.id,
               state.currentToolInput,
@@ -1650,43 +3178,19 @@ class MessagePersister {
               sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
             )
           }
-
-          // Check if this is an AskUserQuestion tool
-          if (state.currentToolUse.name === 'AskUserQuestion') {
-            this.handleAskUserQuestionTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
+          if (state.currentToolUse.name === 'mcp__user-input__create_webhook_endpoint') {
+            this.handleCreateWebhookEndpointTool(
+              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
             )
           }
-
-          // Check if this is a file request tool
-          if (state.currentToolUse.name === 'mcp__user-input__request_file') {
-            this.handleFileRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
+          if (state.currentToolUse.name === 'mcp__user-input__update_webhook_endpoint') {
+            this.handleUpdateWebhookEndpointTool(
+              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
             )
           }
-
-          // Check if this is a remote MCP request tool
-          if (state.currentToolUse.name === 'mcp__user-input__request_remote_mcp') {
-            this.handleRemoteMcpRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          if (state.currentToolUse.name === 'mcp__user-input__request_browser_input') {
-            this.handleBrowserInputRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
+          if (state.currentToolUse.name === 'mcp__user-input__inspect_webhook_events') {
+            this.handleInspectWebhookEventsTool(
+              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
             )
           }
 
@@ -1709,18 +3213,17 @@ class MessagePersister {
             )
           }
 
-          // Mark session as awaiting input when a blocking user-input tool fires
-          // Only tools with 'request_' prefix actually block waiting for user response
-          // (schedule_task, deliver_file, search_* resolve immediately and don't block)
-          // Note: computer-use AND request_script_run tools are handled by their own
-          // handlers which only mark awaiting input when user approval is actually
-          // needed (not when auto-executed against a cached permission grant).
-          if (
-            state.currentToolUse.name === 'AskUserQuestion' ||
-            (state.currentToolUse.name.startsWith('mcp__user-input__request_') &&
-              state.currentToolUse.name !== 'mcp__user-input__request_script_run')
-          ) {
-            this.markSessionAwaitingInput(sessionId)
+          // Subagent/workflow launches pause in the container under a 'review'
+          // policy — surface the approval card. The handler itself checks the
+          // policy and session grants (no-op under allow/block/granted).
+          if (['Task', 'Agent', 'Workflow'].includes(state.currentToolUse.name)) {
+            void this.handleCapabilityReviewTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolUse.name,
+              state.currentToolInput,
+              state.agentSlug
+            )
           }
 
           // Track deliver_file tool calls so the matching tool_result can be
@@ -1753,6 +3256,7 @@ class MessagePersister {
               currentToolUse: null,
               currentToolInput: '',
               isBackground,
+              isResumed: false,
             })
           }
 
@@ -1785,8 +3289,16 @@ class MessagePersister {
         // Defensive: ensure thinking state is cleared if a stop was missed
         if (state.currentThinking) {
           state.currentThinking = false
-          this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_stop',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
         }
+        state.currentAssistantMessageId = null
+        state.currentThinkingBlockIndex = null
         break
     }
   }
@@ -1796,7 +3308,8 @@ class MessagePersister {
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       // Parse the tool input to get secretName and reason
@@ -1813,22 +3326,13 @@ class MessagePersister {
         return
       }
 
-      // Broadcast the secret request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'secret_request',
+      this.registerStreamRequest(
+        sessionId,
+        'secret',
         toolUseId,
-        secretName: input.secretName,
-        reason: input.reason,
-        agentSlug,
-      })
-
-      // Renderer's notification gate decides whether to show the OS popup
-      // based on focus / per-user viewing / `notifyWhenUnfocused` toggle.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'secret').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+        { secretName: input.secretName, reason: input.reason },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling secret request:', error)
     }
@@ -1839,7 +3343,8 @@ class MessagePersister {
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       // Parse the tool input to get toolkit and reason
@@ -1856,69 +3361,76 @@ class MessagePersister {
         return
       }
 
-      // Broadcast the connected account request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'connected_account_request',
+      this.registerStreamRequest(
+        sessionId,
+        'connected_account',
         toolUseId,
-        toolkit: input.toolkit.toLowerCase(),
-        reason: input.reason,
-        agentSlug,
-      })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'connected_account').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+        { toolkit: input.toolkit.toLowerCase(), reason: input.reason },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling connected account request:', error)
     }
   }
 
-  // Handle schedule task tool - save to database and broadcast to SSE clients
+  // Handle schedule task tool - blocking: persist to database, then resolve the
+  // container tool only after the task is actually saved (fixes the false-success
+  // bug where the tool reported success while persistence ran/failed in the
+  // background). Also appends a warning for too-frequent recurring schedules.
   private handleScheduleTaskTool(
     sessionId: string,
     toolUseId: string,
     toolInput: string,
     agentSlug?: string
   ): void {
-    // Use async IIFE since we need to await database operations
     ;(async () => {
+      if (!agentSlug) {
+        // Without an agentSlug we can't reach the container to resolve/reject.
+        console.error('[MessagePersister] Schedule task missing agentSlug')
+        return
+      }
+
+      // Parse the tool input
+      let input: {
+        scheduleType: 'at' | 'cron'
+        scheduleExpression: string
+        prompt: string
+        name?: string
+        timezone?: string
+        model?: string
+        effort?: string
+        speed?: string
+      }
       try {
-        // Parse the tool input
-        let input: {
-          scheduleType: 'at' | 'cron'
-          scheduleExpression: string
-          prompt: string
-          name?: string
-          timezone?: string
-          model?: string
-          effort?: string
-        }
-        try {
-          input = JSON.parse(toolInput)
-        } catch {
-          console.error('[MessagePersister] Failed to parse schedule task input:', toolInput)
-          return
-        }
+        input = JSON.parse(toolInput)
+      } catch {
+        console.error('[MessagePersister] Failed to parse schedule task input:', toolInput)
+        await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input').catch(console.error)
+        return
+      }
 
-        if (!input.scheduleType || !input.scheduleExpression || !input.prompt) {
-          console.error('[MessagePersister] Schedule task missing required fields')
-          return
-        }
+      // Trim-aware required-field check, matching the container tool's own
+      // validation (a whitespace-only prompt/expression is empty). Without the
+      // trim the host would persist a task the container already told the agent
+      // was rejected.
+      if (!input.scheduleType || !input.scheduleExpression?.trim() || !input.prompt?.trim()) {
+        await this.rejectContainerInput(
+          agentSlug,
+          toolUseId,
+          'Missing required fields: scheduleType, scheduleExpression, and prompt are required'
+        ).catch(console.error)
+        return
+      }
 
-        if (!agentSlug) {
-          console.error('[MessagePersister] Schedule task missing agentSlug')
-          return
-        }
-
+      // Persist the task. A failure here must reject — the agent is never told a
+      // false success.
+      let taskId: string
+      let timezone: string | undefined
+      try {
         // Resolve timezone: agent tool override > agent owner's timezone
-        const timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
-
-        // Create the scheduled task in the database
+        timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
         const sessionOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
-        const taskId = await createScheduledTask({
+        taskId = await createScheduledTask({
           agentSlug,
           scheduleType: input.scheduleType,
           scheduleExpression: input.scheduleExpression,
@@ -1929,8 +3441,19 @@ class MessagePersister {
           timezone,
           model: input.model,
           effort: input.effort,
+          speed: input.speed,
         })
+      } catch (error) {
+        console.error('[MessagePersister] Error handling schedule task:', error)
+        const msg = error instanceof Error ? error.message : String(error)
+        await this.rejectContainerInput(agentSlug, toolUseId, `Failed to schedule task: ${msg}`).catch(console.error)
+        return
+      }
 
+      // The task is persisted. Everything past here is best-effort: a failure
+      // delivering the result must NOT reject the tool, or the agent could be told
+      // a real success failed and retry into a duplicate schedule.
+      try {
         // Broadcast the scheduled task created event to session-specific SSE clients
         this.broadcastToSSE(sessionId, {
           type: 'scheduled_task_created',
@@ -1948,10 +3471,201 @@ class MessagePersister {
           taskId,
           agentSlug,
         })
-      } catch (error) {
-        console.error('[MessagePersister] Error handling schedule task:', error)
+
+        // Build the agent-facing result: base success + any frequency warning,
+        // then enrich with the agent's active-schedule count, a soft-cap warning,
+        // and the full active list so a runaway loop or duplicate schedules are
+        // visible. The enrichment is best-effort — if reading the active list
+        // throws we still resolve with the base success so the blocking tool never
+        // hangs.
+        let resultMessage = this.formatScheduleTaskResult(input, taskId, timezone)
+        try {
+          const activeTasks = await listPendingScheduledTasks(agentSlug)
+          resultMessage += this.formatActiveScheduleSummary(activeTasks)
+        } catch (summaryError) {
+          console.error('[MessagePersister] Failed to build active-schedule summary:', summaryError)
+        }
+
+        // Resolve the blocking tool with the (possibly enriched) success message.
+        await this.resolveContainerInput(agentSlug, toolUseId, resultMessage)
+      } catch (deliveryError) {
+        console.error('[MessagePersister] Schedule persisted but result delivery failed:', deliveryError)
       }
     })()
+  }
+
+  /**
+   * Handle schedule_resume: persist a session wake (a one-shot scheduled task
+   * that resumes THIS session instead of creating a new one), then resolve the
+   * blocking container tool. Mirrors handleScheduleTaskTool's persist-then-
+   * resolve contract: a persistence failure rejects; a delivery failure after
+   * persistence never does.
+   */
+  private handleScheduleResumeTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      if (!agentSlug) {
+        console.error('[MessagePersister] Schedule resume missing agentSlug')
+        return
+      }
+
+      let input: { wakeTime?: string; note?: string; timezone?: string }
+      try {
+        input = JSON.parse(toolInput)
+      } catch {
+        console.error('[MessagePersister] Failed to parse schedule resume input:', toolInput)
+        await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input').catch(console.error)
+        return
+      }
+
+      if (!input.wakeTime?.trim() || !input.note?.trim()) {
+        await this.rejectContainerInput(
+          agentSlug,
+          toolUseId,
+          'Missing required fields: wakeTime and note are required'
+        ).catch(console.error)
+        return
+      }
+
+      // Accept both "at tomorrow 9am" and bare "tomorrow 9am" — the parser's
+      // 'at' syntax needs the prefix.
+      const trimmed = input.wakeTime.trim()
+      const scheduleExpression = /^at\s/i.test(trimmed) ? trimmed : `at ${trimmed}`
+
+      let taskId: string
+      let replaced: ScheduledTask | null
+      let timezone: string | undefined
+      try {
+        timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
+        const sessionOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+        ;({ taskId, replaced } = await createSessionWake({
+          agentSlug,
+          scheduleExpression,
+          note: input.note,
+          sessionId,
+          createdByUserId: sessionOwnerId ?? undefined,
+          timezone,
+        }))
+      } catch (error) {
+        console.error('[MessagePersister] Error handling schedule resume:', error)
+        const msg = error instanceof Error ? error.message : String(error)
+        await this.rejectContainerInput(agentSlug, toolUseId, `Failed to schedule resume: ${msg}`).catch(console.error)
+        return
+      }
+
+      // Persisted — everything past here is best-effort delivery.
+      try {
+        this.broadcastToSSE(sessionId, {
+          type: 'scheduled_task_created',
+          toolUseId,
+          taskId,
+          scheduleType: 'at',
+          scheduleExpression,
+          agentSlug,
+          resumeSessionId: sessionId,
+        })
+        this.broadcastGlobal({
+          type: 'scheduled_task_created',
+          taskId,
+          agentSlug,
+          resumeSessionId: sessionId,
+        })
+        // The pending wake is session-level state (badges, resume banner) —
+        // nudge session lists to refetch.
+        this.broadcastToSSE(sessionId, { type: 'session_updated' })
+        this.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
+
+        const parsed = validateScheduleExpression('at', scheduleExpression, timezone)
+        const resolvedTime = parsed.nextTime ? parsed.nextTime.toISOString() : scheduleExpression
+        let resultMessage =
+          `Scheduled this session to auto-resume at ${resolvedTime}${timezone ? ` (${timezone})` : ''} (wake ID: ${taskId}).\n\n` +
+          `Your note (echoed back to you on wake): "${input.note}"`
+        if (replaced) {
+          resultMessage += `\n\nReplaced this session's previous pending wake (was scheduled for ${replaced.nextExecutionAt.toISOString()}). A session holds at most one pending wake.`
+        }
+        resultMessage +=
+          '\n\nEnd your turn now. This conversation will resume automatically at the scheduled time with full context; while sleeping it costs nothing and survives restarts.'
+
+        await this.resolveContainerInput(agentSlug, toolUseId, resultMessage)
+      } catch (deliveryError) {
+        console.error('[MessagePersister] Wake persisted but result delivery failed:', deliveryError)
+      }
+    })()
+  }
+
+  /**
+   * Build the success message returned to the agent after a schedule is persisted,
+   * appending a too-frequent-interval warning for recurring schedules below the
+   * recommended minimum.
+   */
+  private formatScheduleTaskResult(
+    input: {
+      scheduleType: 'at' | 'cron'
+      scheduleExpression: string
+      prompt: string
+      name?: string
+    },
+    taskId: string,
+    timezone?: string
+  ): string {
+    const taskType = input.scheduleType === 'cron' ? 'recurring' : 'one-time'
+    const taskName = input.name || 'Scheduled Task'
+    const parsed = validateScheduleExpression(input.scheduleType, input.scheduleExpression, timezone)
+    const nextRun = parsed.nextTime ? `\nNext run: ${parsed.nextTime.toISOString()}` : ''
+    const continuation =
+      input.scheduleType === 'cron'
+        ? 'This recurring task will continue until cancelled.'
+        : 'This one-time task will be removed after execution.'
+
+    let result = `Scheduled ${taskType} task "${taskName}" (ID: ${taskId}).
+
+Schedule: ${input.scheduleExpression}${timezone ? ` (${timezone})` : ''}${nextRun}
+
+${continuation}`
+
+    const warning = getFrequencyWarning(input.scheduleType, input.scheduleExpression, timezone)
+    if (warning) {
+      result += `\n\n${warning}`
+    }
+
+    return result
+  }
+
+  /**
+   * Build the active-schedule summary appended to a schedule_task result: the
+   * agent's current count of active schedules (pending + paused), a soft-cap
+   * warning when the count is high, and the full list (id, name, schedule
+   * expression, next run) so the agent can spot duplicates/overlaps and
+   * self-correct. Always returns the count + list; the warning is conditional.
+   */
+  private formatActiveScheduleSummary(tasks: ScheduledTask[]): string {
+    const count = tasks.length
+    let summary = `\n\nActive schedules for this agent: ${count}`
+
+    const warning = getScheduleCountWarning(count)
+    if (warning) {
+      summary += `\n\n${warning}`
+    }
+
+    if (count > 0) {
+      const list = tasks
+        .map((t) => {
+          const kind = t.resumeSessionId
+            ? 'session wake'
+            : t.scheduleType === 'cron' ? 'recurring' : 'one-time'
+          const next = t.nextExecutionAt ? t.nextExecutionAt.toISOString() : 'unknown'
+          const status = t.status === 'paused' ? ' [PAUSED]' : ''
+          return `- **${t.name || (t.resumeSessionId ? 'Session Wake' : 'Scheduled Task')}** (ID: ${t.id})${status} — ${kind} (${t.scheduleExpression}), next run ${next}${t.timezone ? ` (${t.timezone})` : ''}`
+        })
+        .join('\n')
+      summary += `\n\n${list}`
+    }
+
+    return summary
   }
 
   // Handle list_scheduled_tasks - blocking: read from SQLite and resolve
@@ -1972,10 +3686,12 @@ class MessagePersister {
         const formatted = tasks.length === 0
           ? 'No scheduled tasks on the schedule for this agent.'
           : `Scheduled tasks:\n\n${tasks.map((t) => {
-              const kind = t.scheduleType === 'cron' ? 'recurring' : 'one-time'
+              const kind = t.resumeSessionId
+                ? `session wake (resumes session ${t.resumeSessionId})`
+                : t.scheduleType === 'cron' ? 'recurring' : 'one-time'
               const next = t.nextExecutionAt ? t.nextExecutionAt.toISOString() : 'unknown'
               const status = t.status === 'paused' ? ' [PAUSED]' : ''
-              return `- **${t.name || 'Scheduled Task'}** (ID: ${t.id})${status}\n  Type: ${kind} (${t.scheduleExpression})\n  Next run: ${next}${t.timezone ? ` (${t.timezone})` : ''}\n  Prompt: ${t.prompt.substring(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
+              return `- **${t.name || (t.resumeSessionId ? 'Session Wake' : 'Scheduled Task')}** (ID: ${t.id})${status}\n  Type: ${kind} (${t.scheduleExpression})\n  Next run: ${next}${t.timezone ? ` (${t.timezone})` : ''}\n  ${t.resumeSessionId ? 'Note' : 'Prompt'}: ${t.prompt.substring(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
             }).join('\n\n')}`
 
         await this.resolveContainerInput(agentSlug, toolUseId, formatted)
@@ -2163,6 +3879,20 @@ class MessagePersister {
     })
   }
 
+  /**
+   * Interrupt the running query in the container (abort + resume) by POSTing the same
+   * `/sessions/:id/interrupt` endpoint the explicit interrupt route hits. Uses `client.fetch`
+   * (not the `client.interruptSession` helper that route calls) to stay on the proxy-routed path
+   * the rest of MessagePersister's container calls use, e.g. `rejectContainerInput`.
+   */
+  private async interruptContainerSession(agentSlug: string, sessionId: string): Promise<void> {
+    const cm = await getContainerManager()
+    const client = cm.getClient(agentSlug)
+    await client.fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+      method: 'POST',
+    })
+  }
+
   // Handle get_available_triggers - blocking: fetch from Composio and resolve
   private handleGetAvailableTriggersTool(
     sessionId: string,
@@ -2204,10 +3934,16 @@ class MessagePersister {
 
         const triggers = await getAvailableTriggers(account.toolkitSlug)
         const formatted = triggers.length === 0
-          ? 'No webhook triggers available for this account.'
+          ? 'No webhook triggers available for this account.\n\n' +
+            'You can still react to events from this service with a custom webhook endpoint:\n' +
+            '1. Call create_webhook_endpoint to mint a public URL (with a prompt describing what to do per event).\n' +
+            `2. Register that URL with the service — most expose webhook registration via their API (use the connected ${account.toolkitSlug} account) or a settings page.\n` +
+            '3. If the service provides a signing secret, attach it with update_webhook_endpoint so deliveries are verified.\n' +
+            '4. If the service\'s webhook events are broader than what you need (most are), add a CEL filter_exp so only matching events start a session — dry-run candidates against real deliveries with inspect_webhook_events first.'
           : `Available triggers for ${account.toolkitSlug}:\n\n${triggers.map((t) =>
               `- **${t.slug}** (${t.name}): ${t.description}${t.type === 'poll' ? ' [poll-based]' : ''}`
-            ).join('\n')}\n\nUse setup_trigger with the trigger slug to subscribe.`
+            ).join('\n')}\n\nUse setup_trigger with the trigger slug to subscribe. ` +
+            'For events this catalog does not cover, you can also mint a custom webhook endpoint (create_webhook_endpoint) and register its URL with the service directly — both kinds can run side by side.'
 
         await this.resolveContainerInput(agentSlug, toolUseId, formatted)
       } catch (error) {
@@ -2246,6 +3982,7 @@ class MessagePersister {
           trigger_config?: Record<string, unknown>
           model?: string
           effort?: string
+          speed?: string
         }
         try {
           input = JSON.parse(toolInput)
@@ -2308,6 +4045,7 @@ class MessagePersister {
             createdByUserId: triggerOwnerId ?? undefined,
             model: input.model,
             effort: input.effort,
+            speed: input.speed,
           })
         } catch (dbError) {
           // Rollback Composio trigger
@@ -2348,6 +4086,351 @@ class MessagePersister {
     })()
   }
 
+  /**
+   * Member context for platform webhook-endpoint calls: session owner first,
+   * stored member as fallback, 'local' placeholder last (opaque platform keys
+   * ignore the member suffix entirely).
+   */
+  private async resolvePlatformMemberForSession(agentSlug: string, sessionId: string): Promise<string> {
+    const ownerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+    const resolved = resolvePlatformMemberForCandidates([ownerId])
+    return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
+  }
+
+  // Handle create_webhook_endpoint - blocking: mint on platform + save SQLite
+  // trigger row (kind='custom'), rolling back the mint if the local save fails.
+  private handleCreateWebhookEndpointTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error('[MessagePersister] create_webhook_endpoint missing agentSlug')
+          return
+        }
+
+        // Gate on platform auth, not Composio mode: custom endpoints live on
+        // the platform proxy and must keep working when the user brings their
+        // own Composio key (mirrors the teardown gate in
+        // webhook-trigger-service).
+        if (!getPlatformAccessToken()) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
+          return
+        }
+
+        let rawInput: unknown
+        try {
+          rawInput = JSON.parse(toolInput)
+        } catch {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
+          return
+        }
+
+        const parsedInput = createWebhookEndpointInputSchema.safeParse(rawInput)
+        if (!parsedInput.success) {
+          await this.rejectContainerInput(agentSlug, toolUseId,
+            `Invalid tool input: ${parsedInput.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`)
+          return
+        }
+        const input = parsedInput.data
+        const verification = input.verification ?? undefined
+        const filterExp = input.filter_exp ?? undefined
+
+        const memberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
+
+        // 1. Mint the endpoint on the platform proxy
+        const endpoint = await createPlatformWebhookEndpoint(memberId, {
+          name: input.name.trim(),
+          ...(verification ? { verification } : {}),
+          ...(filterExp ? { filter_exp: filterExp } : {}),
+        })
+
+        // 2. Save the local trigger row (rollback the mint on failure)
+        let triggerId: string
+        try {
+          const triggerOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+          triggerId = await createWebhookTrigger({
+            agentSlug,
+            kind: 'custom',
+            composioTriggerId: endpoint.id,
+            triggerType: CUSTOM_WEBHOOK_TRIGGER_TYPE,
+            // The public URL lives platform-side; mirror it here so list/UI
+            // don't need a platform round-trip.
+            triggerConfig: JSON.stringify({ url: endpoint.url, endpointId: endpoint.id }),
+            prompt: input.prompt,
+            name: input.name.trim(),
+            createdBySessionId: sessionId,
+            createdByUserId: triggerOwnerId ?? undefined,
+            model: input.model,
+            effort: input.effort,
+            speed: input.speed,
+          })
+        } catch (dbError) {
+          console.error('[MessagePersister] SQLite save failed, disabling platform endpoint:', dbError)
+          captureException(dbError, {
+            tags: { area: 'webhook-endpoints', op: 'create-local-save' },
+            extra: { endpointId: endpoint.id, agentSlug, sessionId },
+          })
+          await disablePlatformWebhookEndpoint(memberId, endpoint.id).catch((rollbackError) => {
+            // Mint succeeded, local save failed, and now the rollback failed too:
+            // a live public URL is orphaned with no local row. Loudest signal.
+            console.error('[MessagePersister] Endpoint rollback failed — endpoint orphaned live:', rollbackError)
+            captureException(rollbackError, {
+              tags: { area: 'webhook-endpoints', op: 'create-rollback' },
+              extra: { endpointId: endpoint.id, agentSlug, sessionId, memberId },
+            })
+          })
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Failed to save trigger locally').catch(console.error)
+          return
+        }
+
+        // 3. Broadcast events (same shape as Composio trigger creation)
+        this.broadcastToSSE(sessionId, {
+          type: 'webhook_trigger_created',
+          toolUseId,
+          triggerId,
+          triggerType: CUSTOM_WEBHOOK_TRIGGER_TYPE,
+          name: input.name,
+          agentSlug,
+        })
+
+        this.broadcastGlobal({
+          type: 'webhook_trigger_created',
+          triggerId,
+          agentSlug,
+        })
+
+        await this.resolveContainerInput(agentSlug, toolUseId,
+          `Webhook endpoint "${input.name}" created (trigger ID: ${triggerId}).\n\n` +
+          `Public URL: ${endpoint.url}\n\n` +
+          `Next: register this URL with the third-party service. Do the registration YOURSELF whenever possible — in order of preference:\n` +
+          `1. The service's API: use the connected account through the authenticated proxy, or call it directly (request_secret for an API key if needed).\n` +
+          `2. Offer to do it via the browser (navigate to the service's webhook settings page and fill it in).\n` +
+          `3. Only if the user prefers to do it themselves (or registration requires access you don't have): give them a precise, copy-pasteable walkthrough — the exact settings path for that service, the URL to paste, the content type to pick, which events to enable, and where to put the signing secret.\n\n` +
+          `Registration handshakes (Slack url_verification, Dropbox/Meta challenges, MS Graph validationToken) are answered automatically.\n\n` +
+          `${verification
+            ? 'Signature verification is configured — events with bad signatures are rejected at the edge.'
+            : 'No signature verification is configured yet — events will be marked UNVERIFIED. If the service provides a signing secret (many reveal it only after registration), attach it with update_webhook_endpoint.'}\n\n` +
+          `${filterExp
+            ? `Delivery filter active: only events matching \`${filterExp}\` start a session (filtered events are logged — inspect_webhook_events shows them). After real traffic arrives, verify the filter behaves with inspect_webhook_events.`
+            : 'No delivery filter is set — EVERY event this URL receives will start a session. After registering, decide whether you need one: compare the events the service will actually send against what your prompt handles. If the subscription is broader (it usually is — most services can\'t filter by assignee/status/type at registration), add a CEL filter_exp via update_webhook_endpoint so irrelevant events are dropped at the edge instead of waking you. Once real deliveries exist, dry-run candidates with inspect_webhook_events (test_filter_exp) before applying.'}\n\n` +
+          `Every delivery to this URL starts a session with your prompt plus the request details.`)
+
+        console.log(`[MessagePersister] Custom webhook endpoint ${endpoint.id} created (trigger: ${triggerId})`)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling create_webhook_endpoint:', error)
+        // Agent-visible via the reject below, but capture so a recurring
+        // platform-integration regression surfaces in aggregate. Never attach
+        // the tool input — it carries the HMAC secret.
+        captureException(error, {
+          tags: { area: 'webhook-endpoints', op: 'create' },
+          extra: { agentSlug, sessionId, toolUseId },
+        })
+        if (agentSlug) {
+          const msg = error instanceof Error ? error.message : String(error)
+          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to create webhook endpoint: ${msg}`).catch(console.error)
+        }
+      }
+    })()
+  }
+
+  // Handle update_webhook_endpoint - blocking: PATCH the platform endpoint
+  // (verification is usually attached AFTER registration reveals the secret).
+  private handleUpdateWebhookEndpointTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error('[MessagePersister] update_webhook_endpoint missing agentSlug')
+          return
+        }
+
+        // Gate on platform auth, not Composio mode: custom endpoints live on
+        // the platform proxy and must keep working when the user brings their
+        // own Composio key (mirrors the teardown gate in
+        // webhook-trigger-service).
+        if (!getPlatformAccessToken()) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
+          return
+        }
+
+        let rawInput: unknown
+        try {
+          rawInput = JSON.parse(toolInput)
+        } catch {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
+          return
+        }
+
+        const parsedInput = updateWebhookEndpointInputSchema.safeParse(rawInput)
+        if (!parsedInput.success) {
+          await this.rejectContainerInput(agentSlug, toolUseId,
+            `Invalid tool input: ${parsedInput.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`)
+          return
+        }
+        const input = parsedInput.data
+
+        const trigger = await getWebhookTrigger(input.trigger_id)
+        if (!trigger || trigger.agentSlug !== agentSlug || trigger.kind !== 'custom' || !trigger.composioTriggerId) {
+          await this.rejectContainerInput(agentSlug, toolUseId, `No custom webhook endpoint found for trigger ${input.trigger_id}`)
+          return
+        }
+        if (trigger.status === 'cancelled') {
+          await this.rejectContainerInput(agentSlug, toolUseId, `Trigger ${input.trigger_id} is cancelled; create a new endpoint instead`)
+          return
+        }
+
+        const patch: {
+          name?: string
+          verification?: import('@shared/lib/services/webhook-endpoint-schema').VerificationProfile | null
+          filter_exp?: string | null
+        } = {}
+        if (input.name) patch.name = input.name
+        if (input.verification !== undefined) patch.verification = input.verification
+        if (input.filter_exp !== undefined) patch.filter_exp = input.filter_exp
+        if (Object.keys(patch).length === 0) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Nothing to update: pass name, verification, and/or filter_exp')
+          return
+        }
+
+        // Creator-first member resolution, matching teardown: the endpoint is
+        // scoped to whoever minted it, not whoever's session runs the update.
+        const memberId =
+          resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
+          (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
+        await updatePlatformWebhookEndpoint(memberId, trigger.composioTriggerId, patch)
+
+        // Keep the local row in sync so list_triggers/UI don't show a stale name.
+        if (patch.name) {
+          await updateWebhookTriggerName(trigger.id, patch.name)
+        }
+
+        const changed = [
+          patch.name ? 'name' : null,
+          patch.verification === null ? 'verification removed' : patch.verification ? 'verification attached' : null,
+          patch.filter_exp === null ? 'filter removed' : patch.filter_exp ? 'filter set' : null,
+        ].filter(Boolean).join(', ')
+        await this.resolveContainerInput(agentSlug, toolUseId,
+          `Webhook endpoint updated (${changed}).${patch.verification
+            ? ' Incoming requests are now signature-verified at the edge; events with bad signatures are rejected.'
+            : ''}${patch.filter_exp
+            ? ` Only deliveries matching \`${patch.filter_exp}\` will start a session; non-matching ones are logged as filtered (inspect_webhook_events shows them, including any filter eval errors — errors fail open and still deliver).`
+            : patch.filter_exp === null
+              ? ' The delivery filter was removed — every event starts a session again.'
+              : ''}`)
+
+        console.log(`[MessagePersister] Custom webhook endpoint ${trigger.composioTriggerId} updated (${changed})`)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling update_webhook_endpoint:', error)
+        // Never attach the tool input — it carries the HMAC secret.
+        captureException(error, {
+          tags: { area: 'webhook-endpoints', op: 'update' },
+          extra: { agentSlug, sessionId, toolUseId },
+        })
+        if (agentSlug) {
+          const msg = error instanceof Error ? error.message : String(error)
+          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to update webhook endpoint: ${msg}`).catch(console.error)
+        }
+      }
+    })()
+  }
+
+  // Handle inspect_webhook_events - blocking: read recent stored deliveries
+  // (including filter-withheld rows) from the platform, or dry-run a candidate
+  // filter expression against them. Read-only on both sides.
+  private handleInspectWebhookEventsTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error('[MessagePersister] inspect_webhook_events missing agentSlug')
+          return
+        }
+
+        if (!getPlatformAccessToken()) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
+          return
+        }
+
+        let rawInput: unknown
+        try {
+          rawInput = JSON.parse(toolInput)
+        } catch {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
+          return
+        }
+
+        const parsedInput = inspectWebhookEventsInputSchema.safeParse(rawInput)
+        if (!parsedInput.success) {
+          await this.rejectContainerInput(agentSlug, toolUseId,
+            `Invalid tool input: ${parsedInput.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`)
+          return
+        }
+        const input = parsedInput.data
+
+        // Cancelled triggers stay inspectable on purpose: the stored events
+        // outlive the endpoint and post-mortems are a legitimate use.
+        const trigger = await getWebhookTrigger(input.trigger_id)
+        if (!trigger || trigger.agentSlug !== agentSlug || trigger.kind !== 'custom' || !trigger.composioTriggerId) {
+          await this.rejectContainerInput(agentSlug, toolUseId, `No custom webhook endpoint found for trigger ${input.trigger_id}`)
+          return
+        }
+
+        // Creator-first member resolution, same as update/teardown.
+        const memberId =
+          resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
+          (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
+
+        if (input.test_filter_exp) {
+          const result = await testPlatformWebhookFilter(
+            memberId, trigger.composioTriggerId, input.test_filter_exp, input.limit)
+          const lines = result.results.map((r) => {
+            const stored = r.stored_status ? ` (stored: ${r.stored_status})` : ''
+            const detail = r.outcome === 'error' && r.error ? ` — ${r.error}` : ''
+            return `- ${r.event_id} · ${r.created_at}${stored}: ${r.outcome.toUpperCase()}${detail}`
+          })
+          await this.resolveContainerInput(agentSlug, toolUseId,
+            `Dry-run of \`${result.filter_exp}\` against the ${result.evaluated} most recent deliveries — ` +
+            `${result.summary.passed} would pass, ${result.summary.filtered} filtered out, ` +
+            `${result.summary.error} errored (errors fail open = delivered), ${result.summary.skipped} skipped (handshakes/scrubbed).\n\n` +
+            `${lines.length ? lines.join('\n') : 'No stored deliveries to evaluate yet — send a test event first.'}\n\n` +
+            `Nothing was changed. When the verdicts look right, apply it with update_webhook_endpoint (filter_exp).`)
+        } else {
+          const { filterExp, events } = await listPlatformWebhookEvents(
+            memberId, trigger.composioTriggerId, input.limit)
+          await this.resolveContainerInput(agentSlug, toolUseId,
+            `Active filter: ${filterExp ? `\`${filterExp}\`` : 'none (every event delivers)'}\n\n` +
+            `${events.length
+              ? `Recent deliveries (newest first):\n${events.map(formatWebhookEventLine).join('\n')}`
+              : 'No deliveries recorded yet for this endpoint.'}`)
+        }
+
+        console.log(`[MessagePersister] Inspected webhook events for ${trigger.composioTriggerId}`)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling inspect_webhook_events:', error)
+        captureException(error, {
+          tags: { area: 'webhook-endpoints', op: 'inspect' },
+          extra: { agentSlug, sessionId, toolUseId },
+        })
+        if (agentSlug) {
+          const msg = error instanceof Error ? error.message : String(error)
+          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to inspect webhook events: ${msg}`).catch(console.error)
+        }
+      }
+    })()
+  }
+
   // Handle list_triggers - blocking: read from SQLite and resolve
   private handleListTriggersTool(
     _sessionId: string,
@@ -2365,9 +4448,12 @@ class MessagePersister {
         const triggers = await listActiveWebhookTriggers(agentSlug)
         const formatted = triggers.length === 0
           ? 'No active webhook triggers for this agent.'
-          : `Active webhook triggers:\n\n${triggers.map((t) =>
-              `- **${t.name || t.triggerType}** (ID: ${t.id})\n  Type: ${t.triggerType}\n  Account: ${t.connectedAccountId}\n  Fires: ${t.fireCount} time(s)\n  Prompt: ${t.prompt.substring(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
-            ).join('\n\n')}`
+          : `Active webhook triggers:\n\n${triggers.map((t) => {
+              const source = t.kind === 'custom'
+                ? `URL: ${extractEndpointUrl(t.triggerConfig) ?? '(unknown)'}`
+                : `Account: ${t.connectedAccountId}`
+              return `- **${t.name || t.triggerType}** (ID: ${t.id})\n  Type: ${t.triggerType}${t.kind === 'custom' ? ' (custom endpoint)' : ''}\n  ${source}\n  Fires: ${t.fireCount} time(s)\n  Prompt: ${t.prompt.substring(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
+            }).join('\n\n')}`
 
         await this.resolveContainerInput(agentSlug, toolUseId, formatted)
       } catch (error) {
@@ -2406,7 +4492,9 @@ class MessagePersister {
           return
         }
 
-        const cancelled = await cancelWebhookTriggerWithCleanup(input.trigger_id)
+        // Scope to the calling agent so it can't cancel (and, for custom kind,
+        // disable the public endpoint of) another agent's trigger by id.
+        const cancelled = await cancelWebhookTriggerWithCleanup(input.trigger_id, agentSlug)
         if (!cancelled) {
           await this.rejectContainerInput(agentSlug, toolUseId, `Trigger ${input.trigger_id} not found or already cancelled`)
           return
@@ -2445,7 +4533,8 @@ class MessagePersister {
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       // Parse the tool input to get questions
@@ -2462,22 +4551,87 @@ class MessagePersister {
         return
       }
 
-      // Broadcast the question request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'user_question_request',
+      this.registerStreamRequest(
+        sessionId,
+        'question',
         toolUseId,
-        questions: input.questions,
-        agentSlug,
-      })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'question').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+        { questions: input.questions },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling AskUserQuestion:', error)
+    }
+  }
+
+  // Handle a subagent (Task/Agent) or workflow (Workflow) launch under a
+  // 'review' policy: broadcast the approval card. The container's canUseTool
+  // has paused the launch on a pending input keyed by the same toolUseId; the
+  // decision route answers it via /inputs/:toolUseId/resolve|reject. Under
+  // 'allow' or an active session grant the container never pauses, and under
+  // 'block' it denies outright — no card in any of those cases.
+  private async handleCapabilityReviewTool(
+    sessionId: string,
+    toolUseId: string,
+    toolName: string,
+    toolInput: string,
+    agentSlug?: string
+  ): Promise<void> {
+    try {
+      const capability = toolName === 'Workflow' ? 'workflows' : 'subagents'
+      if (getAgentCapabilitySettings()[capability] !== 'review') return
+      if (this.hasSessionCapabilityGrant(sessionId, capability)) return
+
+      // The in-memory mirror above is only a fast path — the container's
+      // persisted grants are authoritative. A fresh host process against a
+      // live granted session would otherwise render a phantom review card
+      // while the container runs the launch without waiting.
+      const client = this.containerClients.get(sessionId)
+      if (client) {
+        try {
+          const response = await client.fetch(
+            `/sessions/${encodeURIComponent(sessionId)}/capability-grants`,
+            { method: 'GET' }
+          )
+          if (response.ok) {
+            const { grants } = sessionCapabilityGrantsResponseSchema.parse(await response.json())
+            if (grants.includes(capability)) {
+              this.grantSessionCapability(sessionId, capability)
+              return
+            }
+          }
+        } catch (error) {
+          // Fail toward showing the card: a review the container isn't waiting
+          // on beats a launch that silently skips review.
+          console.warn('[MessagePersister] Capability grant lookup failed; showing review card:', error)
+        }
+      }
+
+      // The grant lookup above is async — a capability_review_cancelled frame
+      // may have arrived while we awaited it (interrupts make this common).
+      // Its completeCapabilityReview found nothing to delete, so consume the
+      // tombstone here: broadcasting now would resurrect an unanswerable card
+      // and re-mark the session as awaiting input.
+      if (this.streamingStates.get(sessionId)?.cancelledCapabilityReviews.delete(toolUseId)) {
+        return
+      }
+
+      let input: Record<string, unknown> = {}
+      try {
+        input = JSON.parse(toolInput)
+      } catch {
+        // Launches with unparseable input still need a decision — show the card with what we have.
+      }
+
+      this.registerStreamRequest(
+        sessionId,
+        'capability_review',
+        toolUseId,
+        { capability, toolName, input },
+        { agentSlug },
+      )
+      this.syncSessionAwaiting(sessionId)
+    } catch (error) {
+      console.error('[MessagePersister] Error handling capability review:', error)
     }
   }
 
@@ -2486,7 +4640,8 @@ class MessagePersister {
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       let input: RequestFileInput = {}
@@ -2502,21 +4657,13 @@ class MessagePersister {
         return
       }
 
-      // Broadcast the file request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'file_request',
+      this.registerStreamRequest(
+        sessionId,
+        'file',
         toolUseId,
-        description: input.description,
-        fileTypes: input.fileTypes,
-        agentSlug,
-      })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'file').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+        { description: input.description, fileTypes: input.fileTypes },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling file request:', error)
     }
@@ -2527,7 +4674,8 @@ class MessagePersister {
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       let input: RequestRemoteMcpInput = {}
@@ -2543,23 +4691,13 @@ class MessagePersister {
         return
       }
 
-      // Broadcast the remote MCP request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'remote_mcp_request',
+      this.registerStreamRequest(
+        sessionId,
+        'remote_mcp',
         toolUseId,
-        url: input.url,
-        name: input.name,
-        reason: input.reason,
-        authHint: input.authHint,
-        agentSlug,
-      })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'remote_mcp').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+        { url: input.url, name: input.name, reason: input.reason, authHint: input.authHint },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling remote MCP request:', error)
     }
@@ -2570,7 +4708,8 @@ class MessagePersister {
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       let input: RequestBrowserInputInput = {}
@@ -2586,20 +4725,48 @@ class MessagePersister {
         return
       }
 
-      this.broadcastToSSE(sessionId, {
-        type: 'browser_input_request',
+      this.registerStreamRequest(
+        sessionId,
+        'browser_input',
         toolUseId,
-        message: input.message,
-        requirements: input.requirements || [],
-        agentSlug,
-      })
+        {
+          message: input.message,
+          // The model controls this field — coerce a non-array (e.g. a bare
+          // string) to [] so no renderer calls `.map()` on a non-array.
+          requirements: Array.isArray(input.requirements) ? input.requirements : [],
+        },
+        { agentSlug, parentToolUseId },
+      )
 
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'browser_input').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+      // The URL is host-observed context, never a model-supplied tool field.
+      // Capture it when the request opens so credential discovery does not
+      // need a separate browser roundtrip later. Fill still re-checks the live
+      // origin immediately before the password crosses the host boundary.
+      const client = this.containerClients.get(sessionId)
+      if (client) {
+        void client.fetch(
+          `/browser/credential-context?sessionId=${encodeURIComponent(sessionId)}`,
+        ).then(async (response) => {
+          if (!response?.ok || typeof response.json !== 'function') return
+          const context = await response.json() as { url?: unknown }
+          if (typeof context.url !== 'string') return
+          userInputRequestManager.enrichOpenRequestPayload(toolUseId, 'browser_input', {
+            browserContext: { url: context.url, capturedAt: Date.now() },
+          })
+        }).catch((error: unknown) => {
+          console.warn(
+            '[MessagePersister] Failed to capture browser input context:',
+            error instanceof Error ? error.message : error,
+          )
         })
       }
+
+      // The request always blocks on the user, no matter which stream it came
+      // from. Marking here (not only in the main-stream content_block_stop
+      // handler) covers SUBAGENT-originated requests, whose sidechain paths
+      // bypass that handler — without this the orange awaiting-input status
+      // never flips and the agent shows "working" while parked on the user.
+      this.syncSessionAwaiting(sessionId)
     } catch (error) {
       console.error('[MessagePersister] Error handling browser input request:', error)
     }
@@ -2625,7 +4792,8 @@ class MessagePersister {
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       let input: RequestScriptRunInput = {}
@@ -2667,26 +4835,18 @@ class MessagePersister {
         }
       }
 
-      this.broadcastToSSE(sessionId, {
-        type: 'script_run_request',
+      this.registerStreamRequest(
+        sessionId,
+        'script_run',
         toolUseId,
-        script: input.script,
-        explanation: input.explanation,
-        scriptType: input.scriptType,
-        agentSlug,
-        autoApproved,
-      })
+        { script: input.script, explanation: input.explanation, scriptType: input.scriptType },
+        { agentSlug, parentToolUseId, autoApproved },
+      )
 
       // Only flip the global "awaiting input" status (which drives the orange agent-status
       // pill in the sidebar / tray) when the user actually has to respond.
       if (!autoApproved) {
-        this.markSessionAwaitingInput(sessionId)
-        // Renderer-side gate handles suppression; see session_complete trigger.
-        if (agentSlug) {
-          notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'script_run').catch((err) => {
-            console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-          })
-        }
+        this.syncSessionAwaiting(sessionId)
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling script run request:', error)
@@ -2702,21 +4862,11 @@ class MessagePersister {
     toolName: string,
     toolInput: string,
     agentSlug?: string,
+    parentToolUseId?: string,
   ): Promise<void> {
     try {
-      // Extract AC method from tool name: mcp__computer-use__computer_launch → launch
-      // Tool names follow the pattern: mcp__computer-use__computer_{method}
-      const toolSuffix = toolName.replace('mcp__computer-use__computer_', '')
-      // Map tool suffixes to AC method names
-      const methodMap: Record<string, string> = {
-        apps: 'apps', windows: 'windows', snapshot: 'snapshot', find: 'find',
-        screenshot: 'screenshot', read: 'read', status: 'status', displays: 'displays',
-        permissions: 'permissions', click: 'click', type: 'type', fill: 'fill',
-        key: 'key', scroll: 'scroll', select: 'select', hover: 'hover',
-        launch: 'launch', quit: 'quit', grab: 'grab', ungrab: 'ungrab',
-        menu: 'menuClick', dialog: 'dialog', run: 'run',
-      }
-      const method = methodMap[toolSuffix] || toolSuffix
+      // Extract AC method from tool name: mcp__computer-use__computer_launch -> launch.
+      const method = computerUseMethodFromToolName(toolName)
 
       // The toolInput is the raw MCP tool input (e.g., { name: "Calculator" } for computer_launch)
       // Empty input is valid for tools like screenshot, apps, ungrab that take no required params
@@ -2755,38 +4905,38 @@ class MessagePersister {
         const permissionResult = computerUsePermissionManager.checkPermission(agentSlug, permissionLevel, appName)
 
         if (permissionResult === 'granted') {
-          // Auto-execute: permission already granted
+          // Auto-execute: permission already granted. Registered anyway —
+          // flagged autoApproved so no projection treats it as a user-facing
+          // wait — because the /computer-use route's already-settled gate only
+          // acts on requests the registry holds open, and auto-execution goes
+          // through that same route.
+          userInputRequestManager.register({
+            id: toolUseId,
+            kind: 'computer_use',
+            scope: { agentSlug, sessionId },
+            blocking: true,
+            autoApproved: true,
+            parentToolUseId,
+            payload: { method, params, permissionLevel, appName },
+          })
           this.autoExecuteComputerUseCommand(sessionId, agentSlug, toolUseId, method, params, permissionLevel, appName)
           return
         }
       }
 
-      // Permission needed — track and broadcast to UI for user approval
-      const state = this.streamingStates.get(sessionId)
-      if (state) {
-        // Guard against duplicate entries (e.g., SSE event replayed)
-        if (!state.pendingComputerUseRequests.has(toolUseId)) {
-          state.pendingComputerUseRequests.set(toolUseId, { toolUseId, method, params, permissionLevel, appName, agentSlug })
-        }
-      }
-      this.markSessionAwaitingInput(sessionId)
-
-      this.broadcastToSSE(sessionId, {
-        type: 'computer_use_request',
-        toolUseId,
-        method,
-        params,
-        permissionLevel,
-        appName,
-        agentSlug,
+      // Permission needed — register and broadcast to UI for user approval.
+      // register() is first-delivery-wins, so a duplicate delivery (e.g. an
+      // SSE event replayed) cannot double-enter the registry.
+      userInputRequestManager.register({
+        id: toolUseId,
+        kind: 'computer_use',
+        scope: { agentSlug, sessionId },
+        blocking: true,
+        autoApproved: false,
+        parentToolUseId,
+        payload: { method, params, permissionLevel, appName },
       })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'computer_use').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+      this.syncSessionAwaiting(sessionId)
     } catch (error) {
       console.error('[MessagePersister] Error handling computer use request:', error)
     }
@@ -2922,11 +5072,20 @@ class MessagePersister {
     content: any
   ): void {
     try {
-      // Extract contextWindow from modelUsage (per-model breakdown in SDK result)
+      // contextWindow precedence: catalog (non-Claude) > SDK-reported > 200K default.
+      // The SDK always reports a number, but for non-Claude models it's a generic
+      // 200K default — so catalog (which only carries non-Claude windows) must win
+      // when present. Claude entries have no catalog window, so they use the SDK value.
       const modelUsage = content.modelUsage
       if (modelUsage && typeof modelUsage === 'object') {
-        const firstModel = Object.values(modelUsage)[0] as { contextWindow?: number } | undefined
-        if (firstModel?.contextWindow) {
+        const [modelId] = Object.keys(modelUsage)
+        const firstModel = modelUsage[modelId] as { contextWindow?: number } | undefined
+        const catalogWindow = modelId
+          ? getModelContextWindow(modelId, getActiveLlmProvider().id)
+          : undefined
+        if (catalogWindow) {
+          state.lastContextWindow = catalogWindow
+        } else if (firstModel?.contextWindow) {
           state.lastContextWindow = firstModel.contextWindow
         }
       }
@@ -2955,6 +5114,39 @@ class MessagePersister {
   }
 
   // Handle tool results - broadcast to SSE clients
+  // Sidechain counterpart of handleToolResults, scoped to tracked input
+  // requests only: ordinary subagent tool results (Bash, Read, …) stream
+  // constantly and must not broadcast main-path `tool_result` events. The
+  // trailing sync recomputes awaiting from what remains open — a main-agent
+  // question, a pending computer-use, or a parked proxy/x-agent review keeps
+  // the session waiting even after a subagent's browser_input resolves.
+  private resolveSidechainInputRequests(
+    sessionId: string,
+    state: StreamingState,
+    content: { message?: { content?: Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }> } }
+  ): void {
+    const blocks = content.message?.content
+    if (!Array.isArray(blocks)) return
+    for (const block of blocks) {
+      if (block.type !== 'tool_result' || !block.tool_use_id) continue
+      const settled = userInputRequestManager.resolveIfInStore(
+        block.tool_use_id,
+        'stream',
+        block.is_error ? 'declined' : 'answered',
+      )
+      if (!settled) continue
+      // Same broadcast the main path emits — the resolving tab already removed
+      // its card optimistically; every other tab drops it off this event.
+      this.broadcastToSSE(sessionId, {
+        type: 'tool_result',
+        toolUseId: block.tool_use_id,
+        result: block.content,
+        isError: block.is_error || false,
+      })
+    }
+    this.syncSessionAwaiting(sessionId)
+  }
+
   private handleToolResults(
     sessionId: string,
     content: { message?: { content?: Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }> } }
@@ -2968,7 +5160,13 @@ class MessagePersister {
           // A resolved user-input request must not be replayed to a client that
           // reconnects later (e.g. answer one of several parallel requests, then
           // refresh) — its tool_result is in, so drop it from the replay store.
-          state?.pendingInputRequests.delete(block.tool_use_id)
+          if (state) {
+            userInputRequestManager.resolveIfInStore(
+              block.tool_use_id,
+              'stream',
+              block.is_error ? 'declined' : 'answered',
+            )
+          }
 
           // Broadcast update to SSE clients
           this.broadcastToSSE(sessionId, {
@@ -2995,6 +5193,7 @@ class MessagePersister {
           }
         }
       }
+      this.syncSessionAwaiting(sessionId)
     } catch (error) {
       console.error('Failed to handle tool results:', error)
     }

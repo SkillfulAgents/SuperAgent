@@ -12,8 +12,14 @@ import {
   messageAuthor,
 } from '@shared/lib/db/schema'
 import { eq, and, inArray } from 'drizzle-orm'
+import { captureException } from '@shared/lib/error-reporting'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { disablePlatformWebhookEndpoint } from '@shared/lib/services/webhook-endpoints-client'
+import {
+  resolvePlatformMemberForCandidates,
+} from '@shared/lib/services/webhook-trigger-service'
+import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 
 export async function cleanupAgentData(agentSlug: string): Promise<void> {
   await cleanupWebhookTriggers(agentSlug)
@@ -52,7 +58,11 @@ async function cleanupWebhookTriggers(agentSlug: string): Promise<void> {
       .where(eq(webhookTriggers.id, trigger.id))
       .run()
 
-    if (trigger.composioTriggerId && isPlatformComposioActive()) {
+    // Custom endpoints live on the platform proxy regardless of Composio key
+    // mode — gate their teardown on platform auth, not the Composio condition.
+    const canReachUpstream =
+      trigger.kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
+    if (trigger.composioTriggerId && canReachUpstream) {
       const remaining = db
         .select()
         .from(webhookTriggers)
@@ -66,9 +76,29 @@ async function cleanupWebhookTriggers(agentSlug: string): Promise<void> {
 
       if (remaining === 0) {
         try {
-          await deleteComposioTrigger(trigger.composioTriggerId)
+          if (trigger.kind === 'custom') {
+            // Disable the platform endpoint so its public URL 404s at the edge.
+            const memberId =
+              resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
+              getStoredPlatformMemberId() ??
+              'local'
+            await disablePlatformWebhookEndpoint(memberId, trigger.composioTriggerId)
+          } else {
+            await deleteComposioTrigger(trigger.composioTriggerId)
+          }
         } catch (error) {
-          console.error('[agent-cleanup] Failed to delete Composio trigger:', error)
+          console.error('[agent-cleanup] Failed to tear down upstream subscription:', error)
+          // Agent is being deleted; no owner is left to notice a live public
+          // URL. Capture so the orphaned endpoint is diagnosable.
+          captureException(error, {
+            tags: { area: 'webhook-endpoints', op: 'cleanup-disable' },
+            extra: {
+              agentSlug: trigger.agentSlug,
+              triggerId: trigger.id,
+              upstreamId: trigger.composioTriggerId,
+              kind: trigger.kind,
+            },
+          })
         }
       }
     }

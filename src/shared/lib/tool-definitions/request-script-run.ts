@@ -21,4 +21,4 @@ function getSummary(input: unknown): string | null {
   return [typeLabel, truncated].filter(Boolean).join(': ') || null
 }
 
-export const requestScriptRunDef = { displayName: 'Run Script', iconName: 'Terminal', parseInput, getSummary } as const
+export const requestScriptRunDef = { displayName: 'Run Script', parseInput, getSummary } as const

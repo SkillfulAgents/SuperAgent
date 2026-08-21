@@ -1,18 +1,36 @@
-import type { ContainerClient, ContainerConfig, ImagePullProgress } from './types'
+import type { ContainerClient, ContainerConfig, ContainerRunner, ImagePullProgress } from './types'
+export { CONTAINER_RUNNER_IDS } from './types'
+export type { ContainerRunner } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
-import { AppleContainerClient } from './apple-container-client'
+import { AppleContainerClient, ensureAppleContainerReady, stopAppleContainerRuntime } from './apple-container-client'
 import { LimaContainerClient, getNerdctlWrapperPath, ensureLimaReady, stopLimaVm } from './lima-container-client'
-import { WSL2ContainerClient, getWSL2NerdctlWrapperPath, ensureWSL2Ready, stopWSL2Distro } from './wsl2-container-client'
+import { WSL2ContainerClient, getWSL2NerdctlWrapperPath, ensureWSL2Ready, stopWSL2Distro, killWSL2PullProcesses } from './wsl2-container-client'
+import { PlatformK8sRuntimeClient } from './platform-k8s-runtime'
+import { LambdaMicroVmRuntimeClient } from './lambda-microvm-runtime'
 import { RunnerSetupError, type RunnerSetupRemediation } from './wsl2-setup-errors'
 import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
 import { BaseContainerClient, execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
-import { platform } from 'os'
+import { platform, homedir } from 'os'
 import * as fs from 'fs'
+import { statfs } from 'fs/promises'
 
-export type ContainerRunner = 'docker' | 'podman' | 'apple-container' | 'lima' | 'wsl2'
+/**
+ * How long a pull may go without any CLI output before the stall watchdog
+ * kills it (only on runners that opt in via pullStallTimeoutMs). Observed
+ * failure mode: a half-dead HTTPS connection to the registry CDN that stops
+ * delivering bytes but never times out, freezing the pull forever mid-layer.
+ */
+export const PULL_STALL_TIMEOUT_MS = 120_000
+
+/**
+ * Hard cap on killStalledPull() cleanup. An unresponsive runtime (e.g. a hung
+ * wsl.exe) must not wedge the pull promise — and with it the retry loop —
+ * forever; the watchdog settles the pull once this expires.
+ */
+export const KILL_STALLED_PULL_TIMEOUT_MS = 10_000
 
 export interface RunnerAvailability {
   runner: ContainerRunner
@@ -22,8 +40,13 @@ export interface RunnerAvailability {
   running: boolean
   /** Overall availability (installed AND running) */
   available: boolean
-  /** If installed but not running, can we attempt to start it? */
+  /**
+   * Whether the UI can offer Start/Install via startRunner.
+   * True when the runtime can be started, or (for apple-container) first-installed.
+   */
   canStart: boolean
+  /** Whether settings.container.agentImage is honored by this runner. */
+  supportsCustomAgentImage: boolean
 }
 
 export interface StartRunnerResult {
@@ -47,21 +70,42 @@ const ALL_RUNNERS: {
   isRunning: () => Promise<boolean>
   /** Optional cleanup when the app is shutting down (e.g., stop a VM). */
   shutdownRuntime?: () => Promise<void>
+  /**
+   * For CLIs that stream continuous progress output (nerdctl): max output
+   * silence before a pull is declared stalled, killed, and left to the caller
+   * to retry. Leave unset for CLIs that are legitimately quiet for minutes
+   * mid-layer (docker, podman print nothing between layer status changes).
+   */
+  pullStallTimeoutMs?: number
+  /**
+   * Kill pull processes that outlive the host-side CLI process (e.g. nerdctl
+   * inside the WSL2 distro survives its wsl.exe parent and keeps holding
+   * containerd's ingest lock, wedging every later pull of that image).
+   * Invoked by the stall watchdog before killing the local process.
+   */
+  killStalledPull?: () => Promise<void>
 }[] = [
-  { name: 'apple-container', cliCommand: 'container', isEligible: () => AppleContainerClient.isEligible(), isAvailable: () => AppleContainerClient.isAvailable(), isRunning: () => AppleContainerClient.isRunning(), shutdownRuntime: () => execWithPath('container system stop').then(() => {}) },
+  { name: 'apple-container', cliCommand: 'container', isEligible: () => AppleContainerClient.isEligible(), isAvailable: () => AppleContainerClient.isAvailable(), isRunning: () => AppleContainerClient.isRunning(), shutdownRuntime: () => stopAppleContainerRuntime() },
   { name: 'docker', cliCommand: 'docker', isEligible: () => DockerContainerClient.isEligible(), isAvailable: () => DockerContainerClient.isAvailable(), isRunning: () => DockerContainerClient.isRunning() },
   { name: 'podman', cliCommand: 'podman', isEligible: () => PodmanContainerClient.isEligible(), isAvailable: () => PodmanContainerClient.isAvailable(), isRunning: () => PodmanContainerClient.isRunning() },
   { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), reconcileRuntimeState: () => LimaContainerClient.reconcileRuntimeState(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
-  { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro() },
+  { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro(), pullStallTimeoutMs: PULL_STALL_TIMEOUT_MS, killStalledPull: () => killWSL2PullProcesses() },
+  { name: 'kubernetes', cliCommand: 'kubernetes', isEligible: () => PlatformK8sRuntimeClient.isEligible(), isAvailable: () => PlatformK8sRuntimeClient.isAvailable(), isRunning: () => PlatformK8sRuntimeClient.isRunning() },
+  { name: 'lambda-microvm', cliCommand: 'lambda-microvm', isEligible: () => LambdaMicroVmRuntimeClient.isEligible(), isAvailable: () => LambdaMicroVmRuntimeClient.isAvailable(), isRunning: () => LambdaMicroVmRuntimeClient.isRunning() },
 ]
 
 /**
  * Supported container runners on this platform, filtered by eligibility.
  * Order reflects preference (apple-container first on macOS 26+, then docker, then podman).
+ * Recomputed on refresh so a transient sw_vers failure does not hide Apple forever.
  */
-export const SUPPORTED_RUNNERS: ContainerRunner[] = ALL_RUNNERS
+export let SUPPORTED_RUNNERS: ContainerRunner[] = ALL_RUNNERS
   .filter((r) => r.isEligible())
   .map((r) => r.name)
+
+function recomputeSupportedRunners(): void {
+  SUPPORTED_RUNNERS = ALL_RUNNERS.filter((r) => r.isEligible()).map((r) => r.name)
+}
 
 /**
  * User-facing display name for a runner.
@@ -72,6 +116,8 @@ const RUNNER_DISPLAY_NAMES: Record<ContainerRunner, string> = {
   podman: 'Podman',
   lima: 'Built-in Runtime',
   wsl2: 'Built-in Runtime',
+  kubernetes: 'Kubernetes',
+  'lambda-microvm': 'AWS Lambda MicroVM',
 }
 
 export function getRunnerDisplayName(runner: ContainerRunner): string {
@@ -133,22 +179,31 @@ function canAttemptStart(runner: ContainerRunner): boolean {
  * Returns true if start was attempted (not necessarily successful).
  */
 // TODO: disgusting piece of code. The whole idea of having the container client classes is that they should encapsulate all runtime-specific logic, including starting the runtime if needed. We should move this logic into static methods on each client class, e.g., DockerContainerClient.startRuntime(), PodmanContainerClient.startRuntime(), etc. Then this function can just delegate to the appropriate class without needing to know about platform-specific details here. Refactor this in the future to clean up the code and adhere to better separation of concerns.
-export async function startRunner(runner: ContainerRunner): Promise<StartRunnerResult> {
+export async function startRunner(
+  runner: ContainerRunner,
+  onProgress?: (progress: ImagePullProgress) => void,
+  options?: { allowInstall?: boolean },
+): Promise<StartRunnerResult> {
   const os = platform()
 
   if (runner === 'apple-container') {
     try {
-      await execWithPath('container system start')
-      return { success: true, message: 'Apple Container runtime is starting...' }
+      await ensureAppleContainerReady(
+        onProgress
+          ? (p) => onProgress({ status: p.status, percent: p.percent, completedLayers: 0, totalLayers: 0 })
+          : undefined,
+        { allowInstall: options?.allowInstall === true },
+      )
+      return { success: true, message: 'Apple Container runtime is running.' }
     } catch (error: any) {
-      if (error.message?.includes('already running')) {
-        return { success: true, message: 'Apple Container runtime is already running.' }
-      }
       captureException(error, {
         tags: { component: 'runtime', operation: 'start-apple-container' },
         extra: { platform: os },
       })
-      return { success: false, message: `Failed to start Apple Container runtime: ${error.message}` }
+      return {
+        success: false,
+        message: error?.message || 'Failed to start Apple Container runtime.',
+      }
     }
   }
 
@@ -271,20 +326,23 @@ export async function restartRunner(runner: ContainerRunner): Promise<StartRunne
  * Check detailed availability of a specific runner.
  */
 async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise<RunnerAvailability> {
+  const supportsCustomAgentImage = getContainerClientClass(runner).supportsCustomAgentImage
   const entry = ALL_RUNNERS.find((r) => r.name === runner)
   if (!entry) {
-    return { runner, installed: false, running: false, available: false, canStart: false }
+    return { runner, installed: false, running: false, available: false, canStart: false, supportsCustomAgentImage }
   }
 
   const installed = await entry.isAvailable()
 
   if (!installed) {
+    // apple-container only: Start/Install provisions (other runners keep installUrl fallthrough).
     return {
       runner,
       installed: false,
       running: false,
       available: false,
-      canStart: false,
+      canStart: runner === 'apple-container',
+      supportsCustomAgentImage,
     }
   }
 
@@ -296,6 +354,7 @@ async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise
     running,
     available: running,
     canStart: !running && canAttemptStart(runner),
+    supportsCustomAgentImage,
   }
 }
 
@@ -306,7 +365,7 @@ async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise
 export async function checkAllRunnersAvailability(): Promise<RunnerAvailability[]> {
   // In E2E mock mode, skip real runtime checks
   if (process.env.E2E_MOCK === 'true') {
-    return [{ runner: 'docker', installed: true, running: true, available: true, canStart: false }]
+    return [{ runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true }]
   }
 
   const now = Date.now()
@@ -333,6 +392,7 @@ export async function checkAllRunnersAvailability(): Promise<RunnerAvailability[
  * Call this after starting a runner or when user requests refresh.
  */
 export async function refreshRunnerAvailability(): Promise<RunnerAvailability[]> {
+  recomputeSupportedRunners()
   cachedRunnerAvailability = null
   runnerAvailabilityCachedAt = 0
   return checkAllRunnersAvailability()
@@ -354,6 +414,15 @@ export async function reconcileRunnerState(runner: ContainerRunner): Promise<boo
   const entry = ALL_RUNNERS.find((r) => r.name === runner)
   if (!entry?.reconcileRuntimeState) return false
   return entry.reconcileRuntimeState()
+}
+
+/** Minimum free disk space (in bytes) required before pulling/building an image: 5 GB */
+export const MIN_IMAGE_DISK_SPACE_BYTES = 5 * 1024 * 1024 * 1024
+
+/** Free bytes on the volume the agent image lands on (host home dir). */
+export async function getAvailableDiskSpace(): Promise<number> {
+  const stats = await statfs(homedir())
+  return stats.bavail * stats.bsize
 }
 
 /**
@@ -385,7 +454,31 @@ export async function checkImageExists(runner: ContainerRunner, image: string): 
  *
  * We track unique layer/item IDs and completed ones to compute progress.
  */
+/**
+ * In-flight pulls keyed by runner:image. Startup's ensureImageReady() and a
+ * session start's ensureImageExists() can both decide to pull the same image
+ * concurrently; sharing one pull avoids a duplicate multi-GB download and the
+ * loser failing a start the winner was about to satisfy.
+ */
+const inflightPulls = new Map<string, Promise<void>>()
+
 export function pullImage(
+  runner: ContainerRunner,
+  image: string,
+  onProgress?: (progress: ImagePullProgress) => void
+): Promise<void> {
+  const key = `${runner}:${image}`
+  const existing = inflightPulls.get(key)
+  if (existing) {
+    addErrorBreadcrumb({ category: 'container', message: 'Awaiting already in-flight pull of the same image', data: { image, runner } })
+    return existing
+  }
+  const pull = doPullImage(runner, image, onProgress).finally(() => inflightPulls.delete(key))
+  inflightPulls.set(key, pull)
+  return pull
+}
+
+function doPullImage(
   runner: ContainerRunner,
   image: string,
   onProgress?: (progress: ImagePullProgress) => void
@@ -412,7 +505,67 @@ export function pullImage(
     // eslint-disable-next-line no-control-regex
     const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
 
+    // Stall watchdog. nerdctl redraws its progress bars continuously, so
+    // prolonged output silence means the download is wedged (observed in the
+    // field: a half-dead registry-CDN connection that stops delivering bytes
+    // but never times out, freezing the pull mid-layer forever). Only runners
+    // that opt in via pullStallTimeoutMs get the watchdog — docker/podman
+    // print nothing between layer status changes, so silence is normal there.
+    const runnerEntry = ALL_RUNNERS.find((r) => r.name === runner)
+    const stallTimeoutMs = runnerEntry?.pullStallTimeoutMs
+    let stallTimer: ReturnType<typeof setTimeout> | undefined
+    let stallError: Error | undefined
+    const onStall = async () => {
+      // sentryCaptured: canonical event for the failure, like the exit-code
+      // path below — callers up the stack must not re-capture it.
+      stallError = Object.assign(
+        new Error(`Image pull stalled: no progress output for ${Math.round(stallTimeoutMs! / 1000)}s while pulling ${image}`),
+        { sentryCaptured: true }
+      )
+      captureException(stallError, {
+        tags: { component: 'container', operation: 'image-pull-stall' },
+        extra: {
+          image,
+          runner,
+          stallTimeoutMs,
+          completedLayers: completedLayers.size,
+          totalLayers: allLayers.size,
+        },
+      })
+      // Kill the runner-side pull first: for wsl2 the real nerdctl runs inside
+      // the distro and survives proc.kill() of the host-side wrapper, keeping
+      // containerd's ingest lock held — a retry would wedge behind it. The
+      // cleanup itself is time-capped: if the runtime is unresponsive, the
+      // pull must still settle so the retry loop isn't stuck forever.
+      let killTimer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          Promise.resolve(runnerEntry?.killStalledPull?.()),
+          new Promise<never>((_, rejectTimeout) => {
+            killTimer = setTimeout(
+              () => rejectTimeout(new Error(`killStalledPull timed out after ${KILL_STALLED_PULL_TIMEOUT_MS}ms`)),
+              KILL_STALLED_PULL_TIMEOUT_MS
+            )
+          }),
+        ])
+      } catch (err) {
+        console.warn(`[pullImage] killStalledPull failed for ${runner}:`, err)
+      } finally {
+        clearTimeout(killTimer)
+        proc.kill()
+        reject(stallError)
+      }
+    }
+    const armStallTimer = () => {
+      if (!stallTimeoutMs) return
+      clearTimeout(stallTimer)
+      stallTimer = setTimeout(() => { void onStall() }, stallTimeoutMs)
+    }
+    armStallTimer()
+
     const handleData = (data: Buffer) => {
+      if (stallError) return
+      armStallTimer()
       const text = stripAnsi(data.toString())
       const lines = text.split('\n')
       for (const line of lines) {
@@ -463,13 +616,22 @@ export function pullImage(
     })
 
     proc.on('close', (code) => {
+      clearTimeout(stallTimer)
+      if (stallError) {
+        // The watchdog already rejected and reported; this exit is just the
+        // kill landing.
+        return
+      }
       if (code === 0) {
         addErrorBreadcrumb({ category: 'container', message: 'Image pull completed', data: { image, runner } })
         resolve()
       } else {
         const stderr = stderrChunks.join('').trim()
         const detail = stderr ? `: ${stderr.slice(-500)}` : ''
-        const pullError = new Error(`Image pull failed with exit code ${code}${detail}`)
+        // sentryCaptured: this capture is the canonical event for the failure —
+        // callers up the stack (start()'s catch, handleRunError fallthroughs,
+        // ensureImageReady) must not re-capture the same error.
+        const pullError = Object.assign(new Error(`Image pull failed with exit code ${code}${detail}`), { sentryCaptured: true })
         captureException(pullError, {
           tags: { component: 'container', operation: 'image-pull' },
           extra: {
@@ -485,11 +647,12 @@ export function pullImage(
       }
     })
     proc.on('error', (err) => {
+      clearTimeout(stallTimer)
       captureException(err, {
         tags: { component: 'container', operation: 'image-pull-spawn' },
         extra: { image, runner },
       })
-      reject(err)
+      reject(Object.assign(err, { sentryCaptured: true }))
     })
   })
 }
@@ -550,7 +713,8 @@ export function buildImage(
       } else {
         const stderr = stderrChunks.join('').trim()
         const detail = stderr ? `: ${stderr.slice(-500)}` : ''
-        const buildError = new Error(`Image build failed with exit code ${code}${detail}`)
+        // sentryCaptured: canonical event — see pullImage.
+        const buildError = Object.assign(new Error(`Image build failed with exit code ${code}${detail}`), { sentryCaptured: true })
         captureException(buildError, {
           tags: { component: 'container', operation: 'image-build' },
           extra: { image, runner, exitCode: code, stderr: stderr.slice(-2000) },
@@ -563,7 +727,7 @@ export function buildImage(
         tags: { component: 'container', operation: 'image-build-spawn' },
         extra: { image, runner },
       })
-      reject(err)
+      reject(Object.assign(err, { sentryCaptured: true }))
     })
   })
 }
@@ -587,6 +751,10 @@ export function getContainerClientClass(runner: ContainerRunner): ConcreteContai
       return LimaContainerClient
     case 'wsl2':
       return WSL2ContainerClient
+    case 'kubernetes':
+      return PlatformK8sRuntimeClient
+    case 'lambda-microvm':
+      return LambdaMicroVmRuntimeClient
     default:
       console.warn(`Unknown container runner "${runner}", falling back to docker`)
       return DockerContainerClient

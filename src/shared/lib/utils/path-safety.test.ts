@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import path from 'path'
-import { isPathWithinDir, assertPathWithinDir } from './path-safety'
+import { isPathWithinDir, assertPathWithinDir, sanitizeUploadFilename } from './path-safety'
 
 // ---------------------------------------------------------------------------
 // Path containment guard (SUP-200 generalization). The motivating bug: a bare
@@ -83,5 +83,52 @@ describe('assertPathWithinDir', () => {
 
   it('supports a custom error message', () => {
     expect(() => assertPathWithinDir(base, '/etc/passwd', 'nope')).toThrow('nope')
+  })
+})
+
+describe('sanitizeUploadFilename', () => {
+  const traversalInputs = [
+    '../../../oauth-token.txt',
+    '../../../../etc/cron.d/x',
+    '..\\..\\win.txt',
+    '/etc/passwd',
+    'foo/bar.txt',
+    '.',
+    '',
+  ]
+
+  it('never yields a name that escapes the uploads directory', () => {
+    const uploadsDir = path.resolve('/workspace', 'uploads')
+    for (const input of traversalInputs) {
+      const safe = sanitizeUploadFilename(input)
+      const uploadName = `${Date.now()}-${safe}`
+      const full = path.resolve(uploadsDir, uploadName)
+      const rel = path.relative(uploadsDir, full)
+      expect(rel.startsWith('..'), `input ${JSON.stringify(input)} -> ${safe}`).toBe(false)
+      expect(path.isAbsolute(rel), `input ${JSON.stringify(input)} -> ${safe}`).toBe(false)
+      // No path separators survive.
+      expect(safe.includes('/')).toBe(false)
+      expect(safe.includes('\\')).toBe(false)
+      expect(safe).not.toBe('')
+    }
+  })
+
+  it('reduces traversal/path inputs to a safe basename', () => {
+    expect(sanitizeUploadFilename('../../../oauth-token.txt')).toBe('oauth-token.txt')
+    expect(sanitizeUploadFilename('foo/bar.txt')).toBe('bar.txt')
+    expect(sanitizeUploadFilename('/etc/passwd')).toBe('passwd')
+    expect(sanitizeUploadFilename('..\\..\\win.txt')).toBe('win.txt')
+  })
+
+  it('falls back to a default name when nothing usable remains', () => {
+    expect(sanitizeUploadFilename('.')).toBe('file')
+    expect(sanitizeUploadFilename('')).toBe('file')
+    expect(sanitizeUploadFilename('..')).toBe('file')
+    expect(sanitizeUploadFilename('\0')).toBe('file')
+  })
+
+  it('preserves a normal filename unchanged', () => {
+    expect(sanitizeUploadFilename('report.pdf')).toBe('report.pdf')
+    expect(sanitizeUploadFilename('My_File-2.png')).toBe('My_File-2.png')
   })
 })

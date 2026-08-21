@@ -4,9 +4,13 @@
  * Helper functions for retrying operations with exponential backoff.
  */
 
-// Throw from inside withRetry to skip backoff on deterministic 4xx.
+// Throw from inside withRetry to skip backoff on deterministic 4xx. `status` carries the HTTP status
+// so a caller can map a specific code to actionable copy without re-parsing the message.
 export class NonRetryableError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
     super(message)
     this.name = 'NonRetryableError'
   }

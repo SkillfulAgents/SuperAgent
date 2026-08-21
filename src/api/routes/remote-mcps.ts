@@ -3,15 +3,29 @@ import crypto from 'crypto'
 import { db } from '@shared/lib/db'
 import { remoteMcpServers, agentRemoteMcps } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
-import { initiateOAuthFlow, initiateNewServerOAuth, completeOAuthFlow, discoverOAuthMetadata } from '@shared/lib/mcp/oauth'
+import {
+  initiateOAuthFlow,
+  initiateNewServerOAuth,
+  completeOAuthFlow,
+  validateAndConsumeOAuthErrorResponse,
+  discoverOAuthMetadata,
+  McpOAuthSetupError,
+} from '@shared/lib/mcp/oauth'
 import type { McpToolInfo } from '@shared/lib/mcp/types'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
-import { captureMessage } from '@shared/lib/error-reporting'
+import { discoverTools } from '@shared/lib/mcp/discover-tools'
+import {
+  findAgentsAssignedRemoteMcp,
+  syncAgentsAssignedRemoteMcp,
+  syncRemoteMcpAgents,
+} from '@shared/lib/container/connection-runtime-sync'
+import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 
 function safeParseTools(json: string | null): McpToolInfo[] {
   if (!json) return []
@@ -45,150 +59,114 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#039;')
 }
 
+type McpOAuthCallbackPayload = {
+  type: 'mcp-oauth-callback'
+  success: boolean
+  mcpId?: string
+  error?: string
+}
+
+function safeScriptJson(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+}
+
+function renderMcpOAuthCallbackHtml(payload: McpOAuthCallbackPayload, message: string): string {
+  const safeMessage = escapeHtml(message)
+  const payloadJson = safeScriptJson(payload)
+  const storageValueJson = safeScriptJson(JSON.stringify({
+    ...payload,
+    deliveredAt: Date.now(),
+  }))
+
+  return `
+    <html><body><script>
+      const payload = ${payloadJson};
+      window.opener?.postMessage(payload, window.location.origin);
+      try {
+        const channel = new BroadcastChannel('mcp-oauth-callback');
+        channel.postMessage(payload);
+        channel.close();
+      } catch {}
+      try {
+        localStorage.setItem('superagent.mcp-oauth-callback', ${storageValueJson});
+        localStorage.removeItem('superagent.mcp-oauth-callback');
+      } catch {}
+      setTimeout(() => window.close(), 0);
+    </script><p>${safeMessage}</p></body></html>
+  `
+}
+
+/**
+ * Callback page for the Electron http-loopback OAuth path. Unlike the custom
+ * scheme path (where the Electron main process fetches this route directly), this
+ * page is loaded in the user's external browser after the token exchange has
+ * already completed server-side. It hands the result back into the app via the
+ * custom scheme so the main process can notify the renderer over IPC.
+ */
+// Only SuperAgent desktop deep-link schemes — never arbitrary URI schemes from the client.
+const DESKTOP_OAUTH_PROTOCOLS = new Set(['superagent', 'superagent-dev'])
+
+function resolveDesktopOAuthProtocol(candidate?: string): string {
+  if (candidate && DESKTOP_OAUTH_PROTOCOLS.has(candidate)) return candidate
+  const fromEnv = process.env.SUPERAGENT_PROTOCOL
+  if (fromEnv && DESKTOP_OAUTH_PROTOCOLS.has(fromEnv)) return fromEnv
+  return 'superagent'
+}
+
+function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload, desktopProtocol?: string): string {
+  // Prefer the scheme recorded on the flow: a cloud deployment serving this
+  // callback has no SUPERAGENT_PROTOCOL of its own (SUP-560).
+  const protocol = resolveDesktopOAuthProtocol(desktopProtocol)
+  const params = new URLSearchParams()
+  params.set('success', payload.success ? 'true' : 'false')
+  if (payload.mcpId) params.set('mcpId', payload.mcpId)
+  if (payload.error) params.set('error', payload.error)
+  const deepLink = `${protocol}://mcp-oauth-callback?${params.toString()}`
+
+  const message = payload.success
+    ? 'Authentication successful! Returning to the app…'
+    : `Authentication failed${payload.error ? `: ${payload.error}` : ''}. Returning to the app…`
+
+  return `
+    <html><body><script>
+      window.location.replace(${safeScriptJson(deepLink)});
+    </script>
+    <p>${escapeHtml(message)}</p>
+    <p><a href="${escapeHtml(deepLink)}">Click here if you are not returned automatically.</a></p>
+    </body></html>
+  `
+}
+
+/**
+ * Pick the right callback response. The Electron http-loopback path (loaded in
+ * the external browser) hands back via the custom scheme; every other case (web,
+ * or the Electron custom-scheme path fetched by the main process) uses the
+ * postMessage/BroadcastChannel/localStorage bridge.
+ */
+function mcpOAuthCallbackBody(
+  payload: McpOAuthCallbackPayload,
+  message: string,
+  delivery: { electron?: boolean; redirectWasScheme?: boolean; desktopProtocol?: string },
+): string {
+  if (delivery.electron && delivery.redirectWasScheme === false) {
+    return renderMcpOAuthHandoffHtml(payload, delivery.desktopProtocol)
+  }
+  return renderMcpOAuthCallbackHtml(payload, message)
+}
+
 // Entry-path SSRF guard for the user-supplied MCP server URL. Delegates to the
 // shared policy so it cannot drift from the OAuth-discovery checks, which must
 // reject the same private/loopback hosts on every server-supplied metadata URL.
-function validateMcpServerUrl(url: string): URL {
+async function validateMcpServerUrl(url: string): Promise<URL> {
   return validateMcpDiscoveryUrl(url)
 }
 
 const remoteMcps = new Hono()
 
 remoteMcps.use('*', Authenticated())
-
-/**
- * Parse an MCP response that may be JSON or SSE (text/event-stream).
- * SSE responses contain lines like "event: message\ndata: {...}\n\n".
- */
-async function parseMcpResponse(res: Response): Promise<unknown> {
-  const contentType = res.headers.get('content-type') || ''
-  if (contentType.includes('text/event-stream')) {
-    const text = await res.text()
-    // Extract the last JSON-RPC message from SSE events
-    const dataLines = text.split('\n').filter((line) => line.startsWith('data: '))
-    for (let i = dataLines.length - 1; i >= 0; i--) {
-      try {
-        const json = JSON.parse(dataLines[i].slice(6))
-        if (json.result !== undefined || json.id !== undefined) {
-          return json
-        }
-      } catch {
-        continue
-      }
-    }
-    throw new Error('No valid JSON-RPC response found in SSE stream')
-  }
-  return res.json()
-}
-
-/**
- * Connect to an MCP server, initialize, and discover available tools.
- * Throws on failure.
- */
-async function discoverTools(url: string, accessToken?: string | null): Promise<McpToolInfo[]> {
-  validateMcpServerUrl(url)
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json, text/event-stream',
-  }
-  if (accessToken) {
-    headers['Authorization'] = `Bearer ${accessToken}`
-  }
-
-  const initRes = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'initialize',
-      params: {
-        protocolVersion: '2025-03-26',
-        capabilities: {},
-        clientInfo: { name: 'Superagent', version: '1.0.0' },
-      },
-      id: 1,
-    }),
-  })
-
-  if (!initRes.ok) {
-    // TEMP DIAGNOSTIC (remove after debugging the Lifetimely 401): capture the
-    // resource server's own error reason and the token's claims (NOT the raw
-    // token — claims alone can't authenticate, so they're safe to log).
-    let body = ''
-    try { body = await initRes.text() } catch { /* ignore */ }
-    const wwwAuth = initRes.headers.get('WWW-Authenticate')
-    let claims: unknown = null
-    if (accessToken) {
-      const parts = accessToken.split('.')
-      if (parts.length === 3) {
-        try {
-          claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
-        } catch { /* not a JWT */ }
-      }
-    }
-    const tokenType = accessToken ? (claims ? 'jwt' : 'opaque-or-unparsable') : 'none'
-    const diagnostic = {
-      url,
-      status: initRes.status,
-      wwwAuthenticate: wwwAuth,
-      body: body.slice(0, 1000),
-      tokenType,
-      tokenClaims: claims,
-    }
-    console.error('[mcp/discover] initialize failed', diagnostic)
-    captureMessage('MCP initialize failed during tool discovery', {
-      level: 'warning',
-      tags: {
-        area: 'remote-mcp',
-        op: 'discover-tools',
-        status: String(initRes.status),
-        tokenType,
-      },
-      extra: diagnostic,
-      // Group every occurrence into one Sentry issue regardless of which
-      // server/status, so it's easy to find while debugging.
-      fingerprint: ['mcp-discover-initialize-failed'],
-    })
-    throw new Error(`Initialize failed: ${initRes.status}`)
-  }
-
-  await parseMcpResponse(initRes)
-  const mcpSessionId = initRes.headers.get('Mcp-Session-Id')
-
-  const toolHeaders: Record<string, string> = { ...headers }
-  if (mcpSessionId) {
-    toolHeaders['Mcp-Session-Id'] = mcpSessionId
-  }
-
-  await fetch(url, {
-    method: 'POST',
-    headers: toolHeaders,
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'notifications/initialized',
-    }),
-  })
-
-  const toolsRes = await fetch(url, {
-    method: 'POST',
-    headers: toolHeaders,
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'tools/list',
-      id: 2,
-    }),
-  })
-
-  if (!toolsRes.ok) {
-    throw new Error(`Tools list failed: ${toolsRes.status}`)
-  }
-
-  const toolsBody = await parseMcpResponse(toolsRes) as {
-    result?: { tools?: McpToolInfo[] }
-  }
-  return toolsBody.result?.tools || []
-}
 
 // List remote MCP servers (scoped to user in auth mode)
 remoteMcps.get('/', async (c) => {
@@ -218,7 +196,7 @@ remoteMcps.post('/', async (c) => {
   }
 
   try {
-    validateMcpServerUrl(body.url.trim())
+    await validateMcpServerUrl(body.url.trim())
   } catch (e: any) {
     return c.json({ error: e.message }, 400)
   }
@@ -295,6 +273,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     name?: string
     url?: string
     electron?: boolean
+    protocol?: string
     clientName?: string
     clientId?: string
     clientSecret?: string
@@ -313,10 +292,29 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       ? body.clientSecret.trim()
       : undefined
 
-  const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
-  const redirectUri = body.electron
-    ? `${protocol}://mcp-oauth-callback`
+  // Ordered redirect candidates. In Electron we prefer the custom app scheme
+  // (port-independent, no external-browser hand-off needed) but fall back to an
+  // http loopback URL for authorization servers that reject non-http(s) redirects
+  // during dynamic client registration (e.g. cal.com). Web only has the http URL.
+  //
+  // The loopback base must come from the request URL's origin (http://localhost:<apiPort>),
+  // not getAppBaseUrlFromRequest: the packaged renderer is served from file://, so its
+  // fetches carry `Origin: null`. The AS redirects the external browser here to complete
+  // the flow, so the URL must be one the local API server actually answers on.
+  //
+  // Scheme from the Electron client (allowlisted): a cloud deployment serving a
+  // proxied client has no SUPERAGENT_PROTOCOL of its own (SUP-560).
+  const protocol = resolveDesktopOAuthProtocol(
+    typeof body.protocol === 'string' ? body.protocol : undefined,
+  )
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
+  const loopbackRedirect = `${new URL(c.req.url).origin}/api/remote-mcps/oauth-callback`
+  const httpRedirect = body.electron
+    ? loopbackRedirect
     : `${getAppBaseUrlFromRequest(c)}/api/remote-mcps/oauth-callback`
+  const redirectCandidates = body.electron
+    ? [`${protocol}://mcp-oauth-callback`, httpRedirect]
+    : [httpRedirect]
 
   if (body.mcpId) {
     // Existing server re-auth
@@ -334,7 +332,13 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       return c.json({ error: 'MCP server not found' }, 404)
     }
 
-    const result = await initiateOAuthFlow(body.mcpId, server.url, redirectUri, clientNameOverride, clientIdOverride, clientSecretOverride)
+    let result
+    try {
+      result = await initiateOAuthFlow(body.mcpId, server.url, redirectCandidates, !!body.electron, clientNameOverride, clientIdOverride, clientSecretOverride)
+    } catch (e) {
+      if (e instanceof McpOAuthSetupError) return c.json({ error: e.message }, 500)
+      throw e
+    }
 
     if (!result) {
       const discoveryResult = await discoverOAuthMetadata(server.url)
@@ -347,13 +351,19 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     return c.json({ redirectUrl: result.authorizationUrl, state: result.state })
   } else if (body.name && body.url) {
     try {
-      validateMcpServerUrl(body.url.trim())
+      await validateMcpServerUrl(body.url.trim())
     } catch (e: any) {
       return c.json({ error: e.message }, 400)
     }
 
     // New server: OAuth-first flow (no DB insert yet)
-    const result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectUri, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
+    let result
+    try {
+      result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectCandidates, !!body.electron, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
+    } catch (e) {
+      if (e instanceof McpOAuthSetupError) return c.json({ error: e.message }, 500)
+      throw e
+    }
 
     if (!result) {
       const discoveryResult = await discoverOAuthMetadata(body.url.trim())
@@ -374,36 +384,52 @@ remoteMcps.get('/oauth-callback', async (c) => {
   const code = c.req.query('code')
   const state = c.req.query('state')
   const error = c.req.query('error')
+  const iss = c.req.query('iss')
 
   if (error) {
-    const safeError = escapeHtml(error)
-    const errorPayload = JSON.stringify({ type: 'mcp-oauth-callback', success: false, error: safeError })
-    return c.html(`
-      <html><body><script>
-        window.opener?.postMessage(${errorPayload}, window.location.origin);
-        window.close();
-      </script><p>OAuth error: ${safeError}. You can close this window.</p></body></html>
-    `)
+    const issuerValidation = validateAndConsumeOAuthErrorResponse(state, iss)
+    if (!issuerValidation.valid) {
+      return c.html(mcpOAuthCallbackBody(
+        { type: 'mcp-oauth-callback', success: false, error: 'OAuth callback validation failed' },
+        'OAuth callback validation failed. You can close this window.',
+        issuerValidation,
+      ))
+    }
+
+    return c.html(mcpOAuthCallbackBody(
+      { type: 'mcp-oauth-callback', success: false, error },
+      `OAuth error: ${error}. You can close this window.`,
+      issuerValidation,
+    ))
   }
 
   if (!code || !state) {
     return c.json({ error: 'Missing code or state parameter' }, 400)
   }
 
-  const result = await completeOAuthFlow(state, code)
+  const result = await completeOAuthFlow(state, code, iss)
+  const delivery = {
+    electron: result.electron,
+    redirectWasScheme: result.redirectWasScheme,
+    desktopProtocol: result.desktopProtocol,
+  }
 
   if (!result.success || !result.mcpId) {
-    const failPayload = JSON.stringify({ type: 'mcp-oauth-callback', success: false, error: 'Token exchange failed' })
-    return c.html(`
-      <html><body><script>
-        window.opener?.postMessage(${failPayload}, window.location.origin);
-        window.close();
-      </script><p>OAuth failed. You can close this window.</p></body></html>
-    `)
+    return c.html(mcpOAuthCallbackBody(
+      { type: 'mcp-oauth-callback', success: false, error: 'Token exchange failed' },
+      'OAuth failed. You can close this window.',
+      delivery,
+    ))
   }
 
   // Discover tools to verify the connection works
   let serverUrl: string | undefined
+  let assignedAgentSlugs: string[] | null = null
+  try {
+    assignedAgentSlugs = await findAgentsAssignedRemoteMcp(result.mcpId)
+  } catch (error) {
+    console.warn('Failed to resolve agents assigned to OAuth MCP:', error)
+  }
   try {
     const [server] = await db
       .select()
@@ -423,27 +449,35 @@ remoteMcps.get('/oauth-callback', async (c) => {
         })
         .where(eq(remoteMcpServers.id, result.mcpId))
     }
+    // This HTML callback has no renderer response channel for a refresh
+    // warning. The sync remains best-effort and logs failures server-side.
+    if (assignedAgentSlugs) await syncRemoteMcpAgents(assignedAgentSlugs)
   } catch (err: any) {
     // Tool discovery failed — delete the server so we don't leave a broken entry
     await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, result.mcpId))
+    if (assignedAgentSlugs) await syncRemoteMcpAgents(assignedAgentSlugs)
     const errorMsg = err.message || 'Tool discovery failed'
-    const payload = JSON.stringify({ type: 'mcp-oauth-callback', success: false, error: `Connected but failed to discover tools: ${errorMsg}` })
-    return c.html(`
-      <html><body><script>
-        window.opener?.postMessage(${payload}, window.location.origin);
-        window.close();
-      </script><p>OAuth succeeded but tool discovery failed. You can close this window.</p></body></html>
-    `)
+    return c.html(mcpOAuthCallbackBody(
+      {
+        type: 'mcp-oauth-callback',
+        success: false,
+        error: `Connected but failed to discover tools: ${errorMsg}`,
+      },
+      'OAuth succeeded but tool discovery failed. You can close this window.',
+      delivery,
+    ))
   }
 
+  // OAuth and tool discovery both succeeded, so every proxy request parked
+  // on this MCP can safely reload its token and retry.
+  mcpReauthManager.completeMcp(result.mcpId)
+
   trackServerEvent('mcp_oauth_succeeded', { url: serverUrl, mcpId: result.mcpId })
-  const successPayload = JSON.stringify({ type: 'mcp-oauth-callback', success: true, mcpId: result.mcpId })
-  return c.html(`
-    <html><body><script>
-      window.opener?.postMessage(${successPayload}, window.location.origin);
-      window.close();
-    </script><p>OAuth successful! You can close this window.</p></body></html>
-  `)
+  return c.html(mcpOAuthCallbackBody(
+    { type: 'mcp-oauth-callback', success: true, mcpId: result.mcpId },
+    'OAuth successful! You can close this window.',
+    delivery,
+  ))
 })
 
 // Get a single MCP server
@@ -502,7 +536,7 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
 
   if (body.url !== undefined) {
     try {
-      validateMcpServerUrl(body.url.trim())
+      await validateMcpServerUrl(body.url.trim())
     } catch (e: any) {
       return c.json({ error: e.message }, 400)
     }
@@ -527,9 +561,11 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     .limit(1)
 
   logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'updated' })
+  const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
 
   return c.json({
     server: sanitizeServer(updated),
+    liveRefresh,
   })
 })
 
@@ -547,11 +583,20 @@ remoteMcps.delete('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     return c.json({ error: 'MCP server not found' }, 404)
   }
 
+  let assignedAgentSlugs: string[] | null = null
+  try {
+    assignedAgentSlugs = await findAgentsAssignedRemoteMcp(id)
+  } catch (error) {
+    console.warn(`Failed to resolve agents assigned MCP ${id} before delete:`, error)
+  }
   await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, id))
+  const liveRefresh = assignedAgentSlugs
+    ? await syncRemoteMcpAgents(assignedAgentSlugs)
+    : false
 
   logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'deleted', details: { name: existing.name } })
 
-  return c.json({ success: true })
+  return c.json({ success: true, liveRefresh })
 })
 
 // Discover tools from an MCP server
@@ -583,7 +628,9 @@ remoteMcps.post('/:id/discover-tools', Or(UsersMcpServer(), IsAdmin()), async (c
       })
       .where(eq(remoteMcpServers.id, id))
 
-    return c.json({ tools })
+    const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+    mcpReauthManager.completeMcp(id)
+    return c.json({ tools, liveRefresh })
   } catch (error: any) {
     const errorMessage = error.message || 'Tool discovery failed'
     await db
@@ -595,7 +642,8 @@ remoteMcps.post('/:id/discover-tools', Or(UsersMcpServer(), IsAdmin()), async (c
       })
       .where(eq(remoteMcpServers.id, id))
 
-    return c.json({ error: errorMessage }, 502)
+    const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+    return c.json({ error: errorMessage, liveRefresh }, 502)
   }
 })
 
@@ -614,7 +662,7 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
   }
 
   try {
-    validateMcpServerUrl(server.url)
+    await validateMcpServerUrl(server.url)
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -624,7 +672,7 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
       headers['Authorization'] = `Bearer ${server.accessToken}`
     }
 
-    const res = await fetch(server.url, {
+    const res = await mcpSafeFetch(server.url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -633,7 +681,7 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
         params: {
           protocolVersion: '2025-03-26',
           capabilities: {},
-          clientInfo: { name: 'Superagent', version: '1.0.0' },
+          clientInfo: { name: 'Gamut', version: '1.0.0' },
         },
         id: 1,
       }),
@@ -644,7 +692,13 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
         .update(remoteMcpServers)
         .set({ status: 'auth_required', errorMessage: 'Authentication required', updatedAt: new Date() })
         .where(eq(remoteMcpServers.id, id))
-      return c.json({ success: false, error: 'Authentication required', needsAuth: true })
+      const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+      return c.json({
+        success: false,
+        error: 'Authentication required',
+        needsAuth: true,
+        liveRefresh,
+      })
     }
 
     if (!res.ok) {
@@ -656,14 +710,17 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
       .set({ status: 'active', errorMessage: null, updatedAt: new Date() })
       .where(eq(remoteMcpServers.id, id))
 
-    return c.json({ success: true })
+    const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+    mcpReauthManager.completeMcp(id)
+    return c.json({ success: true, liveRefresh })
   } catch (error: any) {
     const errorMessage = error.message || 'Connection test failed'
     await db
       .update(remoteMcpServers)
       .set({ status: 'error', errorMessage, updatedAt: new Date() })
       .where(eq(remoteMcpServers.id, id))
-    return c.json({ success: false, error: errorMessage })
+    const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+    return c.json({ success: false, error: errorMessage, liveRefresh })
   }
 })
 

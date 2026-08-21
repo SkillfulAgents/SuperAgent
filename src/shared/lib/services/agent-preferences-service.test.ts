@@ -110,6 +110,34 @@ describe('agent-preferences-service', () => {
       expect(result).toEqual({ autoDeleteInactiveDays: 30 })
       expect('unknownKey' in result).toBe(false)
     })
+
+    it('accepts valid defaultModel and defaultEffort', () => {
+      expect(
+        agentPreferencesSchema.parse({ defaultModel: 'opus', defaultEffort: 'high' })
+      ).toEqual({ defaultModel: 'opus', defaultEffort: 'high' })
+    })
+
+    it('rejects an empty defaultModel', () => {
+      expect(() => agentPreferencesSchema.parse({ defaultModel: '' })).toThrow()
+    })
+
+    // The container file hook shares this schema shape; a whitespace-only model
+    // that passed validation would ride the ?? chains onto the wire and break
+    // every spawn for the agent.
+    it('rejects a whitespace-only defaultModel and trims a padded one', () => {
+      expect(() => agentPreferencesSchema.parse({ defaultModel: '   ' })).toThrow()
+      expect(agentPreferencesSchema.parse({ defaultModel: ' opus ' })).toEqual({
+        defaultModel: 'opus',
+      })
+    })
+
+    it('rejects a non-string defaultModel', () => {
+      expect(() => agentPreferencesSchema.parse({ defaultModel: 42 })).toThrow()
+    })
+
+    it('rejects an unknown defaultEffort level', () => {
+      expect(() => agentPreferencesSchema.parse({ defaultEffort: 'turbo' })).toThrow()
+    })
   })
 
   // ==========================================================================
@@ -158,6 +186,26 @@ describe('agent-preferences-service', () => {
       )
       const result = await readAgentPreferences('test-agent')
       expect(result).toEqual({})
+    })
+
+    // Fail-open: preferences only supply defaults, and every session-spawn
+    // site reads them — a non-corrupt read failure (EACCES, EISDIR, transient
+    // FS errors) must degrade to {} rather than take down session creation.
+    it('returns empty object when the file is unreadable (not just corrupt)', async () => {
+      const workspaceDir = await createWorkspaceDir('test-agent')
+      // A directory at the prefs path makes reads fail with EISDIR — a
+      // non-corrupt I/O error, unlike the garbled-JSON cases above.
+      await fs.promises.mkdir(path.join(workspaceDir, 'agent-preferences.json'))
+      const result = await readAgentPreferences('test-agent')
+      expect(result).toEqual({})
+    })
+
+    it('an unreadable file still aborts the read-modify-write update path', async () => {
+      const workspaceDir = await createWorkspaceDir('test-agent')
+      await fs.promises.mkdir(path.join(workspaceDir, 'agent-preferences.json'))
+      await expect(
+        updateAgentPreferences('test-agent', { autoDeleteInactiveDays: 30 })
+      ).rejects.toThrow()
     })
   })
 

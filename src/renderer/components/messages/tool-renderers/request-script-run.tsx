@@ -1,83 +1,39 @@
 import { Terminal } from 'lucide-react'
+import { cn } from '@shared/lib/utils/cn'
 import type { ToolRenderer, ToolRendererProps } from './types'
+import { Field, FieldLabel } from './shared'
 import { requestScriptRunDef, SCRIPT_TYPE_LABELS } from '@shared/lib/tool-definitions/request-script-run'
 
 const parseInput = requestScriptRunDef.parseInput
 
-function parseResult(result: unknown): string | null {
-  if (!result) return null
-
-  if (Array.isArray(result) && result[0]?.text) {
-    return result[0].text
-  }
-
-  if (typeof result === 'object' && result !== null && 'text' in result) {
-    return (result as { text: string }).text
-  }
-
-  if (typeof result === 'string') {
-    try {
-      const parsed = JSON.parse(result)
-      if (Array.isArray(parsed) && parsed[0]?.text) {
-        return parsed[0].text
-      }
-    } catch {
-      // Not JSON, use as-is
-    }
-    return result
-  }
-
-  return String(result)
-}
-
-function getSummary(input: unknown): string | null {
-  return requestScriptRunDef.getSummary(input)
-}
-
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
   const { script, explanation, scriptType } = parseInput(input)
-  const displayResult = parseResult(result)
 
   return (
     <div className="space-y-2">
-      {explanation && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Explanation</div>
-          <div className="bg-background rounded p-2 text-xs">{explanation}</div>
-        </div>
-      )}
+      {explanation && <Field label="Explanation">{explanation}</Field>}
 
-      {scriptType && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Script Type</div>
-          <div className="bg-background rounded p-2 text-xs">
-            {SCRIPT_TYPE_LABELS[scriptType] || scriptType}
-          </div>
-        </div>
-      )}
+      {scriptType && <Field label="Script Type">{SCRIPT_TYPE_LABELS[scriptType] || scriptType}</Field>}
 
       {script && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Script</div>
+          <FieldLabel>Script</FieldLabel>
           <pre className="bg-background rounded p-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all">
             <code>{script}</code>
           </pre>
         </div>
       )}
 
-      {displayResult && (
+      {result && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
-            {isError ? 'Error' : 'Output'}
-          </div>
+          <FieldLabel>{isError ? 'Error' : 'Output'}</FieldLabel>
           <pre
-            className={`rounded p-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all ${
-              isError
-                ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200'
-                : 'bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200'
-            }`}
+            className={cn(
+              'bg-background rounded p-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all',
+              isError ? 'text-red-800 dark:text-red-200' : 'text-green-800 dark:text-green-200'
+            )}
           >
-            {displayResult}
+            {result}
           </pre>
         </div>
       )}
@@ -88,6 +44,6 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 export const requestScriptRunRenderer: ToolRenderer = {
   displayName: 'Run Script',
   icon: Terminal,
-  getSummary,
+  getSummary: requestScriptRunDef.getSummary,
   ExpandedView,
 }

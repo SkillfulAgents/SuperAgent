@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { formatToolName } from './tool-call-item'
@@ -12,11 +12,13 @@ vi.mock('./tool-renderers', () => ({
 }))
 
 // Mock parseToolResult
+const { mockParseToolResult } = vi.hoisted(() => ({ mockParseToolResult: vi.fn() }))
+mockParseToolResult.mockImplementation((result: unknown) => ({
+  text: result != null ? String(result) : null,
+  images: [],
+}))
 vi.mock('@renderer/lib/parse-tool-result', () => ({
-  parseToolResult: (result: unknown) => ({
-    text: result != null ? String(result) : null,
-    images: [],
-  }),
+  parseToolResult: (result: unknown) => mockParseToolResult(result),
 }))
 
 // Mock useElapsedTimer for deterministic values
@@ -118,7 +120,7 @@ describe('ToolCallItem', () => {
       render(<ToolCallItem toolCall={tc} />)
 
       // Click to expand
-      await user.click(screen.getByText('Bash'))
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
       expect(screen.getByText('Input')).toBeInTheDocument()
       expect(screen.getByText('Output')).toBeInTheDocument()
     })
@@ -128,7 +130,7 @@ describe('ToolCallItem', () => {
       const tc = createToolCall({ result: 'command not found', isError: true })
       render(<ToolCallItem toolCall={tc} />)
 
-      await user.click(screen.getByText('Bash'))
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
       expect(screen.getByText('Error')).toBeInTheDocument()
       expect(screen.queryByText('Output')).not.toBeInTheDocument()
     })
@@ -138,10 +140,10 @@ describe('ToolCallItem', () => {
       const tc = createToolCall({ result: 'output' })
       render(<ToolCallItem toolCall={tc} />)
 
-      await user.click(screen.getByText('Bash'))
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
       expect(screen.getByText('Input')).toBeInTheDocument()
 
-      await user.click(screen.getByText('Bash'))
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
       expect(screen.queryByText('Input')).not.toBeInTheDocument()
     })
   })
@@ -152,7 +154,7 @@ describe('ToolCallItem', () => {
       const tc = createToolCall({ input: { command: 'echo hello' }, result: 'hello' })
       render(<ToolCallItem toolCall={tc} />)
 
-      await user.click(screen.getByText('Bash'))
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
       // JSON.stringify with indentation
       expect(screen.getByText(/echo hello/)).toBeInTheDocument()
     })
@@ -180,5 +182,121 @@ describe('StreamingToolCallItem', () => {
   it('shows waiting message when partialInput is empty', () => {
     render(<StreamingToolCallItem name="Bash" partialInput="" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
+  })
+})
+
+describe('ToolCallItem result images', () => {
+  const refImage = {
+    src: '/api/agents/a/sessions/s/media/ref-1',
+    bytes: 40960,
+    isRef: true,
+  }
+
+  // These override the shared parse mock; put it back so order stays irrelevant.
+  afterEach(() => {
+    mockParseToolResult.mockImplementation((result: unknown) => ({
+      text: result != null ? String(result) : null,
+      images: [],
+    }))
+  })
+
+  it('does not mount a referenced image until the call is expanded', async () => {
+    mockParseToolResult.mockReturnValue({ text: 'done', images: [refImage] })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'done' })} />
+    )
+    // Collapsed: nothing to fetch.
+    expect(container.querySelector('img')).toBeNull()
+
+    await userEvent.click(screen.getByRole('button'))
+    const img = container.querySelector('img')
+    expect(img).toHaveAttribute('src', refImage.src)
+    expect(img).toHaveAttribute('loading', 'lazy')
+  })
+
+  it('offers a retry rather than declaring the image permanently gone', async () => {
+    mockParseToolResult.mockReturnValue({ text: 'done', images: [refImage] })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'done' })} />
+    )
+    await userEvent.click(screen.getByRole('button'))
+
+    const img = container.querySelector('img')!
+    fireEvent.error(img)
+
+    // An <img> error carries no reason, so the copy must not claim one.
+    expect(container.querySelector('img')).toBeNull()
+    expect(screen.getByText(/couldn't load image/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no longer available/i)).not.toBeInTheDocument()
+
+    // Retrying re-requests instead of re-showing the failed load.
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }))
+    const retried = container.querySelector('img')!
+    expect(retried).toBeTruthy()
+    expect(retried.getAttribute('src')).toContain('retry=1')
+  })
+
+  it('reserves the image box and shows a skeleton while a ref is in flight', async () => {
+    // The bytes no longer arrive with the payload, so without a reserved box
+    // the card is a sliver until the fetch lands and then displaces the page.
+    mockParseToolResult.mockReturnValue({
+      text: null,
+      images: [{ ...refImage, width: 919, height: 1998 }],
+    })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'x' })} />
+    )
+    await userEvent.click(screen.getByRole('button'))
+
+    const img = container.querySelector('img')!
+    expect(img).toHaveAttribute('width', '919')
+    expect(img).toHaveAttribute('height', '1998')
+    expect(img.parentElement).toHaveStyle({ aspectRatio: '919 / 1998' })
+    expect(container.querySelector('.animate-pulse')).toBeTruthy()
+
+    fireEvent.load(img)
+    expect(container.querySelector('.animate-pulse')).toBeNull()
+  })
+
+  it('does not show a skeleton for an inline image, which needs no fetch', async () => {
+    mockParseToolResult.mockReturnValue({
+      text: null,
+      images: [{ src: 'data:image/png;base64,abc', isRef: false }],
+    })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'x' })} />
+    )
+    await userEvent.click(screen.getByRole('button'))
+    expect(container.querySelector('.animate-pulse')).toBeNull()
+  })
+
+  it('does not corrupt an inline data URL when retried', async () => {
+    // A query nonce appended to a data: URL becomes part of the base64 payload,
+    // turning a working image into a broken one.
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgo='
+    mockParseToolResult.mockReturnValue({
+      text: null,
+      images: [{ src: dataUrl, isRef: false }],
+    })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'x' })} />
+    )
+    await userEvent.click(screen.getByRole('button'))
+    fireEvent.error(container.querySelector('img')!)
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }))
+
+    expect(container.querySelector('img')).toHaveAttribute('src', dataUrl)
+  })
+
+  it('still renders inline base64 images', async () => {
+    mockParseToolResult.mockReturnValue({
+      text: null,
+      images: [{ src: 'data:image/png;base64,abc', isRef: false }],
+    })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'x' })} />
+    )
+    await userEvent.click(screen.getByRole('button'))
+    expect(container.querySelector('img')).toHaveAttribute('src', 'data:image/png;base64,abc')
   })
 })

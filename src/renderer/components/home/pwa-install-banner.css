@@ -1,0 +1,183 @@
+/*
+  Prominent, animated "Install Gamut" callout.
+    - Animated multi-color gradient border ring + soft colored glow (every device).
+    - Two raw HDR-video layers that render BRIGHTER THAN SDR white on Apple EDR
+      displays (Safari + HDR screen): a blurred halo bleeding out, and a sharp fill
+      for the box surface. Opacity:0 on non-HDR displays (just the colored gradient).
+
+  Why direct video (not backdrop-filter / a translucent overlay): on-device, only
+  the raw HDR video actually reaches EDR. Anything layered *over* the video that
+  forms a stacking context (z-index, isolation, opacity<1, backdrop-filter…)
+  flattens the HDR beneath it back to SDR. So: the box IS the video, the content
+  card sits over it with NO z-index (no stacking context → no clamp), and there is
+  deliberately no `isolation` on the wrapper. Paint order is by tree order alone:
+  ::before(glow) → halo → box → card(content) → ::after(border).
+
+  The banner is mobile-web only (hidden on desktop/Electron), so none of this
+  reaches the desktop app.
+*/
+
+@property --pwa-spin {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes pwa-spin {
+  to {
+    --pwa-spin: 360deg;
+  }
+}
+
+.pwa-banner {
+  position: relative;
+  border-radius: 0.75rem;
+}
+
+/* Soft colored glow — ::before paints first → behind everything, bleeds out. */
+.pwa-banner::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--pwa-spin),
+    #ff2d55,
+    #ff9500,
+    #ffd60a,
+    #34c759,
+    #5ac8fa,
+    #af52de,
+    #ff2d55
+  );
+  filter: blur(14px);
+  opacity: 0.35;
+  animation: pwa-spin 5s linear infinite;
+  pointer-events: none;
+}
+
+/* HDR halo — raw video, blurred, bleeds beyond the card. */
+.pwa-banner__halo {
+  position: absolute;
+  inset: -8px;
+  width: calc(100% + 16px);
+  height: calc(100% + 16px);
+  border-radius: inherit;
+  object-fit: cover;
+  filter: blur(16px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* HDR box surface — raw video, sharp, fills the card box. This is the ultrawhite. */
+.pwa-banner__box {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Content. Positioned (so it paints over the videos) but NO z-index → it does NOT
+   form a stacking context, so it doesn't clamp the HDR box video beneath it.
+   Opaque dark card on non-HDR; transparent on HDR so the ultrawhite shows through. */
+.pwa-banner__card {
+  position: relative;
+  border-radius: inherit;
+  background-color: hsl(var(--card));
+}
+
+/* HDR colored outline — a raw video clipped to a ROUNDED border ring. The inner
+   video fills the wrapper's whole interior (incl. its 1.5px padding), and the
+   wrapper's `content-box` mask carves the ring: content-box follows border-radius,
+   so both edges of the ring round cleanly (a plain inset-rect mask left the inner
+   corners square). Hidden on non-HDR — the SDR ::after border is the fallback. */
+.pwa-banner__outline {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  box-sizing: border-box;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  pointer-events: none;
+}
+.pwa-banner__outline video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+/* Animated gradient border ring — ::after paints last → on top. */
+.pwa-banner::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--pwa-spin),
+    #ff2d55,
+    #ff9500,
+    #ffd60a,
+    #34c759,
+    #5ac8fa,
+    #af52de,
+    #ff2d55
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: pwa-spin 5s linear infinite;
+  pointer-events: none;
+}
+
+@media (dynamic-range: high) {
+  /* Reveal the raw HDR video layers — the box glows ultrawhite, the halo blooms.
+     Box is dialled well below full so the content surface isn't blinding; opacity
+     dims the HDR proportionally (it stays HDR, just calmer). Tune to taste. */
+  .pwa-banner__box {
+    opacity: 0.45;
+  }
+  .pwa-banner__halo {
+    opacity: 0.9;
+  }
+  /* Card goes transparent so the box video shows straight through, and the text
+     goes dark so it stays legible on the ultrawhite. */
+  .pwa-banner__card {
+    background-color: transparent;
+    color: #101012;
+  }
+  .pwa-banner__card .text-muted-foreground {
+    color: #3a3a3e;
+  }
+  /* Swap the dull SDR gradient border for the HDR colored ring. */
+  .pwa-banner__outline {
+    opacity: 1;
+  }
+  .pwa-banner::after {
+    opacity: 0;
+  }
+}
+
+/* Respect reduced-motion: keep the gradient, drop the spin. */
+@media (prefers-reduced-motion: reduce) {
+  .pwa-banner::before,
+  .pwa-banner::after {
+    animation: none;
+  }
+}

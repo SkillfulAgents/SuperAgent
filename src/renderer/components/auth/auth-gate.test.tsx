@@ -1,0 +1,324 @@
+// @vitest-environment jsdom
+
+import { act, render } from '@testing-library/react'
+import { StrictMode } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// Mirror auth-page.test.tsx's api mock: hoist a vi.fn so the module factory can
+// reference it. AuthGate only uses stashRedirectTarget from '@renderer/lib/api'.
+const { stashRedirectTarget } = vi.hoisted(() => ({
+  stashRedirectTarget: vi.fn(),
+}))
+
+vi.mock('@renderer/lib/api', () => ({
+  stashRedirectTarget,
+}))
+
+// Control useUser() per case. AuthGate reads only these four fields off it.
+const { useUser } = vi.hoisted(() => ({
+  useUser: vi.fn(),
+}))
+
+vi.mock('@renderer/context/user-context', () => ({
+  useUser,
+}))
+
+// Keep the auth children shallow — this test is about the stash effect, not the
+// child render. (auth-client is globally mocked in test/setup.ts, but stubbing
+// these avoids pulling in their form/query trees entirely.)
+vi.mock('./auth-page', () => ({
+  AuthPage: () => <div data-testid="auth-page" />,
+}))
+vi.mock('./force-password-change', () => ({
+  ForcePasswordChange: () => <div data-testid="force-password-change" />,
+}))
+vi.mock('./workspace-reconnect', () => ({
+  WorkspaceReconnect: () => <div data-testid="workspace-reconnect" />,
+}))
+
+import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
+import { AuthGate } from './auth-gate'
+
+type UserState = {
+  isAuthMode: boolean
+  isAuthenticated: boolean
+  isPending: boolean
+  mustChangePassword: boolean
+}
+
+function setUser(state: UserState) {
+  // AuthGate only destructures these four; provide defaults for the rest so the
+  // shape stays a valid UserContextValue from the consumer's perspective.
+  vi.mocked(useUser).mockReturnValue(state as never)
+}
+
+describe('AuthGate cold-stash vs sign-out (wasAuthenticatedRef guard)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // `define` installs __AUTH_MODE__ as a real runtime global, so stubGlobal can
+    // flip it per case (same mechanism as api.test.ts / history.test.ts).
+    vi.stubGlobal('__AUTH_MODE__', true)
+    // jsdom: replaceState is the clean way to set pathname/search/hash without
+    // triggering a (jsdom-unsupported) real navigation.
+    window.history.replaceState({}, '', '/')
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('cold deep-link: stashes the target once the session settles unauthenticated', () => {
+    window.history.replaceState({}, '', '/agents/foo?tab=runs#section')
+
+    // Session check still in flight → effect must not stash yet.
+    setUser({ isAuthMode: true, isAuthenticated: false, isPending: true, mustChangePassword: false })
+    const { rerender } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+    expect(stashRedirectTarget).not.toHaveBeenCalled()
+
+    // Settles unauthenticated → effect re-runs (isPending is in the dep array).
+    setUser({ isAuthMode: true, isAuthenticated: false, isPending: false, mustChangePassword: false })
+    rerender(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(stashRedirectTarget).toHaveBeenCalledTimes(1)
+    expect(stashRedirectTarget).toHaveBeenCalledWith('/agents/foo?tab=runs#section')
+  })
+
+  it('sign-out: does NOT stash, so a signed-out path cannot leak into the next session', () => {
+    window.history.replaceState({}, '', '/agents/foo?tab=runs#section')
+
+    // First render authenticated → the wasAuthenticatedRef effect sets the ref.
+    setUser({ isAuthMode: true, isAuthenticated: true, isPending: false, mustChangePassword: false })
+    const { rerender } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    // Sign out → now unauthenticated, but the ref records this tab WAS authenticated,
+    // so the cold-stash guard must suppress the stash.
+    setUser({ isAuthMode: true, isAuthenticated: false, isPending: false, mustChangePassword: false })
+    rerender(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(stashRedirectTarget).not.toHaveBeenCalled()
+  })
+
+  it('outside auth mode: never stashes', () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    window.history.replaceState({}, '', '/agents/foo')
+
+    setUser({ isAuthMode: false, isAuthenticated: false, isPending: true, mustChangePassword: false })
+    const { rerender } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    setUser({ isAuthMode: false, isAuthenticated: false, isPending: false, mustChangePassword: false })
+    rerender(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(stashRedirectTarget).not.toHaveBeenCalled()
+  })
+})
+
+describe('which recovery AuthGate offers when there is no session', () => {
+  // A cloud workspace authenticates with a deployment token held by the main
+  // process. Showing a password form there asks the user for a credential that
+  // cannot work, and hides the one thing that does — getting back to local.
+  beforeEach(() => {
+    vi.clearAllMocks()
+    _resetApiTargetForTest()
+    window.history.replaceState({}, '', '/')
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    _resetApiTargetForTest()
+  })
+
+  const unauthenticated = {
+    isAuthMode: true,
+    isAuthenticated: false,
+    isPending: false,
+    mustChangePassword: false,
+  }
+
+  it('offers the login form for a web deployment', () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+    setUser(unauthenticated)
+
+    const { queryByTestId } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(queryByTestId('auth-page')).toBeInTheDocument()
+    expect(queryByTestId('workspace-reconnect')).not.toBeInTheDocument()
+  })
+
+  it('offers workspace reconnection for a cloud target, not a password form', () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    setActiveTarget('cloud', null)
+    setUser(unauthenticated)
+
+    const { queryByTestId } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(queryByTestId('workspace-reconnect')).toBeInTheDocument()
+    expect(queryByTestId('auth-page')).not.toBeInTheDocument()
+  })
+
+  it('still shows the app once the cloud session resolves', () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    setActiveTarget('cloud', null)
+    setUser({ ...unauthenticated, isAuthenticated: true })
+
+    const { queryByTestId, getByText } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(getByText('app')).toBeInTheDocument()
+    expect(queryByTestId('workspace-reconnect')).not.toBeInTheDocument()
+  })
+
+  it('still waits on a pending session rather than flashing reconnect', () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    setActiveTarget('cloud', null)
+    setUser({ ...unauthenticated, isPending: true })
+
+    const { queryByTestId, getByText } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(getByText('Loading...')).toBeInTheDocument()
+    expect(queryByTestId('workspace-reconnect')).not.toBeInTheDocument()
+  })
+})
+
+describe('telling main the window has painted', () => {
+  // Main covers a target switch with an overlay it cannot lift on its own. This
+  // is the signal that lifts it; without it the band sits there until a timeout.
+  const signalRendererPainted = vi.fn()
+  const settled = {
+    isAuthMode: false,
+    isAuthenticated: true,
+    isPending: false,
+    mustChangePassword: false,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    _resetApiTargetForTest()
+    vi.stubGlobal('__AUTH_MODE__', false)
+    Object.defineProperty(window, 'electronAPI', {
+      value: { signalRendererPainted },
+      configurable: true,
+      writable: true,
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    _resetApiTargetForTest()
+  })
+
+  /** Two animation frames, the way the hook waits for them. */
+  async function paintFrames() {
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    })
+  }
+
+  it('signals once the gate has settled on something to show', async () => {
+    setActiveTarget('local', null)
+    setUser(settled)
+
+    render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+    await paintFrames()
+
+    expect(signalRendererPainted).toHaveBeenCalled()
+  })
+
+  it('survives a mount that is torn down and repeated before the frames arrive', async () => {
+    // StrictMode mounts, cleans up, and mounts again. The cleanup cancels the
+    // frames the signal is waiting on, so a latch closed at schedule time leaves
+    // the second mount with nothing to do — and the overlay with nothing to lift.
+    // Only a boot that is never pending gets here, which is to say a local one.
+    setActiveTarget('local', null)
+    setUser(settled)
+
+    render(
+      <StrictMode>
+        <AuthGate>
+          <div>app</div>
+        </AuthGate>
+      </StrictMode>,
+    )
+    await paintFrames()
+
+    expect(signalRendererPainted).toHaveBeenCalled()
+  })
+
+  it('waits for the session while the gate is still loading', async () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+    setUser({ ...settled, isAuthMode: true, isPending: true })
+
+    render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+    await paintFrames()
+
+    expect(signalRendererPainted).not.toHaveBeenCalled()
+  })
+
+  it('signals only once for a boot', async () => {
+    setActiveTarget('local', null)
+    setUser(settled)
+
+    const { rerender } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+    await paintFrames()
+    rerender(
+      <AuthGate>
+        <div>app again</div>
+      </AuthGate>,
+    )
+    await paintFrames()
+
+    expect(signalRendererPainted).toHaveBeenCalledTimes(1)
+  })
+})

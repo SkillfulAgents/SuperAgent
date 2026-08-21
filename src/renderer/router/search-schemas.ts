@@ -1,0 +1,124 @@
+import { z } from 'zod'
+import { isSafeInternalPath } from '@renderer/lib/api'
+import { TEMPLATE_SLUG_RE } from '@shared/lib/signup-handoff-params'
+
+/**
+ * Zod schemas for the router's URL boundary (search params + the settings tab
+ * path param). Per CLAUDE.md, every value decoded from the URL is validated here
+ * before it reaches a route component.
+ */
+
+// Chat sub-session is optional → SEARCH, not a path segment: the chat root and a
+// specific sub-session are the same view (`view.sessionId` is `string?` on the
+// `chat` variant of AgentView). NOT `.uuid()` — legacy/test session ids may not
+// be UUID-shaped.
+// `newchat` is the externalChatId of a chat opened to a fresh, not-yet-created
+// conversation (after "New conversation"): no `session` exists yet, so we address
+// the chat itself and render a blank thread until the next inbound message.
+export const chatSearchSchema = z.object({
+  session: z.string().optional(),
+  newchat: z.string().optional(),
+})
+
+// A connection-detail overlay key: `account-${id}` / `mcp-${id}` (see
+// connections/unified-rows.ts). ONE definition shared by the agent connections
+// route and the global settings connections tab, so the two can't drift.
+const connectionDetailKey = z.string().regex(/^(account|mcp)-.+$/)
+
+// Connections detail overlay on the list. `detail` is the unified-row key;
+// `source` decides the breadcrumb + back-target. They travel together — today
+// both live inside one optional `detail` object on the `connections` AgentView
+// variant.
+export const connectionsSearchSchema = z
+  .object({
+    detail: connectionDetailKey.optional(),
+    source: z.enum(['home', 'list']).optional(),
+    connectionView: z.literal('logs').optional(),
+  })
+  .refine((s) => (s.detail == null) === (s.source == null), {
+    message: 'detail and source must be set together',
+  })
+  .refine((s) => !s.connectionView || !!s.detail, {
+    message: 'a connection subview requires detail',
+  })
+
+// Open-redirect-safe internal path. ONE definition for the whole app: the same
+// `isSafeInternalPath` backstop applied on the actual stash/redirect path in
+// api.ts (rejects `//host`, `/\host`, and a leading encoded `/%2f`/`/%5c`), so
+// the schema gate and the sanitizer can't drift. Shared by the post-login
+// `redirect` and the settings `from` close-target.
+const internalPath = z.string().refine(isSafeInternalPath, { message: 'must be a safe internal path' })
+
+// Deep-link-through-login target.
+export const rootSearchSchema = z.object({
+  redirect: internalPath.optional(),
+})
+
+// Home view toggle (cards ⇄ graph). URL-driven so back/forward navigation and
+// reloads keep the selected view; absent = cards.
+// Marketing-site signup handoff (one-shot: consumed + stripped by
+// SignupHandoffConsumer). Per-field .catch so a bad model never drops a valid
+// prompt through lenient()'s all-or-nothing parse.
+export const homeSearchSchema = z.object({
+  // Per-field .catch: invalid view must not wipe prompt/model via lenient().
+  view: z.enum(['cards', 'graph']).optional().catch(undefined),
+  // Same gate as the SSO hop's withSignupHandoff (platform-sso-start.ts): a URL
+  // typed or shared directly, with no SSO hop in front of it, has to be cleaned
+  // to the same shape. Strip/trim BEFORE the cap so control characters can't eat
+  // into the 400 budget. An all-whitespace prompt collapses to '' — falsy, so
+  // every consumer reads it as absent.
+  prompt: z.string()
+    .transform((s) => s.replace(/[\r\n\0]/g, '').trim().slice(0, 400))
+    .optional().catch(undefined),
+  model: z.string().regex(/^[A-Za-z0-9._/-]{1,64}$/).optional().catch(undefined),
+  template_slug: z.string().regex(TEMPLATE_SLUG_RE).optional().catch(undefined),
+})
+
+// Settings close-target: the path the gear was opened FROM, so closing returns
+// there. A query param (not an in-memory stash) so it SURVIVES a refresh inside
+// settings.
+//
+// `detail` is the open connection-detail overlay on the Connections tab,
+// URL-driven for parity with the agent connections route (deep-linkable +
+// reload-durable). Only the Connections tab reads it; `lenient()` drops it on
+// other tabs. No `source` here — settings detail always returns to its own list.
+export const settingsSearchSchema = z
+  .object({
+    from: internalPath.optional(),
+    detail: connectionDetailKey.optional(),
+    connectionView: z.literal('logs').optional(),
+  })
+  .refine((s) => !s.connectionView || !!s.detail, {
+    message: 'a connection subview requires detail',
+  })
+
+// The 21 GLOBAL settings tabs (settings/global-settings-page.tsx user/admin/auth
+// sections, flattened in display order). NOTE: `system-prompt` (agent-scoped
+// local dialog) and `secrets` (agent-scoped page, /agents/$slug/secrets) are
+// deliberately absent — they are not global settings routes.
+export const SETTINGS_TABS = [
+  'profile',
+  'mobile',
+  'general',
+  'notifications',
+  'platform',
+  'connections',
+  'usage',
+  'llm',
+  'runtime',
+  'browser',
+  'web',
+  'capabilities',
+  'computer-use',
+  'account-provider',
+  'voice',
+  'skillsets',
+  'analytics',
+  'audit-log',
+  'admin',
+  'users',
+  'auth',
+] as const
+
+export const settingsTabSchema = z.enum(SETTINGS_TABS)
+export type SettingsTab = z.infer<typeof settingsTabSchema>

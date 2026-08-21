@@ -114,6 +114,7 @@ describe('QuestionRequestItem', () => {
         expect.objectContaining({
           method: 'POST',
           body: expect.stringContaining('PostgreSQL'),
+          signal: expect.any(AbortSignal),
         })
       )
     })

@@ -58,3 +58,31 @@ export function assertPathWithinDir(
   }
   return path.resolve(candidate)
 }
+
+/**
+ * Sanitize an externally-supplied filename into a safe basename for writing
+ * under a trusted uploads directory.
+ *
+ * Untrusted names (chat attachments, uploaded files) may carry directory
+ * components or traversal. We drop NUL bytes, strip any directory components
+ * (POSIX and Windows separators) and `..` traversal by keeping only the last
+ * segment, remove leading dots (hidden files / bare `.`/`..`), and replace any
+ * remaining path-unsafe characters. Falls back to `file` when nothing usable
+ * remains. (SUP-231)
+ *
+ * This yields a basename only — it never preserves nested directory structure.
+ * Pair it with `assertPathWithinDir` for defense in depth at the write site.
+ */
+export function sanitizeUploadFilename(filename: string): string {
+  // Drop NUL bytes, then take the last segment so directory components
+  // (including `..`) cannot survive — split on both `/` and `\`.
+  const raw = String(filename ?? '').replace(/\0/g, '')
+  const segments = raw.split(/[/\\]/)
+  let base = segments[segments.length - 1] ?? ''
+  // Strip leading dots (hidden files, bare `.`/`..`).
+  base = base.replace(/^\.+/, '')
+  // Replace any remaining path-unsafe characters.
+  base = base.replace(/[^A-Za-z0-9._-]/g, '_')
+  if (base === '' || base === '.' || base === '..') return 'file'
+  return base
+}

@@ -114,11 +114,20 @@ export function ConnectionAgentsList({ type, id, name, sectioned = false }: Conn
         }
       }
     } catch {
-      setOverrides((prev) => {
+      // Mirror the optimistic path: in the sectioned layout the set above is
+      // deferred inside a view transition, and update callbacks run in queue
+      // order — reverting directly would let a fast failure land BEFORE the
+      // optimistic set and leave the agent stuck in the wrong section.
+      const revertOverride = () => setOverrides((prev) => {
         const n = { ...prev }
         delete n[slug]
         return n
       })
+      if (sectioned) {
+        startViewTransition(() => flushSync(revertOverride))
+      } else {
+        revertOverride()
+      }
     }
   }
 
@@ -151,7 +160,7 @@ export function ConnectionAgentsList({ type, id, name, sectioned = false }: Conn
       >
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium truncate">{agent.name}</div>
-          <div className="text-[11px] text-muted-foreground truncate">{agent.slug}</div>
+          <div className="text-[11px] text-muted-foreground truncate">{agent.displaySlug}</div>
         </div>
         {pending ? (
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />

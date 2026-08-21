@@ -165,6 +165,10 @@ Instructions
       expect(agent).not.toBeNull()
       expect(agent?.status).toBe('stopped')
       expect(agent?.containerPort).toBeNull()
+      expect(agent?.sessionCount).toBe(0)
+      expect(agent?.lastActivityAt).toBeNull()
+      expect(agent?.hasActiveSessions).toBe(false)
+      expect(agent?.hasSessionsAwaitingInput).toBe(false)
     })
 
     it('returns agent with running status when container is running', async () => {
@@ -177,6 +181,18 @@ Instructions
 
       expect(agent?.status).toBe('running')
       expect(agent?.containerPort).toBe(3456)
+    })
+
+    it('can omit filesystem session summaries for command responses', async () => {
+      await createTestAgent('command-agent', SAMPLE_CLAUDE_MD)
+
+      const agent = await getAgentWithStatus('command-agent', { includeSummary: false })
+
+      expect(agent).not.toBeNull()
+      expect(agent).not.toHaveProperty('sessionCount')
+      expect(agent).not.toHaveProperty('lastActivityAt')
+      expect(agent).not.toHaveProperty('hasActiveSessions')
+      expect(agent).not.toHaveProperty('hasSessionsAwaitingInput')
     })
 
     it('surfaces awaiting input when agent has pending proxy reviews and no active sessions', async () => {
@@ -270,7 +286,9 @@ Instructions`
       const agent = await createAgent({ name: 'New Agent' })
 
       expect(agent.name).toBe('New Agent')
-      expect(agent.slug).toMatch(/^new-agent-[a-z0-9]{6}$/)
+      // Identity is now an opaque minted id; the name lives in the projected displaySlug.
+      expect(agent.slug).toMatch(/^[a-z0-9]{10}$/)
+      expect(agent.displaySlug).toMatch(/^new-agent-[a-z0-9]{10}$/)
       expect(agent.status).toBe('stopped')
       expect(agent.containerPort).toBeNull()
       expect(agent.instructions).toContain('You are a helpful AI assistant')

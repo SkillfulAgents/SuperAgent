@@ -8,6 +8,7 @@ export interface UsageByAgent {
 export interface UsageByModel {
   model: string
   cost: number
+  totalTokens: number
 }
 
 export interface DailyUsageEntry {
@@ -20,4 +21,11 @@ export interface DailyUsageEntry {
 
 export interface UsageResponse {
   daily: DailyUsageEntry[]
+}
+
+export interface SessionUsageTotals {
+  totalCost: number
+  totalTokens: number
+  priceMissing: boolean
+  usageIncomplete: boolean
 }

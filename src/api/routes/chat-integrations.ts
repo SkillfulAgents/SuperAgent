@@ -6,6 +6,7 @@
  */
 
 import { Hono } from 'hono'
+import { z } from 'zod'
 import {
   getChatIntegration,
   createChatIntegration,
@@ -14,15 +15,28 @@ import {
   deleteChatIntegration,
   DuplicateBotTokenError,
 } from '@shared/lib/services/chat-integration-service'
+import {
+  getChatAccessById,
+  listChatAccess,
+  approveChatAccess,
+  denyChatAccess,
+  revokeChatAccess,
+} from '@shared/lib/services/chat-integration-access-service'
+import type { ChatAccessStatus } from '@shared/lib/services/chat-integration-access-service'
 import { listChatIntegrationSessions, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
-import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema } from '@shared/lib/chat-integrations/config-schema'
+import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { Authenticated, AgentUser, EntityAgentRole } from '../middleware/auth'
+import { Authenticated, AgentUser, EntityAgentRole, ResolveAgent, getAgentId } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
+import { SPEED_LEVELS } from '@shared/lib/container/types'
 
 const SENTRY_TAGS = { component: 'chat-integration' } as const
+
+// Speed override carried on create/update bodies: a level, null to clear, or absent.
+const speedOverrideSchema = z.enum(SPEED_LEVELS).nullable().optional()
 
 const chatIntegrationsRouter = new Hono()
 
@@ -38,8 +52,8 @@ const IntegrationAgentRole = EntityAgentRole({
 // GET /api/chat-integrations/:integrationId - Get a single integration
 chatIntegrationsRouter.get('/:integrationId', IntegrationAgentRole('viewer'), async (c) => {
   try {
-    const integration = c.get('chatIntegration' as never)
-    return c.json(integration)
+    const integration = c.get('chatIntegration' as never) as NonNullable<ReturnType<typeof getChatIntegration>>
+    return c.json(toPublicChatIntegration(integration))
   } catch (error) {
     console.error('Failed to fetch chat integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'get-integration' }, extra: { integrationId: c.req.param('integrationId') } })
@@ -113,12 +127,22 @@ chatIntegrationsRouter.post('/test-credentials', Authenticated(), async (c) => {
 })
 
 // POST /api/chat-integrations - Create a new integration
-// AgentUser validates the user has 'user' role on the agent identified by :id param
-chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
+// ResolveAgent maps the :id route param (which may be a display slug) to the
+// canonical id BEFORE AgentUser checks the ACL — otherwise auth mode denies valid
+// owners (ACL is id-keyed) and non-auth mode persists the display slug, splitting
+// the row from the canonical id. AgentUser then validates the 'user' role.
+chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const body = await c.req.json()
     const { provider, name, config, showToolCalls, sessionTimeout, model, effort } = body
+    const parsedSpeed = speedOverrideSchema.safeParse(body.speed)
+    if (!parsedSpeed.success) {
+      return c.json({ error: `Invalid speed. Must be one of: ${SPEED_LEVELS.join(', ')}` }, 400)
+    }
+    // requireApproval is intentionally NOT accepted here: making a bot public is
+    // owner-only and must go through PATCH /:integrationId/require-approval. New
+    // integrations default to requireApproval=true (private).
 
     if (!provider || !config) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
@@ -181,6 +205,7 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
         sessionTimeout: sessionTimeout ?? null,
         model: model ?? null,
         effort: effort ?? null,
+        speed: parsedSpeed.data ?? null,
         createdByUserId,
       })
     } catch (err) {
@@ -214,9 +239,15 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
       updateChatIntegrationStatus(id, 'error', errMsg)
     }
 
+    // Outside the connect try/catch: a contact-card failure is cosmetic and must
+    // never surface as a connect error. Not awaited either — the upload has its
+    // own 30s timeout and setup must not block on it.
+    void chatIntegrationManager.sendContactCard(id)
+
     const integration = getChatIntegration(id)
+    if (!integration) throw new Error('Chat integration disappeared after creation')
     logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
-    return c.json(integration, 201)
+    return c.json(toPublicChatIntegration(integration), 201)
   } catch (error) {
     console.error('Failed to create chat integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'create-integration' }, extra: { agentSlug: c.req.param('id') } })
@@ -230,18 +261,9 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     const id = c.req.param('integrationId')
     const body = await c.req.json()
     const { name, config, showToolCalls, sessionTimeout, model, effort, status } = body
-
-    // Validate config if provided
-    if (config !== undefined) {
-      const integration = c.get('chatIntegration' as never) as Awaited<ReturnType<typeof getChatIntegration>>
-      if (integration) {
-        try {
-          validateChatIntegrationConfig(integration.provider as ChatProvider, config)
-        } catch (err) {
-          const message = err instanceof Error ? err.message : 'Invalid config'
-          return c.json({ error: `Invalid config: ${message}` }, 400)
-        }
-      }
+    const parsedSpeed = speedOverrideSchema.safeParse(body.speed)
+    if (!parsedSpeed.success) {
+      return c.json({ error: `Invalid speed. Must be one of: ${SPEED_LEVELS.join(', ')}` }, 400)
     }
 
     // Step 1: Persist DB updates first (config, name, showToolCalls)
@@ -252,9 +274,12 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     if (sessionTimeout !== undefined) updates.sessionTimeout = sessionTimeout
     if (model !== undefined) updates.model = model
     if (effort !== undefined) updates.effort = effort
+    if (body.speed !== undefined) updates.speed = parsedSpeed.data ?? null
 
     if (Object.keys(updates).length > 0) {
-      updateChatIntegration(id, updates)
+      if (!updateChatIntegration(id, updates)) {
+        throw new Error('Chat integration disappeared during update')
+      }
     }
 
     // Step 2: Handle lifecycle changes (pause/resume/reconnect)
@@ -269,8 +294,9 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     }
 
     const updated = getChatIntegration(id)
+    if (!updated) throw new Error('Chat integration disappeared after update')
     logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated' })
-    return c.json(updated)
+    return c.json(toPublicChatIntegration(updated))
   } catch (error) {
     if (error instanceof DuplicateBotTokenError) {
       captureException(error, {
@@ -283,9 +309,41 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
         409,
       )
     }
+    if (error instanceof z.ZodError) {
+      const message = error.issues[0]?.message ?? 'Invalid config'
+      return c.json({ error: `Invalid config: ${message}` }, 400)
+    }
     console.error('Failed to update chat integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'update-integration' }, extra: { integrationId: c.req.param('integrationId') } })
     return c.json({ error: 'Failed to update chat integration' }, 500)
+  }
+})
+
+// PATCH /api/chat-integrations/:integrationId/require-approval - Toggle the allowlist (owner-only)
+// Separate from the general PATCH so the security-sensitive "make public" flip requires
+// the owner role, and so turning approval ON can reconcile already-running sessions.
+chatIntegrationsRouter.patch('/:integrationId/require-approval', IntegrationAgentRole('owner'), async (c) => {
+  try {
+    const id = c.req.param('integrationId')
+    const { requireApproval } = await c.req.json()
+    if (!z.boolean().safeParse(requireApproval).success) {
+      return c.json({ error: 'requireApproval must be a boolean' }, 400)
+    }
+    if (!updateChatIntegration(id, { requireApproval })) {
+      throw new Error('Chat integration disappeared during approval update')
+    }
+    // Secure-by-default: enabling approval must gate already-running sessions whose
+    // chat is not explicitly allowed (previously-public conversations).
+    if (requireApproval === true) {
+      await chatIntegrationManager.reconcileAccess(id)
+    }
+    const updated = getChatIntegration(id)
+    if (!updated) throw new Error('Chat integration disappeared after approval update')
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated', details: { requireApproval } })
+    return c.json(toPublicChatIntegration(updated))
+  } catch (error) {
+    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'set-require-approval' }, extra: { integrationId: c.req.param('integrationId') } })
+    return c.json({ error: 'Failed to update require approval' }, 500)
   }
 })
 
@@ -394,5 +452,55 @@ chatIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', Integration
     return c.json({ error: 'Failed to clear session' }, 500)
   }
 })
+
+// ── Access management routes ────────────────────────────────────────────
+
+const accessStatusSchema = z.enum(['pending', 'allowed', 'denied'])
+
+// GET /api/chat-integrations/:integrationId/access - List access entries (optionally filtered by status)
+// Owner-only: entries expose requester identity + message previews, shown only to owners in the UI.
+chatIntegrationsRouter.get('/:integrationId/access', IntegrationAgentRole('owner'), async (c) => {
+  try {
+    const integrationId = c.req.param('integrationId')
+    const raw = c.req.query('status')
+    let status: ChatAccessStatus | undefined
+    if (raw !== undefined) {
+      const parsed = accessStatusSchema.safeParse(raw)
+      if (!parsed.success) return c.json({ error: 'Invalid status' }, 400)
+      status = parsed.data
+    }
+    return c.json(listChatAccess(integrationId, status))
+  } catch (error) {
+    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'list-access' } })
+    return c.json({ error: 'Failed to list access' }, 500)
+  }
+})
+
+// POST /api/chat-integrations/:integrationId/access/:accessId/{approve,deny,revoke}
+const accessActions = { approve: approveChatAccess, deny: denyChatAccess, revoke: revokeChatAccess } as const
+for (const verb of ['approve', 'deny', 'revoke'] as const) {
+  chatIntegrationsRouter.post(`/:integrationId/access/:accessId/${verb}`, IntegrationAgentRole('owner'), async (c) => {
+    try {
+      const integrationId = c.req.param('integrationId')
+      const accessId = c.req.param('accessId')
+      const row = getChatAccessById(accessId)
+      // BOLA guard: scope the access row to the authorized integration.
+      // IntegrationAgentRole authorizes :integrationId only; the access row is
+      // loaded by primary key, so we must verify it belongs to that integration.
+      // Return 404 so foreign access IDs are not enumerable (SUP-229 pattern).
+      if (!row || row.integrationId !== integrationId) return c.json({ error: 'Access entry not found' }, 404)
+      const ok = accessActions[verb](accessId, getCurrentUserId(c))
+      if (ok) {
+        logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: integrationId, action: 'updated', details: { access: verb, accessId } })
+        if (verb === 'approve') void chatIntegrationManager.notifyChatApproved(integrationId, row.externalChatId)
+        if (verb === 'revoke' || verb === 'deny') await chatIntegrationManager.tearDownChatSession(integrationId, row.externalChatId)
+      }
+      return c.json({ ok })
+    } catch (error) {
+      captureException(error, { tags: { ...SENTRY_TAGS, operation: `access-${verb}` } })
+      return c.json({ error: `Failed to ${verb}` }, 500)
+    }
+  })
+}
 
 export default chatIntegrationsRouter

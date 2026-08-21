@@ -1,6 +1,7 @@
 import { powerSaveBlocker, dialog } from 'electron'
 import { exec, execFile, execFileSync } from 'child_process'
 import fs from 'fs'
+import { runWithAdminPrivileges } from '@shared/lib/run-with-admin-privileges'
 
 let powerSaveBlockerId: number | null = null
 let disableSleepActive = false
@@ -18,15 +19,6 @@ function hasSudoersRule(): boolean {
   } catch {
     return false
   }
-}
-
-function runWithAdminPrivileges(command: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile('osascript', ['-e', `do shell script ${JSON.stringify(command)} with administrator privileges`], (error) => {
-      if (error) reject(error)
-      else resolve()
-    })
-  })
 }
 
 function runPmsetSudo(flag: '0' | '1'): Promise<void> {
@@ -161,7 +153,7 @@ export async function restoreKeepAwakeOnStartup(enabled: boolean): Promise<void>
     const { response } = await dialog.showMessageBox({
       type: 'warning',
       title: 'Keep Awake Cleanup',
-      message: 'Superagent previously prevented your Mac from sleeping, but that setting is still active from a prior session. Would you like to restore normal sleep behavior?',
+      message: 'Gamut previously prevented your Mac from sleeping, but that setting is still active from a prior session. Would you like to restore normal sleep behavior?',
       buttons: ['Restore Sleep', 'Leave As-Is'],
       defaultId: 0,
     })

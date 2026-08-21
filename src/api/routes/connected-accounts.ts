@@ -17,6 +17,12 @@ import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { countActiveTriggersPerAccount, cancelTriggersForConnectedAccount } from '@shared/lib/services/webhook-trigger-service'
+import {
+  findAgentsAssignedConnectedAccount,
+  syncAgentsAssignedConnectedAccount,
+  syncConnectedAccountAgents,
+} from '@shared/lib/container/connection-runtime-sync'
+import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 
 const connectedAccountsRouter = new Hono()
 
@@ -268,6 +274,11 @@ connectedAccountsRouter.post('/complete', async (c) => {
         .where(eq(connectedAccounts.id, reconnectAccountId))
       id = reconnectAccountId
 
+      // The account row now points at a provider connection that was verified
+      // ACTIVE above. Resume every proxy request parked on this account before
+      // the best-effort runtime refresh, which is unrelated to proxy tokens.
+      accountReauthManager.completeAccount(id)
+
       // Clean up the old remote connection (fire-and-forget)
       if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
         accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
@@ -295,8 +306,11 @@ connectedAccountsRouter.post('/complete', async (c) => {
       logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
     }
 
+    const liveRefresh = await syncAgentsAssignedConnectedAccount(id)
+
     return c.json({
       success: true,
+      liveRefresh,
       account: {
         id,
         providerConnectionId: connectionId,
@@ -394,6 +408,8 @@ connectedAccountsRouter.get('/callback', async (c) => {
         .where(eq(connectedAccounts.id, reconnectAccountId))
       id = reconnectAccountId
 
+      accountReauthManager.completeAccount(id)
+
       if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
         accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
           .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err))
@@ -419,6 +435,10 @@ connectedAccountsRouter.get('/callback', async (c) => {
       trackServerEvent('account_oauth_succeeded', { toolkitSlug })
       logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
     }
+
+    // This HTML callback has no renderer response channel for a refresh
+    // warning. The sync remains best-effort and logs failures server-side.
+    await syncAgentsAssignedConnectedAccount(id)
 
     return c.html(
       generateCallbackHtml({
@@ -521,8 +541,10 @@ connectedAccountsRouter.patch('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =>
       .where(eq(connectedAccounts.id, id))
       .limit(1)
 
+    const liveRefresh = await syncAgentsAssignedConnectedAccount(id)
     return c.json({
       account: { ...updated, provider: getProvider(updated.toolkitSlug) },
+      liveRefresh,
     })
   } catch (error) {
     console.error('Failed to update connected account:', error)
@@ -558,11 +580,20 @@ connectedAccountsRouter.delete('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =
       console.warn('Failed to delete connection from provider:', error)
     }
 
+    let assignedAgentSlugs: string[] | null = null
+    try {
+      assignedAgentSlugs = await findAgentsAssignedConnectedAccount(id)
+    } catch (error) {
+      console.warn(`Failed to resolve agents assigned account ${id} before delete:`, error)
+    }
     await db.delete(connectedAccounts).where(eq(connectedAccounts.id, id))
+    const liveRefresh = assignedAgentSlugs
+      ? await syncConnectedAccountAgents(assignedAgentSlugs)
+      : false
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'disconnected', details: { toolkitSlug: existing.toolkitSlug } })
 
-    return c.body(null, 204)
+    return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to delete connected account:', error)
     return c.json({ error: 'Failed to delete connected account' }, 500)

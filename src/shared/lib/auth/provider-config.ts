@@ -120,6 +120,10 @@ class OidcAuthProviderDefinition extends AuthProviderDefinition {
       requireIssuerValidation: true,
       overrideUserInfo: true,
       mapProfileToUser: (profile: Record<string, unknown>) => {
+        // Platform-only: require verified email before first-time link/provision.
+        if (this.config.id === 'platform' && profile.email_verified !== true) {
+          throw new Error('Platform email is not verified')
+        }
         // org-pinned deployment: id_token org_id must match; throw aborts
         // before Better Auth creates the user/account/session.
         const deploymentOrg = decodeOrgIdFromToken(process.env.PLATFORM_TOKEN ?? '')
@@ -206,6 +210,13 @@ export function getPublicAuthProviders(
   providers: AuthProviderSettings[] = resolveEnvAuthProviders(),
 ): PublicAuthProviderConfig[] {
   return getEnabledProviderDefinitions(providers).map((definition) => definition.toPublicConfig())
+}
+
+// Whether the named provider is present and not explicitly disabled. Used to
+// gate flows (e.g. token exchange) that must not run when platform login has
+// been turned off, matching the interactive-login surface.
+export function isAuthProviderEnabled(id: string): boolean {
+  return resolveEnvAuthProviders().some((p) => p.id === id && p.enabled !== false)
 }
 
 // Issuer for the named provider, derived from `issuer` or `discoveryUrl`.

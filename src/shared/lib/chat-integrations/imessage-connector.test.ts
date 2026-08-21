@@ -148,7 +148,7 @@ describe('IMessageConnector', () => {
 
     it('sends approval card text with reaction instructions', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-1',
         questions: [{ question: 'Run command: rm -rf /' }],
       }
@@ -166,7 +166,7 @@ describe('IMessageConnector', () => {
 
     it('tracks the pending approval', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-1',
         questions: [{ question: 'Allow this?' }],
       }
@@ -182,7 +182,7 @@ describe('IMessageConnector', () => {
 
     it('uses fallback text when no questions provided', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-2',
       }
 
@@ -195,7 +195,7 @@ describe('IMessageConnector', () => {
 
     it('emits allow response on thumbs-up reaction', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-1',
         questions: [{ question: 'Allow?' }],
       }
@@ -214,12 +214,12 @@ describe('IMessageConnector', () => {
       expect(handler).toHaveBeenCalledWith('review:tool-1', {
         question: '_approval',
         answer: '✅ Allow',
-      })
+      }, undefined)
     })
 
     it('emits deny response on thumbs-down reaction', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-1',
         questions: [{ question: 'Allow?' }],
       }
@@ -237,12 +237,12 @@ describe('IMessageConnector', () => {
       expect(handler).toHaveBeenCalledWith('review:tool-1', {
         question: '_approval',
         answer: '❌ Deny',
-      })
+      }, undefined)
     })
 
     it('removes pending approval after it is resolved', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-1',
         questions: [{ question: 'Allow?' }],
       }
@@ -272,7 +272,7 @@ describe('IMessageConnector', () => {
 
     it('formats question with numbered options', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-1',
         questions: [{
           question: 'Pick a color',
@@ -298,7 +298,7 @@ describe('IMessageConnector', () => {
 
     it('includes option descriptions when present', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-2',
         questions: [{
           question: 'Choose a plan',
@@ -318,7 +318,7 @@ describe('IMessageConnector', () => {
 
     it('includes header when present', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-3',
         questions: [{
           header: 'Configuration',
@@ -335,7 +335,7 @@ describe('IMessageConnector', () => {
 
     it('renders "(No question provided)" when questions array is empty', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-4',
         questions: [],
       }
@@ -348,7 +348,7 @@ describe('IMessageConnector', () => {
 
     it('tracks pending question', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-5',
         questions: [{
           question: 'Pick one',
@@ -365,7 +365,7 @@ describe('IMessageConnector', () => {
 
     it('resolves question by number', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-6',
         questions: [{
           question: 'Pick a color',
@@ -393,12 +393,12 @@ describe('IMessageConnector', () => {
       expect(handler).toHaveBeenCalledWith('q-6', {
         question: 'Pick a color',
         answer: 'Blue',
-      })
+      }, undefined)
     })
 
     it('resolves question by exact label (case-insensitive)', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-7',
         questions: [{
           question: 'Pick a color',
@@ -421,12 +421,12 @@ describe('IMessageConnector', () => {
       expect(handler).toHaveBeenCalledWith('q-7', {
         question: 'Pick a color',
         answer: 'Red',
-      })
+      }, undefined)
     })
 
     it('resolves question with raw text when no match', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-8',
         questions: [{
           question: 'Pick a color',
@@ -449,12 +449,12 @@ describe('IMessageConnector', () => {
       expect(handler).toHaveBeenCalledWith('q-8', {
         question: 'Pick a color',
         answer: 'Purple',
-      })
+      }, undefined)
     })
 
     it('does not emit a regular message when answering a question', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-9',
         questions: [{
           question: 'Pick one',
@@ -480,7 +480,7 @@ describe('IMessageConnector', () => {
 
     it('removes pending question after resolution', async () => {
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'q-10',
         questions: [{
           question: 'Pick one',
@@ -715,7 +715,7 @@ describe('IMessageConnector', () => {
       wireUp(connector)
 
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-A',
         questions: [{ question: 'Allow A?' }],
       }
@@ -737,7 +737,7 @@ describe('IMessageConnector', () => {
       expect(handler).toHaveBeenCalledWith('review:tool-A', {
         question: '_approval',
         answer: '❌ Deny',
-      })
+      }, undefined)
     })
 
     it('denies multiple pending approvals when they have distinct IDs', async () => {
@@ -773,7 +773,7 @@ describe('IMessageConnector', () => {
       wireUp(connector)
 
       const event = {
-        type: 'user_question_request' as const,
+        type: 'question_request' as const,
         toolUseId: 'review:tool-C',
         questions: [{ question: 'Allow?' }],
       }
@@ -807,7 +807,7 @@ describe('IMessageConnector', () => {
       ws = wireUp(connector)
     })
 
-    it('sends secret request text', async () => {
+    it('sends secret request as a desktop-only fallback (secrets are unsafe to type in chat)', async () => {
       const event = {
         type: 'secret_request' as const,
         toolUseId: 'sec-1',
@@ -818,9 +818,8 @@ describe('IMessageConnector', () => {
       await connector.sendUserRequestCard('chat-1', event as any)
 
       const text = (parseSent(ws)[0].data as any).parts[0].value as string
-      expect(text).toContain('Secret requested: API_KEY')
-      expect(text).toContain('Reason: Needed for authentication')
-      expect(text).toContain('reply with the secret value')
+      expect(text).toContain('API_KEY')
+      expect(text).toContain('Open Gamut on your desktop')
     })
 
     it('sends tool status with correct emoji', async () => {
@@ -850,22 +849,49 @@ describe('IMessageConnector', () => {
 
       const text = (parseSent(ws)[0].data as any).parts[0].value as string
       expect(text).toContain("isn't supported in chat")
-      expect(text).toContain('Open Superagent on your desktop')
+      expect(text).toContain('Open Gamut on your desktop')
     })
   })
 
   // ── 8. Typing indicator ───────────────────────────────────────────
 
-  describe('showTypingIndicator', () => {
+  describe('startWorking', () => {
     it('sends start_typing command', async () => {
       const connector = createConnector()
       const ws = wireUp(connector)
 
-      await connector.showTypingIndicator('chat-1')
+      await connector.startWorking('chat-1', 'working')
 
       const messages = parseSent(ws)
       expect(messages).toHaveLength(1)
       expect(messages[0].type).toBe('start_typing')
+    })
+
+    // The manager's per-session tick calls startWorking every ~1s for keep-alive;
+    // iMessage's bubble self-expires, so we fire start_typing once per working
+    // segment instead of on every tick (avoids flooding the bridge).
+    it('does not re-send start_typing on repeated calls within a segment', async () => {
+      const connector = createConnector()
+      const ws = wireUp(connector)
+
+      await connector.startWorking('chat-1', 'working')
+      await connector.startWorking('chat-1', 'working') // tick keep-alive
+      await connector.startWorking('chat-1', 'thinking')
+
+      const typing = parseSent(ws).filter((m) => m.type === 'start_typing')
+      expect(typing).toHaveLength(1)
+    })
+
+    it('re-sends start_typing for a new segment after stopWorking', async () => {
+      const connector = createConnector()
+      const ws = wireUp(connector)
+
+      await connector.startWorking('chat-1', 'working')
+      await connector.stopWorking('chat-1')
+      await connector.startWorking('chat-1', 'working') // new segment
+
+      const typing = parseSent(ws).filter((m) => m.type === 'start_typing')
+      expect(typing).toHaveLength(2)
     })
   })
 

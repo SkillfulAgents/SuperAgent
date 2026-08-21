@@ -171,6 +171,109 @@ describe('chat-integration-service', () => {
   })
 
   describe('updateChatIntegration', () => {
+    it('preserves stored Slack credentials when PATCHing only behavior settings', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'slack',
+        config: {
+          botToken: 'xoxb-secret',
+          appToken: 'xapp-secret',
+          channelId: 'C123',
+          onlyMentioned: false,
+        },
+      })
+
+      expect(updateChatIntegration(id, {
+        config: { onlyMentioned: true },
+      })).toBe(true)
+
+      expect(JSON.parse(getChatIntegration(id)!.config)).toEqual({
+        botToken: 'xoxb-secret',
+        appToken: 'xapp-secret',
+        channelId: 'C123',
+        onlyMentioned: true,
+      })
+    })
+
+    it('preserves stored credentials when a client echoes masked placeholders', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'slack',
+        config: { botToken: 'xoxb-secret', appToken: 'xapp-secret' },
+      })
+
+      updateChatIntegration(id, {
+        config: {
+          botToken: '********',
+          appToken: '••••xapp',
+          answerInThread: true,
+        },
+      })
+
+      expect(JSON.parse(getChatIntegration(id)!.config)).toEqual({
+        botToken: 'xoxb-secret',
+        appToken: 'xapp-secret',
+        answerInThread: true,
+      })
+    })
+
+    it('repairs an invalid stored config when PATCH supplies a complete replacement', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'slack',
+        config: { legacyBotToken: 'obsolete-shape' },
+      })
+
+      expect(updateChatIntegration(id, {
+        config: {
+          botToken: 'xoxb-repaired',
+          appToken: 'xapp-repaired',
+          onlyMentioned: true,
+        },
+      })).toBe(true)
+
+      expect(JSON.parse(getChatIntegration(id)!.config)).toEqual({
+        botToken: 'xoxb-repaired',
+        appToken: 'xapp-repaired',
+        onlyMentioned: true,
+      })
+    })
+
+    it('rejects a partial PATCH when an invalid stored config cannot supply credentials', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'slack',
+        config: { legacyBotToken: 'obsolete-shape' },
+      })
+
+      expect(() => updateChatIntegration(id, {
+        config: { onlyMentioned: true },
+      })).toThrow()
+    })
+
+    it('allows settings-only edits on legacy rows whose token is already duplicated', () => {
+      createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'telegram',
+        config: { botToken: 'legacy-duplicate' },
+      })
+      const secondId = createChatIntegration({
+        agentSlug: 'agent-b',
+        provider: 'telegram',
+        config: { botToken: 'originally-unique' },
+      })
+      testSqlite.prepare('UPDATE chat_integrations SET config = ? WHERE id = ?')
+        .run(JSON.stringify({ botToken: 'legacy-duplicate' }), secondId)
+
+      expect(updateChatIntegration(secondId, {
+        config: { draftStreaming: true },
+      })).toBe(true)
+      expect(JSON.parse(getChatIntegration(secondId)!.config)).toEqual({
+        botToken: 'legacy-duplicate',
+        draftStreaming: true,
+      })
+    })
+
     it('throws DuplicateBotTokenError when PATCHing config to an already-used token', () => {
       const firstId = createChatIntegration({
         agentSlug: 'agent-a',
@@ -379,6 +482,32 @@ describe('chat-integration-service', () => {
 
       updateChatIntegration(id, { sessionTimeout: null })
       expect(getChatIntegration(id)?.sessionTimeout).toBeNull()
+    })
+  })
+
+  describe('requireApproval (secure-by-default invariant)', () => {
+    // The allowlist only protects if new integrations default to gated. Assert
+    // the persisted row, not the call args: an omitted flag must land as `true`.
+    it('persists requireApproval=true when the flag is omitted', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'telegram',
+        config: { botToken: 'tok-omitted' },
+      })
+      expect(getChatIntegration(id)?.requireApproval).toBe(true)
+    })
+
+    it('ignores any caller-supplied requireApproval at create and stays private', () => {
+      // The field is intentionally not in CreateChatIntegrationParams; a caller
+      // smuggling it in (e.g. via an untyped request body) must NOT create a
+      // public bot — making a bot public is owner-only via PATCH.
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'telegram',
+        config: { botToken: 'tok-override-ignored' },
+        requireApproval: false,
+      } as Parameters<typeof createChatIntegration>[0] & { requireApproval: boolean })
+      expect(getChatIntegration(id)?.requireApproval).toBe(true)
     })
   })
 })

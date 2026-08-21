@@ -8,6 +8,9 @@ import { listChromeProfiles, copyChromeProfileData } from '@shared/lib/browser/c
 import { containerManager } from '@shared/lib/container/container-manager'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { readJsonFileStrictSync, writeFileAtomicSync, CorruptFileError } from '@shared/lib/utils/file-storage'
+import { waitForBrowserProfileCleanup, markProfileInUse, unmarkProfileInUse } from './profile-maintenance'
+import { z } from 'zod'
 
 // Chrome's DevTools Protocol has no auth token: any host/process that can reach
 // the CDP port gets full remote control of the dedicated browser profile (read
@@ -265,6 +268,34 @@ export class ChromeProvider implements HostBrowserProvider {
       throw err
     }
 
+    // Claim this profile BEFORE waiting on the sweep: if the sweep hasn't
+    // started yet, the mark makes it skip this profile; if it's already
+    // running, the await keeps us out of its way. Marking after the await
+    // would leave a window where a sweep firing right now could delete
+    // directories under a spawning Chrome. On success the claim is held until
+    // stop()/handleExit; on ANY launch failure it's released here, so no
+    // throw site inside the claimed phase can leak it (a leaked claim would
+    // make the sweep skip this profile until the next restart — the exact
+    // wrong outcome when the failure was disk pressure).
+    markProfileInUse(instanceId)
+    try {
+      return await this.launchClaimed(instanceId, options)
+    } catch (err) {
+      // Idempotent with the release in stop() for failure paths that got far
+      // enough to call it.
+      unmarkProfileInUse(instanceId)
+      throw err
+    }
+  }
+
+  /** The launch phase that runs with the profile claim held. The caller owns
+   *  the claim: it is released there if this throws, and by stop()/handleExit
+   *  once the instance is registered and running. */
+  private async launchClaimed(instanceId: string, options?: Record<string, string>): Promise<BrowserConnectionInfo> {
+    // If the startup profile-storage sweep is still running, let it finish
+    // before touching (or launching Chrome onto) this profile dir.
+    await waitForBrowserProfileCleanup()
+
     const port = await this.findFreePort()
     const profileId = options?.chromeProfileId
 
@@ -291,7 +322,7 @@ export class ChromeProvider implements HostBrowserProvider {
       // should keep the session data (cookies, local storage, etc.) that the
       // agent accumulated during its browsing sessions.
       const alreadyHasProfile = fs.existsSync(path.join(destProfileDir, 'Cookies'))
-      if (!alreadyHasProfile && copyChromeProfileData(profileId, destProfileDir)) {
+      if (!alreadyHasProfile && await copyChromeProfileData(profileId, destProfileDir)) {
         console.log(`[ChromeProvider] Copied Chrome profile "${profileId}" for instance ${instanceId}`)
       }
     }
@@ -302,18 +333,30 @@ export class ChromeProvider implements HostBrowserProvider {
     const prefsDir = path.join(userDataDir, 'Default')
     const prefsPath = path.join(prefsDir, 'Preferences')
     fs.mkdirSync(prefsDir, { recursive: true })
-    let prefs: Record<string, unknown> = {}
+    // Read Chrome's existing Preferences fail-closed: a missing file is
+    // a fresh profile (→ {}), but a present-but-corrupt one must NOT be silently
+    // replaced with just `{ download }` — that would wipe every other Chrome
+    // preference. On corruption, skip the download tweak rather than clobber.
+    let prefs: Record<string, unknown>
     try {
-      prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf-8'))
-    } catch {
-      // No existing preferences file
+      prefs = readJsonFileStrictSync(prefsPath, z.object({}).loose(), {}) as Record<string, unknown>
+    } catch (error) {
+      if (error instanceof CorruptFileError) {
+        console.warn(`[ChromeProvider] Corrupt Chrome Preferences at ${prefsPath}; leaving it untouched`)
+        prefs = null as unknown as Record<string, unknown>
+      } else {
+        throw error
+      }
     }
-    prefs.download = {
-      ...(prefs.download as Record<string, unknown> | undefined),
-      default_directory: downloadDir,
-      prompt_for_download: false,
+    if (prefs) {
+      prefs.download = {
+        ...(prefs.download as Record<string, unknown> | undefined),
+        default_directory: downloadDir,
+        prompt_for_download: false,
+      }
+      // Atomic write so an interrupted write can't truncate Chrome's Preferences.
+      writeFileAtomicSync(prefsPath, JSON.stringify(prefs, null, 2))
     }
-    fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2))
 
     const headless = options?.chromeHeadless === 'true'
 
@@ -328,7 +371,18 @@ export class ChromeProvider implements HostBrowserProvider {
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
       '--disable-background-timer-throttling',
-      '--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion',
+      // Chrome honors only the LAST --disable-features occurrence, so every
+      // disabled feature must live in this single flag.
+      // CalculateNativeWinOcclusion/WebContentsOcclusion: occlusion throttling
+      // (see above). The optimization-guide features stop Chrome from
+      // downloading the on-device Gemini Nano model (4 GB per profile) and
+      // per-page optimization hints into these automation profiles.
+      '--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion,OptimizationGuideOnDeviceModel,OptimizationGuideModelDownloading,OptimizationHints,TextSafetyClassifier',
+      // Component updater re-downloads browser-level components (safe-browsing
+      // lists, TTS engines, CRX caches, optimization-guide model store —
+      // ~130 MB) into every per-agent user-data-dir. None of it is needed for
+      // automation; disabling it keeps each profile at just its session state.
+      '--disable-component-update',
       // Start with about:blank instead of chrome://newtab so agent-browser's
       // target discovery sees a trackable page and reuses it rather than
       // creating an extra tab (it filters out chrome:// URLs).
@@ -540,6 +594,7 @@ export class ChromeProvider implements HostBrowserProvider {
         instance.externalCloseWatcher = null
       }
       this.instances.delete(instanceId)
+      unmarkProfileInUse(instanceId)
       if (!wasIntentional) {
         console.log(`[ChromeProvider] Browser for instance ${instanceId} closed externally, notifying listeners`)
         Promise.resolve(this.onExternalClose?.(instanceId)).catch((err) => {
@@ -608,6 +663,31 @@ export class ChromeProvider implements HostBrowserProvider {
       }, 1000)
     }
 
+    // Chrome is up and the proxy is bound, but on bridged runners the container
+    // still has to cross the host firewall to reach the proxy (on Windows,
+    // Defender or third-party AV commonly drops WSL2→host traffic on the
+    // vEthernet interface). That block only manifests at connect time inside
+    // the container, where nothing reports to Sentry — so probe the proxy from
+    // the runner's network side and fail the launch loudly with an actionable
+    // message instead.
+    if (proxyHost && proxyPort) {
+      const probe = await this.probeProxyFromRunner(instanceId, proxyHost, proxyPort)
+      if (probe === 'unreachable') {
+        const err = new Error(
+          `Chrome launched on the host, but the agent cannot reach it: connections from the container network to the browser's debugging proxy on ${proxyHost}:${proxyPort} are being blocked — most likely by a firewall on the host machine` +
+          (process.platform === 'win32'
+            ? ' (Windows Defender Firewall or third-party antivirus blocking inbound connections on the "vEthernet (WSL)" interface). Ask the user to allow this app through Windows Firewall for all network profiles (including Public), then try again — or switch Browser Host to the built-in browser in Settings.'
+            : '. Ask the user to allow this app through the host firewall, or switch Browser Host to the built-in browser in Settings.'),
+        )
+        captureException(err, {
+          tags: { component: 'browser', operation: 'cdp-proxy-reachability' },
+          extra: { instanceId, proxyHost, proxyPort, chromePort: port, platform: process.platform },
+        })
+        await this.stop(instanceId)
+        throw err
+      }
+    }
+
     const exposedPort = proxyPort ?? port
 
     console.log(`[ChromeProvider] Chrome CDP on ${CDP_LOOPBACK_ADDRESS}:${port}${proxyPort ? `, proxy on ${proxyHost}:${proxyPort}` : ''} for instance ${instanceId} (pid ${chromePid})`)
@@ -654,6 +734,7 @@ export class ChromeProvider implements HostBrowserProvider {
       }
     }
     this.instances.delete(instanceId)
+    unmarkProfileInUse(instanceId)
   }
 
   async stopAll(): Promise<void> {
@@ -754,6 +835,22 @@ export class ChromeProvider implements HostBrowserProvider {
       else if (pid > 0) process.kill(pid)
     } catch {
       /* already gone */
+    }
+  }
+
+  /** Ask the active runner to probe the CDP proxy from its network side.
+   *  Any failure to run the probe itself means 'unknown' — only a positive
+   *  "connection refused / timed out" verdict may fail a launch. */
+  private async probeProxyFromRunner(
+    instanceId: string,
+    host: string,
+    port: number,
+  ): Promise<'reachable' | 'unreachable' | 'unknown'> {
+    try {
+      return await containerManager.getClient(instanceId).probeHostPortFromRunner(host, port)
+    } catch (error) {
+      console.warn('[ChromeProvider] CDP proxy reachability probe failed to run:', error)
+      return 'unknown'
     }
   }
 

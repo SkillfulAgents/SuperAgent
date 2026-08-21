@@ -21,6 +21,12 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   // Cross-agent / host API wiring
   'SUPERAGENT_HOST_API_URL',
   'SUPERAGENT_AGENT_SLUG',
+  // Host→container API auth (never agent-visible)
+  'SUPERAGENT_HOST_TOKEN',
+  // Agent identity for LLM-usage attribution (platform provider injects these;
+  // the container folds them into ANTHROPIC_CUSTOM_HEADERS)
+  'SUPERAGENT_AGENT_ID',
+  'SUPERAGENT_AGENT_NAME',
   // Account + MCP metadata
   'CONNECTED_ACCOUNTS',
   'REMOTE_MCPS',
@@ -32,6 +38,7 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   'TZ',
   'HOST_PLATFORM',
   'COMPOSIO_PLATFORM_MODE',
+  'PLATFORM_AUTH_ACTIVE',
   'CLAUDE_CODE_ATTRIBUTION_HEADER',
 ])
 

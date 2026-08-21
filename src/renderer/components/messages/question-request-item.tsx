@@ -9,6 +9,7 @@ import { DeclineButton } from './decline-button'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 import { useSubPagination } from './pending-request-stack'
+import { linkify } from '@renderer/lib/linkify'
 import { cn } from '@shared/lib/utils/cn'
 
 interface Question {
@@ -158,13 +159,14 @@ export function QuestionRequestItem({
     return (selection as string) || ''
   }
 
-  const postAnswer = async (body: Record<string, unknown>) => {
+  const postAnswer = async (body: Record<string, unknown>, signal: AbortSignal) => {
     const response = await apiFetch(
       `/api/agents/${agentSlug}/sessions/${sessionId}/answer-question`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ toolUseId, ...body }),
+        signal,
       }
     )
     if (!response.ok) {
@@ -181,7 +183,7 @@ export function QuestionRequestItem({
       answers[q.question] = getAnswerForQuestion(i, q)
     })
 
-    submit(() => postAnswer({ answers }), 'answered')
+    submit((signal) => postAnswer({ answers }, signal), 'answered')
   }
 
   // Cmd/Ctrl-Enter inside the "Other" textarea advances to the next question,
@@ -201,7 +203,7 @@ export function QuestionRequestItem({
 
   const handleDecline = (reason?: string) => {
     submit(
-      () => postAnswer({ decline: true, declineReason: reason || 'User declined to answer' }),
+      (signal) => postAnswer({ decline: true, declineReason: reason || 'User declined to answer' }, signal),
       'declined',
     )
   }
@@ -233,7 +235,7 @@ export function QuestionRequestItem({
         description: questions.length > 1 ? (
           <div className="mt-3 space-y-2">
             {questions.slice(1).map((q, i) => (
-              <p key={i} className="whitespace-pre-line text-sm font-medium leading-5 text-foreground">{q.question}</p>
+              <p key={i} className="whitespace-pre-line text-sm font-medium leading-5 text-foreground">{typeof q.question === 'string' ? linkify(q.question) : q.question}</p>
             ))}
           </div>
         ) : undefined,

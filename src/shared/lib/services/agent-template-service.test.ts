@@ -2,8 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { createZipBuffer, openZipFromBuffer } from '@shared/lib/utils/zip'
+import http from 'node:http'
+import { Readable } from 'node:stream'
+import type { AddressInfo } from 'node:net'
+import { Hono } from 'hono'
+import { serve } from '@hono/node-server'
+import type { ServerType } from '@hono/node-server'
+import { createZipBuffer, openZipFromBuffer, type ZipEntryMeta } from '@shared/lib/utils/zip'
 import type { SkillsetConfig, InstalledAgentMetadata } from '@shared/lib/types/skillset'
+import { armAbortSignal } from '@/api/middleware/arm-abort-signal'
 
 // ============================================================================
 // Hoisted Mocks - must come before imports of the module under test
@@ -54,14 +61,20 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 
 import {
   validateAgentTemplate,
-  exportAgentTemplate,
-  exportAgentFull,
+  validateTemplateEntries,
+  exportAgentTemplate as exportAgentTemplateStream,
+  exportAgentFull as exportAgentFullStream,
+  ExportInProgressError,
+  isHostExportBusy,
+  resetHostExportLockForTests,
   importAgentFromTemplate,
   installAgentFromSkillset,
   computeAgentTemplateHash,
   getAgentTemplateStatus,
   getInstalledAgentMetadata,
   hasOnboardingSkill,
+  getAgentTemplatePrompt,
+  MAX_TEMPLATE_PROMPT_SIZE,
   getDiscoverableAgents,
 } from './agent-template-service'
 import { createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/lib/services/agent-service'
@@ -70,6 +83,35 @@ import { getSkillsetIndex } from '@shared/lib/services/skillset-service'
 // ============================================================================
 // Shared Constants & Helpers
 // ============================================================================
+
+async function readableToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+  return Buffer.concat(chunks)
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  throw new Error('timed out waiting for condition')
+}
+
+async function exportAgentTemplate(slug: string): Promise<Buffer> {
+  return readableToBuffer(await exportAgentTemplateStream(slug))
+}
+
+async function exportAgentFull(slug: string): Promise<Buffer> {
+  return readableToBuffer(await exportAgentFullStream(slug))
+}
+
+afterEach(() => {
+  resetHostExportLockForTests()
+})
 
 const MINIMAL_CLAUDE_MD = `---
 name: Test Agent
@@ -86,6 +128,22 @@ description: An agent without a name field
 const CLAUDE_MD_NO_FRONTMATTER = `# Just Markdown
 No frontmatter at all.
 `
+
+function zipEntry(fileName: string, uncompressedSize: number): ZipEntryMeta {
+  return {
+    fileName,
+    uncompressedSize,
+    compressedSize: Math.min(uncompressedSize, 1024),
+    isDirectory: fileName.endsWith('/'),
+  }
+}
+
+function templateEntriesWithSizes(sizes: number[]): ZipEntryMeta[] {
+  return [
+    zipEntry('CLAUDE.md', Buffer.byteLength(MINIMAL_CLAUDE_MD, 'utf-8')),
+    ...sizes.map((size, index) => zipEntry(`data-${index}.bin`, size)),
+  ]
+}
 
 /** Helper: create a zip buffer from a map of { path: content } */
 async function makeZip(files: Record<string, string>): Promise<Buffer> {
@@ -382,69 +440,46 @@ describe('validateAgentTemplate', () => {
   // Size limits
   // --------------------------------------------------------------------------
 
-  // Each case below builds and zlib-compresses ~500MB in memory, which can run
-  // right up against the 5s default test timeout under `vitest --coverage` on
-  // CI runners (a pre-existing flake). Give these the headroom they need.
   describe('total size limits', () => {
-    it('rejects template exceeding 500MB uncompressed', async () => {
-      const largeContent = 'x'.repeat(10 * 1024 * 1024)
-      const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      }
-      for (let i = 0; i < 51; i++) {
-        files[`large-${i}.bin`] = largeContent
-      }
-      const result = await validateAgentTemplate(await makeZip(files))
+    it('rejects template exceeding 500MB uncompressed', () => {
+      const tenMB = 10 * 1024 * 1024
+      const result = validateTemplateEntries(templateEntriesWithSizes(Array(51).fill(tenMB)), 'template')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
       expect(result.error).toContain('500MB')
-    }, 30_000)
+    })
 
-    it('accepts template at exactly the uncompressed size limit', async () => {
-      const chunkContent = 'a'.repeat(10 * 1024 * 1024)
-      const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      }
-      for (let i = 0; i < 49; i++) {
-        files[`data-${i}.bin`] = chunkContent
-      }
+    it('accepts template at exactly the uncompressed size limit', () => {
+      const tenMB = 10 * 1024 * 1024
       // Fill the remaining budget: 500MB - 49*10MB - CLAUDE.md size
       const claudeMdSize = Buffer.byteLength(MINIMAL_CLAUDE_MD, 'utf-8')
-      const remaining = 500 * 1024 * 1024 - 49 * 10 * 1024 * 1024 - claudeMdSize
-      files['data-last.bin'] = 'b'.repeat(remaining)
-      const result = await validateAgentTemplate(await makeZip(files))
+      const remaining = 500 * 1024 * 1024 - 49 * tenMB - claudeMdSize
+      const result = validateTemplateEntries(templateEntriesWithSizes([
+        ...Array(49).fill(tenMB),
+        remaining,
+      ]), 'template')
       expect(result.valid).toBe(true)
-    }, 30_000)
+    })
 
-    it('rejects template at exactly one byte over the limit', async () => {
-      const chunkContent = 'a'.repeat(10 * 1024 * 1024)
-      const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      }
-      for (let i = 0; i < 49; i++) {
-        files[`data-${i}.bin`] = chunkContent
-      }
+    it('rejects template at exactly one byte over the limit', () => {
+      const tenMB = 10 * 1024 * 1024
       const claudeMdSize = Buffer.byteLength(MINIMAL_CLAUDE_MD, 'utf-8')
-      const remaining = 500 * 1024 * 1024 - 49 * 10 * 1024 * 1024 - claudeMdSize
-      files['data-last.bin'] = 'b'.repeat(remaining + 1)
-      const result = await validateAgentTemplate(await makeZip(files))
+      const remaining = 500 * 1024 * 1024 - 49 * tenMB - claudeMdSize
+      const result = validateTemplateEntries(templateEntriesWithSizes([
+        ...Array(49).fill(tenMB),
+        remaining + 1,
+      ]), 'template')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
-    }, 30_000)
+    })
 
-    it('rejects when multiple small files sum to over the limit', async () => {
-      const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      }
+    it('rejects when multiple small files sum to over the limit', () => {
       // 51 files × 10MB each = 510MB > 500MB
-      const tenMB = 'x'.repeat(10 * 1024 * 1024)
-      for (let i = 0; i < 51; i++) {
-        files[`chunk-${i}.bin`] = tenMB
-      }
-      const result = await validateAgentTemplate(await makeZip(files))
+      const tenMB = 10 * 1024 * 1024
+      const result = validateTemplateEntries(templateEntriesWithSizes(Array(51).fill(tenMB)), 'template')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
-    }, 30_000)
+    })
   })
 
   // --------------------------------------------------------------------------
@@ -1692,6 +1727,65 @@ describe('hasOnboardingSkill', () => {
 })
 
 // ============================================================================
+// getAgentTemplatePrompt
+// ============================================================================
+
+describe('getAgentTemplatePrompt', () => {
+  let testDir: string
+  let originalEnv: string | undefined
+
+  beforeEach(async () => {
+    testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'agent-prompt-test-'))
+    originalEnv = process.env.SUPERAGENT_DATA_DIR
+    process.env.SUPERAGENT_DATA_DIR = testDir
+  })
+
+  afterEach(async () => {
+    process.env.SUPERAGENT_DATA_DIR = originalEnv
+    await fs.promises.rm(testDir, { recursive: true, force: true })
+  })
+
+  it('reads and trims a root PROMPT.md', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'PROMPT.md'), '\n  Research this market  \n')
+
+    await expect(getAgentTemplatePrompt('test-agent')).resolves.toBe('Research this market')
+  })
+
+  it('accepts the lowercase prompt.md spelling from existing templates', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'prompt.md'), 'Draft the launch plan')
+
+    await expect(getAgentTemplatePrompt('test-agent')).resolves.toBe('Draft the launch plan')
+  })
+
+  it('treats a missing or blank prompt as absent', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'PROMPT.md'), '  \n')
+
+    await expect(getAgentTemplatePrompt('test-agent')).resolves.toBeUndefined()
+  })
+
+  it('skips a PROMPT.md directory without failing the completed install', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
+    fs.mkdirSync(path.join(workspaceDir, 'PROMPT.md'), { recursive: true })
+
+    await expect(getAgentTemplatePrompt('test-agent')).resolves.toBeUndefined()
+  })
+
+  it('skips prompt files larger than the composer handoff limit', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'PROMPT.md'), Buffer.alloc(MAX_TEMPLATE_PROMPT_SIZE + 1, 'a'))
+
+    await expect(getAgentTemplatePrompt('test-agent')).resolves.toBeUndefined()
+  })
+})
+
+// ============================================================================
 // getDiscoverableAgents
 // ============================================================================
 
@@ -1828,6 +1922,7 @@ describe('exportAgentTemplate - error cases', () => {
   })
 
   afterEach(async () => {
+    resetHostExportLockForTests()
     process.env.SUPERAGENT_DATA_DIR = originalEnv
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
@@ -1846,6 +1941,18 @@ describe('exportAgentTemplate - error cases', () => {
     await expect(exportAgentTemplate('no-claude')).rejects.toThrow(
       'CLAUDE.md not found'
     )
+  })
+
+  it('does not hold the lock when CLAUDE.md is missing', async () => {
+    const missingDir = path.join(testDir, 'agents', 'no-claude', 'workspace')
+    fs.mkdirSync(missingDir, { recursive: true })
+    await expect(exportAgentTemplate('no-claude')).rejects.toThrow('CLAUDE.md not found')
+
+    const workspaceDir = path.join(testDir, 'agents', 'ok-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    const zipBuffer = await exportAgentTemplate('ok-agent')
+    expect(zipBuffer.length).toBeGreaterThan(0)
   })
 })
 
@@ -1866,6 +1973,7 @@ describe('exportAgentFull', () => {
   })
 
   afterEach(async () => {
+    resetHostExportLockForTests()
     process.env.SUPERAGENT_DATA_DIR = originalEnv
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
@@ -1874,6 +1982,49 @@ describe('exportAgentFull', () => {
     await expect(exportAgentFull('nonexistent-agent')).rejects.toThrow(
       'Agent workspace not found'
     )
+  })
+
+  it('rejects a second export while the first stream is still open', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+
+    expect(isHostExportBusy()).toBe(false)
+    const first = await exportAgentFullStream('full-agent')
+    expect(isHostExportBusy()).toBe(true)
+    await expect(exportAgentFullStream('full-agent')).rejects.toBeInstanceOf(ExportInProgressError)
+    await expect(exportAgentTemplateStream('full-agent')).rejects.toBeInstanceOf(ExportInProgressError)
+
+    await readableToBuffer(first)
+    expect(isHostExportBusy()).toBe(false)
+    const second = await exportAgentFullStream('full-agent')
+    const zipBuffer = await readableToBuffer(second)
+    const reader = await openZipFromBuffer(zipBuffer)
+    reader.close()
+    expect(reader.entries.some((e) => e.fileName === 'CLAUDE.md')).toBe(true)
+  })
+
+  it('does not hold the lock when the workspace is missing', async () => {
+    await expect(exportAgentFull('missing')).rejects.toThrow('Agent workspace not found')
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    const zipBuffer = await exportAgentFull('full-agent')
+    expect(zipBuffer.length).toBeGreaterThan(0)
+  })
+
+  it('returns a readable zip stream', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+
+    const stream = await exportAgentFullStream('full-agent')
+    expect(typeof stream.pipe).toBe('function')
+    const zipBuffer = await readableToBuffer(stream)
+    const reader = await openZipFromBuffer(zipBuffer)
+    const entryNames = reader.entries.map((e) => e.fileName)
+    reader.close()
+    expect(entryNames).toContain('CLAUDE.md')
   })
 
   it('includes .env in the export', async () => {
@@ -1956,6 +2107,97 @@ describe('exportAgentFull', () => {
     reader.close()
 
     expect(entryNames).not.toContain('.browser-profile/cookies.db')
+  })
+
+  it('releases the lock when the caller destroys the stream before reading it', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+
+    const first = await exportAgentFullStream('full-agent')
+    expect(isHostExportBusy()).toBe(true)
+    first.destroy()
+    await waitUntil(() => !isHostExportBusy())
+
+    const second = await exportAgentFullStream('full-agent')
+    const zipBuffer = await readableToBuffer(second)
+    expect(zipBuffer.length).toBeGreaterThan(0)
+    expect(isHostExportBusy()).toBe(false)
+  })
+
+  it('releases the lock when the abort signal fires mid-export', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    for (let i = 0; i < 40; i++) {
+      const blob = Buffer.alloc(64 * 1024)
+      for (let j = 0; j < blob.length; j++) blob[j] = (i + j * 31) & 0xff
+      fs.writeFileSync(path.join(workspaceDir, `blob-${i}.bin`), blob)
+    }
+
+    const ac = new AbortController()
+    const first = await exportAgentFullStream('full-agent', ac.signal)
+    first.resume()
+    ac.abort()
+    await waitUntil(() => !isHostExportBusy())
+
+    const second = await exportAgentFullStream('full-agent')
+    const zipBuffer = await readableToBuffer(second)
+    expect(zipBuffer.length).toBeGreaterThan(0)
+  })
+
+  it('releases the lock when the HTTP client hangs up mid-download', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    for (let i = 0; i < 8; i++) {
+      const blob = Buffer.alloc(256 * 1024)
+      for (let j = 0; j < blob.length; j++) blob[j] = (i * 17 + j * 13) & 0xff
+      fs.writeFileSync(path.join(workspaceDir, `blob-${i}.bin`), blob)
+    }
+
+    const app = new Hono()
+    app.use('*', armAbortSignal)
+    app.post('/export/:slug', async (c) => {
+      const zipStream = await exportAgentFullStream(c.req.param('slug'), c.req.raw.signal)
+      return new Response(Readable.toWeb(zipStream) as ReadableStream)
+    })
+
+    let server: ServerType | undefined
+    const port = await new Promise<number>((resolve) => {
+      server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, (info) =>
+        resolve((info as AddressInfo).port)
+      )
+    })
+
+    try {
+      await new Promise<void>((resolve) => {
+        const req = http.request(
+          { host: '127.0.0.1', port, path: '/export/full-agent', method: 'POST' },
+          (res) => {
+            let received = 0
+            res.on('data', (chunk: Buffer) => {
+              received += chunk.length
+              if (received >= 64 * 1024) req.destroy()
+            })
+            res.on('error', () => {})
+            res.on('close', () => resolve())
+          },
+        )
+        req.on('error', () => resolve())
+        req.end()
+      })
+
+      await waitUntil(() => !isHostExportBusy())
+      const second = await exportAgentFullStream('full-agent')
+      const zipBuffer = await readableToBuffer(second)
+      expect(zipBuffer.length).toBeGreaterThan(0)
+    } finally {
+      await new Promise<void>((resolve) => {
+        if (!server) return resolve()
+        server.close(() => resolve())
+      })
+    }
   })
 })
 
@@ -2103,7 +2345,7 @@ describe('installAgentFromSkillset', () => {
     const installTime = new Date()
     const oldTemplateTime = '2020-01-01T00:00:00.000Z'
 
-    const agent = { slug, name: 'My Agent', createdAt: installTime, status: 'stopped' as const, containerPort: null }
+    const agent = { slug, displaySlug: slug, name: 'My Agent', createdAt: installTime, status: 'stopped' as const, containerPort: null }
     mockCreateAgent.mockResolvedValue(agent)
     mockGetAgentWithStatus.mockResolvedValue(agent)
 

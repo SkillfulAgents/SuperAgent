@@ -48,6 +48,26 @@ vi.mock('child_process', () => {
   }
 })
 
+vi.mock('net', () => {
+  const createServer = vi.fn(() => {
+    const listeners = new Map<string, () => void>()
+    return {
+      once: vi.fn((event: string, callback: () => void) => {
+        listeners.set(event, callback)
+      }),
+      close: vi.fn(),
+      listen: vi.fn(() => {
+        queueMicrotask(() => listeners.get('listening')?.())
+      }),
+    }
+  })
+
+  return {
+    default: { createServer },
+    createServer,
+  }
+})
+
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
   addErrorBreadcrumb: vi.fn(),

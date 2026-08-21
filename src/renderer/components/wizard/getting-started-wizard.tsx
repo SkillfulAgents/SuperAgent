@@ -7,8 +7,10 @@ import {
   ChevronLeft,
 } from 'lucide-react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
+import { targetIsRemote } from '@renderer/lib/api-target'
 import { WelcomeStep } from './welcome-step'
 import { ConfigureLLMStep } from './configure-llm-step'
+import { ConfigureModelStep } from './configure-model-step'
 import { DockerSetupStep } from './docker-setup-step'
 import { BrowserSetupStep } from './browser-setup-step'
 import { ComposioStep } from './composio-step'
@@ -16,10 +18,11 @@ import { CreateAgentStep } from './create-agent-step'
 import { PrivacyStep } from './privacy-step'
 import { RibbonWave } from './ribbon-wave'
 
-type WizardStepId = 'llm' | 'browser' | 'composio' | 'runtime' | 'privacy' | 'agent'
+type WizardStepId = 'llm' | 'model' | 'browser' | 'composio' | 'runtime' | 'privacy' | 'agent'
 
 const MANUAL_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] = [
   { id: 'llm', label: 'LLM', skippable: false },
+  { id: 'model', label: 'Model', skippable: false },
   { id: 'browser', label: 'Browser', skippable: false },
   { id: 'composio', label: 'Composio', skippable: true },
   { id: 'runtime', label: 'Runtime', skippable: false },
@@ -28,11 +31,36 @@ const MANUAL_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] = 
 ]
 
 const PLATFORM_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] = [
+  { id: 'model', label: 'Model', skippable: false },
   { id: 'browser', label: 'Browser', skippable: false },
   { id: 'runtime', label: 'Runtime', skippable: false },
   { id: 'privacy', label: 'Privacy', skippable: false },
   { id: 'agent', label: 'Agent', skippable: true },
 ]
+
+/**
+ * The steps of a path, as this window can actually run them.
+ *
+ * The runtime step sets up the container runtime of the Superagent being
+ * configured — starting a runner, and on the desktop opening the Docker Desktop
+ * download or telling you to run `wsl --install` as Administrator. That is
+ * exactly what onboarding is for, on the desktop app and on a self-hosted web
+ * deployment alike. A cloud workspace is the one case where it is not: the
+ * runtime is already provisioned and the machine is out of reach.
+ *
+ * So the test is `targetIsRemote()`, NOT `canUseHostFeatures()` — the latter is
+ * false in every browser and would drop this step from ordinary web onboarding
+ * as well.
+ *
+ * Everything that turns a step id into a position must go through here. Two
+ * places do — rendering and restoring saved progress — and indexing one into
+ * the filtered list and the other into the constant lands the user on a
+ * different step than the one they left.
+ */
+export function stepsForPath(path: 'platform' | 'manual' | null) {
+  const all = path === 'platform' ? PLATFORM_STEPS : path === 'manual' ? MANUAL_STEPS : []
+  return targetIsRemote() ? all.filter((step) => step.id !== 'runtime') : all
+}
 
 interface GettingStartedWizardProps {
   agentOnly?: boolean
@@ -53,11 +81,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
   const updateUserSettings = useUpdateUserSettings()
   const updateGlobalSettings = useUpdateSettings()
 
-  const steps = useMemo(() => {
-    if (welcomePath === 'platform') return PLATFORM_STEPS
-    if (welcomePath === 'manual') return MANUAL_STEPS
-    return []
-  }, [welcomePath])
+  const steps = useMemo(() => stepsForPath(welcomePath), [welcomePath])
 
   const activeStep = welcomePath ? steps[currentStep] : null
 
@@ -72,7 +96,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
 
     const progress = userSettings.onboardingProgress
     if (progress) {
-      const targetSteps = progress.path === 'platform' ? PLATFORM_STEPS : MANUAL_STEPS
+      const targetSteps = stepsForPath(progress.path)
       const idx = targetSteps.findIndex(s => s.id === progress.stepId)
       if (idx >= 0) {
         isRestoringRef.current = true
@@ -195,6 +219,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
                 onCanProceedChange={setLlmCanProceed}
               />
             )}
+            {activeStep?.id === 'model' && <ConfigureModelStep />}
             {activeStep?.id === 'browser' && <BrowserSetupStep onCanProceedChange={setBrowserCanProceed} />}
             {activeStep?.id === 'composio' && <ComposioStep onCanProceedChange={setComposioCanProceed} saveRef={composioSaveRef} />}
             {activeStep?.id === 'runtime' && <DockerSetupStep onCanProceedChange={setRuntimeCanProceed} />}

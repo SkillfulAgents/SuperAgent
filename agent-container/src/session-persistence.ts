@@ -1,25 +1,16 @@
 import * as fs from 'fs';
-import type { EffortLevel } from './types';
+import { writeFileAtomicSync } from './atomic-file';
+import type { AgentCapabilityPolicies, EffortLevel, SpeedLevel } from './types';
+import {
+  persistedSessionsFileSchema,
+  sessionMetadataSchema,
+  type SessionMetadata,
+} from './session-persistence-schema';
 
-interface SessionMetadata {
-  sessionId: string;
-  claudeSessionId: string;
-  workingDirectory: string;
-  createdAt: string;
-  lastActivity: string;
-  systemPrompt?: string;
-  availableEnvVars?: string[];
-  model?: string;
-  browserModel?: string;
-  maxOutputTokens?: number;
-  maxThinkingTokens?: number;
-  maxTurns?: number;
-  maxBudgetUsd?: number;
-  customEnvVars?: Record<string, string>;
-  effort?: EffortLevel;
-}
-
-const SESSIONS_FILE = '/workspace/.superagent-sessions.json';
+// Overridable so the session-GC E2E harness (which runs this stack on a dev
+// machine, where /workspace does not exist) gets working persistence.
+const SESSIONS_FILE =
+  process.env.SUPERAGENT_SESSIONS_FILE || '/workspace/.superagent-sessions.json';
 
 export class SessionPersistence {
   private sessions: Map<string, SessionMetadata> = new Map();
@@ -29,15 +20,45 @@ export class SessionPersistence {
   }
 
   private load(): void {
+    let data: string;
     try {
-      if (fs.existsSync(SESSIONS_FILE)) {
-        const data = fs.readFileSync(SESSIONS_FILE, 'utf-8');
-        const sessions = JSON.parse(data);
-        this.sessions = new Map(Object.entries(sessions));
-        console.log(`Loaded ${this.sessions.size} persisted sessions`);
-      }
+      if (!fs.existsSync(SESSIONS_FILE)) return; // fresh container — empty map
+      data = fs.readFileSync(SESSIONS_FILE, 'utf-8');
     } catch (error) {
-      console.error('Error loading persisted sessions:', error);
+      // Genuine IO error reading an existing file. Start empty but leave the
+      // file untouched (we can't preserve what we couldn't read, and must not
+      // assume it's safe to overwrite).
+      console.error('Error reading persisted sessions:', error);
+      this.sessions = new Map();
+      return;
+    }
+
+    try {
+      const rawSessions = persistedSessionsFileSchema.parse(JSON.parse(data));
+      const sessions = new Map<string, SessionMetadata>();
+      for (const [sessionId, rawSession] of Object.entries(rawSessions)) {
+        const parsed = sessionMetadataSchema.safeParse(rawSession);
+        if (!parsed.success) {
+          console.error(
+            `Dropping invalid persisted session "${sessionId}":`,
+            parsed.error.issues[0]?.message ?? parsed.error.message,
+          );
+          continue;
+        }
+        sessions.set(sessionId, parsed.data);
+      }
+      this.sessions = sessions;
+      console.log(`Loaded ${this.sessions.size} persisted sessions`);
+    } catch (error) {
+      // Corrupt JSON (e.g. a torn write from an older build, or disk damage). Do
+      // NOT silently overwrite it on the next save() — preserve it aside for
+      // recovery first, then start empty (fail-closed, matching the host stores).
+      console.error('Corrupt persisted sessions; preserving aside and starting empty:', error);
+      try {
+        fs.renameSync(SESSIONS_FILE, `${SESSIONS_FILE}.corrupt-${Date.now()}`);
+      } catch (renameErr) {
+        console.error('Failed to preserve corrupt sessions file:', renameErr);
+      }
       this.sessions = new Map();
     }
   }
@@ -45,14 +66,21 @@ export class SessionPersistence {
   private save(): void {
     try {
       const data = Object.fromEntries(this.sessions.entries());
-      fs.writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2));
+      // Atomic temp-file + rename: this map is rewritten on every
+      // message (updateLastActivity), and a container force-stop mid-write would
+      // otherwise tear the file — making the next load() swallow the parse error
+      // and silently wipe ALL session metadata. The atomic write guarantees the
+      // previous good file survives an interrupted write. /workspace is fully
+      // bind-mounted, so the rename is same-filesystem and reaches the host.
+      writeFileAtomicSync(SESSIONS_FILE, JSON.stringify(data, null, 2));
     } catch (error) {
       console.error('Error saving persisted sessions:', error);
     }
   }
 
   saveSession(metadata: SessionMetadata): void {
-    this.sessions.set(metadata.sessionId, metadata);
+    const parsed = sessionMetadataSchema.parse(metadata);
+    this.sessions.set(parsed.sessionId, parsed);
     this.save();
   }
 
@@ -81,11 +109,49 @@ export class SessionPersistence {
     }
   }
 
+  updateSpeed(sessionId: string, speed: SpeedLevel | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.speed = speed;
+      this.save();
+    }
+  }
+
+  updateMetadata(sessionId: string, metadata: Record<string, unknown> | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.metadata = metadata;
+      this.save();
+    }
+  }
+
   updateModel(sessionId: string, model: string | undefined): void {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.model = model;
       this.save();
     }
+  }
+
+  updateCapabilityPolicies(sessionId: string, policies: AgentCapabilityPolicies | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.capabilityPolicies = policies;
+      this.save();
+    }
+  }
+
+  addSessionCapabilityGrant(sessionId: string, capability: 'subagents' | 'workflows'): void {
+    const session = this.sessions.get(sessionId);
+    if (session && !session.sessionCapabilityGrants?.includes(capability)) {
+      session.sessionCapabilityGrants = [...(session.sessionCapabilityGrants ?? []), capability];
+      this.save();
+    }
+  }
+
+  getSessionCapabilityGrants(sessionId: string): Array<'subagents' | 'workflows'> | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    return session.sessionCapabilityGrants ?? [];
   }
 }

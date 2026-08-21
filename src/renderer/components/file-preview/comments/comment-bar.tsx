@@ -2,12 +2,13 @@ import { useCallback } from 'react'
 import { MessageSquare, X, Trash2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
-import { useSendMessage } from '@renderer/hooks/use-messages'
+import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { focusSessionComposer } from '@renderer/components/messages/composer-focus'
+import { formatMediaTime } from './format-media-time'
 
 interface CommentBarProps {
   comments: FileComment[]
   filePath: string
-  agentSlug: string
   sessionId: string
 }
 
@@ -15,13 +16,44 @@ function getFilename(filePath: string): string {
   return filePath.split('/').pop() || filePath
 }
 
+/** Cap long cell values so a single comment can't bloat the prompt. */
+function truncateValue(value: string, max = 200): string {
+  return value.length > max ? value.slice(0, max) + '…' : value
+}
+
+/** Escape double quotes so a value containing `"` can't unbalance the wrapper. */
+function escapeQuotes(value: string): string {
+  return value.replace(/"/g, '\\"')
+}
+
 export function formatComments(filePath: string, comments: FileComment[]): string {
   const filename = getFilename(filePath)
   const lines: string[] = [`File feedback on \`${filename}\`:\n`]
 
   comments.forEach((comment, i) => {
-    if (comment.selectedText) {
+    if (comment.cell) {
+      const { row, col, column, value } = comment.cell
+      // Include the 1-based column position so duplicate header names stay
+      // unambiguous, and escape the value so embedded quotes don't break out.
+      const ref = `${row}:${column} (col ${col + 1}`
+      if (value === undefined) {
+        lines.push(`At cell ${ref}):`)
+      } else if (value === '') {
+        lines.push(`At cell ${ref}, empty cell):`)
+      } else {
+        lines.push(`At cell ${ref}, value: "${escapeQuotes(truncateValue(value))}"):`)
+      }
+      lines.push(comment.text)
+    } else if (comment.selectedText) {
       lines.push(`> "${comment.selectedText}"`)
+      lines.push(comment.text)
+    } else if (comment.timestamp != null) {
+      // Media comment: tie the feedback to playback time and, for video, the
+      // in-frame position the user marked.
+      const pos = comment.x != null && comment.y != null
+        ? ` at position (${Math.round(comment.x)}%, ${Math.round(comment.y)}%)`
+        : ''
+      lines.push(`At ${formatMediaTime(comment.timestamp)}${pos}:`)
       lines.push(comment.text)
     } else if (comment.x != null && comment.y != null) {
       lines.push(`At position (${Math.round(comment.x)}%, ${Math.round(comment.y)}%):`)
@@ -35,20 +67,17 @@ export function formatComments(filePath: string, comments: FileComment[]): strin
   return lines.join('\n')
 }
 
-export function CommentBar({ comments, filePath, agentSlug, sessionId }: CommentBarProps) {
+export function CommentBar({ comments, filePath, sessionId }: CommentBarProps) {
   const { clearComments, removeComment } = useFilePreview()
-  const sendMessage = useSendMessage()
+  const draftsStore = useDraftsStore()
 
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(() => {
     if (comments.length === 0) return
     const content = formatComments(filePath, comments)
-    try {
-      await sendMessage.mutateAsync({ sessionId, agentSlug, content })
-      clearComments(filePath)
-    } catch (err) {
-      console.error('Failed to send comment:', err)
-    }
-  }, [comments, filePath, sessionId, agentSlug, sendMessage, clearComments])
+    appendToSessionDraft(draftsStore, sessionId, content, { prepend: false })
+    clearComments(filePath)
+    queueMicrotask(() => focusSessionComposer(sessionId))
+  }, [comments, filePath, sessionId, draftsStore, clearComments])
 
   if (comments.length === 0) return null
 
@@ -60,10 +89,24 @@ export function CommentBar({ comments, filePath, agentSlug, sessionId }: Comment
           <div key={comment.id} className="flex items-start gap-2 text-xs group">
             <span className="text-muted-foreground shrink-0 tabular-nums">{i + 1}.</span>
             <div className="flex-1 min-w-0">
+              {comment.cell && (
+                <div className="text-muted-foreground/70 truncate">
+                  <span className="font-medium">Cell {comment.cell.row}:{comment.cell.column}</span>
+                  {comment.cell.value
+                    ? <span className="italic"> &mdash; &ldquo;{comment.cell.value}&rdquo;</span>
+                    : comment.cell.value === '' ? <span className="italic"> &mdash; empty</span> : null}
+                </div>
+              )}
               {comment.selectedText && (
                 <div className="text-muted-foreground/70 italic truncate">&ldquo;{comment.selectedText}&rdquo;</div>
               )}
-              {comment.x != null && comment.y != null && (
+              {comment.timestamp != null && (
+                <div className="text-muted-foreground/70">
+                  At {formatMediaTime(comment.timestamp)}
+                  {comment.x != null && comment.y != null && <span> &middot; ({Math.round(comment.x)}%, {Math.round(comment.y)}%)</span>}
+                </div>
+              )}
+              {comment.timestamp == null && comment.x != null && comment.y != null && (
                 <div className="text-muted-foreground/70">({Math.round(comment.x)}%, {Math.round(comment.y)}%)</div>
               )}
               <div className="text-foreground">{comment.text}</div>
@@ -99,7 +142,6 @@ export function CommentBar({ comments, filePath, agentSlug, sessionId }: Comment
             size="sm"
             className="h-7 text-xs"
             onClick={handleSubmit}
-            disabled={sendMessage.isPending}
           >
             Submit
           </Button>

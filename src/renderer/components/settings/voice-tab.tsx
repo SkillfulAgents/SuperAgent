@@ -256,9 +256,11 @@ function VoiceTest() {
         <span className="text-sm text-muted-foreground">
           {voiceInput.isConnecting
             ? 'Connecting...'
-            : voiceInput.isRecording
-              ? 'Listening — speak now'
-              : 'Click to test voice input'}
+            : voiceInput.isFinalizing
+              ? 'Finishing…'
+              : voiceInput.isRecording
+                ? 'Listening — speak now'
+                : 'Click to test voice input'}
         </span>
       </div>
 

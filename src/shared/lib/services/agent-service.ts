@@ -15,10 +15,12 @@ import {
   ensureDirectory,
   removeDirectory,
   readFileOrNull,
-  writeFile,
+  fileExists,
+  writeFileAtomic,
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
-  generateUniqueAgentSlug,
+  generateAgentId,
+  displaySlug,
 } from '@shared/lib/utils/file-storage'
 import {
   AgentFrontmatter,
@@ -48,6 +50,7 @@ function toApiAgent(
   const healthWarnings = containerManager.getHealthWarnings(agent.slug)
   return {
     slug: agent.slug,
+    displaySlug: displaySlug(agent.frontmatter.name, agent.slug),
     name: agent.frontmatter.name,
     description: agent.frontmatter.description,
     instructions: agent.instructions,
@@ -95,6 +98,22 @@ async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
 }
 
 /**
+ * List agent slugs only — a directory listing plus a CLAUDE.md existence
+ * check per entry, no frontmatter parsing. For callers that need scope
+ * (which agents exist), not identity; listAgents() reads every agent's
+ * CLAUDE.md sequentially, which is too heavy to run per request.
+ */
+export async function listAgentSlugs(): Promise<string[]> {
+  const agentsDir = getAgentsDir()
+  await ensureDirectory(agentsDir)
+  const slugs = await listDirectories(agentsDir)
+  const checks = await Promise.all(
+    slugs.map(async (slug) => ((await fileExists(getAgentClaudeMdPath(slug))) ? slug : null)),
+  )
+  return checks.filter((slug): slug is string => slug !== null)
+}
+
+/**
  * Get a single agent by slug
  */
 export async function getAgent(slug: string): Promise<AgentConfig | null> {
@@ -111,7 +130,10 @@ export async function getAgent(slug: string): Promise<AgentConfig | null> {
  * Get a single agent with container status (returns API format)
  * Uses cached container status to avoid spawning docker processes.
  */
-export async function getAgentWithStatus(slug: string): Promise<ApiAgent | null> {
+export async function getAgentWithStatus(
+  slug: string,
+  options: { includeSummary?: boolean } = {},
+): Promise<ApiAgent | null> {
   const agent = await getAgent(slug)
   if (!agent) {
     return null
@@ -120,6 +142,11 @@ export async function getAgentWithStatus(slug: string): Promise<ApiAgent | null>
   // Use cached status to avoid spawning docker processes
   const info = containerManager.getCachedInfo(slug)
   const base = toApiAgent(agent, info.status, info.port)
+
+  // Routes that either discard the body (/start) or immediately run the richer
+  // enrichAgentsWithSummary pass (list/detail) skip this otherwise-duplicate
+  // O(session-count) stat scan; standalone callers keep the enriched default.
+  if (options.includeSummary === false) return base
 
   // Compute session activity flags (same logic as the list endpoint)
   const sessionSummary = await getSessionSummary(slug)
@@ -204,8 +231,9 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
   const { name: rawName, description, instructions } = input
   const name = String(rawName)
 
-  // Generate unique slug
-  const slug = await generateUniqueAgentSlug(name)
+  // Mint an opaque id — the name no longer feeds the folder, so the "Untitled"
+  // promptless-create flow can't poison it.
+  const slug = await generateAgentId()
 
   // Create directory structure
   const workspaceDir = getAgentWorkspaceDir(slug)
@@ -223,11 +251,12 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
 
   const body = instructions || DEFAULT_AGENT_INSTRUCTIONS
   const content = serializeMarkdownWithFrontmatter(frontmatter, body)
-  await writeFile(claudeMdPath, content)
+  await writeFileAtomic(claudeMdPath, content)
 
   // Return in API format (new agents are always stopped)
   return {
     slug,
+    displaySlug: displaySlug(name, slug),
     name,
     description,
     instructions: body,
@@ -268,7 +297,7 @@ export async function updateAgent(
   // Write back to file
   const claudeMdPath = getAgentClaudeMdPath(slug)
   const content = serializeMarkdownWithFrontmatter(newFrontmatter, newInstructions)
-  await writeFile(claudeMdPath, content)
+  await writeFileAtomic(claudeMdPath, content)
 
   // Get container status
   const client = containerManager.getClient(slug)
@@ -276,6 +305,7 @@ export async function updateAgent(
 
   return {
     slug,
+    displaySlug: displaySlug(newFrontmatter.name, slug),
     name: newFrontmatter.name,
     description: newFrontmatter.description,
     instructions: newInstructions,
@@ -347,7 +377,7 @@ export async function deleteAgent(slug: string): Promise<boolean> {
  */
 export async function createAgentFromExistingWorkspace(rawName: string): Promise<ApiAgent> {
   const name = String(rawName)
-  const slug = await generateUniqueAgentSlug(name)
+  const slug = await generateAgentId()
 
   const workspaceDir = getAgentWorkspaceDir(slug)
   await ensureDirectory(workspaceDir)
@@ -361,10 +391,11 @@ export async function createAgentFromExistingWorkspace(rawName: string): Promise
 
   const body = DEFAULT_AGENT_INSTRUCTIONS
   const content = serializeMarkdownWithFrontmatter(frontmatter, body)
-  await writeFile(claudeMdPath, content)
+  await writeFileAtomic(claudeMdPath, content)
 
   return {
     slug,
+    displaySlug: displaySlug(name, slug),
     name,
     createdAt: new Date(frontmatter.createdAt),
     status: 'stopped',
@@ -396,5 +427,5 @@ export async function setAgentClaudeMdContent(
   content: string
 ): Promise<void> {
   const claudeMdPath = getAgentClaudeMdPath(slug)
-  await writeFile(claudeMdPath, content)
+  await writeFileAtomic(claudeMdPath, content)
 }

@@ -1,36 +1,44 @@
 {
   "fill" : {
-    "linear-gradient" : [
-      "display-p3:0.58066,0.50589,0.95784,1.00000",
-      "display-p3:0.19657,0.10116,0.68343,1.00000"
-    ],
-    "orientation" : {
-      "start" : {
-        "x" : 0.5,
-        "y" : 0
-      },
-      "stop" : {
-        "x" : 0.5,
-        "y" : 0.7
-      }
-    }
+    "automatic-gradient" : "display-p3:1.00000,1.00000,1.00000,1.00000"
   },
   "groups" : [
     {
       "layers" : [
         {
-          "fill" : {
-            "solid" : "extended-gray:1.00000,1.00000"
-          },
-          "glass" : true,
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "srgb:0.00000,0.00000,0.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "display-p3:1.00000,1.00000,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "solid" : "display-p3:1.00000,1.00000,1.00000,1.00000"
+              }
+            }
+          ],
           "hidden" : false,
-          "image-name" : "Vector.svg",
-          "name" : "Vector",
+          "image-name" : "gamut_logomark_white.svg",
+          "name" : "gamut_logomark_white",
+          "opacity-specializations" : [
+            {
+              "appearance" : "tinted",
+              "value" : 1
+            }
+          ],
           "position" : {
-            "scale" : 0.78,
+            "scale" : 1.22,
             "translation-in-points" : [
-              0,
-              0
+              16.021125651590978,
+              -12
             ]
           }
         }

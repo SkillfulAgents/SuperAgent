@@ -11,8 +11,19 @@ const notificationSettingsSchema = z.object({
   sessionComplete: z.boolean().default(true),
   sessionWaiting: z.boolean().default(true),
   sessionScheduled: z.boolean().default(true),
+  platformNotification: z.boolean().default(true),
   notifyWhenUnfocused: z.boolean().default(false),
 })
+
+const homeGridLayoutSchema = z.record(
+  z.string(),
+  z.object({
+    x: z.number().int().min(0),
+    y: z.number().int().min(0),
+    w: z.number().int().min(1).max(2),
+    h: z.number().int().min(1).max(2),
+  })
+)
 
 export const userSettingsSchema = z.object({
   theme: z.enum(['system', 'light', 'dark']).default('system'),
@@ -21,6 +32,7 @@ export const userSettingsSchema = z.object({
     sessionComplete: true,
     sessionWaiting: true,
     sessionScheduled: true,
+    platformNotification: true,
     notifyWhenUnfocused: false,
   }),
   setupCompleted: z.boolean().default(false),
@@ -29,6 +41,38 @@ export const userSettingsSchema = z.object({
   autoCheckUpdates: z.boolean().default(true),
   timezone: z.string().optional(),
   agentOrder: z.array(z.string()).optional(),
+  // Home graph view: user-dragged node positions, keyed by stable node id
+  // (e.g. 'agent:{slug}', 'account:{id}'). Absent entries fall back to auto-layout.
+  graphNodePositions: z.record(z.string(), z.object({ x: z.number(), y: z.number() })).optional(),
+  // Home graph view: user-dragged elbow-connector geometry, keyed by edge id.
+  // coords = cross-coordinates of the route's interior segments (the
+  // orthogonal waypoint model in graph-edges.tsx); sourceAngle/targetAngle =
+  // pinned anchor position on the node's circular perimeter, in degrees
+  // (absent = auto-picked facing side).
+  graphEdgeGeometry: z.record(
+    z.string(),
+    z.object({
+      coords: z.array(z.number()).optional(),
+      sourceAngle: z.number().optional(),
+      targetAngle: z.number().optional(),
+      // Count-chip position as a fraction of the route's length
+      chipT: z.number().optional(),
+    }),
+  ).optional(),
+  // Home graph view: the "Details" toggle (pin every resource's detail card
+  // + count chips open). Absent = off.
+  graphShowDetails: z.boolean().optional(),
+  // Home page widget grid: per-card position + footprint in grid cells,
+  // keyed by card id (agent slug or dashboard key). Absent = never customized
+  // (the board auto-packs responsively until the user drags/resizes).
+  homeGridLayout: homeGridLayoutSchema.optional(),
+  // Phone layout is persisted independently so arranging a responsive two-
+  // column board never overwrites desktop geometry. Until customized, mobile
+  // falls back to homeGridLayout and lets WidgetBoard re-pack it responsively.
+  homeGridMobileLayout: homeGridLayoutSchema.optional(),
+  // Agent slugs whose associated app/dashboard card is hidden from the home grid
+  // (toggled from the agent card). Absent/empty = all app cards shown.
+  hiddenAppCards: z.array(z.string()).optional(),
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   keepAwakeEnabled: z.boolean().default(false),
@@ -71,6 +115,7 @@ function seedFromAppSettings(): UserSettingsData {
           sessionComplete: appPrefs.notifications.sessionComplete ?? true,
           sessionWaiting: appPrefs.notifications.sessionWaiting ?? true,
           sessionScheduled: appPrefs.notifications.sessionScheduled ?? true,
+          platformNotification: appPrefs.notifications.platformNotification ?? true,
           notifyWhenUnfocused: appPrefs.notifications.notifyWhenUnfocused ?? false,
         }
       : undefined,

@@ -1,4 +1,18 @@
-import { zip } from 'fflate'
+import { canUseHostFeatures } from './host-features'
+
+/**
+ * A dropped or picked file's absolute path on this computer, or null when that
+ * path is of no use.
+ *
+ * Everything downstream uses it to have the machine running the agent read or
+ * mount that path directly, so it means something only while that machine is
+ * this one. Against a cloud workspace, returning null takes the web route
+ * (enumerate and upload the bytes), which is the only thing that can work.
+ */
+function hostPathOf(file: File): string | null {
+  if (!canUseHostFeatures()) return null
+  return window.electronAPI?.getPathForFile(file) ?? null
+}
 
 export interface FileWithPath {
   file: File
@@ -77,7 +91,7 @@ export async function getItemsFromDataTransfer(
   const dtFiles = Array.from(dataTransfer.files)
   const folderPathMap = new Map<string, string>()
   for (const f of dtFiles) {
-    const fp = window.electronAPI?.getPathForFile(f)
+    const fp = hostPathOf(f)
     if (fp) {
       folderPathMap.set(f.name, fp)
     }
@@ -114,18 +128,18 @@ export async function getItemsFromDataTransfer(
 }
 
 /**
- * In Electron, File objects from <input> have a non-standard .path property
- * with the absolute filesystem path. Extract the folder's absolute path
- * by stripping inner path components from the first file's absolute path.
+ * In Electron, resolve a file's absolute path via webUtils.getPathForFile
+ * (exposed on the preload bridge — File.path was removed in Electron 32),
+ * then extract the folder's absolute path by stripping inner path components.
  * Works on macOS, Linux, and Windows (handles both / and \ separators).
  */
 function getElectronFolderPath(firstFile: File, relativePath?: string): string | null {
-  const f = firstFile as File & { path?: string }
-  const rel = relativePath ?? f.webkitRelativePath
-  if (!f.path || !rel) return null
+  const rel = relativePath ?? firstFile.webkitRelativePath
+  const absPath = hostPathOf(firstFile)
+  if (!absPath || !rel) return null
 
   const relParts = rel.split('/')
-  let folderPath = f.path
+  let folderPath = absPath
   for (let i = relParts.length - 1; i >= 1; i--) {
     const lastSep = Math.max(folderPath.lastIndexOf('/'), folderPath.lastIndexOf('\\'))
     if (lastSep === -1) return null
@@ -166,12 +180,20 @@ export function getFolderFromDirectoryInput(files: FileList): FolderGroup | null
 export async function zipFolderFiles(
   files: { file: File; relativePath: string }[]
 ): Promise<Blob> {
-  // Read files sequentially to avoid memory spikes from parallel reads
-  const data: Record<string, Uint8Array> = {}
-  for (const f of files) {
-    const buffer = await f.file.arrayBuffer()
-    data[f.relativePath] = new Uint8Array(buffer)
-  }
+  // Load the browser-only zipper on demand, in parallel with sequential file
+  // reads. Electron hands the host a folder path and never needs this module.
+  const [{ zip }, data] = await Promise.all([
+    import('./browser-zip'),
+    (async () => {
+      // Read files sequentially to avoid memory spikes from parallel reads.
+      const contents: Record<string, Uint8Array> = {}
+      for (const f of files) {
+        const buffer = await f.file.arrayBuffer()
+        contents[f.relativePath] = new Uint8Array(buffer)
+      }
+      return contents
+    })(),
+  ])
 
   const zipped = await new Promise<Uint8Array>((resolve, reject) => {
     zip(data, { level: 0 }, (err, result) => {

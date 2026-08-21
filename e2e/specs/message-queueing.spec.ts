@@ -104,16 +104,6 @@ test.describe('Message queueing while agent is working', () => {
     await sessionPage.sendMessage('please work slowly for the pickup race')
     await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 10000 })
 
-    // Hold transcript GETs so the picked-up ghost cannot materialize while we
-    // stage the lost race. Send (POST) and cancel (DELETE …/queued-messages/:uuid)
-    // use other method/URL shapes and pass through.
-    let holdTranscript = true
-    await page.route('**/sessions/*/messages', async (route) => {
-      if (route.request().method() !== 'GET') return route.continue()
-      while (holdTranscript) await new Promise((r) => setTimeout(r, 100))
-      await route.continue()
-    })
-
     await sessionPage.typeMessage('cancel me too late')
     await sessionPage.getSendButton().click()
 
@@ -122,8 +112,21 @@ test.describe('Message queueing while agent is working', () => {
     const cancelBtn = page.locator('[data-testid="cancel-queued-message"]')
     await expect(cancelBtn).toBeVisible({ timeout: 3000 })
 
-    // Let the mock's 1200ms pickup window elapse — the agent now has the message.
-    await page.waitForTimeout(2000)
+    // Hold transcript GETs so the picked-up ghost cannot materialize while we
+    // stage the lost race. Send (POST) and cancel (DELETE …/queued-messages/:uuid)
+    // use other method/URL shapes and pass through. The trailing * covers the
+    // ?limit= query string (Playwright globs match the full URL) without
+    // matching …/queued-messages/* (the literal /messages can't match /queued-).
+    let holdTranscript = true
+    let pickupRefetchSeen = false
+    await page.route('**/sessions/*/messages*', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      pickupRefetchSeen = true
+      while (holdTranscript) await new Promise((r) => setTimeout(r, 100))
+      await route.continue()
+    })
+
+    await expect.poll(() => pickupRefetchSeen, { timeout: 5000 }).toBe(true)
 
     // Cancel loses the race (cancelled: false): the ghost flips to the
     // picked-up state and its Cancel affordance disappears.

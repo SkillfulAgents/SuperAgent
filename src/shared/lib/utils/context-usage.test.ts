@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeContextPercent } from './context-usage'
+import { computeContextPercent, computeContextTokens } from './context-usage'
 import type { SessionUsage } from '@shared/lib/types/agent'
 
 function usage(overrides: Partial<SessionUsage> = {}): SessionUsage {
@@ -129,5 +129,23 @@ describe('computeContextPercent', () => {
       }))
       expect(result).toBe(33)
     })
+  })
+})
+
+describe('computeContextTokens', () => {
+  it('does not double-count cache subsets in the new API format', () => {
+    expect(computeContextTokens(usage({
+      inputTokens: 110_000,
+      cacheCreationInputTokens: 10_000,
+      cacheReadInputTokens: 90_000,
+    }))).toBe(110_000)
+  })
+
+  it('adds cache fields in the old API format', () => {
+    expect(computeContextTokens(usage({
+      inputTokens: 10_000,
+      cacheCreationInputTokens: 10_000,
+      cacheReadInputTokens: 90_000,
+    }))).toBe(110_000)
   })
 })

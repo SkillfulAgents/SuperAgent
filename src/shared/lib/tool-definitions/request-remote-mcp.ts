@@ -14,4 +14,4 @@ function getSummary(input: unknown): string | null {
   return name || url || null
 }
 
-export const requestRemoteMcpDef = { displayName: 'Request MCP Server', iconName: 'Plug', parseInput, getSummary } as const
+export const requestRemoteMcpDef = { displayName: 'Request MCP Server', parseInput, getSummary } as const

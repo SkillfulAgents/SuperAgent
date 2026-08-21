@@ -53,7 +53,7 @@ describe('parseToolResult', () => {
       ])
       const result = parseToolResult(json)
       expect(result.text).toBeNull()
-      expect(result.images).toEqual([{ data: 'abc123', mimeType: 'image/png' }])
+      expect(result.images).toEqual([{ src: 'data:image/png;base64,abc123', isRef: false }])
     })
 
     it('parses a JSON string containing mixed text and image blocks', () => {
@@ -63,7 +63,7 @@ describe('parseToolResult', () => {
       ])
       const result = parseToolResult(json)
       expect(result.text).toBe('some text')
-      expect(result.images).toEqual([{ data: 'imgdata', mimeType: 'image/jpeg' }])
+      expect(result.images).toEqual([{ src: 'data:image/jpeg;base64,imgdata', isRef: false }])
     })
   })
 
@@ -89,7 +89,7 @@ describe('parseToolResult', () => {
         },
       ])
       expect(result.text).toBeNull()
-      expect(result.images).toEqual([{ data: 'base64data', mimeType: 'image/png' }])
+      expect(result.images).toEqual([{ src: 'data:image/png;base64,base64data', isRef: false }])
     })
 
     it('extracts images in MCP format', () => {
@@ -97,7 +97,7 @@ describe('parseToolResult', () => {
         { type: 'image', data: 'mcpdata', mimeType: 'image/jpeg' },
       ])
       expect(result.text).toBeNull()
-      expect(result.images).toEqual([{ data: 'mcpdata', mimeType: 'image/jpeg' }])
+      expect(result.images).toEqual([{ src: 'data:image/jpeg;base64,mcpdata', isRef: false }])
     })
 
     it('handles mixed text and multiple images', () => {
@@ -108,8 +108,8 @@ describe('parseToolResult', () => {
       ])
       expect(result.text).toBe('screenshot results')
       expect(result.images).toHaveLength(2)
-      expect(result.images[0]).toEqual({ data: 'img1', mimeType: 'image/png' })
-      expect(result.images[1]).toEqual({ data: 'img2', mimeType: 'image/jpeg' })
+      expect(result.images[0]).toEqual({ src: 'data:image/png;base64,img1', isRef: false })
+      expect(result.images[1]).toEqual({ src: 'data:image/jpeg;base64,img2', isRef: false })
     })
 
     it('returns null text for image-only arrays', () => {
@@ -135,7 +135,7 @@ describe('parseToolResult', () => {
         { type: 'image', data: 'valid', mimeType: 'image/png' },
       ])
       expect(result.images).toHaveLength(1)
-      expect(result.images[0]).toEqual({ data: 'valid', mimeType: 'image/png' })
+      expect(result.images[0]).toEqual({ src: 'data:image/png;base64,valid', isRef: false })
     })
 
     it('returns null text for empty arrays', () => {
@@ -156,7 +156,7 @@ describe('parseToolResult', () => {
         source: { type: 'base64', media_type: 'image/png', data: 'singleimg' },
       })
       expect(result.text).toBeNull()
-      expect(result.images).toEqual([{ data: 'singleimg', mimeType: 'image/png' }])
+      expect(result.images).toEqual([{ src: 'data:image/png;base64,singleimg', isRef: false }])
     })
 
     it('extracts image from a single MCP format image block', () => {
@@ -166,7 +166,80 @@ describe('parseToolResult', () => {
         mimeType: 'image/webp',
       })
       expect(result.text).toBeNull()
-      expect(result.images).toEqual([{ data: 'mcpimg', mimeType: 'image/webp' }])
+      expect(result.images).toEqual([{ src: 'data:image/webp;base64,mcpimg', isRef: false }])
+    })
+  })
+
+  describe('media refs', () => {
+    const ctx = { agentSlug: 'a1', sessionId: 's1' }
+
+    it('builds the session media URL from trusted context, not the block', () => {
+      const result = parseToolResult(
+        [
+          { type: 'text', text: 'screenshot' },
+          { type: 'media_ref', id: 'abc', mimeType: 'image/png', bytes: 40960 },
+        ],
+        ctx
+      )
+      expect(result.text).toBe('screenshot')
+      expect(result.images).toEqual([
+        { src: '/api/agents/a1/sessions/s1/media/abc', bytes: 40960, isRef: true },
+      ])
+    })
+
+    it('carries intrinsic dimensions through so the layout can reserve the box', () => {
+      const result = parseToolResult(
+        [{ type: 'media_ref', id: 'abc', bytes: 40960, width: 919, height: 1998 }],
+        ctx
+      )
+      expect(result.images[0]).toMatchObject({ width: 919, height: 1998 })
+    })
+
+    it('omits dimensions when the server could not read them', () => {
+      const result = parseToolResult([{ type: 'media_ref', id: 'abc', bytes: 40960 }], ctx)
+      expect(result.images[0]!.width).toBeUndefined()
+      expect(result.images[0]!.height).toBeUndefined()
+    })
+
+    it('ignores refs when no session context is supplied', () => {
+      // A caller that cannot vouch for the transcript must not turn its
+      // contents into requests.
+      const result = parseToolResult([{ type: 'media_ref', id: 'abc', bytes: 99 }])
+      expect(result.images).toEqual([])
+    })
+
+    it('does not let a tool result name its own image address', () => {
+      // Tool output is untrusted text that reaches this parser as JSON, so a
+      // block claiming to be a ref proves nothing about where its bytes live.
+      const hostile = JSON.stringify([
+        { type: 'media_ref', id: 'abc', url: 'https://attacker.example/track?u=1' },
+      ])
+      const result = parseToolResult(hostile, ctx)
+      expect(result.images[0]!.src).toBe('/api/agents/a1/sessions/s1/media/abc')
+      expect(JSON.stringify(result.images)).not.toContain('attacker.example')
+    })
+
+    it('drops ids that could not have been minted here', () => {
+      const result = parseToolResult(
+        [
+          { type: 'media_ref', id: '../../../other/x' },
+          { type: 'media_ref', id: 'has spaces' },
+          { type: 'media_ref', id: '' },
+        ],
+        ctx
+      )
+      expect(result.images).toEqual([])
+    })
+
+    it('handles a page that mixes refs and inline images', () => {
+      const result = parseToolResult(
+        [
+          { type: 'image', data: 'small', mimeType: 'image/png' },
+          { type: 'media_ref', id: 'abc', bytes: 99 },
+        ],
+        ctx
+      )
+      expect(result.images.map((i) => i.isRef)).toEqual([false, true])
     })
   })
 

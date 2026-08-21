@@ -73,6 +73,7 @@ describe('AutoSleepMonitor', () => {
     mockListSessions.mockResolvedValue([])
     mockGetContainerStartTime.mockReturnValue(undefined)
     mockGetLastKeepAlive.mockReturnValue(undefined)
+    mockHasActiveSessions.mockReturnValue(false)
     mockStopContainer.mockResolvedValue(undefined)
   })
 
@@ -177,9 +178,34 @@ describe('AutoSleepMonitor', () => {
     expect(mockStopContainer).not.toHaveBeenCalled()
   })
 
-  it('skips agent with no sessions', async () => {
+  it('stops warm-started agent with no sessions after timeout', async () => {
+    const now = Date.now()
     mockGetRunningAgentIds.mockReturnValue(['agent-1'])
     mockListSessions.mockResolvedValue([])
+    mockGetContainerStartTime.mockReturnValue(now - THIRTY_MINUTES_MS - 1000)
+
+    await autoSleepMonitor.start()
+    await tick()
+
+    expect(mockStopContainer).toHaveBeenCalledWith('agent-1', expect.anything())
+  })
+
+  it('keeps recently warm-started agent with no sessions', async () => {
+    const now = Date.now()
+    mockGetRunningAgentIds.mockReturnValue(['agent-1'])
+    mockListSessions.mockResolvedValue([])
+    mockGetContainerStartTime.mockReturnValue(now - 5 * 60 * 1000)
+
+    await autoSleepMonitor.start()
+    await tick()
+
+    expect(mockStopContainer).not.toHaveBeenCalled()
+  })
+
+  it('skips agent with no sessions when start time is unknown', async () => {
+    mockGetRunningAgentIds.mockReturnValue(['agent-1'])
+    mockListSessions.mockResolvedValue([])
+    mockGetContainerStartTime.mockReturnValue(undefined)
 
     await autoSleepMonitor.start()
     await tick()

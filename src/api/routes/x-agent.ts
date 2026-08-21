@@ -14,9 +14,9 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { agentAcl } from '@shared/lib/db/schema'
+import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -26,12 +26,16 @@ import {
   listAgents,
   getAgent,
 } from '@shared/lib/services/agent-service'
+import { resolveAgentId, displaySlug } from '@shared/lib/utils/file-storage'
 import {
   listSessions,
   getSessionMessagesWithCompact,
+  findLastSessionEntry,
   getSessionMetadata,
   registerSession,
+  reserveSessionOwnership,
   updateSessionMetadata,
+  sessionIsKnown,
 } from '@shared/lib/services/session-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -41,8 +45,13 @@ import {
   type XAgentOperation,
 } from '@shared/lib/services/x-agent-policy-service'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
+import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { captureException } from '@shared/lib/error-reporting'
 import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+
+const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 
 // Typed context variables for the x-agent router. Using Hono's generic instead
 // of `as never` casts gives us type safety on c.get/c.set.
@@ -86,6 +95,84 @@ async function getOwnersOfAgent(agentSlug: string): Promise<string[]> {
     .from(agentAcl)
     .where(and(eq(agentAcl.agentSlug, agentSlug), eq(agentAcl.role, 'owner')))
   return rows.map((r) => r.userId)
+}
+
+/**
+ * Resolve the user who sent the message currently driving an agent session.
+ * In shared sessions this can differ from the session creator, so invocation
+ * attribution must prefer the latest per-message author record.
+ */
+async function getLatestMessageAuthorUserId(
+  agentSlug: string,
+  sessionId: string,
+): Promise<string | undefined> {
+  try {
+    const rows = await db
+      .select({ userId: messageAuthor.userId })
+      .from(messageAuthor)
+      .where(and(
+        eq(messageAuthor.agentSlug, agentSlug),
+        eq(messageAuthor.sessionId, sessionId),
+      ))
+      .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
+      .limit(1)
+    return rows[0]?.userId
+  } catch (error) {
+    // Attribution is optional. A DB/read failure must never block the invoke.
+    console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {
+      agentSlug,
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return undefined
+  }
+}
+
+async function insertMessageAuthorBestEffort(params: {
+  id: string
+  sessionId: string
+  agentSlug: string
+  userId: string
+}): Promise<boolean> {
+  try {
+    await db.insert(messageAuthor).values(params)
+    return true
+  } catch (error) {
+    // Includes stale createdByUserId values whose user row has been deleted.
+    // The invocation remains usable; only the optional sender badge is lost.
+    console.warn('[x-agent] failed to record invoked message author; continuing unattributed', {
+      agentSlug: params.agentSlug,
+      sessionId: params.sessionId,
+      userId: params.userId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return false
+  }
+}
+
+async function deleteMessageAuthorBestEffort(messageUuid: string): Promise<void> {
+  try {
+    await db.delete(messageAuthor).where(eq(messageAuthor.id, messageUuid))
+  } catch (error) {
+    console.warn('[x-agent] failed to clean up invoked message attribution', {
+      messageUuid,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+async function getAgentDisplayNameBestEffort(agentSlug: string): Promise<string> {
+  try {
+    const agent = await getAgent(agentSlug)
+    return agent?.frontmatter.name || agentSlug
+  } catch (error) {
+    // Human-readable naming is cosmetic and must not gate agent invocation.
+    console.warn('[x-agent] failed to resolve caller display name; using slug', {
+      agentSlug,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return agentSlug
+  }
 }
 
 /**
@@ -196,7 +283,9 @@ xAgent.post('/list', async (c) => {
     .filter((a) => a.slug !== callerSlug)
     .filter((a) => (visible ? visible.has(a.slug) : true))
     .map((a) => ({
-      slug: a.slug,
+      // Project the decorative display slug for the model; resolveAgentId tolerates
+      // it (and the bare id / legacy form) on the way back in via invoke/get-*.
+      slug: displaySlug(a.frontmatter.name, a.slug),
       name: a.frontmatter.name,
       description: a.frontmatter.description,
     }))
@@ -240,7 +329,14 @@ xAgent.post('/create', zValidator('json', createBodySchema), async (c) => {
       })
     }
   }
-  return c.json({ slug: agent.slug, name: agent.name })
+
+  // Announce only after ACL inheritance so live stream filters admit owners.
+  messagePersister.broadcastGlobal({
+    type: 'agent_created',
+    agentSlug: agent.slug,
+  })
+
+  return c.json({ slug: agent.displaySlug, name: agent.name })
 })
 
 // ----------------------------------------------------------------------------
@@ -255,7 +351,12 @@ const getSessionsBodySchema = z.object({
 
 xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c) => {
   const callerSlug = getCallerSlug(c)
-  const { slug: targetSlug, limit = 50, offset = 0 } = c.req.valid('json')
+  const { slug: rawTargetSlug, limit = 50, offset = 0 } = c.req.valid('json')
+
+  // Resolve the model-supplied display slug to the canonical id and rebind, so
+  // every downstream ACL / policy / fs use below keys on the id, not the prefix.
+  const targetSlug = await resolveAgentId(rawTargetSlug)
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
   const target = await getAgent(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
@@ -375,31 +476,182 @@ function compactMessage(entry: JsonlMessageEntry | JsonlSystemEntry): {
 const READ_RETRY_ATTEMPTS = Number(process.env.X_AGENT_READ_RETRY_ATTEMPTS) || 10
 const READ_RETRY_INTERVAL_MS = Number(process.env.X_AGENT_READ_RETRY_INTERVAL_MS) || 500
 
+// Sync x-agent calls hold the HTTP response open with zero bytes written until
+// the target turn completes, and the container's fetch (undici) aborts any
+// request whose response headers don't arrive within 300s ("fetch failed").
+// Cap the sync wait well under that cliff: sync is meant for fast turns, so a
+// slow turn promotes to the async contract (status 'running' + session id)
+// instead of dying as a network error that invites the caller to retry.
+//
+// The budget is end-to-end from handler entry, not from when waitForIdle
+// starts: policy review and container startup happen first and can be slow,
+// and a wait that ignored them could still push the total response time past
+// the transport cliff.
+const SYNC_WAIT_TIMEOUT_DEFAULT_MS = 120_000
+
+// Exported for unit tests. The env override can only SHORTEN the wait (its
+// purpose is keeping tests snappy): the container tool docs promise "up to
+// ~2 minutes", and a longer wait would both break that promise and erode the
+// margin to the 300s transport cliff.
+export function resolveSyncWaitTimeoutMs(raw: string | undefined): number {
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed <= 0) return SYNC_WAIT_TIMEOUT_DEFAULT_MS
+  return Math.min(parsed, SYNC_WAIT_TIMEOUT_DEFAULT_MS)
+}
+
+const SYNC_WAIT_TIMEOUT_MS = resolveSyncWaitTimeoutMs(process.env.X_AGENT_SYNC_WAIT_TIMEOUT_MS)
+
+// Hard stop for delivering the prompt at all. Past this point the caller's
+// fetch has been dead-or-dying for a while (undici gives up at 300s), so
+// delivering anyway creates exactly the ghost run the caller's inevitable
+// retry then duplicates. Applies to async invokes too — they also respond
+// only after delivery, so a slow container start can strand them the same way.
+// The 60s margin leaves room for the delivery call itself plus the response.
+const DELIVERY_CUTOFF_MS = 240_000
+
+function deliveryCutoffError(): string {
+  return (
+    `Target agent took too long to become ready (over ${Math.round(DELIVERY_CUTOFF_MS / 1000)}s), ` +
+    'so the prompt was NOT delivered. It is safe to retry; prefer sync=false.'
+  )
+}
+
+function lateDeliveryRevokedError(): string {
+  return (
+    `Target agent took too long to start the session (over ${Math.round(DELIVERY_CUTOFF_MS / 1000)}s total). ` +
+    'The invocation was cancelled and any late-created session is revoked, so nothing is running — ' +
+    'it is safe to retry; prefer sync=false.'
+  )
+}
+
+const DEADLINE = Symbol('deadline')
+
+// Race a promise against an absolute deadline. The losing promise keeps
+// running — callers that receive DEADLINE must decide what to do when (or if)
+// it eventually settles, and must attach their own rejection handler to it.
+async function raceDeadline<T>(promise: Promise<T>, deadline: number): Promise<T | typeof DEADLINE> {
+  const remainingMs = deadline - Date.now()
+  if (remainingMs <= 0) return DEADLINE
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<typeof DEADLINE>((resolve) => {
+        timer = setTimeout(() => resolve(DEADLINE), remainingMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+// Bounds the persister's stream attach — its WebSocket `ready` promise has no
+// timeout of its own, so a wedged container would otherwise hold the caller's
+// fetch open past its 300s header timeout.
+const SUBSCRIBE_TIMEOUT_MS = Number(process.env.X_AGENT_SUBSCRIBE_TIMEOUT_MS) || 30_000
+
+async function subscribeWithTimeout(subscribe: Promise<void>): Promise<void> {
+  const result = await raceDeadline(subscribe, Date.now() + SUBSCRIBE_TIMEOUT_MS)
+  if (result === DEADLINE) {
+    // The stalled attach may still settle later; swallow its rejection so a
+    // late failure doesn't become an unhandled rejection.
+    subscribe.catch(() => {})
+    throw new Error(`Timed out attaching to session stream after ${SUBSCRIBE_TIMEOUT_MS}ms`)
+  }
+}
+
+// Matched by name rather than instanceof: the persister module is wholesale-
+// mocked in many test suites, and an instanceof against a possibly-undefined
+// mock export throws instead of returning false.
+function isWaitForIdleTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === 'WaitForIdleTimeoutError'
+}
+
+/**
+ * Wait for the target turn to finish within what's left of the caller's sync
+ * budget (deadline is stamped at handler entry). Returns 'timeout' when the
+ * budget is exhausted — before or during the wait — and rethrows any other
+ * waitForIdle failure.
+ *
+ * requireActiveFirst is off: every sync caller marks the session active before
+ * the prompt is delivered (invoke) or checks isSessionActive just before
+ * waiting (get-transcript), so an inactive session here means the turn already
+ * finished — resolving immediately is correct, not a startup race.
+ */
+async function waitForTurnWithinBudget(
+  sessionId: string,
+  deadline: number,
+): Promise<'completed' | 'timeout'> {
+  const remainingMs = deadline - Date.now()
+  if (remainingMs <= 0) {
+    // Pre-wait work can eat the whole budget; if the turn already finished
+    // during it, that's a completion — reporting 'timeout' here would label a
+    // finished turn 'running' and make the caller poll for a result it has.
+    return messagePersister.isSessionActive(sessionId) ? 'timeout' : 'completed'
+  }
+  try {
+    await messagePersister.waitForIdle(sessionId, {
+      timeoutMs: remainingMs,
+      requireActiveFirst: false,
+    })
+    return 'completed'
+  } catch (error) {
+    if (isWaitForIdleTimeout(error)) return 'timeout'
+    throw error
+  }
+}
+
+function syncWaitPromotedNote(timeoutMs: number): string {
+  return (
+    `Sync wait timed out after ${Math.round(timeoutMs / 1000)}s, but the target agent is still ` +
+    'working on this prompt. Do NOT re-invoke — that would start a duplicate run. ' +
+    'Poll get_agent_session_transcript with this session_id to retrieve the result.'
+  )
+}
+
+function isReturnableAssistantEntry(e: JsonlMessageEntry | JsonlSystemEntry): boolean {
+  return e.type === 'assistant' && compactMessage(e) !== null
+}
+
+/**
+ * `boundaryUuid` is the uuid of the last assistant entry persisted BEFORE the
+ * current turn's prompt was delivered (undefined when the session is new or
+ * had none). Seeing that entry still last means this turn's reply hasn't
+ * flushed yet — keep polling rather than returning the previous turn's answer
+ * as if it were this one's.
+ */
 async function readLastAssistantMessage(
   targetSlug: string,
   sessionId: string,
-  attempts = READ_RETRY_ATTEMPTS,
-  intervalMs = READ_RETRY_INTERVAL_MS,
+  boundaryUuid?: string,
 ): Promise<{ role: string; content: string; toolName?: string } | null> {
-  for (let i = 0; i < attempts; i++) {
-    const entries = await getSessionMessagesWithCompact(targetSlug, sessionId)
-    // Walk backwards to find the most recent assistant entry.
-    for (let j = entries.length - 1; j >= 0; j--) {
-      const e = entries[j]
-      if (e.type !== 'assistant') continue
-      const compact = compactMessage(e)
+  for (let i = 0; i < READ_RETRY_ATTEMPTS; i++) {
+    // Only the most recent assistant entry matters, so read the transcript
+    // from the tail instead of full-parsing it (transcripts reach 100MB+, and
+    // this runs up to READ_RETRY_ATTEMPTS times per invoke).
+    const entry = await findLastSessionEntry(targetSlug, sessionId, isReturnableAssistantEntry)
+    const isStaleBoundary = boundaryUuid !== undefined && entry?.uuid === boundaryUuid
+    if (entry && !isStaleBoundary) {
+      const compact = compactMessage(entry)
       if (compact) return compact
     }
-    if (i < attempts - 1) {
-      await new Promise((r) => setTimeout(r, intervalMs))
+    if (i < READ_RETRY_ATTEMPTS - 1) {
+      await new Promise((r) => setTimeout(r, READ_RETRY_INTERVAL_MS))
     }
   }
   return null
 }
 
 xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), async (c) => {
+  // Stamp the sync budget before any slow pre-work (policy review can block on
+  // a human decision) so the total response time stays under the transport cap.
+  const syncDeadline = Date.now() + SYNC_WAIT_TIMEOUT_MS
   const callerSlug = getCallerSlug(c)
-  const { slug: targetSlug, sessionId, sync } = c.req.valid('json')
+  const { slug: rawTargetSlug, sessionId, sync } = c.req.valid('json')
+
+  // Resolve the model-supplied display slug to the canonical id and rebind.
+  const targetSlug = await resolveAgentId(rawTargetSlug)
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
   const target = await getAgent(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
@@ -413,9 +665,40 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
+  // Status and wait state live in the process-global persister. Validate the
+  // target/session pair before consulting it, not only before reading the
+  // target-scoped transcript below.
+  if (!(await sessionIsKnown(targetSlug, sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
   if (sync && messagePersister.isSessionActive(sessionId)) {
+    // Last reply flushed before we started waiting — used below to detect that
+    // the turn we waited out has actually reached the transcript file.
+    const boundaryEntry = await findLastSessionEntry(targetSlug, sessionId, isReturnableAssistantEntry)
     try {
-      await messagePersister.waitForIdle(sessionId)
+      // 'timeout' falls through: return the transcript so far with status
+      // 'running'. Sync get-transcript is a bounded long-poll the caller can
+      // repeat, not an unbounded wait — an unbounded wait would outlive the
+      // container's 300s fetch header timeout and surface as a retry-inducing
+      // network error. Other failures stay hard errors.
+      const outcome = await waitForTurnWithinBudget(sessionId, syncDeadline)
+      // The turn's 'result' event clears isActive before its final assistant
+      // entry hits the JSONL file. When the turn we observed running has ended
+      // — the wait said so, or it timed out and the turn ended in the gap
+      // before the status read below — reconcile (bounded, ~5s) until an entry
+      // newer than the pre-wait boundary appears, so an "idle" response
+      // doesn't ship a transcript missing the reply it waited for.
+      //
+      // Deliberately gated on activity observed IN THIS REQUEST: the JSONL is
+      // written by the container process, so the host has no write queue to
+      // barrier on, and reconciling on every idle response would burn the full
+      // poll budget on sessions that are simply idle. A session that went idle
+      // just before the isSessionActive check above keeps plain read-what's-
+      // flushed semantics.
+      if (outcome === 'completed' || !messagePersister.isSessionActive(sessionId)) {
+        await readLastAssistantMessage(targetSlug, sessionId, boundaryEntry?.uuid)
+      }
     } catch (error) {
       return c.json({
         error: `Session did not idle: ${error instanceof Error ? error.message : String(error)}`,
@@ -455,16 +738,25 @@ const invokeBodySchema = z.object({
 })
 
 xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
+  // Stamp both clocks before any slow pre-work (policy review, container
+  // startup, session creation): the sync budget governs how long we wait for
+  // the turn, the delivery cutoff governs whether we deliver the prompt at all
+  // — so the total response time stays under the container fetch's 300s header
+  // timeout, and no prompt is delivered to a caller that already gave up.
+  const syncDeadline = Date.now() + SYNC_WAIT_TIMEOUT_MS
+  const deliveryCutoff = Date.now() + DELIVERY_CUTOFF_MS
   const callerSlug = getCallerSlug(c)
-  const { slug: targetSlug, prompt, sessionId: existingSessionId, sync, _callerSessionId } = c.req.valid('json')
+  const { slug: rawTargetSlug, prompt, sessionId: existingSessionId, sync, _callerSessionId } = c.req.valid('json')
+
+  // Resolve display slug → canonical id so ACL / policy / runtime all use ids.
+  const targetSlug = await resolveAgentId(rawTargetSlug)
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
   if (targetSlug === callerSlug) {
     return c.json({ error: 'Agent cannot invoke itself' }, 400)
   }
 
-  // One-hop rule: a session that was started by another agent cannot itself
-  // start invocations into other agents. Prevents A→B→C chains and A→B→A
-  // cycles transitively. Hoisted out so attribution lookup below can reuse it.
+  // One-hop rule: sessions started by another agent cannot invoke further.
   const callerMeta = _callerSessionId
     ? await getSessionMetadata(callerSlug, _callerSessionId)
     : null
@@ -478,6 +770,14 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       403,
     )
   }
+
+  // Capture the triggering message's author before a review prompt can pause
+  // this request and newer messages can arrive in a shared caller session.
+  // This remains a best-effort "latest author" heuristic until the container
+  // can pass the exact driving message UUID.
+  const triggeringUserId = isAuthMode() && _callerSessionId
+    ? await getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
+    : undefined
 
   const target = await getAgent(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
@@ -497,121 +797,326 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
-  // Attribute to the originating user: caller session's creator → caller
-  // agent's first owner (legacy fallback for pre-attribution sessions).
-  let attributedUserId: string | undefined = callerMeta?.createdByUserId
+  // Attribute to the triggering message author. Session creator and caller
+  // owner remain compatibility fallbacks for old sessions without author rows.
+  let attributedUserId: string | undefined = triggeringUserId ?? callerMeta?.createdByUserId
   if (!attributedUserId && isAuthMode()) {
-    attributedUserId = (await getOwnersOfAgent(callerSlug))[0]
-  }
-
-  return runWithOptionalUser(attributedUserId, async () => {
-  // Existing session: must exist, must not be running
-  if (existingSessionId) {
-    if (messagePersister.isSessionActive(existingSessionId)) {
-      return c.json({ error: 'Target session is currently running' }, 409)
-    }
-    const client = await containerManager.ensureRunning(targetSlug)
-    if (!messagePersister.isSubscribed(existingSessionId)) {
-      await messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug)
-    }
-    messagePersister.markSessionActive(existingSessionId, targetSlug)
-    await client.sendMessage(existingSessionId, prompt)
-
-    if (sync) {
-      try {
-        await messagePersister.waitForIdle(existingSessionId)
-      } catch (error) {
-        return c.json({
-          sessionId: existingSessionId,
-          status: 'running',
-          error: error instanceof Error ? error.message : String(error),
-        })
-      }
-      const lastMessage = await readLastAssistantMessage(targetSlug, existingSessionId)
-      return c.json({
-        sessionId: existingSessionId,
-        status: 'completed',
-        lastMessage: lastMessage?.content,
-      })
-    }
-    return c.json({ sessionId: existingSessionId, status: 'running' })
-  }
-
-  // New session
-  const client = await containerManager.ensureRunning(targetSlug)
-  const availableEnvVars = await getSecretEnvVars(targetSlug)
-  const agentLimits = getEffectiveAgentLimits()
-  const customEnvVars = getCustomEnvVars()
-
-  const containerSession = await client.createSession({
-    availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-    initialMessage: prompt,
-    model: getEffectiveModels().agentModel,
-    browserModel: getEffectiveModels().browserModel,
-    maxOutputTokens: agentLimits.maxOutputTokens,
-    maxThinkingTokens: agentLimits.maxThinkingTokens,
-    maxTurns: agentLimits.maxTurns,
-    maxBudgetUsd: agentLimits.maxBudgetUsd,
-    customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-    maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-  })
-  const newSessionId = containerSession.id
-  // Mark active synchronously before any await so waitForIdle has state to observe
-  // even if the SDK's 'result' event lands before subscribeToSession completes.
-  messagePersister.markSessionActive(newSessionId, targetSlug)
-
-  // Register on the host. If this fails, the container is already holding a
-  // running session — clean it up so we don't leave orphans burning model budget.
-  try {
-    await registerSession(targetSlug, newSessionId, `Invoked by ${callerSlug}`)
-  } catch (registerErr) {
-    console.error('[x-agent] registerSession failed; cleaning up container session', registerErr)
-    await client.deleteSession(newSessionId).catch((cleanupErr) => {
-      // Container was unreachable or session already gone — nothing more we can do
-      console.error('[x-agent] failed to clean up orphaned container session', newSessionId, cleanupErr)
-    })
-    messagePersister.unsubscribeFromSession(newSessionId)
-    return c.json(
-      { error: `Failed to register invoked session: ${registerErr instanceof Error ? registerErr.message : String(registerErr)}` },
-      500,
-    )
-  }
-
-  // Metadata write failure shouldn't fail the invoke (the session is still
-  // usable), but don't silently swallow — log so we can debug missing
-  // cross-agent provenance later.
-  try {
-    await updateSessionMetadata(targetSlug, newSessionId, {
-      invokedByAgentSlug: callerSlug,
-      ...(attributedUserId ? { createdByUserId: attributedUserId } : {}),
-    })
-  } catch (metaErr) {
-    console.warn('[x-agent] updateSessionMetadata failed (session usable, provenance not recorded)', metaErr)
-  }
-
-  await messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug)
-  if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-    messagePersister.setSlashCommands(newSessionId, containerSession.slashCommands)
-  }
-
-  if (sync) {
     try {
-      await messagePersister.waitForIdle(newSessionId)
+      attributedUserId = (await getOwnersOfAgent(callerSlug))[0]
     } catch (error) {
-      return c.json({
-        sessionId: newSessionId,
-        status: 'running',
+      // ACL checks already ran above; this second lookup is attribution-only.
+      console.warn('[x-agent] failed to resolve caller owner for attribution; continuing unattributed', {
+        callerSlug,
         error: error instanceof Error ? error.message : String(error),
       })
     }
-    const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)
-    return c.json({
-      sessionId: newSessionId,
-      status: 'completed',
-      lastMessage: lastMessage?.content,
-    })
   }
-  return c.json({ sessionId: newSessionId, status: 'running' })
+
+  return runWithOptionalUser(attributedUserId, async () => {
+    // Stages for runtime 500s: ensure_running → create_session / send_message.
+    let stage = 'ensure_running'
+    try {
+      if (existingSessionId) {
+        // Invoke rights on the target say nothing about the session id sent
+        // with them. The persister is keyed by session id alone, so a third
+        // agent's id would get re-pointed at the target's container here — and
+        // the target's transcript written under it.
+        if (!(await sessionIsKnown(targetSlug, existingSessionId))) {
+          return c.json({ error: 'Session not found' }, 404)
+        }
+        if (messagePersister.isSessionActive(existingSessionId)) {
+          return c.json({ error: 'Target session is currently running' }, 409)
+        }
+        stage = 'ensure_running'
+        const client = await containerManager.ensureRunning(targetSlug)
+        // Last reply flushed before THIS prompt goes out — used to make sure a
+        // fast turn's answer isn't confused with the previous turn's while the
+        // new entry is still being written to the JSONL file.
+        const replyBoundary = sync
+          ? await findLastSessionEntry(targetSlug, existingSessionId, isReturnableAssistantEntry)
+          : null
+        stage = 'subscribe'
+        if (!messagePersister.isSubscribed(existingSessionId)) {
+          await subscribeWithTimeout(
+            messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug),
+          )
+        }
+        // Checked AFTER every unbounded pre-send await (container startup and
+        // the stream attach above) so only fast local writes remain between
+        // here and sendMessage — a check followed by a slow await could still
+        // deliver to a caller whose fetch died at the 300s header timeout.
+        if (Date.now() > deliveryCutoff) {
+          console.warn('[x-agent] delivery cutoff exceeded before send; prompt not delivered', {
+            callerSlug,
+            targetSlug,
+            sessionId: existingSessionId,
+          })
+          return c.json({ error: deliveryCutoffError() }, 504)
+        }
+        messagePersister.markSessionActive(existingSessionId, targetSlug)
+        stage = 'send_message'
+        let messageUuid: string | undefined
+        if (isAuthMode() && attributedUserId) {
+          const candidateUuid = randomUUID()
+          const recorded = await insertMessageAuthorBestEffort({
+            id: candidateUuid,
+            sessionId: existingSessionId,
+            agentSlug: targetSlug,
+            userId: attributedUserId,
+          })
+          if (recorded) messageUuid = candidateUuid
+        }
+        try {
+          if (messageUuid) {
+            await client.sendMessage(existingSessionId, prompt, messageUuid)
+          } else {
+            await client.sendMessage(existingSessionId, prompt)
+          }
+        } catch (sendError) {
+          if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
+          throw sendError
+        }
+
+        if (sync) {
+          stage = 'wait_for_idle'
+          let outcome: 'completed' | 'timeout'
+          try {
+            outcome = await waitForTurnWithinBudget(existingSessionId, syncDeadline)
+          } catch (error) {
+            return c.json({
+              sessionId: existingSessionId,
+              status: 'running',
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          if (outcome === 'timeout') {
+            // Budget exhausted (whether before or during the wait) means the
+            // target is simply still working — promote to the async contract
+            // with explicit guidance so the caller polls instead of re-invoking
+            // (a re-invoke duplicates the whole run).
+            return c.json({
+              sessionId: existingSessionId,
+              status: 'running',
+              error: syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS),
+            })
+          }
+          const lastMessage = await readLastAssistantMessage(
+            targetSlug,
+            existingSessionId,
+            replyBoundary?.uuid,
+          )
+          return c.json({
+            sessionId: existingSessionId,
+            status: 'completed',
+            lastMessage: lastMessage?.content,
+          })
+        }
+        return c.json({ sessionId: existingSessionId, status: 'running' })
+      }
+
+      stage = 'ensure_running'
+      const client = await containerManager.ensureRunning(targetSlug)
+      const availableEnvVars = await getSecretEnvVars(targetSlug)
+      const agentLimits = getEffectiveAgentLimits()
+      const customEnvVars = getCustomEnvVars()
+      const targetPrefs = await readAgentPreferences(targetSlug)
+      const models = getEffectiveModels()
+      const resolved = resolveRuntimeInherit({}, targetPrefs, models)
+      const callerName = await getAgentDisplayNameBestEffort(callerSlug)
+      const initialMessageUuid = isAuthMode() && attributedUserId
+        ? randomUUID()
+        : undefined
+
+      // createSession delivers the prompt (initialMessage) — same cutoff rule
+      // as sendMessage above.
+      if (Date.now() > deliveryCutoff) {
+        console.warn('[x-agent] delivery cutoff exceeded before create; prompt not delivered', {
+          callerSlug,
+          targetSlug,
+        })
+        return c.json({ error: deliveryCutoffError() }, 504)
+      }
+      stage = 'create_session'
+      // createSession IS the delivery (initialMessage carries the prompt) and
+      // cannot be cancelled mid-flight, so race it against the cutoff: if it
+      // lands after the caller's fetch is already dead, revoke the session the
+      // moment it materializes instead of leaving a ghost run for the caller's
+      // retry to duplicate.
+      const createPromise = client.createSession({
+        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: prompt,
+        ...(initialMessageUuid ? { initialMessageUuid } : {}),
+        model: resolved.model,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        effort: resolved.effort,
+        speed: resolved.speed,
+        maxOutputTokens: agentLimits.maxOutputTokens,
+        maxThinkingTokens: agentLimits.maxThinkingTokens,
+        maxTurns: agentLimits.maxTurns,
+        maxBudgetUsd: agentLimits.maxBudgetUsd,
+        customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
+        maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+      })
+      const created = await raceDeadline(createPromise, deliveryCutoff)
+      if (created === DEADLINE) {
+        console.warn('[x-agent] delivery cutoff exceeded during create; late session will be revoked', {
+          callerSlug,
+          targetSlug,
+        })
+        void createPromise.then(
+          (lateSession) =>
+            client.deleteSession(lateSession.id).catch((cleanupErr) => {
+              console.error('[x-agent] failed to revoke late-created session', {
+                sessionId: lateSession.id,
+                error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+              })
+            }),
+          () => {}, // create itself failed — nothing to revoke
+        )
+        return c.json({ error: lateDeliveryRevokedError() }, 504)
+      }
+      const containerSession = created
+      const newSessionId = containerSession.id
+      await reserveSessionOwnership(targetSlug, newSessionId)
+      // Mark active before any await so waitForIdle sees state if result arrives early.
+      messagePersister.markSessionActive(newSessionId, targetSlug)
+
+      const authorRecorded = initialMessageUuid && attributedUserId
+        ? await insertMessageAuthorBestEffort({
+            id: initialMessageUuid,
+            sessionId: newSessionId,
+            agentSlug: targetSlug,
+            userId: attributedUserId,
+          })
+        : false
+
+      stage = 'register_session'
+      try {
+        await registerSession(targetSlug, newSessionId, `Invoked by ${callerName}`)
+      } catch (registerErr) {
+        const message = registerErr instanceof Error ? registerErr.message : String(registerErr)
+        console.error('[x-agent] invoke failed', {
+          callerSlug,
+          targetSlug,
+          sessionId: newSessionId,
+          stage,
+          error: message,
+        })
+        captureException(registerErr, {
+          tags: { ...X_AGENT_SENTRY, stage },
+          extra: { callerSlug, targetSlug, sessionId: newSessionId },
+        })
+        await client.deleteSession(newSessionId).catch((cleanupErr) => {
+          console.error('[x-agent] failed to clean up orphaned container session', {
+            sessionId: newSessionId,
+            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          })
+        })
+        if (authorRecorded && initialMessageUuid) {
+          await deleteMessageAuthorBestEffort(initialMessageUuid)
+        }
+        messagePersister.unsubscribeFromSession(newSessionId)
+        return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
+      }
+
+      try {
+        await updateSessionMetadata(targetSlug, newSessionId, {
+          invokedByAgentSlug: callerSlug,
+          ...(authorRecorded && attributedUserId ? { createdByUserId: attributedUserId } : {}),
+        })
+      } catch (metaErr) {
+        console.warn('[x-agent] updateSessionMetadata failed (session usable, provenance not recorded)', {
+          callerSlug,
+          targetSlug,
+          sessionId: newSessionId,
+          error: metaErr instanceof Error ? metaErr.message : String(metaErr),
+        })
+      }
+
+      stage = 'subscribe'
+      try {
+        await subscribeWithTimeout(
+          messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug),
+        )
+      } catch (subscribeErr) {
+        const message = subscribeErr instanceof Error ? subscribeErr.message : String(subscribeErr)
+        console.error('[x-agent] invoke failed', {
+          callerSlug,
+          targetSlug,
+          sessionId: newSessionId,
+          stage,
+          error: message,
+        })
+        captureException(subscribeErr, {
+          tags: { ...X_AGENT_SENTRY, stage },
+          extra: { callerSlug, targetSlug, sessionId: newSessionId },
+        })
+        // Without the stream attach nothing would persist this session's
+        // transcript — it would run as an invisible ghost. Revoke it, same
+        // remediation as a failed registration above.
+        await client.deleteSession(newSessionId).catch((cleanupErr) => {
+          console.error('[x-agent] failed to clean up orphaned container session', {
+            sessionId: newSessionId,
+            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          })
+        })
+        if (authorRecorded && initialMessageUuid) {
+          await deleteMessageAuthorBestEffort(initialMessageUuid)
+        }
+        messagePersister.unsubscribeFromSession(newSessionId)
+        return c.json({ error: `Failed to attach to invoked session: ${message}` }, 500)
+      }
+      if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
+        messagePersister.setSlashCommands(newSessionId, containerSession.slashCommands)
+      }
+
+      if (sync) {
+        stage = 'wait_for_idle'
+        let outcome: 'completed' | 'timeout'
+        try {
+          outcome = await waitForTurnWithinBudget(newSessionId, syncDeadline)
+        } catch (error) {
+          return c.json({
+            sessionId: newSessionId,
+            status: 'running',
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+        if (outcome === 'timeout') {
+          // Budget exhausted (whether before or during the wait) means the
+          // target is simply still working — promote to the async contract
+          // with explicit guidance so the caller polls instead of re-invoking
+          // (a re-invoke duplicates the whole run).
+          return c.json({
+            sessionId: newSessionId,
+            status: 'running',
+            error: syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS),
+          })
+        }
+        const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)
+        return c.json({
+          sessionId: newSessionId,
+          status: 'completed',
+          lastMessage: lastMessage?.content,
+        })
+      }
+      return c.json({ sessionId: newSessionId, status: 'running' })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[x-agent] invoke failed', {
+        callerSlug,
+        targetSlug,
+        existingSessionId: existingSessionId ?? null,
+        stage,
+        error: message,
+      })
+      captureException(err, {
+        tags: { ...X_AGENT_SENTRY, stage },
+        extra: { callerSlug, targetSlug, existingSessionId: existingSessionId ?? null },
+      })
+      return c.json({ error: `Failed to invoke agent (${stage}): ${message}` }, 500)
+    }
   })
 })
 

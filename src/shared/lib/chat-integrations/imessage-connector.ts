@@ -8,8 +8,17 @@
 
 import WebSocket from 'ws'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
-import { ChatClientConnector, type OutgoingMessage } from './base-connector'
-import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
+import type { SessionActivity } from '@shared/lib/types/agent'
+import {
+  ChatClientConnector,
+  isMultiPartyChatType,
+  type ChatClassifyContext,
+  type ChatConversationType,
+  type OutgoingMessage,
+  type SystemPromptContext,
+} from './base-connector'
+import { buildSessionContextPrompt } from './chat-session-context'
+import { describeUnsupportedRequest, isUnsupportedInChat, withSessionUrl, type AppLinkContext } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -59,10 +68,39 @@ interface PendingQuestion {
   }>
 }
 
+/**
+ * Classify an iMessage chat. This depends on the bridge contract that chatName
+ * is present only for group chats.
+ * Without a name we return undefined (not dm) so listing callers that only
+ * have a chat id do not mislabel groups as private.
+ */
+export function classifyIMessageChat(chat: ChatClassifyContext): ChatConversationType | undefined {
+  return chat.chatName ? 'group' : undefined
+}
+
+const IMESSAGE_PROVIDER_RULES = `- Prefer asking questions directly in natural language rather than using the ask questions tool.
+- You can react to the user's last message by starting your response with a reaction tag. Available reactions: [[reaction:heart]], [[reaction:thumbs_up]], [[reaction:thumbs_down]], [[reaction:haha]], [[reaction:emphasize]], [[reaction:question]]. The tag will be stripped from the message and sent as a tapback reaction. If your entire response is just a reaction tag, only the reaction is sent (no text message).
+- The user may send voice notes which are automatically transcribed.`
+
+export function buildIMessageSystemPrompt(message: SystemPromptContext): string {
+  const kind = classifyIMessageChat(message)
+  const shared = buildSessionContextPrompt({
+    surface: 'chat',
+    where: kind === 'group'
+      ? 'a live iMessage group conversation'
+      : 'a live iMessage conversation',
+    multiParty: isMultiPartyChatType(kind),
+  })
+  return `${shared}\n${IMESSAGE_PROVIDER_RULES}`
+}
+
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class IMessageConnector extends ChatClientConnector {
   readonly provider = 'imessage' as const
+
+  static generateSystemPrompt = buildIMessageSystemPrompt
+  static classifyChatId = classifyIMessageChat
 
   private ws: WebSocket | null = null
   private _connected = false
@@ -79,6 +117,10 @@ export class IMessageConnector extends ChatClientConnector {
 
   private lastReceivedMessageId: string | null = null
   private lastChatId: string | null = null
+  // Chats currently showing the typing bubble. The manager's tick calls startWorking
+  // every ~1s for keep-alive; iMessage's bubble self-expires, so we send start_typing
+  // once per working segment (on the not-shown→shown edge) instead of on every tick.
+  private typingShown: Set<string> = new Set()
   private pendingApprovals: Map<string, PendingApproval> = new Map()
   private pendingQuestions: Map<string, PendingQuestion> = new Map()
 
@@ -88,7 +130,7 @@ export class IMessageConnector extends ChatClientConnector {
   private nextUploadId = 0
   private nextApprovalId = 0
 
-  constructor(private config: IMessageConfig) {
+  constructor(private config: IMessageConfig, private appLink?: AppLinkContext) {
     super()
   }
 
@@ -248,9 +290,20 @@ export class IMessageConnector extends ChatClientConnector {
     await this.sendMessage(chatId, { text: finalText })
   }
 
-  async showTypingIndicator(chatId: string): Promise<void> {
-    const targetChatId = chatId || this.lastChatId || undefined
+  async startWorking(chatId: string, _activity: SessionActivity): Promise<void> {
+    // iMessage shows only a typing indicator, so the activity label is unused.
+    const targetChatId = chatId || this.lastChatId
+    if (!targetChatId) return
+    if (this.typingShown.has(targetChatId)) return // already shown — tick keep-alive no-ops
+    this.typingShown.add(targetChatId)
     this.send({ type: 'start_typing', data: { chatId: targetChatId } })
+  }
+
+  async stopWorking(chatId: string): Promise<void> {
+    // No stop_typing command exists; the OS bubble self-expires. Clear the shown flag
+    // so the next working segment re-arms start_typing.
+    const targetChatId = chatId || this.lastChatId
+    if (targetChatId) this.typingShown.delete(targetChatId)
   }
 
   async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
@@ -313,14 +366,15 @@ export class IMessageConnector extends ChatClientConnector {
 
   // ── User request cards ──────────────────────────────────────────────
 
-  async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
+  async sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
+    const appLink = withSessionUrl(this.appLink, sessionId)
     const targetChatId = chatId || this.lastChatId || undefined
     if (isUnsupportedInChat(event)) {
-      return this.sendTextAndReturn(describeUnsupportedRequest(event), targetChatId)
+      return this.sendTextAndReturn(describeUnsupportedRequest(event, appLink), targetChatId)
     }
 
     switch (event.type) {
-      case 'user_question_request': {
+      case 'question_request': {
         // Handle proxy review requests (approval cards)
         if (event.toolUseId.startsWith('review:')) {
           return this.sendApprovalCard(event, targetChatId)
@@ -328,15 +382,8 @@ export class IMessageConnector extends ChatClientConnector {
         return this.sendQuestionCard(event, targetChatId)
       }
 
-      case 'secret_request': {
-        const text = `Secret requested: ${event.secretName}${event.reason ? `\nReason: ${event.reason}` : ''}\n\nPlease reply with the secret value.`
-        return this.sendTextAndReturn(text, targetChatId)
-      }
-
-      case 'file_request': {
-        const text = `File requested:\n${event.description}${event.fileTypes ? `\n\nAccepted types: ${event.fileTypes}` : ''}\n\nPlease send the file.`
-        return this.sendTextAndReturn(text, targetChatId)
-      }
+      // secret_request / file_request are handled by the isUnsupportedInChat early-return above
+      // (desktop-only fallback); they intentionally have no prompt case here.
 
       case 'file_delivery': {
         const text = `File delivered: ${event.filePath}${event.description ? `\n${event.description}` : ''}`
@@ -350,7 +397,7 @@ export class IMessageConnector extends ChatClientConnector {
       }
 
       default: {
-        return this.sendTextAndReturn(describeUnsupportedRequest(event), targetChatId)
+        return this.sendTextAndReturn(describeUnsupportedRequest(event, appLink), targetChatId)
       }
     }
   }
@@ -711,7 +758,7 @@ function guessMimeType(filename: string): string {
     webp: 'image/webp', svg: 'image/svg+xml', pdf: 'application/pdf',
     mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', ogg: 'audio/ogg',
     mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm',
-    txt: 'text/plain', json: 'application/json', csv: 'text/csv',
+    txt: 'text/plain', json: 'application/json', csv: 'text/csv', vcf: 'text/vcard',
     zip: 'application/zip',
   }
   return (ext && map[ext]) || 'application/octet-stream'

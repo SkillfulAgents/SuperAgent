@@ -15,6 +15,8 @@ export type { PlatformAuthSource }
 
 export interface PlatformAuthStatus extends SharedPlatformAuthStatus {
   platformBaseUrl: string
+  /** AUTH_MODE + PLATFORM_TOKEN — same predicate as server resolveAuthSettings. */
+  platformControlled?: boolean
 }
 
 export interface PlatformAuthCallbackParams {
@@ -95,12 +97,16 @@ function usePlatformAuthCallbackListener(
 
     const handleCallback = (params: PlatformAuthCallbackParams) => {
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      // Reset, not invalidate: this key holds another account's deployment URL
+      // behind a live "Open" button, and invalidation keeps serving stale data
+      // while the refetch runs. Reset drops it and refetches from scratch.
+      queryClient.resetQueries({ queryKey: ['cloud-workspace'] })
       callbackRef.current?.(params)
     }
 
-    window.electronAPI.onPlatformAuthCallback(handleCallback)
+    const unsubscribe = window.electronAPI.onPlatformAuthCallback(handleCallback)
     return () => {
-      window.electronAPI?.removePlatformAuthCallback?.()
+      unsubscribe?.()
     }
   }, [queryClient])
 }
@@ -121,6 +127,88 @@ function useApplyPlatformDefaults() {
 export interface PlatformConnectOptions {
   onSuccess?: (params: PlatformAuthCallbackParams) => void
   successMessage?: string | ((wasConnected: boolean) => string | null) | null
+}
+
+// ---------------------------------------------------------------------------
+// Download-carried enrollment ("Continue as X"): the main process may recover
+// a single-use nonce from the installer's surroundings. When it resolves, the
+// onboarding button offers one-click sign-in; redeeming runs through the same
+// completion path as the manual access-key flow.
+// ---------------------------------------------------------------------------
+
+export interface DownloadNonceOffer {
+  available: boolean
+  email?: string
+  orgName?: string
+  avatarUrl?: string
+}
+
+export function useDownloadNonceOffer(enabled: boolean) {
+  return useQuery<DownloadNonceOffer>({
+    queryKey: ['download-nonce-offer'],
+    enabled,
+    // The offer only changes through redeem/dismiss, which update the cache
+    // directly.
+    staleTime: Infinity,
+    queryFn: async () => {
+      const res = await apiFetch('/api/platform-auth/download-nonce')
+      if (!res.ok) return { available: false }
+      return res.json()
+    },
+  })
+}
+
+export function useRedeemDownloadNonce() {
+  const queryClient = useQueryClient()
+  const applyPlatformDefaults = useApplyPlatformDefaults()
+
+  return useMutation<unknown, Error>({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async () => {
+      const res = await apiFetch('/api/platform-auth/download-nonce/redeem', {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to sign in.')
+      }
+      return res.json()
+    },
+    onSuccess: async () => {
+      window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
+      queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      // Reset, not invalidate: this key holds another account's deployment URL
+      // behind a live "Open" button, and invalidation keeps serving stale data
+      // while the refetch runs. Reset drops it and refetches from scratch.
+      queryClient.resetQueries({ queryKey: ['cloud-workspace'] })
+      queryClient.setQueryData<DownloadNonceOffer>(['download-nonce-offer'], { available: false })
+      await applyPlatformDefaults().catch(() => {})
+
+      triggerPlatformSkillsetSync(queryClient)
+    },
+    onError: () => {
+      // Whatever went wrong (expired, consumed elsewhere, offline), the offer
+      // may be gone — refetch so the button falls back to the normal flow.
+      queryClient.invalidateQueries({ queryKey: ['download-nonce-offer'] })
+    },
+  })
+}
+
+export function useDismissDownloadNonce() {
+  const queryClient = useQueryClient()
+
+  return useMutation<unknown, Error>({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async () => {
+      const res = await apiFetch('/api/platform-auth/download-nonce/dismiss', {
+        method: 'POST',
+      })
+      return res.ok ? res.json() : {}
+    },
+    onSuccess: () => {
+      queryClient.setQueryData<DownloadNonceOffer>(['download-nonce-offer'], { available: false })
+    },
+  })
 }
 
 export function useSavePlatformAccessKey() {
@@ -144,6 +232,10 @@ export function useSavePlatformAccessKey() {
     onSuccess: async () => {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      // Reset, not invalidate: this key holds another account's deployment URL
+      // behind a live "Open" button, and invalidation keeps serving stale data
+      // while the refetch runs. Reset drops it and refetches from scratch.
+      queryClient.resetQueries({ queryKey: ['cloud-workspace'] })
       await applyPlatformDefaults().catch(() => {})
 
       triggerPlatformSkillsetSync(queryClient)

@@ -6,6 +6,7 @@
  */
 
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { SessionActivity } from '@shared/lib/types/agent'
 import type { ChatProvider } from './config-schema'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -18,6 +19,7 @@ export interface IncomingMessage {
   text: string
   chatId: string               // Telegram chat_id or Slack channel_id
   userId: string               // Telegram user_id or Slack user_id
+  chatType?: 'private' | 'group' | 'supergroup'  // Telegram chat type (undefined for non-Telegram connectors)
   userName?: string            // Display name of the user (for session naming)
   chatName?: string            // Display name of the chat/channel (for session naming)
   files?: { name: string; url: string; mimeType?: string }[]
@@ -31,14 +33,118 @@ export interface OutgoingMessage {
 }
 
 export type MessageHandler = (message: IncomingMessage) => void
-export type InteractiveResponseHandler = (toolUseId: string, response: unknown) => void
+export type InteractiveResponseHandler = (toolUseId: string, response: unknown, chatId?: string) => void
 export type ErrorHandler = (error: Error) => void
 export type TypingHintHandler = (chatId: string) => void
+
+/** Context available at chat-session creation, passed to generateSystemPrompt. */
+export type SystemPromptContext = Pick<IncomingMessage, 'chatId' | 'chatName' | 'userName'>
+
+/** What a connector's chat classifier gets to look at. */
+export type ChatClassifyContext = Pick<IncomingMessage, 'chatId' | 'chatName'>
+
+/** What kind of conversation a chat addresses, for labeling and attribution. */
+export type ChatConversationType = 'dm' | 'channel' | 'group' | 'thread'
+
+/**
+ * Whether more than one person can post. Fail-closed: only group/channel/thread
+ * count; undefined (unclassified) does not.
+ */
+export function isMultiPartyChatType(type: ChatConversationType | undefined): boolean {
+  return type === 'group' || type === 'channel' || type === 'thread'
+}
+
+/** Optional discovery features a provider can support (see discoveryCapabilities). */
+export type ChatDiscoveryCapability = 'list_users' | 'list_channels' | 'dm_by_user_id'
+
+/** A person reachable through a provider's directory. */
+export interface ChatDirectoryUser {
+  id: string
+  name: string
+  title?: string
+}
+
+/** A channel/group the bot could post into. */
+export interface ChatDirectoryChannel {
+  id: string
+  name: string
+  isPrivate?: boolean
+  /** Whether the bot is a member (it may be unable to post where it isn't). */
+  isMember?: boolean
+}
+
+/**
+ * A capped directory listing. `truncated` is true when the provider had more
+ * entries than the cap — callers must surface that rather than presenting the
+ * list as complete.
+ */
+export interface ChatDirectoryPage<T> {
+  items: T[]
+  truncated: boolean
+}
+
+/**
+ * Static surface of a connector class, for capability lookups that never
+ * construct (concrete connectors have provider-specific constructor args, so
+ * `typeof ChatClientConnector` — which carries a construct signature — would
+ * not admit them).
+ */
+export type ChatConnectorClass = Pick<
+  typeof ChatClientConnector,
+  'generateSystemPrompt' | 'discoveryCapabilities' | 'classifyChatId'
+>
 
 // ── Abstract class ──────────────────────────────────────────────────────
 
 export abstract class ChatClientConnector {
   abstract readonly provider: ChatProvider
+
+  /**
+   * Optional provider-specific system prompt attached to every NEW chat
+   * session for this provider. Implement it to tell the agent what kind of
+   * conversation it is serving (e.g. Slack DM vs channel thread) and any
+   * provider conventions (delivery semantics, reaction tags, …).
+   *
+   * Static rather than an instance method: the prompt derives from the
+   * incoming message alone and must not depend on live connection state.
+   */
+  static generateSystemPrompt?: (message: SystemPromptContext) => string
+
+  /**
+   * Discovery features this provider supports, advertised to agents via
+   * list_chat_integrations so tools that need a capability are only ever
+   * suggested where it exists. Static (a property of the provider, not a
+   * connection) so listings can label integrations without a live connector.
+   * Undefined/empty means no discovery support — the graceful default.
+   */
+  static discoveryCapabilities?: ReadonlyArray<ChatDiscoveryCapability>
+
+  /**
+   * Classify a chat as dm/channel/group/thread. Each provider uses its best
+   * signal (Slack/Telegram: id shape; iMessage: chatName when the bridge set
+   * one). Optional: providers that cannot classify leave chats unlabeled.
+   * Static for the same reason generateSystemPrompt is: it derives from the
+   * message alone. Listing callers may pass only chatId.
+   */
+  static classifyChatId?: (chat: ChatClassifyContext) => ChatConversationType | undefined
+
+  /**
+   * List people reachable through the provider's directory (capability:
+   * list_users). Implementations must cap the result and set `truncated`
+   * rather than returning unbounded listings from large workspaces.
+   */
+  listChatUsers?(): Promise<ChatDirectoryPage<ChatDirectoryUser>>
+
+  /** List channels/groups the bot could post into (capability: list_channels). */
+  listChatChannels?(): Promise<ChatDirectoryPage<ChatDirectoryChannel>>
+
+  /**
+   * Return (opening if needed) the chat id of a 1:1 conversation with a
+   * directory user (capability: dm_by_user_id). Lets a send reach a person the
+   * bot has never talked to. Throws when the provider refuses (e.g. the user
+   * left the workspace).
+   */
+  resolveDirectChat?(userId: string): Promise<string>
 
   protected messageHandlers: MessageHandler[] = []
   protected interactiveResponseHandlers: InteractiveResponseHandler[] = []
@@ -65,8 +171,21 @@ export abstract class ChatClientConnector {
   /** Finalize a streaming message (last edit with final text). */
   abstract finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void>
 
-  /** Show typing / processing indicator. */
-  abstract showTypingIndicator(chatId: string): Promise<void>
+  /**
+   * Signal that the agent is busy, labeled by what it is doing (`activity`). The
+   * connector owns how that maps to its surface (Telegram labels a draft, Slack
+   * reacts) AND any keep-alive needed to survive provider-side expiry. Called
+   * again with a new activity when the label changes mid-turn. Idempotent — safe
+   * to call repeatedly for the same chat.
+   */
+  abstract startWorking(chatId: string, activity: SessionActivity): Promise<void>
+
+  /**
+   * Stop the working indicator as the response takes over. Idempotent — safe to
+   * call repeatedly. Default no-op for connectors whose indicator is ephemeral
+   * and self-expires.
+   */
+  async stopWorking(_chatId: string): Promise<void> {}
 
   /**
    * Send a file to the chat. Returns the external message ID.
@@ -83,7 +202,24 @@ export abstract class ChatClientConnector {
    * (Slack Block Kit, Telegram inline keyboards, etc.).
    * Returns the external message ID.
    */
-  abstract sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string>
+  abstract sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string>
+
+  /**
+   * Resolve an open single-question AskUserQuestion card with a free-typed message as the
+   * "Other" answer. Returns true only if a live card matching `toolUseId` is open for this chat,
+   * so the manager consumes the message only on a real resolve. Default: not supported (false).
+   */
+  async answerOpenQuestionWithText(_chatId: string, _toolUseId: string, _text: string): Promise<boolean> {
+    return false
+  }
+
+  /**
+   * Dismiss every open request card for this chat: strip its inline keyboard and forget its
+   * callbacks, so a card abandoned by a cancelling message doesn't keep showing live buttons.
+   * Called on the cancel path when a new message starts a fresh turn. Default no-op for
+   * connectors without interactive cards.
+   */
+  async dismissOpenCards(_chatId: string): Promise<void> {}
 
   /** Whether the connection is healthy right now. */
   abstract isConnected(): boolean
@@ -132,10 +268,10 @@ export abstract class ChatClientConnector {
     }
   }
 
-  protected emitInteractiveResponse(toolUseId: string, response: unknown): void {
+  protected emitInteractiveResponse(toolUseId: string, response: unknown, chatId?: string): void {
     for (const handler of this.interactiveResponseHandlers) {
       try {
-        handler(toolUseId, response)
+        handler(toolUseId, response, chatId)
       } catch (err) {
         console.error('[ChatConnector] Error in interactive response handler:', err)
         captureException(err, { tags: { component: 'chat-integration', operation: 'emit-interactive-response' }, extra: { provider: this.provider, toolUseId } })

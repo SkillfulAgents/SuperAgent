@@ -1,0 +1,25 @@
+{
+  "sessionId": "18762a15-e1e9-443c-ae5e-e55f138989ac",
+  "agentSlug": "capture",
+  "description": "Real capture (2026-07-09, SDK 0.3.206). A 2-agent local_workflow run (mirrors local-workflow-capture-probe incl. an interpolated-prompt agent). Contains BOTH the wire stream (stream-input.jsonl with task_* + background_tasks_changed{task_type:local_workflow} frames) AND the on-disk session tree (<sessionId>/ with journal.jsonl, agent transcripts, script) for workflow-tree/journal-tailer/route tests.",
+  "sdkVersion": "0.3.206",
+  "cliVersion": "2.1.206",
+  "capturedAt": "2026-07-09",
+  "startActive": true,
+  "subagents": [],
+  "backgroundTasks": [
+    {
+      "taskId": "wi9tu82w7",
+      "taskType": "local_workflow",
+      "startedT": 515735,
+      "prematureIdleT": 517326,
+      "realCompletionT": 518396
+    }
+  ],
+  "newFrameCounts": {
+    "background_tasks_changed": 2,
+    "result.terminal_reason:completed": 2,
+    "command_lifecycle:completed": 1
+  },
+  "totalEntries": 52
+}

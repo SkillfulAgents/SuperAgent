@@ -7,6 +7,7 @@ export class OpenAIVoiceAgentAdapter implements VoiceAgentAdapter {
   private ws: WebSocket | null = null
   private eventCb: VoiceAgentEventCallback | null = null
   private connected = false
+  private closed = false
   readonly inputSampleRate = 24000
   readonly outputSampleRate = 24000
 
@@ -36,7 +37,7 @@ export class OpenAIVoiceAgentAdapter implements VoiceAgentAdapter {
         const err = new Error('OpenAI Realtime WebSocket connection failed')
         if (!this.connected) {
           reject(err)
-        } else {
+        } else if (!this.closed) {
           this.eventCb?.({ type: 'error', message: err.message })
         }
       }
@@ -51,7 +52,9 @@ export class OpenAIVoiceAgentAdapter implements VoiceAgentAdapter {
       }
 
       this.ws.onclose = (event) => {
-        if (event.code !== 1000 && event.code !== 1005) {
+        // Suppress the error for a deliberate close (e.g. stopping a still-connecting
+        // session yields a non-1000 close that isn't a real failure).
+        if (!this.closed && event.code !== 1000 && event.code !== 1005) {
           this.eventCb?.({ type: 'error', message: `OpenAI connection closed: ${event.code} ${event.reason}` })
         }
         this.eventCb?.({ type: 'disconnected' })
@@ -228,6 +231,7 @@ export class OpenAIVoiceAgentAdapter implements VoiceAgentAdapter {
   }
 
   close(): void {
+    this.closed = true
     if (this.ws) {
       this.ws.close()
       this.ws = null

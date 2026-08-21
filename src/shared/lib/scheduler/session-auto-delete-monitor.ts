@@ -6,6 +6,7 @@ import {
 } from '@shared/lib/services/session-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-task-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { getSettings } from '@shared/lib/config/settings'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -97,12 +98,16 @@ class SessionAutoDeleteMonitor {
 
     const metadata = await readSessionMetadata(agentSlug)
     const cutoff = Date.now() - inactiveDays * 86_400_000
+    // A long-sleeping session can be inactive far past the cutoff by design —
+    // deleting it would silently destroy the very session its wake resumes.
+    const pendingWakeSessionIds = await listSessionIdsWithPendingWakes(agentSlug)
 
     const toDelete = sessions
       .filter((s) => {
         if (s.lastActivityAt.getTime() >= cutoff) return false
         if (metadata[s.id]?.starred) return false
         if (messagePersister.isSessionActive(s.id)) return false
+        if (pendingWakeSessionIds.has(s.id)) return false
         return true
       })
       .map((s) => s.id)

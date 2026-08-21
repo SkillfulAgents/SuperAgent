@@ -10,6 +10,11 @@ export class SubagentCapture {
   private readonly baseDir: string
   private readonly startedAt = Date.now()
   private snapshotCounter = 0
+  // Serializes appends per file. Callers fire-and-forget recordInput/recordOutput,
+  // so without this two near-simultaneous messages can land in the file in the
+  // wrong order (the fixture line order then disagrees with processing order,
+  // which the `t` field — stamped synchronously at call time — preserves).
+  private writeChains = new Map<string, Promise<void>>()
 
   constructor(baseDir: string) {
     this.baseDir = baseDir
@@ -69,13 +74,19 @@ export class SubagentCapture {
     }
   }
 
-  private async append(sessionId: string, fileName: string, data: unknown): Promise<void> {
-    try {
-      const dir = this.sessionDir(sessionId)
-      await fsPromises.mkdir(dir, { recursive: true })
-      await fsPromises.appendFile(path.join(dir, fileName), JSON.stringify(data) + '\n')
-    } catch {
-      // Capture is best-effort — never disrupt real flow.
-    }
+  private append(sessionId: string, fileName: string, data: unknown): Promise<void> {
+    const key = `${sessionId}/${fileName}`
+    const line = JSON.stringify(data) + '\n'
+    const chained = (this.writeChains.get(key) ?? Promise.resolve()).then(async () => {
+      try {
+        const dir = this.sessionDir(sessionId)
+        await fsPromises.mkdir(dir, { recursive: true })
+        await fsPromises.appendFile(path.join(dir, fileName), line)
+      } catch {
+        // Capture is best-effort — never disrupt real flow.
+      }
+    })
+    this.writeChains.set(key, chained)
+    return chained
   }
 }

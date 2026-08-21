@@ -1,0 +1,31 @@
+{
+  "sessionId": "061706a6-3343-477f-9f7b-c648a01d939c",
+  "agentSlug": "capture",
+  "description": "Real capture (2026-07-09, SDK 0.3.206). Two Agent tool calls in one assistant message with run_in_background:false (explicit synchronous override of the new background default). Guards sidechain routing + subagent card bookkeeping for parallel synchronous subagents.",
+  "sdkVersion": "0.3.206",
+  "cliVersion": "2.1.206",
+  "capturedAt": "2026-07-09",
+  "startActive": true,
+  "subagents": [],
+  "backgroundTasks": [
+    {
+      "taskId": "a0dc5c2fc663d2eda",
+      "taskType": "local_agent",
+      "startedT": 283941,
+      "prematureIdleT": null,
+      "realCompletionT": 286218
+    },
+    {
+      "taskId": "a9df88f71302198fd",
+      "taskType": "local_agent",
+      "startedT": 284955,
+      "prematureIdleT": null,
+      "realCompletionT": 286369
+    }
+  ],
+  "newFrameCounts": {
+    "result.terminal_reason:completed": 1,
+    "command_lifecycle:completed": 1
+  },
+  "totalEntries": 50
+}

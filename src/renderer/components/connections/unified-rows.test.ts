@@ -140,4 +140,35 @@ describe('buildUnifiedRows', () => {
     expect(rows[0].toolkit).toBe('slack')
     expect(rows[0].type).toBe('oauth')
   })
+
+  it('renders foreign links as generic, granted rows without resource metadata', () => {
+    const rows = buildUnifiedRows({
+      allAccounts: [],
+      allMcps: [],
+      foreignAccounts: [{ kind: 'connected-account', toolkitSlug: 'github' }],
+      foreignMcps: [{ kind: 'remote-mcp' }],
+    })
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        key: 'foreign-account-github-0',
+        name: 'GitHub',
+        subtitle: 'Connected by another member',
+        type: 'oauth',
+        granted: true,
+        foreign: true,
+      }),
+      expect.objectContaining({
+        key: 'foreign-mcp-0',
+        name: 'Shared MCP connection',
+        subtitle: 'Connected by another member',
+        type: 'mcp',
+        granted: true,
+        foreign: true,
+      }),
+    ])
+    expect(rows.every((row) => row.date === undefined)).toBe(true)
+    expect(rows.every((row) => row.mcpTools === undefined)).toBe(true)
+    expect(rows.every((row) => row.mcpErrorMessage === undefined)).toBe(true)
+  })
 })

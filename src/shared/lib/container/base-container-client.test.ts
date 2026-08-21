@@ -5,6 +5,16 @@ import * as os from 'os'
 import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient } from './base-container-client'
 import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
 
+const enableToolSearch = vi.fn((): boolean | undefined => true)
+vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => ({ enableToolSearch: enableToolSearch() }),
+}))
+const getContainerEnvVars = vi.fn(() => ({ ANTHROPIC_API_KEY: 'provider-key' }))
+const toolSearchEnv = vi.fn((): 'true' | undefined => 'true')
+vi.mock('@shared/lib/llm-provider', () => ({
+  getActiveLlmProvider: () => ({ getContainerEnvVars, toolSearchEnv: toolSearchEnv() }),
+}))
+
 /** Minimal concrete subclass to exercise protected run-error classification. */
 class TestContainerClient extends BaseContainerClient {
   protected getRunnerCommand(): string {
@@ -17,7 +27,58 @@ class TestContainerClient extends BaseContainerClient {
   public testExtractInaccessibleMountPath(error: unknown): string | null {
     return this.extractInaccessibleMountPath(error)
   }
+  public testBuildAgentEnv(extra?: Record<string, string>): Record<string, string> {
+    return this.buildAgentEnv(extra)
+  }
 }
+
+describe('buildAgentEnv', () => {
+  afterEach(() => {
+    enableToolSearch.mockReturnValue(true)
+    toolSearchEnv.mockReturnValue('true')
+  })
+
+  it('merges provider env, constants, config.envVars and per-start extra (later wins)', () => {
+    const client = new TestContainerClient({
+      agentId: 'a',
+      envVars: { FROM_CONFIG: 'c', ANTHROPIC_API_KEY: 'from-config' }, // config beats provider
+    })
+    const env = client.testBuildAgentEnv({ FROM_EXTRA: 'e', FROM_CONFIG: 'from-extra' }) // extra beats config
+    expect(env.ANTHROPIC_API_KEY).toBe('from-config')
+    expect(env.FROM_CONFIG).toBe('from-extra')
+    expect(env.FROM_EXTRA).toBe('e')
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/workspace/.claude')
+    expect(env.ENABLE_TOOL_SEARCH).toBe('true')
+  })
+
+  it('sets ENABLE_TOOL_SEARCH=false only when the setting is explicitly false', () => {
+    enableToolSearch.mockReturnValue(false)
+    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    expect(env.ENABLE_TOOL_SEARCH).toBe('false')
+  })
+
+  it('leaves ENABLE_TOOL_SEARCH unset when the provider does not declare one', () => {
+    toolSearchEnv.mockReturnValue(undefined)
+    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    expect('ENABLE_TOOL_SEARCH' in env).toBe(false)
+  })
+
+  // The setting is a master switch, not a way to force tool search onto an
+  // endpoint that rejects deferred tools.
+  it('keeps ENABLE_TOOL_SEARCH=false over the provider value when the setting is off', () => {
+    enableToolSearch.mockReturnValue(false)
+    toolSearchEnv.mockReturnValue(undefined)
+    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    expect(env.ENABLE_TOOL_SEARCH).toBe('false')
+  })
+
+  it('passes the agent identity to the provider so it can attribute LLM usage', () => {
+    new TestContainerClient({ agentId: 'my-agent', envVars: {} }).testBuildAgentEnv()
+    expect(getContainerEnvVars).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'my-agent' })
+    )
+  })
+})
 
 describe('writeEnvFile', () => {
   const cleanups: (() => void)[] = []
@@ -673,6 +734,67 @@ describe('BaseContainerClient.isPortConflictError', () => {
 
   it('base extractInaccessibleMountPath returns null (no VM filesystem)', () => {
     expect(client.testExtractInaccessibleMountPath(new Error('operation not permitted'))).toBe(null)
+  })
+})
+
+// ============================================================================
+// ensureImageExistsWithRecovery — SUP-291: the image BUILD step runs before
+// start()'s run-retry loop, so a dirty/unreachable runtime must get the same
+// one-shot self-heal the run step gets (else a scheduled task firing against a
+// not-yet-healed Lima VM hard-fails on a missing ha.sock).
+// ============================================================================
+
+describe('BaseContainerClient.ensureImageExistsWithRecovery', () => {
+  function makeClient() {
+    return new TestContainerClient({ agentId: 'test-agent' }) as any
+  }
+
+  it('builds once and never calls recovery when the build succeeds', async () => {
+    const client = makeClient()
+    const build = vi.spyOn(client, 'ensureImageExists').mockResolvedValue(undefined)
+    const recover = vi.spyOn(client, 'handleRunError').mockResolvedValue(true)
+
+    await client.ensureImageExistsWithRecovery()
+
+    expect(build).toHaveBeenCalledTimes(1)
+    expect(recover).not.toHaveBeenCalled()
+  })
+
+  it('self-heals and retries the build once when recovery succeeds', async () => {
+    const client = makeClient()
+    const buildErr = new Error('Container build failed with code 255: stat …/ha.sock: no such file or directory')
+    const build = vi.spyOn(client, 'ensureImageExists')
+      .mockRejectedValueOnce(buildErr)
+      .mockResolvedValueOnce(undefined)
+    const recover = vi.spyOn(client, 'handleRunError').mockResolvedValue(true)
+
+    await expect(client.ensureImageExistsWithRecovery()).resolves.toBeUndefined()
+
+    expect(recover).toHaveBeenCalledWith(buildErr)
+    expect(build).toHaveBeenCalledTimes(2)
+  })
+
+  it('rethrows the original build error when recovery is a no-op (e.g. non-Lima runner)', async () => {
+    const client = makeClient()
+    const buildErr = new Error('Dockerfile syntax error')
+    const build = vi.spyOn(client, 'ensureImageExists').mockRejectedValueOnce(buildErr)
+    const recover = vi.spyOn(client, 'handleRunError').mockResolvedValue(false) // base default
+
+    await expect(client.ensureImageExistsWithRecovery()).rejects.toThrow('Dockerfile syntax error')
+
+    expect(recover).toHaveBeenCalledTimes(1)
+    expect(build).toHaveBeenCalledTimes(1) // not retried
+  })
+
+  it('propagates a second build failure after recovery (one retry, no loop)', async () => {
+    const client = makeClient()
+    const build = vi.spyOn(client, 'ensureImageExists')
+      .mockRejectedValueOnce(new Error('first: ha.sock missing'))
+      .mockRejectedValueOnce(new Error('second: still broken'))
+    vi.spyOn(client, 'handleRunError').mockResolvedValue(true)
+
+    await expect(client.ensureImageExistsWithRecovery()).rejects.toThrow('second: still broken')
+    expect(build).toHaveBeenCalledTimes(2)
   })
 })
 

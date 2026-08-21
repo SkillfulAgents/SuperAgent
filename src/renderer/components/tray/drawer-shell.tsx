@@ -13,6 +13,10 @@ export interface DrawerShellHandle {
 interface DrawerShellProps {
   isOpen: boolean
   storageKey: string
+  /** Expand to a full-width overlay when the containing layout is narrow. */
+  responsiveFullWidth?: boolean
+  /** Overlay the parent instead of participating in its wide-screen flex layout. */
+  wideOverlay?: boolean
   defaultWidth?: number
   minWidth?: number
   maxWidth?: number
@@ -24,6 +28,8 @@ interface DrawerShellProps {
 export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(function DrawerShell({
   isOpen,
   storageKey,
+  responsiveFullWidth = false,
+  wideOverlay = false,
   defaultWidth = DEFAULT_WIDTH,
   minWidth = MIN_WIDTH,
   maxWidth = MAX_WIDTH,
@@ -85,16 +91,23 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
     <div
       className={cn(
         'h-full border-l bg-background flex flex-col shrink-0 overflow-hidden relative shadow-[-4px_0_16px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_16px_rgba(0,0,0,0.3)]',
+        responsiveFullWidth && 'file-preview-responsive-overlay',
+        responsiveFullWidth && !isOpen && 'file-preview-responsive-overlay-closed',
+        wideOverlay && 'file-preview-wide-overlay',
         !isResizing && 'transition-[width] duration-300 ease-in-out',
         className
       )}
-      style={{ width: isOpen ? drawerWidth : 0, contain: 'layout paint', willChange: 'transform' }}
+      style={{ width: isOpen ? drawerWidth : 0, maxWidth: '100%', contain: 'layout paint', willChange: 'transform' }}
       onTransitionEnd={onTransitionEnd}
+      data-testid="tray-drawer"
     >
       {/* Resize handle on left edge */}
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
       <div
-        className="absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-border transition-colors"
+        className={cn(
+          'absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-border transition-colors',
+          responsiveFullWidth && 'file-preview-responsive-resize-handle',
+        )}
         onMouseDown={handleResizeMouseDown}
       />
       {children}

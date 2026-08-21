@@ -1,0 +1,1 @@
+ALTER TABLE `proxy_audit_log` ADD `duration_ms` integer;

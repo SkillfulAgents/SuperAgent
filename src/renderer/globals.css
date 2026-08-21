@@ -22,7 +22,7 @@
     --destructive-foreground: 0 0% 98%;
     --border: 0 0% 89.8%;
     --input: 0 0% 89.8%;
-    --ring: 0 0% 3.9%;
+    --ring: 0 0% 63.9%;
     --radius: 0.5rem;
     --chart-1: 12 76% 61%;
     --chart-2: 173 58% 39%;
@@ -58,7 +58,7 @@
     --destructive-foreground: 0 0% 98%;
     --border: 0 0% 19%;
     --input: 0 0% 19%;
-    --ring: 0 0% 83.1%;
+    --ring: 0 0% 45%;
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
@@ -82,6 +82,15 @@
   html, body {
     @apply bg-background text-foreground h-screen;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    /* The app is a fixed full-height shell — scrolling lives in inner regions,
+       never the document. Lock it so iOS Safari can't rubber-band or scroll-chain
+       the whole page when an inner scroller reaches its boundary. */
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  #root {
+    height: 100%;
+    overflow: hidden;
   }
   /* Disable text selection globally, re-enable on content areas */
   * {
@@ -94,6 +103,164 @@
     user-select: text;
     -webkit-user-select: text;
   }
+}
+/*
+  Soft-keyboard handling (mobile web/PWA). `useKeyboardViewport` sets
+  `data-keyboard-open` on <html> while the keyboard is up. The home-indicator
+  safe-area pad below the composer is meaningless while the keyboard covers the
+  bottom, so drop it — the composer then sits flush above the keyboard. (iOS does
+  its native pan-up for the content; reliably pinning the top nav during the
+  keyboard animation without jank turned out to be an iOS limitation — parked.)
+  Inert on desktop/Electron — no soft keyboard, so the attribute never appears.
+*/
+html[data-keyboard-open] [data-composer-footer] {
+  padding-bottom: 0;
+}
+
+/* Newly streamed prose resolves from a soft blur. Each word is mounted once in
+   the growing Markdown tail, so previously revealed text stays crisp while the
+   next chunk arrives. */
+@keyframes streaming-word-reveal {
+  from {
+    opacity: 0.18;
+    filter: blur(3.5px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+/* `backwards` (not `both`): a forwards fill would keep `filter: blur(0)` applied
+   after the animation ends, leaving every revealed word layer-promoted and a
+   stacking context for the life of the tail — tables and lists have no blank
+   lines, so they stay "tail" (and would accumulate promoted layers) until the
+   stream moves past them. No `will-change` for the same reason: browsers already
+   promote during an active filter animation, and it would otherwise pin a layer
+   per word. */
+.streaming-word-reveal {
+  animation: streaming-word-reveal 420ms cubic-bezier(0.22, 0.61, 0.25, 1) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming-word-reveal {
+    animation: none;
+  }
+}
+
+/* The composer uses a ProseMirror document model but its controlled value is
+   always serialized Markdown. Keep block spacing compact enough for chat while
+   still making each Markdown construct immediately legible as it is typed. */
+.markdown-composer-editor {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* prosemirror-view's own stylesheet sets `font-variant-ligatures: none` on
+   .ProseMirror, which also disables Inter's contextual alternates — the calt
+   substitutions that draw ->, --> and => as arrows. That stylesheet is imported
+   by the editor component, so it lands after this file in the bundle and a
+   same-specificity override loses the cascade. Double the class so this rule
+   wins regardless of import order. */
+.markdown-composer-editor.markdown-composer-editor {
+  -webkit-font-variant-ligatures: normal;
+  font-variant-ligatures: normal;
+  font-feature-settings: normal;
+}
+
+.markdown-composer-editor[contenteditable="false"] {
+  cursor: not-allowed;
+  opacity: .5;
+}
+
+.markdown-composer-editor[data-empty="true"]::before {
+  position: absolute;
+  color: hsl(var(--muted-foreground));
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.markdown-composer-editor p,
+.markdown-composer-editor h1,
+.markdown-composer-editor h2,
+.markdown-composer-editor h3,
+.markdown-composer-editor h4,
+.markdown-composer-editor h5,
+.markdown-composer-editor h6 {
+  min-height: 1.25rem;
+  margin: 0;
+}
+
+.markdown-composer-editor > * + * {
+  margin-top: .25rem;
+}
+
+.markdown-composer-editor h1 { font-size: 1.25rem; line-height: 1.6rem; font-weight: 500; }
+.markdown-composer-editor h2 { font-size: 1.125rem; line-height: 1.5rem; font-weight: 500; }
+.markdown-composer-editor h3,
+.markdown-composer-editor h4,
+.markdown-composer-editor h5,
+.markdown-composer-editor h6 { font-size: 1rem; line-height: 1.4rem; font-weight: 500; }
+
+.markdown-composer-editor strong { font-weight: 500; }
+.markdown-composer-editor em { font-style: italic; }
+.markdown-composer-editor s { color: hsl(var(--muted-foreground)); }
+
+.markdown-composer-editor :not(pre) > code {
+  border-radius: .25rem;
+  background: hsl(var(--muted));
+  padding: .08rem .28rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: .88em;
+}
+
+.markdown-composer-editor pre {
+  overflow-x: auto;
+  border-radius: .5rem;
+  background: hsl(var(--muted));
+  padding: .5rem .65rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: .82rem;
+  line-height: 1.2rem;
+}
+
+.markdown-composer-editor blockquote {
+  margin: .2rem 0;
+  border-left: 2px solid hsl(var(--border));
+  padding-left: .65rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.markdown-composer-editor ul,
+.markdown-composer-editor ol {
+  margin: .15rem 0;
+  padding-left: 1.35rem;
+}
+
+.markdown-composer-editor ul { list-style: disc; }
+.markdown-composer-editor ol { list-style: decimal; }
+.markdown-composer-editor li > p { min-height: auto; }
+.markdown-composer-editor li::marker { color: hsl(var(--muted-foreground)); }
+
+.markdown-composer-editor a {
+  color: hsl(var(--foreground));
+  text-decoration: underline;
+  text-decoration-color: hsl(var(--muted-foreground) / .6);
+  text-underline-offset: 2px;
+}
+
+.markdown-composer-editor hr {
+  margin: .45rem 0;
+  border: 0;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.markdown-composer-editor img {
+  display: inline-block;
+  max-height: 5rem;
+  max-width: min(100%, 12rem);
+  border-radius: .35rem;
+  vertical-align: middle;
 }
 
 /* Force visible scrollbar on code blocks so users know content is scrollable */
@@ -110,6 +277,49 @@
 }
 .dark .code-scrollbar::-webkit-scrollbar-thumb {
   background-color: rgba(255, 255, 255, .3);
+}
+
+/* Reader surfaces (e.g. the chat-integration read-only thread): replace the pale
+   native overlay scrollbar on the inner message scroller with a subtle neutral
+   thumb that reads as intentional under the read-only veil. Add `reader-scrollbar`
+   to the wrapper of any read-only MessageList to opt in. */
+.reader-scrollbar [data-message-content-area]::-webkit-scrollbar {
+  -webkit-appearance: none;
+  width: 10px;
+}
+.reader-scrollbar [data-message-content-area]::-webkit-scrollbar-track {
+  background: transparent;
+}
+.reader-scrollbar [data-message-content-area]::-webkit-scrollbar-thumb {
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: rgba(120, 120, 130, .35);
+}
+.reader-scrollbar [data-message-content-area]:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(120, 120, 130, .55);
+}
+
+/* Height-capped panels inside a chat card (e.g. the web-fetch page body). Same problem
+   as the reader surface above, one level in: the native overlay thumb is pale, full-height
+   and sits hard against the card edge over the text, so it reads as a foreign element on a
+   dark card. Same neutral thumb, sized down for a panel rather than a page. Add
+   `card-scrollbar` to any height-capped scroller inside a card to opt in. */
+.card-scrollbar::-webkit-scrollbar {
+  -webkit-appearance: none;
+  width: 8px;
+}
+.card-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.card-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: rgba(120, 120, 130, .35);
+}
+.card-scrollbar:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(120, 120, 130, .55);
 }
 
 /* Fix Radix ScrollArea viewport using display: table which causes content to expand */
@@ -136,6 +346,15 @@
 /* Inset sidebar variant adds bg-sidebar to the SidebarProvider wrapper, which would
    mask the vibrancy layer — force it transparent so blur shows through the gutters. */
 .electron-vibrancy .group\/sidebar-wrapper {
+  background: transparent !important;
+}
+
+/* The pre-app screens (session check, boot) cover the whole window, so an opaque
+   background there replaces the native material with a flat sheet — and since
+   the theme class is applied further down the tree, that sheet is light even in
+   dark mode. Keeping them transparent turns a switch into a pause rather than a
+   flash. */
+.electron-vibrancy [data-boot-surface] {
   background: transparent !important;
 }
 
@@ -179,15 +398,6 @@
   border-color: transparent !important;
 }
 
-/* In dark mode, user message bubbles have a light background (primary flips to white),
-   so reset prose-invert to use dark text matching primary-foreground */
-.dark .prose-user-message {
-  --tw-prose-body: hsl(var(--primary-foreground));
-  --tw-prose-headings: hsl(var(--primary-foreground));
-  --tw-prose-bold: hsl(var(--primary-foreground));
-  --tw-prose-code: hsl(var(--primary-foreground));
-}
-
 /* Electron window drag regions */
 .app-drag-region {
   -webkit-app-region: drag;
@@ -197,11 +407,77 @@
   -webkit-app-region: no-drag;
 }
 
+@keyframes home-card-jiggle {
+  from {
+    transform: rotate(-0.35deg) translateY(0);
+  }
+  to {
+    transform: rotate(0.35deg) translateY(-0.4px);
+  }
+}
+
+.home-card-jiggle {
+  transform-origin: 50% 55%;
+  animation: home-card-jiggle 160ms ease-in-out infinite alternate;
+}
+
+@keyframes home-title-ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.home-title-ticker {
+  animation: home-title-ticker 14s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-card-jiggle {
+    animation: none;
+  }
+
+  .home-title-ticker {
+    animation: none;
+  }
+}
+
 /* Windows: pad right side of main content headers to avoid overlapping with the custom
    window controls (144px wide at right-2, so 152px total reserved). */
 .electron-vibrancy-win main > div > header,
 .electron-vibrancy-win main > header {
   padding-right: 152px;
+}
+
+/* Windows: Chromium paints classic opaque scrollbars (arrow buttons, full-height
+   track) on every overflow container, unlike macOS's auto-hiding overlays.
+   Restyle them app-wide to the same thin muted thumb the app sidebar uses so
+   scrollable areas read the same on both platforms. Custom webkit scrollbars
+   are always painted when content overflows, so scrollability stays visible. */
+.electron-vibrancy-win ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+  background: transparent;
+}
+.electron-vibrancy-win ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.electron-vibrancy-win ::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: hsl(var(--muted-foreground) / 0.25);
+}
+.electron-vibrancy-win ::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--muted-foreground) / 0.4);
+}
+.electron-vibrancy-win ::-webkit-scrollbar-button {
+  display: none;
+}
+.electron-vibrancy-win ::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* Delivered file pill hover animation */
@@ -245,6 +521,116 @@
   will-change: opacity;
   box-shadow: inset 0 0 12px 4px rgba(37, 99, 235, 0.4), inset 0 0 28px 8px rgba(59, 130, 246, 0.2), inset 0 0 50px 12px rgba(96, 165, 250, 0.1);
   animation: browser-glow-pulse 4s ease-in-out infinite;
+}
+
+/* Effort slider — animated rainbow mesh overlaid on the right of the maxed-out
+   ("Max") fill. The mesh lives on a double-width ::before whose background tiles
+   every container-width; translating it by exactly one tile per loop (marquee
+   trick) gives a seamless, ALWAYS-LEFTWARD flow — emanating from the thumb, never
+   reversing, no hard line at the loop point. hue-rotate cycles the colors on top
+   (0deg == 360deg, also seamless). A left-fading mask on the host keeps the
+   rainbow from running the full width — it fades out around the Med–High marks.
+   GPU-friendly (transform + filter only). */
+@keyframes effort-rainbow-hue {
+  from { filter: hue-rotate(0deg) saturate(1.15); }
+  to   { filter: hue-rotate(360deg) saturate(1.15); }
+}
+@keyframes effort-rainbow-drift {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); } /* one tile — wraps invisibly */
+}
+/* Entry sweep, shared by the rainbow and the gray fill's inverse fade: both
+   masks are 200%-wide no-repeat gradients, so sliding mask-position 0%→100%
+   sweeps the reveal leftward from the thumb. At 0% the element reads the mask's
+   left half (rainbow: all transparent = hidden; gray: all opaque = untouched);
+   at 100% the right half = the steady-state fade profile (28%→58%). Runs once
+   per mount — the overlay mounts on selecting Max, so picking Max replays it. */
+@keyframes effort-mask-sweep {
+  from { -webkit-mask-position: 0% 0; mask-position: 0% 0; }
+  to   { -webkit-mask-position: 100% 0; mask-position: 100% 0; }
+}
+
+.effort-rainbow {
+  overflow: hidden;
+  /* Stops at 64%/79% of the 200%-wide mask == 28%/58% of the element once the
+     sweep lands at mask-position 100%. */
+  -webkit-mask-image: linear-gradient(to right, transparent 64%, #000 79%);
+  mask-image: linear-gradient(to right, transparent 64%, #000 79%);
+  -webkit-mask-size: 200% 100%;
+  mask-size: 200% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  will-change: filter;
+  /* Finite loop counts (~50s), not infinite: the popovers never dismiss on
+     pick, so an abandoned-open picker at Max would otherwise composite these
+     layers every frame indefinitely. Both loops end exactly where they start
+     (360deg == 0deg, one tile == origin), so the stop is a seamless freeze to
+     the static rainbow, never a visible jump. */
+  animation:
+    effort-rainbow-hue 6s linear 8,
+    effort-mask-sweep 4s cubic-bezier(0.22, 0.6, 0.36, 1) both;
+}
+
+.effort-rainbow::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 200%;
+  /* One full 360° hue sweep per tile, in wheel order — every neighboring pair
+     (including the wrap, magenta→magenta) is analogous, so blends stay clean:
+     no complementary adjacencies like red→green that mud into brown. The white
+     radial blobs add the organic vapor depth; white only tints, never muddies.
+     Blob extents stay inside [0%,100%] of the tile so tiles join seamlessly. */
+  background-image:
+    radial-gradient(20% 80% at 22% 30%, rgba(255, 255, 255, 0.28), transparent),
+    radial-gradient(18% 75% at 58% 70%, rgba(255, 255, 255, 0.22), transparent),
+    radial-gradient(15% 70% at 85% 35%, rgba(255, 255, 255, 0.18), transparent),
+    linear-gradient(
+      90deg,
+      #ff0080 0%,
+      #ff8c00 14%,
+      #ffd300 28%,
+      #35d435 42%,
+      #00cfcf 56%,
+      #2b6cff 70%,
+      #8a2be2 85%,
+      #ff0080 100%
+    );
+  /* Tile = half this double-width layer = one container width. */
+  background-size: 50% 100%;
+  background-repeat: repeat;
+  will-change: transform;
+  /* Matches the host's ~50s animation budget — see the comment there. */
+  animation: effort-rainbow-drift 5s linear 10;
+}
+
+/* Inverse of the rainbow's mask, applied to the gray base fill at Max: gray
+   fades out exactly where the rainbow fades in, a clean crossfade instead of
+   the rainbow blending over gray (which muddied its colors). Shares the entry
+   sweep so the crossfade travels leftward with the rainbow instead of the gray
+   vanishing instantly. */
+.effort-fill-fade {
+  -webkit-mask-image: linear-gradient(to right, #000 64%, transparent 79%);
+  mask-image: linear-gradient(to right, #000 64%, transparent 79%);
+  -webkit-mask-size: 200% 100%;
+  mask-size: 200% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  animation: effort-mask-sweep 4s cubic-bezier(0.22, 0.6, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .effort-rainbow,
+  .effort-rainbow::before,
+  .effort-fill-fade {
+    animation: none;
+    /* The sweep normally lands the mask here; without it, pin the end state so
+       the rainbow isn't stuck hidden behind the sweep's start position. */
+    -webkit-mask-position: 100% 0;
+    mask-position: 100% 0;
+  }
 }
 
 /* Voice agent orb — glowing sphere with radial depth and amp-driven reactivity.
@@ -396,3 +782,301 @@
   }
 }
 
+/*
+  Search palette enter/exit: fade + a small upward glide that replaces the
+  default dialog zoom/slide so dismissing it (keyboard, the X, or Esc — all flip
+  Radix to data-state=closed) feels native. We animate the standalone `translate`
+  property in pixels, NOT the `transform` keyframe, because:
+   - `transform` already holds the dialog's centering (-50%,-50% on desktop) /
+     top-anchor offset, and
+   - WebKit/Safari won't reliably interpolate a transform keyframe that mixes a
+     percentage with calc()/var(), which silently collapses it to a bare fade.
+  The standalone `translate` composes on top of `transform`, animates in clean
+  pixels everywhere, and so covers both the mobile (top-anchored) and desktop
+  (centered) cases with no media query.
+*/
+@keyframes search-fade-up-in {
+  from { opacity: 0; translate: 0 1rem; }
+  to   { opacity: 1; translate: 0 0; }
+}
+@keyframes search-fade-up-out {
+  from { opacity: 1; translate: 0 0; }
+  to   { opacity: 0; translate: 0 -1.5rem; }
+}
+/* !important: tailwindcss-animate's `data-[state=closed]:animate-out` utility is
+   emitted AFTER this file's custom CSS, so at equal specificity it would win and
+   replace this animation. The base utility has no !important, so this overrides it. */
+.search-anim[data-state="open"] {
+  animation: search-fade-up-in 200ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+.search-anim[data-state="closed"] {
+  animation: search-fade-up-out 180ms ease-in forwards !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Keep the fade, drop the glide for users who prefer reduced motion. */
+  @keyframes search-fade-up-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes search-fade-up-out { from { opacity: 1; } to { opacity: 0; } }
+}
+
+/*
+  The collapsed activity summary stays in the status row. When its measured
+  width exceeds the available space, pause at the beginning before gently
+  panning to the hidden end, pause again, then return like a compact ticker.
+*/
+@keyframes activity-summary-ticker {
+  0%, 18% { transform: translateX(0); }
+  82%, 100% { transform: translateX(calc(-1 * var(--activity-summary-ticker-distance))); }
+}
+
+.activity-summary-ticker[data-overflowing="true"] .activity-summary-ticker-content {
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  animation: activity-summary-ticker var(--activity-summary-ticker-duration) ease-in-out 1.25s infinite alternate both;
+  will-change: transform;
+}
+
+.activity-summary-ticker:hover .activity-summary-ticker-content {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-summary-ticker[data-overflowing="true"] .activity-summary-ticker-content {
+    width: auto;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    animation: none;
+  }
+}
+
+/*
+  Long sidebar labels stay ellipsized until the user has briefly dwelled on
+  them, then ease into one pass that reveals the hidden end. Removing
+  data-scrolling on mouse leave removes the animation and restores the start
+  immediately, matching native sidebar marquee behavior.
+*/
+@keyframes hover-scroll-text {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-1 * var(--hover-scroll-distance))); }
+}
+
+.hover-scroll-text[data-scrolling="true"] .hover-scroll-text-content {
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  animation: hover-scroll-text var(--hover-scroll-duration) cubic-bezier(0.42, 0, 0.58, 1) forwards;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hover-scroll-text[data-scrolling="true"] .hover-scroll-text-content {
+    animation: none;
+  }
+}
+
+/*
+  Installed-PWA full height (iOS). `h-screen`/`min-h-svh` resolve to the DYNAMIC viewport
+  (100dvh/100svh) so mobile-BROWSER layouts track the URL bar — keep that. But in an
+  installed PWA there's no URL bar, and iOS reports dvh/svh EXCLUDING the top safe area
+  (device-measured 812 vs 874 physical on a Dynamic-Island phone) while the shell is
+  anchored to the full-bleed top edge — so a dvh-tall shell falls ~62px short at the
+  bottom (the "chin"). vh/lvh report the full height and are stable with no browser
+  chrome, so pin full-height to the large viewport in standalone only. `!important`
+  because Tailwind's height utilities may be emitted after this file (see note above).
+  Inert in the browser (media doesn't match); a no-op on desktop (lvh == the window).
+*/
+@media (display-mode: standalone) {
+  html, body { height: 100vh !important; height: 100lvh !important; }
+  .h-screen { height: 100vh !important; height: 100lvh !important; }
+  .min-h-svh { min-height: 100vh !important; min-height: 100lvh !important; }
+}
+
+/*
+  File previews can render in the agent body or in a smaller embedded session
+  mirror. A viewport or app-level query cannot describe both spaces. Make each
+  immediate tray host a query container. Above 768px, Session View keeps its
+  file tray in the flex layout while Agent Home opts into an overlay. Below the
+  breakpoint, both use the same full-width overlay.
+*/
+.file-preview-container {
+  container-type: inline-size;
+}
+
+.file-preview-wide-overlay {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  z-index: 30;
+}
+
+@container (max-width: 767px) {
+  .file-preview-responsive-overlay {
+    position: absolute;
+    inset-block: 0;
+    right: 0;
+    z-index: 30;
+    left: 0;
+    width: 100% !important; /* overrides the persisted inline drawer width */
+    border-left-width: 0;
+    box-shadow: none;
+    transform: translateX(0);
+    transition-property: transform;
+  }
+
+  .file-preview-responsive-overlay-closed {
+    transform: translateX(100%);
+    pointer-events: none;
+  }
+
+  .file-preview-responsive-resize-handle {
+    display: none;
+  }
+
+  .file-preview-compact-close {
+    display: inline-flex;
+  }
+
+  .file-preview-wide-close {
+    display: none;
+  }
+}
+
+/*
+  Tree tracer: rather than marking each running row with an indicator of its own,
+  the branch path carries the motion — a bright band running down the trunk, out
+  along each live branch as it passes, and across that row's own label.
+
+  The trunk is the LIST's own ::before, painted with a tall repeating tile so the
+  band's travel is one unbroken loop with no phase-matching between rows. The
+  branches are the per-row ::before elbows, and the labels are masked; both flash
+  as the band reaches them.
+
+  They stay in step through fixed geometry rather than measurement: every row on
+  this tree is one 16px line box plus the list's 4px gap, so branch N sits exactly
+  N pitches below the first and lights one --tree-tracer-step later. ActivityCard
+  writes each row's N into --tree-tracer-row and pins the animations to a shared
+  start time (useTracerPhaseLock), since a CSS animation's clock otherwise starts
+  whenever its row happens to go live. A row that wraps to a second line is taller
+  than one pitch, so branches below it flash early by that much.
+
+  Only rows marked data-tracer-live take part — a finished subagent or a pending
+  task keeps its resting branch as the band goes by. The trunk runs through all of
+  them: it is one element, and it stands for the turn rather than any single row.
+  The index still counts EVERY row, because the stagger is physical.
+*/
+.tree-tracer {
+  /* Travel per cycle. Longer than the tree usually is, so a single band is in
+     flight at a time; a tree taller than this shows a train of them. */
+  --tree-tracer-span: 200px;
+  --tree-tracer-cycle: 2.2s;
+  /* One row pitch as time: cycle × 20px pitch ÷ span. Keep these three in sync —
+     the branch flashes are positioned by multiplying step by the row index. */
+  --tree-tracer-step: 0.22s;
+}
+
+/* Ends where it started (one whole tile down), so the loop is seamless. */
+@keyframes tree-tracer-trunk {
+  from { background-position-y: 0; }
+  to { background-position-y: var(--tree-tracer-span); }
+}
+
+/* Bright as the band arrives, then back to the resting rail color for the rest
+   of the cycle. 12% ≈ the band's own depth as a fraction of the travel. */
+@keyframes tree-tracer-branch {
+  0% { border-top-color: hsl(var(--foreground) / 0.85); }
+  12%, 100% { border-top-color: hsl(var(--muted-foreground) / 0.25); }
+}
+
+@keyframes tree-tracer-shimmer {
+  /* One tile of travel, so the loop is seamless like the trunk's. */
+  from { -webkit-mask-position: -40px 0; mask-position: -40px 0; }
+  to { -webkit-mask-position: 380px 0; mask-position: 380px 0; }
+}
+
+.tree-tracer::before {
+  background-color: hsl(var(--muted-foreground) / 0.25);
+  /* Band sits at the top of the tile, centered 12px down — which is where the
+     first row's elbow is, so that branch flashes at cycle start with no offset. */
+  background-image: linear-gradient(
+    to bottom,
+    transparent 0px,
+    hsl(var(--foreground) / 0.85) 12px,
+    transparent 24px
+  );
+  background-repeat: repeat-y;
+  background-size: 100% var(--tree-tracer-span);
+  animation: tree-tracer-trunk var(--tree-tracer-cycle) linear infinite;
+  will-change: background-position;
+}
+
+.tree-tracer > li[data-tracer-live]::before {
+  animation: tree-tracer-branch var(--tree-tracer-cycle) linear infinite;
+  animation-delay: calc(var(--tree-tracer-row, 0) * var(--tree-tracer-step));
+}
+
+/*
+  The label picks the pulse up from its branch. Masked rather than recolored, so
+  the row's own colors survive — the mask only modulates alpha, leaving a mono
+  name and its muted description their own weights. Applied to each row's single
+  content wrapper; masking the <li> itself would sweep the branch pseudo-element
+  too, on top of the flash it already has.
+*/
+.tree-tracer > li[data-tracer-live] > * {
+  --tree-tracer-shimmer-tile: 420px;
+  /*
+    How far the text drops between passes. This is the ONE dial for how loud the
+    shimmer reads: a mask can only subtract, so the peak is pinned at the row's
+    normal appearance and prominence has to come from how far it falls away.
+    Lower = more obvious sweep, but a row still working sits dimmer between
+    passes than a finished row beside it, which is the cost of going much below
+    this.
+  */
+  --tree-tracer-shimmer-rest: 0.45;
+  /*
+    A narrow band — full strength at 28px, back to resting by 56px — reads as a
+    defined highlight travelling across the row. Widening it washes the whole
+    row up and down instead. The tile repeats, so a row wider than it shows a
+    second pass.
+  */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    rgba(0, 0, 0, var(--tree-tracer-shimmer-rest)) 0px,
+    rgba(0, 0, 0, 1) 28px,
+    rgba(0, 0, 0, var(--tree-tracer-shimmer-rest)) 56px,
+    rgba(0, 0, 0, var(--tree-tracer-shimmer-rest)) 420px
+  );
+  mask-image: linear-gradient(
+    to right,
+    rgba(0, 0, 0, var(--tree-tracer-shimmer-rest)) 0px,
+    rgba(0, 0, 0, 1) 28px,
+    rgba(0, 0, 0, var(--tree-tracer-shimmer-rest)) 56px,
+    rgba(0, 0, 0, var(--tree-tracer-shimmer-rest)) 420px
+  );
+  -webkit-mask-size: var(--tree-tracer-shimmer-tile) 100%;
+  mask-size: var(--tree-tracer-shimmer-tile) 100%;
+  -webkit-mask-repeat: repeat-x;
+  mask-repeat: repeat-x;
+  animation: tree-tracer-shimmer var(--tree-tracer-cycle) linear infinite;
+  animation-delay: calc(var(--tree-tracer-row, 0) * var(--tree-tracer-step));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tree-tracer::before {
+    background-image: none;
+    animation: none;
+  }
+
+  .tree-tracer > li::before {
+    animation: none;
+  }
+
+  .tree-tracer > li[data-tracer-live] > * {
+    -webkit-mask-image: none;
+    mask-image: none;
+    animation: none;
+  }
+}

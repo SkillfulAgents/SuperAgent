@@ -16,4 +16,4 @@ function getSummary(input: unknown): string | null {
   return provider?.displayName || toolkit
 }
 
-export const requestConnectedAccountDef = { displayName: 'Request Connected Account', iconName: 'Link2', parseInput, getSummary } as const
+export const requestConnectedAccountDef = { displayName: 'Request Connected Account', parseInput, getSummary } as const

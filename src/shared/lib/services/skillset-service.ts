@@ -14,14 +14,16 @@ import fs from 'fs'
 import yaml from 'js-yaml'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
-import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
-import { withRetry } from '@shared/lib/utils/retry'
+import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
+import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
   getAgentWorkspaceDir,
   readFileOrNull,
   ensureDirectory,
   directoryExists,
+  fileExists,
+  removeDirectory,
 } from '@shared/lib/utils/file-storage'
 import type {
   SkillsetIndex,
@@ -32,8 +34,9 @@ import type {
   SkillWithStatus,
   SkillStatus,
   SkillProvider,
+  SkillsetCredentialInput,
 } from '@shared/lib/types/skillset'
-import { InstalledSkillMetadataSchema } from '@shared/lib/types/skillset-schema'
+import { InstalledSkillMetadataSchema, parseSkillsetIndex } from '@shared/lib/types/skillset-schema'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
   copyDirectoryFiltered,
@@ -53,6 +56,19 @@ const GIT_ENV = {
   LC_ALL: 'C',
   LANG: 'C',
 }
+
+function getRepoGitEnv(repoDir: string) {
+  const inheritedCount = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? '0', 10)
+  const configIndex = Number.isInteger(inheritedCount) && inheritedCount >= 0 ? inheritedCount : 0
+  return {
+    ...GIT_ENV,
+    GIT_CONFIG_COUNT: String(configIndex + 1),
+    [`GIT_CONFIG_KEY_${configIndex}`]: 'safe.directory',
+    [`GIT_CONFIG_VALUE_${configIndex}`]: repoDir,
+  }
+}
+
+const activeSkillsetRefreshes = new Map<string, Promise<SkillsetIndex>>()
 
 // ============================================================================
 // Path Helpers
@@ -98,6 +114,7 @@ type SkillsetRef = {
   provider?: SkillProvider
   skillsetName?: string
   providerData?: SkillsetConfig['providerData']
+  credential?: SkillsetCredentialInput
 }
 
 function toSkillsetRefFromConfig(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>): SkillsetRef {
@@ -403,11 +420,11 @@ function getDisplayName(dirName: string): string {
 // ============================================================================
 
 
-async function gitClone(url: string, dest: string): Promise<void> {
+async function gitClone(url: string, dest: string, environment: NodeJS.ProcessEnv): Promise<void> {
   try {
     await execFileAsync('git', ['clone', '--depth', '1', url, dest], {
       timeout: 60000,
-      env: GIT_ENV,
+      env: environment,
     })
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
@@ -415,8 +432,8 @@ async function gitClone(url: string, dest: string): Promise<void> {
     if (/not found|does not exist|Could not read from remote|Permission denied/i.test(msg)) {
       throw new Error(
         `Could not access repository: ${url}\n\n` +
-        'This may be a private repository. To access private repos, configure SSH authentication:\n' +
-        'https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent'
+        'This may be a private repository. Add a repository token in Skillset settings, or configure SSH authentication:\n' +
+        'https://docs.github.com/en/authentication/connecting-to-github-with-ssh'
       )
     }
     throw error
@@ -435,17 +452,78 @@ function isExpectedGitDriftError(msg: string): boolean {
 }
 
 /**
+ * Git errors that mean the remote is unavailable to us right now — offline,
+ * DNS/connect failures, timeouts, or auth problems. These are environmental,
+ * not a sign the local cache is corrupt, so they must never trigger a
+ * nuke-and-reclone and are not worth reporting to Sentry per-refresh.
+ */
+function isRemoteUnavailableGitError(msg: string): boolean {
+  return /Could not resolve host|unable to access|Connection (timed out|refused|reset)|Network is unreachable|Could not read from remote|Failed to connect|Operation timed out|timed? ?out|Permission denied|Could not access repository|remote is unreachable|fetch failed|Failed to get platform Git URL: (401|403|407|408|429|5\d\d)|Not authorized to download platform skillset|Platform not connected|Platform server error while downloading/i.test(msg)
+}
+
+const NETWORK_ERROR_CODES = new Set([
+  'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT',
+  'ENETUNREACH', 'ENETDOWN', 'EHOSTUNREACH', 'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET',
+])
+
+/** Walk error → cause → AggregateError.errors looking for a network errno. */
+function hasNetworkErrorCode(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== 'object' || depth > 4) return false
+  const e = error as { code?: unknown; cause?: unknown; errors?: unknown }
+  if (typeof e.code === 'string' && NETWORK_ERROR_CODES.has(e.code)) return true
+  if (Array.isArray(e.errors) && e.errors.some((sub) => hasNetworkErrorCode(sub, depth + 1))) return true
+  return hasNetworkErrorCode(e.cause, depth + 1)
+}
+
+/**
+ * Object-aware remote-unavailability check. The message alone is not enough:
+ * an execFile timeout kills the child (`killed`/`signal` set) with a bare
+ * "Command failed: git …" message, and undici surfaces DNS failures as
+ * "fetch failed" with the errno only on `cause`.
+ */
+function isRemoteUnavailableError(error: unknown): boolean {
+  if (error && typeof error === 'object') {
+    const e = error as { killed?: unknown; signal?: unknown }
+    if (e.killed === true || (typeof e.signal === 'string' && e.signal.length > 0)) return true
+    if (hasNetworkErrorCode(error)) return true
+  }
+  const msg = error instanceof Error ? error.message : String(error)
+  return isRemoteUnavailableGitError(msg)
+}
+
+/**
+ * Thrown when the remote is reachable but the cache is unusable as a git
+ * clone (no resolvable origin/HEAD). Signals `refreshSkillsetCache` to nuke
+ * the directory and re-clone instead of failing every refresh forever.
+ */
+class SkillsetCacheCorruptError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SkillsetCacheCorruptError'
+  }
+}
+
+type DefaultBranchResolution =
+  | { branch: string }
+  | { branch: null; reason: 'offline' | 'unresolvable'; detail: string }
+
+/**
  * Resolve the repo's real default branch from its origin remote. Falls back to
  * `set-head --auto` (which queries the remote's HEAD) when the local
  * `refs/remotes/origin/HEAD` symref is missing — common on shallow clones.
- * Returns null if it can't be determined.
+ * When it can't be determined, says whether that's because the remote is
+ * unavailable (offline/auth) or the cache itself is unresolvable.
  */
-async function resolveDefaultBranch(repoDir: string): Promise<string | null> {
+async function resolveDefaultBranch(
+  repoDir: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<DefaultBranchResolution> {
   const readSymref = async (): Promise<string | null> => {
     try {
       const { stdout } = await execFileAsync(
         'git', ['symbolic-ref', 'refs/remotes/origin/HEAD'],
-        { cwd: repoDir, timeout: 5000, env: GIT_ENV },
+        { cwd: repoDir, timeout: 5000, env: environment },
       )
       const branch = stdout.trim().replace('refs/remotes/origin/', '')
       return branch || null
@@ -455,41 +533,64 @@ async function resolveDefaultBranch(repoDir: string): Promise<string | null> {
   }
 
   const existing = await readSymref()
-  if (existing) return existing
+  if (existing) return { branch: existing }
 
   // The symref isn't set locally — ask the remote for its HEAD once, then
-  // re-read. `set-head --auto` is a no-op if it can't reach the remote.
+  // re-read. The failure matters: it tells offline apart from a cache whose
+  // origin/HEAD genuinely can't be resolved (half-clone, empty repo). Keep
+  // the error object, not just its message — a hung set-head killed by the
+  // execFile timeout only carries `killed`/`signal`, not a network message.
+  let setHeadError: unknown = null
   try {
     await execFileAsync('git', ['remote', 'set-head', 'origin', '--auto'], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      cwd: repoDir, timeout: 10000, env: environment,
     })
-  } catch {
-    // Ignore — readSymref below will return null and the caller handles it.
+  } catch (err) {
+    setHeadError = err
+    console.warn(
+      `[resolveDefaultBranch] set-head --auto failed in ${repoDir}:`,
+      err instanceof Error ? err.message : String(err),
+    )
   }
-  return readSymref()
+
+  const branch = await readSymref()
+  if (branch) return { branch }
+
+  const detail = setHeadError instanceof Error
+    ? setHeadError.message
+    : setHeadError ? String(setHeadError) : 'origin/HEAD still unset after set-head --auto'
+  if (setHeadError && isRemoteUnavailableError(setHeadError)) {
+    return { branch: null, reason: 'offline', detail }
+  }
+  return { branch: null, reason: 'unresolvable', detail }
 }
 
-async function gitPull(repoDir: string): Promise<void> {
+type GitPullResult = 'pulled' | 'skipped-offline'
+
+async function gitPull(repoDir: string, environment: NodeJS.ProcessEnv): Promise<GitPullResult> {
   // Resolve the repo's real default branch instead of guessing main/master.
   // After a PR flow the repo may be left on a detached HEAD, a stale branch,
   // or with a drifted branch.<name>.merge config.
-  const defaultBranch = await resolveDefaultBranch(repoDir)
+  const resolved = await resolveDefaultBranch(repoDir, environment)
 
-  if (!defaultBranch) {
-    // Without a known default branch we can't deterministically refresh. This
-    // happens on caches whose origin/HEAD can't be resolved (offline, etc.).
-    const msg = `[gitPull] Could not resolve default branch in ${repoDir}`
-    console.warn(msg)
-    captureException(new Error(msg), {
-      tags: { area: 'skillset-git', op: 'resolve-default-branch' },
-      extra: { repoDir },
-    })
-    return
+  if (resolved.branch === null) {
+    if (resolved.reason === 'offline') {
+      // Remote unavailable — the cache is stale but usable; skip quietly.
+      console.warn(`[gitPull] Remote unavailable; skipping refresh in ${repoDir}:`, resolved.detail)
+      return 'skipped-offline'
+    }
+    // The remote answered (or the symref is simply broken) yet origin/HEAD is
+    // unresolvable — a half-cloned or corrupted cache that will never heal on
+    // its own. Let the caller nuke and re-clone.
+    throw new SkillsetCacheCorruptError(
+      `Could not resolve default branch in ${repoDir}: ${resolved.detail}`,
+    )
   }
+  const defaultBranch = resolved.branch
 
   try {
     await execFileAsync('git', ['checkout', defaultBranch], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      cwd: repoDir, timeout: 10000, env: environment,
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -509,10 +610,10 @@ async function gitPull(repoDir: string): Promise<void> {
   // would break `reset --hard origin/<branch>` / `git pull`.
   try {
     await execFileAsync('git', ['fetch', '--depth', '1', 'origin', defaultBranch], {
-      cwd: repoDir, timeout: 30000, env: GIT_ENV,
+      cwd: repoDir, timeout: 30000, env: environment,
     })
     await execFileAsync('git', ['reset', '--hard', 'FETCH_HEAD'], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      cwd: repoDir, timeout: 10000, env: environment,
     })
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
@@ -520,11 +621,17 @@ async function gitPull(repoDir: string): Promise<void> {
       // Expected drift on shallow single-branch caches — already handled, no
       // user-facing impact, so don't report to Sentry.
       console.warn(`[gitPull] fetch/reset drift (recoverable) in ${repoDir}:`, msg)
-      return
+      return 'pulled'
+    }
+    if (isRemoteUnavailableError(error)) {
+      // Offline/auth/timeout — the stale cache remains usable; skip quietly.
+      console.warn(`[gitPull] Remote unavailable; keeping stale cache in ${repoDir}:`, msg)
+      return 'skipped-offline'
     }
     captureException(error, { tags: { area: 'skillset-git', op: 'fetch-reset' }, extra: { repoDir } })
     throw error
   }
+  return 'pulled'
 }
 
 async function isGitRepo(dir: string): Promise<boolean> {
@@ -617,7 +724,8 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
 
   await ensureGitInstalled()
   const cloneUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
-  await gitClone(cloneUrl, repoDir)
+  const gitEnvironment = hostingProvider.getGitEnvironment(ref, GIT_ENV)
+  await gitClone(cloneUrl, repoDir, gitEnvironment)
   return repoDir
 }
 
@@ -638,12 +746,22 @@ export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
     throw new Error('index.json contains invalid JSON')
   }
 
-  const parsed = raw as Record<string, unknown>
-  if (!parsed.skillset_name || !Array.isArray(parsed.skills)) {
-    throw new Error('Invalid index.json: missing skillset_name or skills array')
+  const parsed = parseSkillsetIndex(raw)
+  if (!parsed.ok) {
+    throw new Error(`Invalid index.json: ${parsed.error}`)
   }
 
-  return raw as SkillsetIndex
+  // Individual bad entries are dropped, not fatal (see parseSkillsetIndex).
+  // Say so — the alternative is a skillset that quietly ships fewer templates
+  // than its repo lists, with nothing anywhere explaining why.
+  if (parsed.dropped.length > 0) {
+    console.warn(
+      `[readIndexJson] ${indexPath}: skipped ${parsed.dropped.length} malformed ` +
+      `entr${parsed.dropped.length === 1 ? 'y' : 'ies'}: ${parsed.dropped.join('; ')}`,
+    )
+  }
+
+  return parsed.index
 }
 
 // ============================================================================
@@ -654,9 +772,32 @@ export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
  * Validate a skillset URL by cloning the repo and reading index.json.
  * Returns the parsed index on success.
  */
-export async function validateSkillsetUrl(url: string, provider?: SkillProvider): Promise<SkillsetIndex> {
+export async function validateSkillsetUrl(
+  url: string,
+  provider?: SkillProvider,
+  credential?: SkillsetCredentialInput,
+): Promise<SkillsetIndex> {
   const skillsetId = urlToSkillsetId(url)
-  const repoDir = await ensureSkillsetCached({ skillsetId, skillsetUrl: url, provider })
+  const ref: SkillsetRef = { skillsetId, skillsetUrl: url, provider, credential }
+
+  // A cached public clone must not let an invalid replacement token appear to
+  // validate. Explicit credentials always prove remote access first.
+  if (credential) {
+    await ensureGitInstalled()
+    const hostingProvider = getSkillsetProvider(provider)
+    const cloneUrl = await hostingProvider.resolveCloneUrl(url, ref)
+    const environment = hostingProvider.getGitEnvironment(ref, GIT_ENV)
+    try {
+      await execFileAsync('git', ['ls-remote', '--exit-code', cloneUrl, 'HEAD'], {
+        timeout: 30000,
+        env: environment,
+      })
+    } catch {
+      throw new Error('Could not access this repository with the supplied token. Check its repository access and Contents permission.')
+    }
+  }
+
+  const repoDir = await ensureSkillsetCached(ref)
   return readIndexJson(repoDir)
 }
 
@@ -667,6 +808,44 @@ export async function refreshSkillset(ref: SkillsetRef): Promise<SkillsetIndex> 
   const hostingProvider = getSkillsetProvider(ref.provider)
   const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
+  const inFlight = activeSkillsetRefreshes.get(repoDir)
+  if (inFlight) return inFlight
+
+  const refresh = refreshSkillsetCache(ref, hostingProvider, repoDir)
+  activeSkillsetRefreshes.set(repoDir, refresh)
+  try {
+    return await refresh
+  } finally {
+    if (activeSkillsetRefreshes.get(repoDir) === refresh) {
+      activeSkillsetRefreshes.delete(repoDir)
+    }
+  }
+}
+
+/**
+ * Nuke a corrupt git cache and re-clone it from scratch. A half-cloned cache
+ * (no resolvable origin/HEAD, or `.git` present with an empty tree) makes
+ * every refresh fail forever; the cache holds nothing of value, so recovery
+ * is a fresh clone. Throws a distinct error if the freshly cloned repo still
+ * has no index.json — that means the remote content itself is broken, not
+ * the cache.
+ */
+async function recloneSkillsetCache(ref: SkillsetRef, repoDir: string, cause: string): Promise<void> {
+  console.warn(`[refreshSkillset] Re-cloning corrupt skillset cache at ${repoDir}: ${cause}`)
+  await fs.promises.rm(repoDir, { recursive: true, force: true })
+  await ensureSkillsetCached(ref)
+  if (!(await fileExists(path.join(repoDir, 'index.json')))) {
+    throw new Error(
+      `Skillset repository has no index.json at its root (re-cloned ${repoDir} after: ${cause})`,
+    )
+  }
+}
+
+async function refreshSkillsetCache(
+  ref: SkillsetRef,
+  hostingProvider: ReturnType<typeof getSkillsetProvider>,
+  repoDir: string,
+): Promise<SkillsetIndex> {
   if (!hostingProvider.usesGitCache) {
     await hostingProvider.refreshCache(repoDir, ref)
     return readIndexJson(repoDir)
@@ -677,12 +856,43 @@ export async function refreshSkillset(ref: SkillsetRef): Promise<SkillsetIndex> 
     // For platform, the URL embeds a short-lived token that needs refreshing.
     // For github, set-url is a cheap no-op when unchanged.
     const freshUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
-    await execFileAsync('git', ['remote', 'set-url', 'origin', freshUrl], {
-      cwd: repoDir, timeout: 5000, env: GIT_ENV,
-    })
-    await gitPull(repoDir)
+    const gitEnvironment = hostingProvider.getGitEnvironment(ref, getRepoGitEnv(repoDir))
+
+    let pullResult: GitPullResult
+    try {
+      // A cache whose `origin` remote is missing entirely (interrupted clone,
+      // mangled config) fails set-url with "No such remote" — that's the same
+      // corrupt-cache shape as an unresolvable origin/HEAD, so it recovers
+      // through the same nuke-and-reclone.
+      await execFileAsync('git', ['remote', 'set-url', 'origin', freshUrl], {
+        cwd: repoDir, timeout: 5000, env: gitEnvironment,
+      })
+      pullResult = await gitPull(repoDir, gitEnvironment)
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      const isCorrupt = error instanceof SkillsetCacheCorruptError || /No such remote/i.test(msg)
+      if (!isCorrupt) throw error
+      await recloneSkillsetCache(ref, repoDir, msg)
+      return readIndexJson(repoDir)
+    }
+
+    if (!(await fileExists(path.join(repoDir, 'index.json')))) {
+      if (pullResult === 'skipped-offline') {
+        // The cache is incomplete but we can't re-clone right now. Don't nuke
+        // it while offline — retry on the next refresh instead.
+        throw new Error(
+          `Skillset cache at ${repoDir} has no index.json and the remote is unreachable; will retry on next refresh`,
+        )
+      }
+      await recloneSkillsetCache(ref, repoDir, 'index.json missing after successful pull')
+    }
   } else {
     await ensureSkillsetCached(ref)
+    if (!(await fileExists(path.join(repoDir, 'index.json')))) {
+      throw new Error(
+        `Skillset repository has no index.json at its root (fresh clone at ${repoDir})`,
+      )
+    }
   }
 
   return readIndexJson(repoDir)
@@ -880,7 +1090,7 @@ export async function getAgentSkillsWithStatus(
 ): Promise<SkillWithStatus[]> {
   const skillsDir = getAgentSkillsDir(agentSlug)
 
-  if (!fs.existsSync(skillsDir)) {
+  if (!(await directoryExists(skillsDir))) {
     return []
   }
 
@@ -1040,14 +1250,14 @@ export async function refreshAgentSkills(
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
       const msg = error instanceof Error ? error.message : String(error)
-      if (!isExpectedGitDriftError(msg)) {
+      if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableError(error)) {
         captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
       }
     }
   }
 
   const skillsDir = getAgentSkillsDir(agentSlug)
-  if (!fs.existsSync(skillsDir)) return
+  if (!(await directoryExists(skillsDir))) return
 
   const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
 
@@ -1099,7 +1309,7 @@ export async function refreshAgentSkills(
             await refreshSkillset(toSkillsetRefFromMeta(meta))
           } catch (error) {
             const msg = error instanceof Error ? error.message : String(error)
-            if (!isExpectedGitDriftError(msg)) {
+            if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableError(error)) {
               captureException(error, { tags: { area: 'skillset-refresh', op: 'queue-merged-pull' }, extra: { skillsetId: meta.skillsetId } })
             }
           }
@@ -1183,7 +1393,7 @@ export async function getDiscoverableSkills(
   const skillsDir = getAgentSkillsDir(agentSlug)
   const installedDirs = new Set<string>()
 
-  if (fs.existsSync(skillsDir)) {
+  if (await directoryExists(skillsDir)) {
     const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
     for (const entry of entries) {
       if (entry.isDirectory()) installedDirs.add(entry.name)
@@ -1264,16 +1474,14 @@ async function generatePRSuggestions(
   }
 
   try {
-    const model = getEffectiveModels().summarizerModel
+    const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
 
-    const response = await withRetry(() =>
-      client.messages.create({
-        model,
-        max_tokens: 500,
-        messages: [
-          {
-            role: 'user',
-            content: `You are analyzing changes to a skill definition file (SKILL.md). Compare the original and modified versions and generate a PR title, description, and new SemVer version.
+    const text = await createSummarizerText(client, {
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: `You are analyzing changes to a skill definition file (SKILL.md). Compare the original and modified versions and generate a PR title, description, and new SemVer version.
 
 Current version: ${meta.installedVersion}
 
@@ -1299,27 +1507,24 @@ Rules for the version bump:
 - PATCH (x.y.Z): bug fixes, typo corrections, minor wording tweaks
 - MINOR (x.Y.0): new features, added capabilities, significant improvements
 - MAJOR (X.0.0): breaking changes, fundamental restructuring`,
-          },
-        ],
-        output_config: {
-          format: {
-            type: 'json_schema' as const,
-            schema: {
-              type: 'object',
-              properties: {
-                title: { type: 'string', description: 'Concise imperative PR title' },
-                body: { type: 'string', description: 'Markdown description of what changed' },
-                version: { type: 'string', description: 'New SemVer version' },
-              },
-              required: ['title', 'body', 'version'],
-              additionalProperties: false,
+        },
+      ],
+      output_config: {
+        format: {
+          type: 'json_schema' as const,
+          schema: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Concise imperative PR title' },
+              body: { type: 'string', description: 'Markdown description of what changed' },
+              version: { type: 'string', description: 'New SemVer version' },
             },
+            required: ['title', 'body', 'version'],
+            additionalProperties: false,
           },
         },
-      })
-    )
-
-    const text = extractTextFromLlmResponse(response)
+      },
+    })
     if (!text) return fallback
 
     const parsed = JSON.parse(text)
@@ -1353,7 +1558,7 @@ export async function getSkillPRInfo(
     throw new Error('Skill has no skillset metadata - cannot create PR')
   }
 
-  await getSkillsetProvider(meta.provider).ensurePublishPreconditions()
+  await getSkillsetProvider(meta.provider).ensurePublishPreconditions(toSkillsetRefFromMeta(meta))
 
   const suggestions = await generatePRSuggestions(meta, agentSlug, skillDirName)
 
@@ -1496,16 +1701,14 @@ async function generatePublishSuggestions(
   }
 
   try {
-    const model = getEffectiveModels().summarizerModel
+    const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
 
-    const response = await withRetry(() =>
-      client.messages.create({
-        model,
-        max_tokens: 500,
-        messages: [
-          {
-            role: 'user',
-            content: `You are reviewing a new skill definition file (SKILL.md) that is being submitted to a shared skillset repository. Generate a PR title, description, and confirm the version.
+    const text = await createSummarizerText(client, {
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: `You are reviewing a new skill definition file (SKILL.md) that is being submitted to a shared skillset repository. Generate a PR title, description, and confirm the version.
 
 Skill name: ${skillName}
 
@@ -1518,27 +1721,24 @@ Generate:
 - A concise, imperative PR title (e.g. "Add NDA review skill")
 - A markdown description explaining what the skill does and its key capabilities
 - The version to use (use the version from the skill's metadata if present, otherwise "1.0.0")`,
-          },
-        ],
-        output_config: {
-          format: {
-            type: 'json_schema' as const,
-            schema: {
-              type: 'object',
-              properties: {
-                title: { type: 'string', description: 'Concise imperative PR title' },
-                body: { type: 'string', description: 'Markdown description of the skill' },
-                version: { type: 'string', description: 'SemVer version for the skill' },
-              },
-              required: ['title', 'body', 'version'],
-              additionalProperties: false,
+        },
+      ],
+      output_config: {
+        format: {
+          type: 'json_schema' as const,
+          schema: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Concise imperative PR title' },
+              body: { type: 'string', description: 'Markdown description of the skill' },
+              version: { type: 'string', description: 'SemVer version for the skill' },
             },
+            required: ['title', 'body', 'version'],
+            additionalProperties: false,
           },
         },
-      })
-    )
-
-    const text = extractTextFromLlmResponse(response)
+      },
+    })
     if (!text) return fallback
 
     const parsed = JSON.parse(text)
@@ -1581,7 +1781,7 @@ export async function getSkillPublishInfo(
     throw new Error('SKILL.md not found')
   }
 
-  await getSkillsetProvider(skillsetConfig.provider).ensurePublishPreconditions()
+  await getSkillsetProvider(skillsetConfig.provider).ensurePublishPreconditions(toSkillsetRefFromConfig(skillsetConfig))
 
   const skillName = getDisplayName(skillDirName)
   const suggestions = await generatePublishSuggestions(skillContent, skillName)
@@ -1712,9 +1912,20 @@ export const SKILL_MAX_COMPRESSED_SIZE = 100 * 1024 * 1024 // 100MB
 const SKILL_MAX_FILE_COUNT = 500
 
 /**
- * Export a single skill directory as a ZIP buffer.
+ * Export a single skill directory as a ZIP buffer, alongside the skill's
+ * display name from SKILL.md frontmatter (null when the frontmatter has none)
+ * so callers can name the download after the skill rather than its directory.
+ *
+ * Entries are wrapped in a top-level `<skillDirName>/` folder (the same
+ * convention Anthropic skill exports use, and what import strips via
+ * detectZipPrefix). That folder carries the skill's name INSIDE the package
+ * content, so a skill without frontmatter still round-trips with its name —
+ * the download filename is never trusted on import.
  */
-export async function exportSkill(agentSlug: string, skillDirName: string): Promise<Buffer> {
+export async function exportSkill(
+  agentSlug: string,
+  skillDirName: string,
+): Promise<{ zipBuffer: Buffer; skillName: string | null }> {
   sanitizeDirName(skillDirName)
   const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
 
@@ -1731,11 +1942,28 @@ export async function exportSkill(agentSlug: string, skillDirName: string): Prom
   const packageFiles = await readSkillPackageFiles(skillDir)
   const files: Record<string, string> = {}
   for (const f of packageFiles) {
-    files[f.relativePath] = f.content
+    files[`${skillDirName}/${f.relativePath}`] = f.content
   }
 
   const { createZipBuffer } = await import('@shared/lib/utils/zip')
-  return createZipBuffer(files)
+  return {
+    zipBuffer: await createZipBuffer(files),
+    skillName: parseSkillFrontmatter(skillContent).name || null,
+  }
+}
+
+/**
+ * Delete a skill from an agent's installed skills directory.
+ */
+export async function deleteSkill(agentSlug: string, skillDirName: string): Promise<void> {
+  sanitizeDirName(skillDirName)
+  const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
+
+  if (!(await directoryExists(skillDir))) {
+    throw new Error('Skill directory not found')
+  }
+
+  await removeDirectory(skillDir)
 }
 
 export interface SkillValidationResult {
@@ -1744,6 +1972,11 @@ export interface SkillValidationResult {
   skillName?: string
   fileCount: number
   stripPrefix: string
+}
+
+/** `my-skill/` → `my-skill`; '' when the package has no single wrapper folder. */
+function wrapperDirName(stripPrefix: string): string {
+  return stripPrefix.replace(/\/$/, '')
 }
 
 /**
@@ -1789,7 +2022,9 @@ export async function validateSkillZip(zipBuffer: Buffer): Promise<SkillValidati
 
     const skillMdBuf = await reader.readEntry(skillMdEntry.fileName)
     const frontmatter = parseSkillFrontmatter(skillMdBuf.toString('utf-8'))
-    const skillName = frontmatter.name || undefined
+    // Frontmatter name first; a wrapper folder (how our own exports and
+    // Anthropic-convention packages are laid out) is the in-content fallback.
+    const skillName = frontmatter.name || wrapperDirName(stripPrefix) || undefined
 
     return { valid: true, skillName, fileCount: realEntries.length, stripPrefix }
   } catch (error) {
@@ -1832,7 +2067,9 @@ export async function importSkillFromZip(
     const skillMdBuf = await reader.readEntry(skillMdEntry.fileName)
     const skillMdContent = skillMdBuf.toString('utf-8')
     const frontmatter = parseSkillFrontmatter(skillMdContent)
-    const skillName = frontmatter.name || 'imported-skill'
+    // Same fallback chain as validateSkillZip: frontmatter name, then the
+    // wrapper folder name baked into the package, then the generic last resort.
+    const skillName = frontmatter.name || wrapperDirName(stripPrefix) || 'imported-skill'
 
     // Derive a safe directory name from the skill name
     const baseDirName = skillName

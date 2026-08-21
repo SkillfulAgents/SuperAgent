@@ -1,0 +1,19 @@
+{
+  "sessionId": "b0fdaac5-7cf0-4a48-964d-7d3d5aa3f34d",
+  "agentSlug": "bg-probe",
+  "description": "Real, verbatim SUPERAGENT_CAPTURE_DIR capture (2026-07-02, claude-agent-sdk 0.3.197 / CLI 2.1.197) of the premature-idle regression for background SUBAGENTS (task_type 'local_agent'). The agent launches a background Agent ('Sleep 30 seconds', run_in_background:true), gets the 'async_launched' tool_result (carries agentId, NO backgroundTaskId), and ends its turn immediately ('Launched.'). Under this SDK the turn settles right away: result at t=25655 and session_state_changed:'idle' at t=25660 fire while the subagent still has ~28s to run — older SDKs (see background-subagent-completion, 2026-06-11) held result/idle back until background agents finished, which is why no host-side gate ever existed for local_agent. The real completion arrives ~31s AFTER the premature idle: task_updated{patch.status:completed} at t=56832, then session_state_changed:'running' at t=56933, then task_notification{tool_use_id,status:completed} at t=56940, then the wake turn's result (origin task-notification) + the truly-settled idle at t=58642. Correct behavior: the turn-end idle with a background subagent still running must NOT finalize (no session_idle) — it should surface session_waiting_background and keep the session alive until the task's own terminal signal clears it and the final idle settles. Quirk preserved verbatim: the subagent's INNER Bash surfaces in the main stream as unparented task_started{task_type:'local_bash', task_id:'bzlcchicu'} at t=28772 (after the premature idle) + task_notification at t=55775 — these must not re-activate the session or be confused with the local_agent task.",
+  "subagents": [
+    {
+      "parentToolId": "toolu_01RTMmzYAcBwxytSKA8Gehpk",
+      "taskId": "a2ae22a90c517ef2e",
+      "agentId": "a2ae22a90c517ef2e",
+      "subagentType": "general-purpose",
+      "description": "Sleep 30 seconds"
+    }
+  ],
+  "startActive": true,
+  "backgroundTasks": [
+    { "taskId": "a2ae22a90c517ef2e", "label": "background subagent (task_type local_agent, ~31s gap)", "prematureIdleT": 25660, "realCompletionT": 56832 }
+  ],
+  "totalEntries": 82
+}

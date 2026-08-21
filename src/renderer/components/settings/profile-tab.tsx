@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { authClient } from '@renderer/lib/auth-client'
 import { useChangePasswordSchema } from '@renderer/lib/password-utils'
 import { useUser } from '@renderer/context/user-context'
+import { usePublicAuthConfig } from '@renderer/hooks/use-public-auth-config'
 import { Input } from '@renderer/components/ui/input'
 import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
@@ -199,14 +200,24 @@ function ChangePasswordSection() {
 // --- Main tab ---
 
 export function ProfileTab() {
+  const { config: authConfig, isLoading: authConfigLoading } = usePublicAuthConfig()
+  // Email/password controls follow the effective local-auth setting. Platform-managed
+  // deployments normally disable it, while migrated credential users remain manageable
+  // whenever local auth is intentionally kept on.
+  const showChangePassword =
+    !authConfigLoading &&
+    authConfig.allowLocalAuth
+
   return (
     <div className="space-y-6">
       <ProfileSection />
 
-      <div className="pt-4 border-t space-y-4">
-        <Label className="text-base">Change Password</Label>
-        <ChangePasswordSection />
-      </div>
+      {showChangePassword ? (
+        <div className="pt-4 border-t space-y-4">
+          <Label className="text-base">Change Password</Label>
+          <ChangePasswordSection />
+        </div>
+      ) : null}
     </div>
   )
 }

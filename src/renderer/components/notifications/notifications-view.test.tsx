@@ -2,38 +2,43 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderWithProviders, screen, userEvent } from '@renderer/test/test-utils'
 import type { ApiNotification } from '@shared/lib/types/api'
+import type { ApiPlatformNotification } from '@renderer/hooks/use-platform-notifications'
 
 // ---------------------------------------------------------------------------
 // Mock state — mutated by tests, reset in beforeEach
 // ---------------------------------------------------------------------------
 
-const mockSetView = vi.fn()
-const mockSetAgent = vi.fn()
 const mockMarkReadMutate = vi.fn()
 const mockMarkAllReadMutate = vi.fn()
+const mockNavigate = vi.fn()
+const mockMarkPlatformReadMutate = vi.fn()
+const mockMarkAllPlatformReadMutate = vi.fn()
 
 let mockNotificationsData: { items: ApiNotification[]; total: number } | undefined
 let mockNotificationsLoading = false
 let mockUnreadCount = 0
 let mockAgents: { slug: string; name: string }[] = []
 let mockMarkAllPending = false
+let mockPlatformData: {
+  notifications: ApiPlatformNotification[]
+  total: number
+  unread_count: number
+  connected: boolean
+} = { notifications: [], total: 0, unread_count: 0, connected: false }
+let mockPlatformLoading = false
+let mockPlatformUnreadCount = 0
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({
-    view: { kind: 'notifications' },
-    setView: mockSetView,
-    setAgent: mockSetAgent,
-  }),
-  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}))
-
 vi.mock('@renderer/hooks/use-notifications', () => ({
-  useNotifications: () => ({
-    data: mockNotificationsData,
+  // The view fetches a growing window ((page+1)*PAGE_SIZE) and paginates
+  // client-side over the merged list — honor the limit like the server would.
+  useNotifications: (limit: number) => ({
+    data: mockNotificationsData
+      ? { ...mockNotificationsData, items: mockNotificationsData.items.slice(0, limit) }
+      : undefined,
     isLoading: mockNotificationsLoading,
   }),
   useUnreadNotificationCount: () => ({
@@ -48,6 +53,28 @@ vi.mock('@renderer/hooks/use-notifications', () => ({
   }),
 }))
 
+vi.mock('@renderer/hooks/use-platform-notifications', () => ({
+  // Honor the requested window like the platform would (same reasoning as the
+  // useNotifications mock above) so pagination tests exercise real slicing.
+  usePlatformNotifications: (limit?: number) => ({
+    data:
+      typeof limit === 'number'
+        ? { ...mockPlatformData, notifications: mockPlatformData.notifications.slice(0, limit) }
+        : mockPlatformData,
+    isLoading: mockPlatformLoading,
+  }),
+  usePlatformUnreadCount: () => ({
+    data: { count: mockPlatformUnreadCount },
+  }),
+  useMarkPlatformNotificationsRead: () => ({
+    mutate: mockMarkPlatformReadMutate,
+  }),
+  useMarkAllPlatformNotificationsRead: () => ({
+    mutate: mockMarkAllPlatformReadMutate,
+    isPending: false,
+  }),
+}))
+
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => ({ data: mockAgents }),
 }))
@@ -55,6 +82,15 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 vi.mock('@renderer/lib/env', () => ({
   isElectron: () => false,
   getApiBaseUrl: () => 'http://localhost:3000',
+}))
+
+// The back button navigates via useNavigate. Capture the navigate target via a
+// file-level useNavigate spy (overrides the global no-op stub). The notification
+// ROWS navigate declaratively via <AppLink>, which the global stub renders as
+// <a data-to/data-params>.
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  useNavigate: () => mockNavigate,
 }))
 
 import { NotificationsView } from './notifications-view'
@@ -77,6 +113,22 @@ function makeNotification(overrides: Partial<ApiNotification> & { id: string }):
   }
 }
 
+function makePlatformNotification(
+  overrides: Partial<ApiPlatformNotification> & { id: string },
+): ApiPlatformNotification {
+  return {
+    org_id: null,
+    title: 'Platform announcement',
+    body: 'We shipped something',
+    action_url: null,
+    kind: 'broadcast',
+    read_at: null,
+    expires_at: null,
+    created_at: '2026-05-20T09:00:00Z',
+    ...overrides,
+  }
+}
+
 function makeNotifications(count: number): ApiNotification[] {
   return Array.from({ length: count }, (_, i) =>
     makeNotification({ id: `n${i + 1}` }),
@@ -95,6 +147,9 @@ describe('NotificationsView', () => {
     mockUnreadCount = 0
     mockAgents = []
     mockMarkAllPending = false
+    mockPlatformData = { notifications: [], total: 0, unread_count: 0, connected: false }
+    mockPlatformLoading = false
+    mockPlatformUnreadCount = 0
   })
 
   // -----------------------------------------------------------------------
@@ -169,15 +224,15 @@ describe('NotificationsView', () => {
   // Click behavior
   // -----------------------------------------------------------------------
 
-  it('navigates to the session when a notification is clicked', async () => {
-    const user = userEvent.setup()
+  it('links a notification to its session route', () => {
     mockNotificationsData = {
       items: [makeNotification({ id: '1', agentSlug: 'bot-1', sessionId: 'sess-42' })],
       total: 1,
     }
     renderWithProviders(<NotificationsView />)
-    await user.click(screen.getByText('Notification 1'))
-    expect(mockSetAgent).toHaveBeenCalledWith('bot-1', { kind: 'session', id: 'sess-42' })
+    const link = screen.getByText('Notification 1').closest('a')
+    expect(link).toHaveAttribute('data-to', '/agents/$slug/sessions/$sessionId')
+    expect(link).toHaveAttribute('data-params', JSON.stringify({ slug: 'bot-1', sessionId: 'sess-42' }))
   })
 
   it('marks unread notification as read on click', async () => {
@@ -202,8 +257,7 @@ describe('NotificationsView', () => {
     expect(mockMarkReadMutate).not.toHaveBeenCalled()
   })
 
-  it('navigates to agent home for chat integration notifications', async () => {
-    const user = userEvent.setup()
+  it('links a chat-integration notification to the agent home', () => {
     mockNotificationsData = {
       items: [makeNotification({
         id: 'ci1',
@@ -214,8 +268,9 @@ describe('NotificationsView', () => {
       total: 1,
     }
     renderWithProviders(<NotificationsView />)
-    await user.click(screen.getByText('Chat Integration Connected'))
-    expect(mockSetAgent).toHaveBeenCalledWith('slack-bot-1', { kind: 'home' })
+    const link = screen.getByText('Chat Integration Connected').closest('a')
+    expect(link).toHaveAttribute('data-to', '/agents/$slug')
+    expect(link).toHaveAttribute('data-params', JSON.stringify({ slug: 'slack-bot-1' }))
   })
 
   // -----------------------------------------------------------------------
@@ -268,7 +323,7 @@ describe('NotificationsView', () => {
 
   it('navigates to the next page when the next button is clicked', async () => {
     const user = userEvent.setup()
-    mockNotificationsData = { items: makeNotifications(15), total: 30 }
+    mockNotificationsData = { items: makeNotifications(30), total: 30 }
     renderWithProviders(<NotificationsView />)
     const nextButton = screen.getAllByRole('button').find((b) =>
       b.querySelector('.lucide-chevron-right'),
@@ -287,7 +342,152 @@ describe('NotificationsView', () => {
     mockNotificationsData = { items: [], total: 0 }
     renderWithProviders(<NotificationsView />)
     await user.click(screen.getByTestId('notifications-back-button'))
-    expect(mockSetView).toHaveBeenCalledWith({ kind: 'home' })
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/' })
+  })
+
+  // -----------------------------------------------------------------------
+  // Platform notifications (merged rows)
+  // -----------------------------------------------------------------------
+
+  it('merges platform rows into the list sorted by date', () => {
+    mockNotificationsData = {
+      items: [makeNotification({ id: 'a1', createdAt: new Date('2026-05-20T10:00:00Z') })],
+      total: 1,
+    }
+    mockPlatformData = {
+      notifications: [
+        makePlatformNotification({ id: 'ntf_1', created_at: '2026-05-21T10:00:00Z' }),
+      ],
+      total: 1,
+      unread_count: 1,
+      connected: true,
+    }
+    renderWithProviders(<NotificationsView />)
+
+    const rows = screen.getAllByText(/Platform announcement|Notification a1/)
+    // Newer platform row sorts above the agent row
+    expect(rows[0].textContent).toContain('Platform announcement')
+    expect(screen.getByTestId('platform-notification-row')).toBeTruthy()
+  })
+
+  it('links a platform row to the notification detail route', () => {
+    mockPlatformData = {
+      notifications: [makePlatformNotification({ id: 'ntf_42' })],
+      total: 1,
+      unread_count: 1,
+      connected: true,
+    }
+    renderWithProviders(<NotificationsView />)
+    const link = screen.getByTestId('platform-notification-row')
+    expect(link).toHaveAttribute('data-to', '/notifications/$id')
+    expect(link).toHaveAttribute('data-params', JSON.stringify({ id: 'ntf_42' }))
+  })
+
+  it('shows the unread indicator for unread platform rows only', () => {
+    mockPlatformData = {
+      notifications: [
+        makePlatformNotification({ id: 'ntf_read', read_at: '2026-05-20T11:00:00Z' }),
+      ],
+      total: 1,
+      unread_count: 0,
+      connected: true,
+    }
+    renderWithProviders(<NotificationsView />)
+    expect(screen.queryByLabelText('Unread')).toBeNull()
+  })
+
+  it('marks platform notifications read too when mark-all is clicked', async () => {
+    const user = userEvent.setup()
+    mockPlatformUnreadCount = 2
+    mockPlatformData = {
+      notifications: [makePlatformNotification({ id: 'ntf_1' })],
+      total: 1,
+      unread_count: 2,
+      connected: true,
+    }
+    renderWithProviders(<NotificationsView />)
+    await user.click(screen.getByTestId('notifications-mark-all-read'))
+    expect(mockMarkAllReadMutate).toHaveBeenCalled()
+    expect(mockMarkAllPlatformReadMutate).toHaveBeenCalled()
+  })
+
+  it('counts platform totals into merged pagination', () => {
+    mockNotificationsData = { items: makeNotifications(15), total: 20 }
+    mockPlatformData = {
+      notifications: [makePlatformNotification({ id: 'ntf_1' })],
+      total: 10,
+      unread_count: 0,
+      connected: true,
+    }
+    renderWithProviders(<NotificationsView />)
+    expect(screen.getByText('30 total')).toBeTruthy()
+  })
+
+  it('clamps pagination to the platform fetch cap so every advertised page has content', async () => {
+    const user = userEvent.setup()
+    // 120 platform rows exist but only 100 are fetchable: the view must
+    // advertise 7 pages (100 rows), not 8, and the last page must render
+    // rows — not strand the user on an empty state with no pagination.
+    mockNotificationsData = { items: [], total: 0 }
+    mockPlatformData = {
+      notifications: Array.from({ length: 120 }, (_, i) =>
+        makePlatformNotification({ id: `ntf_${i + 1}` }),
+      ),
+      total: 120,
+      unread_count: 0,
+      connected: true,
+    }
+    renderWithProviders(<NotificationsView />)
+
+    expect(screen.getByText('1 / 7')).toBeTruthy()
+    expect(screen.getByText('100 total')).toBeTruthy()
+
+    const nextButton = screen.getAllByRole('button').find((b) =>
+      b.querySelector('.lucide-chevron-right'),
+    )
+    for (let i = 0; i < 6; i++) {
+      await user.click(nextButton!)
+    }
+
+    expect(screen.getByText('7 / 7')).toBeTruthy()
+    // Last page: the tail 10 of the 100 fetchable rows, and next is disabled.
+    expect(screen.getAllByTestId('platform-notification-row')).toHaveLength(10)
+    expect(nextButton!).toBeDisabled()
+    expect(screen.queryByText('No notifications yet.')).toBeNull()
+  })
+
+  it('walks to page 2 of a mixed merged list without dropping or duplicating rows', async () => {
+    const user = userEvent.setup()
+    // 20 agent rows (newer, 10:00) + 10 platform rows (older, 09:00): page 1
+    // must be all-agent, page 2 the remaining 5 agent rows + all 10 platform.
+    mockNotificationsData = { items: makeNotifications(20), total: 20 }
+    mockPlatformData = {
+      notifications: Array.from({ length: 10 }, (_, i) =>
+        makePlatformNotification({ id: `ntf_${i + 1}` }),
+      ),
+      total: 10,
+      unread_count: 0,
+      connected: true,
+    }
+    renderWithProviders(<NotificationsView />)
+
+    expect(screen.getByText('1 / 2')).toBeTruthy()
+    expect(screen.getByText('30 total')).toBeTruthy()
+    expect(screen.getByText('Notification n15')).toBeTruthy()
+    expect(screen.queryAllByTestId('platform-notification-row')).toHaveLength(0)
+
+    const nextButton = screen.getAllByRole('button').find((b) =>
+      b.querySelector('.lucide-chevron-right'),
+    )
+    await user.click(nextButton!)
+
+    expect(screen.getByText('2 / 2')).toBeTruthy()
+    // Nothing from page 1 repeats at the slice boundary...
+    expect(screen.queryByText('Notification n15')).toBeNull()
+    // ...and nothing is skipped: the agent tail and the full platform set.
+    expect(screen.getByText('Notification n16')).toBeTruthy()
+    expect(screen.getByText('Notification n20')).toBeTruthy()
+    expect(screen.getAllByTestId('platform-notification-row')).toHaveLength(10)
   })
 
   // -----------------------------------------------------------------------

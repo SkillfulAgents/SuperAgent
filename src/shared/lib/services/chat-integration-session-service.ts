@@ -50,6 +50,23 @@ export function listChatIntegrationSessions(integrationId: string): ChatIntegrat
     .all()
 }
 
+/**
+ * List only the ACTIVE (non-archived) sessions for an integration.
+ *
+ * Used by the reconnect/restore path so archived/cleared/timed-out sessions are
+ * not re-subscribed for SSE forwarding (SUP-233). `listChatIntegrationSessions`
+ * intentionally returns archived rows too — the UI/x-agent surfaces filter at
+ * the call site — so it is left unchanged.
+ */
+export function listActiveChatIntegrationSessions(integrationId: string): ChatIntegrationSession[] {
+  return db.select().from(chatIntegrationSessions)
+    .where(and(
+      eq(chatIntegrationSessions.integrationId, integrationId),
+      isNull(chatIntegrationSessions.archivedAt),
+    ))
+    .all()
+}
+
 // ── Create ──────────────────────────────────────────────────────────────
 
 export function createChatIntegrationSession(params: {

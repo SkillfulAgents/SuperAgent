@@ -1,13 +1,12 @@
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { getConfiguredLlmClient } from '@shared/lib/llm-provider/helpers'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
+import { getEffectiveModels } from '@shared/lib/config/settings'
 
 const llm = new Hono()
 
 llm.use('*', Authenticated())
-
-const DEFAULT_MODEL = 'claude-sonnet-4-6'
 
 // Simple rate limiter: 100 requests per minute
 const requestCounts = new Map<string, { count: number; resetAt: number }>()
@@ -32,12 +31,22 @@ function checkRateLimit(key: string): boolean {
   return true
 }
 
+/**
+ * Resolve the dashboard-runtime default to the active provider's concrete wire
+ * id. The iframe proxy historically used the Sonnet tier; browserModel is the
+ * existing cross-provider Sonnet-tier setting, so using it preserves that cost
+ * profile without hard-coding a Claude model id.
+ */
+function getDefaultModel(): string {
+  return resolveActiveProviderModel(getEffectiveModels().browserModel, 'browser')
+}
+
 // GET /api/llm/config
 llm.get('/config', (c) => {
   const provider = getActiveLlmProvider()
   return c.json({
     configured: provider.getApiKeyStatus().isConfigured,
-    defaultModel: DEFAULT_MODEL,
+    defaultModel: getDefaultModel(),
     provider: provider.id,
   })
 })
@@ -68,14 +77,14 @@ llm.post('/v1/messages', async (c) => {
     return c.json({ error: 'Missing required field: messages' }, 400)
   }
 
-  const model = (body.model as string) || DEFAULT_MODEL
+  const model = (body.model as string) || getDefaultModel()
   const stream = !!body.stream
 
   let client
   try {
     client = getConfiguredLlmClient()
   } catch {
-    return c.json({ error: 'LLM provider not configured. Check Superagent settings.' }, 503)
+    return c.json({ error: 'LLM provider not configured. Check Gamut settings.' }, 503)
   }
 
   try {

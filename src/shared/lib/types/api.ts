@@ -5,7 +5,7 @@
  * These types represent the "flattened" format returned by API routes.
  */
 
-import type { EffortLevel, HealthCheckResult } from '@shared/lib/container/types'
+import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/container/types'
 import type { SessionUsage } from '@shared/lib/types/agent'
 
 // ============================================================================
@@ -16,7 +16,10 @@ import type { SessionUsage } from '@shared/lib/types/agent'
  * Agent response from API - flattened format
  */
 export interface ApiAgent {
+  /** Canonical opaque id — folder name, DB key, URL resolution key. Never changes. */
   slug: string
+  /** Decorative `{slug(name)}-{id}` projection for URLs/links; recomputed from the current name. */
+  displaySlug: string
   name: string
   description?: string
   instructions?: string // Only included in single-agent response
@@ -31,14 +34,14 @@ export interface ApiAgent {
   hasUnreadNotifications?: boolean
   sessionCount?: number
   lastActivityAt?: Date | null
-  scheduledTaskCount?: number
-  nextScheduledTaskAt?: Date | null
-  chatIntegrationCount?: number
-  dashboardCount?: number
-  dashboardNames?: string[]
-  dashboardSlugs?: string[]
   dashboards?: ApiAgentDashboard[]
-  autoDeleteInactiveDays?: number
+}
+
+/** Response returned when an agent template has been installed or imported. */
+export interface ApiAgentTemplateInstallResult extends ApiAgent {
+  hasOnboarding?: boolean
+  /** Optional root PROMPT.md contents to prefill on the new agent's home page. */
+  templatePrompt?: string
 }
 
 export interface ApiAgentDashboard {
@@ -73,6 +76,16 @@ export interface ApiDiscoverableAgent {
   description: string
   version: string
   path: string
+  /** Long-form markdown for the details page. */
+  details?: string
+  /** Marketplace category, e.g. "Marketing", "Customer Success". */
+  category?: string
+  /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
+  icon?: string
+  tags?: string[]
+  /** Services the template connects to; `slug` matches the service-icon set. */
+  worksWith?: { type: string; slug: string }[]
+  developer?: { name: string; url?: string }
 }
 
 // ============================================================================
@@ -100,8 +113,15 @@ export interface ApiSession {
   webhookTriggerName?: string
   // Last effort level used on this session (seeds the composer selector)
   effort?: EffortLevel
+  // Last processing speed used on this session (seeds the composer selector)
+  speed?: SpeedLevel
   // Last model used on this session (seeds the composer selector)
   model?: string
+  // Present when the session has a pending scheduled wake (long sleep):
+  // it will auto-resume at pendingWakeAt with pendingWakeNote echoed back.
+  pendingWakeAt?: string
+  pendingWakeTaskId?: string
+  pendingWakeNote?: string
 }
 
 // ============================================================================
@@ -157,6 +177,20 @@ export interface ApiMessage {
    * detection) must skip it.
    */
   queued?: boolean
+  /**
+   * Summarized extended-thinking blocks persisted in the session transcript,
+   * in order. Absent when the turn had no thinking or the transcript predates
+   * thinking-text persistence. `durationMs` is derived from transcript entry
+   * timestamps and absent when underivable.
+   */
+  thinking?: Array<{ id?: string; text: string; durationMs?: number }>
+  /** Per-model-response token usage preserved from the session transcript. */
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheCreationInputTokens: number
+    cacheReadInputTokens: number
+  }
 }
 
 /**
@@ -194,9 +228,21 @@ export interface ApiMemoryRecall {
 }
 
 /**
+ * Host-persisted informational banner in API response (e.g. a hook blocked a
+ * prompt before it reached the model)
+ */
+export interface ApiInformational {
+  id: string
+  type: 'informational'
+  content: string
+  level?: string
+  createdAt: Date
+}
+
+/**
  * Union type for all message-like items in the API response
  */
-export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall
+export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational
 
 // ============================================================================
 // Secret API Types
@@ -283,6 +329,10 @@ export interface ApiSkillsetConfig {
   badgeLabel?: string
   showUrl: boolean
   publishMode: 'pull_request' | 'hosted_submit' | 'none'
+  credential?: {
+    type: 'token'
+    tokenPreview: string
+  }
   error?: string
 }
 
@@ -310,6 +360,7 @@ export interface ApiScheduledTask {
   timezone: string | null
   model: string | null
   effort: string | null
+  speed: string | null
   createdAt: Date
   cancelledAt: Date | null
   pausedAt: Date | null
@@ -332,35 +383,4 @@ export interface ApiNotification {
   isRead: boolean
   createdAt: Date
   readAt: Date | null
-}
-
-// ============================================================================
-// Connected Account API Types
-// ============================================================================
-
-/**
- * Provider info
- */
-export interface ApiProvider {
-  slug: string
-  displayName: string
-  icon?: string
-}
-
-/**
- * Connected account response
- */
-export interface ApiConnectedAccount {
-  id: string
-  providerConnectionId: string
-  providerName: string
-  toolkitSlug: string
-  displayName: string
-  status: 'active' | 'revoked' | 'expired'
-  createdAt: Date
-  updatedAt: Date
-  provider?: ApiProvider
-  // Only present when fetched for a specific agent
-  mappingId?: string
-  mappedAt?: Date
 }

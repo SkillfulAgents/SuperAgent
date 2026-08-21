@@ -1,7 +1,11 @@
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
+// Captures SUPERAGENT_HOST_TOKEN and strips it from process.env — import early
+// so no later module can snapshot an environment that still contains it.
+import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
 import { SessionManager } from './session-manager';
 import { CreateSessionRequest, SendMessageRequest } from './types';
+import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import type { UUID } from 'crypto';
 import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -9,14 +13,38 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile, execSync } from 'child_process';
 import { promisify } from 'util';
-import * as dns from 'dns';
+import { z } from 'zod';
 
 import { inputManager } from './input-manager';
-import { dashboardManager } from './dashboard-manager';
+import { resolveCdpIp } from './cdp-host';
+import { startScreenshotJanitor } from './screenshot-janitor';
+import { dashboardManager, getDashboardBasePath } from './dashboard-manager';
+import {
+  dashboardHttpForwardHeaders,
+  dashboardHttpUpstreamPath,
+  dashboardWebSocketForwardHeaders,
+  dashboardWebSocketUpstreamPath,
+  parseDashboardProxyRoute,
+  requestedWebSocketProtocols,
+} from './dashboard-proxy';
 import { tabManager } from './tab-manager';
+import { startTabPolling, stopTabPolling } from './tab-poll';
 import { runBrowserUpload } from './browser-upload';
+import { runBrowserDownload } from './browser-download';
+import { updateEnvFileEntry, healEnvFilePermissions } from './env-file-store';
+import { isAgentIdentityEnvKey } from './attribution-headers';
+import {
+  deleteWorkspaceEntry,
+  renameWorkspaceEntry,
+  WorkspaceEntryOperationError,
+  type DeleteWorkspaceEntryRequest,
+  type RenameWorkspaceEntryRequest,
+} from './workspace-entry-operations';
 
 import { getEditingCommands } from './cdp-editing-commands';
+import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
+import { selectActivePageTarget } from './active-page-target';
+import { decodeChromeTargetTitle } from './chrome-target-title';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -45,6 +73,17 @@ process.on('unhandledRejection', (reason: unknown) => {
 const app = new Hono();
 const sessionManager = new SessionManager();
 const WORKSPACE_DOWNLOADS_DIR = '/workspace/downloads';
+
+// The agent's own Bash can reach this API (shared network namespace), so every
+// endpoint that could loosen policy or self-approve an input must prove the
+// caller is the host. /health stays open for the Docker HEALTHCHECK.
+app.use('*', async (c, next) => {
+  if (!hostAuthEnabled() || c.req.path === '/health') return next();
+  if (!isValidHostToken(c.req.header(HOST_TOKEN_HEADER))) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  return next();
+});
 
 // Health check endpoint
 app.get('/health', (c) => {
@@ -85,6 +124,17 @@ app.get('/sessions/:id', async (c) => {
   });
 });
 
+// Persisted "Allow for this session" review grants. The host consults this when
+// its in-memory grant mirror is cold (fresh host process against a live
+// container) before broadcasting a review card the container isn't waiting on.
+app.get('/sessions/:id/capability-grants', (c) => {
+  const grants = sessionManager.getSessionCapabilityGrants(c.req.param('id'));
+  if (grants === null) {
+    return c.json({ error: 'Session not found' }, 404);
+  }
+  return c.json({ grants });
+});
+
 app.get('/sessions', (c) => {
   const sessions = sessionManager.getAllSessions();
   return c.json(sessions);
@@ -93,6 +143,12 @@ app.get('/sessions', (c) => {
 app.delete('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
   const deleted = await sessionManager.deleteSession(sessionId);
+
+  // The host never answers a deleted session's input requests — reject them
+  // so awaiting tool handlers unblock and the entries don't live forever.
+  // Unconditional: a not-found session may still own entries from a racing
+  // or repeated delete.
+  inputManager.rejectForSession(sessionId);
 
   if (!deleted) {
     return c.json({ error: 'Session not found' }, 404);
@@ -105,13 +161,15 @@ app.post('/sessions/:id/interrupt', async (c) => {
   const sessionId = c.req.param('id');
 
   try {
-    const interrupted = await sessionManager.interruptSession(sessionId);
+    const { found, discardedUuids } = await sessionManager.interruptSession(sessionId);
 
-    if (!interrupted) {
+    if (!found) {
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    return c.json({ success: true });
+    // The same uuids also flow to the host as synthetic command_lifecycle
+    // 'discarded' stream frames; this response is for the API caller.
+    return c.json({ success: true, discardedUuids });
   } catch (error: any) {
     console.error('Error interrupting session:', error);
     return c.json({ error: error.message || 'Failed to interrupt session' }, 500);
@@ -119,18 +177,6 @@ app.post('/sessions/:id/interrupt', async (c) => {
 });
 
 // Message endpoints
-app.get('/sessions/:id/messages', async (c) => {
-  const sessionId = c.req.param('id');
-  const session = await sessionManager.getSession(sessionId);
-
-  if (!session) {
-    return c.json({ error: 'Session not found' }, 404);
-  }
-
-  const messages = sessionManager.getMessages(sessionId);
-  return c.json(messages);
-});
-
 app.post('/sessions/:id/messages', async (c) => {
   const sessionId = c.req.param('id');
   const session = await sessionManager.getSession(sessionId);
@@ -145,8 +191,10 @@ app.post('/sessions/:id/messages', async (c) => {
 
     await sessionManager.sendMessage(sessionId, content, body.uuid, {
       effort: body.effort,
+      speed: speedLevelSchema.parse(body.speed),
       model: body.model,
       shouldQuery: body.shouldQuery,
+      capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
     });
 
     return c.json({ success: true }, 201);
@@ -173,6 +221,35 @@ app.delete('/sessions/:id/queued-messages/:uuid', async (c) => {
 });
 
 // File system endpoints
+// These host-authenticated mutations deliberately execute inside the container
+// namespace. The workspace is bind-mounted, so changes persist, while a racing
+// symlink can never redirect a destructive operation into the host filesystem.
+app.patch('/workspace/entries', async (c) => {
+  try {
+    const result = await renameWorkspaceEntry(await c.req.json<RenameWorkspaceEntryRequest>());
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof WorkspaceEntryOperationError) {
+      return c.json({ error: error.message }, error.status);
+    }
+    console.error('Error renaming workspace entry:', error);
+    return c.json({ error: error instanceof Error ? error.message : 'Failed to rename workspace entry' }, 500);
+  }
+});
+
+app.delete('/workspace/entries', async (c) => {
+  try {
+    await deleteWorkspaceEntry(await c.req.json<DeleteWorkspaceEntryRequest>());
+    return c.json({ success: true });
+  } catch (error) {
+    if (error instanceof WorkspaceEntryOperationError) {
+      return c.json({ error: error.message }, error.status);
+    }
+    console.error('Error deleting workspace entry:', error);
+    return c.json({ error: error instanceof Error ? error.message : 'Failed to delete workspace entry' }, 500);
+  }
+});
+
 app.get('/files/*', async (c) => {
   const filePath = c.req.param('*') || '';
   const fullPath = path.join('/workspace', filePath);
@@ -344,39 +421,12 @@ async function updateEnvFile(key: string, value: string): Promise<void> {
   const envFilePath = '/workspace/.env';
 
   try {
-    // Read existing .env file or start fresh
-    let envContent = '';
-    try {
-      envContent = await fs.promises.readFile(envFilePath, 'utf-8');
-    } catch {
-      // File doesn't exist yet, start fresh
-    }
-
-    // Parse existing entries
-    const lines = envContent.split('\n');
-    const entries = new Map<string, string>();
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith('#')) {
-        const eqIndex = trimmed.indexOf('=');
-        if (eqIndex > 0) {
-          const k = trimmed.substring(0, eqIndex);
-          const v = trimmed.substring(eqIndex + 1);
-          entries.set(k, v);
-        }
-      }
-    }
-
-    // Update or add the new entry (quote the value to handle special chars)
-    entries.set(key, `"${value.replace(/"/g, '\\"')}"`);
-
-    // Write back
-    const newContent = Array.from(entries.entries())
-      .map(([k, v]) => `${k}=${v}`)
-      .join('\n') + '\n';
-
-    await fs.promises.writeFile(envFilePath, newContent, { mode: 0o600 });
+    // The host app also writes this file (user secrets). updateEnvFileEntry
+    // serializes via the shared on-disk lock, reads fail-closed (an unreadable
+    // file THROWS instead of being treated as empty — merging into "empty" and
+    // writing back once wiped every secret), merges line-preservingly (the
+    // host's header and display-name comments survive), and writes atomically.
+    await updateEnvFileEntry(envFilePath, key, value);
     console.log(`[ENV] Updated .env file with ${key}`);
   } catch (error) {
     console.error(`[ENV] Failed to update .env file:`, error);
@@ -400,12 +450,30 @@ app.post('/env', async (c) => {
       return c.json({ error: 'Invalid environment variable name' }, 400);
     }
 
+    // The boot-time agent identity must stay immutable — header composition
+    // reads a boot snapshot anyway, but reject the write outright so the env
+    // never lies about which agent this container is.
+    if (isAgentIdentityEnvKey(body.key)) {
+      console.error(`[ENV] Rejected write to reserved identity env var: ${body.key}`);
+      return c.json({ error: `${body.key} is reserved and cannot be modified` }, 403);
+    }
+
     // Set the environment variable in process.env (for Node.js code)
     process.env[body.key] = body.value;
     console.log(`[ENV] Set environment variable: ${body.key} (${body.value.length} chars)`);
 
+    // A pre-warmed subprocess captured the old env when it spawned (REMOTE_MCPS
+    // in particular is read while building its query options), so it would run
+    // the next session against a stale view. Invalidated here — immediately
+    // after the env changes and BEFORE the awaited file write below — so a
+    // session arriving in that window cannot claim the stale process. The
+    // generation bump inside is synchronous and also rejects a warm-up that is
+    // still spawning; the next createSession re-warms from the current env.
+    const discarded = sessionManager.discardPrewarmed(`env var ${body.key} changed`);
+
     // Also write to .env file (for uv/python scripts)
     await updateEnvFile(body.key, body.value);
+    await discarded;
 
     // Verify it was set in process.env
     if (process.env[body.key] !== body.value) {
@@ -513,14 +581,20 @@ async function proxyToDashboard(c: any) {
   const url = new URL(c.req.url);
   const prefixPattern = `/artifacts/${slug}`;
   const subPath = url.pathname.slice(url.pathname.indexOf(prefixPattern) + prefixPattern.length) || '/';
-  const targetUrl = `http://localhost:${port}${subPath}${url.search}`;
+  const upstreamPathMode = dashboardManager.getDashboardUpstreamPathMode(slug);
+  const targetPath = dashboardHttpUpstreamPath(
+    subPath,
+    getDashboardBasePath(slug),
+    upstreamPathMode,
+  );
+  const targetUrl = `http://localhost:${port}${targetPath}${url.search}`;
 
-  const headers = new Headers(c.req.header());
-  headers.delete('host');
+  const headers = dashboardHttpForwardHeaders(c.req.header(), upstreamPathMode);
 
   const response = await fetch(targetUrl, {
     method: c.req.method,
     headers,
+    redirect: 'manual',
     body: c.req.method !== 'GET' && c.req.method !== 'HEAD'
       ? await c.req.arrayBuffer()
       : undefined,
@@ -562,7 +636,16 @@ import {
   setBrowserState as _setBrowserState,
   validateBrowserSession,
   releaseBrowserLock,
+  transferBrowserLock,
 } from './browser-state';
+import {
+  BROWSER_OPEN_LOCATIONS,
+  type BrowserOpenLocation,
+  type BrowserRuntimeLocation,
+  requiresBrowserLocationSwitch,
+  resolveBrowserRuntimeLocation,
+  shouldRefuseImplicitHostLoopback,
+} from './browser-location';
 
 // Proxy object so existing code can read `browserState.active` etc. without changes.
 // Writes must go through _setBrowserState() to keep the canonical module state in sync.
@@ -572,10 +655,43 @@ const browserState: BrowserState = new Proxy({} as BrowserState, {
   },
 });
 
+/**
+ * validateBrowserSession with stale-owner recovery.
+ *
+ * A lock can be left keyed to a session id that no longer maps to any live
+ * session: the canonical Claude id changes on query restart, and crashed
+ * sessions never call release. Locking everyone out until container restart
+ * produced 100+ consecutive "Browser is owned by session …" failures in the
+ * browser-tools audit. If the recorded owner is not an active session,
+ * transfer the lock to the requester instead of rejecting.
+ */
+function validateBrowserSessionWithRecovery(requestSessionId: string): string | null {
+  const error = validateBrowserSession(requestSessionId);
+  if (!error) return null;
+  const ownerId = _getBrowserState().sessionId;
+  if (ownerId && !sessionManager.hasActiveSession(ownerId)) {
+    transferBrowserLock(requestSessionId);
+    console.log(`[Browser] Lock owner ${ownerId} is no longer an active session — transferred browser to ${requestSessionId}`);
+    return null;
+  }
+  return `${error}, which is still active. The browser is in use by another session — do not retry; report the conflict and stop.`;
+}
+
 
 const execFileAsync = promisify(execFile);
 
-import { buildRunCommandArgs, splitCommandArgs } from './browser-command-args';
+import { resolveRunCommandArgs } from './browser-command-args';
+import { validatePressKey } from './press-key';
+import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
+import { judgeSelectCommit, SELECT_COMMIT_SETTLE_MS } from './select-verify';
+import { resolveCommittedValue } from './field-value-readback';
+import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
+import { capSnapshot, formatIframePlaceholders, parseIframeInfo, IFRAME_ENUM_SCRIPT } from './snapshot-format';
+import {
+  observeUrl, resetUrlTracking,
+  CLICK_SETTLE_MS, FILL_SETTLE_MS, PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS,
+  type UrlDigest, type ScrollInfo, parseScrollInfo,
+} from './browser-digest';
 
 // Ensure Chrome download preferences are set in the browser profile directory.
 // Merges with existing preferences to avoid overwriting other settings.
@@ -632,31 +748,64 @@ async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: s
     const fullArgs = cdpUrl ? ['--cdp', cdpUrl, ...args] : args;
     const { stdout } = await execFileAsync('agent-browser', fullArgs, {
       timeout: 30000,
+      // Large-but-legitimate outputs must not THROW (the throw path used to
+      // stuff up to 1 MiB of partial output into an error string);
+      // capBrowserOutput below bounds what the model actually sees.
+      maxBuffer: 4 * 1024 * 1024,
       env: {
         ...process.env,
         AGENT_BROWSER_STREAM_PORT: process.env.AGENT_BROWSER_STREAM_PORT || '9223',
         AGENT_BROWSER_ARGS: process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled',
       },
     });
-    return { stdout: stdout.trim(), exitCode: 0 };
+    return { stdout: capBrowserOutput(stdout.trim(), MAX_BROWSER_OUTPUT_CHARS), exitCode: 0 };
   } catch (error: any) {
+    // Full, unsanitized detail (incl. the command line with the CDP URL) goes
+    // to container logs for connectivity debugging — never to the model.
+    console.error('[Browser] agent-browser failed:', error.message);
     if (error.stderr) {
       console.error('[Browser] agent-browser stderr:', error.stderr);
     }
-    // Combine stdout, stderr, and message for maximum debuggability.
-    // The error shown to users includes the full command line (from error.message)
-    // which contains the CDP URL — helpful for diagnosing connectivity issues.
     const parts = [
       error.stdout?.trim(),
       error.stderr?.trim(),
     ].filter(Boolean);
-    const detail = parts.length > 0 ? parts.join('\n') : (error.message || 'Command failed');
+    const rawDetail = parts.length > 0 ? parts.join('\n') : (error.message || 'Command failed');
     return {
-      stdout: detail,
-      exitCode: error.code || 1,
+      stdout: redactCdpUrls(capBrowserOutput(rawDetail, MAX_BROWSER_ERROR_CHARS)),
+      exitCode: typeof error.code === 'number' ? error.code : 1,
     };
   }
 }
+
+/** Read the current URL after an action and build the navigation digest. */
+async function observeUrlDigest(): Promise<UrlDigest | null> {
+  const r = await execBrowser(['get', 'url'], browserState.cdpUrl || undefined);
+  if (r.exitCode !== 0 || !r.stdout.trim()) return null;
+  return observeUrl(r.stdout.trim());
+}
+
+/**
+ * Read back the committed value of a field after fill/type.
+ *
+ * `get value` reads `.value`, which contenteditable widgets (LinkedIn's message
+ * box, rich-text editors) do not expose — it returns "" for them even when text
+ * is present. The false-empty read-back made agents believe their keystrokes
+ * had not landed and re-type, duplicating text. When `get value` is empty we
+ * fall back to `get text`, which IS populated for contenteditables.
+ */
+async function readCommittedFieldValue(ref: string): Promise<string | null> {
+  const value = await execBrowser(['get', 'value', ref], browserState.cdpUrl || undefined);
+  const valueRead = { ok: value.exitCode === 0, text: value.stdout.trim() };
+  if (valueRead.ok && valueRead.text !== '') return valueRead.text;
+
+  // Empty/unreadable `.value`: read text content to catch contenteditables.
+  const text = await execBrowser(['get', 'text', ref], browserState.cdpUrl || undefined);
+  const textRead = { ok: text.exitCode === 0, text: text.stdout.trim() };
+  return resolveCommittedValue(valueRead, textRead);
+}
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 interface HostBrowserInfo {
   cdpUrl: string;
@@ -664,11 +813,30 @@ interface HostBrowserInfo {
   hostDownloadDir: string;
 }
 
-// Launch the host browser via CDP if AGENT_BROWSER_USE_HOST is set.
+// Relay a container-side browser-launch failure to the host for Sentry.
+// Only called for failures after the launch request itself succeeded — the
+// host is known reachable at that point, but has no other way to learn this
+// half of the launch broke (the error otherwise surfaces only in the agent's
+// tool result). Fire-and-forget: reporting must never mask the real error.
+function reportHostBrowserLaunchError(
+  hostAppUrl: string,
+  headers: Record<string, string>,
+  stage: string,
+  err: unknown,
+): void {
+  const message = err instanceof Error ? err.message : String(err);
+  void fetch(`${hostAppUrl}/api/browser/report-launch-error`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ agentId: process.env.AGENT_ID || 'default', stage, message }),
+  }).catch(() => {});
+}
+
+// Launch the host browser via CDP when this open request resolved to the host.
 // Returns the CDP WebSocket URL and host download dir, or undefined if not using host browser.
-// Throws if host browser mode is enabled but the browser fails to launch.
-async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined> {
-  if (!process.env.AGENT_BROWSER_USE_HOST) {
+// Throws if the request resolves to the host but that browser fails to launch.
+async function launchHostBrowserIfNeeded(location: BrowserRuntimeLocation): Promise<HostBrowserInfo | undefined> {
+  if (location !== 'host') {
     return undefined;
   }
 
@@ -683,11 +851,28 @@ async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined>
   const browserAuthHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
   if (proxyToken) browserAuthHeaders['Authorization'] = `Bearer ${proxyToken}`;
 
-  const response = await fetch(`${hostAppUrl}/api/browser/launch-host-browser`, {
-    method: 'POST',
-    headers: browserAuthHeaders,
-    body: JSON.stringify({ agentId: agentId || 'default' }),
-  });
+  // A network-level failure here means the launch request never reached the
+  // host app at all — the host never launches Chrome and never reports to
+  // Sentry, so this bare 'fetch failed' used to be the only trace. On Windows
+  // it is almost always Windows Firewall blocking the app's API port for
+  // container (WSL2) traffic, e.g. after the first-run firewall prompt was
+  // dismissed. Surface that diagnosis instead.
+  let response: Response;
+  try {
+    response = await fetch(`${hostAppUrl}/api/browser/launch-host-browser`, {
+      method: 'POST',
+      headers: browserAuthHeaders,
+      body: JSON.stringify({ agentId: agentId || 'default' }),
+    });
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Could not reach the host app at ${hostAppUrl} to launch the browser (${cause}). ` +
+      `Connections from the agent container to the host machine appear to be blocked — on Windows this is usually ` +
+      `Windows Defender Firewall blocking the app (open "Allow an app through Windows Firewall" and enable it for both Private and Public networks), ` +
+      `or third-party antivirus. Ask the user to allow the app through their firewall, then try again.`
+    );
+  }
 
   if (!response.ok) {
     const body = await response.text();
@@ -706,25 +891,43 @@ async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined>
     throw new Error('Host browser response missing both cdpUrl and port');
   }
 
-  // Resolve host.docker.internal to its IP address. Chrome's CDP server
-  // validates the Host header and only accepts "localhost" or IP addresses,
-  // rejecting hostnames like "host.docker.internal". Using the resolved IP
-  // ensures the Host header passes Chrome's check for both HTTP requests
-  // and WebSocket connections from agent-browser.
-  const hostDockerInternal = 'host.docker.internal';
+  // Derive the CDP host from HOST_APP_URL - the same address the
+  // launch-host-browser request above already reached the host at. Chrome's CDP
+  // server validates the Host header and rejects hostnames, so resolveCdpIp
+  // returns an IP. Apple containers can't resolve host.docker.internal (no
+  // --add-host equivalent), so there HOST_APP_URL is the host gateway IP and no
+  // DNS is needed; Docker/Lima/WSL2 keep host.docker.internal, which their
+  // runtime maps.
   let cdpIp: string;
   try {
-    const { address } = await dns.promises.lookup(hostDockerInternal);
-    cdpIp = address;
-  } catch {
-    throw new Error(`Failed to resolve ${hostDockerInternal}`);
+    cdpIp = await resolveCdpIp(hostAppUrl);
+  } catch (err) {
+    reportHostBrowserLaunchError(hostAppUrl, browserAuthHeaders, 'resolve-cdp-host', err);
+    throw err;
   }
 
   // Chrome's CDP requires connecting to the full debugger WebSocket URL
   // (ws://host:port/devtools/browser/<id>), not just ws://host:port.
   // Query Chrome's /json/version endpoint to discover it.
   const cdpHost = `${cdpIp}:${data.port}`;
-  const versionRes = await fetch(`http://${cdpHost}/json/version`);
+  // A network-level failure here (vs. an HTTP error) means the host browser
+  // launched but this container can't reach its debugging port — on Windows
+  // that is almost always the host firewall dropping container→host traffic.
+  // Surface that diagnosis instead of an opaque "fetch failed".
+  let versionRes: Response;
+  try {
+    versionRes = await fetch(`http://${cdpHost}/json/version`);
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    const error = new Error(
+      `The host browser launched, but its debugging endpoint at ${cdpHost} is unreachable from inside the agent container (${cause}). ` +
+      `This usually means a firewall on the host machine is blocking container-to-host connections ` +
+      `(on Windows: Windows Defender Firewall or antivirus blocking the app on the "vEthernet (WSL)" network). ` +
+      `Ask the user to allow the app through their firewall, or to switch Browser Host to the built-in browser in Settings.`
+    );
+    reportHostBrowserLaunchError(hostAppUrl, browserAuthHeaders, 'cdp-endpoint-unreachable', error);
+    throw error;
+  }
   if (!versionRes.ok) {
     throw new Error(`Failed to query CDP /json/version: ${versionRes.status}`);
   }
@@ -785,9 +988,24 @@ async function setDownloadBehaviorViaCDP(cdpUrl: string, downloadPath: string): 
   });
 }
 
+// The CDP download path applied for the current browser (host path in host
+// mode, /workspace/downloads locally). Playwright connections made mid-session
+// (browser_upload/browser_download) can clobber Browser.setDownloadBehavior,
+// so we remember what we applied and re-apply it after those calls.
+let appliedCdpDownloadPath: string | null = null;
+
+async function reapplyDownloadBehavior(): Promise<void> {
+  if (!browserState.cdpUrl || !appliedCdpDownloadPath) return;
+  try {
+    await setDownloadBehaviorViaCDP(browserState.cdpUrl, appliedCdpDownloadPath);
+  } catch (err) {
+    console.error('[Browser] Failed to re-apply download behavior via CDP:', err);
+  }
+}
+
 // Tell the host to stop the Chrome process for this agent.
-async function stopHostBrowserIfNeeded(): Promise<void> {
-  if (!process.env.AGENT_BROWSER_USE_HOST) return;
+async function stopHostBrowserIfNeeded(location: BrowserRuntimeLocation | null): Promise<void> {
+  if (location !== 'host') return;
 
   const hostAppUrl = process.env.HOST_APP_URL;
   if (!hostAppUrl) return;
@@ -809,13 +1027,13 @@ async function stopHostBrowserIfNeeded(): Promise<void> {
   }
 }
 
-// Broadcast a browser_active event to the owning session's WebSocket subscribers
-function broadcastBrowserEvent(active: boolean): void {
-  if (!browserState.sessionId) return;
-  const sessionId = browserState.sessionId;
+// Broadcast a browser_active event to the owning session's WebSocket subscribers.
+// Callers releasing a lock can supply the pre-release owner explicitly.
+function broadcastBrowserEvent(active: boolean, targetSessionId: string | null = browserState.sessionId): void {
+  if (!targetSessionId) return;
 
   // Broadcast through the session manager's subscriber system
-  sessionManager.broadcast(sessionId, {
+  sessionManager.broadcast(targetSessionId, {
     type: 'browser_active',
     active,
     timestamp: new Date().toISOString(),
@@ -833,29 +1051,72 @@ app.get('/browser/status', (c) => {
 // POST /browser/open - Start browser and navigate to URL
 app.post('/browser/open', async (c) => {
   try {
-    const body = await c.req.json<{ sessionId: string; url: string }>();
+    const body = await c.req.json<{
+      sessionId: string;
+      url: string;
+      location?: BrowserOpenLocation;
+    }>();
 
     if (!body.sessionId || !body.url) {
       return c.json({ error: 'sessionId and url are required' }, 400);
     }
+    if (body.location !== undefined && !BROWSER_OPEN_LOCATIONS.some(value => value === body.location)) {
+      return c.json({ error: `location must be one of: ${BROWSER_OPEN_LOCATIONS.join(', ')}` }, 400);
+    }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
+    }
+
+    const location = resolveBrowserRuntimeLocation(body.location, browserState.location);
+    if (shouldRefuseImplicitHostLoopback(body.url, body.location, location)) {
+      return c.json({
+        error:
+          'This loopback URL would open on the host machine because no browser location was specified. ' +
+          'Retry with location="container" for a service inside the agent container, or explicitly pass ' +
+          'location="configured" to open the host browser\'s loopback interface. The current browser was left unchanged.',
+      }, 400);
+    }
+    let switchedFrom: BrowserRuntimeLocation | null = null;
+
+    // The browser tools expose one active browser abstraction. Changing its
+    // process location therefore closes the old provider before launching the
+    // new one, rather than leaving an unreachable browser consuming resources.
+    if (requiresBrowserLocationSwitch(browserState.location, location)) {
+      switchedFrom = browserState.location;
+      await execBrowser(['close'], browserState.cdpUrl || undefined);
+      cleanupAgentBrowserDaemon();
+      await stopHostBrowserIfNeeded(browserState.location);
+      cleanupCdpScreencast();
+      broadcastBrowserEvent(false);
+      _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
+      tabManager.resetTabCount();
+      inputManager.rejectByType(
+        'browser_input',
+        'The browser provider changed before the user completed this request'
+      );
     }
 
     // If browser is already active, check for a matching tab before opening a new one
     if (browserState.active) {
       const matchingTab = await tabManager.findMatchingTab(body.url);
       if (matchingTab) {
-        await execBrowser(['tab', String(matchingTab.index)], browserState.cdpUrl || undefined);
+        await execBrowser(['tab', matchingTab.tabId], browserState.cdpUrl || undefined);
         await tabManager.syncTabCount();
+        observeUrl(matchingTab.url); // seed URL baseline for post-action digests
         notifyBrowserAction();
-        return c.json({ success: true, switchedToExisting: true, tabIndex: matchingTab.index, url: matchingTab.url });
+        return c.json({
+          success: true,
+          switchedToExisting: true,
+          tabId: matchingTab.tabId,
+          url: matchingTab.url,
+          location,
+        });
       }
     }
 
-    const hostBrowser = await launchHostBrowserIfNeeded();
+    const hostBrowser = await launchHostBrowserIfNeeded(location);
     const cdpUrl = hostBrowser?.cdpUrl;
     const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
 
@@ -876,7 +1137,7 @@ app.post('/browser/open', async (c) => {
     }
 
     if (result.exitCode !== 0) {
-      const debugInfo = cdpUrl ? ` [cdp=${cdpUrl}, mode=host, attempts=2]` : ' [mode=local, attempts=2]';
+      const debugInfo = ` [location=${location}, attempts=2]`;
       return c.json({ error: `${result.stdout}${debugInfo}`, success: false }, 500);
     }
 
@@ -884,19 +1145,29 @@ app.post('/browser/open', async (c) => {
     // For host browser: use the host-filesystem path (volume-mounted as /workspace).
     // For container browser: use /workspace/downloads directly.
     const downloadPath = hostBrowser?.hostDownloadDir || WORKSPACE_DOWNLOADS_DIR;
+    appliedCdpDownloadPath = null;
     if (cdpUrl) {
       try {
         await setDownloadBehaviorViaCDP(cdpUrl, downloadPath);
+        appliedCdpDownloadPath = downloadPath;
       } catch (err) {
         console.error('[Browser] Failed to set download behavior via CDP:', err);
       }
     }
 
-    _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null });
+    _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null, location });
     tabManager.resetTabCount();
+    resetUrlTracking();
+    // Seed the URL baseline so the FIRST post-action digest can distinguish
+    // "navigated" from "unchanged" (validation found a click that navigated
+    // away from the opened page being reported as "URL unchanged").
+    const landed = await execBrowser(['get', 'url'], cdpUrl);
+    if (landed.exitCode === 0 && landed.stdout.trim()) {
+      observeUrl(landed.stdout.trim());
+    }
     broadcastBrowserEvent(true);
 
-    return c.json({ success: true });
+    return c.json({ success: true, location, switchedFrom });
   } catch (error: any) {
     console.error('[Browser] Error opening browser:', error);
     return c.json({ error: error.message || 'Failed to open browser' }, 500);
@@ -912,21 +1183,32 @@ app.post('/browser/close', async (c) => {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
 
+    const activeLocation = browserState.location;
     await execBrowser(['close'], browserState.cdpUrl || undefined);
     cleanupAgentBrowserDaemon();
 
     // If using host browser, tell the host to kill the Chrome process
-    await stopHostBrowserIfNeeded();
+    await stopHostBrowserIfNeeded(activeLocation);
 
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
-    _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
+    _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     tabManager.resetTabCount();
+
+    // A browser_input request is only answerable while the browser exists —
+    // and it may belong to a session OTHER than the closer (e.g. a background
+    // subagent parked on a login while the main agent closes the browser).
+    // Reject them all so blocked awaiters unblock instead of hanging for the
+    // 24h human-input TTL behind a card the user can no longer act on.
+    inputManager.rejectByType(
+      'browser_input',
+      'The browser was closed before the user completed this request'
+    );
 
     return c.json({ success: true });
   } catch (error: any) {
@@ -946,9 +1228,11 @@ app.post('/browser/release', async (c) => {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const released = releaseBrowserLock(body.sessionId);
+    const released = releaseBrowserLock(
+      body.sessionId,
+      releasedSessionId => broadcastBrowserEvent(false, releasedSessionId),
+    );
     if (released) {
-      broadcastBrowserEvent(false);
       console.log(`[Browser] Lock released by session ${body.sessionId} (browser still running)`);
     }
     return c.json({ success: true, released });
@@ -960,27 +1244,41 @@ app.post('/browser/release', async (c) => {
 
 // POST /browser/notify-closed - Host browser was closed externally, clean up state
 app.post('/browser/notify-closed', (c) => {
-  if (browserState.active) {
+  if (browserState.location) {
     cleanupAgentBrowserDaemon();
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
-    _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
+    _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     tabManager.resetTabCount();
     console.log('[Browser] Browser closed externally, state cleaned up');
   }
+  // Outside the guard: an external close can race the active flag, and a
+  // pending browser_input is unanswerable once the browser is gone either way.
+  inputManager.rejectByType(
+    'browser_input',
+    'The browser was closed before the user completed this request'
+  );
   return c.json({ success: true });
 });
 
 // POST /browser/snapshot - Get accessibility tree snapshot
 app.post('/browser/snapshot', async (c) => {
   try {
-    const body = await c.req.json<{ sessionId: string; interactive?: boolean; compact?: boolean; json?: boolean }>();
+    const body = await c.req.json<{
+      sessionId: string;
+      interactive?: boolean;
+      compact?: boolean;
+      json?: boolean;
+      scope?: string;
+      fullText?: boolean;
+      includeUrls?: boolean;
+    }>();
 
     if (!body.sessionId) {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -991,8 +1289,14 @@ app.post('/browser/snapshot', async (c) => {
 
     const snapshotArgs = ['snapshot'];
     if (body.json) snapshotArgs.push('--json');
-    if (body.interactive !== false) snapshotArgs.push('-i');
-    if (body.compact !== false) snapshotArgs.push('-c');
+    // fullText drops BOTH -i and -c: each independently strips static text
+    // (validation errors, prices, instructions) — audit P5.
+    if (!body.fullText) {
+      if (body.interactive !== false) snapshotArgs.push('-i');
+      if (body.compact !== false) snapshotArgs.push('-c');
+    }
+    if (body.scope) snapshotArgs.push('-s', body.scope);
+    if (body.includeUrls) snapshotArgs.push('--urls');
 
     const result = await execBrowser(snapshotArgs, browserState.cdpUrl || undefined);
 
@@ -1000,17 +1304,26 @@ app.post('/browser/snapshot', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    // Enumerate cross-origin iframes so the agent knows about fields the a11y
+    // tree cannot see (e.g. Stripe payment frames — audit P2).
+    const iframeProbe = await execBrowser(['eval', IFRAME_ENUM_SCRIPT], browserState.cdpUrl || undefined);
+    const iframes = iframeProbe.exitCode === 0 ? parseIframeInfo(iframeProbe.stdout) : [];
+
     if (body.json) {
       // Try to parse JSON output
       try {
         const parsed = JSON.parse(result.stdout);
-        return c.json({ ...parsed, tabCount: tabManager.getTabCount() });
+        return c.json({ ...parsed, iframes, tabCount: tabManager.getTabCount() });
       } catch {
-        return c.json({ snapshot: result.stdout, tabCount: tabManager.getTabCount() });
+        return c.json({ snapshot: result.stdout, iframes, tabCount: tabManager.getTabCount() });
       }
     }
 
-    return c.json({ snapshot: result.stdout, tabCount: tabManager.getTabCount() });
+    return c.json({
+      snapshot: capSnapshot(result.stdout, Boolean(body.scope)) + formatIframePlaceholders(iframes),
+      iframes,
+      tabCount: tabManager.getTabCount(),
+    });
   } catch (error: any) {
     console.error('[Browser] Error taking snapshot:', error);
     return c.json({ error: error.message || 'Failed to take snapshot' }, 500);
@@ -1026,7 +1339,7 @@ app.post('/browser/click', async (c) => {
       return c.json({ error: 'sessionId and ref are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1041,9 +1354,12 @@ app.post('/browser/click', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    await sleep(CLICK_SETTLE_MS);
+    const digest = await observeUrlDigest();
+
     const tabInfo = await tabManager.detectNewTab();
     notifyBrowserAction();
-    return c.json({ success: true, ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, ...(digest && { digest }), ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error clicking:', error);
     return c.json({ error: error.message || 'Failed to click' }, 500);
@@ -1059,7 +1375,7 @@ app.post('/browser/fill', async (c) => {
       return c.json({ error: 'sessionId, ref, and value are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1074,8 +1390,14 @@ app.post('/browser/fill', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    // Read the value back after a settle: the CLI reports success regardless
+    // of what the page kept (maxlength truncation, JS reformatting,
+    // keystroke-only widgets — audit F6).
+    await sleep(FILL_SETTLE_MS);
+    const committedValue = await readCommittedFieldValue(body.ref);
+
     notifyBrowserAction();
-    return c.json({ success: true });
+    return c.json({ success: true, ...(committedValue !== null && { committedValue }) });
   } catch (error: any) {
     console.error('[Browser] Error filling:', error);
     return c.json({ error: error.message || 'Failed to fill' }, 500);
@@ -1091,7 +1413,7 @@ app.post('/browser/scroll', async (c) => {
       return c.json({ error: 'sessionId and direction are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1109,8 +1431,14 @@ app.post('/browser/scroll', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    const probe = await execBrowser(
+      ['eval', 'JSON.stringify({y:window.scrollY,vh:window.innerHeight,h:document.documentElement.scrollHeight})'],
+      browserState.cdpUrl || undefined
+    );
+    const scrollInfo: ScrollInfo | null = probe.exitCode === 0 ? parseScrollInfo(probe.stdout) : null;
+
     notifyBrowserAction();
-    return c.json({ success: true });
+    return c.json({ success: true, ...(scrollInfo && { scrollInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error scrolling:', error);
     return c.json({ error: error.message || 'Failed to scroll' }, 500);
@@ -1126,7 +1454,7 @@ app.post('/browser/wait', async (c) => {
       return c.json({ error: 'sessionId and for are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1168,7 +1496,14 @@ app.post('/browser/press', async (c) => {
       return c.json({ error: 'sessionId and key are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    // agent-browser forwards any string to CDP and reports success even for
+    // non-keys (typing nothing) — reject up front with typing guidance.
+    const keyError = validatePressKey(body.key);
+    if (keyError) {
+      return c.json({ error: keyError, success: false }, 400);
+    }
+
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1183,9 +1518,12 @@ app.post('/browser/press', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    await sleep(body.key.trim() === 'Enter' ? PRESS_ENTER_SETTLE_MS : PRESS_SETTLE_MS);
+    const digest = await observeUrlDigest();
+
     const tabInfo = await tabManager.detectNewTab();
     notifyBrowserAction();
-    return c.json({ success: true, ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, ...(digest && { digest }), ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error pressing key:', error);
     return c.json({ error: error.message || 'Failed to press key' }, 500);
@@ -1201,7 +1539,7 @@ app.post('/browser/screenshot', async (c) => {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1236,7 +1574,7 @@ app.post('/browser/select', async (c) => {
       return c.json({ error: 'sessionId, ref, and value are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1245,14 +1583,32 @@ app.post('/browser/select', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
+    // Read the element's value before and after: the CLI reports "✓ Done"
+    // even when nothing commits (custom dropdown divs, React-reverted
+    // selects) — the read-back is what makes the result honest.
+    const readValue = async (): Promise<string | null> => {
+      const r = await execBrowser(['get', 'value', body.ref], browserState.cdpUrl || undefined);
+      return r.exitCode === 0 ? r.stdout.trim() : null;
+    };
+
+    const before = await readValue();
+
     const result = await execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    await new Promise(resolve => setTimeout(resolve, SELECT_COMMIT_SETTLE_MS));
+    const after = await readValue();
+
+    const judgement = judgeSelectCommit(body.value, before, after);
+    if (!judgement.ok) {
+      return c.json({ error: judgement.reason, success: false }, 500);
+    }
+
     notifyBrowserAction();
-    return c.json({ success: true });
+    return c.json({ success: true, committedValue: judgement.committed });
   } catch (error: any) {
     console.error('[Browser] Error selecting:', error);
     return c.json({ error: error.message || 'Failed to select' }, 500);
@@ -1268,7 +1624,7 @@ app.post('/browser/hover', async (c) => {
       return c.json({ error: 'sessionId and ref are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1296,12 +1652,16 @@ app.post('/browser/upload', async (c) => {
   try {
     const rawBody = await c.req.json().catch(() => ({}));
     const result = await runBrowserUpload(rawBody, {
-      validateSession: validateBrowserSession,
+      validateSession: validateBrowserSessionWithRecovery,
       isBrowserActive: () => browserState.active,
       getConnectionUrl: () => browserState.cdpUrl || getCdpHttpEndpoint(),
       getActiveTargetUrl: async () => (await findActivePageTarget())?.url ?? null,
       urlsMatch: (left, right) => tabManager.urlsMatch(left, right),
     });
+
+    // Playwright's CDP attach can reset Browser.setDownloadBehavior — re-apply
+    // ours so click-triggered downloads keep landing in the workspace.
+    await reapplyDownloadBehavior();
 
     if (!result.success) {
       return c.json(result.body, result.status);
@@ -1315,16 +1675,135 @@ app.post('/browser/upload', async (c) => {
   }
 });
 
+// POST /browser/download - Download a URL's bytes through the browser session
+// into /workspace/downloads. The bytes travel over the CDP wire, so this works
+// even when the browser's own filesystem is unreachable (host Chrome, Browserbase).
+app.post('/browser/download', async (c) => {
+  try {
+    const rawBody = await c.req.json().catch(() => ({}));
+    const result = await runBrowserDownload(rawBody, {
+      validateSession: validateBrowserSessionWithRecovery,
+      isBrowserActive: () => browserState.active,
+      getConnectionUrl: () => browserState.cdpUrl || getCdpHttpEndpoint(),
+      getActiveTargetUrl: async () => (await findActivePageTarget())?.url ?? null,
+      urlsMatch: (left, right) => tabManager.urlsMatch(left, right),
+    });
+
+    // Playwright's CDP attach can reset Browser.setDownloadBehavior — re-apply
+    // ours so click-triggered downloads keep landing in the workspace.
+    await reapplyDownloadBehavior();
+
+    if (!result.success) {
+      return c.json(result.body, result.status);
+    }
+
+    notifyBrowserAction();
+    return c.json(result.body);
+  } catch (error: any) {
+    console.error('[Browser] Error downloading file:', error);
+    return c.json({ error: error.message || 'Failed to download file' }, 500);
+  }
+});
+
+// POST /browser/type - Type real keystrokes into the focused element (optionally focusing a ref first)
+app.post('/browser/type', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; text: string; ref?: string }>();
+
+    if (!body.sessionId || typeof body.text !== 'string' || body.text.length === 0) {
+      return c.json({ error: 'sessionId and text are required' }, 400);
+    }
+
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    if (body.ref) {
+      const focusResult = await execBrowser(['focus', body.ref], browserState.cdpUrl || undefined);
+      if (focusResult.exitCode !== 0) {
+        return c.json({ error: focusResult.stdout, success: false }, 500);
+      }
+    }
+
+    // `keyboard type` dispatches real key events into whatever has focus —
+    // this is what drives keystroke-listening widgets (Stripe card fields,
+    // OTP boxes, typeaheads) that programmatic fill cannot.
+    const result = await execBrowser(['keyboard', 'type', body.text], browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    // When we know the target, read the value back (keyboard type APPENDS to
+    // existing content). Focused-element typing without a ref has no readable
+    // target by definition (e.g. cross-origin payment iframes).
+    let committedValue: string | null = null;
+    if (body.ref) {
+      committedValue = await readCommittedFieldValue(body.ref);
+    }
+
+    notifyBrowserAction();
+    return c.json({ success: true, ...(committedValue !== null && { committedValue }) });
+  } catch (error: any) {
+    console.error('[Browser] Error typing:', error);
+    return c.json({ error: error.message || 'Failed to type' }, 500);
+  }
+});
+
+// POST /browser/eval - Run JavaScript in the page (dedicated eval with guardrails)
+app.post('/browser/eval', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; script: string }>();
+
+    if (!body.sessionId || typeof body.script !== 'string' || body.script.trim() === '') {
+      return c.json({ error: 'sessionId and script are required' }, 400);
+    }
+
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const { script, wrapped } = prepareEvalScript(body.script);
+    const result = await execBrowser(['eval', script], browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: evalErrorHint(result.stdout), success: false }, 500);
+    }
+
+    notifyBrowserAction();
+    return c.json({ success: true, output: finalizeEvalOutput(result.stdout), wrapped });
+  } catch (error: any) {
+    console.error('[Browser] Error running eval:', error);
+    return c.json({ error: error.message || 'Failed to run eval' }, 500);
+  }
+});
+
 // POST /browser/run - Generic catch-all for any agent-browser command
 app.post('/browser/run', async (c) => {
   try {
-    const body = await c.req.json<{ sessionId: string; command: string }>();
+    const body = await c.req.json<{ sessionId: string; command?: string; args?: string[] }>();
 
-    if (!body.sessionId || !body.command) {
-      return c.json({ error: 'sessionId and command are required' }, 400);
+    if (!body.sessionId) {
+      return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const resolved = resolveRunCommandArgs(body);
+    if (resolved.error !== undefined) {
+      return c.json({ error: resolved.error }, 400);
+    }
+    const commandArgs = resolved.args;
+
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1336,16 +1815,20 @@ app.post('/browser/run', async (c) => {
     // The agent-browser CLI `upload` command does not work reliably in this
     // environment — refuse it and steer the model to `browser_upload`, which
     // routes through the buffer-based path with size verification.
-    if (splitCommandArgs(body.command)[0] === 'upload') {
+    if (commandArgs[0] === 'upload') {
       return c.json({
         error: 'Use the `browser_upload(filePath, selector)` MCP tool for file uploads instead of `browser_run("upload …")`.',
         success: false,
       }, 400);
     }
 
-    const commandArgs = buildRunCommandArgs(body.command);
-    if (commandArgs.length === 0) {
-      return c.json({ error: 'Empty command' }, 400);
+    // Same guard as /browser/press for the raw CLI form: `press` with a
+    // non-key string silently types nothing while reporting success.
+    if (commandArgs[0] === 'press' && commandArgs.length === 2) {
+      const keyError = validatePressKey(commandArgs[1]);
+      if (keyError) {
+        return c.json({ error: keyError, success: false }, 400);
+      }
     }
 
     const result = await execBrowser(commandArgs, browserState.cdpUrl || undefined);
@@ -1354,9 +1837,10 @@ app.post('/browser/run', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    const cmd = body.command.trim().toLowerCase();
+    const verb = commandArgs[0].toLowerCase();
+    const joined = commandArgs.join(' ').toLowerCase();
     let tabInfo = null;
-    if (cmd.startsWith('tab') || cmd.includes('.click(') || cmd.startsWith('click') || cmd.startsWith('dblclick')) {
+    if (verb.startsWith('tab') || verb === 'click' || verb === 'dblclick' || joined.includes('.click(')) {
       tabInfo = await tabManager.detectNewTab();
     }
 
@@ -1414,6 +1898,13 @@ async function buildFileTree(
   }
 }
 
+// Startup self-heal: older builds could leave /workspace/.env 0o600 and
+// owner-flipped, locking one writer out permanently. If WE own the poisoned
+// file, only we can fix it — do so before any session starts.
+void healEnvFilePermissions('/workspace/.env').then((healed) => {
+  if (healed) console.log('[ENV] Healed /workspace/.env permissions back to 0666');
+});
+
 // Start the server
 const port = parseInt(process.env.PORT || '3000');
 const server = serve({
@@ -1427,8 +1918,50 @@ const wss = new WebSocketServer({ noServer: true });
 // Create a separate WebSocket server for browser stream proxying
 const browserWss = new WebSocketServer({ noServer: true });
 
+interface DashboardProtocolRequest extends http.IncomingMessage {
+  _dashboardProtocol?: string;
+}
+
+const dashboardWss = new WebSocketServer({
+  noServer: true,
+  handleProtocols(protocols, request) {
+    const selected = (request as DashboardProtocolRequest)._dashboardProtocol;
+    return selected && protocols.has(selected) ? selected : false;
+  },
+});
+
+function closeDashboardPeer(peer: WebSocket, code?: number, reason?: Buffer): void {
+  if (peer.readyState !== WebSocket.OPEN) return;
+  const relayCode = code === 1000 || (code !== undefined && code >= 3000) ? code : 1011;
+  peer.close(relayCode, reason?.toString().slice(0, 120));
+}
+
+function bridgeDashboardWebSocket(browser: WebSocket, dashboard: WebSocket): void {
+  dashboard.on('message', (data, isBinary) => {
+    if (browser.readyState === WebSocket.OPEN) browser.send(data, { binary: isBinary });
+  });
+  browser.on('message', (data, isBinary) => {
+    if (dashboard.readyState === WebSocket.OPEN) dashboard.send(data, { binary: isBinary });
+  });
+  dashboard.on('close', (code, reason) => closeDashboardPeer(browser, code, reason));
+  browser.on('close', (code, reason) => closeDashboardPeer(dashboard, code, reason));
+  dashboard.on('error', (error) => {
+    console.error('[Artifacts] Dashboard WebSocket error:', error);
+    closeDashboardPeer(browser);
+  });
+  browser.on('error', () => closeDashboardPeer(dashboard));
+}
+
 // Handle WebSocket upgrade
 server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) => {
+  // Upgrades bypass the Hono middleware chain — enforce host auth here too.
+  const presentedToken = request.headers[HOST_TOKEN_HEADER];
+  if (!isValidHostToken(Array.isArray(presentedToken) ? presentedToken[0] : presentedToken)) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
   const url = new URL(request.url || '', `http://${request.headers.host}`);
   const pathname = url.pathname;
 
@@ -1456,6 +1989,65 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
     return;
   }
 
+  // Dashboard application sockets and Vite HMR use the same upstream path
+  // contract as HTTP after the container artifact prefix is removed.
+  const dashboardRoute = parseDashboardProxyRoute(pathname);
+  if (dashboardRoute) {
+    const dashboardPort = dashboardManager.getDashboardPort(dashboardRoute.slug);
+    if (!dashboardPort) {
+      socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    const protocols = requestedWebSocketProtocols(request);
+    const upstreamPathMode = dashboardManager.getDashboardUpstreamPathMode(dashboardRoute.slug);
+    const upstreamPath = dashboardWebSocketUpstreamPath(
+      dashboardRoute.subPath,
+      protocols,
+      getDashboardBasePath(dashboardRoute.slug),
+      upstreamPathMode,
+    );
+    const upstream = new WebSocket(
+      `ws://127.0.0.1:${dashboardPort}${upstreamPath}${url.search}`,
+      protocols,
+      { headers: dashboardWebSocketForwardHeaders(request, upstreamPathMode) },
+    );
+    let settled = false;
+
+    const fail = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      upstream.terminate();
+      if (error) console.error('[Artifacts] Failed to connect dashboard WebSocket:', error);
+      if (!socket.destroyed) {
+        socket.write('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+      }
+    };
+
+    socket.once('close', () => {
+      if (!settled) upstream.terminate();
+    });
+    upstream.once('unexpected-response', (_req, response) => {
+      response.resume();
+      fail(new Error(`Dashboard refused WebSocket upgrade (${response.statusCode})`));
+    });
+    upstream.once('error', fail);
+    upstream.once('open', () => {
+      if (settled || socket.destroyed) {
+        upstream.terminate();
+        return;
+      }
+      settled = true;
+      (request as DashboardProtocolRequest)._dashboardProtocol = upstream.protocol || undefined;
+      dashboardWss.handleUpgrade(request, socket, head, (browser) => {
+        bridgeDashboardWebSocket(browser, upstream);
+      });
+    });
+    return;
+  }
+
   socket.destroy();
 });
 
@@ -1476,10 +2068,17 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
   // session_state_changed:'idle' as the idle authority from the first turn —
   // a 'result' alone must not end the session while queued messages keep the
   // runtime going.
+  // process_instance: identity of the CLI process backing the session right
+  // now. Background tasks are process-local and a fresh process emits no
+  // initial background_tasks_changed, so a client reconnecting after a restart
+  // it never observed (idle eviction + --resume, container restart — the live
+  // process_restarted broadcast fires before any subscriber exists) would
+  // otherwise keep bookkeeping for tasks that died with the old process.
   ws.send(JSON.stringify({
     type: 'system',
     subtype: 'capabilities',
     session_state_events: true,
+    process_instance: sessionManager.getProcessInstanceId(sessionId),
     timestamp: new Date(),
   }));
 
@@ -1490,6 +2089,19 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
     }
   });
 
+  // Catch-up for turns that ended before this socket attached. createSession
+  // returns at `init`, so an instant turn (e.g. a UserPromptSubmit hook
+  // blocking the prompt) emits informational/result/idle into the attach gap
+  // and nothing re-delivers them — the host would show the session as working
+  // forever. Frames are marked `replayed: true`; the host ignores them when it
+  // already processed the live copies. Sent after the subscription so a turn
+  // starting mid-replay still delivers its live frames afterwards (WS is FIFO).
+  for (const frame of sessionManager.getLateJoinReplay(sessionId)) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(frame));
+    }
+  }
+
   // Handle incoming messages
   ws.on('message', async (data: Buffer) => {
     try {
@@ -1498,7 +2110,9 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
 
       await sessionManager.sendMessage(sessionId, content, payload.uuid, {
         effort: payload.effort,
+        speed: speedLevelSchema.parse(payload.speed),
         model: payload.model,
+        capabilityPolicies: agentCapabilityPoliciesSchema.parse(payload.capabilityPolicies),
       });
     } catch (error: any) {
       console.error('Error handling WebSocket message:', error);
@@ -1584,8 +2198,6 @@ interface BrowserTabInfo {
   active: boolean;
 }
 
-let tabPollInterval: NodeJS.Timeout | null = null;
-
 /** Get ALL CDP page targets across all strategies */
 async function getAllPageTargets(): Promise<PageTarget[]> {
   // Try Chrome's HTTP /json endpoint first (works for local Chrome)
@@ -1606,7 +2218,7 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
       return pages.map(p => ({
         id: p.id,
         url: p.url,
-        title: p.title || '',
+        title: decodeChromeTargetTitle(p.title || ''),
         wsUrl: p.webSocketDebuggerUrl,
         requiresSession: false,
       }));
@@ -1653,25 +2265,27 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
   return target ? [target] : [];
 }
 
-/** Find the CDP page target that corresponds to agent-browser's active page */
-async function findActivePageTarget(): Promise<PageTarget | null> {
+/** Find Chrome's active page. Credential actions opt into the viewer page. */
+async function findActivePageTarget(preferViewer = false): Promise<PageTarget | null> {
   const allTargets = await getAllPageTargets();
   if (allTargets.length === 0) return null;
   if (allTargets.length === 1) return allTargets[0];
 
-  // Use daemon to find which is active
+  let daemonTabs: Awaited<ReturnType<typeof tabManager.queryTabs>> = [];
   try {
-    const tabs = await tabManager.queryTabs();
-    const active = tabs.find(t => t.active);
-    if (active) {
-      const byUrl = allTargets.find(p => tabManager.urlsMatch(p.url, active.url));
-      if (byUrl) return byUrl;
-    }
+    daemonTabs = await tabManager.queryTabs();
   } catch (err) {
     console.error('[CDP] Daemon tab query failed:', err);
   }
 
-  return allTargets[0]; // fallback: first target (most recently active per Chrome's /json ordering)
+  return selectActivePageTarget(
+    allTargets,
+    daemonTabs,
+    (left, right) => tabManager.urlsMatch(left, right),
+    preferViewer
+      ? { preferViewer: true, viewerTargetId: cdpScreencast?.currentTargetId ?? null }
+      : {},
+  );
 }
 
 /** Discover page targets via CDP WebSocket protocol (for remote providers) */
@@ -1703,6 +2317,178 @@ function findPageTargetViaCdp(browserWsUrl: string): Promise<PageTarget | null> 
     ws.on('error', () => { clearTimeout(timeout); resolve(null); });
   });
 }
+
+interface CredentialAutofillResult {
+  ok: boolean;
+  reason?: 'origin_changed' | 'no_password_field';
+  usernameFilled: boolean;
+  passwordFilled: boolean;
+}
+
+/**
+ * Execute the privileged fill on the active target. The expected-origin check
+ * and DOM mutation happen in one JS turn, so a navigation between host lookup
+ * and fill cannot receive the credential.
+ */
+function autofillCredentialViaCdp(
+  target: PageTarget,
+  username: string,
+  password: string,
+  expectedOrigin: string,
+): Promise<CredentialAutofillResult> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(target.wsUrl);
+    let sessionId: string | null = null;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      ws.close();
+      reject(new Error('Credential autofill timed out'));
+    }, 5000);
+
+    const finish = (result?: CredentialAutofillResult, error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      ws.close();
+      if (error) reject(error);
+      else resolve(result || { ok: false, usernameFilled: false, passwordFilled: false });
+    };
+
+    const sendGlobalLookup = () => {
+      ws.send(JSON.stringify({
+        id: 2,
+        method: 'Runtime.evaluate',
+        params: { expression: 'globalThis', returnByValue: false },
+        ...(sessionId ? { sessionId } : {}),
+      }));
+    };
+
+    ws.on('open', () => {
+      if (target.requiresSession) {
+        ws.send(JSON.stringify({
+          id: 1,
+          method: 'Target.attachToTarget',
+          params: { targetId: target.id, flatten: true },
+        }));
+      } else {
+        sendGlobalLookup();
+      }
+    });
+
+    ws.on('message', (raw) => {
+      try {
+        const message = JSON.parse(raw.toString());
+        if (message.id === 1) {
+          sessionId = message.result?.sessionId || null;
+          if (!sessionId) return finish(undefined, new Error('Could not attach to browser page'));
+          sendGlobalLookup();
+          return;
+        }
+        if (message.id === 2) {
+          const objectId = message.result?.result?.objectId;
+          if (!objectId) return finish(undefined, new Error('Could not access browser page'));
+          ws.send(JSON.stringify({
+            id: 3,
+            method: 'Runtime.callFunctionOn',
+            params: {
+              objectId,
+              functionDeclaration: CREDENTIAL_AUTOFILL_FUNCTION,
+              arguments: [
+                { value: username },
+                { value: password },
+                { value: expectedOrigin },
+              ],
+              returnByValue: true,
+              awaitPromise: true,
+            },
+            ...(sessionId ? { sessionId } : {}),
+          }));
+          return;
+        }
+        if (message.id === 3) {
+          if (message.error || message.result?.exceptionDetails) {
+            return finish(undefined, new Error('Browser rejected credential autofill'));
+          }
+          const value = message.result?.result?.value as CredentialAutofillResult | undefined;
+          if (!value || typeof value.ok !== 'boolean') {
+            return finish(undefined, new Error('Browser returned an invalid autofill result'));
+          }
+          finish(value);
+        }
+      } catch {
+        // Ignore unrelated CDP events and wait for the response IDs above.
+      }
+    });
+
+    ws.on('error', () => finish(undefined, new Error('Could not connect to browser page')));
+  });
+}
+
+// Host-only credential endpoints. The global host-token middleware prevents
+// the agent's own shell from discovering metadata or injecting secrets.
+const credentialAutofillRequestSchema = z.object({
+  sessionId: z.string().min(1).max(1024),
+  username: z.string().max(4096),
+  password: z.string().min(1).max(65536),
+  expectedOrigin: z.string().max(2048).refine((value) => {
+    try {
+      const parsed = new URL(value);
+      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.origin === value;
+    } catch {
+      return false;
+    }
+  }),
+}).strict();
+
+app.get('/browser/credential-context', async (c) => {
+  if (!hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503);
+  const sessionId = c.req.query('sessionId');
+  if (!sessionId) return c.json({ error: 'sessionId is required' }, 400);
+  const validationError = validateBrowserSessionWithRecovery(sessionId);
+  if (validationError) return c.json({ error: validationError }, 409);
+  if (!browserState.active) return c.json({ error: 'Browser is not active' }, 409);
+
+  const target = await findActivePageTarget(true);
+  if (!target?.url) return c.json({ error: 'No active browser page was found' }, 409);
+  return c.json({ url: target.url });
+});
+
+app.post('/browser/fill-credential', async (c) => {
+  try {
+    if (!hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503);
+    const parsedBody = credentialAutofillRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsedBody.success) return c.json({ error: 'Invalid credential autofill request' }, 400);
+    const body = parsedBody.data;
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
+    if (validationError) return c.json({ error: validationError }, 409);
+    if (!browserState.active) return c.json({ error: 'Browser is not active' }, 409);
+
+    const target = await findActivePageTarget(true);
+    if (!target) return c.json({ error: 'No active browser page was found' }, 409);
+    const result = await autofillCredentialViaCdp(
+      target,
+      body.username,
+      body.password,
+      body.expectedOrigin,
+    );
+    if (!result.ok) {
+      const message = result.reason === 'origin_changed'
+        ? 'The browser page changed before autofill'
+        : 'No visible password field was found';
+      return c.json({ error: message, reason: result.reason }, 409);
+    }
+    return c.json({
+      success: true,
+      usernameFilled: result.usernameFilled,
+      passwordFilled: result.passwordFilled,
+    });
+  } catch (error) {
+    console.error('[Browser] Credential autofill failed:', error instanceof Error ? error.message : 'Unknown error');
+    return c.json({ error: 'Credential autofill failed' }, 500);
+  }
+});
 
 /** Helper to build a CDP message, adding sessionId when in session mode */
 function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params?: Record<string, unknown>): string {
@@ -1895,7 +2681,9 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
       claimedTargetIds.add(target.id);
       tabs.push({
         targetId: target.id,
-        index: dt.index,
+        // Positional index for the renderer's display fallback only — the daemon's
+        // stable ids (t1, t2, …) are strings and tab switching uses targetId
+        index: tabs.length,
         url: dt.url,
         // Prefer Chrome's title (actual <title> tag) over daemon's (often just domain)
         title: target.title || dt.title || '',
@@ -1953,12 +2741,13 @@ function notifyBrowserAction() {
         tabManager.queryTabs(),
       ]);
 
-      // Resolve the active target from daemon info
-      const activeDaemonTab = daemonTabs.find(t => t.active);
-      let activeTarget: PageTarget | null = allTargets[0] ?? null;
-      if (activeDaemonTab && allTargets.length > 1) {
-        activeTarget = allTargets.find(p => tabManager.urlsMatch(p.url, activeDaemonTab.url)) ?? activeTarget;
-      }
+      // Resolve where the viewer should move. Do not prefer its current target:
+      // a stale daemon URL must retain Chrome's MRU fallback for auto-follow.
+      const activeTarget = selectActivePageTarget(
+        allTargets,
+        daemonTabs,
+        (left, right) => tabManager.urlsMatch(left, right),
+      );
 
       // Switch screencast only if auto-following and target changed
       if (activeTarget && activeTarget.id !== cdpScreencast.currentTargetId && cdpScreencast.autoFollow) {
@@ -1998,8 +2787,8 @@ function handleBrowserStreamConnection(ws: WebSocket) {
     ws.close();
   });
 
-  // Start tab list polling
-  tabPollInterval = setInterval(() => broadcastTabList(), 2000);
+  // Start tab list polling for this connection (replaces any previous viewer's timer)
+  const tabPoll = startTabPolling(() => broadcastTabList());
 
   // Forward input events and handle tab control messages from client
   // Protocol: see src/renderer/components/browser/browser-preview.tsx
@@ -2124,20 +2913,37 @@ function handleBrowserStreamConnection(ws: WebSocket) {
   });
 
   ws.on('close', () => {
-    if (tabPollInterval) { clearInterval(tabPollInterval); tabPollInterval = null; }
+    stopTabPolling(tabPoll);
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 
   ws.on('error', () => {
-    if (tabPollInterval) { clearInterval(tabPollInterval); tabPollInterval = null; }
+    stopTabPolling(tabPoll);
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 }
+
+// Spawn a CLI subprocess for the shape of the last session this workspace ran,
+// so the first session after a wake doesn't pay the boot cost inline. No-op
+// until a session has been created here at least once. Kicked off before the
+// dashboard scan below: on a cold container the two compete for the same two
+// CPUs, and only this one is in front of a waiting user.
+sessionManager.prewarmFromLastProfile();
 
 // Start dashboard processes asynchronously (don't block server startup)
 dashboardManager.scanAndStartAll().catch((error) => {
   console.error('[DashboardManager] Failed to scan and start dashboards:', error);
 });
+
+// Sweep abandoned input requests. Entries the host never answers (session
+// deleted mid-prompt, app closed, request card ignored) would otherwise live
+// forever — pinning dead tool-handler closures and, via the early-result
+// buffer, secret values. TTLs are type-aware inside cleanupStale.
+setInterval(() => inputManager.cleanupStale(), 60_000).unref();
+
+// Pin agent-browser's screenshot directory and sweep stale files (boot +
+// hourly). Every screenshot is a uniquely named PNG nothing else deletes.
+startScreenshotJanitor();
 
 console.log(`Server running on http://localhost:${port}`);
 console.log('Available endpoints:');
@@ -2146,7 +2952,6 @@ console.log('  GET    /sessions/:id');
 console.log('  GET    /sessions');
 console.log('  DELETE /sessions/:id');
 console.log('  POST   /sessions/:id/interrupt');
-console.log('  GET    /sessions/:id/messages');
 console.log('  POST   /sessions/:id/messages');
 console.log('  WS     /sessions/:id/stream');
 console.log('  GET    /files/*');
@@ -2183,12 +2988,12 @@ async function gracefulShutdown(signal: string) {
 
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
 
-  // Close browser if active
-  if (browserState.active) {
+  // Close the browser even if an automated session released its ownership lock.
+  if (browserState.location) {
     try {
       await execBrowser(['close'], browserState.cdpUrl || undefined);
-      await stopHostBrowserIfNeeded();
-      _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
+      await stopHostBrowserIfNeeded(browserState.location);
+      _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     } catch (error) {
       console.error('Error closing browser:', error);
     }

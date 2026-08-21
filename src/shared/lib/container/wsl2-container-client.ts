@@ -1,10 +1,10 @@
-import { execSync, spawn } from 'child_process'
+import { execFile, execSync, spawn } from 'child_process'
+import { promisify } from 'util'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { BaseContainerClient, checkCommandAvailable, execWithPath, writeEnvFile } from './base-container-client'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
-import type { ContainerConfig } from './types'
+import type { ContainerConfig, HostPortProbeResult } from './types'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import {
@@ -120,6 +120,46 @@ function collectWSL2Diagnostics(): Record<string, unknown> {
 }
 
 export const WSL2_DISTRO_NAME = 'superagent'
+
+const execFileAsync = promisify(execFile)
+
+/**
+ * Map a curl exit code from the in-distro reachability probe to a verdict.
+ * Only "couldn't connect" (7) and "timed out" (28) prove the path is blocked —
+ * a firewall silently dropping WSL2→host traffic surfaces as 28. Anything else
+ * (curl missing, wsl broken, HTTP-level errors, mid-transfer resets) is
+ * 'unknown' so a broken probe can never fail a working setup.
+ */
+export function classifyProbeCurlExit(exitCode: number | null | undefined): HostPortProbeResult {
+  if (exitCode === 0) return 'reachable'
+  if (exitCode === 7 || exitCode === 28) return 'unreachable'
+  return 'unknown'
+}
+
+/**
+ * Map a busybox-wget probe result to a verdict. The bundled Alpine distro
+ * ships busybox wget but no curl, so this is the fallback classifier. Busybox
+ * wget exits 1 for nearly every failure, so the verdict comes from stderr
+ * (messages observed against busybox v1.37.0 in the shipped distro):
+ *   - "Connection refused" → nothing listening: unreachable
+ *   - "timed out" ("download timed out" / kernel "Connection timed out") —
+ *     how a firewall silently dropping WSL2→host traffic surfaces: unreachable
+ *   - "server returned error: HTTP/..." → TCP+HTTP round-trip completed, so
+ *     the port is reachable (matches curl-without--f semantics)
+ * Anything else (wget missing, bad address, wsl broken) is 'unknown' so a
+ * broken probe can never fail a working setup.
+ */
+export function classifyProbeWgetResult(
+  exitCode: number | null | undefined,
+  stderr: string,
+): HostPortProbeResult {
+  if (exitCode === 0) return 'reachable'
+  if (exitCode !== 1) return 'unknown'
+  if (/connection refused/i.test(stderr)) return 'unreachable'
+  if (/timed out/i.test(stderr)) return 'unreachable'
+  if (/server returned error/i.test(stderr)) return 'reachable'
+  return 'unknown'
+}
 
 /**
  * Pre-flight: check if hardware virtualization is enabled in firmware (BIOS).
@@ -239,6 +279,25 @@ function execWSL(args: string): Promise<{ stdout: string; stderr: string }> {
 }
 
 /**
+ * Kill any nerdctl pull processes running inside the distro. A pull spawned
+ * through the wrapper outlives its host-side wsl.exe parent, and a wedged one
+ * keeps holding containerd's ingest lock, so every subsequent pull hangs
+ * silently behind it. The pull stall watchdog calls this before retrying.
+ * The [p] regex trick stops pkill from matching its own command line.
+ */
+export async function killWSL2PullProcesses(): Promise<void> {
+  try {
+    await execWSL('pkill -f "nerdctl [p]ull"')
+  } catch (err) {
+    // pkill exits 1 when no process matched — nothing to kill is fine. Any
+    // other failure (WSL not responding, pkill missing, permissions) must
+    // surface to the caller so it isn't silently mistaken for a clean kill.
+    if ((err as { code?: number | string })?.code === 1) return
+    throw err
+  }
+}
+
+/**
  * Parse wsl --list --verbose output into distro status objects.
  * WSL outputs UTF-16LE on Windows, so we strip null bytes.
  */
@@ -319,6 +378,48 @@ export class WSL2ContainerClient extends BaseContainerClient {
   }
 
   /**
+   * Probe a host-side TCP endpoint from inside the WSL2 distro. Containers are
+   * NATed through the distro's eth0, so distro→host traffic crosses the same
+   * Windows Firewall boundary (the vEthernet (WSL) interface) as
+   * container→host traffic — a block here is exactly what the container will
+   * hit when it tries to connect.
+   */
+  async probeHostPortFromRunner(host: string, port: number): Promise<HostPortProbeResult> {
+    const url = `http://${host}:${port}/json/version`
+    let curlExit: number | null
+    try {
+      await execFileAsync(
+        'wsl',
+        [
+          '-d', WSL2_DISTRO_NAME, '--',
+          'curl', '--silent', '--output', '/dev/null', '--max-time', '4',
+          url,
+        ],
+        { timeout: 15000 },
+      )
+      return 'reachable'
+    } catch (err) {
+      const code = (err as { code?: number | string }).code
+      curlExit = typeof code === 'number' ? code : null
+    }
+    // 126/127 = curl absent or not executable in the distro. The bundled
+    // Alpine rootfs ships no curl, so this is the common case — fall back to
+    // busybox wget (no -q: the verdict is classified from its stderr).
+    if (curlExit !== 126 && curlExit !== 127) return classifyProbeCurlExit(curlExit)
+    try {
+      await execFileAsync(
+        'wsl',
+        ['-d', WSL2_DISTRO_NAME, '--', 'wget', '-O', '/dev/null', '-T', '4', url],
+        { timeout: 15000 },
+      )
+      return 'reachable'
+    } catch (err) {
+      const { code, stderr } = err as { code?: number | string; stderr?: string }
+      return classifyProbeWgetResult(typeof code === 'number' ? code : null, stderr ?? '')
+    }
+  }
+
+  /**
    * Map host.docker.internal to the detected Windows-host gateway IP. nerdctl's
    * `host-gateway` resolves to the in-WSL2 bridge, not the Windows host, so we
    * pass the resolved IP; fall back to the host-gateway literal if undetectable.
@@ -345,16 +446,9 @@ export class WSL2ContainerClient extends BaseContainerClient {
    * translate the path for WSL2.
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
-    const envVars: Record<string, string | undefined> = {
-      ...getActiveLlmProvider().getContainerEnvVars(),
-      CLAUDE_CONFIG_DIR: '/workspace/.claude',
-      ...this.config.envVars,
-      ...additionalEnvVars,
-    }
-
     const home = os.homedir()
     const tmpDir = path.join(home, '.superagent', 'tmp')
-    const { filePath, cleanup } = writeEnvFile(envVars, this.config.agentId, tmpDir)
+    const { filePath, cleanup } = writeEnvFile(this.buildAgentEnv(additionalEnvVars), this.config.agentId, tmpDir)
 
     // Translate the Windows file path to a WSL2 path for the --env-file flag
     const wslPath = windowsToWSLPath(filePath)
@@ -367,16 +461,35 @@ export class WSL2ContainerClient extends BaseContainerClient {
   protected async handleRunError(error: any): Promise<boolean> {
     const msg = error.message || error.stderr || String(error)
     addErrorBreadcrumb({ category: 'wsl2', message: 'Container run error', data: { error: msg, agentId: this.config.agentId } })
-    if (
-      msg.includes('ENOENT') ||
-      msg.includes('not found') ||
-      msg.includes('does not exist') ||
-      msg.includes('not running') ||
-      msg.includes('No such file') ||
-      msg.includes('EACCES') ||
-      msg.includes('is not recognized')
-    ) {
-      console.log('WSL2 distro not ready, attempting to provision...')
+    // Image create (pull/build) failures carry registry-level text that would
+    // false-match the patterns below — for those, only the health probe may
+    // decide recovery.
+    const isKnownVmIssue =
+      error?.isImageCreateError !== true && (
+        msg.includes('ENOENT') ||
+        msg.includes('not found') ||
+        msg.includes('does not exist') ||
+        msg.includes('not running') ||
+        msg.includes('No such file') ||
+        msg.includes('EACCES') ||
+        msg.includes('is not recognized')
+      )
+
+    // Mirror Lima (SUP-291): when the string match doesn't decide — including
+    // tagged image-create errors, whose runtime may have died mid-pull — let
+    // the real health probe decide, so recovery is driven by actual distro
+    // state rather than error text.
+    let distroUnhealthy = false
+    if (!isKnownVmIssue) {
+      try {
+        distroUnhealthy = !(await WSL2ContainerClient.isRunning())
+      } catch {
+        distroUnhealthy = true
+      }
+    }
+
+    if (isKnownVmIssue || distroUnhealthy) {
+      console.log(`WSL2 distro not ready (${distroUnhealthy ? 'unhealthy distro' : 'known issue'}), attempting to provision...`)
       try {
         await ensureWSL2Ready()
         return true
@@ -389,10 +502,13 @@ export class WSL2ContainerClient extends BaseContainerClient {
         return false
       }
     }
-    captureException(error, {
-      tags: { component: 'wsl2', operation: 'container-run' },
-      extra: { agentId: this.config.agentId, ...collectWSL2Diagnostics() },
-    })
+    // Skip errors whose throw site already captured them (e.g. pullImage).
+    if (!error?.sentryCaptured) {
+      captureException(error, {
+        tags: { component: 'wsl2', operation: 'container-run' },
+        extra: { agentId: this.config.agentId, ...collectWSL2Diagnostics() },
+      })
+    }
     return false
   }
 

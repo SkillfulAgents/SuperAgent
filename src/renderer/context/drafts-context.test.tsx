@@ -2,7 +2,13 @@
 import { describe, it, expect } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
-import { DraftsProvider, useDraft } from './drafts-context'
+import {
+  appendToSessionDraft,
+  DraftsProvider,
+  seedAgentTemplatePrompt,
+  useDraft,
+  useDraftsStore,
+} from './drafts-context'
 
 function wrapper({ children }: { children: ReactNode }) {
   return createElement(DraftsProvider, null, children)
@@ -84,5 +90,63 @@ describe('useDraft', () => {
 
   it('throws when used outside a DraftsProvider', () => {
     expect(() => renderHook(() => useDraft<string>('k'))).toThrow(/DraftsProvider/)
+  })
+})
+
+describe('appendToSessionDraft', () => {
+  it('appends content after the existing session draft', () => {
+    const { result } = renderHook(() => ({
+      draft: useDraft<string>('session:s-1'),
+      store: useDraftsStore(),
+    }), { wrapper })
+
+    act(() => result.current.draft[1]('  Existing draft  '))
+    act(() => appendToSessionDraft(
+      result.current.store,
+      's-1',
+      '  File feedback  ',
+      { prepend: false },
+    ))
+
+    expect(result.current.draft[0]).toBe('Existing draft\n\nFile feedback')
+  })
+
+  it('prepends rescued content before the existing session draft', () => {
+    const { result } = renderHook(() => ({
+      draft: useDraft<string>('session:s-1'),
+      store: useDraftsStore(),
+    }), { wrapper })
+
+    act(() => result.current.draft[1]('Current draft'))
+    act(() => appendToSessionDraft(
+      result.current.store,
+      's-1',
+      'Rescued message',
+      { prepend: true },
+    ))
+
+    expect(result.current.draft[0]).toBe('Rescued message\n\nCurrent draft')
+  })
+})
+
+describe('seedAgentTemplatePrompt', () => {
+  it('stores the template prompt under the new agent home draft key', () => {
+    const { result } = renderHook(() => ({
+      draft: useDraft<string>('agent:new-agent'),
+      store: useDraftsStore(),
+    }), { wrapper })
+
+    act(() => {
+      expect(seedAgentTemplatePrompt(result.current.store, 'new-agent', 'Start with this task')).toBe(true)
+    })
+
+    expect(result.current.draft[0]).toBe('Start with this task')
+  })
+
+  it('does not seed or suppress onboarding when the prompt is absent', () => {
+    const { result } = renderHook(() => useDraftsStore(), { wrapper })
+
+    expect(seedAgentTemplatePrompt(result.current, 'new-agent', undefined)).toBe(false)
+    expect(result.current.get('agent:new-agent')).toBeUndefined()
   })
 })

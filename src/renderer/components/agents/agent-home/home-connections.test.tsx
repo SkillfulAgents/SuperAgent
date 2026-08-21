@@ -12,16 +12,25 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
-// Capture setView so we can assert on the deep link into the connections page.
-const mockSetView = vi.fn()
-vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({
-    view: { kind: 'home' },
-    setView: mockSetView,
-    setAgent: vi.fn(),
-    consumePendingDraft: vi.fn(() => null),
+const oauthReconnectMocks = vi.hoisted(() => ({
+  reconnect: vi.fn(),
+  cancelReconnect: vi.fn(),
+}))
+vi.mock('@renderer/hooks/use-oauth-reconnect', () => ({
+  useOAuthReconnect: () => ({
+    reconnect: oauthReconnectMocks.reconnect,
+    pendingAccountId: null,
+    canCancelPendingReconnect: false,
+    cancelReconnect: oauthReconnectMocks.cancelReconnect,
   }),
-  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
+// Capture navigate so we can assert the deep link into the connections page
+// (the rows navigate directly).
+const mockNavigate = vi.fn()
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  useNavigate: () => mockNavigate,
 }))
 
 const ACCOUNT = {
@@ -38,6 +47,11 @@ const ACCOUNT = {
   provider: { slug: 'github', displayName: 'GitHub' },
 }
 
+type AccountFixture = Omit<typeof ACCOUNT, 'status'> & {
+  status: 'active' | 'expired' | 'revoked'
+}
+let accountResponse: AccountFixture[] = [ACCOUNT]
+
 function jsonResponse(body: unknown, ok = true): Response {
   return {
     ok,
@@ -49,15 +63,32 @@ function jsonResponse(body: unknown, ok = true): Response {
 describe('HomeConnections — row navigation', () => {
   beforeEach(() => {
     mockApiFetch.mockReset()
-    mockSetView.mockReset()
+    mockNavigate.mockReset()
+    oauthReconnectMocks.reconnect.mockReset()
+    oauthReconnectMocks.cancelReconnect.mockReset()
+    accountResponse = [ACCOUNT]
 
     mockApiFetch.mockImplementation((path: string, init?: { method?: string }) => {
       const method = init?.method ?? 'GET'
       if (path === '/api/agents/test-agent/connected-accounts' && method === 'GET') {
-        return Promise.resolve(jsonResponse({ accounts: [ACCOUNT] }))
+        return Promise.resolve(jsonResponse({ accounts: accountResponse }))
       }
       if (path === '/api/agents/test-agent/remote-mcps' && method === 'GET') {
         return Promise.resolve(jsonResponse({ mcps: [] }))
+      }
+      if (path.startsWith('/api/activity/agents/test-agent?days=14&tz=') && method === 'GET') {
+        return Promise.resolve(jsonResponse({
+          days: 2,
+          generatedAt: '2026-07-09T12:00:00.000Z',
+          cronByTaskId: {},
+          webhookByTriggerId: {},
+          connectionById: {
+            'account-acc-1': [
+              { date: '2026-07-08', succeeded: 2, failed: 1 },
+              { date: '2026-07-09', succeeded: 1, failed: 0 },
+            ],
+          },
+        }))
       }
       throw new Error(`Unexpected request: ${method} ${path}`)
     })
@@ -74,9 +105,10 @@ describe('HomeConnections — row navigation', () => {
 
     // The row key matches the UnifiedRow key format used by the connections
     // page; source 'home' makes Back (and the header breadcrumb) skip the list.
-    expect(mockSetView).toHaveBeenCalledWith({
-      kind: 'connections',
-      detail: { rowKey: 'account-acc-1', source: 'home' },
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/connections',
+      params: { slug: 'test-agent' },
+      search: { detail: 'account-acc-1', source: 'home' },
     })
   })
 
@@ -88,6 +120,62 @@ describe('HomeConnections — row navigation', () => {
 
     await user.click(screen.getByTestId('home-connections-open-page'))
 
-    expect(mockSetView).toHaveBeenCalledWith({ kind: 'connections' })
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/agents/$slug/connections', params: { slug: 'test-agent' } })
+  })
+
+  it('shows only this agent\'s activity for the matching connection', async () => {
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+
+    expect(await screen.findByRole('img', {
+      name: 'GitHub activity: 4 calls over 2 days, 3 succeeded and 1 failed.',
+    })).toBeInTheDocument()
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      `/api/activity/agents/test-agent?days=14&tz=${new Date().getTimezoneOffset()}`,
+    )
+  })
+
+  it('shows an expired API account and reconnects it from the status badge', async () => {
+    accountResponse = [{ ...ACCOUNT, status: 'expired' }]
+    const user = userEvent.setup()
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+
+    expect(await screen.findByText('GitHub')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Expired/i }))
+
+    expect(oauthReconnectMocks.reconnect).toHaveBeenCalledWith('acc-1', 'github')
+    expect(mockNavigate).not.toHaveBeenCalled()
+  })
+
+  it('shows foreign links as non-navigable shared capabilities', async () => {
+    mockApiFetch.mockImplementation((path: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (path === '/api/agents/test-agent/connected-accounts' && method === 'GET') {
+        return Promise.resolve(jsonResponse({
+          accounts: [{ kind: 'connected-account', toolkitSlug: 'slack' }],
+        }))
+      }
+      if (path === '/api/agents/test-agent/remote-mcps' && method === 'GET') {
+        return Promise.resolve(jsonResponse({ mcps: [{ kind: 'remote-mcp' }] }))
+      }
+      if (path.startsWith('/api/activity/agents/test-agent?days=14&tz=') && method === 'GET') {
+        return Promise.resolve(jsonResponse({
+          days: 0,
+          generatedAt: '2026-07-19T12:00:00.000Z',
+          cronByTaskId: {},
+          webhookByTriggerId: {},
+          connectionById: {},
+        }))
+      }
+      throw new Error(`Unexpected request: ${method} ${path}`)
+    })
+
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+
+    expect(await screen.findByText('Slack')).toBeInTheDocument()
+    expect(screen.getByText('Shared MCP connection')).toBeInTheDocument()
+    expect(screen.getAllByText('Connected by another member')).toHaveLength(2)
+    expect(screen.getAllByText('Shared')).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: /connection details/i })).not.toBeInTheDocument()
+    expect(mockNavigate).not.toHaveBeenCalled()
   })
 })

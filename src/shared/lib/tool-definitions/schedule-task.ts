@@ -45,7 +45,7 @@ export function cronToHuman(cron: string): string {
 
 function getSummary(input: unknown): string | null {
   const { name, scheduleType, scheduleExpression, timezone } = parseInput(input)
-  const prefix = scheduleType === 'cron' ? '🔁' : '📅'
+  const prefix = scheduleType === 'cron' ? 'Recurring' : scheduleType === 'at' ? 'One-time' : null
 
   let schedule = ''
   if (scheduleType === 'cron' && scheduleExpression) {
@@ -55,11 +55,14 @@ function getSummary(input: unknown): string | null {
   }
 
   const tzSuffix = timezone ? ` (${timezone.replace(/_/g, ' ')})` : ''
+  const namePart = name ? ` · ${name}` : ''
+  const schedulePart = schedule ? ` · ${schedule}${tzSuffix}` : tzSuffix
 
-  if (name && schedule) return `${prefix} ${name} · ${schedule}${tzSuffix}`
-  if (name) return `${prefix} ${name}${tzSuffix}`
-  if (schedule) return `${prefix} ${schedule}${tzSuffix}`
+  if (prefix) return `${prefix}${namePart}${schedulePart}`
+  if (name && schedule) return `${name} · ${schedule}${tzSuffix}`
+  if (name) return `${name}${tzSuffix}`
+  if (schedule) return `${schedule}${tzSuffix}`
   return null
 }
 
-export const scheduleTaskDef = { displayName: 'Schedule Task', iconName: 'Clock', parseInput, getSummary } as const
+export const scheduleTaskDef = { displayName: 'Schedule Task', parseInput, getSummary } as const

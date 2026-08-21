@@ -7,7 +7,7 @@ SuperAgent is a super app for building and running personal agents. You can crea
 
 | Windows | Mac |
 |:-------:|:---:|
-| [Download for Windows](https://github.com/SkillfulAgents/SuperAgent/releases/latest/download/Superagent-Setup.exe) | [Download for Mac](https://github.com/SkillfulAgents/SuperAgent/releases/latest/download/Superagent-arm64.dmg) |
+| [Download for Windows](https://updates.gamutagents.com/download/win) | [Download for Mac](https://updates.gamutagents.com/download/mac) |
 
 **Features:**
 
@@ -264,6 +264,24 @@ The application uses a dual-target architecture supporting both web and Electron
 - **Main Process**: Starts embedded Hono API server and creates browser window
 - **Renderer Process**: Same React app as web, communicates with API via localhost
 - **Preload Script**: Exposes safe IPC methods to renderer
+
+The desktop app can also drive a *remote* auth-mode deployment ("cloud
+workspace") instead of its own embedded API. Because the same React app runs in
+three configurations — Electron on the local API, Electron on a cloud workspace,
+and a plain browser — a feature is gated by **what it touches, not by what the
+window is**:
+
+| The feature acts on… | Predicate |
+| --- | --- |
+| this computer, on the agents' behalf | `canUseHostFeatures()` |
+| the machine running the API | `!targetIsRemote()` |
+| the window itself (traffic lights, tray, updates) | `isElectron()` |
+
+`!targetIsRemote()` is true in browsers and `isElectron()` is not, so these are
+not one scale of strictness — choosing the wrong one silently withdraws a
+feature from every web deployment. See
+[docs/cloud-workspace.md § Capability gating](docs/cloud-workspace.md#capability-gating-three-questions-not-one-axis)
+for the truth table and the full inventory of gated sites.
 
 ### Agent Containers
 Each agent runs in its own Docker/Podman container with Claude Code in headless mode:

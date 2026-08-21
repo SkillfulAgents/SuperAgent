@@ -1,7 +1,7 @@
-import { ArrowRight, MessageSquare } from 'lucide-react'
+import { ArrowDownToLine, ArrowRight, MessageSquare } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { useSelection } from '@renderer/context/selection-context'
-import { useAgents } from '@renderer/hooks/use-agents'
+import { useNavigate } from '@tanstack/react-router'
+import { useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useSession } from '@renderer/hooks/use-sessions'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, CollapsedContentProps } from './types'
 import { deliverSessionDef, shortSessionId, type DeliverSessionInput } from '@shared/lib/tool-definitions/deliver-session'
@@ -9,7 +9,11 @@ import { deliverSessionDef, shortSessionId, type DeliverSessionInput } from '@sh
 function useAgentName(slug: string | undefined): string | undefined {
   const { data: agents } = useAgents()
   if (!slug) return undefined
-  return agents?.find((a) => a.slug === slug)?.name ?? slug
+  // `slug` arrives as the x-agent display slug (model-facing) or the route slug —
+  // resolve to the canonical id before matching, else the name falls back to the
+  // raw slug string. `agent.slug` is the id, so compare against the resolved id.
+  const id = resolveRouteAgentId(slug, agents)
+  return agents?.find((a) => a.slug === id)?.name ?? slug
 }
 
 // Resolve session name via the same query the rest of the app uses.
@@ -23,7 +27,7 @@ function useSessionLabel(slug: string | undefined, sessionId: string | undefined
 
 function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) {
   const { session_id, agent_slug, description } = input as DeliverSessionInput
-  const { setAgent } = useSelection()
+  const navigate = useNavigate()
 
   // agent_slug from input wins (x-agent case); fall back to the message's agent
   // (the one running the tool) when omitted — i.e. "deliver one of my own sessions".
@@ -33,18 +37,18 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
 
   const handleOpen = () => {
     if (!targetSlug || !session_id) return
-    setAgent(targetSlug, { kind: 'session', id: session_id })
+    void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: targetSlug, sessionId: session_id } })
   }
 
   return (
     <div className="space-y-2">
       {description && (
-        <p className="text-sm text-muted-foreground">{description}</p>
+        <p className="text-xs text-muted-foreground">{description}</p>
       )}
       {session_id && (
         <div className="flex items-center gap-2 flex-wrap">
           <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0" />
-          <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
+          <code className="bg-background px-1.5 py-0.5 rounded text-xs">
             {targetName ? `${targetName} · ${sessionLabel}` : sessionLabel}
           </code>
           {!isError && targetSlug && (
@@ -57,7 +61,7 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
       )}
       {result && (
         <div
-          className={`text-xs rounded p-2 ${isError ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}
+          className={`bg-background text-xs rounded p-2 ${isError ? 'text-red-800 dark:text-red-200' : 'text-green-800 dark:text-green-200'}`}
         >
           {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
         </div>
@@ -71,7 +75,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
     const partial = JSON.parse(partialInput)
     if (partial.session_id) {
       return (
-        <div className="text-sm text-muted-foreground">
+        <div className="text-xs text-muted-foreground">
           Delivering session: {shortSessionId(partial.session_id)}
         </div>
       )
@@ -79,7 +83,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
   } catch {
     // partial JSON, ignore
   }
-  return <div className="text-sm text-muted-foreground">Preparing session…</div>
+  return <div className="text-xs text-muted-foreground">Preparing session…</div>
 }
 
 function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) {
@@ -87,7 +91,7 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
   const targetSlug = agent_slug || agentSlug
   const targetName = useAgentName(targetSlug)
   const sessionLabel = useSessionLabel(targetSlug, session_id)
-  const { setAgent } = useSelection()
+  const navigate = useNavigate()
 
   if (!session_id || !targetSlug || isError) return null
 
@@ -98,7 +102,7 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
       type="button"
       onClick={(e) => {
         e.stopPropagation()
-        setAgent(targetSlug, { kind: 'session', id: session_id })
+        void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: targetSlug, sessionId: session_id } })
       }}
       className="inline-flex min-w-0 max-w-full items-center gap-1 px-2 py-0.5 rounded border text-xs text-muted-foreground hover:text-foreground hover:bg-muted whitespace-nowrap"
     >
@@ -111,7 +115,7 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
 
 export const deliverSessionRenderer: ToolRenderer = {
   displayName: 'Deliver Session',
-  icon: ArrowRight,
+  icon: ArrowDownToLine,
   getSummary: (input: unknown) => deliverSessionDef.getSummary(input),
   ExpandedView,
   StreamingView,

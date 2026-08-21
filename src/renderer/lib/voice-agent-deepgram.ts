@@ -8,6 +8,7 @@ export class DeepgramVoiceAgentAdapter implements VoiceAgentAdapter {
   private eventCb: VoiceAgentEventCallback | null = null
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null
   private connected = false
+  private closed = false
   readonly inputSampleRate = 16000
   readonly outputSampleRate = 24000
 
@@ -39,7 +40,7 @@ export class DeepgramVoiceAgentAdapter implements VoiceAgentAdapter {
         const err = new Error('Deepgram Voice Agent WebSocket connection failed')
         if (!this.connected) {
           reject(err)
-        } else {
+        } else if (!this.closed) {
           this.eventCb?.({ type: 'error', message: err.message })
         }
       }
@@ -61,7 +62,9 @@ export class DeepgramVoiceAgentAdapter implements VoiceAgentAdapter {
 
       this.ws.onclose = (event) => {
         this.stopKeepAlive()
-        if (event.code !== 1000 && event.code !== 1005) {
+        // Suppress the error for a deliberate close (e.g. stopping a still-connecting
+        // session yields a non-1000 close that isn't a real failure).
+        if (!this.closed && event.code !== 1000 && event.code !== 1005) {
           this.eventCb?.({ type: 'error', message: `Deepgram connection closed: ${event.code} ${event.reason}` })
         }
         this.eventCb?.({ type: 'disconnected' })
@@ -207,6 +210,7 @@ export class DeepgramVoiceAgentAdapter implements VoiceAgentAdapter {
   }
 
   close(): void {
+    this.closed = true
     this.stopKeepAlive()
     if (this.ws) {
       this.ws.close()

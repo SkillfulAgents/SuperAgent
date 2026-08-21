@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { sqliteTable, text, integer, uniqueIndex, index } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, uniqueIndex, index, check } from 'drizzle-orm/sqlite-core'
 import { CHAT_PROVIDERS } from '@shared/lib/chat-integrations/config-schema'
 
 // =============================================================================
@@ -29,6 +29,27 @@ export const user = sqliteTable('user', {
   mustChangePassword: integer('must_change_password', { mode: 'boolean' }).default(false),
 })
 
+/**
+ * Stable installed-mobile-device identity. Access sessions rotate underneath
+ * this row; the refresh secret is stored only as a SHA-256 hash and deleting
+ * the row revokes every session in the device family through the FK below.
+ */
+export const mobileDevice = sqliteTable('mobile_device', {
+  id: text('id').primaryKey(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  refreshTokenHash: text('refresh_token_hash').notNull().unique(),
+  deviceName: text('device_name'),
+  platform: text('platform'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  userIdIdx: index('mobile_device_user_id_idx').on(table.userId),
+  expiresAtIdx: index('mobile_device_expires_at_idx').on(table.expiresAt),
+}))
+
 export const authSession = sqliteTable('session', {
   id: text('id').primaryKey(),
   expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
@@ -45,8 +66,22 @@ export const authSession = sqliteTable('session', {
     .notNull()
     .references(() => user.id, { onDelete: 'cascade' }),
   impersonatedBy: text('impersonated_by'),
+  /**
+   * How this session came to exist — one of `SESSION_CREATION_METHODS`
+   * (auth/session-audit.ts), written once at creation and never updated.
+   * Nullable: rows that predate the column carry no answer, and "unknown"
+   * would be a claim we cannot make about them.
+   */
+  creationMethod: text('creation_method'),
+  /**
+   * Stable mobile-device family for an access session. Null for browser and
+   * desktop token-exchange sessions. Deleting the device revokes all access
+   * sessions minted from its refresh credential.
+   */
+  deviceId: text('device_id').references(() => mobileDevice.id, { onDelete: 'cascade' }),
 }, (table) => ({
   userIdIdx: index('session_userId_idx').on(table.userId),
+  deviceIdIdx: index('session_device_id_idx').on(table.deviceId),
 }))
 
 export const authAccount = sqliteTable('account', {
@@ -71,6 +106,35 @@ export const authAccount = sqliteTable('account', {
     .notNull(),
 }, (table) => ({
   userIdIdx: index('account_userId_idx').on(table.userId),
+  // One stable mapping per external identity: (providerId, accountId) is the
+  // durable lookup for token-exchange provisioning and must never fork.
+  providerAccountIdx: uniqueIndex('account_provider_account_unique').on(table.providerId, table.accountId),
+}))
+
+// Single-use `jti` replay guard for the RFC 7523 token-exchange endpoint.
+// The primary key makes consumption atomic: only the request whose INSERT
+// lands may mint a session for that grant. Rows expire with the grant's exp.
+export const tokenExchangeJti = sqliteTable('token_exchange_jti', {
+  jti: text('jti').primaryKey(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  expiresAtIdx: index('token_exchange_jti_expires_at_idx').on(table.expiresAt),
+}))
+
+// Single-use pairing tokens for the mobile app connect flow. Only the sha256
+// hex of the token is stored — the plaintext (`mp_…`) exists solely in the QR
+// code / deep link handed to the phone. Redemption is an atomic
+// DELETE … RETURNING on the hash, so a token can mint at most one session.
+// Rows are short-lived (5-minute TTL) and swept opportunistically on mint.
+export const mobilePairingToken = sqliteTable('mobile_pairing_token', {
+  tokenHash: text('token_hash').primaryKey(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  expiresAtIdx: index('mobile_pairing_token_expires_at_idx').on(table.expiresAt),
 }))
 
 export const verification = sqliteTable('verification', {
@@ -161,6 +225,9 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   lastSessionId: text('last_session_id'),
   createdBySessionId: text('created_by_session_id'),
   createdByUserId: text('created_by_user_id'), // For ACL purposes in auth mode
+  // When set, this task is a session "wake": firing resumes the referenced
+  // existing session (sendMessage into it) instead of creating a new one.
+  resumeSessionId: text('resume_session_id'),
 
   // Timezone (IANA identifier, e.g. 'America/New_York')
   timezone: text('timezone'),
@@ -168,12 +235,21 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   // Runtime options (override global defaults when set)
   model: text('model'),
   effort: text('effort'),
+  speed: text('speed'),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   cancelledAt: integer('cancelled_at', { mode: 'timestamp_ms' }),
   pausedAt: integer('paused_at', { mode: 'timestamp_ms' }),
-})
+}, (table) => ({
+  // One pending wake per session, enforced at the storage layer: the
+  // replace-on-create logic in createSessionWake runs in a transaction, and
+  // this partial index makes any interleaving that slips past it a hard
+  // constraint error instead of a silent duplicate wake.
+  pendingWakePerSession: uniqueIndex('scheduled_tasks_pending_wake_unique')
+    .on(table.resumeSessionId)
+    .where(sql`status = 'pending' AND resume_session_id IS NOT NULL`),
+}))
 
 // Notifications - user notifications for session events
 export const notifications = sqliteTable('notifications', {
@@ -202,6 +278,71 @@ export const notifications = sqliteTable('notifications', {
   createdAtIdx: index('notifications_created_at_idx').on(table.createdAt),
 }))
 
+/**
+ * Web Push subscriptions — one row per browser/device that opted into push
+ * (installed-PWA "Enable on this device" flow). Unlike `notifications` above,
+ * these rows ARE per-user in auth mode: a subscription addresses one person's
+ * physical device, so `user_id` is the recipient whose settings and agent
+ * access gate each send. Plain text (no FK) because local mode has no user
+ * rows at all — null user_id means the single local user owns the device.
+ *
+ * `origin` is the origin the PWA was installed from (the host is reachable at
+ * several — localhost, LAN IP, tailnet name — but a subscription is bound to
+ * exactly one), and click-through `navigate` URLs must be absolute on it.
+ */
+export const pushSubscriptions = sqliteTable('push_subscriptions', {
+  id: text('id').primaryKey(),
+  endpoint: text('endpoint').notNull().unique(),
+  keysP256dh: text('keys_p256dh').notNull(),
+  keysAuth: text('keys_auth').notNull(),
+  origin: text('origin').notNull(),
+  userId: text('user_id'),
+  deviceName: text('device_name'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  userIdIdx: index('push_subscriptions_user_id_idx').on(table.userId),
+}))
+
+/**
+ * APNs device registrations — one row per native iOS app install that
+ * registered its device token (POST /api/push/devices). Like
+ * `push_subscriptions`, rows are per-user in auth mode (`user_id` gates
+ * settings and agent access; plain text, no FK, because local mode has no user
+ * rows). `mobile_device_id` ties the token to the stable mobile-device family
+ * so origin-device alert routing can match a session's `createdByDeviceId`;
+ * cascade delete means unpairing the device also silences its pushes.
+ * `workspace_tag` is an opaque client-supplied id echoed back in every push
+ * payload as `workspaceId` so the app can route the push to the right paired
+ * deployment.
+ */
+export const apnsDevices = sqliteTable('apns_devices', {
+  id: text('id').primaryKey(),
+  token: text('token').notNull().unique(),
+  environment: text('environment').notNull().default('production'), // 'sandbox' | 'production'
+  userId: text('user_id'),
+  mobileDeviceId: text('mobile_device_id').references(() => mobileDevice.id, { onDelete: 'cascade' }),
+  workspaceTag: text('workspace_tag'),
+  deviceName: text('device_name'),
+  platform: text('platform').notNull().default('ios'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  userIdIdx: index('apns_devices_user_id_idx').on(table.userId),
+  mobileDeviceIdIdx: index('apns_devices_mobile_device_id_idx').on(table.mobileDeviceId),
+}))
+
+// Single-row VAPID keypair identifying this install to push services.
+// Must stay stable: browsers bind subscriptions to the public key, so a
+// regenerated pair invalidates every existing push_subscriptions row
+// (vapid-keys.ts drops them when it mints a fresh pair).
+export const pushVapidKeys = sqliteTable('push_vapid_keys', {
+  id: integer('id').primaryKey(),
+  publicKey: text('public_key').notNull(),
+  privateKey: text('private_key').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+})
+
 // Proxy tokens - synthetic tokens for agent-to-proxy authentication
 export const proxyTokens = sqliteTable('proxy_tokens', {
   id: text('id').primaryKey(),
@@ -221,10 +362,18 @@ export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   method: text('method').notNull(),
   statusCode: integer('status_code'),
   errorMessage: text('error_message'),
+  durationMs: integer('duration_ms'),
   policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
   matchedScopes: text('matched_scopes'), // JSON array string of matched scope names
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
-})
+}, (table) => ({
+  agentSlugCreatedAtIdx: index('proxy_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),
+  accountIdCreatedAtIdx: index('proxy_audit_log_account_id_created_at_idx').on(table.accountId, table.createdAt),
+  // Covers the home-graph usage aggregation (GROUP BY agent×account, with an
+  // owner join on account_id) — the table grows with every proxied call, so
+  // an unindexed scan degrades linearly forever.
+  accountAgentIdx: index('proxy_audit_log_account_agent_idx').on(table.accountId, table.agentSlug),
+}))
 
 // Remote MCP servers registered at app level
 export const remoteMcpServers = sqliteTable('remote_mcp_servers', {
@@ -280,7 +429,13 @@ export const mcpAuditLog = sqliteTable('mcp_audit_log', {
   policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
   matchedTool: text('matched_tool'), // tool name for tools/call requests
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
-})
+}, (table) => ({
+  agentSlugCreatedAtIdx: index('mcp_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),
+  remoteMcpIdCreatedAtIdx: index('mcp_audit_log_remote_mcp_id_created_at_idx').on(table.remoteMcpId, table.createdAt),
+  // Same rationale as proxy_audit_log_account_agent_idx: usage aggregation
+  // over an append-only table.
+  mcpAgentIdx: index('mcp_audit_log_mcp_agent_idx').on(table.remoteMcpId, table.agentSlug),
+}))
 
 // Agent ACLs - maps users to agents with roles (auth mode only)
 export const agentAcl = sqliteTable('agent_acl', {
@@ -360,15 +515,24 @@ export const mcpToolPolicies = sqliteTable('mcp_tool_policies', {
   mcpToolUnique: uniqueIndex('mcp_tool_policies_unique').on(table.mcpId, table.toolName),
 }))
 
-// Webhook triggers - Composio trigger subscriptions for agents
+// Webhook triggers - Composio trigger subscriptions and custom webhook
+// endpoints (agent-minted public URLs on the platform proxy) for agents
 export const webhookTriggers = sqliteTable('webhook_triggers', {
   id: text('id').primaryKey(),
   agentSlug: text('agent_slug').notNull(),
 
-  // Composio details
+  // 'composio' = Composio trigger subscription; 'custom' = agent-minted public
+  // webhook endpoint. Explicit column instead of inferring from the id prefix.
+  kind: text('kind', { enum: ['composio', 'custom'] })
+    .notNull()
+    .default('composio'),
+
+  // Composio details. For kind='custom', composioTriggerId carries the platform
+  // webhook endpoint id ("whep_...") — events ride the same column both ways —
+  // and connectedAccountId is null (no connected account involved).
   composioTriggerId: text('composio_trigger_id'), // set after Composio confirms (e.g. "ti_...")
-  connectedAccountId: text('connected_account_id').notNull(),
-  triggerType: text('trigger_type').notNull(), // slug e.g. 'GMAIL_NEW_EMAIL'
+  connectedAccountId: text('connected_account_id'),
+  triggerType: text('trigger_type').notNull(), // slug e.g. 'GMAIL_NEW_EMAIL' or 'CUSTOM_WEBHOOK'
   triggerConfig: text('trigger_config'), // JSON string
 
   // What to do when triggered
@@ -392,6 +556,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   // Runtime options (override global defaults when set)
   model: text('model'),
   effort: text('effort'),
+  speed: text('speed'),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -415,9 +580,11 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
 
   // Behavior settings
   showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
+  requireApproval: integer('require_approval', { mode: 'boolean' }).notNull().default(true),
   sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
   model: text('model'), // Claude model override; null = use default
   effort: text('effort'), // Effort level override; null = use default
+  speed: text('speed'), // Speed level override; null = use default
 
   // Status
   status: text('status', { enum: ['active', 'paused', 'error', 'disconnected'] })
@@ -448,6 +615,32 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
+}))
+
+export const chatIntegrationAccess = sqliteTable('chat_integration_access', {
+  id: text('id').primaryKey(),
+  integrationId: text('integration_id').notNull()
+    .references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  externalChatId: text('external_chat_id').notNull(),
+  chatType: text('chat_type', { enum: ['private', 'group', 'supergroup'] }), // nullable: seeded rows unknown
+  status: text('status', { enum: ['pending', 'allowed', 'denied'] }).notNull().default('pending'),
+  approvalSource: text('approval_source', { enum: ['auto_first_contact', 'owner', 'migration'] }),
+  title: text('title'),
+  firstUserId: text('first_user_id'),
+  firstUserName: text('first_user_name'),
+  firstMessagePreview: text('first_message_preview'),
+  requestNoticeSentAt: integer('request_notice_sent_at', { mode: 'timestamp_ms' }),
+  requestedAt: integer('requested_at', { mode: 'timestamp_ms' }).notNull(),
+  decidedAt: integer('decided_at', { mode: 'timestamp_ms' }),
+  decidedByUserId: text('decided_by_user_id'), // NOT an FK: non-auth mode stores sentinel "local"
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  chatUnique: uniqueIndex('chat_integration_access_unique').on(table.integrationId, table.externalChatId),
+  statusIdx: index('chat_integration_access_status_idx').on(table.integrationId, table.status),
+  statusCheck: check('chat_integration_access_status_check', sql`${table.status} in ('pending','allowed','denied')`),
+  chatTypeCheck: check('chat_integration_access_chat_type_check', sql`${table.chatType} is null or ${table.chatType} in ('private','group','supergroup')`),
+  sourceCheck: check('chat_integration_access_source_check', sql`${table.approvalSource} is null or ${table.approvalSource} in ('auto_first_contact','owner','migration')`),
 }))
 
 // Audit log - tracks key user actions across the app
@@ -492,6 +685,10 @@ export type UserSettingsRow = typeof userSettings.$inferSelect
 export type NewUserSettingsRow = typeof userSettings.$inferInsert
 export type User = typeof user.$inferSelect
 export type AuthSession = typeof authSession.$inferSelect
+export type MobileDevice = typeof mobileDevice.$inferSelect
+export type NewMobileDevice = typeof mobileDevice.$inferInsert
+export type MobilePairingToken = typeof mobilePairingToken.$inferSelect
+export type NewMobilePairingToken = typeof mobilePairingToken.$inferInsert
 export type AuthAccount = typeof authAccount.$inferSelect
 export type Verification = typeof verification.$inferSelect
 export type ApiScopePolicy = typeof apiScopePolicies.$inferSelect
@@ -506,5 +703,7 @@ export type ChatIntegration = typeof chatIntegrations.$inferSelect
 export type NewChatIntegration = typeof chatIntegrations.$inferInsert
 export type ChatIntegrationSession = typeof chatIntegrationSessions.$inferSelect
 export type NewChatIntegrationSession = typeof chatIntegrationSessions.$inferInsert
+export type ChatIntegrationAccess = typeof chatIntegrationAccess.$inferSelect
+export type NewChatIntegrationAccess = typeof chatIntegrationAccess.$inferInsert
 export type AuditLogEntry = typeof auditLog.$inferSelect
 export type NewAuditLogEntry = typeof auditLog.$inferInsert

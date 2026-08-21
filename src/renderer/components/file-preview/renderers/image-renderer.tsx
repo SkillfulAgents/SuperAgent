@@ -1,12 +1,14 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
 import { CommentPin } from '../comments/comment-pin'
 import { CommentOverlay } from '../comments/comment-overlay'
+import { useDismissOnOutsideClick } from '../comments/use-dismiss-on-outside-click'
 
 interface ImageRendererProps {
   url: string
   filePath: string
+  commentsEnabled?: boolean
 }
 
 interface ClickPoint {
@@ -15,7 +17,9 @@ interface ClickPoint {
   rect: DOMRect
 }
 
-export function ImageRenderer({ url, filePath }: ImageRendererProps) {
+const IMAGE_DISMISS_IGNORE = ['[data-comment-overlay]']
+
+export function ImageRenderer({ url, filePath, commentsEnabled = true }: ImageRendererProps) {
   const [loaded, setLoaded] = useState(false)
   const [clickPoint, setClickPoint] = useState<ClickPoint | null>(null)
   const imgContainerRef = useRef<HTMLDivElement>(null)
@@ -23,17 +27,10 @@ export function ImageRenderer({ url, filePath }: ImageRendererProps) {
   const fileComments = comments.get(filePath) || []
   const imageComments = fileComments.filter((c): c is FileComment & { x: number; y: number } => c.x != null && c.y != null)
 
-  useEffect(() => {
-    if (!clickPoint) return
-    const handleMouseDown = (e: MouseEvent) => {
-      if ((e.target as HTMLElement).closest?.('[data-comment-overlay]')) return
-      setClickPoint(null)
-    }
-    document.addEventListener('mousedown', handleMouseDown)
-    return () => document.removeEventListener('mousedown', handleMouseDown)
-  }, [clickPoint])
+  useDismissOnOutsideClick(clickPoint != null, () => setClickPoint(null), IMAGE_DISMISS_IGNORE)
 
   const handleImageClick = useCallback((e: React.MouseEvent<HTMLImageElement>) => {
+    if (!commentsEnabled) return
     const img = e.currentTarget
     const rect = img.getBoundingClientRect()
     const x = ((e.clientX - rect.left) / rect.width) * 100
@@ -50,7 +47,7 @@ export function ImageRenderer({ url, filePath }: ImageRendererProps) {
         0
       ),
     })
-  }, [])
+  }, [commentsEnabled])
 
   return (
     <div ref={imgContainerRef} className="relative flex items-center justify-center p-4 min-h-[200px]">
@@ -64,7 +61,7 @@ export function ImageRenderer({ url, filePath }: ImageRendererProps) {
         <img
           src={url}
           alt={filePath.split('/').pop() || 'Preview'}
-          className="max-w-full max-h-[60vh] object-contain cursor-crosshair rounded"
+          className={`max-w-full max-h-[60vh] object-contain rounded ${commentsEnabled ? 'cursor-crosshair' : ''}`}
           onLoad={() => setLoaded(true)}
           onClick={handleImageClick}
         />
