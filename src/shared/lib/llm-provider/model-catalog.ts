@@ -58,10 +58,32 @@ function withoutDisabled(entry: CatalogOverrideEntry): Partial<ModelDefinition> 
   return model
 }
 
+function mergeModelPatch(
+  base: Partial<ModelDefinition> & { id: string },
+  patch: Partial<ModelDefinition> & { id: string },
+): Partial<ModelDefinition> & { id: string } {
+  const next = { ...base, ...patch }
+  if (base.pricing && patch.pricing) {
+    next.pricing = {
+      ...base.pricing,
+      ...patch.pricing,
+      ...(base.pricing.speedMultipliers && patch.pricing.speedMultipliers
+        ? {
+            speedMultipliers: {
+              ...base.pricing.speedMultipliers,
+              ...patch.pricing.speedMultipliers,
+            },
+          }
+        : {}),
+    }
+  }
+  return next
+}
+
 /**
  * A provider's user-effective catalog:
- * built-ins → shallow per-id overrides → disabled entries removed → structural
- * validation → family latest normalization.
+ * built-ins → per-id overrides (with nested pricing merged) → disabled
+ * entries removed → structural validation → family latest normalization.
  */
 export function getEffectiveCatalog(providerId: LlmProviderId): ModelDefinition[] {
   const builtins = getProviderCatalog(providerId)
@@ -83,7 +105,7 @@ export function getEffectiveCatalog(providerId: LlmProviderId): ModelDefinition[
 
     const patch = withoutDisabled(entry)
     const base = current ?? builtin
-    const next = base ? { ...base, ...patch } : patch
+    const next = base ? mergeModelPatch(base, patch) : patch
     if (!base && !order.includes(entry.id)) order.push(entry.id)
     byId.set(entry.id, next)
   }

@@ -109,8 +109,8 @@ describe('usage-service', () => {
 
           expect(lw.date).toBe(cc.date)
           expect(lw.inputTokens).toBe(cc.inputTokens)
-          // ccusage keeps the first snapshot for duplicate assistant message IDs.
-          // We keep the highest output_tokens snapshot, so output/cost can be higher.
+          // This pinned ccusage version keeps the first duplicate snapshot.
+          // We keep the richest total-token snapshot, so output/cost can be higher.
           expect(lw.outputTokens).toBeGreaterThanOrEqual(cc.outputTokens)
           expect(lw.cacheCreationTokens).toBe(cc.cacheCreationTokens)
           expect(lw.cacheReadTokens).toBe(cc.cacheReadTokens)
@@ -318,11 +318,11 @@ describe('usage-service', () => {
           day.cacheCreationTokens +
           day.cacheReadTokens,
       ).toBe(138_263)
-      expect(day.totalCost).toBeCloseTo(0.3591282, 10)
+      expect(day.totalCost).toBeCloseTo(0.2394188, 10)
       expect(day.modelBreakdowns).toEqual([
         expect.objectContaining({
           modelName: 'anthropic/claude-sonnet-5-20260630',
-          cost: 0.3591282,
+          cost: 0.2394188,
         }),
       ])
     })
@@ -347,7 +347,7 @@ describe('usage-service', () => {
       await expect(
         loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' }),
       ).resolves.toEqual({
-        totalCost: 0.8979571,
+        totalCost: 0.7782477,
         totalTokens: 286_966,
         priceMissing: false,
         usageIncomplete: false,
@@ -905,13 +905,15 @@ describe('usage-service', () => {
   })
 
   describe('calculateCost — runtime model id aliases', () => {
+    const aliasPricingTimestamp = Date.parse('2026-08-20T12:00:00.000Z')
+
     it.each([
       // Anthropic API canonical ids and pre-4.6 convenience aliases.
-      ['claude-sonnet-5', 3, 15],
+      ['claude-sonnet-5', 2, 10],
       ['claude-haiku-4-5-20251001', 1, 5],
       ['claude-haiku-4-5', 1, 5],
       // Provider-translated runtime ids observed in sanitized transcripts.
-      ['anthropic/claude-sonnet-5-20260630', 3, 15],
+      ['anthropic/claude-sonnet-5-20260630', 2, 10],
       ['anthropic/claude-4.6-sonnet-20260217', 3, 15],
       ['anthropic/claude-4.6-opus-20260205', 5, 25],
       ['anthropic/claude-4.5-haiku-20251001', 1, 5],
@@ -940,7 +942,9 @@ describe('usage-service', () => {
       ['grok-4.6', 2, 6],
       ['x-ai/grok-4.6', 2, 6],
     ])('prices %s through its canonical rate card', (model, inputRate, outputRate) => {
-      expect(calculateCost(model, 100_000, 1_000, 0, 0)).toBeCloseTo(
+      expect(
+        calculateCost(model, 100_000, 1_000, 0, 0, undefined, aliasPricingTimestamp),
+      ).toBeCloseTo(
         (100_000 * inputRate + 1_000 * outputRate) / 1_000_000,
         9,
       )
@@ -1077,7 +1081,7 @@ describe('usage-service', () => {
       expect(result.length).toBeGreaterThan(0)
     })
 
-    it('deduplicates entries across files and keeps the highest output_tokens snapshot', async () => {
+    it('deduplicates entries across files and keeps the richest token snapshot', async () => {
       // msg_dup1/req_dup1 appears multiple times with output snapshots 50, 75, and 50.
       const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
       const dec10 = result.find((d) => d.date === '2025-12-10')!
@@ -1297,8 +1301,9 @@ describe('usage-service', () => {
     })
 
     it('bills a model with no speedMultipliers at 1x even for fast rows', async () => {
-      // claude-sonnet-5: $3/Mtok input, $15/Mtok output, no fast tier.
-      const sonnetBase = (100_000 * 3 + 1_000 * 15) / 1_000_000
+      // This row predates the September 2026 price change, so Sonnet 5 uses
+      // its $2/Mtok input and $10/Mtok output introductory rates.
+      const sonnetBase = (100_000 * 2 + 1_000 * 10) / 1_000_000
       expect(await costOf('claude-sonnet-5', { speed: 'fast' }, 'platform')).toBeCloseTo(
         sonnetBase,
         9,

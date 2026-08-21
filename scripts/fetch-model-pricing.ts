@@ -1,10 +1,17 @@
 #!/usr/bin/env npx tsx
 /**
  * Fetch Claude model pricing from LiteLLM's model pricing database
- * and write a JSON file for use by the usage service.
+ * and merge its flat rates into the pricing table used by the usage service.
+ * Curated metadata and non-Claude entries already in the table are preserved.
  *
  * Run: npx tsx scripts/fetch-model-pricing.ts
  */
+
+import {
+  mergeRefreshedModelPricing,
+  type FlatModelPricing,
+  type ModelPricingTable,
+} from './lib/model-pricing-merge'
 
 const LITELLM_URL =
   'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
@@ -19,13 +26,6 @@ interface LiteLLMModel {
   litellm_provider?: string
 }
 
-interface PricingEntry {
-  input: number
-  output: number
-  cacheCreation: number
-  cacheRead: number
-}
-
 async function main() {
   console.log('Fetching model pricing from LiteLLM...')
   const res = await fetch(LITELLM_URL)
@@ -36,7 +36,7 @@ async function main() {
   const data: Record<string, LiteLLMModel> = await res.json()
 
   // Filter to Claude models from Anthropic direct API (not bedrock/vertex/etc)
-  const pricing: Record<string, PricingEntry> = {}
+  const refreshedPricing: Record<string, FlatModelPricing> = {}
 
   for (const [key, model] of Object.entries(data)) {
     // Only include direct Anthropic models (no provider prefix like "anthropic.", "bedrock/", etc)
@@ -44,7 +44,7 @@ async function main() {
     if (!model.input_cost_per_token || !model.output_cost_per_token) continue
 
     // Convert per-token to per-million-token
-    pricing[key] = {
+    refreshedPricing[key] = {
       input: round(model.input_cost_per_token * 1e6),
       output: round(model.output_cost_per_token * 1e6),
       cacheCreation: round((model.cache_creation_input_token_cost ?? 0) * 1e6),
@@ -52,18 +52,22 @@ async function main() {
     }
   }
 
-  const sortedPricing: Record<string, PricingEntry> = {}
-  for (const key of Object.keys(pricing).sort()) {
-    sortedPricing[key] = pricing[key]
-  }
-
   const fs = await import('fs')
+  let existingPricing: ModelPricingTable
+  try {
+    existingPricing = JSON.parse(fs.readFileSync(OUTPUT_PATH, 'utf8')) as ModelPricingTable
+  } catch (error) {
+    throw new Error(`Failed to read existing pricing table at ${OUTPUT_PATH}`, { cause: error })
+  }
+  const mergedPricing = mergeRefreshedModelPricing(existingPricing, refreshedPricing)
   fs.writeFileSync(
     OUTPUT_PATH,
-    JSON.stringify(sortedPricing, null, 2) + '\n'
+    JSON.stringify(mergedPricing, null, 2) + '\n'
   )
 
-  console.log(`Wrote ${Object.keys(sortedPricing).length} models to ${OUTPUT_PATH}`)
+  console.log(
+    `Refreshed ${Object.keys(refreshedPricing).length} Claude models; wrote ${Object.keys(mergedPricing).length} total models to ${OUTPUT_PATH}`,
+  )
 }
 
 function round(n: number): number {
