@@ -37,7 +37,10 @@ const mockSettings = {
     hasRunningAgents: false,
     customEnvVars: {},
     dataDir: '/tmp/superagent',
-    app: { autoSleepTimeoutMinutes: 30 },
+    app: {
+      autoSleepTimeoutMinutes: 30,
+      autoResumeOnUnexpectedDeath: undefined as boolean | undefined,
+    },
     agentLimits: {},
   },
   isLoading: false,
@@ -177,6 +180,56 @@ describe('RuntimeTab', () => {
 
       expect(screen.queryByText('Agent image is required.')).not.toBeInTheDocument()
     })
+  })
+
+  it('hides the MicroVM auto-resume toggle on other runtimes', () => {
+    renderWithProviders(<RuntimeTab />)
+
+    expect(screen.queryByRole('switch', { name: 'Auto-resume mid-turn sessions' })).not.toBeInTheDocument()
+  })
+
+  it('defaults auto-resume on for MicroVM and persists the toggle immediately', async () => {
+    const user = userEvent.setup()
+    mockSettings.data.container.containerRunner = 'lambda-microvm'
+    mockSettings.data.runnerAvailability = [
+      {
+        runner: 'lambda-microvm',
+        installed: true,
+        running: true,
+        available: true,
+        canStart: false,
+        supportsCustomAgentImage: false,
+      },
+    ]
+    renderWithProviders(<RuntimeTab />)
+
+    const toggle = screen.getByRole('switch', { name: 'Auto-resume mid-turn sessions' })
+    expect(toggle).toBeChecked()
+
+    await user.click(toggle)
+
+    expect(mockUpdateSettings.mutate).toHaveBeenCalledWith({
+      app: { autoResumeOnUnexpectedDeath: false },
+    })
+  })
+
+  it('renders auto-resume off when the MicroVM preference is disabled', () => {
+    mockSettings.data.container.containerRunner = 'lambda-microvm'
+    mockSettings.data.runnerAvailability = [
+      {
+        runner: 'lambda-microvm',
+        installed: true,
+        running: true,
+        available: true,
+        canStart: false,
+        supportsCustomAgentImage: false,
+      },
+    ]
+    mockSettings.data.app = { autoSleepTimeoutMinutes: 30, autoResumeOnUnexpectedDeath: false }
+
+    renderWithProviders(<RuntimeTab />)
+
+    expect(screen.getByRole('switch', { name: 'Auto-resume mid-turn sessions' })).not.toBeChecked()
   })
 
   it('adds a custom environment variable through the dialog', async () => {

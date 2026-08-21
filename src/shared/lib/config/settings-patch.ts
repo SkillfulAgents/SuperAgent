@@ -75,6 +75,7 @@ export const appSettingsPatchSchema = z.object({
   notifications: notificationSettingsSchema,
   autoSleepTimeoutMinutes: z.number(),
   warmStartOnType: z.boolean(),
+  autoResumeOnUnexpectedDeath: z.boolean(),
   autoDeleteInactiveDays: z.number(),
   setupCompleted: z.boolean(),
   accountProvider: z.enum(['composio', 'nango']),
