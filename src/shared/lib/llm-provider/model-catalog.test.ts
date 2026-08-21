@@ -107,7 +107,12 @@ describe('getProviderCatalog', () => {
       family: 'glm',
       isLatest: true,
       icon: 'zai',
-      pricing: { inputPerMtok: 1.2, outputPerMtok: 4.2 },
+      pricing: {
+        inputPerMtok: 1.2,
+        outputPerMtok: 4.2,
+        cacheCreationPerMtok: 0,
+        cacheCreation1hPerMtok: 0,
+      },
     })
     expect(grok).toMatchObject({
       family: 'grok',
@@ -277,7 +282,7 @@ describe('getEffectiveCatalog', () => {
     expect(catalog.some((model) => model.id === 'missing-model')).toBe(false)
   })
 
-  it('shallow-patches built-ins while preserving siblings', () => {
+  it('patches built-ins while preserving sibling fields', () => {
     settingsMock.mockReturnValue({
       llmProvider: 'anthropic',
       modelCatalog: {
@@ -301,6 +306,31 @@ describe('getEffectiveCatalog', () => {
       family: 'opus',
       supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
       pricing: { inputPerMtok: 7, outputPerMtok: 31 },
+    })
+  })
+
+  it('preserves built-in cache pricing when overriding input and output rates', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'openrouter',
+      modelCatalog: {
+        openrouter: {
+          overrides: [
+            {
+              id: 'z-ai/glm-5.2',
+              pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+            },
+          ],
+        },
+      },
+    })
+
+    expect(
+      getEffectiveCatalog('openrouter').find((model) => model.id === 'z-ai/glm-5.2')?.pricing,
+    ).toEqual({
+      inputPerMtok: 2,
+      outputPerMtok: 6,
+      cacheCreationPerMtok: 0,
+      cacheCreation1hPerMtok: 0,
     })
   })
 
@@ -386,7 +416,10 @@ describe('getEffectiveCatalog', () => {
         anthropic: {
           overrides: [
             { id: 'incomplete-custom' },
-            { id: 'claude-opus-4-8', pricing: { inputPerMtok: 7 } as never },
+            {
+              id: 'claude-opus-4-8',
+              pricing: { inputPerMtok: -1, outputPerMtok: 25 },
+            },
           ],
         },
       },
