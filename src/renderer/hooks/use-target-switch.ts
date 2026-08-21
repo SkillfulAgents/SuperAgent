@@ -18,12 +18,10 @@ export function useTargetSwitch() {
 
   const { data: platform } = usePlatformAuthStatus()
 
-  // Only ask about cloud availability from the LOCAL side. In cloud mode every
-  // request goes through the proxy to the deployment, and `getCloudWorkspace`
-  // self-gates off the Electron main process — so the deployment would answer
-  // "no cloud workspace" about itself, and the control would hide exactly when
-  // the user needs it to get back. Being in cloud mode is its own proof.
-  const canAsk = isElectron() && current === 'local' && platform?.connected === true
+  // IPC-backed discovery works in both targets. Cloud mode is also its own
+  // proof the workspace exists (we already switched there).
+  const canAsk =
+    isElectron() && (current === 'cloud' || platform?.connected === true)
   const { data: workspace } = useCloudWorkspace(canAsk, platform?.orgId)
 
   const cloudReachable =
