@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardHeaderProvider } from '@renderer/context/dashboard-header-context'
 import { DashboardHeaderActions } from './dashboard-header-actions'
 import { DashboardView } from './dashboard-view'
@@ -9,6 +9,7 @@ import { DashboardView } from './dashboard-view'
 const mocks = vi.hoisted(() => ({
   agentSlug: 'agent',
   agentStatus: 'running',
+  refetchedAgentStatus: 'running',
   dashboardStatus: 'crashed',
   dashboardDescription: '',
   dashboardStartupPhase: undefined as undefined | 'installing-dependencies' | 'starting-server',
@@ -24,6 +25,7 @@ const mocks = vi.hoisted(() => ({
     mutateAsync: vi.fn(),
     isPending: false,
   },
+  refetchAgent: vi.fn(),
   openDashboardExternal: vi.fn(),
 }))
 
@@ -33,6 +35,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
       slug: mocks.agentSlug,
       status: mocks.agentStatus,
     },
+    refetch: mocks.refetchAgent,
   }),
   useStartAgent: () => mocks.start,
   useStopAgent: () => mocks.stop,
@@ -103,11 +106,64 @@ describe('DashboardView restart', () => {
     vi.clearAllMocks()
     mocks.agentSlug = 'agent'
     mocks.agentStatus = 'running'
+    mocks.refetchedAgentStatus = 'running'
     mocks.dashboardStatus = 'crashed'
     mocks.dashboardDescription = ''
     mocks.dashboardStartupPhase = undefined
     mocks.dashboardFirstRun = undefined
     mocks.start.mutateAsync.mockResolvedValue({})
+    mocks.refetchAgent.mockImplementation(async () => ({
+      data: {
+        slug: mocks.agentSlug,
+        status: mocks.refetchedAgentStatus,
+      },
+    }))
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('wakes a sleeping agent on visibility return even when its cached status is stale', async () => {
+    let visibilityState: DocumentVisibilityState = 'visible'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibilityState)
+    mocks.dashboardStatus = 'running'
+
+    const view = renderDashboard()
+    expect(mocks.start.mutate).not.toHaveBeenCalled()
+
+    visibilityState = 'hidden'
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+
+    // The visibility event can precede delivery of the stopped status. Keep
+    // the rendered cache stale and let the foreground refetch discover sleep.
+    mocks.refetchedAgentStatus = 'stopped'
+    view.rerender(<DashboardHarness />)
+    expect(mocks.start.mutate).not.toHaveBeenCalled()
+
+    visibilityState = 'visible'
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')))
+
+    expect(mocks.refetchAgent).toHaveBeenCalledOnce()
+    expect(mocks.start.mutate).toHaveBeenCalledOnce()
+    expect(mocks.start.mutate).toHaveBeenCalledWith('agent')
+  })
+
+  it('does not undo auto-sleep while the dashboard tab remains hidden', () => {
+    let visibilityState: DocumentVisibilityState = 'visible'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibilityState)
+    mocks.dashboardStatus = 'running'
+
+    const view = renderDashboard()
+    visibilityState = 'hidden'
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+
+    mocks.agentStatus = 'stopped'
+    mocks.dashboardStatus = 'stopped'
+    view.rerender(<DashboardHarness />)
+
+    expect(mocks.start.mutate).not.toHaveBeenCalled()
+    expect(mocks.refetchAgent).not.toHaveBeenCalled()
   })
 
   it('does not auto-start a second time while a deliberate stop is pending', async () => {
