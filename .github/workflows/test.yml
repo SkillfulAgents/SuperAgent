@@ -8,22 +8,7 @@ on:
 
 jobs:
   unit-tests:
-    name: unit-tests (${{ matrix.label }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: github-ubuntu
-            runner: ubuntu-latest
-          - label: blacksmith-4vcpu
-            runner: blacksmith-4vcpu-ubuntu-2404
-          - label: blacksmith-8vcpu
-            runner: blacksmith-8vcpu-ubuntu-2404
-          - label: blacksmith-16vcpu
-            runner: blacksmith-16vcpu-ubuntu-2404
-          - label: blacksmith-32vcpu
-            runner: blacksmith-32vcpu-ubuntu-2404
-    runs-on: ${{ matrix.runner }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -33,9 +18,6 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-
-      - name: Show available parallelism
-        run: node --print "require('node:os').availableParallelism()"
 
       # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
       # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
