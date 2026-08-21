@@ -79,6 +79,7 @@ vi.mock('./mcp-server', () => ({
   createDashboardsMcpServer: () => ({}),
   createAgentsMcpServer: () => ({}),
   createChatMcpServer: () => ({}),
+  createBrainMcpServer: () => ({}),
 }))
 
 vi.mock('./tools/browser', () => ({
@@ -202,6 +203,43 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     await claudeProcess.sendMessage('Continue without connections')
 
     expect(calls).toHaveLength(1)
+  })
+})
+
+describe('ClaudeCodeProcess Team Brain MCP gate', () => {
+  let claudeProcess: ClaudeCodeProcess | undefined
+
+  beforeEach(() => {
+    calls.length = 0
+    mcpServerStatusImpl = null
+    mcpServerStatusCalls = 0
+    delete process.env.REMOTE_MCPS
+    delete process.env.CONNECTED_ACCOUNTS
+  })
+
+  afterEach(async () => {
+    await claudeProcess?.stop()
+    claudeProcess = undefined
+  })
+
+  it('registers the brain server only when the workspace flag is on', async () => {
+    claudeProcess = new ClaudeCodeProcess({
+      sessionId: 'test-brain-gate-off',
+      workingDirectory: '/tmp',
+    })
+    await claudeProcess.start()
+    expect(calls[calls.length - 1].options.mcpServers).not.toHaveProperty('brain')
+    await claudeProcess.stop()
+    claudeProcess = undefined
+
+    claudeProcess = new ClaudeCodeProcess({
+      sessionId: 'test-brain-gate-on',
+      workingDirectory: '/tmp',
+      teamBrain: true,
+    })
+    await claudeProcess.start()
+    expect(calls[calls.length - 1].options.mcpServers).toHaveProperty('brain')
+    expect(calls[calls.length - 1].options.systemPrompt).toContain('## Team Brain')
   })
 })
 

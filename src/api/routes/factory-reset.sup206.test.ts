@@ -70,6 +70,7 @@ vi.mock('@shared/lib/container/client-factory', () => ({
 vi.mock('@shared/lib/config/data-dir', () => ({
   getDataDir: () => '/mock/data',
   getAgentsDataDir: () => '/mock/data/agents',
+  getBrainDir: () => '/mock/data/brain',
 }))
 
 vi.mock('../../main/host-browser', () => ({
@@ -187,6 +188,16 @@ describe('POST /api/settings/factory-reset — agent/app-owned table cleanup', (
         `factory-reset must delete agent/app-owned table "${getTableName(table as Table)}"`,
       ).toContain(table)
     }
+  })
+
+  it('deletes the brain directory', async () => {
+    const fs = await import('fs')
+    const res = await factoryReset()
+    expect(res.status).toBe(200)
+    expect(fs.default.promises.rm).toHaveBeenCalledWith('/mock/data/brain', {
+      recursive: true,
+      force: true,
+    })
   })
 
   it('does NOT delete Better Auth tables (user accounts survive a factory reset)', async () => {

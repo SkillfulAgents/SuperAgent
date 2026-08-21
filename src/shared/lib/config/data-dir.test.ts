@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { getDataDir, getDatabasePath } from './data-dir'
+import { BRAIN_INDEX_FILENAME, ensureBrainDir, getBrainDir, getDataDir, getDatabasePath } from './data-dir'
 
 describe('getDataDir / getDatabasePath', () => {
   const prevDataDir = process.env.SUPERAGENT_DATA_DIR
@@ -39,5 +40,43 @@ describe('getDataDir / getDatabasePath', () => {
     delete process.env.SUPERAGENT_DATA_DIR
     process.env.SUPERAGENT_DB_PATH = 'relative/superagent.db'
     expect(getDatabasePath()).toBe(path.resolve('relative/superagent.db'))
+  })
+})
+
+describe('getBrainDir / ensureBrainDir', () => {
+  const prevDataDir = process.env.SUPERAGENT_DATA_DIR
+  let tmp: string
+
+  afterEach(() => {
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true })
+    if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
+    else process.env.SUPERAGENT_DATA_DIR = prevDataDir
+  })
+
+  it('sits beside agents/, not under it', () => {
+    process.env.SUPERAGENT_DATA_DIR = '/tmp/sa-brain-path'
+    expect(getBrainDir()).toBe(path.join(path.resolve('/tmp/sa-brain-path'), 'brain'))
+    expect(getBrainDir()).not.toMatch(/\/agents\//)
+  })
+
+  it('creates the directory and is idempotent', () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-brain-'))
+    process.env.SUPERAGENT_DATA_DIR = tmp
+    const first = ensureBrainDir()
+    const second = ensureBrainDir()
+    expect(first).toBe(path.join(tmp, 'brain'))
+    expect(first).toBe(second)
+    expect(fs.statSync(first).isDirectory()).toBe(true)
+  })
+
+  it('seeds INDEX.md once and leaves curator edits alone', () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-brain-'))
+    process.env.SUPERAGENT_DATA_DIR = tmp
+    const dir = ensureBrainDir()
+    const indexPath = path.join(dir, BRAIN_INDEX_FILENAME)
+    expect(fs.readFileSync(indexPath, 'utf8')).toMatch(/Curator-owned catalog/)
+    fs.writeFileSync(indexPath, '# edited by curator\n')
+    ensureBrainDir()
+    expect(fs.readFileSync(indexPath, 'utf8')).toBe('# edited by curator\n')
   })
 })

@@ -29,6 +29,7 @@ const AUDITED_KEYS: (keyof AppSettings)[] = [
   'analyticsTargets',
   'shareErrorReports',
   'enableToolSearch',
+  'teamBrain',
   'agentCapabilities',
 ]
 
@@ -60,6 +61,7 @@ const SECTION_RULES: Array<[prefix: string, label: string]> = [
   ['models', 'Model Provider'],
   ['modelCatalog', 'Model Provider'],
   ['enableToolSearch', 'Model Provider'],
+  ['teamBrain', 'General'],
   ['webProvider', 'Web Search'],
   ['webAllowedSites', 'Web Search'],
   ['webBlockedSites', 'Web Search'],

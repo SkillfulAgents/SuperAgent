@@ -26,6 +26,7 @@ export const sessionMetadataSchema = z
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
     speed: speedLevelSchema,
     capabilityPolicies: agentCapabilityPoliciesSchema,
+    teamBrain: z.boolean().optional(),
     sessionCapabilityGrants: z.array(z.enum(['subagents', 'workflows'])).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
   })

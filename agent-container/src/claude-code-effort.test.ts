@@ -80,6 +80,7 @@ vi.mock('./mcp-server', () => ({
   createDashboardsMcpServer: () => ({}),
   createAgentsMcpServer: (_getCallerSessionId: () => string) => ({}),
   createChatMcpServer: () => ({}),
+  createBrainMcpServer: () => ({}),
 }))
 
 vi.mock('./tools/browser', () => ({

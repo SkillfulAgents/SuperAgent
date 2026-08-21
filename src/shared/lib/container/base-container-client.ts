@@ -1155,6 +1155,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           effort: options.effort,
           speed: options.speed,
           capabilityPolicies,
+          teamBrain: getSettings().teamBrain === true,
           prewarmDefaults: options.prewarmDefaults && {
             model: resolvedPrewarmModel,
             modelPromptHints: prewarmPromptHints.length > 0 ? prewarmPromptHints : undefined,

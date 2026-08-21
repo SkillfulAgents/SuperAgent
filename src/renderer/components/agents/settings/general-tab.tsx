@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
+import { Switch } from '@renderer/components/ui/switch'
 import { AgentAutoDeleteSelect } from '@renderer/components/settings/auto-delete-select'
 import {
   AlertDialog,
@@ -35,6 +36,7 @@ import { AgentTemplatePublishDialog } from '@renderer/components/agents/agent-te
 import { Trash2, Download, HardDriveDownload, RefreshCw, GitPullRequest, Send, Upload, Loader2 } from 'lucide-react'
 import { getReviewActionLabel, isPullRequestPublishMode } from '@renderer/lib/skillset-publish-ui'
 import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
+import { useBrainCurator, useSetBrainCurator } from '@renderer/hooks/use-brain-curator'
 
 interface GeneralTabProps {
   name: string
@@ -67,6 +69,9 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const publishMode = useSkillsetPublishMode(templateStatus?.skillsetId)
   const isPR = isPullRequestPublishMode(publishMode)
   const SubmitIcon = isPR ? GitPullRequest : Send
+  const { data: curator } = useBrainCurator()
+  const setCurator = useSetBrainCurator()
+  const isCurator = curator?.agentSlug === agentSlug
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -93,6 +98,30 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
           placeholder="Enter agent name"
         />
       </div>
+
+      {curator?.enabled && (
+      <div className="flex items-center justify-between gap-3">
+        <div className="space-y-1">
+          <Label htmlFor="brain-curator">Team Brain curator</Label>
+          <p className="text-xs text-muted-foreground">
+            This agent is the only writer of the shared Team Brain.
+          </p>
+        </div>
+        <Switch
+          id="brain-curator"
+          data-testid="brain-curator-switch"
+          checked={isCurator}
+          disabled={setCurator.isPending}
+          onCheckedChange={(on) => {
+            setCurator.mutate(on ? agentSlug : null, {
+              onError: (error) => {
+                toast.error(error instanceof Error ? error.message : 'Failed to update curator')
+              },
+            })
+          }}
+        />
+      </div>
+      )}
 
       {/* Template Status */}
       {templateStatus && (templateStatus.type !== 'local' || !!templateSourceLabel) && (

@@ -7,7 +7,7 @@ import { zValidator } from '@hono/zod-validator'
 import { getLlmProvider, getAllProviderInfo, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
-import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
+import { getDataDir, getAgentsDataDir, getBrainDir } from '@shared/lib/config/data-dir'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -427,6 +427,7 @@ function buildSettingsResponse(
     analyticsTargets: appSettings.analyticsTargets,
     shareErrorReports: appSettings.shareErrorReports !== false,
     enableToolSearch: appSettings.enableToolSearch !== false,
+    teamBrain: appSettings.teamBrain === true,
     agentCapabilities: appSettings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES,
   }
 }
@@ -890,6 +891,8 @@ settings.post('/factory-reset', async (c) => {
     // Delete agents directory
     const agentsDir = getAgentsDataDir()
     await fs.promises.rm(agentsDir, { recursive: true, force: true })
+
+    await fs.promises.rm(getBrainDir(), { recursive: true, force: true })
 
     // Clear every agent/app-owned relational table (children before parents).
     // Better Auth tables (user/session/account/verification) are preserved.

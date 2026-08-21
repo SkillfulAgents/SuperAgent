@@ -57,6 +57,8 @@ import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
+import { BrainCuratorBadge } from '@renderer/components/agents/brain-curator-badge'
+import { useBrainCurator } from '@renderer/hooks/use-brain-curator'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
 import { useQueryClient } from '@tanstack/react-query'
@@ -406,6 +408,8 @@ export const AgentMenuItem = React.forwardRef<
   const [showAll, setShowAll] = useState(false)
   const [showSkeleton, setShowSkeleton] = useState(false)
   const isShared = agentMemberCount(agent.slug) > 1
+  const { data: curator } = useBrainCurator()
+  const isCurator = curator?.agentSlug === agent.slug
 
   // Lazy-load detail data only when expanded
   const { data: sessions, isLoading: sessionsLoading } = useSessions(isOpen ? agent.slug : null)
@@ -474,6 +478,7 @@ export const AgentMenuItem = React.forwardRef<
               <AppLink ref={hintRef} to="/agents/$slug" params={{ slug: agent.displaySlug }}>
                 <span className="flex items-center gap-1.5 min-w-0">
                   <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+                  {isCurator && <BrainCuratorBadge />}
                   {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
                 </span>
                 {hint !== null ? (

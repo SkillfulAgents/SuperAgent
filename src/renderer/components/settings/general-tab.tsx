@@ -10,7 +10,9 @@ import {
 import { cn } from '@shared/lib/utils/cn'
 import { TimezonePicker } from '@renderer/components/ui/timezone-picker'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useQueryClient } from '@tanstack/react-query'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
+import { BRAIN_CURATOR_QUERY_KEY } from '@renderer/hooks/use-brain-curator'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
@@ -36,18 +38,22 @@ interface SettingRowProps {
   subtitle: ReactNode
   right: ReactNode
   htmlFor?: string
+  badge?: ReactNode
   /** Stack the control under the label below `md` — for wide controls (e.g. the
       timezone picker) that would otherwise crush the label on mobile. */
   stack?: boolean
 }
 
-function SettingRow({ name, subtitle, right, htmlFor, stack }: SettingRowProps) {
+function SettingRow({ name, subtitle, right, htmlFor, badge, stack }: SettingRowProps) {
   const Name = htmlFor ? 'label' : 'div'
   return (
     <div className="py-3 px-4">
       <div className={cn('flex gap-3', stack ? 'flex-col items-stretch md:flex-row md:items-center' : 'items-center')}>
         <div className="min-w-0 flex-1">
-          <Name htmlFor={htmlFor} className="text-xs font-medium truncate block cursor-default">{name}</Name>
+          <div className="flex items-center gap-2 min-w-0">
+            <Name htmlFor={htmlFor} className="text-xs font-medium truncate block cursor-default">{name}</Name>
+            {badge}
+          </div>
           <div className="text-[11px] text-muted-foreground mt-0.5">{subtitle}</div>
         </div>
         <div className={cn('flex items-center gap-2 shrink-0', stack && 'w-full md:w-auto')}>{right}</div>
@@ -137,6 +143,7 @@ interface GeneralTabProps {
 export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
   const { data: userSettings, isLoading: isUserSettingsLoading } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
+  const queryClient = useQueryClient()
   const { data: globalSettings } = useSettings()
   const updateGlobalSettings = useUpdateSettings()
   const { isAuthMode, isAdmin } = useUser()
@@ -308,6 +315,26 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
               disabled={isUserSettingsLoading || keepAwakeLoading}
             />
           )}
+          <SettingRow
+            name="Team Brain"
+            htmlFor="team-brain"
+            badge={<span className="text-[11px] text-muted-foreground">Experimental</span>}
+            subtitle="Shared pages other agents can read. New sessions pick this up."
+            right={
+              <Switch
+                id="team-brain"
+                data-testid="team-brain-switch"
+                checked={globalSettings?.teamBrain === true}
+                onCheckedChange={(checked: boolean) => {
+                  updateGlobalSettings.mutate({ teamBrain: checked }, {
+                    onSuccess: () => {
+                      void queryClient.invalidateQueries({ queryKey: BRAIN_CURATOR_QUERY_KEY })
+                    },
+                  })
+                }}
+              />
+            }
+          />
         </div>
       </div>
 
